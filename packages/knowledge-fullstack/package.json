@@ -1,0 +1,20 @@
+{
+  "name": "@aura/knowledge-fullstack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AURA Hub — production FullStack Knowledge Engine. Understands an entire software system: extracts entities + cross-layer relationships from real files into a persistent project graph. Reuses the frozen Coding Knowledge Engine. No embeddings, no vector search, no mock data.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@aura/retrieval": "*",
+    "@aura/knowledge-coding": "*"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

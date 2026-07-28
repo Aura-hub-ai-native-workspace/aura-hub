@@ -1,0 +1,19 @@
+{
+  "name": "@aura/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AURA Hub core — design tokens, motion presets, types, global store, navigation model, mock data.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "zustand": "^4.5.2"
+  },
+  "peerDependencies": {
+    "react": "^18.3.0"
+  }
+}

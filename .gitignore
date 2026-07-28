@@ -1,0 +1,26 @@
+node_modules
+dist
+dist-ssr
+*.local
+
+# AURA local artifacts (AI service bundle + knowledge indexes)
+.aura
+.aura-index
+.aura-fullstack
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Tauri / Rust
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/gen
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+
+# Logs
+*.log
+npm-debug.log*

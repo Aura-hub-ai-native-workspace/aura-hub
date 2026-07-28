@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": false,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": false,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@aura/core": ["packages/core/src/index.ts"],
+      "@aura/core/*": ["packages/core/src/*"],
+      "@aura/ui": ["packages/ui/src/index.ts"],
+      "@aura/ui/*": ["packages/ui/src/*"],
+      "@aura/intelligence": ["packages/intelligence/src/index.ts"],
+      "@aura/intelligence/*": ["packages/intelligence/src/*"],
+      "@aura/retrieval": ["packages/retrieval/src/index.ts"],
+      "@aura/retrieval/*": ["packages/retrieval/src/*"],
+      "@aura/knowledge-coding": ["packages/knowledge-coding/src/index.ts"],
+      "@aura/knowledge-coding/*": ["packages/knowledge-coding/src/*"],
+      "@aura/knowledge-fullstack": ["packages/knowledge-fullstack/src/index.ts"],
+      "@aura/knowledge-fullstack/*": ["packages/knowledge-fullstack/src/*"],
+      "@aura/ai-service": ["packages/ai-service/src/index.ts"],
+      "@aura/ai-service/*": ["packages/ai-service/src/*"],
+      "@aura/runtime": ["packages/runtime/src/index.ts"],
+      "@aura/runtime/*": ["packages/runtime/src/*"]
+    }
+  }
+}

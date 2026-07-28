@@ -1,0 +1,187 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * AURA Hub — global theme layer.
+ * Semantic tokens as CSS variables. Swap a block, retheme the OS.
+ * (Fonts fall back to system UI when Inter isn't installed, so the app
+ *  stays fully offline-capable inside Tauri.)
+ */
+:root,
+:root[data-theme='light'] {
+  --canvas: #ffffff;
+  --surface: #ffffff;
+  --surface-hover: #f4f6f9;
+  --surface-active: #eef0f4;
+  --line: #e6e9ef;
+  --line-strong: #d5dae3;
+  --text: #14171d;
+  --text-muted: #5b6376;
+  --text-subtle: #9aa2b2;
+
+  --accent: #3b6bff;
+  --accent-50: #eef4ff;
+  --accent-100: #dbe6ff;
+  --accent-200: #bfd2ff;
+  --accent-600: #2451f5;
+  --accent-700: #1c3ee0;
+
+  --positive: #1fb567;
+  --attention: #f5a524;
+  --danger: #f04438;
+  --scrim: rgba(17, 20, 28, 0.32);
+
+  /* The canvas has a faint cool wash — the "desk" the surfaces sit on. */
+  --canvas-wash: radial-gradient(120% 120% at 100% 0%, #f5f8ff 0%, #f7f8fa 40%, #f4f5f8 100%);
+}
+
+:root[data-theme='dark'] {
+  --canvas: #0b0d11;
+  --surface: #14171d;
+  --surface-hover: #1b1f27;
+  --surface-active: #232833;
+  --line: #232833;
+  --line-strong: #2f3542;
+  --text: #f2f4f8;
+  --text-muted: #9aa2b2;
+  --text-subtle: #667085;
+
+  --accent: #5c86ff;
+  --accent-50: #182036;
+  --accent-100: #1c2a4d;
+  --accent-200: #24356a;
+  --accent-600: #6f95ff;
+  --accent-700: #93b0ff;
+
+  --positive: #34d187;
+  --attention: #ffbf4d;
+  --danger: #ff6a5e;
+  --scrim: rgba(0, 0, 0, 0.55);
+
+  --canvas-wash: radial-gradient(120% 120% at 100% 0%, #10141d 0%, #0d1015 45%, #0b0d11 100%);
+}
+
+* {
+  border-color: var(--line);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--text);
+  font-family: 'Inter', 'SF Pro Text', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  overflow: hidden; /* the shell manages its own scroll regions */
+  user-select: none;
+}
+
+/* Let text-bearing regions stay selectable. */
+input,
+textarea,
+[contenteditable],
+.selectable {
+  user-select: text;
+}
+
+/* Thin, self-hiding scrollbars — OS-native calm. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+:hover::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  background-clip: content-box;
+}
+
+/* Skeleton shimmer used by @aura/ui <Skeleton>. */
+.aura-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.aura-shimmer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  animation: shimmer 1.6s infinite;
+}
+:root[data-theme='dark'] .aura-shimmer::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+}
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* Focus visibility that matches the accent, never the browser default. */
+:focus-visible {
+  outline: none;
+}
+
+/* ── Living environment ─────────────────────────────────────────────
+   Subtle signs of life. Calm, slow, never distracting. */
+
+/* A status dot that quietly breathes. */
+.aura-breathe {
+  animation: aura-breathe 3.4s ease-in-out infinite;
+}
+@keyframes aura-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* A live indicator: a solid dot with a slow expanding halo. Apply to a
+   positioned element that contains a ::before/::after-free child. */
+.aura-live {
+  position: relative;
+}
+.aura-live::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.5;
+  animation: aura-live-ring 2.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+@keyframes aura-live-ring {
+  0% { transform: scale(1); opacity: 0.45; }
+  70%, 100% { transform: scale(2.6); opacity: 0; }
+}
+
+/* Ultra-slow ambient drift for background auras. */
+.aura-drift {
+  animation: aura-drift 14s ease-in-out infinite;
+}
+@keyframes aura-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.9; }
+  50% { transform: translate3d(2%, -3%, 0) scale(1.08); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

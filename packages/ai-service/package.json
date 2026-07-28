@@ -1,0 +1,17 @@
+{
+  "name": "@aura/ai-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AURA Hub — local AI service. Runs the full frozen pipeline (intent → enhance → knowledge engines → context → runtime → response) and exposes it to the UI over localhost HTTP + SSE. Composition only; no frozen module is modified.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": { ".": "./src/index.ts", "./*": "./src/*" },
+  "dependencies": {
+    "@aura/intelligence": "*",
+    "@aura/knowledge-coding": "*",
+    "@aura/knowledge-fullstack": "*",
+    "@aura/runtime": "*"
+  },
+  "scripts": { "typecheck": "tsc -p tsconfig.json --noEmit" }
+}

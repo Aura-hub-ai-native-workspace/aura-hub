@@ -1,0 +1,17 @@
+export { PipelineManager, type PipelineOptions, type InspectResult, type StreamEmit, type NormalizedError, type IndexStatus, type MountTarget, type ProviderStatus } from './pipeline';
+export { WorkspaceManager, type OpenResult } from './workspace';
+export { ProjectRegistry, type ProjectRecord } from './projects';
+export { ProjectMemory, type MemoryItem, type MemoryKind } from './memory';
+export { ProjectConversations, type Conversation, type ConvMessage, type ConversationSummary } from './conversations';
+export { buildKnowledgeGraph, type KnowledgeGraph, type GraphNode, type GraphEdge } from './knowledgeGraph';
+export { buildProfile, getOrBuildProfile, loadProfile, type ProjectProfile, type FolderNode } from './profile';
+export { configHome, homePath } from './persist';
+export { startService, type ServiceHandle } from './server';
+export { DEFAULT_SETTINGS, selectEngines, type AiSettings } from './settings';
+export { WorkflowStore } from './workflow/store';
+export { runWorkflow, type RunOptions, type RunResult } from './workflow/engine';
+export { NODE_SPECS, nodeSpecInfos } from './workflow/nodes';
+export { TEMPLATES, instantiateTemplate, type WorkflowTemplate } from './workflow/templates';
+export type { Workflow, WorkflowSummary, WfNode, WfEdge, WfNodeType, NodeCategory, NodeIO, NodeRunState, RunEvent, NodeSpecInfo, FieldSpec } from './workflow/types';
+export { RuntimeManager, setupProviders, listProviders, getProvider, storeCredential, getCredential, removeCredential, getConnectedProviders, getFingerprint, isProviderConnected, registerProvider } from './provider';
+export type { ProviderInfo, ConnectedProvider, ActiveProvider, ProviderAdapterFactory } from './provider';
