@@ -2,17 +2,26 @@
 #
 # Every change requires review and approval from the repository owner.
 # This file is enforced by branch protection ("Require review from Code Owners").
+# Team labels below are informational (who to loop in) — @Gokulanand-art
+# is the required approver on everything per repository governance.
 
 * @Gokulanand-art
 
-/packages/runtime/          @Gokulanand-art
-/packages/ai-service/       @Gokulanand-art
-/apps/desktop/              @Gokulanand-art
-/packages/core/             @Gokulanand-art
-/packages/intelligence/     @Gokulanand-art
-/packages/knowledge-coding/ @Gokulanand-art
-/packages/knowledge-fullstack/ @Gokulanand-art
-/packages/retrieval/        @Gokulanand-art
-/packages/ui/               @Gokulanand-art
+# UI-UX Team surfaces
+/apps/desktop/       @Gokulanand-art
+/packages/ui/        @Gokulanand-art
+/packages/core/      @Gokulanand-art
 
-/.github/                   @Gokulanand-art
+# Backend Team surfaces
+/packages/ai-service/          @Gokulanand-art
+/packages/intelligence/        @Gokulanand-art
+/packages/retrieval/           @Gokulanand-art
+/packages/runtime/             @Gokulanand-art
+
+# Database Team surfaces
+/packages/knowledge-coding/     @Gokulanand-art
+/packages/knowledge-fullstack/  @Gokulanand-art
+
+# Governance
+/.github/            @Gokulanand-art
+/docs/                @Gokulanand-art
