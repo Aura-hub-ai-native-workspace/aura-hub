@@ -1,0 +1,18 @@
+# AURA Code Owners
+#
+# Every change requires review and approval from the repository owner.
+# This file is enforced by branch protection ("Require review from Code Owners").
+
+* @Gokulanand-art
+
+/packages/runtime/          @Gokulanand-art
+/packages/ai-service/       @Gokulanand-art
+/apps/desktop/              @Gokulanand-art
+/packages/core/             @Gokulanand-art
+/packages/intelligence/     @Gokulanand-art
+/packages/knowledge-coding/ @Gokulanand-art
+/packages/knowledge-fullstack/ @Gokulanand-art
+/packages/retrieval/        @Gokulanand-art
+/packages/ui/               @Gokulanand-art
+
+/.github/                   @Gokulanand-art
