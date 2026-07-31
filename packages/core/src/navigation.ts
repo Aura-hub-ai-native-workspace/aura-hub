@@ -12,8 +12,6 @@ export interface NavItem {
   key: NavKey;
   label: string;
   icon: string;
-  /** Optional live count badge (e.g. running tasks). */
-  badge?: number;
   /** Grouping — lets us insert a visual divider without hard-coding it. */
   group: 'primary' | 'system';
 }
@@ -24,6 +22,10 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'knowledge', label: 'Knowledge', icon: 'knowledge', group: 'primary' },
   { key: 'ai', label: 'AI', icon: 'spark', group: 'primary' },
   { key: 'workflows', label: 'Workflows', icon: 'workflows', group: 'primary' },
+  { key: 'missions', label: 'Mission Control', icon: 'deploy', group: 'primary' },
+  { key: 'dashboard', label: 'Engineering', icon: 'activity', group: 'primary' },
+  { key: 'governance', label: 'Governance', icon: 'shield', group: 'primary' },
+  { key: 'workspace', label: 'Workspace', icon: 'layout', group: 'primary' },
   { key: 'marketplace', label: 'Marketplace', icon: 'marketplace', group: 'primary' },
   { key: 'settings', label: 'Settings', icon: 'settings', group: 'system' },
 ];
@@ -37,6 +39,7 @@ export interface ProjectTabDef {
 export const PROJECT_TABS: ProjectTabDef[] = [
   { key: 'overview', label: 'Overview', icon: 'grid' },
   { key: 'architecture', label: 'Architecture', icon: 'architecture' },
+  { key: 'code', label: 'Code', icon: 'code' },
   { key: 'frontend', label: 'Frontend', icon: 'layout' },
   { key: 'backend', label: 'Backend', icon: 'server' },
   { key: 'database', label: 'Database', icon: 'database' },
@@ -57,6 +60,10 @@ export const NAV_TITLES: Record<NavKey, string> = {
   knowledge: 'Knowledge',
   ai: 'AI',
   workflows: 'Workflows',
+  missions: 'Mission Control',
+  dashboard: 'Engineering',
+  governance: 'Governance',
+  workspace: 'Workspace',
   marketplace: 'Marketplace',
   settings: 'Settings',
 };

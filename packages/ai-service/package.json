@@ -8,10 +8,13 @@
   "types": "./src/index.ts",
   "exports": { ".": "./src/index.ts", "./*": "./src/*" },
   "dependencies": {
+    "@aura/engineering-memory": "*",
     "@aura/intelligence": "*",
     "@aura/knowledge-coding": "*",
     "@aura/knowledge-fullstack": "*",
-    "@aura/runtime": "*"
+    "@aura/retrieval": "*",
+    "@aura/runtime": "*",
+    "typescript": "^5.4.5"
   },
   "scripts": { "typecheck": "tsc -p tsconfig.json --noEmit" }
 }

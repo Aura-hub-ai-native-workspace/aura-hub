@@ -33,6 +33,8 @@
       "@aura/knowledge-fullstack/*": ["packages/knowledge-fullstack/src/*"],
       "@aura/ai-service": ["packages/ai-service/src/index.ts"],
       "@aura/ai-service/*": ["packages/ai-service/src/*"],
+      "@aura/governance": ["packages/governance/src/index.ts"],
+      "@aura/governance/*": ["packages/governance/src/*"],
       "@aura/runtime": ["packages/runtime/src/index.ts"],
       "@aura/runtime/*": ["packages/runtime/src/*"]
     }

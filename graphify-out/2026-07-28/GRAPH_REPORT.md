@@ -1,12 +1,12 @@
 # Graph Report - aura-hub  (2026-07-28)
 
 ## Corpus Check
-- 228 files · ~267,709 words
+- 251 files · ~282,371 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1954 nodes · 4717 edges · 97 communities (88 shown, 9 thin omitted)
-- Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 23 edges (avg confidence: 0.8)
+- 2092 nodes · 4997 edges · 111 communities (100 shown, 11 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 26 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -22,6 +22,7 @@
 - [[_COMMUNITY_Workspace Manager & Records|Workspace Manager & Records]]
 - [[_COMMUNITY_Home & Projects Screens|Home & Projects Screens]]
 - [[_COMMUNITY_Provider Adapters & Runtime|Provider Adapters & Runtime]]
+- [[_COMMUNITY_Community 12|Community 12]]
 - [[_COMMUNITY_Intelligence Types|Intelligence Types]]
 - [[_COMMUNITY_AI Chat Workspace|AI Chat Workspace]]
 - [[_COMMUNITY_FullStack Entities|FullStack Entities]]
@@ -30,6 +31,7 @@
 - [[_COMMUNITY_FullStack Engine & Indexer|FullStack Engine & Indexer]]
 - [[_COMMUNITY_FullStack Extractors|FullStack Extractors]]
 - [[_COMMUNITY_Repository Identity Engine|Repository Identity Engine]]
+- [[_COMMUNITY_Community 21|Community 21]]
 - [[_COMMUNITY_TypeScript Config|TypeScript Config]]
 - [[_COMMUNITY_Module Summaries & Glossary|Module Summaries & Glossary]]
 - [[_COMMUNITY_Desktop Dependencies|Desktop Dependencies]]
@@ -65,6 +67,7 @@
 - [[_COMMUNITY_index.ts|index.ts]]
 - [[_COMMUNITY_package.json|package.json]]
 - [[_COMMUNITY_package.json|package.json]]
+- [[_COMMUNITY_Community 57|Community 57]]
 - [[_COMMUNITY_validation.ts|validation.ts]]
 - [[_COMMUNITY_healthEngine.ts|healthEngine.ts]]
 - [[_COMMUNITY_package.json|package.json]]
@@ -77,6 +80,7 @@
 - [[_COMMUNITY_Community 67|Community 67]]
 - [[_COMMUNITY_compilerOptions|compilerOptions]]
 - [[_COMMUNITY_detector.ts|detector.ts]]
+- [[_COMMUNITY_Community 70|Community 70]]
 - [[_COMMUNITY_compilerOptions|compilerOptions]]
 - [[_COMMUNITY_NullEmbeddingProvider|NullEmbeddingProvider]]
 - [[_COMMUNITY_compilerOptions|compilerOptions]]
@@ -90,102 +94,115 @@
 - [[_COMMUNITY_lib.rs|lib.rs]]
 - [[_COMMUNITY_tailwind.config.ts|tailwind.config.ts]]
 - [[_COMMUNITY_AURA_LOGO_SRC|AURA_LOGO_SRC]]
-- [[_COMMUNITY_Community 89|Community 89]]
 - [[_COMMUNITY_Community 90|Community 90]]
 - [[_COMMUNITY_Community 91|Community 91]]
 - [[_COMMUNITY_Community 92|Community 92]]
 - [[_COMMUNITY_Community 93|Community 93]]
 - [[_COMMUNITY_Community 94|Community 94]]
 - [[_COMMUNITY_Community 95|Community 95]]
+- [[_COMMUNITY_Community 96|Community 96]]
 - [[_COMMUNITY_Community 97|Community 97]]
+- [[_COMMUNITY_Community 98|Community 98]]
 - [[_COMMUNITY_Community 99|Community 99]]
 - [[_COMMUNITY_Community 100|Community 100]]
 - [[_COMMUNITY_Community 101|Community 101]]
 - [[_COMMUNITY_Community 102|Community 102]]
+- [[_COMMUNITY_Community 104|Community 104]]
+- [[_COMMUNITY_Community 105|Community 105]]
+- [[_COMMUNITY_Community 106|Community 106]]
+- [[_COMMUNITY_Community 107|Community 107]]
+- [[_COMMUNITY_Community 109|Community 109]]
+- [[_COMMUNITY_Community 110|Community 110]]
+- [[_COMMUNITY_Community 113|Community 113]]
+- [[_COMMUNITY_Community 114|Community 114]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `cn()` - 74 edges
-2. `homePath()` - 41 edges
-3. `readJsonFile()` - 41 edges
-4. `WorkspaceManager` - 41 edges
-5. `Entity` - 40 edges
-6. `Icon` - 39 edges
+1. `cn()` - 82 edges
+2. `Icon` - 46 edges
+3. `homePath()` - 41 edges
+4. `readJsonFile()` - 41 edges
+5. `WorkspaceManager` - 41 edges
+6. `Entity` - 40 edges
 7. `writeJsonFile()` - 38 edges
 8. `PipelineManager` - 37 edges
-9. `useAppStore` - 32 edges
-10. `SourceFile` - 32 edges
+9. `useAppStore` - 34 edges
+10. `useWorkspace` - 33 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `AURA Logo` --conceptually_related_to--> `Design Language (AURA Blue, glass, whitespace)`  [INFERRED]
   apps/desktop/src/assets/aura-logo.png → docs/DESIGN.md
-- `AuraLockup()` --calls--> `cn()`  [EXTRACTED]
-  apps/desktop/src/brand/AuraLogo.tsx → packages/core/src/utils/cn.ts
+- `ResizablePane()` --calls--> `cn()`  [EXTRACTED]
+  apps/desktop/src/editor/EditorWorkspace.tsx → packages/core/src/utils/cn.ts
+- `PlaceholderView()` --calls--> `cn()`  [EXTRACTED]
+  apps/desktop/src/editor/ExplorerPanel.tsx → packages/core/src/utils/cn.ts
 - `StatusRow()` --calls--> `cn()`  [EXTRACTED]
   apps/desktop/src/screens/Home.tsx → packages/core/src/utils/cn.ts
 - `Toggle()` --calls--> `cn()`  [EXTRACTED]
   apps/desktop/src/screens/ai/AiSettings.tsx → packages/core/src/utils/cn.ts
-- `Kv()` --calls--> `cn()`  [EXTRACTED]
-  apps/desktop/src/screens/ai/AiWorkspace.tsx → packages/core/src/utils/cn.ts
 
 ## Import Cycles
-- None detected.
+- 1-file cycle: `apps/desktop/src-tauri/src/lib.rs -> apps/desktop/src-tauri/src/lib.rs`
 
 ## Hyperedges (group relationships)
 - **AURA Knowledge Layer** — concept_coding_knowledge_engine, concept_fullstack_knowledge_engine, concept_retrieval_memory_foundation [INFERRED 0.75]
 
-## Communities (97 total, 9 thin omitted)
+## Communities (111 total, 11 thin omitted)
 
 ### Community 0 - "Design System & Core Primitives"
-Cohesion: 0.04
-Nodes (74): ButtonProps, ButtonSize, ButtonVariant, SIZES, VARIANTS, CardProps, PADDING, Dialog() (+66 more)
+Cohesion: 0.05
+Nodes (59): BadgeProps, TONES, ButtonProps, ButtonSize, ButtonVariant, SIZES, VARIANTS, CommandPalette() (+51 more)
 
 ### Community 1 - "Project Workspace Sections"
-Cohesion: 0.10
-Nodes (33): ProjectIntelligence, WorkspaceIntelligence, Badge(), BadgeProps, TONES, Card, CardHeader(), EmptyState() (+25 more)
+Cohesion: 0.11
+Nodes (29): KGNode, RetrieveResult, Badge(), Card, CardHeader(), CardProps, PADDING, EmptyState() (+21 more)
 
 ### Community 2 - "Conversations & Intent"
-Cohesion: 0.08
-Nodes (31): IntentClassifier, KeywordIntentClassifier, PromptEnhancer, TemplatePromptEnhancer, createRequest(), genId(), Attachment, Citation (+23 more)
+Cohesion: 0.07
+Nodes (33): IntentClassifier, KeywordIntentClassifier, PromptEnhancer, TemplatePromptEnhancer, normalize(), createRequest(), genId(), Attachment (+25 more)
 
 ### Community 3 - "Repository Intelligence Modules"
-Cohesion: 0.09
-Nodes (52): FileContent, fileExists(), getDirectoryTree(), getFileInfo(), getProjectInfo(), listFiles(), ProjectInfo, searchCode() (+44 more)
+Cohesion: 0.08
+Nodes (55): FileContent, fileExists(), getDirectoryTree(), getFileInfo(), getProjectInfo(), listFiles(), ProjectInfo, searchCode() (+47 more)
 
 ### Community 4 - "Memory Hierarchy"
 Cohesion: 0.10
 Nodes (24): MemoryHierarchy, MemoryLayers, RecallHit, clockOf(), InMemoryKnowledgeMemory, InMemoryPersistentMemory, InMemoryProjectMemory, InMemorySessionMemory (+16 more)
 
 ### Community 5 - "Persistence & Workspace"
-Cohesion: 0.11
-Nodes (29): buildCrossRepoGraph(), CROSS_REPO_FILE, CrossRepoEdge, CrossRepoGraph, detectLanguageClusters(), detectMonorepoCluster(), detectSharedCode(), findPath() (+21 more)
+Cohesion: 0.17
+Nodes (18): CrossRepoGraph, getGraphStats(), runWorkspaceIntelligence(), WorkspaceIntelligenceReport, createRepositoryGroup(), detectCrossRepoDependencies(), findRepositories(), getRepositoryDependencies() (+10 more)
 
 ### Community 6 - "AI Client & Settings UI"
-Cohesion: 0.05
-Nodes (55): AiSettings, ArchitectureLayer, ConnectedProvider, Conversation, ConvMessage, ENV, FieldSpec, FolderNode (+47 more)
+Cohesion: 0.09
+Nodes (20): AiSettings, ConnectedProvider, HealthResult, ProviderInfo, ProviderStatus, AiSettings(), DialogState, EMPTY_DIALOG (+12 more)
 
 ### Community 7 - "App Shell & Store"
-Cohesion: 0.14
-Nodes (11): CommandPalette(), CommandPaletteProps, SECTION_ICON, SECTION_ORDER, boot, breathe, enterSpaceVariants, leaveSpaceVariants (+3 more)
+Cohesion: 0.06
+Nodes (52): aiClient, ArchitectureLayer, Conversation, ConvMessage, ENV, FieldSpec, FolderNode, GraphRelation (+44 more)
 
 ### Community 8 - "Workflow Engine"
 Cohesion: 0.13
-Nodes (11): ExtractorRegistry, normPath(), RelationLinker, FullStackEngineOptions, FullStackKnowledgeEngine, LAYER_CATEGORY, abortError(), AnalyzeOptions (+3 more)
+Nodes (17): abortError(), Accum, buildDocument(), CODE_LANGS, CONFIG_LANGS, detectKind(), detectLanguage(), DOC_LANGS (+9 more)
 
 ### Community 9 - "Workspace Manager & Records"
-Cohesion: 0.10
-Nodes (10): Conversation, ConversationSummary, MemoryItem, IndexStatus, Mount, ProjectProfile, ProjectRecord, OpenResult (+2 more)
+Cohesion: 0.09
+Nodes (11): Conversation, ConversationSummary, MemoryItem, MemoryKind, IndexStatus, Mount, ProjectProfile, ProjectRecord (+3 more)
 
 ### Community 10 - "Home & Projects Screens"
-Cohesion: 0.12
-Nodes (27): AiWorkspace(), AuraLockup(), AuraLogo(), AuraLogoProps, AuraTile(), Tooltip(), useWorkspace, useHotkey() (+19 more)
+Cohesion: 0.11
+Nodes (26): AiWorkspace(), Tooltip(), useWorkspace, useHotkey(), ProjectWorkspace(), ErrorBoundary, Props, State (+18 more)
 
 ### Community 11 - "Provider Adapters & Runtime"
+Cohesion: 0.12
+Nodes (10): BaseOpenAICompatible, GroqAdapter, KimiAdapter, MistralAdapter, NvidiaAdapter, OpenAIAdapter, OpenRouterAdapter, adapters (+2 more)
+
+### Community 12 - "Community 12"
 Cohesion: 0.11
-Nodes (11): BaseOpenAICompatible, GroqAdapter, KimiAdapter, MistralAdapter, NvidiaAdapter, OpenAIAdapter, OpenRouterAdapter, adapters (+3 more)
+Nodes (15): Delivery, RunOptions, RunResult, runWorkflow(), NODE_SPECS, NodeResult, NodeSpec, nodeSpecInfos() (+7 more)
 
 ### Community 13 - "Intelligence Types"
-Cohesion: 0.09
-Nodes (33): AgentContext, ConfidenceSource, AssembledContext, ContextAssemblerInput, detectDocKind(), INTENT_DOC_PRIORITIES, prioritizeDocuments(), IntelligenceEngineResult (+25 more)
+Cohesion: 0.07
+Nodes (38): AgentContext, ConfidenceSource, AssembledContext, ContextAssemblerInput, detectDocKind(), INTENT_DOC_PRIORITIES, prioritizeDocuments(), IntelligenceEngineResult (+30 more)
 
 ### Community 14 - "AI Chat Workspace"
 Cohesion: 0.09
@@ -196,8 +213,8 @@ Cohesion: 0.22
 Nodes (10): ConfigExtractor, DatabaseExtractor, isPrisma(), isSql(), isTsOrm(), LineMap, makeEntity(), snippetAround() (+2 more)
 
 ### Community 16 - "Provider Registry"
-Cohesion: 0.10
-Nodes (16): HealthResult, AddProjectDialog(), Button, useToast(), ErrorBoundary, Props, State, StatusRow() (+8 more)
+Cohesion: 0.29
+Nodes (7): Branch naming, Branch protection on `main`, Commit convention, Contributing to AURA, Pull requests, Roles & Permissions, Workflow
 
 ### Community 17 - "Retrieval Kernel & Budget"
 Cohesion: 0.19
@@ -209,7 +226,11 @@ Nodes (10): 1. Philosophy → structure, 2. Monorepo & dependency direction, 3. 
 
 ### Community 20 - "Repository Identity Engine"
 Cohesion: 0.11
-Nodes (32): CANDIDATE_EXTS, collectSignals(), computeFingerprint(), detectArchitectureStyle(), detectBuildSystem(), detectEntryPoints(), detectModules(), detectPlatforms() (+24 more)
+Nodes (30): CANDIDATE_EXTS, collectSignals(), computeFingerprint(), detectArchitectureStyle(), detectBuildSystem(), detectEntryPoints(), detectModules(), detectPlatforms() (+22 more)
+
+### Community 21 - "Community 21"
+Cohesion: 0.08
+Nodes (44): IconButton, AIContextPanel(), formatBytes(), FUTURE, BottomPanel(), TABS, BreadcrumbBar(), DirState (+36 more)
 
 ### Community 22 - "TypeScript Config"
 Cohesion: 0.07
@@ -220,12 +241,12 @@ Cohesion: 0.20
 Nodes (10): Adding a real provider (the whole point), Adding retrieval / memory (no RAG here, just the seam), @aura/intelligence, Demo, Design guarantees, Interfaces at a glance, Quick start, Replacing any stage (+2 more)
 
 ### Community 24 - "Desktop Dependencies"
-Cohesion: 0.08
-Nodes (25): dependencies, @aura/core, @aura/ui, framer-motion, react, react-dom, description, devDependencies (+17 more)
+Cohesion: 0.07
+Nodes (28): dependencies, @aura/core, @aura/ui, framer-motion, monaco-editor, @monaco-editor/react, react, react-dom (+20 more)
 
 ### Community 25 - "Credential Store & Connect"
-Cohesion: 0.13
-Nodes (26): DEFAULT_STORE, deriveKey(), getActive(), getAllProviderStores(), getConnectedIds(), getFingerprint(), getHealth(), getKey() (+18 more)
+Cohesion: 0.15
+Nodes (23): DEFAULT_STORE, deriveKey(), getActive(), getAllProviderStores(), getConnectedIds(), getFingerprint(), getHealth(), getKey() (+15 more)
 
 ### Community 26 - "Retrieval Engine Contracts"
 Cohesion: 0.20
@@ -236,8 +257,8 @@ Cohesion: 0.15
 Nodes (23): buildProfile(), classify(), DB_DEPS, deriveBuildSystem(), deriveCodingStyle(), deriveEntryPoints(), deriveImportantFiles(), derivePurpose() (+15 more)
 
 ### Community 28 - "Gemini Runtime"
-Cohesion: 0.14
-Nodes (9): OpenAICompatibleRuntime, GenerateResponse, HealthStatus, HealthStatusType, ModelInfo, RuntimeConfig, RuntimeMessage, RuntimeToolSpec (+1 more)
+Cohesion: 0.17
+Nodes (10): GeminiRuntime, GenerateRequest, GenerateResponse, HealthStatus, HealthStatusType, ModelInfo, RuntimeConfig, RuntimeMessage (+2 more)
 
 ### Community 29 - "Document Store & Chunks"
 Cohesion: 0.15
@@ -249,19 +270,19 @@ Nodes (23): evaluateConfidence(), assembleApiReference(), assembleArchitecture()
 
 ### Community 31 - "Root Workspace Config"
 Cohesion: 0.08
-Nodes (25): allowScripts, esbuild@0.21.5, dependencies, 3d-force-graph, three, description, devDependencies, rimraf (+17 more)
+Nodes (24): allowScripts, esbuild@0.21.5, dependencies, three, description, devDependencies, rimraf, @types/node (+16 more)
 
 ### Community 32 - "Coding Indexer & Chunker"
-Cohesion: 0.11
-Nodes (19): abortError(), chunkDocument(), ChunkOptions, extractSymbols(), IgnoreRules, Accum, buildDocument(), CodingIndexer (+11 more)
+Cohesion: 0.13
+Nodes (10): chunkDocument(), ChunkOptions, extractSymbols(), CodingKnowledgeEngine, IgnoreRules, CodingIndexer, throwIfAborted(), IndexDelta (+2 more)
 
 ### Community 33 - "Pipeline & Server"
-Cohesion: 0.07
-Nodes (38): ActiveProvider, ConnectedProvider, getConnectedProviders(), getCredential(), getFingerprint(), getProvider(), isProviderConnected(), listProviders() (+30 more)
+Cohesion: 0.09
+Nodes (33): ActiveProvider, ConnectedProvider, getConnectedProviders(), getCredential(), getFingerprint(), getProvider(), isProviderConnected(), listProviders() (+25 more)
 
 ### Community 34 - "Project Memory & Graph"
-Cohesion: 0.13
-Nodes (10): ConvMessage, FILE(), genId(), ProjectConversations, buildKnowledgeGraph(), ENTITY_TYPE, GraphEdge, GraphNode (+2 more)
+Cohesion: 0.07
+Nodes (33): AuraLockup(), AuraLogo(), AuraLogoProps, AuraTile(), Meter(), MethodTag(), Row(), StatTile() (+25 more)
 
 ### Community 35 - "Navigation & App Store"
 Cohesion: 0.13
@@ -272,12 +293,12 @@ Cohesion: 0.20
 Nodes (10): Architecture, @aura/retrieval, Integration, Interfaces (each explains its responsibility), Memory hierarchy, Quick start, Replacing anything, The four engines (+2 more)
 
 ### Community 37 - "anthropic.ts"
-Cohesion: 0.13
-Nodes (11): ANTHROPIC_MODELS, AnthropicAdapter, GeminiAdapter, PersistedStore, DiscoveredModel, ModelCapabilities, ProviderAdapter, ProviderHealth (+3 more)
+Cohesion: 0.14
+Nodes (9): ANTHROPIC_MODELS, AnthropicAdapter, ActiveRuntime, ModelCapabilities, ProviderAdapter, ProviderHealth, ProviderMetadata, ProviderState (+1 more)
 
 ### Community 38 - "PipelineManager"
-Cohesion: 0.42
-Nodes (8): assessArchitecture(), assessDependencies(), assessDocumentation(), assessTesting(), findOrphanModules(), generateRepositoryHealth(), HEALTH_FILE(), loadRepositoryHealth()
+Cohesion: 0.19
+Nodes (16): ArchitectureExtractor, isMarkdown(), BackendExtractor, isBackendCandidate(), referencedClasses(), versionOf(), entityId(), EntitySpec (+8 more)
 
 ### Community 39 - "Tauri Config"
 Cohesion: 0.10
@@ -292,20 +313,20 @@ Cohesion: 0.22
 Nodes (8): IndexCandidate, IndexProvider, InMemoryIndexProvider, tokenize(), KeywordRetrievalProvider, RetrievalProvider, RetrievalQuery, SearchResult
 
 ### Community 43 - "InvertedIndex"
-Cohesion: 0.10
-Nodes (17): CODE_LANGS, CONFIG_LANGS, DOC_LANGS, EXT_LANG, isIndexableLanguage(), MANIFEST_NAMES, NAME_LANG, MODE_EXPANSIONS (+9 more)
+Cohesion: 0.14
+Nodes (10): MODE_EXPANSIONS, FileKind, LanguageId, FileRecord, editDistance(), ExpansionKind, InvertedIndex, RawHit (+2 more)
 
 ### Community 44 - "JsonKnowledgeStore"
 Cohesion: 0.15
 Nodes (4): readFile(), CodeChunk, CodeDocument, JsonKnowledgeStore
 
 ### Community 45 - "runIntelligencePipeline()"
-Cohesion: 0.08
-Nodes (8): FILE(), keywords(), ProjectMemory, emptyStatus(), normalize(), PipelineManager, AiSettings, ConversationTurn
+Cohesion: 0.14
+Nodes (3): emptyStatus(), PipelineManager, AiSettings
 
 ### Community 46 - "context.ts"
-Cohesion: 0.12
-Nodes (17): ContextBuilder, CodingEngineOptions, CodingKnowledgeEngine, KIND_CATEGORY, CodingSearch, CodingContext, CodingContextEntry, ContextChunkRef (+9 more)
+Cohesion: 0.15
+Nodes (16): ContextBuilder, CodingEngineOptions, KIND_CATEGORY, CodingSearch, CodingContext, CodingContextEntry, ContextChunkRef, ContextOptions (+8 more)
 
 ### Community 47 - "package.json"
 Cohesion: 0.12
@@ -314,10 +335,6 @@ Nodes (16): dependencies, @aura/core, clsx, tailwind-merge, description, exports
 ### Community 48 - "package.json"
 Cohesion: 0.12
 Nodes (15): dependencies, @aura/intelligence, @aura/knowledge-coding, @aura/knowledge-fullstack, @aura/runtime, description, exports, main (+7 more)
-
-### Community 49 - "Community 49"
-Cohesion: 0.19
-Nodes (16): ArchitectureExtractor, isMarkdown(), BackendExtractor, isBackendCandidate(), referencedClasses(), versionOf(), entityId(), EntitySpec (+8 more)
 
 ### Community 50 - "store.ts"
 Cohesion: 0.29
@@ -336,8 +353,8 @@ Cohesion: 0.14
 Nodes (13): dependencies, @aura/knowledge-coding, @aura/retrieval, description, exports, main, name, private (+5 more)
 
 ### Community 54 - "index.ts"
-Cohesion: 0.32
-Nodes (8): sha1(), ALLOWED_DOTFILES, DEFAULT_IGNORE_DIRS, DEFAULT_IGNORE_EXTS, looksBinary(), readFileSafe(), ReadResult, replacementRatio()
+Cohesion: 0.13
+Nodes (11): ExtractorRegistry, normPath(), RelationLinker, FullStackEngineOptions, FullStackKnowledgeEngine, LAYER_CATEGORY, abortError(), AnalyzeOptions (+3 more)
 
 ### Community 55 - "package.json"
 Cohesion: 0.15
@@ -348,12 +365,12 @@ Cohesion: 0.15
 Nodes (12): dependencies, @aura/retrieval, description, exports, main, name, private, scripts (+4 more)
 
 ### Community 58 - "validation.ts"
-Cohesion: 0.11
-Nodes (4): FileRecord, ProjectGraphStore, GraphStats, Relation
+Cohesion: 0.33
+Nodes (5): Actual behavior, Description, Environment, Expected behavior, Steps to reproduce
 
 ### Community 59 - "healthEngine.ts"
-Cohesion: 0.11
-Nodes (22): findGraphify(), genState, GraphifyBin, graphifyGraphPath(), graphifyJsonPath(), GraphifyPhase, graphifyStatus(), runGraphify() (+14 more)
+Cohesion: 0.08
+Nodes (33): buildCrossRepoGraph(), CROSS_REPO_FILE, detectLanguageClusters(), detectMonorepoCluster(), detectSharedCode(), loadCrossRepoGraph(), saveCrossRepoGraph(), buildGlossary() (+25 more)
 
 ### Community 60 - "package.json"
 Cohesion: 0.18
@@ -384,16 +401,20 @@ Cohesion: 0.20
 Nodes (9): compilerOptions, composite, declaration, emitDeclarationOnly, noEmit, outDir, rootDir, extends (+1 more)
 
 ### Community 67 - "Community 67"
-Cohesion: 0.21
-Nodes (8): DEP_EDGES, FullStackSearch, EntityHit, QueryIntent, RelationKind, RelationPath, SystemAnswer, SystemQuery
+Cohesion: 0.25
+Nodes (7): Checklist, Files Changed, Problem, Screenshots, Solution, Summary, Testing
 
 ### Community 68 - "compilerOptions"
 Cohesion: 0.22
 Nodes (8): compilerOptions, composite, noEmit, tsBuildInfoFile, types, extends, include, references
 
 ### Community 69 - "detector.ts"
-Cohesion: 0.22
+Cohesion: 0.29
 Nodes (6): AURA Hub — Design Language, Components, Motion vocabulary, Principles, Tokens (semantic), Type
+
+### Community 70 - "Community 70"
+Cohesion: 0.29
+Nodes (9): detectChanges(), FileIndexState, hasChanges(), INDEX_STATE_FILE, IndexResult, loadIndexState(), saveIndexState(), scanFilesWithMtime() (+1 more)
 
 ### Community 71 - "compilerOptions"
 Cohesion: 0.25
@@ -428,64 +449,100 @@ Cohesion: 0.33
 Nodes (5): description, identifier, permissions, $schema, windows
 
 ### Community 79 - "RetrievalEngineRegistry"
-Cohesion: 0.13
-Nodes (15): AssembleInput, ContextAssembler, DefaultAssemblerOptions, DefaultContextAssembler, normalize(), GlobalBudget, RetrievalEngine, RetrievalEngineRegistry (+7 more)
+Cohesion: 0.18
+Nodes (14): AssembleInput, ContextAssembler, DefaultAssemblerOptions, DefaultContextAssembler, normalize(), GlobalBudget, RetrievalEngine, RetrievalConfig (+6 more)
+
+### Community 81 - "lib.rs"
+Cohesion: 0.36
+Nodes (10): PathBuf, Result, code_read_dir(), code_read_file(), code_write_file(), CodeFsEntry, environment_ping(), resolve_within_root() (+2 more)
 
 ### Community 90 - "Community 90"
-Cohesion: 0.25
-Nodes (8): AURA Logo, Design Language (AURA Blue, glass, whitespace), Desktop entry (index.html), AURA Design Language, AURA Hub, Monorepo layout, Quick start, What's inside
+Cohesion: 0.67
+Nodes (3): AURA Logo, Design Language (AURA Blue, glass, whitespace), AURA Design Language
 
 ### Community 91 - "Community 91"
-Cohesion: 0.33
+Cohesion: 0.40
 Nodes (4): Coding Knowledge Engine, Five-Layer Memory Hierarchy, FullStack Knowledge Engine, Retrieval & Memory Foundation
 
 ### Community 92 - "Community 92"
-Cohesion: 0.09
-Nodes (16): DB_DEPS, DIR_WEIGHT, FRAMEWORK_DEPS, IGNORE_DIRS, LANG_BY_EXT, buildGlossary(), extractModuleNames(), GLOSSARY_FILE() (+8 more)
+Cohesion: 0.12
+Nodes (25): DB_DEPS, DIR_WEIGHT, FRAMEWORK_DEPS, IGNORE_DIRS, LANG_BY_EXT, assessArchitecture(), assessDependencies(), assessDocumentation() (+17 more)
 
 ### Community 93 - "Community 93"
 Cohesion: 0.33
 Nodes (6): Architecture (reference for the remaining engines), @aura/knowledge-fullstack, The relationship chain it reconstructs, The vector seam, Usage, Verification (reproducible, real)
 
 ### Community 94 - "Community 94"
-Cohesion: 0.40
+Cohesion: 0.33
 Nodes (5): @aura/knowledge-coding, Pipeline (each component is standalone & replaceable), The vector-index seam, Usage, Verification (reproducible, real files)
 
 ### Community 97 - "Community 97"
-Cohesion: 0.09
-Nodes (20): aiClient, ArchitectureDiagram3D(), DEFAULT_LAYERS, LayerDef, Graph3DErrorBoundary, Graph3DLink, Graph3DNode, GraphCanvas3D() (+12 more)
+Cohesion: 0.08
+Nodes (21): GraphEntity, ArchitectureDiagram3D(), DEFAULT_LAYERS, LayerDef, GraphCanvas(), GraphCanvasEdge, GraphCanvasNode, GraphLegend() (+13 more)
+
+### Community 98 - "Community 98"
+Cohesion: 0.11
+Nodes (4): FileRecord, ProjectGraphStore, GraphStats, Relation
 
 ### Community 99 - "Community 99"
-Cohesion: 0.15
-Nodes (19): buildModuleDescription(), extractCapabilities(), extractFileDescription(), FileSummary, generateRepositorySummary(), loadRepositorySummary(), summarizeFile(), summarizeModule() (+11 more)
+Cohesion: 0.40
+Nodes (4): Additional context, Alternatives considered, Problem, Proposed solution
 
 ### Community 100 - "Community 100"
 Cohesion: 0.38
-Nodes (9): analyzeDependencies(), buildRepositoryProfile(), detectArchitectureStyle(), detectDesignPatterns(), detectModuleStructure(), detectNamingConventions(), extractKeyDecisions(), loadRepositoryProfile() (+1 more)
+Nodes (5): detectByKeyPrefix(), DetectionStrategy, detectProvider(), KEY_PREFIX_RULES, getAllAdapters()
 
-### Community 101 - "Community 101"
+### Community 104 - "Community 104"
+Cohesion: 0.21
+Nodes (8): DEP_EDGES, FullStackSearch, EntityHit, QueryIntent, RelationKind, RelationPath, SystemAnswer, SystemQuery
+
+### Community 105 - "Community 105"
+Cohesion: 0.32
+Nodes (8): sha1(), ALLOWED_DOTFILES, DEFAULT_IGNORE_DIRS, DEFAULT_IGNORE_EXTS, looksBinary(), readFileSafe(), ReadResult, replacementRatio()
+
+### Community 106 - "Community 106"
+Cohesion: 0.17
+Nodes (12): Desktop entry (index.html), Architecture, AURA Hub, Contributing, Development setup, Features, Future plans, License (+4 more)
+
+### Community 107 - "Community 107"
+Cohesion: 0.18
+Nodes (9): AURA Development — Project Board, Automation rules, Columns (Status field), How to create this if it doesn't exist yet, Views, AURA Roadmap, Beyond v0.1, Current milestone: `AURA Presentation v0.1` (+1 more)
+
+### Community 109 - "Community 109"
+Cohesion: 0.13
+Nodes (14): findGraphify(), genState, GraphifyBin, graphifyGraphPath(), graphifyJsonPath(), GraphifyPhase, graphifyStatus(), runGraphify() (+6 more)
+
+### Community 110 - "Community 110"
 Cohesion: 0.25
-Nodes (4): COLORS, ProjectRegistry, REGISTRY(), slug()
+Nodes (8): AURA Team Guide, ⚙ Backend Team, 🗄 Database Team, Getting added to a team, Permission model, 👑 Repository Owner, Teams, 🎨 UI-UX Team
+
+### Community 113 - "Community 113"
+Cohesion: 0.40
+Nodes (5): Branch Protection — `main`, Current configuration, How to configure this in the GitHub UI, How to configure via `gh` / REST API, Note on GitHub plan limits
+
+### Community 114 - "Community 114"
+Cohesion: 0.40
+Nodes (5): AURA Code Style, Commit messages, Formatting, React, TypeScript
 
 ## Knowledge Gaps
-- **457 isolated node(s):** `name`, `version`, `private`, `type`, `description` (+452 more)
+- **513 isolated node(s):** `name`, `version`, `private`, `type`, `description` (+508 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **9 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **11 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `runStream()` connect `AI Chat Workspace` to `store.ts`?**
-  _High betweenness centrality (0.153) - this node is a cross-community bridge._
-- **Why does `byKind()` connect `Project Workspace Sections` to `Workflow Engine`, `Community 97`?**
-  _High betweenness centrality (0.121) - this node is a cross-community bridge._
-- **Why does `FullStackKnowledgeEngine` connect `Workflow Engine` to `Coding Indexer & Chunker`, `Project Memory & Graph`, `Community 67`, `Workspace Manager & Records`, `Community 49`, `validation.ts`, `healthEngine.ts`?**
-  _High betweenness centrality (0.108) - this node is a cross-community bridge._
+  _High betweenness centrality (0.166) - this node is a cross-community bridge._
+- **Why does `byKind()` connect `Project Workspace Sections` to `Community 97`, `index.ts`?**
+  _High betweenness centrality (0.119) - this node is a cross-community bridge._
+- **Why does `FullStackKnowledgeEngine` connect `index.ts` to `Coding Indexer & Chunker`, `Pipeline & Server`, `Community 98`, `PipelineManager`, `Community 104`, `Workspace Manager & Records`, `Intelligence Types`?**
+  _High betweenness centrality (0.112) - this node is a cross-community bridge._
 - **What connects `name`, `version`, `private` to the rest of the system?**
-  _458 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _514 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Design System & Core Primitives` be split into smaller, more focused modules?**
-  _Cohesion score 0.04479283314669653 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.05228105228105228 - nodes in this community are weakly interconnected._
 - **Should `Project Workspace Sections` be split into smaller, more focused modules?**
-  _Cohesion score 0.10087719298245613 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.11236802413273002 - nodes in this community are weakly interconnected._
 - **Should `Conversations & Intent` be split into smaller, more focused modules?**
-  _Cohesion score 0.08392603129445235 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.07272727272727272 - nodes in this community are weakly interconnected._

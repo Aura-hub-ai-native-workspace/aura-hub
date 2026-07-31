@@ -79,7 +79,7 @@ export interface IndexStatus {
   finishedAt: string | null;
 }
 
-export type MemoryKind = 'conversation' | 'decision' | 'code' | 'accepted' | 'rejected' | 'correction' | 'pinned' | 'learning';
+export type MemoryKind = 'conversation' | 'decision' | 'code' | 'accepted' | 'rejected' | 'correction' | 'pinned' | 'learning' | 'diagnosis';
 export interface MemoryItem { id: string; kind: MemoryKind; title: string; body: string; pinned: boolean; at: string }
 
 export interface GraphEntity { id: string; kind: string; layer: string; name: string; relPath: string; line?: number; summary?: string }
@@ -87,6 +87,41 @@ export interface GraphRelation { id: string; from: string; to: string; kind: str
 export interface GraphView { entities: GraphEntity[]; relations: GraphRelation[]; stats: unknown }
 
 export interface RetrieveResult { entries: { source: string; score: number; snippet: string; lines: { start: number; end: number }[] }[]; totalTokens: number }
+
+/* ── Code Workspace AI actions (real, single-shot, grounded in the graph) ── */
+export type ActionKind =
+  | 'explain' | 'refactor' | 'optimize'
+  | 'generate-tests' | 'add-docs' | 'review-security' | 'simplify'
+  | 'convert' | 'rename' | 'custom';
+export type RiskLevel = 'safe' | 'medium' | 'high';
+export interface CodeRelationRef { id: string; name: string; kind: string; relPath: string }
+export interface CodeActionRequest {
+  projectId?: string;
+  action: ActionKind;
+  filePath: string;
+  language: string;
+  selectedCode: string;
+  selectionRange: { startLine: number; startColumn: number; endLine: number; endColumn: number } | null;
+  surroundingContext: { before: string; after: string };
+  symbol: { id: string; name: string; kind: string; line: number } | null;
+  dependencies: CodeRelationRef[];
+  dependents: CodeRelationRef[];
+  dependentFileCount: number;
+  customInstruction?: string;
+  riskFloor: { level: RiskLevel; reasons: string[] };
+}
+export interface CodeActionFinding { severity: 'info' | 'warning' | 'critical'; title: string; detail: string; line?: number }
+export interface CodeActionResponse {
+  ok: boolean;
+  action: ActionKind;
+  mode: 'diff' | 'findings' | 'new-file';
+  explanation: string;
+  newCode: string | null;
+  newFilePath?: string;
+  findings: CodeActionFinding[] | null;
+  risk: { level: RiskLevel; reasons: string[] };
+  error?: { type: string; message: string; retryable: boolean };
+}
 
 /* ── architecture layers (from graphify graph.json) ─────────────── */
 export interface ArchitectureLayer {
@@ -103,6 +138,8 @@ export interface HealthResult {
   index?: IndexStatus;
   project?: ProjectRecord | null;
 }
+
+/* ── Mission Control types now live in `missionClient.ts` (its own file, mirroring `diagnosisClient.ts`'s split from this one) ── */
 export interface AiSettings { model: string; streaming: boolean; temperature: number; maxTokens: number; timeoutMs: number; maxRetries: number }
 export interface SettingsResult { settings: AiSettings; models: string[]; key: { configured: boolean; fingerprint: string } }
 
@@ -199,6 +236,7 @@ export const aiClient = {
   clearKey: () => jsend('DELETE', '/settings/key'),
   inspect: (text: string) => jpost<InspectResult>('/inspect', { text }),
   reindex: () => jpost<IndexStatus>('/reindex', {}),
+  codeAction: (req: CodeActionRequest) => jpost<CodeActionResponse>('/code/action', req),
 
   /* BYOAK providers */
   getProviders: () => jget<ProvidersResult>('/providers'),

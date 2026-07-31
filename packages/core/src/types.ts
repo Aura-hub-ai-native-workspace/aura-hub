@@ -13,6 +13,10 @@ export type NavKey =
   | 'knowledge'
   | 'ai'
   | 'workflows'
+  | 'missions'
+  | 'dashboard'
+  | 'workspace'
+  | 'governance'
   | 'marketplace'
   | 'settings';
 
@@ -20,6 +24,7 @@ export type NavKey =
 export type ProjectTab =
   | 'overview'
   | 'architecture'
+  | 'code'
   | 'frontend'
   | 'backend'
   | 'database'

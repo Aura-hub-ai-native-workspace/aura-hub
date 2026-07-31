@@ -62,6 +62,46 @@ export const SECTION_IDENTITY: Record<NavKey, SectionIdentity> = {
       { icon: 'activity', label: 'View runs' },
     ],
   },
+  missions: {
+    hue: '#e0475e',
+    motif: 'deploy',
+    tagline: 'Turn a real goal into a grounded, human-approved plan.',
+    chips: [
+      { icon: 'deploy', label: 'New mission' },
+      { icon: 'activity', label: 'Health signals' },
+      { icon: 'architecture', label: 'Architecture layers' },
+    ],
+  },
+  dashboard: {
+    hue: '#3b6bff',
+    motif: 'activity',
+    tagline: "The mission engine's global control plane.",
+    chips: [
+      { icon: 'activity', label: 'Task flow' },
+      { icon: 'shield', label: 'Human gates' },
+      { icon: 'refresh', label: 'Replays' },
+    ],
+  },
+  governance: {
+    hue: '#8b5cf6',
+    motif: 'shield',
+    tagline: 'Continuous protection from architectural decay.',
+    chips: [
+      { icon: 'activity', label: 'Health scorecard' },
+      { icon: 'bug', label: 'Debt tracking' },
+      { icon: 'shield', label: 'Security review' },
+    ],
+  },
+  workspace: {
+    hue: '#3b6bff',
+    motif: 'layout',
+    tagline: 'Dock every engineering surface into one command center.',
+    chips: [
+      { icon: 'deploy', label: 'Open Mission Control' },
+      { icon: 'search', label: 'Search everything' },
+      { icon: 'layout', label: 'Save a layout' },
+    ],
+  },
   marketplace: {
     hue: '#3b6bff',
     motif: 'marketplace',

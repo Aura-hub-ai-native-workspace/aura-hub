@@ -10,7 +10,7 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspace @aura/desktop",
-    "ai": "esbuild packages/ai-service/src/start.ts --bundle --platform=node --format=esm --outfile=.aura/ai-service.mjs && node .aura/ai-service.mjs",
+    "ai": "esbuild packages/ai-service/src/start.ts --bundle --platform=node --format=esm --external:typescript --outfile=.aura/ai-service.mjs && node .aura/ai-service.mjs",
     "build": "npm run build --workspace @aura/desktop",
     "preview": "npm run preview --workspace @aura/desktop",
     "tauri": "npm run tauri --workspace @aura/desktop",
@@ -29,7 +29,6 @@
     "esbuild@0.21.5": true
   },
   "dependencies": {
-    "3d-force-graph": "^1.80.0",
     "three": "^0.185.1"
   }
 }

@@ -8,8 +8,18 @@ import { nodeSpecInfos } from './workflow/nodes';
 import { TEMPLATES, instantiateTemplate } from './workflow/templates';
 import type { RunEvent, Workflow } from './workflow/types';
 import { setupProviders } from './provider';
-import { graphifyGraphPath, graphifyJsonPath, graphifyStatus, runGraphify } from './graphify';
-import { extractArchitectureLayers, layersFromFullstack } from './architectureExtractor';
+import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
+import { handleCodeAction, type CodeActionRequest } from './codeAction';
+import type { DiagnosisEvent, DiagnosisRequest } from './diagnosis/types';
+import type { MissionEvent } from './mission/types';
+import type { ExecutionEvent } from './mission/execution/types';
+import {
+  getEngineeringScorecard,
+  getEngineeringAudit,
+  getProjectInsights,
+  getArchitectureCouncil,
+  type AuditScope,
+} from '@aura/governance';
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -115,6 +125,11 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       if (method === 'GET' && seg[0] === 'index') return json(res, 200, manager.indexStatus());
       if (method === 'POST' && seg[0] === 'reindex') return json(res, 200, await p.reindex());
 
+      /* ── global engineering dashboard (across all projects) ────── */
+      if (method === 'GET' && seg[0] === 'missions' && seg[1] === 'dashboard') {
+        return json(res, 200, manager.missionDashboard());
+      }
+
       /* ── projects ─────────────────────────────────────────────── */
       if (seg[0] === 'projects') {
         if (seg.length === 1) {
@@ -163,17 +178,7 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           return;
         }
         if (seg[2] === 'architecture-layers' && method === 'GET') {
-          const name = manager.registry.get(id)?.name;
-          const jp = graphifyJsonPath(id);
-          // Prefer the rich graphify graph; fall back to AURA's FullStack graph
-          // for the mounted project so EVERY project shows real, unique layers
-          // even before graphify has finished (never the generic default).
-          let layers = jp ? extractArchitectureLayers(jp, name) : [];
-          if (layers.length <= 1 && p.currentProjectId === id) {
-            const g = p.graphView() as { entities?: { id: string; name: string; relPath: string }[]; relations?: { from: string; to: string }[] };
-            if (g.entities?.length) layers = layersFromFullstack(g.entities, g.relations ?? [], name);
-          }
-          return json(res, 200, { layers });
+          return json(res, 200, { layers: manager.resolveArchitectureLayers(id) });
         }
         if (seg[2] === 'memory') {
           if (seg.length === 3 && method === 'GET') return json(res, 200, { items: manager.listMemory(id) });
@@ -188,6 +193,141 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             return item ? json(res, 200, item) : json(res, 404, { error: 'no such memory' });
           }
           if (seg.length === 4 && method === 'DELETE') return json(res, 200, { ok: manager.removeMemory(id, memId) });
+        }
+        if (seg[2] === 'diagnose') {
+          if (seg.length === 3 && method === 'GET') return json(res, 200, { diagnoses: manager.listDiagnoses(id) });
+          if (seg.length === 3 && method === 'POST') {
+            const b = await readJson(req);
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
+            const ac = new AbortController();
+            res.on('close', () => ac.abort());
+            const emit = (e: DiagnosisEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
+            const diagReq: Omit<DiagnosisRequest, 'projectId'> = {
+              filePath: String(b.filePath ?? ''),
+              language: String(b.language ?? ''),
+              selectionRange: (b.selectionRange ?? null) as DiagnosisRequest['selectionRange'],
+            };
+            try {
+              await manager.runDiagnosis(id, diagReq, emit, ac.signal);
+            } catch (e) {
+              emit({ type: 'error', message: (e as Error).message });
+            }
+            if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+            return;
+          }
+          const did = seg[3];
+          if (seg.length === 4 && method === 'GET') {
+            const d = manager.getDiagnosis(id, did);
+            return d ? json(res, 200, d) : json(res, 404, { error: 'no such diagnosis' });
+          }
+          if (seg[4] === 'accept' && method === 'POST') {
+            const b = await readJson(req);
+            const candidateId = b.candidateId;
+            if (candidateId !== 'A' && candidateId !== 'B' && candidateId !== 'C') return json(res, 400, { error: 'candidateId (A|B|C) is required' });
+            const result = manager.acceptDiagnosis(id, did, candidateId);
+            return json(res, result.ok ? 200 : 400, result);
+          }
+          if (seg[4] === 'reject' && method === 'POST') {
+            const b = await readJson(req);
+            const candidateId = b.candidateId as 'A' | 'B' | 'C' | undefined;
+            const result = manager.rejectDiagnosis(id, did, candidateId, typeof b.reason === 'string' ? b.reason : undefined);
+            return json(res, result.ok ? 200 : 400, result);
+          }
+        }
+        if (seg[2] === 'missions') {
+          if (seg.length === 3 && method === 'GET') return json(res, 200, { missions: manager.listMissions(id) });
+          if (seg.length === 3 && method === 'POST') {
+            const b = await readJson(req);
+            const text = String(b.text ?? '').trim();
+            if (!text) return json(res, 400, { error: 'text is required' });
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
+            const ac = new AbortController();
+            res.on('close', () => ac.abort());
+            const emit = (e: MissionEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
+            try {
+              await manager.runMissionCreation(id, text, emit, ac.signal);
+            } catch (e) {
+              emit({ type: 'error', message: (e as Error).message });
+            }
+            if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+            return;
+          }
+          const mid = seg[3];
+          if (seg.length === 4 && method === 'GET') {
+            const m = manager.getMission(id, mid);
+            return m ? json(res, 200, m) : json(res, 404, { error: 'no such mission' });
+          }
+          if (seg[4] === 'approve' && method === 'POST') {
+            const m = manager.approveMission(id, mid);
+            return m ? json(res, 200, m) : json(res, 404, { error: 'no such mission' });
+          }
+          if (seg[4] === 'reject' && method === 'POST') {
+            const b = await readJson(req);
+            const m = manager.rejectMission(id, mid, typeof b.reason === 'string' ? b.reason : undefined);
+            return m ? json(res, 200, m) : json(res, 404, { error: 'no such mission' });
+          }
+          /* ── Mission Control v3 — execution lifecycle ──────────── */
+          if (seg[4] === 'start' && method === 'POST') {
+            const r = manager.startMissionExecution(id, mid);
+            return json(res, r.ok ? 200 : 400, r);
+          }
+          if (seg[4] === 'execute' && method === 'POST') {
+            const b = await readJson(req);
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
+            const ac = new AbortController();
+            res.on('close', () => ac.abort());
+            const emit = (e: ExecutionEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
+            try {
+              const result = await manager.runMissionBatch(id, mid, { maxParallel: typeof b.maxParallel === 'number' ? b.maxParallel : 2 }, emit);
+              if (result.mission?.execution) emit({ type: 'execution', record: { id, projectId: id, execution: result.mission.execution } });
+              if (!result.ok && result.error) emit({ type: 'error', message: result.error });
+            } catch (e) {
+              emit({ type: 'error', message: (e as Error).message });
+            }
+            if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+            return;
+          }
+          if (seg[4] === 'pause' && method === 'POST') {
+            const r = manager.pauseMissionExecution(id, mid);
+            return json(res, r.ok ? 200 : 400, r);
+          }
+          if (seg[4] === 'resume' && method === 'POST') {
+            const r = manager.resumeMissionExecution(id, mid);
+            return json(res, r.ok ? 200 : 400, r);
+          }
+          if (seg[4] === 'cancel' && method === 'POST') {
+            const b = await readJson(req);
+            const r = manager.cancelMissionExecution(id, mid, typeof b.reason === 'string' ? b.reason : undefined);
+            return json(res, r.ok ? 200 : 400, r);
+          }
+          if (seg[4] === 'review' && method === 'POST') {
+            const b = await readJson(req);
+            const r = manager.reviewMissionCheckpoint(id, mid, b.pass === true, typeof b.note === 'string' ? b.note : undefined);
+            return json(res, r.ok ? 200 : 400, r);
+          }
+          if (seg[4] === 'replay' && method === 'GET') {
+            const replay = manager.getMissionReplay(id, mid);
+            return replay ? json(res, 200, replay) : json(res, 404, { error: 'no replay available' });
+          }
+          if (seg[4] === 'tasks' && method === 'POST') {
+            const taskId = seg[5];
+            if (seg[6] === 'run') {
+              const ac = new AbortController();
+              res.on('close', () => ac.abort());
+              const result = await manager.runMissionTask(id, mid, taskId, ac.signal);
+              return json(res, result.ok ? 200 : 400, result);
+            }
+            if (seg[6] === 'accept') return json(res, 200, manager.acceptMissionTask(id, mid, taskId));
+            if (seg[6] === 'reject') {
+              const r = manager.rejectMissionTask(id, mid, taskId);
+              return json(res, r.ok ? 200 : 400, r);
+            }
+            if (seg[6] === 'complete') return json(res, 200, manager.completeManualTask(id, mid, taskId));
+            if (seg[6] === 'retry') {
+              const r = manager.retryMissionTask(id, mid, taskId);
+              return json(res, r.ok ? 200 : 400, r);
+            }
+          }
         }
         if (seg.length === 2) {
           if (method === 'PATCH' || method === 'POST') {
@@ -249,6 +389,18 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       /* ── workspace-level intelligence (cross-repository) ───────── */
       if (method === 'GET' && seg[0] === 'workspace' && seg[1] === 'intelligence') return json(res, 200, manager.workspaceIntelligence());
 
+      /* ── engineering governance platform (Node-side scans) ─────── */
+      if (seg[0] === 'governance' && method === 'POST') {
+        const b = await readJson(req);
+        const projectPath = typeof b.projectPath === 'string' && b.projectPath ? b.projectPath : manager.currentProject()?.path ?? null;
+        if (!projectPath) return json(res, 400, { error: 'projectPath required' });
+        if (seg[1] === 'scorecard') return json(res, 200, await getEngineeringScorecard({ projectPath }));
+        if (seg[1] === 'audit') return json(res, 200, await getEngineeringAudit({ projectPath, scope: b.scope as AuditScope | undefined }));
+        if (seg[1] === 'insights') return json(res, 200, await getProjectInsights({ projectPath }));
+        if (seg[1] === 'council') return json(res, 200, await getArchitectureCouncil({ projectPath }));
+        return json(res, 404, { error: 'not found' });
+      }
+
       /* ── real project views ───────────────────────────────────── */
       if (method === 'GET' && seg[0] === 'graph') return json(res, 200, p.graphView());
       if (method === 'POST' && seg[0] === 'retrieve') { const b = await readJson(req); return json(res, 200, p.retrieve(String(b.text ?? ''))); }
@@ -264,6 +416,13 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       }
 
       /* ── AI pipeline ──────────────────────────────────────────── */
+      if (method === 'POST' && seg[0] === 'code' && seg[1] === 'action') {
+        const b = await readJson(req);
+        if (!b.filePath || !b.action) return json(res, 400, { error: 'filePath and action are required' });
+        const ac = new AbortController();
+        res.on('close', () => ac.abort());
+        return json(res, 200, await handleCodeAction(p, b as unknown as CodeActionRequest, ac.signal));
+      }
       if (method === 'POST' && seg[0] === 'inspect') { const b = await readJson(req); return json(res, 200, await p.inspect(String(b.text ?? ''))); }
       if (method === 'POST' && seg[0] === 'ask') {
         const b = await readJson(req);

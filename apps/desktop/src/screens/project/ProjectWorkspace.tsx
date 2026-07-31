@@ -41,10 +41,15 @@ export function ProjectWorkspace() {
   }
 
   const indexing = status?.phase === 'indexing';
+  // The Code Workspace doesn't depend on Knowledge Fabric indexing (it
+  // reads/writes real files directly) and owns a fixed-viewport layout
+  // with its own internal scroll regions — it never waits on the
+  // indexing gate and never sits inside the page's normal scroll flow.
+  const isCode = tab === 'code';
 
   return (
-    <div className="flex min-h-full flex-col">
-      <div className="border-b border-line bg-surface/40 px-8 pt-6 backdrop-blur-sm sm:px-10 lg:px-12">
+    <div className={cn('flex flex-col', isCode ? 'h-full min-h-full' : 'min-h-full')}>
+      <div className="shrink-0 border-b border-line bg-surface/40 px-8 pt-6 backdrop-blur-sm sm:px-10 lg:px-12">
         <button onClick={closeProject} className="mb-4 inline-flex items-center gap-1.5 text-[12px] font-medium text-text-muted transition-colors hover:text-text">
           <Icon name="chevron-right" size={14} className="rotate-180" />
           Back to Projects
@@ -80,9 +85,11 @@ export function ProjectWorkspace() {
         </div>
       </div>
 
-      <div className="flex-1">
-        {indexing && tab !== 'settings' && tab !== 'memory' ? (
+      <div className={cn('flex-1', isCode ? 'flex min-h-0 overflow-hidden' : '')}>
+        {indexing && !isCode && tab !== 'settings' && tab !== 'memory' ? (
           <EmptyState icon="knowledge" title="Indexing your project…" description={`${status?.message ?? 'Working'} — ${status?.coding.processed ?? 0}/${status?.coding.total || '…'} files.`} />
+        ) : isCode ? (
+          <ProjectSection tab={tab} projectId={project.id} />
         ) : (
           <motion.div key={tab} variants={pageVariants} initial="initial" animate="animate">
             <ProjectSection tab={tab} projectId={project.id} />

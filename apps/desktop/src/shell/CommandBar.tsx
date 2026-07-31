@@ -1,6 +1,8 @@
 import { NAV_TITLES, useAppStore, cn } from '@aura/core';
 import { Icon, IconButton, Tooltip } from '@aura/ui';
 import { useWorkspace } from '../data/useWorkspace';
+import { useUnreadCount } from '../ops/useNotificationsFeed';
+import { useLayoutStore } from '../ops/layoutStore';
 
 /**
  * Top command / search bar. The search field is a *portal* into the
@@ -16,8 +18,16 @@ export function CommandBar() {
   const toggleRightPanel = useAppStore((s) => s.toggleRightPanel);
   const theme = useAppStore((s) => s.theme);
   const rightPanelOpen = useAppStore((s) => s.rightPanelOpen);
+  const setNav = useAppStore((s) => s.setNav);
+  const unread = useUnreadCount();
+  const openPanel = useLayoutStore((s) => s.openPanel);
 
   const project = useWorkspace((s) => s.projects.find((p) => p.id === activeProjectId));
+
+  const openNotifications = () => {
+    setNav('workspace');
+    openPanel('notifications');
+  };
 
   return (
     <header className="flex h-16 shrink-0 items-center gap-4 border-b border-line bg-surface/50 px-5 backdrop-blur-xl">
@@ -56,7 +66,18 @@ export function CommandBar() {
           <IconButton icon={theme === 'light' ? 'moon' : 'sun'} label="Toggle theme" size="sm" onClick={toggleTheme} />
         </Tooltip>
         <Tooltip content="Notifications">
-          <IconButton icon="bell" label="Notifications" size="sm" />
+          <button
+            onClick={openNotifications}
+            className="relative grid h-7 w-7 place-items-center rounded-lg text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
+            aria-label="Open notification center"
+          >
+            <Icon name="bell" size={16} />
+            {unread > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[9px] font-bold leading-none text-white">
+                {unread > 99 ? '99+' : unread}
+              </span>
+            )}
+          </button>
         </Tooltip>
         <Tooltip content="Context panel">
           <IconButton

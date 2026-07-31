@@ -7,6 +7,10 @@ import { PlaceholderScreen } from './PlaceholderScreen';
 import { AiWorkspace } from './ai/AiWorkspace';
 import { AiSettings } from './ai/AiSettings';
 import { Workflows } from './workflows/Workflows';
+import { MissionControl } from './missions/MissionControl';
+import { EngineeringDashboard } from './EngineeringDashboard';
+import { EngineeringGovernanceDashboard } from './governance/EngineeringGovernance';
+import { WorkspaceScreen } from './WorkspaceScreen';
 import { ErrorBoundary } from './ErrorBoundary';
 
 /**
@@ -30,9 +34,15 @@ import { ErrorBoundary } from './ErrorBoundary';
 export function ScreenRouter() {
   const nav = useAppStore((s) => s.nav);
   const activeProjectId = useAppStore((s) => s.activeProjectId);
+  const projectTab = useAppStore((s) => s.projectTab);
 
   const inProject = Boolean(activeProjectId);
   const key = inProject ? `project:${activeProjectId}` : nav;
+
+  // The workflow editor and the Code Workspace are fixed-viewport canvases
+  // (their own internal scrolling regions); every other screen scrolls the
+  // page normally.
+  const fixedViewport = (!inProject && (nav === 'workflows' || nav === 'workspace')) || (inProject && projectTab === 'code');
 
   return (
     <motion.div
@@ -42,9 +52,7 @@ export function ScreenRouter() {
       variants={inProject ? enterSpaceVariants : pageVariants}
       initial="initial"
       animate="animate"
-      // The workflow editor is a fixed-viewport canvas (its own internal
-      // scrolling regions); every other screen scrolls the page normally.
-      className={!inProject && nav === 'workflows' ? 'h-full min-h-full' : 'min-h-full'}
+      className={fixedViewport ? 'h-full min-h-full' : 'min-h-full'}
     >
       {renderScreen(nav, inProject)}
     </motion.div>
@@ -70,6 +78,14 @@ function renderScreen(nav: string, inProject: boolean) {
       return <AiWorkspace />;
     case 'workflows':
       return <Workflows />;
+    case 'missions':
+      return <MissionControl />;
+    case 'dashboard':
+      return <EngineeringDashboard />;
+    case 'governance':
+      return <EngineeringGovernanceDashboard />;
+    case 'workspace':
+      return <WorkspaceScreen />;
     case 'marketplace':
       return (
         <PlaceholderScreen

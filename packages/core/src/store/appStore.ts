@@ -12,11 +12,18 @@ import type { NavKey, ProjectTab } from '../types';
 export type Theme = 'light' | 'dark';
 
 const THEME_KEY = 'aura-theme';
+const ONBOARDED_KEY = 'aura-onboarded';
 
 /** Read the persisted theme so a relaunch (and its boot) respects it. */
 function initialTheme(): Theme {
   if (typeof localStorage === 'undefined') return 'light';
   return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light';
+}
+
+/** First-run onboarding only ever plays once per install. */
+function initialOnboarded(): boolean {
+  if (typeof localStorage === 'undefined') return true;
+  return localStorage.getItem(ONBOARDED_KEY) === 'true';
 }
 
 interface AppState {
@@ -34,6 +41,8 @@ interface AppState {
   paletteOpen: boolean;
   /** Whether the boot/intro sequence has finished. */
   booted: boolean;
+  /** Whether the first-run onboarding experience has been completed. */
+  onboarded: boolean;
   /** Recently-run command ids (most-recent first) — powers the palette. */
   recentCommandIds: string[];
   /** Active theme (also reflected on <html data-theme>). */
@@ -41,6 +50,10 @@ interface AppState {
 
   setNav: (nav: NavKey) => void;
   setBooted: (booted: boolean) => void;
+  /** Marks onboarding complete (persisted) and skips the redundant generic
+   *  boot animation this one time — the onboarding's own Ready screen
+   *  already served as this launch's cinematic boot moment. */
+  completeOnboarding: () => void;
   pushRecentCommand: (id: string) => void;
   openProject: (id: string) => void;
   closeProject: () => void;
@@ -55,14 +68,19 @@ export const useAppStore = create<AppState>((set) => ({
   nav: 'home',
   activeProjectId: null,
   projectTab: 'overview',
-  sidebarExpanded: true,
-  rightPanelOpen: true,
+  sidebarExpanded: false,
+  rightPanelOpen: false,
   paletteOpen: false,
   booted: false,
+  onboarded: initialOnboarded(),
   recentCommandIds: [],
   theme: initialTheme(),
 
   setBooted: (booted) => set({ booted }),
+  completeOnboarding: () => {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(ONBOARDED_KEY, 'true');
+    set({ onboarded: true, booted: true });
+  },
   pushRecentCommand: (id) =>
     set((s) => ({ recentCommandIds: [id, ...s.recentCommandIds.filter((x) => x !== id)].slice(0, 5) })),
 
