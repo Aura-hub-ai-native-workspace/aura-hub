@@ -761,15 +761,16 @@ def slide_14(prs):
         y = 2.05 + i * 0.87
         text(slide, label, 0.84, y + 0.20, 1.72, 0.16, 8.2, accent, True, caps=True)
         line(slide, 2.58, y + 0.40, 2.92, y + 0.40, C("30415E"), 1.0)
+        if len(values) > 6:
+            item_step, item_width, item_size = 1.07, 0.96, 7.7
+        elif len(values) == 6:
+            item_step, item_width, item_size = 1.45, 1.30, 8.0
+        else:
+            item_step, item_width, item_size = 1.60, 1.43, 8.4
         for j, value in enumerate(values):
-            x = 3.08 + j * (1.12 if len(values) > 6 else 1.60)
-            width = 1.02 if len(values) > 6 else 1.43
-            if x + width > 12.46:
-                # Long provider rows use a smaller, tighter rhythm.
-                x = 3.08 + j * 1.07
-                width = 0.96
-            rect(slide, x, y + 0.11, width, 0.56, SURFACE_2, C("2B3A55"), radius=True)
-            text(slide, value, x + 0.05, y + 0.30, width - 0.10, 0.13, 7.7 if len(values) > 6 else 8.4, TEXT, True, align=PP_ALIGN.CENTER)
+            x = 3.08 + j * item_step
+            rect(slide, x, y + 0.11, item_width, 0.56, SURFACE_2, C("2B3A55"), radius=True)
+            text(slide, value, x + 0.05, y + 0.30, item_width - 0.10, 0.13, item_size, TEXT, True, align=PP_ALIGN.CENTER)
     rect(slide, 0.84, 6.57, 11.78, 0.30, C("182236"), C("2D4568"), radius=True)
     text(slide, "CURRENT RETRIEVAL IS KEYWORD + GRAPH; EMBEDDINGS / VECTOR SEARCH REMAIN A REPLACEABLE SEAM.", 1.06, 6.66, 11.34, 0.12, 7.9, MUTED, True, align=PP_ALIGN.CENTER, caps=True)
 
