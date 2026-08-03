@@ -218,6 +218,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           dirty: false,
           loading: true,
           error: null,
+          saveError: null,
           cursor: { line: 1, column: 1 },
           selection: null,
         },
@@ -268,6 +269,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           dirty: false,
           loading: false,
           error: null,
+          saveError: null,
           cursor: { line: 1, column: 1 },
           selection: null,
         },
@@ -329,14 +331,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         const current = s.openFiles[path];
         if (!current) return s;
         return {
-          openFiles: { ...s.openFiles, [path]: { ...current, originalContent: current.content, dirty: false } },
+          openFiles: { ...s.openFiles, [path]: { ...current, originalContent: current.content, dirty: false, saveError: null } },
         };
       });
     } catch (e) {
+      // Deliberately `saveError`, not `error` — `error` means "failed to
+      // load" and EditorView.tsx replaces the whole editor pane with it.
+      // A failed save must never hide already-open, already-edited content.
       set((s) => {
         const current = s.openFiles[path];
         if (!current) return s;
-        return { openFiles: { ...s.openFiles, [path]: { ...current, error: (e as Error).message } } };
+        return { openFiles: { ...s.openFiles, [path]: { ...current, saveError: (e as Error).message } } };
       });
     }
   },
@@ -348,3 +353,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setBottomPanelHeight: (h) => set({ bottomPanelHeight: Math.min(560, Math.max(120, h)) }),
   setBottomPanelTab: (bottomPanelTab) => set({ bottomPanelTab, bottomPanelOpen: true }),
 }));
+
+/**
+ * True when switching to `targetProjectId` would discard unsaved editor
+ * work — i.e. a *different* project than the one currently loaded has at
+ * least one dirty file open. `init()` itself only resets state on a real
+ * project change (see above), so this mirrors that exact condition —
+ * callers outside `editor/` (project switcher, Home, command palette) use
+ * this to gate the switch behind a confirmation instead of silently
+ * discarding the previous project's unsaved changes.
+ */
+export function hasUnsavedWorkFor(targetProjectId: string): boolean {
+  const s = useEditorStore.getState();
+  if (s.projectId === targetProjectId) return false;
+  return Object.values(s.openFiles).some((f) => f.dirty);
+}

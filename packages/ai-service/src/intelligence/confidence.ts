@@ -63,24 +63,3 @@ export function evaluateConfidence(
   // Default: uncertain
   return { level: 'uncertain', evidence: 'No direct evidence found in repository knowledge' };
 }
-
-/**
- * Format confidence mark as a human-readable prefix.
- */
-export function formatConfidence(mark: ConfidenceMark): string {
-  switch (mark.level) {
-    case 'documented':
-      return '';  // No prefix needed — confident
-    case 'inferred':
-      return `[Based on the indexed source code] `;
-    case 'uncertain':
-      return `[The available information is limited] `;
-  }
-}
-
-/**
- * Should the response include a confidence disclaimer?
- */
-export function shouldDisclaimConfidence(marks: ConfidenceMark[]): boolean {
-  return marks.some(m => m.level === 'uncertain');
-}

@@ -76,8 +76,16 @@ class AnthropicRuntime implements Runtime {
     const signal = AbortSignal.any([this.ac.signal, AbortSignal.timeout(this.timeoutMs)]);
     const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: this.headers(), body, signal });
     if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Anthropic error ${res.status}: ${t || res.statusText}`); }
-    const json = await res.json() as { content: { text: string }[]; model: string };
-    return { content: json.content?.map((c) => c.text).join('') ?? '', model: json.model ?? this.defaultModel, usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 }, finishReason: 'stop' };
+    const json = await res.json() as { content: { text: string }[]; model: string; usage?: { input_tokens: number; output_tokens: number } };
+    const usage = json.usage;
+    return {
+      content: json.content?.map((c) => c.text).join('') ?? '',
+      model: json.model ?? this.defaultModel,
+      usage: usage
+        ? { promptTokens: usage.input_tokens, completionTokens: usage.output_tokens, totalTokens: usage.input_tokens + usage.output_tokens }
+        : { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      finishReason: 'stop',
+    };
   }
 
   async *stream(request: GenerateRequest): AsyncIterable<StreamChunk> {

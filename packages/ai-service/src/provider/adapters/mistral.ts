@@ -2,7 +2,7 @@ import { BaseOpenAICompatible } from './base';
 import type { Runtime } from '@aura/runtime';
 
 export class MistralAdapter extends BaseOpenAICompatible {
-  readonly metadata = { id: 'mistral', name: 'Mistral', description: 'Mistral AI models', docsUrl: 'https://console.mistral.ai/api-keys' };
+  readonly metadata = { id: 'mistral', name: 'Mistral AI', description: 'Open-weight and frontier models from Europe', docsUrl: 'https://console.mistral.ai/api-keys' };
   protected baseUrl = 'https://api.mistral.ai/v1';
 
   detect(_apiKey: string): boolean { return false; }

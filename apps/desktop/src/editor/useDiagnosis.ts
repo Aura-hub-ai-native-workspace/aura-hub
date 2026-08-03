@@ -19,6 +19,8 @@ import {
   type RootCause,
 } from '../ai/diagnosisClient';
 import { useEditorStore } from './editorStore';
+import { splicePatch } from './editorTypes';
+import { recordDiagnosisMemory } from '../ops/memoryRecorder';
 
 export type DiagnosisPhase = 'idle' | 'analyzing' | 'diagnosing' | 'patching' | 'reviewing' | 'done' | 'error';
 
@@ -40,13 +42,6 @@ const IDLE_STATE: DiagnosisState = {
   candidates: [], comparison: null, diagnosis: null, unknownMessage: null, errorMessage: null,
 };
 
-/** Same line-range replace as the backend's `patchLimiter.ts#splicePatch` — kept in sync manually since client and server never share code. */
-function splicePatch(originalText: string, range: { startLine: number; endLine: number }, newText: string): string {
-  const lines = originalText.split('\n');
-  const before = lines.slice(0, range.startLine - 1);
-  const after = lines.slice(range.endLine);
-  return [...before, ...newText.split('\n'), ...after].join('\n');
-}
 
 export function useDiagnosis(projectId: string) {
   const [state, setState] = useState<DiagnosisState>(IDLE_STATE);
@@ -101,12 +96,29 @@ export function useDiagnosis(projectId: string) {
       const candidate = state.diagnosis.candidates.find((c) => c.id === candidateId);
       const { openFiles, updateContent, saveFile } = useEditorStore.getState();
       const file = state.filePath ? openFiles[state.filePath] : undefined;
+      // The backend already wrote the patch to disk (this is the real,
+      // authoritative accept) — this resync just keeps the open editor
+      // buffer in sync so the user isn't left looking at stale content.
+      // saveFile() catches its own write errors onto the file record
+      // instead of throwing, so a resync failure must be checked for
+      // explicitly rather than assumed away.
+      let resyncWarning: string | undefined;
       if (candidate && file) {
         const patched = splicePatch(file.content, candidate.targetRange, candidate.newText);
         updateContent(file.path, patched);
         await saveFile(file.path);
+        const after = useEditorStore.getState().openFiles[file.path];
+        if (after?.saveError) resyncWarning = `Accepted and saved, but the open tab could not refresh (${after.saveError}). Close and reopen the file to see the change.`;
       }
       setState((s) => (s.diagnosis ? { ...s, diagnosis: { ...s.diagnosis, decision: { status: 'accepted', candidateId, at: new Date().toISOString() } } } : s));
+      recordDiagnosisMemory(projectId, {
+        id: state.diagnosis.id,
+        filePath: state.diagnosis.filePath,
+        event: 'accepted',
+        candidateId,
+        category: state.diagnosis.classification.category,
+      });
+      if (resyncWarning) return { ok: true, error: resyncWarning };
     }
     return result;
   }, [projectId, state.diagnosis, state.filePath]);
@@ -116,6 +128,14 @@ export function useDiagnosis(projectId: string) {
     const result = await diagnosisClient.reject(projectId, state.diagnosis.id, candidateId, reason);
     if (result.ok) {
       setState((s) => (s.diagnosis ? { ...s, diagnosis: { ...s.diagnosis, decision: { status: 'rejected', candidateId, reason, at: new Date().toISOString() } } } : s));
+      recordDiagnosisMemory(projectId, {
+        id: state.diagnosis.id,
+        filePath: state.diagnosis.filePath,
+        event: 'rejected',
+        candidateId,
+        reason,
+        category: state.diagnosis.classification.category,
+      });
     }
     return result;
   }, [projectId, state.diagnosis]);

@@ -91,20 +91,40 @@ export const useNotificationsStore = create<NotificationsState>((set, get) => ({
       missionId: input.missionId,
       diagnosisId: input.diagnosisId,
     };
-    set({ items: [notification, ...items].slice(0, CAP) });
+    const next = [notification, ...items].slice(0, CAP);
+    set({ items: next });
+    persistNotifications(next);
     return notification;
   },
 
-  markRead: (id) =>
-    set((s) => ({ items: s.items.map((n) => (n.id === id ? { ...n, read: true } : n)) })),
+  markRead: (id) => {
+    const items = get().items.map((n) => (n.id === id ? { ...n, read: true } : n));
+    set({ items });
+    persistNotifications(items);
+  },
 
-  markAllRead: () => set((s) => ({ items: s.items.map((n) => ({ ...n, read: true })) })),
+  markAllRead: () => {
+    const items = get().items.map((n) => ({ ...n, read: true }));
+    set({ items });
+    persistNotifications(items);
+  },
 
-  clearRead: () => set((s) => ({ items: s.items.filter((n) => !n.read) })),
+  clearRead: () => {
+    const items = get().items.filter((n) => !n.read);
+    set({ items });
+    persistNotifications(items);
+  },
 
-  clearAll: () => set({ items: [] }),
+  clearAll: () => {
+    set({ items: [] });
+    persistNotifications([]);
+  },
 
-  dismiss: (key) => set((s) => ({ items: s.items.filter((n) => n.key !== key) })),
+  dismiss: (key) => {
+    const items = get().items.filter((n) => n.key !== key);
+    set({ items });
+    persistNotifications(items);
+  },
 
   seen: (key) => get().items.some((n) => n.key === key),
 }));

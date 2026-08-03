@@ -55,6 +55,7 @@ export function DiagnosisPanel({
   const openFiles = useEditorStore((s) => s.openFiles);
   const [selected, setSelected] = useState<'A' | 'B' | 'C' | null>(null);
   const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const file = state.filePath ? openFiles[state.filePath] : undefined;
   const stageIndex = state.phase === 'idle' || state.phase === 'error' ? -1 : STAGE_ORDER.indexOf(state.phase as (typeof STAGE_ORDER)[number]);
@@ -63,9 +64,15 @@ export function DiagnosisPanel({
   const handleAccept = async () => {
     if (!selected || busy) return;
     setBusy(true);
+    setActionError(null);
     try {
       const res = await accept(selected);
-      if (res.ok) setTimeout(onClose, 900);
+      if (!res.ok) { setActionError(res.error ?? 'Could not accept this candidate.'); return; }
+      // ok:true with an error is a non-blocking warning (the accept itself
+      // succeeded) — surface it and let the user close manually instead of
+      // auto-closing over a message they'd never get to read.
+      if (res.error) { setActionError(res.error); return; }
+      setTimeout(onClose, 900);
     } finally {
       setBusy(false);
     }
@@ -73,9 +80,11 @@ export function DiagnosisPanel({
   const handleReject = async () => {
     if (busy) return;
     setBusy(true);
+    setActionError(null);
     try {
-      await reject(selected ?? undefined);
-      onClose();
+      const res = await reject(selected ?? undefined);
+      if (res.ok) onClose();
+      else setActionError(res.error ?? 'Could not reject this diagnosis.');
     } finally {
       setBusy(false);
     }
@@ -132,6 +141,10 @@ export function DiagnosisPanel({
 
         {state.errorMessage && (
           <div className="rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[12.5px] text-danger">{state.errorMessage}</div>
+        )}
+
+        {actionError && (
+          <div className="rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[12.5px] text-danger">{actionError}</div>
         )}
 
         {state.unknownMessage && (

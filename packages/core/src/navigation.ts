@@ -8,7 +8,7 @@
 
 import type { NavKey, ProjectTab } from './types';
 
-export interface NavItem {
+interface NavItem {
   key: NavKey;
   label: string;
   icon: string;
@@ -18,19 +18,13 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { key: 'home', label: 'Home', icon: 'home', group: 'primary' },
-  { key: 'projects', label: 'Projects', icon: 'projects', group: 'primary' },
-  { key: 'knowledge', label: 'Knowledge', icon: 'knowledge', group: 'primary' },
-  { key: 'ai', label: 'AI', icon: 'spark', group: 'primary' },
-  { key: 'workflows', label: 'Workflows', icon: 'workflows', group: 'primary' },
-  { key: 'missions', label: 'Mission Control', icon: 'deploy', group: 'primary' },
-  { key: 'dashboard', label: 'Engineering', icon: 'activity', group: 'primary' },
-  { key: 'governance', label: 'Governance', icon: 'shield', group: 'primary' },
+  { key: 'workflows', label: 'Workflow', icon: 'workflows', group: 'primary' },
   { key: 'workspace', label: 'Workspace', icon: 'layout', group: 'primary' },
-  { key: 'marketplace', label: 'Marketplace', icon: 'marketplace', group: 'primary' },
+  { key: 'marketplace', label: 'Extended Environment', icon: 'marketplace', group: 'primary' },
   { key: 'settings', label: 'Settings', icon: 'settings', group: 'system' },
 ];
 
-export interface ProjectTabDef {
+interface ProjectTabDef {
   key: ProjectTab;
   label: string;
   icon: string;
@@ -56,14 +50,8 @@ export const PROJECT_TABS: ProjectTabDef[] = [
 /** Human-readable titles for the top command bar breadcrumb. */
 export const NAV_TITLES: Record<NavKey, string> = {
   home: 'Home',
-  projects: 'Projects',
-  knowledge: 'Knowledge',
-  ai: 'AI',
-  workflows: 'Workflows',
-  missions: 'Mission Control',
-  dashboard: 'Engineering',
-  governance: 'Governance',
+  workflows: 'Workflow',
   workspace: 'Workspace',
-  marketplace: 'Marketplace',
+  marketplace: 'Extended Environment',
   settings: 'Settings',
 };

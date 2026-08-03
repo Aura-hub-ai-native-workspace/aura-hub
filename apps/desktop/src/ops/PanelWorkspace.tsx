@@ -26,6 +26,7 @@ import {
   type PanelKind,
 } from './layoutStore';
 import { PanelContent } from './panels';
+import { FloatingPanel } from './FloatingPanel';
 
 const DIVIDER = 6;
 
@@ -33,13 +34,16 @@ export function PanelWorkspace() {
   const root = useLayoutStore((s) => s.root);
   const presets = useLayoutStore((s) => s.presets);
   const resetLayout = useLayoutStore((s) => s.resetLayout);
+  const floating = useLayoutStore((s) => s.floating);
 
-  // Layout + presets persist on every change.
+  // Layout + presets persist on every change. Floating panels are
+  // in-session only for now (ephemeral by design — see the Windows &
+  // Tools design review's note on extending preset shape later).
   useEffect(() => persistLayout(root), [root]);
   useEffect(() => persistPresets(presets), [presets]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-app">
+    <div className="relative flex h-full min-h-0 flex-col bg-app">
       <WorkspaceToolbar />
       <div className="flex min-h-0 flex-1 p-2">
         {root ? (
@@ -64,6 +68,9 @@ export function PanelWorkspace() {
           </div>
         )}
       </div>
+      {floating.map((f) => (
+        <FloatingPanel key={f.id} panel={f} />
+      ))}
     </div>
   );
 }
@@ -73,7 +80,6 @@ export function PanelWorkspace() {
 const ALL_KINDS = Object.keys(PANEL_META) as PanelKind[];
 
 function WorkspaceToolbar() {
-  const addPanel = useLayoutStore((s) => s.openPanel);
   const savePreset = useLayoutStore((s) => s.savePreset);
   const loadPreset = useLayoutStore((s) => s.loadPreset);
   const removePreset = useLayoutStore((s) => s.removePreset);
@@ -141,17 +147,6 @@ function WorkspaceToolbar() {
           ]}
         />
 
-        <Menu
-          align="end"
-          trigger={<ToolbarButton icon="plus" label="Add panel" />}
-          items={ALL_KINDS.map((k) => ({
-            id: k,
-            label: PANEL_META[k].label,
-            icon: PANEL_META[k].icon as IconName,
-            onSelect: () => addPanel(k),
-          }))}
-        />
-
         <ToolbarButton icon="refresh" label="Reset" onClick={resetLayout} title="Reset to the default layout" />
       </div>
     </div>
@@ -173,7 +168,8 @@ function ToolbarButton({ icon, label, onClick, title }: { icon: IconName; label:
 
 /* ── tree rendering ───────────────────────────────────────────────── */
 
-function Node({ node }: { node: LayoutNode }) {
+function Node({ node }: { node: LayoutNode | null }) {
+  if (!node) return null;
   if (node.kind === 'leaf') return <Leaf node={node} />;
   return <Split node={node} />;
 }
@@ -239,6 +235,9 @@ function Leaf({ node }: { node: LayoutLeaf }) {
   const removeLeaf = useLayoutStore((s) => s.removeLeaf);
   const openPanel = useLayoutStore((s) => s.openPanel);
   const moveTab = useLayoutStore((s) => s.moveTab);
+  const pinTab = useLayoutStore((s) => s.pinTab);
+  const unpinTab = useLayoutStore((s) => s.unpinTab);
+  const detachToFloating = useLayoutStore((s) => s.detachToFloating);
   const [dragging, setDragging] = useState(false);
 
   const missing = ALL_KINDS.filter((k) => !node.tabs.includes(k));
@@ -273,8 +272,12 @@ function Leaf({ node }: { node: LayoutLeaf }) {
             kind={kind}
             active={node.active === kind}
             leafId={node.id}
+            pinned={Boolean(node.pinned?.includes(kind))}
             onClick={() => setActive(node.id, kind)}
             onClose={() => (node.tabs.length === 1 ? removeLeaf(node.id) : closeTab(node.id, kind))}
+            onPin={() => pinTab(node.id, kind)}
+            onUnpin={() => unpinTab(node.id, kind)}
+            onDetach={() => detachToFloating(node.id, kind)}
           />
         ))}
         {missing.length > 0 && (
@@ -306,14 +309,22 @@ function Tab({
   kind,
   active,
   leafId,
+  pinned,
   onClick,
   onClose,
+  onPin,
+  onUnpin,
+  onDetach,
 }: {
   kind: PanelKind;
   active: boolean;
   leafId: string;
+  pinned: boolean;
   onClick: () => void;
   onClose: () => void;
+  onPin: () => void;
+  onUnpin: () => void;
+  onDetach: () => void;
 }) {
   const meta = PANEL_META[kind];
   return (
@@ -335,18 +346,59 @@ function Tab({
     >
       <Icon name={meta.icon as IconName} size={12} />
       <span className="whitespace-nowrap">{meta.label}</span>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-        className={cn(
-          'grid h-4 w-4 place-items-center rounded transition-colors',
-          active ? 'opacity-60 hover:bg-accent/20 hover:opacity-100' : 'opacity-0 group-hover:opacity-60 hover:opacity-100',
-        )}
-      >
-        <Icon name="close" size={10} />
-      </button>
+
+      <Menu
+        align="start"
+        trigger={
+          <button
+            onClick={(e) => e.stopPropagation()}
+            title="Tab options"
+            className="grid h-4 w-4 shrink-0 place-items-center rounded opacity-0 transition-opacity hover:bg-surface-hover group-hover:opacity-60 hover:!opacity-100"
+          >
+            <Icon name="more" size={10} />
+          </button>
+        }
+        items={[
+          {
+            id: 'pin-toggle',
+            label: pinned ? 'Unpin' : 'Pin',
+            icon: 'pin' as IconName,
+            onSelect: pinned ? onUnpin : onPin,
+          },
+          {
+            id: 'detach',
+            label: 'Detach to floating panel',
+            icon: 'panel' as IconName,
+            onSelect: onDetach,
+          },
+        ]}
+      />
+
+      {pinned ? (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onUnpin();
+          }}
+          title="Pinned — click to unpin"
+          className="grid h-4 w-4 shrink-0 place-items-center rounded text-accent opacity-70 transition-opacity hover:opacity-100"
+        >
+          <Icon name="pin" size={10} />
+        </button>
+      ) : (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+          className={cn(
+            'grid h-4 w-4 shrink-0 place-items-center rounded transition-colors',
+            active ? 'opacity-60 hover:bg-accent/20 hover:opacity-100' : 'opacity-0 group-hover:opacity-60 hover:opacity-100',
+          )}
+        >
+          <Icon name="close" size={10} />
+        </button>
+      )}
     </div>
   );
 }

@@ -63,13 +63,6 @@ export const popVariants: Variants = {
   exit: { opacity: 0, scale: 0.98, y: 4, transition: ease.out },
 };
 
-/** Shared hover/tap affordance for interactive surfaces. */
-export const pressable = {
-  whileHover: { y: -1 },
-  whileTap: { scale: 0.985 },
-  transition: spring.snappy,
-} as const;
-
 /**
  * Project immersion — you don't "open a page", you *enter* the space.
  * The workspace materialises from slightly too-close and out-of-focus,
@@ -79,13 +72,6 @@ export const enterSpaceVariants: Variants = {
   initial: { opacity: 0, scale: 1.06, filter: 'blur(12px)' },
   animate: { opacity: 1, scale: 1, filter: 'blur(0px)', transition: { ...spring.gentle, mass: 1.1 } },
   exit: { opacity: 0, scale: 0.985, filter: 'blur(8px)', transition: ease.out },
-};
-
-/** Leaving a space back to a section — a gentle pull-back, not a cut. */
-export const leaveSpaceVariants: Variants = {
-  initial: { opacity: 0, scale: 0.97, filter: 'blur(8px)' },
-  animate: { opacity: 1, scale: 1, filter: 'blur(0px)', transition: spring.gentle },
-  exit: { opacity: 0, scale: 1.02, filter: 'blur(6px)', transition: ease.out },
 };
 
 /**

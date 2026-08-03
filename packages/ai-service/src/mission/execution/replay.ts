@@ -36,14 +36,3 @@ export function captureFrame(type: ReplayFrame['type'], input: SnapshotInput, ex
   if (next.length > MAX_FRAMES) next.splice(0, next.length - MAX_FRAMES);
   return next;
 }
-
-/** Progress of a replay run (0..1) at a given frame index. */
-export function progressOf(frames: ReplayFrame[], index: number): number {
-  if (frames.length <= 1) return index >= frames.length ? 1 : 0;
-  return Math.max(0, Math.min(1, index / (frames.length - 1)));
-}
-
-/** Number of completed tasks at each frame — for progress charts. */
-export function completionSeries(frames: ReplayFrame[]): number[] {
-  return frames.map((f) => f.snapshot.completedCount);
-}

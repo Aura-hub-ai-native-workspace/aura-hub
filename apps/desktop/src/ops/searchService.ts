@@ -9,7 +9,7 @@
  */
 import type { IconName } from '@aura/ui';
 import { useWorkspace } from '../data/useWorkspace';
-import { useEditorStore } from '../editor/editorStore';
+import { useEditorStore, hasUnsavedWorkFor } from '../editor/editorStore';
 import { useAppStore } from '@aura/core';
 import { aiClient } from '../ai/aiClient';
 import { missionClient, type MissionSummary } from '../ai/missionClient';
@@ -40,7 +40,18 @@ const qMatch = (query: string, ...fields: (string | null | undefined)[]): boolea
   return parts.every((p) => hay.includes(p));
 };
 
+/**
+ * Navigates to a project's shell, guarding against silently discarding
+ * unsaved Code Workspace edits in whatever project is currently open —
+ * same confirm convention as the project switcher, Home, and command
+ * palette (see `hasUnsavedWorkFor` in editorStore.ts). Search results
+ * that stay within the already-open project (files, symbols, knowledge,
+ * documentation, architecture) pass straight through, since only a real
+ * cross-project jump (missions/diagnoses/memory from another project) can
+ * ever have unsaved work to lose.
+ */
 function openProjectShell(projectId: string): void {
+  if (hasUnsavedWorkFor(projectId) && !window.confirm('You have unsaved changes in the current project\'s Code Workspace. Switch projects anyway?')) return;
   const app = useAppStore.getState();
   if (useAppStore.getState().activeProjectId !== projectId) app.openProject(projectId);
 }
@@ -116,7 +127,6 @@ async function searchKnowledge(query: string): Promise<SearchHit[]> {
         const editor = useEditorStore.getState();
         const rel = e.source.replace(/\\/g, '/');
         if (editor.projectId) void editor.openFile({ path: rel, name: rel.split('/').pop() ?? rel });
-        app.setNav('projects');
         app.openProject(useWorkspace.getState().openId ?? '');
         app.setProjectTab('code');
       },
@@ -254,7 +264,7 @@ async function searchMemory(query: string): Promise<SearchHit[]> {
         icon: 'memory' as const,
         action: () => {
           useLayoutStore.getState().setFocused({ projectId: project.id });
-          useLayoutStore.getState().openPanel('memory');
+          useLayoutStore.getState().openPanel('engineering-memory');
           openProjectShell(project.id);
         },
       });

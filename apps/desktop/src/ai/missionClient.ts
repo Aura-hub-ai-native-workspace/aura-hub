@@ -258,7 +258,10 @@ export type MissionEvent =
 
 export const missionClient = {
   list: (projectId: string): Promise<{ missions: MissionSummary[] }> =>
-    fetch(`${BASE}/projects/${projectId}/missions`).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions`).then(async (r) => {
+      if (!r.ok) throw new Error(`Mission list failed (${r.status})`);
+      return r.json();
+    }),
 
   get: (projectId: string, mid: string): Promise<MissionRecord | { error: string }> =>
     fetch(`${BASE}/projects/${projectId}/missions/${mid}`).then((r) => r.json()),
@@ -288,7 +291,10 @@ export const missionClient = {
     fetch(`${BASE}/projects/${projectId}/missions/${mid}/replay`).then((r) => r.json()),
 
   dashboard: (): Promise<MissionDashboard> =>
-    fetch(`${BASE}/missions/dashboard`).then((r) => r.json()),
+    fetch(`${BASE}/missions/dashboard`).then(async (r) => {
+      if (!r.ok) throw new Error(`Mission dashboard failed (${r.status})`);
+      return r.json();
+    }),
 
   runTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
     fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/run`, { method: 'POST' }).then((r) => r.json()),

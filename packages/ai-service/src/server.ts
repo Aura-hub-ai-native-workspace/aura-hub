@@ -10,6 +10,9 @@ import type { RunEvent, Workflow } from './workflow/types';
 import { setupProviders } from './provider';
 import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
 import { handleCodeAction, type CodeActionRequest } from './codeAction';
+import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate } from '@aura/automation';
+import type { AutomationEvent, AutomationRule } from '@aura/automation';
+import { automationEvent } from './automation';
 import type { DiagnosisEvent, DiagnosisRequest } from './diagnosis/types';
 import type { MissionEvent } from './mission/types';
 import type { ExecutionEvent } from './mission/execution/types';
@@ -22,20 +25,40 @@ import {
 } from '@aura/governance';
 
 const CORS = {
-  'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
   'access-control-allow-headers': 'content-type',
 };
 
+/** Local-only server: reflect the origin only for known local clients. */
+const ALLOWED_ORIGIN = /^(https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?|tauri:\/\/localhost|https?:\/\/tauri\.localhost)$/;
+
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+
 function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let raw = '';
-    req.on('data', (c) => (raw += c));
+    let settled = false;
+    const fail = (err: HttpError) => { if (!settled) { settled = true; reject(err); } };
+    req.on('data', (c) => {
+      if (settled) return;
+      raw += c;
+      if (raw.length > MAX_BODY_BYTES) fail(new HttpError(413, 'request body too large'));
+    });
+    req.on('error', () => fail(new HttpError(400, 'invalid request body')));
     req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      if (!raw) return resolve({});
       try {
-        resolve(raw ? JSON.parse(raw) : {});
+        resolve(JSON.parse(raw));
       } catch {
-        resolve({});
+        reject(new HttpError(400, 'malformed JSON body'));
       }
     });
   });
@@ -68,17 +91,25 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   setupProviders();
   const manager = new WorkspaceManager(opts);
 
+  // Auto-connect providers configured through environment variables
+  // (e.g. MISTRAL_API_KEY) so an env-configured key is active on startup.
+  await manager.connectEnvProviders().catch((e) => {
+    console.warn('[providers] env auto-connect failed:', (e as Error).message);
+  });
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const seg = url.pathname.split('/').filter(Boolean);
     const method = req.method ?? 'GET';
+    const origin = req.headers.origin;
+    if (origin && ALLOWED_ORIGIN.test(origin)) res.setHeader('access-control-allow-origin', origin);
     if (method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
     const p = manager.pipeline;
 
     try {
       /* ── health / settings / key ──────────────────────────────── */
       if (method === 'GET' && seg[0] === 'health') return json(res, 200, { health: await p.health(), key: p.keyStatus(), index: manager.indexStatus(), project: manager.currentProject() });
-      if (method === 'GET' && (seg.length === 0 || seg[0] === 'settings')) return json(res, 200, { settings: p.getSettings(), models: [], defaults: DEFAULT_SETTINGS, key: p.keyStatus() });
+      if (method === 'GET' && (seg.length === 0 || seg[0] === 'settings')) return json(res, 200, { settings: p.getSettings(), defaults: DEFAULT_SETTINGS, key: p.keyStatus() });
       if (method === 'POST' && seg[0] === 'settings' && seg[1] === 'key') { const b = await readJson(req); return json(res, 200, p.setKey(String(b.apiKey ?? ''), Boolean(b.persist))); }
       if (method === 'DELETE' && seg[0] === 'settings' && seg[1] === 'key') { p.clearKey(); return json(res, 200, { ok: true }); }
       if (method === 'POST' && seg[0] === 'settings') { const b = await readJson(req); return json(res, 200, { settings: p.setSettings(b) }); }
@@ -114,7 +145,7 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         const result = manager.switchToProvider(providerId, model || undefined);
         return json(res, result.ok ? 200 : 400, { ok: result.ok, status: p.providerStatus, error: result.error });
       }
-      if (method === 'GET' && seg[0] === 'providers' && seg[1] === 'models') {
+      if ((method === 'GET' || method === 'POST') && seg[0] === 'providers' && seg[1] === 'models') {
         const b = (seg[3] ? { providerId: seg[2], apiKey: seg[3] } : await readJson(req)) as { providerId?: string; apiKey?: string };
         if (!b.providerId || !b.apiKey) return json(res, 400, { models: [] });
         const models = await manager.discoverModels(b.providerId, b.apiKey);
@@ -157,6 +188,7 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (seg.length === 4 && (method === 'PATCH' || method === 'POST')) { const b = await readJson(req); const c = manager.renameConversation(id, cid, String(b.title ?? '')); return c ? json(res, 200, c) : json(res, 404, { error: 'no such conversation' }); }
           if (seg.length === 4 && method === 'DELETE') return json(res, 200, { ok: manager.removeConversation(id, cid) });
           if (seg[4] === 'message' && method === 'POST') { const b = await readJson(req); return json(res, 200, manager.appendMessage(id, cid, { role: b.role === 'assistant' ? 'assistant' : 'user', content: String(b.content ?? ''), meta: b.meta, error: Boolean(b.error) }) ?? { error: 'no such conversation' }); }
+          if (seg[4] === 'message' && seg[5] === 'last' && method === 'DELETE') return json(res, 200, { ok: manager.removeLastAssistantMessage(id, cid) });
         }
         if (seg[2] === 'graph' && method === 'GET') { const kg = manager.knowledgeGraph(id); return kg ? json(res, 200, kg) : json(res, 404, { error: 'project not open' }); }
         if (seg[2] === 'intelligence' && method === 'GET') { const r = manager.projectIntelligence(id); return r ? json(res, 200, r) : json(res, 404, { error: 'no such project' }); }
@@ -179,6 +211,10 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         }
         if (seg[2] === 'architecture-layers' && method === 'GET') {
           return json(res, 200, { layers: manager.resolveArchitectureLayers(id) });
+        }
+        if (seg[2] === 'changes' && method === 'GET') {
+          const log = manager.changeLog(id);
+          return log ? json(res, 200, log) : json(res, 404, { error: 'no such project' });
         }
         if (seg[2] === 'memory') {
           if (seg.length === 3 && method === 'GET') return json(res, 200, { items: manager.listMemory(id) });
@@ -386,6 +422,159 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         }
       }
 
+      /* ── automation engine ──────────────────────────────────────── */
+      if (seg[0] === 'automation') {
+        const auto = manager.automation;
+        if (seg[1] === 'templates' && method === 'GET') {
+          return json(res, 200, { templates: AUTOMATION_TEMPLATES.map((t) => ({ id: t.id, name: t.name, description: t.description, category: t.category })) });
+        }
+        if (seg[1] === 'events' && method === 'POST') {
+          const b = await readJson(req);
+          const type = String(b.type ?? '') as AutomationEvent['type'];
+          const projectId = String(b.projectId ?? '');
+          if (!type || !projectId) return json(res, 400, { error: 'type and projectId are required' });
+          const project = manager.registry.get(projectId);
+          if (!project) return json(res, 404, { error: 'no such project' });
+          auto.engine.handleEvent(automationEvent(type, projectId, project.path, (b.payload ?? {}) as Record<string, unknown>));
+          return json(res, 200, { ok: true });
+        }
+        if (seg[1] === 'events' && seg[2] === 'stream' && method === 'GET') {
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
+          res.write('data: {"type":"subscribed"}\n\n');
+          const unsub = auto.subscribe((e) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); });
+          res.on('close', () => { unsub(); });
+          return;
+        }
+        if (seg[1] === 'rules') {
+          if (seg.length === 2) {
+            if (method === 'GET') return json(res, 200, { rules: auto.store.listRules() });
+            if (method === 'POST') {
+              const b = await readJson(req);
+              const fromTemplate = typeof b.template === 'string' ? instantiateAutomationTemplate(b.template) : null;
+              if (typeof b.template === 'string' && !fromTemplate) return json(res, 404, { error: 'no such template' });
+              return json(res, 200, auto.store.createRule(fromTemplate ?? (b as Record<string, unknown>)));
+            }
+          }
+          const ruleId = seg[2];
+          if (seg[3] === 'run' && method === 'POST') {
+            const b = await readJson(req);
+            const rule = auto.store.getRule(ruleId);
+            if (!rule) return json(res, 404, { error: 'no such rule' });
+            const projectId = String(b.projectId ?? '');
+            const project = manager.registry.get(projectId);
+            if (!project) return json(res, 400, { error: 'projectId is required' });
+            const run = await auto.engine.runRuleNow(ruleId, automationEvent(rule.trigger.type, projectId, project.path, (b.payload ?? {}) as Record<string, unknown>));
+            return run ? json(res, 200, run) : json(res, 200, { error: 'conditions not met', run: null });
+          }
+          if (seg[3] === 'pause' && method === 'POST') {
+            const run = auto.engine.pauseRule(ruleId);
+            return json(res, run ? 200 : 404, run ?? { error: 'no running run to pause' });
+          }
+          if (seg[3] === 'resume' && method === 'POST') {
+            const run = auto.engine.resumeRule(ruleId);
+            return json(res, run ? 200 : 404, run ?? { error: 'no paused run to resume' });
+          }
+          if (seg[3] === 'runs') {
+            const runId = seg[4];
+            // The list route only matches with no further segment — a bare
+            // `method === 'GET'` check here would also swallow
+            // `.../runs/:runId`, making the single-run route below dead code.
+            if (!runId && method === 'GET') return json(res, 200, { runs: auto.store.listRuns(ruleId) });
+            if (runId && seg[5] === 'cancel' && method === 'POST') {
+              const run = auto.engine.cancelRun(ruleId, runId);
+              return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
+            }
+            if (runId && method === 'GET') {
+              const run = auto.store.getRun(ruleId, runId);
+              return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
+            }
+          }
+          if (seg.length === 3) {
+            if (method === 'GET') { const r = auto.store.getRule(ruleId); return r ? json(res, 200, r) : json(res, 404, { error: 'no such rule' }); }
+            if (method === 'PUT') { const b = await readJson(req); const r = auto.store.saveRule(ruleId, b as Partial<AutomationRule>); return r ? json(res, 200, r) : json(res, 404, { error: 'no such rule' }); }
+            if (method === 'PATCH') { const b = await readJson(req); const r = auto.store.saveRule(ruleId, b as Partial<AutomationRule>); return r ? json(res, 200, r) : json(res, 404, { error: 'no such rule' }); }
+            if (method === 'DELETE') return json(res, 200, { ok: auto.store.removeRule(ruleId) });
+          }
+        }
+      }
+
+      /* ── predictive engineering platform ───────────────────────── */
+      if (seg[0] === 'predictive') {
+        const { buildPredictiveEngine, missionContextFrom, candidateContextFrom } = await import('./predictive');
+        const projectId = String(url.searchParams.get('projectId') ?? '');
+        const project = manager.registry.get(projectId);
+        const pathOf = (): string => {
+          if (project?.path) return project.path;
+          if (p.currentProjectId && manager.registry.get(p.currentProjectId)?.path) return manager.registry.get(p.currentProjectId)!.path;
+          return '';
+        };
+        if (seg[1] === 'report' && method === 'GET') {
+          const root = pathOf();
+          if (!root) return json(res, 400, { error: 'projectId is required (or open a project)' });
+          const engine = await buildPredictiveEngine({ projectId: project?.id ?? p.currentProjectId ?? 'unknown', projectPath: root });
+          return json(res, 200, engine.report());
+        }
+        if (seg[1] === 'mission' && seg[2] && method === 'GET') {
+          const root = pathOf();
+          if (!root) return json(res, 400, { error: 'projectId is required (or open a project)' });
+          const ctx = missionContextFrom(projectId || p.currentProjectId || 'unknown', seg[2]);
+          if (!ctx) return json(res, 404, { error: 'no such mission' });
+          const engine = await buildPredictiveEngine({ projectId: project?.id ?? p.currentProjectId ?? 'unknown', projectPath: root });
+          return json(res, 200, engine.missionFailure(ctx));
+        }
+        if (seg[1] === 'candidate' && seg[2] && seg[3] && method === 'GET') {
+          const root = pathOf();
+          if (!root) return json(res, 400, { error: 'projectId is required (or open a project)' });
+          const ctx = candidateContextFrom(projectId || p.currentProjectId || 'unknown', seg[2], seg[3]);
+          if (!ctx) return json(res, 404, { error: 'no such diagnosis candidate' });
+          const engine = await buildPredictiveEngine({ projectId: project?.id ?? p.currentProjectId ?? 'unknown', projectPath: root });
+          return json(res, 200, engine.proposalSuccess(ctx));
+        }
+        if (seg[1] === 'impact' && seg[2] && method === 'GET') {
+          const root = pathOf();
+          if (!root) return json(res, 400, { error: 'projectId is required (or open a project)' });
+          const engine = await buildPredictiveEngine({ projectId: project?.id ?? p.currentProjectId ?? 'unknown', projectPath: root });
+          return json(res, 200, engine.impact(decodeURIComponent(seg[2])));
+        }
+        if (seg[1] === 'simulate' && method === 'POST') {
+          const b = await readJson(req);
+          const root = pathOf();
+          if (!root || !b.target || !b.change) return json(res, 400, { error: 'projectId, target and change are required' });
+          const engine = await buildPredictiveEngine({ projectId: project?.id ?? p.currentProjectId ?? 'unknown', projectPath: root });
+          return json(res, 200, engine.simulate(String(b.target), String(b.change) as 'modify' | 'add' | 'remove'));
+        }
+        if (seg[1] === 'explain' && method === 'POST') {
+          const b = await readJson(req);
+          const root = pathOf();
+          if (!root) return json(res, 400, { error: 'projectId is required (or open a project)' });
+          const engine = await buildPredictiveEngine({ projectId: project?.id ?? p.currentProjectId ?? 'unknown', projectPath: root });
+          const report = engine.report();
+          const lines: string[] = [
+            `Predictive Engineering report for ${report.projectId} (deterministic, no ML).`,
+            `Overall risk: ${report.risk.level} (${Math.round(report.risk.overall * 100)}%).`,
+            `Dimensions: ${report.risk.dimensions.map((d) => `${d.label} ${Math.round(d.score * 100)}%`).join(', ')}.`,
+            `Top predicted hotspots: ${report.hotspots.slice(0, 5).map((p) => `${p.target} (${Math.round(p.probability * 100)}%)`).join(', ') || 'none'}.`,
+            `Predicted regressions: ${report.regressions.slice(0, 5).map((p) => `${p.target} (${Math.round(p.probability * 100)}%)`).join(', ') || 'none'}.`,
+            `Upcoming architecture risks: ${report.architectureRisks.slice(0, 5).map((p) => `${p.target} (${Math.round(p.probability * 100)}%)`).join(', ') || 'none'}.`,
+            `Suggested preventive actions: ${report.preventiveActions.slice(0, 8).join('; ') || 'none'}.`,
+          ];
+          if (b.predictionId) {
+            const pred = report.predictions.find((x) => x.id === b.predictionId);
+            if (pred) {
+              lines.push(
+                `\nPrediction ${pred.id} (${pred.kind}) on ${pred.target}:`,
+                `- probability ${Math.round(pred.probability * 100)}%, severity ${pred.severity}, horizon ${pred.horizon}`,
+                `- confidence ${Math.round(pred.confidence.score * 100)}% (${pred.confidence.signals} positive signals; ${pred.confidence.caveats.join(' ')})`,
+                `- drivers: ${pred.drivers.map((d) => `${d.label}=${d.value}`).join('; ') || 'none'}`,
+                `- preventive: ${pred.preventiveActions.join('; ') || 'none'}`,
+              );
+            }
+          }
+          return json(res, 200, { text: lines.join('\n'), report });
+        }
+        return json(res, 404, { error: 'no such predictive endpoint' });
+      }
+
       /* ── workspace-level intelligence (cross-repository) ───────── */
       if (method === 'GET' && seg[0] === 'workspace' && seg[1] === 'intelligence') return json(res, 200, manager.workspaceIntelligence());
 
@@ -433,25 +622,19 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       }
       if (method === 'POST' && seg[0] === 'stream') {
         const b = await readJson(req);
-        console.error('[TRACE:SERVER] /stream POST received:', { textLen: String(b.text ?? '').length, projectId: b.projectId, conversationId: b.conversationId });
-        console.error('[TRACE:SERVER] Current pipeline project:', p.currentProjectId);
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
         const ac = new AbortController();
         res.on('close', () => ac.abort());
         const history = resolveHistory(manager, b);
-        console.error('[TRACE:SERVER] History resolved:', { historyLen: history?.length ?? 0 });
-        const emit = (e: StreamEmit) => { console.error('[TRACE:SERVER] emit:', e.type, e.type === 'token' ? { textLen: e.text.length } : e.type === 'done' ? { finishReason: e.finishReason, usage: e.usage } : e.type === 'error' ? e.error : e.type === 'meta' ? { contextTokens: e.meta.contextTokens } : ''); if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
-        console.error('[TRACE:SERVER] Calling streamEvents...');
-        const t0 = Date.now();
+        const emit = (e: StreamEmit) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
         await p.streamEvents(String(b.text ?? ''), emit, ac.signal, history);
-        console.error('[TRACE:SERVER] streamEvents returned in', Date.now() - t0, 'ms');
         if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
         return;
       }
 
       json(res, 404, { error: 'not found' });
     } catch (e) {
-      json(res, 500, { error: (e as Error).message });
+      json(res, e instanceof HttpError ? e.status : 500, { error: (e as Error).message });
     }
   });
 

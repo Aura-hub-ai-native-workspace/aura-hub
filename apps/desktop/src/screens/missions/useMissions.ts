@@ -136,25 +136,38 @@ export function useMissions(projectId: string | null) {
 
   const approve = useCallback(async () => {
     if (!projectId || !active) return;
-    const mission = await missionClient.approve(projectId, active.id);
-    setActive(mission);
-    void refreshList();
+    setError(null);
+    try {
+      const mission = await missionClient.approve(projectId, active.id);
+      setActive(mission);
+      void refreshList();
+    } catch (e) {
+      setError((e as Error).message || 'Could not approve the mission plan.');
+    }
   }, [projectId, active, refreshList]);
 
   const rejectPlan = useCallback(async () => {
     if (!projectId || !active) return;
-    const mission = await missionClient.reject(projectId, active.id);
-    setActive(mission);
-    void refreshList();
+    setError(null);
+    try {
+      const mission = await missionClient.reject(projectId, active.id);
+      setActive(mission);
+      void refreshList();
+    } catch (e) {
+      setError((e as Error).message || 'Could not reject the mission plan.');
+    }
   }, [projectId, active, refreshList]);
 
   const startExecution = useCallback(async () => {
     if (!projectId || !active) return;
     setBatchBusy(true);
+    setError(null);
     try {
       const result = await missionClient.start(projectId, active.id);
       if (result.mission) setActive(result.mission);
       if (!result.ok && result.error) setError(result.error);
+    } catch (e) {
+      setError((e as Error).message || 'Could not start execution.');
     } finally {
       setBatchBusy(false);
     }
@@ -187,6 +200,8 @@ export function useMissions(projectId: string | null) {
       const result = await missionClient.runTask(projectId, active.id, taskId);
       if (result.mission) setActive(result.mission);
       if (!result.ok && result.error) setError(result.error);
+    } catch (e) {
+      setError((e as Error).message || 'Could not run the task.');
     } finally {
       setBusyTaskId(null);
     }
@@ -195,10 +210,13 @@ export function useMissions(projectId: string | null) {
   const acceptTask = useCallback(async (taskId: string) => {
     if (!projectId || !active) return;
     setBusyTaskId(taskId);
+    setError(null);
     try {
       const result = await missionClient.acceptTask(projectId, active.id, taskId);
       if (result.mission) setActive(result.mission);
       if (!result.ok && result.error) setError(result.error);
+    } catch (e) {
+      setError((e as Error).message || 'Could not write this change to disk.');
     } finally {
       setBusyTaskId(null);
     }
@@ -206,53 +224,99 @@ export function useMissions(projectId: string | null) {
 
   const rejectTask = useCallback(async (taskId: string) => {
     if (!projectId || !active) return;
-    const result = await missionClient.rejectTask(projectId, active.id, taskId);
-    if (result.mission) setActive(result.mission);
+    setError(null);
+    try {
+      const result = await missionClient.rejectTask(projectId, active.id, taskId);
+      if (result.mission) setActive(result.mission);
+      if (!result.ok && result.error) setError(result.error);
+    } catch (e) {
+      setError((e as Error).message || 'Could not reject the task.');
+    }
   }, [projectId, active]);
 
   const retryTask = useCallback(async (taskId: string) => {
     if (!projectId || !active) return;
-    const result = await missionClient.retryTask(projectId, active.id, taskId);
-    if (result.mission) setActive(result.mission);
+    setError(null);
+    try {
+      const result = await missionClient.retryTask(projectId, active.id, taskId);
+      if (result.mission) setActive(result.mission);
+      if (!result.ok && result.error) setError(result.error);
+    } catch (e) {
+      setError((e as Error).message || 'Could not retry the task.');
+    }
   }, [projectId, active]);
 
   const completeTask = useCallback(async (taskId: string) => {
     if (!projectId || !active) return;
-    const result = await missionClient.completeManualTask(projectId, active.id, taskId);
-    if (result.mission) setActive(result.mission);
+    setError(null);
+    try {
+      const result = await missionClient.completeManualTask(projectId, active.id, taskId);
+      if (result.mission) setActive(result.mission);
+      if (!result.ok && result.error) setError(result.error);
+    } catch (e) {
+      setError((e as Error).message || 'Could not complete the task.');
+    }
   }, [projectId, active]);
 
   const pause = useCallback(async () => {
     if (!projectId || !active) return;
-    const result = await missionClient.pause(projectId, active.id);
-    if (result.mission) setActive(result.mission);
+    setError(null);
+    try {
+      const result = await missionClient.pause(projectId, active.id);
+      if (result.mission) setActive(result.mission);
+      if (!result.ok && result.error) setError(result.error);
+    } catch (e) {
+      setError((e as Error).message || 'Could not pause execution.');
+    }
   }, [projectId, active]);
 
   const resume = useCallback(async () => {
     if (!projectId || !active) return;
-    const result = await missionClient.resume(projectId, active.id);
-    if (result.mission) setActive(result.mission);
+    setError(null);
+    try {
+      const result = await missionClient.resume(projectId, active.id);
+      if (result.mission) setActive(result.mission);
+      if (!result.ok && result.error) setError(result.error);
+    } catch (e) {
+      setError((e as Error).message || 'Could not resume execution.');
+    }
   }, [projectId, active]);
 
   const cancel = useCallback(async () => {
     if (!projectId || !active) return;
-    const result = await missionClient.cancel(projectId, active.id);
-    if (result.mission) setActive(result.mission);
+    setError(null);
+    try {
+      const result = await missionClient.cancel(projectId, active.id);
+      if (result.mission) setActive(result.mission);
+      if (!result.ok && result.error) setError(result.error);
+    } catch (e) {
+      setError((e as Error).message || 'Could not cancel the mission.');
+    }
   }, [projectId, active]);
 
   const reviewCheckpoint = useCallback(async (pass: boolean, note?: string) => {
     if (!projectId || !active) return;
-    const result = await missionClient.review(projectId, active.id, pass, note);
-    if (result.mission) setActive(result.mission);
+    setError(null);
+    try {
+      const result = await missionClient.review(projectId, active.id, pass, note);
+      if (result.mission) setActive(result.mission);
+      if (!result.ok && result.error) setError(result.error);
+    } catch (e) {
+      setError((e as Error).message || 'Could not record the review decision.');
+    }
   }, [projectId, active]);
 
   const loadReplay = useCallback(async (id?: string) => {
     if (!projectId) return;
     const mid = id ?? active?.id;
     if (!mid) return;
-    const payload = await missionClient.replay(projectId, mid);
-    if ('error' in payload) setError(payload.error);
-    else setReplay(payload);
+    try {
+      const payload = await missionClient.replay(projectId, mid);
+      if ('error' in payload) setError(payload.error);
+      else setReplay(payload);
+    } catch (e) {
+      setError((e as Error).message || 'Could not load mission replay.');
+    }
   }, [projectId, active]);
 
   return {

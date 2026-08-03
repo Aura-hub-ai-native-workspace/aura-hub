@@ -135,7 +135,3 @@ export function prioritizeDocuments(
 
   return docs.slice(0, maxResults);
 }
-
-export function getDocumentPriorities(intentType: RepositoryIntentType): Record<string, DocumentPriority> {
-  return INTENT_DOC_PRIORITIES[intentType] ?? INTENT_DOC_PRIORITIES.unknown;
-}

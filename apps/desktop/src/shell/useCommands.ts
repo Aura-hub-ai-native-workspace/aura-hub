@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useAppStore, type Command } from '@aura/core';
 import { useWorkspace } from '../data/useWorkspace';
 import { useLayoutStore } from '../ops/layoutStore';
+import { hasUnsavedWorkFor } from '../editor/editorStore';
 
 /**
  * Builds the command registry for the palette — the Global Command
@@ -14,6 +15,7 @@ import { useLayoutStore } from '../ops/layoutStore';
 export function useCommands(): Command[] {
   const setNav = useAppStore((s) => s.setNav);
   const openProject = useAppStore((s) => s.openProject);
+  const openAddProjectDialog = useAppStore((s) => s.openAddProjectDialog);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
   const toggleRightPanel = useAppStore((s) => s.toggleRightPanel);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
@@ -23,18 +25,22 @@ export function useCommands(): Command[] {
   const openPanel = useLayoutStore((s) => s.openPanel);
 
   return useMemo<Command[]>(() => {
+      const inWorkspace = (run: () => void) => () => { setNav('workspace'); run(); };
+
       const nav: Command[] = [
         { id: 'nav-home', title: 'Go to Home', section: 'Navigate', icon: 'home', run: () => setNav('home') },
-        { id: 'nav-projects', title: 'Go to Projects', section: 'Navigate', icon: 'projects', run: () => setNav('projects') },
-        { id: 'nav-knowledge', title: 'Go to Knowledge', section: 'Navigate', icon: 'knowledge', run: () => setNav('knowledge') },
-        { id: 'nav-ai', title: 'Go to AI', section: 'Navigate', icon: 'spark', run: () => setNav('ai') },
-        { id: 'nav-workflows', title: 'Go to Workflows', section: 'Navigate', icon: 'workflows', run: () => setNav('workflows') },
-        { id: 'nav-missions', title: 'Go to Mission Control', section: 'Navigate', icon: 'deploy', run: () => setNav('missions') },
-        { id: 'nav-dashboard', title: 'Go to Engineering Dashboard', section: 'Navigate', icon: 'activity', run: () => setNav('dashboard') },
-        { id: 'nav-governance', title: 'Go to Governance', section: 'Navigate', icon: 'shield', run: () => setNav('governance') },
+        { id: 'nav-workflows', title: 'Go to Workflow', section: 'Navigate', icon: 'workflows', run: () => setNav('workflows') },
         { id: 'nav-workspace', title: 'Go to Workspace', section: 'Navigate', icon: 'layout', run: () => setNav('workspace') },
-        { id: 'nav-marketplace', title: 'Go to Marketplace', section: 'Navigate', icon: 'marketplace', run: () => setNav('marketplace') },
+        { id: 'nav-marketplace', title: 'Go to Extended Environment', section: 'Navigate', icon: 'marketplace', run: () => setNav('marketplace') },
         { id: 'nav-settings', title: 'Go to Settings', section: 'Navigate', icon: 'settings', run: () => setNav('settings') },
+        // Knowledge/AI/Missions/Dashboard/Twin/Governance no longer have their
+        // own nav destinations — they're Workspace panels now (see 'Actions'
+        // section below), consistent with every other panel-opening command.
+        { id: 'open-knowledge', title: 'Open Knowledge', section: 'Actions', icon: 'knowledge', run: inWorkspace(() => openPanel('knowledge')) },
+        { id: 'open-ai-chat', title: 'Ask AURA', section: 'Actions', icon: 'spark', run: inWorkspace(() => openPanel('ai-chat')) },
+        { id: 'open-dashboard', title: 'Open Engineering Dashboard', section: 'Actions', icon: 'activity', run: inWorkspace(() => openPanel('dashboard')) },
+        { id: 'open-twin', title: 'Open Engineering Twin', section: 'Actions', icon: 'cpu', run: inWorkspace(() => openPanel('twin')) },
+        { id: 'open-governance', title: 'Open Governance', section: 'Actions', icon: 'shield', run: inWorkspace(() => openPanel('governance')) },
       ];
 
     const projects: Command[] = projectList.map((p) => ({
@@ -43,10 +49,12 @@ export function useCommands(): Command[] {
       section: 'Projects',
       icon: 'folder',
       keywords: [p.type, p.language],
-      run: () => { void openWorkspace(p.id); openProject(p.id); },
+      run: () => {
+        if (hasUnsavedWorkFor(p.id) && !window.confirm('You have unsaved changes in the current project\'s Code Workspace. Switch projects anyway?')) return;
+        void openWorkspace(p.id);
+        openProject(p.id);
+      },
     }));
-
-    const inWorkspace = (run: () => void) => () => { setNav('workspace'); run(); };
 
     const actions: Command[] = [
       {
@@ -55,7 +63,7 @@ export function useCommands(): Command[] {
         section: 'Actions',
         icon: 'plus',
         shortcut: ['⌘', 'N'],
-        run: () => setNav('projects'),
+        run: () => { setNav('home'); openAddProjectDialog(); },
       },
       {
         id: 'toggle-theme',
@@ -63,13 +71,6 @@ export function useCommands(): Command[] {
         section: 'Actions',
         icon: 'moon',
         run: toggleTheme,
-      },
-      {
-        id: 'ops-overview',
-        title: 'Open Engineering Overview',
-        section: 'Actions',
-        icon: 'activity',
-        run: inWorkspace(() => openPanel('overview')),
       },
       {
         id: 'ops-mission-control',
@@ -93,18 +94,25 @@ export function useCommands(): Command[] {
         run: inWorkspace(() => openPanel('diagnostics')),
       },
       {
-        id: 'ops-notifications',
-        title: 'Notification Center',
+        id: 'ops-engineering-memory',
+        title: 'Open Engineering Memory',
         section: 'Actions',
-        icon: 'bell',
-        run: inWorkspace(() => openPanel('notifications')),
+        icon: 'memory',
+        run: inWorkspace(() => openPanel('engineering-memory')),
       },
       {
-        id: 'ops-feed',
-        title: 'Engineering Feed',
+        id: 'ops-engineering-learning',
+        title: 'Open Engineering Learning',
         section: 'Actions',
-        icon: 'activity',
-        run: inWorkspace(() => openPanel('feed')),
+        icon: 'research',
+        run: inWorkspace(() => openPanel('engineering-learning')),
+      },
+      {
+        id: 'ops-engineering-agent',
+        title: 'Open Engineering Agent',
+        section: 'Actions',
+        icon: 'spark',
+        run: inWorkspace(() => openPanel('engineering-agent')),
       },
       {
         id: 'ops-search',
@@ -189,5 +197,5 @@ export function useCommands(): Command[] {
     ];
 
     return [...actions, ...nav, ...projects];
-  }, [setNav, openProject, openWorkspace, projectList, toggleTheme, toggleRightPanel, toggleSidebar, setSearchScope, openPanel]);
+  }, [setNav, openProject, openAddProjectDialog, openWorkspace, projectList, toggleTheme, toggleRightPanel, toggleSidebar, setSearchScope, openPanel]);
 }

@@ -13,6 +13,7 @@ import { DiffEditor } from '@monaco-editor/react';
 import { Badge, Icon, Tab, Tabs } from '@aura/ui';
 import type { StatusTone } from '@aura/core';
 import type { DiagnosisComparison, PatchCandidate, PatchDecision } from '../ai/diagnosisClient';
+import { splicePatch } from './editorTypes';
 
 const DECISION_TONE: Record<PatchDecision, StatusTone> = {
   'auto-approved': 'positive',
@@ -27,13 +28,6 @@ const DECISION_LABEL: Record<PatchDecision, string> = {
 
 function pct(n: number): string {
   return `${Math.floor(Math.min(0.99, Math.max(0, n)) * 100)}%`;
-}
-
-function splicePatch(originalText: string, range: { startLine: number; endLine: number }, newText: string): string {
-  const lines = originalText.split('\n');
-  const before = lines.slice(0, range.startLine - 1);
-  const after = lines.slice(range.endLine);
-  return [...before, ...newText.split('\n'), ...after].join('\n');
 }
 
 export function DiagnosisPatchCompare({

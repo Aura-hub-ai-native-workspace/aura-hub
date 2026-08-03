@@ -36,7 +36,11 @@
       "@aura/governance": ["packages/governance/src/index.ts"],
       "@aura/governance/*": ["packages/governance/src/*"],
       "@aura/runtime": ["packages/runtime/src/index.ts"],
-      "@aura/runtime/*": ["packages/runtime/src/*"]
+      "@aura/runtime/*": ["packages/runtime/src/*"],
+      "@aura/automation": ["packages/automation/src/index.ts"],
+      "@aura/automation/*": ["packages/automation/src/*"],
+      "@aura/predictive": ["packages/predictive/src/index.ts"],
+      "@aura/predictive/*": ["packages/predictive/src/*"]
     }
   }
 }

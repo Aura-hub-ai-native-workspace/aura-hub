@@ -108,6 +108,3 @@ export const TYPE = {
     '4xl': 46,
   },
 } as const;
-
-export type AuraBlue = typeof AURA_BLUE;
-export type Gray = typeof GRAY;

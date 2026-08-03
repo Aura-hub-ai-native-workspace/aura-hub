@@ -10,6 +10,7 @@ const RULES: { prefix: string; providerId: string }[] = [
   { prefix: 'sk-or-', providerId: 'openrouter' },
   { prefix: 'gsk_', providerId: 'groq' },
   { prefix: 'nvapi-', providerId: 'nvidia' },
+  { prefix: 'csk_', providerId: 'cerebras' },
   { prefix: 'AIza', providerId: 'gemini' },
   { prefix: 'sk-', providerId: 'openai' },
 ];

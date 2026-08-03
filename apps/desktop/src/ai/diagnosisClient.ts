@@ -131,15 +131,27 @@ export const diagnosisClient = {
   get: (projectId: string, id: string): Promise<DiagnosisRecord | { error: string }> =>
     fetch(`${BASE}/projects/${projectId}/diagnose/${id}`).then((r) => r.json()),
 
-  accept: (projectId: string, id: string, candidateId: 'A' | 'B' | 'C'): Promise<{ ok: boolean; error?: string }> =>
-    fetch(`${BASE}/projects/${projectId}/diagnose/${id}/accept`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ candidateId }),
-    }).then((r) => r.json()),
+  accept: async (projectId: string, id: string, candidateId: 'A' | 'B' | 'C'): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const r = await fetch(`${BASE}/projects/${projectId}/diagnose/${id}/accept`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ candidateId }),
+      });
+      return await r.json();
+    } catch (e) {
+      return { ok: false, error: (e as Error).message || 'Service unreachable' };
+    }
+  },
 
-  reject: (projectId: string, id: string, candidateId?: 'A' | 'B' | 'C', reason?: string): Promise<{ ok: boolean; error?: string }> =>
-    fetch(`${BASE}/projects/${projectId}/diagnose/${id}/reject`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ candidateId, reason }),
-    }).then((r) => r.json()),
+  reject: async (projectId: string, id: string, candidateId?: 'A' | 'B' | 'C', reason?: string): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const r = await fetch(`${BASE}/projects/${projectId}/diagnose/${id}/reject`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ candidateId, reason }),
+      });
+      return await r.json();
+    } catch (e) {
+      return { ok: false, error: (e as Error).message || 'Service unreachable' };
+    }
+  },
 
   async run(projectId: string, req: DiagnosisRequest, onEvent: (e: DiagnosisEvent) => void, signal?: AbortSignal): Promise<void> {
     let res: Response;

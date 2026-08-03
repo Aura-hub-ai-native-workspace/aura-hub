@@ -5,6 +5,7 @@
 import { Badge } from '@aura/ui';
 import type { CreationStage } from './useMissions';
 import type { IntentClassification, MissionStrategy } from '../../ai/missionClient';
+import { STAGE_LABEL } from './missionMeta';
 
 const STAGE_ORDER: CreationStage[] = [
   'classify',
@@ -17,20 +18,6 @@ const STAGE_ORDER: CreationStage[] = [
   'quality',
   'done',
 ];
-
-const STAGE_LABEL: Record<CreationStage, string> = {
-  idle: '',
-  classify: 'Classifying intent…',
-  signals: 'Gathering real project signals…',
-  intent: 'Extracting intent…',
-  strategy: 'Selecting mission strategy…',
-  'goal-graph': 'Building Goal Graph…',
-  risk: 'Analyzing risk…',
-  review: 'Adversarial review…',
-  quality: 'Scoring plan quality…',
-  done: 'Done',
-  error: 'Failed',
-};
 
 function StageDot({ stage, current }: { stage: CreationStage; current: CreationStage }) {
   const completed = STAGE_ORDER.indexOf(stage) < STAGE_ORDER.indexOf(current);

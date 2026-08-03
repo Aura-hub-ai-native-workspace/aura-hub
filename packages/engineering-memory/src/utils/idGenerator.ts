@@ -17,13 +17,6 @@ export function generateId(prefix: string): string {
 }
 
 /**
- * Generate a short unique ID
- */
-export function generateShortId(): string {
-  return generateId('id');
-}
-
-/**
  * Generate a memory-specific ID
  */
 export function generateMemoryId(): string {

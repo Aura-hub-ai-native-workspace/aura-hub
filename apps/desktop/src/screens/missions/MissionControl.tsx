@@ -21,20 +21,13 @@ import { useState } from 'react';
 import { Badge, Button, Icon } from '@aura/ui';
 import { useWorkspace } from '../../data/useWorkspace';
 import { EmptyState } from '../../components/EmptyState';
-import { useMissions, type CreationStage } from './useMissions';
+import { useMissions } from './useMissions';
 import { MissionDetail } from './MissionDetail';
 import { CreationProgress } from './CreationProgress';
 import type { ExecutionStatus, MissionCategory } from '../../ai/missionClient';
-import { CATEGORY_LABEL, CATEGORY_TONE, EXECUTION_STATUS_LABEL, relTime } from './missionMeta';
+import { CATEGORY_LABEL, CATEGORY_TONE, EXECUTION_STATUS_LABEL, relTime, STAGE_LABEL } from './missionMeta';
 
 const EXAMPLE_MISSION = 'Prepare this project for production';
-
-const STAGE_LABEL: Record<CreationStage, string> = {
-  idle: '', classify: 'Classifying intent…', signals: 'Gathering real project signals…',
-  intent: 'Extracting intent…', strategy: 'Selecting mission strategy…', 'goal-graph': 'Building Goal Graph…',
-  risk: 'Analyzing risk…', review: 'Adversarial review…', quality: 'Scoring plan quality…',
-  done: 'Done', error: 'Failed',
-};
 
 const EXEC_FILTERS: (ExecutionStatus | 'all')[] = ['all', 'idle', 'approved', 'running', 'paused', 'reviewing', 'completed', 'failed'];
 

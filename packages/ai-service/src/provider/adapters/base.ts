@@ -3,6 +3,14 @@ import type {
 } from '@aura/runtime';
 import type { ProviderAdapter, DiscoveredModel, ProviderHealth, ModelCapabilities } from '../types';
 
+/** Classify an OpenAI-compatible HTTP status into a user-facing validation state. */
+function classifyError(status: number): string {
+  if (status === 401) return 'Invalid API key (401)';
+  if (status === 403) return 'Unauthorized (403)';
+  if (status === 429) return 'Rate limited (429)';
+  return `HTTP ${status}`;
+}
+
 export abstract class BaseOpenAICompatible implements ProviderAdapter {
   abstract readonly metadata: { id: string; name: string; description: string; docsUrl?: string };
 
@@ -19,9 +27,9 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
         headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
         signal: AbortSignal.timeout(10000),
       });
-      return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
+      return res.ok ? { ok: true } : { ok: false, error: classifyError(res.status) };
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: `Network error — could not reach ${this.metadata.name} (${(e as Error).message})` };
     }
   }
 
@@ -36,7 +44,6 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
       const json = await res.json() as { data?: { id: string; object?: string; created?: number; owned_by?: string }[] };
       if (!json.data) return [];
       return json.data
-        .filter((m) => m.id.startsWith('gpt-') || m.id.startsWith('o1') || m.id.startsWith('o3') || m.id.startsWith('claude') || m.id.startsWith('llama') || m.id.startsWith('mixtral') || m.id.startsWith('gemma') || m.id.startsWith('qwen') || true)
         .map((m) => {
           const caps: ModelCapabilities = {};
           if (m.id.includes('vision') || m.id.includes('turbo')) caps.vision = true;
@@ -57,9 +64,9 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
         headers: { authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(5000),
       });
-      return { ok: res.ok, latencyMs: Math.round(performance.now() - start), error: res.ok ? undefined : `HTTP ${res.status}`, lastChecked: new Date().toISOString() };
+      return { ok: res.ok, latencyMs: Math.round(performance.now() - start), error: res.ok ? undefined : classifyError(res.status), lastChecked: new Date().toISOString() };
     } catch (e) {
-      return { ok: false, latencyMs: Math.round(performance.now() - start), error: (e as Error).message, lastChecked: new Date().toISOString() };
+      return { ok: false, latencyMs: Math.round(performance.now() - start), error: `Network error — could not reach ${this.metadata.name} (${(e as Error).message})`, lastChecked: new Date().toISOString() };
     }
   }
 
@@ -148,7 +155,13 @@ class OpenAICompatibleRuntime implements Runtime {
           } catch { /* skip */ }
         }
       }
-    } finally { try { reader.cancel(); } catch { /* ignore */ } }
+    } finally {
+      // Tear the connection down via the controller: aborting the fetch
+      // cancels the body cleanly, whereas reader.cancel() mid-flight can
+      // surface an undici unhandled rejection (reason undefined).
+      this.ac?.abort();
+      this.ac = null;
+    }
   }
 
   async listModels(): Promise<ModelInfo[]> { return []; }

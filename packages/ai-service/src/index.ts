@@ -15,3 +15,6 @@ export { TEMPLATES, instantiateTemplate, type WorkflowTemplate } from './workflo
 export type { Workflow, WorkflowSummary, WfNode, WfEdge, WfNodeType, NodeCategory, NodeIO, NodeRunState, RunEvent, NodeSpecInfo, FieldSpec } from './workflow/types';
 export { RuntimeManager, setupProviders, listProviders, getProvider, storeCredential, getCredential, removeCredential, getConnectedProviders, getFingerprint, isProviderConnected, registerProvider } from './provider';
 export type { ProviderInfo, ConnectedProvider, ActiveProvider, ProviderAdapterFactory } from './provider';
+export { createAutomationRuntime, automationEvent, type AutomationHost, type AutomationRuntime } from './automation';
+export { buildPredictiveEngine, collectPredictiveEvidence, missionContextFrom, candidateContextFrom, PredictiveEngine } from './predictive';
+export type { CollectOptions } from './predictive';

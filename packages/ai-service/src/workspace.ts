@@ -8,9 +8,11 @@ import { engineeringMemory, decisionMemory, missionMemory, type BaseMemoryRecord
 import { ProjectConversations, type Conversation, type ConversationSummary } from './conversations';
 import { buildKnowledgeGraph, type KnowledgeGraph } from './knowledgeGraph';
 import { runProjectIntelligence, runWorkspaceIntelligence, type ProjectIntelligenceReport, type WorkspaceIntelligenceReport } from './intelligence';
+import { loadChangeLog, analyzeChangePatterns, getChangeVelocity, detectHotspots, type ChangeEntry, type ChangePattern } from './intelligence/changeIntelligence';
 import { WorkflowStore } from './workflow/store';
 import { runWorkflow, type RunResult } from './workflow/engine';
 import type { RunEvent, Workflow } from './workflow/types';
+import { createAutomationRuntime, automationEvent, type AutomationRuntime, type AutomationEvent } from './automation';
 import fs from 'node:fs';
 import { DiagnosisStore } from './diagnosis/store';
 import { runDiagnosis } from './diagnosis/orchestrator';
@@ -24,8 +26,8 @@ import { MissionExecutionEngine } from './mission/execution/engine';
 import type { RunReadyOptions } from './mission/execution/engine';
 import type { ExecutionEvent } from './mission/execution/types';
 import type { MissionEvent, MissionRecord, MissionSummary } from './mission/types';
-import { getAdapter, getAllAdapters } from './provider/registry';
-import { storeKey, removeKey, getKey, getActive, getAllProviderStores, storeModels, storeHealth, setActive } from './provider/credentialStore';
+import { getAdapter, getAllAdapters, ENV_VAR_BY_PROVIDER } from './provider/registry';
+import { storeKey, removeKey, getKey, getActive, getAllProviderStores, storeModels, storeHealth } from './provider/credentialStore';
 import { detectProvider } from './provider/detector';
 import type { DiscoveredModel } from './provider/types';
 
@@ -57,6 +59,7 @@ export class WorkspaceManager {
 
   constructor(opts: PipelineOptions = {}) {
     this.pipeline = new PipelineManager(opts);
+    this.initAutomation();
   }
 
   /* ── projects ───────────────────────────────────────────────────── */
@@ -286,6 +289,9 @@ export class WorkspaceManager {
   appendMessage(id: string, cid: string, msg: { role: 'user' | 'assistant'; content: string; meta?: unknown; error?: boolean }) {
     return this.conversationsOf(id).append(cid, msg);
   }
+  removeLastAssistantMessage(id: string, cid: string): boolean {
+    return this.conversationsOf(id).removeLastAssistant(cid);
+  }
   conversationHistory(id: string, cid: string) {
     return this.conversationsOf(id).history(cid);
   }
@@ -318,6 +324,29 @@ export class WorkspaceManager {
     return layers;
   }
 
+  /**
+   * The Engineering Twin's change-intelligence log (file-level history,
+   * detected patterns, velocity, hotspots) — see intelligence/changeIntelligence.ts.
+   * `projectIntelligence()`'s `.change` field already reads this same log for
+   * its summary numbers; this returns the full entry list the Twin's
+   * timeline/heat-map/risk-map views need. The log itself is currently a
+   * single workspace-wide file (not scoped per project) and nothing yet
+   * calls `recordChange()` to populate it, so this legitimately returns an
+   * empty log today — that's a data-population gap, not a reason to hide
+   * the endpoint.
+   */
+  changeLog(id: string): { entries: ChangeEntry[]; patterns: ChangePattern[]; velocity: number; hotspots: { file: string; score: number; reason: string }[] } | null {
+    if (!this.registry.get(id)) return null;
+    const log = loadChangeLog();
+    if (!log) return { entries: [], patterns: [], velocity: 0, hotspots: [] };
+    return {
+      entries: log.entries.map((e) => ({ ...e, linesAdded: e.linesAdded ?? 0, linesRemoved: e.linesRemoved ?? 0 })),
+      patterns: analyzeChangePatterns(log),
+      velocity: getChangeVelocity(log),
+      hotspots: detectHotspots(log),
+    };
+  }
+
   /** Workspace-level intelligence across every registered project
    *  (workspace graph + cross-repository analysis). */
   workspaceIntelligence(): WorkspaceIntelligenceReport {
@@ -342,6 +371,32 @@ export class WorkspaceManager {
     }, emit);
   }
 
+  /* ── Automation Engine ─────────────────────────────────────────────
+   * Event-driven workflows: rules react to REAL platform moments by
+   * running real actions (diagnosis, governance audits, knowledge
+   * update, engineering memory). Created per-manager so the emitted
+   * events can be streamed to the UI. */
+
+  automation!: AutomationRuntime;
+
+  /** Push a real platform event into the Automation Engine. */
+  pushAutomationEvent(event: AutomationEvent): void {
+    this.automation.engine.handleEvent(event);
+  }
+
+  private initAutomation(): void {
+    this.automation = createAutomationRuntime({
+      projectPath: (projectId) => {
+        const p = this.registry.get(projectId);
+        if (!p) throw new Error(`no such project: ${projectId}`);
+        return p.path;
+      },
+      pipelineFor: () => this.pipeline,
+      memoryFor: (projectId) => this.memoryOf(projectId),
+      diagnoses: this.diagnoses,
+    });
+  }
+
   /* ── Engineering Diagnosis Engine ──────────────────────────────────
    * Only `acceptDiagnosis` ever touches the filesystem — running a
    * diagnosis only computes and stores candidates. */
@@ -356,6 +411,14 @@ export class WorkspaceManager {
     const result = await runDiagnosis(this.pipeline, memory, this.diagnoses, project.path, { ...req, projectId: id }, emit, signal);
 
     this.recordDiagnosisMemory(id, result, 'created');
+
+    // Real platform moment → Automation Engine (diagnosis-completed).
+    this.automation.engine.handleEvent(automationEvent('diagnosis-completed', id, project.path, {
+      diagnosisId: result.id,
+      filePath: result.filePath,
+      category: result.classification.category,
+      decision: result.decision.status,
+    }));
 
     return result;
   }
@@ -393,6 +456,15 @@ export class WorkspaceManager {
     if (this.pipeline.currentProjectId === id) void this.pipeline.reindex();
     const memory = this.pipeline.currentProjectId === id ? this.pipeline.memory : this.memoryOf(id);
     memory?.add({ kind: 'accepted', title: `Diagnosis accepted: ${diagnosis.filePath}`, body: `Candidate ${candidateId} (${candidate.strategy}): ${candidate.summary}` });
+
+    // Real platform moment → Automation Engine (diagnosis-accepted).
+    this.automation.engine.handleEvent(automationEvent('diagnosis-accepted', id, project.path, {
+      diagnosisId: diagnosis.id,
+      filePath: diagnosis.filePath,
+      category: diagnosis.classification.category,
+      candidateId,
+      strategy: candidate.strategy,
+    }));
 
     this.recordDiagnosisMemory(id, diagnosis, 'accepted', candidateId);
     this.recordPatchMemory(id, diagnosis, candidate, 'accepted');
@@ -546,6 +618,16 @@ export class WorkspaceManager {
     const memory = this.pipeline.currentProjectId === id ? this.pipeline.memory : this.memoryOf(id);
     memory?.add({ kind: 'accepted', title: `Mission task accepted: ${task.title}`, body: run.proposal.explanation });
 
+    // Real platform moment → Automation Engine (mission-accepted).
+    this.automation.engine.handleEvent(automationEvent('mission-accepted', id, project.path, {
+      missionId: mission.id,
+      taskId,
+      taskTitle: task.title,
+      targetFile: task.targetFile,
+      mission: { text: mission.text },
+      task: { title: task.title },
+    }));
+
     if (updated) {
       this.recordMissionMemory(id, updated, 'completed', taskId);
       this.recordDecisionMemory(id, {
@@ -616,6 +698,21 @@ export class WorkspaceManager {
     }
     if (mission.execution?.status !== 'running') return { ok: false, error: 'execution is not running', mission };
     const updated = await engine.runReadyTasks(mission, opts);
+    if (updated.execution?.status === 'completed') {
+      const project = this.registry.get(id);
+      // Real platform moment → Automation Engine (mission-completed).
+      if (project) {
+        const lastDone = [...(updated.goalGraph?.tasks ?? [])].reverse().find((t) => updated.taskRuns.find((r) => r.taskId === t.id)?.status === 'accepted');
+        this.automation.engine.handleEvent(automationEvent('mission-completed', id, project.path, {
+          missionId: updated.id,
+          category: updated.classification?.category ?? 'unknown',
+          quality: updated.quality?.overall ?? null,
+          taskCount: updated.goalGraph?.tasks.length ?? 0,
+          filePath: lastDone?.targetFile ?? null,
+          mission: { status: 'completed', text: updated.text },
+        }));
+      }
+    }
     return { ok: true, mission: updated };
   }
 
@@ -744,6 +841,29 @@ export class WorkspaceManager {
     return this.connectProvider(detected.adapter.metadata.id, apiKey);
   }
 
+  /**
+   * Connect every provider whose key is supplied through an environment
+   * variable (e.g. MISTRAL_API_KEY). Providers already connected keep their
+   * stored key. Runs the exact same validate → discover → health → activate
+   * path as a manual connect in Settings, so an env-configured provider
+   * becomes the active runtime on startup.
+   */
+  async connectEnvProviders(): Promise<{ providerId: string; ok: boolean; error?: string }[]> {
+    const results: { providerId: string; ok: boolean; error?: string }[] = [];
+    for (const [providerId, envVar] of Object.entries(ENV_VAR_BY_PROVIDER)) {
+      const apiKey = process.env[envVar]?.trim();
+      if (!apiKey) continue;
+      if (getKey(providerId)) {
+        results.push({ providerId, ok: true });
+        continue;
+      }
+      const result = await this.connectProvider(providerId, apiKey);
+      results.push({ providerId, ok: result.ok, error: result.error });
+      console.log(`[providers] ${envVar} → "${providerId}": ${result.ok ? 'connected' : `rejected — ${result.error ?? 'unknown error'}`}`);
+    }
+    return results;
+  }
+
   async connectProvider(providerId: string, apiKey: string): Promise<{ ok: boolean; fingerprint?: string; models?: DiscoveredModel[]; error?: string }> {
     const adapter = getAdapter(providerId);
     if (!adapter) return { ok: false, error: 'Unknown provider' };
@@ -777,10 +897,12 @@ export class WorkspaceManager {
     const adapter = getAdapter(providerId);
     if (!adapter) return { ok: false, error: 'Unknown provider' };
     const apiKey = getKey(providerId);
-    setActive(providerId, model);
-    if (!apiKey) return { ok: true, error: 'No API key configured' };
+    if (!apiKey) return { ok: false, error: 'No API key configured for this provider' };
+    // RuntimeManager.switchToProvider() persists the active pointer itself
+    // (credentialStore.setActive) — only on success, so a failed switch never
+    // leaves the store pointing at a provider with no working runtime.
     const switched = this.pipeline.runtimeManager.switchToProvider(providerId, model);
-    return switched ? { ok: true } : { ok: true, error: 'Failed to activate runtime' };
+    return switched ? { ok: true } : { ok: false, error: 'Failed to activate runtime' };
   }
 
   async discoverModels(providerId: string, apiKey: string): Promise<DiscoveredModel[]> {

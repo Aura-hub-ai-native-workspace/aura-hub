@@ -16,6 +16,7 @@ import type {
   TaskRisk,
   TaskStatus,
 } from '../../ai/missionClient';
+import type { CreationStage } from './useMissions';
 
 export const CATEGORY_LABEL: Record<MissionCategory, string> = {
   'feature-development': 'Feature',
@@ -169,6 +170,20 @@ export const CHECKPOINT_STATUS_TONE: Record<CheckpointStatus, StatusTone> = {
   passed: 'positive',
   failed: 'critical',
   skipped: 'neutral',
+};
+
+export const STAGE_LABEL: Record<CreationStage, string> = {
+  idle: '',
+  classify: 'Classifying intent…',
+  signals: 'Gathering real project signals…',
+  intent: 'Extracting intent…',
+  strategy: 'Selecting mission strategy…',
+  'goal-graph': 'Building Goal Graph…',
+  risk: 'Analyzing risk…',
+  review: 'Adversarial review…',
+  quality: 'Scoring plan quality…',
+  done: 'Done',
+  error: 'Failed',
 };
 
 export function relTime(iso: string): string {

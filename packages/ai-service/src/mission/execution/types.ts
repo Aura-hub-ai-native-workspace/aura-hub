@@ -215,17 +215,6 @@ export type ExecutionEvent =
   | { type: 'execution'; record: { id: string; projectId: string; execution: MissionExecution } }
   | { type: 'error'; message: string };
 
-/** What the engine is allowed to change — used to keep transitions honest. */
-export const EXECUTION_ORDER: ExecutionTaskStatus[] = [
-  'queued', 'waiting', 'blocked', 'running', 'paused', 'review',
-  'completed', 'rejected', 'cancelled', 'retrying', 'failed', 'rollback',
-];
-
-/** Terminal task states — the task will not transition again on its own. */
-export const TERMINAL_TASK_STATES: ReadonlySet<ExecutionTaskStatus> = new Set([
-  'completed', 'rejected', 'cancelled', 'failed',
-]);
-
 /** Map a planning TaskStatus to its runtime equivalent. */
 export const PLANNING_TO_RUNTIME: Record<TaskStatus, ExecutionTaskStatus> = {
   pending: 'queued',

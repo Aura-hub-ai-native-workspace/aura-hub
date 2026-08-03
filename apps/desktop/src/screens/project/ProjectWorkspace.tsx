@@ -5,6 +5,7 @@ import { Badge, Button, Icon } from '@aura/ui';
 import { ProjectSection } from './sections';
 import { EmptyState } from '../../components/EmptyState';
 import { useWorkspace } from '../../data/useWorkspace';
+import { useLayoutStore } from '../../ops/layoutStore';
 
 /**
  * ProjectWorkspace — a real project rendered as its own operating
@@ -18,6 +19,7 @@ export function ProjectWorkspace() {
   const setTab = useAppStore((s) => s.setProjectTab);
   const closeProject = useAppStore((s) => s.closeProject);
   const setNav = useAppStore((s) => s.setNav);
+  const openPanel = useLayoutStore((s) => s.openPanel);
   const { projects, openId, status, open } = useWorkspace();
 
   const project = projects.find((p) => p.id === activeProjectId) ?? null;
@@ -33,8 +35,8 @@ export function ProjectWorkspace() {
         <EmptyState
           icon="folder"
           title="Project not found"
-          description="It may have been removed. Return to the library to pick another."
-          action={<Button icon="projects" onClick={() => setNav('projects')}>Back to Projects</Button>}
+          description="It may have been removed. Return to Home to pick another."
+          action={<Button icon="home" onClick={() => setNav('home')}>Back to Home</Button>}
         />
       </div>
     );
@@ -52,7 +54,7 @@ export function ProjectWorkspace() {
       <div className="shrink-0 border-b border-line bg-surface/40 px-8 pt-6 backdrop-blur-sm sm:px-10 lg:px-12">
         <button onClick={closeProject} className="mb-4 inline-flex items-center gap-1.5 text-[12px] font-medium text-text-muted transition-colors hover:text-text">
           <Icon name="chevron-right" size={14} className="rotate-180" />
-          Back to Projects
+          Back to Home
         </button>
 
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -74,7 +76,7 @@ export function ProjectWorkspace() {
             </div>
           </div>
           <div className="flex gap-2.5">
-            <Button variant="secondary" icon="spark" onClick={() => setNav('ai')}>Ask AURA</Button>
+            <Button variant="secondary" icon="spark" onClick={() => { setNav('workspace'); openPanel('ai-chat'); }}>Ask AURA</Button>
           </div>
         </div>
 

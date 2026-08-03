@@ -62,7 +62,7 @@ export function useNotificationsFeed(intervalMs = 15000) {
         let missions: MissionSummary[] = [];
         try {
           const res = await missionClient.list(pid);
-          missions = res.missions;
+          missions = res.missions ?? [];
         } catch {
           continue;
         }

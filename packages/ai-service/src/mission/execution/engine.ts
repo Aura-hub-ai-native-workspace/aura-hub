@@ -107,17 +107,19 @@ export class MissionExecutionEngine {
     return record;
   }
 
+  /** Runtime status of a single task, derived from the plan's own status + runs. */
+  private statusForTask(record: MissionRecord, taskId: string): ExecutionTaskStatus {
+    const t = record.goalGraph?.tasks.find((x) => x.id === taskId);
+    if (!t) return 'queued';
+    const run = record.taskRuns.find((r) => r.taskId === taskId);
+    if (run?.proposal?.error) return 'failed';
+    return PLANNING_TO_RUNTIME[t.status] ?? 'queued';
+  }
+
   /** Runtime status per task, derived from the plan's own status + runs. */
   private taskStatuses(record: MissionRecord): Record<string, ExecutionTaskStatus> {
     const out: Record<string, ExecutionTaskStatus> = {};
-    for (const t of record.goalGraph?.tasks ?? []) {
-      const run = record.taskRuns.find((r) => r.taskId === t.id);
-      if (run?.proposal?.error) {
-        out[t.id] = 'failed';
-      } else {
-        out[t.id] = PLANNING_TO_RUNTIME[t.status] ?? 'queued';
-      }
-    }
+    for (const t of record.goalGraph?.tasks ?? []) out[t.id] = this.statusForTask(record, t.id);
     return out;
   }
 
@@ -137,6 +139,26 @@ export class MissionExecutionEngine {
   ): MissionRecord {
     if (!record.execution) return record;
     const { dag, statuses } = this.build(record);
+
+    // Write toPlan's task-status changes first, and sync the in-memory
+    // `statuses` map to match immediately — otherwise the DAG/metrics/replay
+    // snapshot built below (and broadcast over SSE this same pass) would show
+    // the task's PREVIOUS status until some later call recomputed it fresh.
+    for (const [taskId, { status, mode }] of toPlan) {
+      const tasks = record.goalGraph!.tasks.map((t) => (t.id === taskId ? { ...t, status, ...(mode ? { mode } : {}) } : t));
+      record.goalGraph = { ...record.goalGraph!, tasks };
+      const run = record.taskRuns.find((r) => r.taskId === taskId);
+      record.taskRuns = [
+        ...record.taskRuns.filter((r) => r.taskId !== taskId),
+        { taskId, status, proposal: run?.proposal ?? null, updatedAt: new Date().toISOString() },
+      ];
+      statuses[taskId] = this.statusForTask(record, taskId);
+    }
+
+    // Propagate dependency-driven states (blocked/queued/waiting) using the
+    // now-current statuses, so a dependent of a task that just resolved in
+    // this same pass is correctly re-evaluated against its real state
+    // instead of the pre-mutation snapshot.
     for (const n of dag.nodes) {
       const s = statuses[n.id];
       if (s !== 'waiting' && s !== 'queued') continue;
@@ -146,16 +168,6 @@ export class MissionExecutionEngine {
       if (anyHard) statuses[n.id] = 'blocked';
       else if (allDone) statuses[n.id] = 'queued';
       else statuses[n.id] = 'waiting';
-    }
-
-    for (const [taskId, { status, mode }] of toPlan) {
-      const tasks = record.goalGraph!.tasks.map((t) => (t.id === taskId ? { ...t, status, ...(mode ? { mode } : {}) } : t));
-      record.goalGraph = { ...record.goalGraph!, tasks };
-      const run = record.taskRuns.find((r) => r.taskId === taskId);
-      record.taskRuns = [
-        ...record.taskRuns.filter((r) => r.taskId !== taskId),
-        { taskId, status, proposal: run?.proposal ?? null, updatedAt: new Date().toISOString() },
-      ];
     }
 
     const ex = record.execution;
@@ -187,7 +199,7 @@ export class MissionExecutionEngine {
   /** Ensure a v3 execution block exists (idempotent — call on every read). */
   hydrate(record: MissionRecord): MissionRecord {
     if (record.execution) return record;
-    if (!record.goalGraph?.tasks.length) return record;
+    if (!record.goalGraph?.tasks?.length) return record;
     const approved = record.approval.status === 'approved';
     const checkpoints = emptyCheckpoints();
     if (approved) {
@@ -235,6 +247,12 @@ export class MissionExecutionEngine {
     record.execution.status = 'approved';
     record.execution.timeline.push(timeline('approved', 'human', 'Mission plan approved', { checkpoint: 'planning' }));
     record.execution.activity.push(activity('human', 'approved', 'Plan approved — execution unlocked'));
+    // Keep the legacy v2 `approval` field in sync — workspace.ts's
+    // startMissionExecution()/runMissionTask() (and several UI surfaces:
+    // TaskList's per-task Run button, MissionDetail's approval badges,
+    // signals.ts's open-missions filter) all still read this field, and
+    // v3's own checkpoint state was never mirrored into it.
+    record.approval = { status: 'approved', at: new Date().toISOString() };
     this.commit(record);
     return record;
   }
@@ -246,6 +264,7 @@ export class MissionExecutionEngine {
     record.execution.status = 'idle';
     record.execution.timeline.push(timeline('rejected-plan', 'human', 'Mission plan rejected', { checkpoint: 'planning', detail: reason }));
     record.execution.activity.push(activity('human', 'rejected-plan', `Plan rejected${reason ? ` — ${reason}` : ''}`));
+    record.approval = { status: 'rejected', at: new Date().toISOString() };
     this.commit(record);
     return record;
   }
@@ -344,7 +363,18 @@ export class MissionExecutionEngine {
     this.apply(record, () => undefined, 'state', new Map([[task.id, { status: 'pending' as TaskStatus }]]));
     this.commit(record);
 
-    const result = await this.hooks.runTask({ record, task });
+    // The hook is documented to resolve with a RunTaskResult, never reject —
+    // but its real implementation (workspace.ts) calls through to fs reads
+    // and resolveInsideProject(), which throw on an escaping/unreadable
+    // path. Without this guard, that throw would abort runOne() right after
+    // the 'task-started' commit above, leaving the task stuck mid-flight on
+    // disk forever instead of resolving to a terminal 'failed' state.
+    let result: RunTaskResult;
+    try {
+      result = await this.hooks.runTask({ record, task });
+    } catch (e) {
+      result = { ok: false, error: (e as Error).message || 'Task execution failed unexpectedly' };
+    }
 
     const toPlan = new Map<string, { status: TaskStatus; mode?: TaskMode }>();
     toPlan.set(task.id, { status: result.ok ? 'proposed' : 'error', mode: result.mode });

@@ -1,26 +1,51 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAppStore, cn } from '@aura/core';
-import { Button, Card, CardHeader, Icon } from '@aura/ui';
+import { Badge, Button, Card, CardHeader, Icon, IconButton, Input, Menu, useToast } from '@aura/ui';
 import { PageContainer, PageBlock } from './PageContainer';
 import { EmptyState } from '../components/EmptyState';
 import { AddProjectDialog } from '../components/AddProjectDialog';
 import { useWorkspace } from '../data/useWorkspace';
+import { hasUnsavedWorkFor } from '../editor/editorStore';
+import { useLayoutStore } from '../ops/layoutStore';
 import { aiClient, type HealthResult } from '../ai/aiClient';
+
+type Segment = 'all' | 'favorites' | 'recent';
+
+function relTime(iso: string | null): string {
+  if (!iso) return 'never opened';
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.round(diff / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
 
 /**
  * Home — the environment overview. Everything shown here is real: the
  * projects the user actually added, the live indexing status of the open
  * project, and the real AI provider connection. When there is no data
  * yet, the space says so and points at the first action.
+ *
+ * The full project library (search, favorites, rename, remove — what used
+ * to be its own "Projects" nav destination) lives here too, as an
+ * expandable section, now that the sidebar only has four primary
+ * destinations. "Continue working" and "All projects" are two views onto
+ * the same real project list, not two separate features.
  */
 export function Home() {
   const openProjectNav = useAppStore((s) => s.openProject);
   const setNav = useAppStore((s) => s.setNav);
   const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
+  const addProjectDialogOpen = useAppStore((s) => s.addProjectDialogOpen);
+  const openAddProjectDialog = useAppStore((s) => s.openAddProjectDialog);
+  const closeAddProjectDialog = useAppStore((s) => s.closeAddProjectDialog);
+  const openWorkspacePanel = useLayoutStore((s) => s.openPanel);
   const { projects, status, refresh, open } = useWorkspace();
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [reachable, setReachable] = useState<boolean | null>(null);
-  const [adding, setAdding] = useState(false);
+  const [showAllProjects, setShowAllProjects] = useState(false);
 
   useEffect(() => {
     void refresh();
@@ -30,7 +55,12 @@ export function Home() {
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const recents = projects.slice(0, 4);
-  const enter = (id: string) => { void open(id); openProjectNav(id); };
+  const enter = (id: string) => {
+    if (hasUnsavedWorkFor(id) && !window.confirm('You have unsaved changes in the current project\'s Code Workspace. Switch projects anyway?')) return;
+    void open(id);
+    openProjectNav(id);
+  };
+  const askAura = () => { setNav('workspace'); openWorkspacePanel('ai-chat'); };
 
   const subtitle = projects.length === 0
     ? 'No projects yet — add a real folder to begin.'
@@ -38,7 +68,7 @@ export function Home() {
 
   return (
     <PageContainer wide>
-      <AddProjectDialog open={adding} onClose={() => setAdding(false)} />
+      <AddProjectDialog open={addProjectDialogOpen} onClose={closeAddProjectDialog} />
 
       <PageBlock className="mb-8">
         <div className="relative overflow-hidden rounded-3xl border border-line bg-surface p-8">
@@ -53,7 +83,7 @@ export function Home() {
               <p className="mt-2 max-w-lg text-[14px] text-text-muted">{subtitle}</p>
             </div>
             <div className="flex gap-2.5">
-              <Button variant="primary" icon="plus" onClick={() => setAdding(true)}>Add Project</Button>
+              <Button variant="primary" icon="plus" onClick={openAddProjectDialog}>Add Project</Button>
               <Button variant="secondary" icon="command" onClick={() => setPaletteOpen(true)}>Command Bar</Button>
             </div>
           </div>
@@ -67,7 +97,9 @@ export function Home() {
             <div className="flex items-center justify-between px-6 pt-5">
               <CardHeader title="Continue working" subtitle="Your recent projects" />
               {projects.length > 0 && (
-                <Button size="sm" variant="ghost" iconRight="arrow-right" onClick={() => setNav('projects')}>All projects</Button>
+                <Button size="sm" variant="ghost" iconRight={showAllProjects ? 'chevron-down' : 'chevron-right'} onClick={() => setShowAllProjects((v) => !v)}>
+                  {showAllProjects ? 'Hide' : 'All projects'}
+                </Button>
               )}
             </div>
             {recents.length === 0 ? (
@@ -75,7 +107,7 @@ export function Home() {
                 icon="folder"
                 title="No projects to continue"
                 description="Add a folder and it will show up here so you can pick up where you left off."
-                action={<Button icon="plus" onClick={() => setAdding(true)}>Add Project</Button>}
+                action={<Button icon="plus" onClick={openAddProjectDialog}>Add Project</Button>}
                 compact
               />
             ) : (
@@ -123,8 +155,8 @@ export function Home() {
           <Card className="h-full">
             <CardHeader title="Quick actions" />
             <div className="mt-4 grid grid-cols-2 gap-2.5">
-              <QuickAction icon="plus" label="Add Project" hint="Import a real folder" onClick={() => setAdding(true)} />
-              <QuickAction icon="spark" label="Ask AURA" hint="Chat over your project" onClick={() => setNav('ai')} />
+              <QuickAction icon="plus" label="Add Project" hint="Import a real folder" onClick={openAddProjectDialog} />
+              <QuickAction icon="spark" label="Ask AURA" hint="Chat over your project" onClick={askAura} />
               <QuickAction icon="command" label="Command Bar" hint="Do anything, instantly" onClick={() => setPaletteOpen(true)} />
               <QuickAction icon="settings" label="AI Provider" hint="Connect an AI provider" onClick={() => setNav('settings')} />
             </div>
@@ -153,7 +185,176 @@ export function Home() {
           </Card>
         </PageBlock>
       </div>
+
+      {showAllProjects && (
+        <PageBlock className="mt-5">
+          <ProjectLibrary onEnter={enter} onAdd={openAddProjectDialog} />
+        </PageBlock>
+      )}
     </PageContainer>
+  );
+}
+
+/**
+ * The full project library — search, favorites/recent filters, per-card
+ * manage menu. Absorbed from the former standalone "Projects" screen;
+ * expanded here from Home's "All projects" toggle rather than its own
+ * top-level nav destination.
+ */
+function ProjectLibrary({ onEnter, onAdd }: { onEnter: (id: string) => void; onAdd: () => void }) {
+  const { projects, reachable, favorite, remove, rename } = useWorkspace();
+  const { push } = useToast();
+  const [query, setQuery] = useState('');
+  const [segment, setSegment] = useState<Segment>('all');
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return projects.filter((p) => {
+      if (segment === 'favorites' && !p.favorite) return false;
+      if (!q) return true;
+      return `${p.name} ${p.type} ${p.language} ${p.path}`.toLowerCase().includes(q);
+    });
+  }, [projects, query, segment]);
+
+  const visible = segment === 'recent' ? filtered.slice(0, 6) : filtered;
+
+  const segments: { key: Segment; label: string; icon: 'grid' | 'pin' | 'activity' }[] = [
+    { key: 'all', label: 'All', icon: 'grid' },
+    { key: 'favorites', label: 'Favorites', icon: 'pin' },
+    { key: 'recent', label: 'Recent', icon: 'activity' },
+  ];
+
+  return (
+    <div>
+      <div className="mb-5 flex flex-wrap items-center gap-3">
+        <h2 className="text-[15px] font-semibold text-text">All projects</h2>
+        <Input icon="search" placeholder="Search projects…" value={query} onChange={(e) => setQuery(e.target.value)} className="w-60" />
+        <div className="inline-flex items-center gap-1 rounded-xl bg-surface-active/70 p-1">
+          {segments.map((s) => (
+            <button
+              key={s.key}
+              onClick={() => setSegment(s.key)}
+              className={cn(
+                'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12.5px] font-medium transition-colors',
+                segment === s.key ? 'bg-surface text-text shadow-sm' : 'text-text-muted hover:text-text',
+              )}
+            >
+              <Icon name={s.icon} size={14} /> {s.label}
+            </button>
+          ))}
+        </div>
+        <span className="ml-auto text-[12px] text-text-subtle">{visible.length} of {projects.length}</span>
+      </div>
+
+      {reachable === false && (
+        <div className="mb-5 flex items-center gap-3 rounded-2xl border border-attention/30 bg-attention/10 px-4 py-3 text-[12.5px] text-attention">
+          <Icon name="cpu" size={16} />
+          <span>Backend service offline. Start it with <code className="rounded bg-surface-active px-1.5 py-0.5 font-mono text-[11px]">npm&nbsp;run&nbsp;ai</code> — your projects live there.</span>
+        </div>
+      )}
+
+      {projects.length === 0 ? (
+        <EmptyState
+          icon="folder"
+          title="No projects yet"
+          description="Add a real project folder to start. AURA profiles it, indexes its code and system graph, and remembers everything you do."
+          action={<Button icon="plus" onClick={onAdd}>Add your first project</Button>}
+        />
+      ) : (
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+          {visible.map((p) => (
+            <PageBlock key={p.id}>
+              <Card interactive padding="lg" onClick={() => onEnter(p.id)} className="group h-full">
+                <div className="flex items-start justify-between">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl text-white shadow-sm" style={{ background: p.color }}>
+                      <Icon name={(p.icon as 'folder') || 'folder'} size={20} />
+                    </span>
+                    <div className="min-w-0">
+                      <h3 className="truncate text-[15px] font-semibold text-text">{p.name}</h3>
+                      <div className="mt-0.5 flex items-center gap-2">
+                        <Badge tone="neutral">{p.type}</Badge>
+                        <span className="text-[11px] text-text-subtle">{relTime(p.lastOpenedAt)}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+                    <IconButton
+                      icon="pin"
+                      label={p.favorite ? 'Unfavorite' : 'Favorite'}
+                      className={p.favorite ? 'text-accent' : 'text-text-subtle'}
+                      onClick={() => void favorite(p.id, !p.favorite)}
+                    />
+                    <Menu
+                      align="end"
+                      trigger={<IconButton icon="more" label="Project actions" />}
+                      items={[
+                        { id: 'open', label: 'Open', icon: 'arrow-right', onSelect: () => onEnter(p.id) },
+                        {
+                          id: 'rename', label: 'Rename', icon: 'note',
+                          onSelect: () => { const n = window.prompt('Rename project', p.name); if (n && n.trim()) void rename(p.id, n.trim()); },
+                        },
+                        {
+                          id: 'fav', label: p.favorite ? 'Remove favorite' : 'Add favorite', icon: 'pin',
+                          onSelect: () => void favorite(p.id, !p.favorite),
+                        },
+                        'separator',
+                        {
+                          id: 'remove', label: 'Remove from AURA', icon: 'close', tone: 'danger',
+                          onSelect: () => {
+                            if (window.confirm(`Remove "${p.name}" from AURA? The folder on disk is not deleted.`)) {
+                              void remove(p.id);
+                              push({ title: 'Project removed', description: 'The folder was left untouched.', tone: 'info' });
+                            }
+                          },
+                        },
+                      ]}
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-4 flex items-center gap-2 text-[11.5px] text-text-subtle">
+                  <Icon name="doc" size={13} />
+                  <span className="font-mono truncate">{p.path}</span>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <Readout icon="cpu" label="Language" value={p.language} />
+                  <Readout icon="spark" label="Type" value={p.type.replace(' application', '').replace(' service', '')} />
+                </div>
+
+                <div className="mt-4 flex items-center justify-between border-t border-line pt-3">
+                  <span className="text-[11px] text-text-subtle">Added {relTime(p.createdAt)}</span>
+                  <Icon name="arrow-right" size={16} className="text-text-subtle transition-transform group-hover:translate-x-0.5 group-hover:text-text" />
+                </div>
+              </Card>
+            </PageBlock>
+          ))}
+
+          <PageBlock>
+            <button onClick={onAdd} className="flex h-full min-h-[220px] w-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-line text-text-subtle transition-colors hover:border-accent hover:text-accent">
+              <span className="grid h-12 w-12 place-items-center rounded-2xl bg-surface-active"><Icon name="plus" size={22} /></span>
+              <span className="text-[13px] font-medium">Add a project</span>
+            </button>
+          </PageBlock>
+
+          {visible.length === 0 && (
+            <div className="col-span-full">
+              <EmptyState icon="search" title="No projects match" description="Try a different filter or search term." compact />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Readout({ icon, label, value }: { icon: 'cpu' | 'spark'; label: string; value: string }) {
+  return (
+    <div className="rounded-xl bg-surface-active/50 px-2.5 py-2">
+      <div className="flex items-center gap-1 text-[10px] text-text-subtle"><Icon name={icon} size={11} /> {label}</div>
+      <div className="mt-0.5 truncate text-[13px] font-semibold text-text">{value}</div>
+    </div>
   );
 }
 

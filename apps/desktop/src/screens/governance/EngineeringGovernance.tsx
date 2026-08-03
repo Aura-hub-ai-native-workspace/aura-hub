@@ -7,17 +7,17 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Badge, Button, Icon } from '@aura/ui';
+import { Badge, Button, Icon, Skeleton } from '@aura/ui';
+import { governanceClient } from '../../ai/governanceClient';
 import { useWorkspace } from '../../data/useWorkspace';
-import {
-  governanceClient,
-  type EngineeringScorecard,
-  type EngineeringAuditReport,
-  type ProjectInsightsReport,
-  type ArchitectureCouncilReport,
-} from '../../ai/governanceClient';
-
-const DEFAULT_ROOT = 'E:\\aura-hub';
+import { ErrorState } from '../../components/ErrorState';
+import type { StatusTone } from '@aura/core';
+import type {
+  EngineeringScorecard,
+  EngineeringAuditReport,
+  ProjectInsightsReport,
+  ArchitectureCouncilReport,
+} from '@aura/governance';
 
 function Stat({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
   return (
@@ -31,11 +31,13 @@ function Stat({ label, value, sub, color }: { label: string; value: string | num
 }
 
 function GradeBadge({ grade }: { grade: string }) {
-  const tone = grade === 'A' ? 'positive' : grade === 'B' ? 'info' : grade === 'C' ? 'attention' : 'critical';
-  return <Badge tone={tone as any}>{grade}</Badge>;
+  const tone: StatusTone = grade === 'A' ? 'positive' : grade === 'B' ? 'info' : grade === 'C' ? 'attention' : 'critical';
+  return <Badge tone={tone}>{grade}</Badge>;
 }
 
 export function EngineeringGovernanceDashboard() {
+  const { projects, openId } = useWorkspace();
+  const projectPath = projects.find((p) => p.id === openId)?.path ?? null;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,18 +46,16 @@ export function EngineeringGovernanceDashboard() {
   const [insights, setInsights] = useState<ProjectInsightsReport | null>(null);
   const [council, setCouncil] = useState<ArchitectureCouncilReport | null>(null);
 
-  const project = useWorkspace((s) => s.projects.find((p) => p.id === s.openId));
-  const root = project?.path ?? DEFAULT_ROOT;
-
   const load = async () => {
+    if (!projectPath) return;
     setLoading(true);
     setError(null);
     try {
       const [sc, au, in_, co] = await Promise.all([
-        governanceClient.scorecard(root),
-        governanceClient.audit(root, 'daily'),
-        governanceClient.insights(root),
-        governanceClient.council(root),
+        governanceClient.scorecard(projectPath),
+        governanceClient.audit(projectPath, 'daily'),
+        governanceClient.insights(projectPath),
+        governanceClient.council(projectPath),
       ]);
       setScorecard(sc);
       setAudit(au);
@@ -68,26 +68,31 @@ export function EngineeringGovernanceDashboard() {
     }
   };
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); }, [projectPath]);
 
   if (error) {
     return (
       <div className="mx-auto max-w-[1080px] px-8 py-10">
-        <div className="flex items-center gap-3 text-danger">
-          <Icon name="bug" size={18} />
-          <span>{error}</span>
-        </div>
-        <Button size="sm" variant="secondary" icon="refresh" onClick={() => void load()}>Retry</Button>
+        <ErrorState
+          icon="bug"
+          title="Couldn't analyze the workspace"
+          description={error}
+          action={<Button size="sm" variant="secondary" icon="refresh" onClick={() => void load()}>Retry</Button>}
+        />
       </div>
     );
   }
 
   if (loading || !scorecard) {
     return (
-      <div className="mx-auto max-w-[1080px] px-8 py-10">
-        <div className="flex items-center gap-2">
-          <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-          <span>Analyzing workspace...</span>
+      <div className="mx-auto max-w-[1080px] space-y-5 px-8 py-8">
+        <div className="flex items-center gap-3">
+          <Skeleton variant="circle" className="h-10 w-10" />
+          <Skeleton variant="line" className="w-56" />
+        </div>
+        <Skeleton className="h-24" />
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
+          {Array.from({ length: 8 }).map((_, i) => <Skeleton key={i} className="h-20" />)}
         </div>
       </div>
     );

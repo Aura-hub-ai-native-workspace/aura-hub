@@ -1,10 +1,18 @@
 import type { Config } from 'tailwindcss';
+import { SPACE, RADIUS, TYPE } from '../../packages/core/src/tokens';
+
+const px = (n: number) => `${n}px`;
 
 /**
  * Tailwind config for AURA Hub.
  * Colors resolve to CSS variables (see src/styles/global.css) so the
  * entire palette can be re-themed at runtime without a rebuild. We scan
  * the workspace packages too, so @aura/ui utility classes are preserved.
+ *
+ * `spacing`/`fontSize`/`borderRadius` mirror packages/core/src/tokens.ts's
+ * SPACE/TYPE/RADIUS scales, so named utilities (text-base, p-4) agree with
+ * the token file by construction instead of by convention. This is additive
+ * — existing arbitrary-value classes (text-[13px]) are untouched.
  */
 const config: Config = {
   darkMode: ['selector', '[data-theme="dark"]'],
@@ -49,10 +57,16 @@ const config: Config = {
         sans: ['Inter', 'SF Pro Text', 'system-ui', '-apple-system', 'sans-serif'],
         mono: ['JetBrains Mono', 'SF Mono', 'ui-monospace', 'monospace'],
       },
+      spacing: Object.fromEntries(Object.entries(SPACE).map(([k, v]) => [k, px(v)])),
+      fontSize: Object.fromEntries(Object.entries(TYPE.size).map(([k, v]) => [k, px(v)])),
       borderRadius: {
+        sm: px(RADIUS.sm),
+        md: px(RADIUS.md),
+        lg: px(RADIUS.lg),
         xl: '14px',
         '2xl': '18px',
         '3xl': '24px',
+        full: px(RADIUS.full),
       },
       boxShadow: {
         xs: '0 1px 2px rgba(20, 23, 29, 0.04)',

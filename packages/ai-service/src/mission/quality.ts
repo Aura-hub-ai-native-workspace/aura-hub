@@ -21,11 +21,7 @@ import type {
   QualityScore,
   RiskAnalysis,
 } from './types';
-
-function capUnit(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  return Math.min(1, Math.max(0, n));
-}
+import { capUnit } from './utils';
 
 const STOPWORDS = new Set(['this', 'that', 'with', 'from', 'have', 'will', 'your', 'about', 'into', 'their', 'them', 'they', 'were', 'what', 'when', 'where', 'which', 'while', 'should', 'could', 'would', 'and', 'the', 'for', 'are', 'was']);
 

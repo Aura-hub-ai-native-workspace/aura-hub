@@ -35,6 +35,7 @@ export function EditorTabs() {
             <button
               onClick={(e) => {
                 e.stopPropagation();
+                if (file.dirty && !window.confirm(`"${file.name}" has unsaved changes. Close without saving?`)) return;
                 closeFile(path);
               }}
               className="relative grid h-4 w-4 shrink-0 place-items-center rounded text-text-subtle hover:bg-surface-active hover:text-text"

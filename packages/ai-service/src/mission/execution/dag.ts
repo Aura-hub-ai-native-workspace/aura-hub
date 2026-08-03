@@ -197,14 +197,3 @@ export function runnableTaskIds(dag: ExecutionDag, statusOf: (id: string) => Exe
     .map((n) => n.id);
 }
 
-/** Exposure for external sort consumers (deterministic auto-ordering). */
-export function orderTasks(tasks: MissionTask[]): string[] {
-  const byId = new Map(tasks.map((t) => [t.id, t] as const));
-  const blockedBy = new Map<string, Set<string>>();
-  for (const t of tasks) {
-    const deps = new Set<string>();
-    for (const d of t.dependencies) if (byId.has(d)) deps.add(d);
-    blockedBy.set(t.id, deps);
-  }
-  return topoSort(tasks, blockedBy).order;
-}

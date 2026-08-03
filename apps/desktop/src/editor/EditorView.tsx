@@ -1,10 +1,10 @@
 import { motion } from 'framer-motion';
 import { spring } from '@aura/core';
-import { Icon } from '@aura/ui';
+import { Icon, Skeleton } from '@aura/ui';
 import { BreadcrumbBar } from './BreadcrumbBar';
 import { MonacoEditor } from './MonacoEditor';
 import { useEditorStore } from './editorStore';
-import { EmptyState } from '../components/EmptyState';
+import { ErrorState } from '../components/ErrorState';
 import type { WorkspaceActionId } from './actionSpecs';
 
 /** Center-right — breadcrumb + Monaco, or a premium empty state when nothing is open. */
@@ -56,14 +56,24 @@ export function EditorView({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <BreadcrumbBar path={file.path} projectName={projectName} />
+      {file.saveError && !file.loading && !file.error && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-3.5 py-1.5 text-[12px] text-danger">
+          <Icon name="close" size={12} className="shrink-0" />
+          <span className="truncate">Save failed: {file.saveError}</span>
+        </div>
+      )}
       <div className="relative min-h-0 flex-1">
         {file.loading ? (
-          <div className="grid h-full place-items-center">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-line-strong border-t-accent" />
+          <div className="space-y-3 px-6 py-6">
+            <Skeleton variant="line" className="w-2/5" />
+            <Skeleton variant="line" className="w-3/5" />
+            <Skeleton variant="line" className="w-1/3" />
+            <Skeleton variant="line" className="w-1/2" />
+            <Skeleton variant="line" className="w-2/3" />
           </div>
         ) : file.error ? (
           <div className="grid h-full place-items-center">
-            <EmptyState icon="close" title="Couldn't open this file" description={file.error} compact />
+            <ErrorState icon="close" title="Couldn't open this file" description={file.error} compact />
           </div>
         ) : (
           // Mounted only once real content is in hand. @monaco-editor/react's

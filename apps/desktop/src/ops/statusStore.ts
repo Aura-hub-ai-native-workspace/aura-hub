@@ -99,13 +99,9 @@ export const useStatusStore = create<StatusState>((set) => ({
 
       let pendingDiagnoses = 0;
       try {
-        for (const project of ws.projects) {
-          try {
-            const res = await diagnosisClient.list(project.id);
-            pendingDiagnoses += res.diagnoses.filter((d) => d.decision.status === 'pending').length;
-          } catch {
-            /* skip */
-          }
+        if (openId) {
+          const res = await diagnosisClient.list(openId);
+          pendingDiagnoses = res.diagnoses.filter((d) => d.decision.status === 'pending').length;
         }
       } catch {
         /* keep previous */

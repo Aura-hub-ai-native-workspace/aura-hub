@@ -28,6 +28,8 @@ export interface OpenFile {
   dirty: boolean;
   loading: boolean;
   error: string | null;
+  /** Set when saveFile() fails — distinct from `error` (a load failure), which replaces the editor pane entirely. */
+  saveError: string | null;
   cursor: CursorPosition;
   selection: EditorSelection | null;
 }
@@ -42,3 +44,14 @@ export interface FileTreeNode {
 export type ExplorerView = 'explorer' | 'search' | 'bookmarks' | 'git' | 'knowledge';
 
 export type BottomPanelTab = 'terminal' | 'problems' | 'output' | 'tasks';
+
+/**
+ * Same line-range replace as the backend's `patchLimiter.ts#splicePatch` —
+ * kept in sync manually since client and server never share code.
+ */
+export function splicePatch(originalText: string, range: { startLine: number; endLine: number }, newText: string): string {
+  const lines = originalText.split('\n');
+  const before = lines.slice(0, range.startLine - 1);
+  const after = lines.slice(range.endLine);
+  return [...before, ...newText.split('\n'), ...after].join('\n');
+}

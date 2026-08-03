@@ -1,17 +1,33 @@
+import { lazy, Suspense } from 'react';
+import type { ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { pageVariants, enterSpaceVariants, useAppStore } from '@aura/core';
+import { Skeleton } from '@aura/ui';
 import { Home } from './Home';
-import { Projects } from './Projects';
 import { ProjectWorkspace } from './project/ProjectWorkspace';
 import { PlaceholderScreen } from './PlaceholderScreen';
-import { AiWorkspace } from './ai/AiWorkspace';
-import { AiSettings } from './ai/AiSettings';
-import { Workflows } from './workflows/Workflows';
-import { MissionControl } from './missions/MissionControl';
-import { EngineeringDashboard } from './EngineeringDashboard';
-import { EngineeringGovernanceDashboard } from './governance/EngineeringGovernance';
-import { WorkspaceScreen } from './WorkspaceScreen';
 import { ErrorBoundary } from './ErrorBoundary';
+
+const AiSettings = lazy(() => import('./ai/AiSettings').then((m) => ({ default: m.AiSettings })));
+const Workflows = lazy(() => import('./workflows/Workflows').then((m) => ({ default: m.Workflows })));
+const WorkspaceScreen = lazy(() => import('./WorkspaceScreen').then((m) => ({ default: m.WorkspaceScreen })));
+
+/** Content-shaped placeholder — screens lazy-load on first visit. */
+function ScreenLoading() {
+  return (
+    <div className="mx-auto w-full max-w-[1180px] px-8 py-10">
+      <Skeleton variant="line" className="w-48" />
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Skeleton className="h-32" />
+        <Skeleton className="h-32" />
+        <Skeleton className="h-32" />
+        <Skeleton className="h-32" />
+      </div>
+    </div>
+  );
+}
+
+const lazyScreen = (el: ReactNode) => <Suspense fallback={<ScreenLoading />}>{el}</Suspense>;
 
 /**
  * ScreenRouter — a tiny in-memory router. AURA doesn't use URL routing
@@ -30,6 +46,12 @@ import { ErrorBoundary } from './ErrorBoundary';
  * its own `AnimatePresence mode="wait"` (its tab switcher), the outer
  * exit-complete never fired, leaving the workspace permanently blank.
  * Never nest `mode="wait"` presences. See docs/ARCHITECTURE.md §9.
+ *
+ * Heavy screens (settings, workspace, workflows) are `React.lazy`-loaded:
+ * the first visit streams the chunk behind a
+ * spinner, after which the module is cached and navigation back into
+ * the screen stays synchronous — preserving the instant-commit model
+ * for repeat visits without paying their bundle cost at startup.
  */
 export function ScreenRouter() {
   const nav = useAppStore((s) => s.nav);
@@ -64,28 +86,10 @@ function renderScreen(nav: string, inProject: boolean) {
   switch (nav) {
     case 'home':
       return <Home />;
-    case 'projects':
-      return <Projects />;
-    case 'knowledge':
-      return (
-        <PlaceholderScreen
-          navKey="knowledge"
-          title="Your Knowledge Fabric is ready"
-          hint="Documents, notes and indexes weave together here. The retrieval layer is a future module — the environment is already prepared for it."
-        />
-      );
-    case 'ai':
-      return <AiWorkspace />;
     case 'workflows':
-      return <Workflows />;
-    case 'missions':
-      return <MissionControl />;
-    case 'dashboard':
-      return <EngineeringDashboard />;
-    case 'governance':
-      return <EngineeringGovernanceDashboard />;
+      return lazyScreen(<Workflows />);
     case 'workspace':
-      return <WorkspaceScreen />;
+      return lazyScreen(<WorkspaceScreen />);
     case 'marketplace':
       return (
         <PlaceholderScreen
@@ -95,7 +99,11 @@ function renderScreen(nav: string, inProject: boolean) {
         />
       );
     case 'settings':
-      return <ErrorBoundary><AiSettings /></ErrorBoundary>;
+      return (
+        <ErrorBoundary title="Unable to load AI Settings">
+          {lazyScreen(<AiSettings />)}
+        </ErrorBoundary>
+      );
     default:
       return <Home />;
   }

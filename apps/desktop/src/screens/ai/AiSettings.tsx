@@ -19,7 +19,7 @@ const EMPTY_DIALOG: DialogState = { open: false, step: 'provider', providerId: '
 function providerIcon(id: string): 'spark' | 'cpu' {
   const icons: Record<string, 'spark' | 'cpu'> = {
     openai: 'spark', anthropic: 'spark', groq: 'cpu', gemini: 'spark',
-    mistral: 'spark', kimi: 'spark', openrouter: 'cpu', nvidia: 'cpu',
+    mistral: 'spark', kimi: 'spark', openrouter: 'cpu', nvidia: 'cpu', cerebras: 'cpu',
   };
   return icons[id] ?? 'cpu';
 }
@@ -214,6 +214,7 @@ export function AiSettings() {
               <div className="flex items-center justify-between"><span className="text-text-muted">Provider</span><span className="font-medium text-text">{status?.label ?? 'Not connected'}</span></div>
               <div className="flex items-center justify-between"><span className="text-text-muted">Model</span><span className="font-medium text-text">{status?.model || '—'}</span></div>
               <div className="flex items-center justify-between"><span className="text-text-muted">Latency</span><span className="font-medium text-text">{hasProvider && health ? `${health.latencyMs ?? '—'}ms` : '—'}</span></div>
+              <div className="flex items-center justify-between"><span className="text-text-muted">Last validation</span><span className="font-medium text-text">{activeInfo?.health?.lastChecked ? new Date(activeInfo.health.lastChecked).toLocaleString() : '—'}</span></div>
             </div>
             <Button variant="secondary" icon="activity" onClick={test} loading={testing} block className="mt-3" disabled={!hasProvider}>Test connection</Button>
             {hasProvider && health ? (

@@ -14,12 +14,14 @@ import { useEffect, useState } from 'react';
 import { Badge, Button, Icon } from '@aura/ui';
 import { useAppStore } from '@aura/core';
 import { useWorkspace } from '../data/useWorkspace';
+import { useLayoutStore } from '../ops/layoutStore';
 import { missionClient, type MissionDashboard } from '../ai/missionClient';
 import { EmptyState } from '../components/EmptyState';
 import { CATEGORY_LABEL, CATEGORY_TONE, EXECUTION_STATUS_LABEL, EXECUTION_STATUS_TONE, relTime } from './missions/missionMeta';
 
 export function EngineeringDashboard() {
   const setNav = useAppStore((s) => s.setNav);
+  const openPanel = useLayoutStore((s) => s.openPanel);
   const projects = useWorkspace((s) => s.projects);
   const [data, setData] = useState<MissionDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +42,7 @@ export function EngineeringDashboard() {
 
   const openMission = (projectId: string) => {
     const w = useWorkspace.getState();
-    void w.open(projectId).then(() => setNav('missions'));
+    void w.open(projectId).then(() => { setNav('workspace'); openPanel('missions'); });
   };
 
   if (error && !data) {
@@ -164,7 +166,7 @@ export function EngineeringDashboard() {
           <section className="rounded-xl border border-line bg-canvas p-4">
             <div className="flex items-center justify-between">
               <span className="text-[12px] font-semibold text-text">Recent missions</span>
-              <button onClick={() => setNav('missions')} className="text-[11px] text-accent hover:underline">Mission Control →</button>
+              <button onClick={() => { setNav('workspace'); openPanel('missions'); }} className="text-[11px] text-accent hover:underline">Mission Control →</button>
             </div>
             <div className="mt-2 space-y-1.5">
               {data.recent.length === 0 && <p className="text-[11.5px] text-text-subtle">No missions yet.</p>}

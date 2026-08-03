@@ -43,31 +43,6 @@ export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
 }
 
 /**
- * Calculate cosine similarity between two vectors
- */
-export function cosineSimilarity(a: Map<string, number>, b: Map<string, number>): number {
-  let dotProduct = 0;
-  let aMagnitude = 0;
-  let bMagnitude = 0;
-  
-  // Get all unique keys
-  const allKeys = new Set([...a.keys(), ...b.keys()]);
-  
-  for (const key of allKeys) {
-    const aVal = a.get(key) ?? 0;
-    const bVal = b.get(key) ?? 0;
-    
-    dotProduct += aVal * bVal;
-    aMagnitude += aVal * aVal;
-    bMagnitude += bVal * bVal;
-  }
-  
-  if (aMagnitude === 0 || bMagnitude === 0) return 0;
-  
-  return dotProduct / (Math.sqrt(aMagnitude) * Math.sqrt(bMagnitude));
-}
-
-/**
  * Calculate text similarity using Jaccard
  */
 export function textSimilarity(text1: string, text2: string): number {

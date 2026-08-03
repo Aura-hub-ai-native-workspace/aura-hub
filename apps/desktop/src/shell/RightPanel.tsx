@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { spring, useAppStore, cn } from '@aura/core';
 import { Badge, Button, Icon, PanelSection, PropertyRow } from '@aura/ui';
 import { useWorkspace } from '../data/useWorkspace';
+import { useLayoutStore } from '../ops/layoutStore';
 import { aiClient, type HealthResult, type ProviderStatus } from '../ai/aiClient';
 
 export function RightPanel() {
@@ -67,6 +68,8 @@ function ProjectContext({ projectId }: { projectId: string }) {
 function NavContext() {
   const setNav = useAppStore((s) => s.setNav);
   const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
+  const openAddProjectDialog = useAppStore((s) => s.openAddProjectDialog);
+  const openPanel = useLayoutStore((s) => s.openPanel);
   const projectCount = useWorkspace((s) => s.projects.length);
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [reachable, setReachable] = useState<boolean | null>(null);
@@ -78,8 +81,8 @@ function NavContext() {
   }, []);
 
   const actions = [
-    { icon: 'plus' as const, label: 'Add Project', hint: 'Import a real folder', run: () => setNav('projects') },
-    { icon: 'spark' as const, label: 'Ask AURA', hint: 'Chat over your project', run: () => setNav('ai') },
+    { icon: 'plus' as const, label: 'Add Project', hint: 'Import a real folder', run: () => { setNav('home'); openAddProjectDialog(); } },
+    { icon: 'spark' as const, label: 'Ask AURA', hint: 'Chat over your project', run: () => { setNav('workspace'); openPanel('ai-chat'); } },
     { icon: 'command' as const, label: 'Command Bar', hint: 'Run any command', run: () => setPaletteOpen(true) },
   ];
 

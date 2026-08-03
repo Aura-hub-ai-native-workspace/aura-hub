@@ -4,6 +4,7 @@ import { Badge, Button, Dialog, Icon, type IconName } from '@aura/ui';
 import type { StatusTone } from '@aura/core';
 import { useAppStore } from '@aura/core';
 import { aiClient, type RiskLevel } from '../ai/aiClient';
+import { recordAiActionMemory } from '../ops/memoryRecorder';
 import { actionSpec } from './actionSpecs';
 import { useEditorStore } from './editorStore';
 import { spliceSelection, type AiActionState } from './useAiAction';
@@ -35,6 +36,7 @@ export function AIActionDialog({
   const [showExplanation, setShowExplanation] = useState(false);
   const [accepting, setAccepting] = useState(false);
   const [accepted, setAccepted] = useState(false);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
   const [askAgainOpen, setAskAgainOpen] = useState(false);
   const [refinement, setRefinement] = useState('');
 
@@ -53,25 +55,56 @@ export function AIActionDialog({
     setAskAgainOpen(false);
     setRefinement('');
     setAccepted(false);
+    setAcceptError(null);
     reset();
   };
 
   const handleAccept = async () => {
     if (!state.response || !file || accepting) return;
     setAccepting(true);
+    setAcceptError(null);
     try {
       if (spec?.mode === 'new-file' && state.response.newFilePath) {
         await createFile(state.response.newFilePath, state.response.newCode ?? '');
       } else {
         updateContent(file.path, modifiedFull);
         await saveFile(file.path);
+        // saveFile() catches its own write errors and records them on the
+        // file rather than throwing — check for that instead of assuming
+        // the write succeeded just because the promise resolved.
+        const written = useEditorStore.getState().openFiles[file.path];
+        if (written?.saveError) throw new Error(written.saveError);
       }
       void aiClient.reindex(); // fire-and-forget — refreshes the Knowledge Fabric shortly after
+      recordAiActionMemory({
+        accepted: true,
+        action: state.action ?? spec?.id ?? 'custom',
+        filePath: file.path,
+        symbolLabel: state.contextSummary?.symbolLabel ?? null,
+        explanation: state.response.explanation,
+        riskLevel: risk?.level ?? null,
+      });
       setAccepted(true);
       setTimeout(close, 900);
+    } catch (e) {
+      setAcceptError((e as Error).message || 'Could not write the change to disk.');
     } finally {
       setAccepting(false);
     }
+  };
+
+  const handleReject = () => {
+    if (state.response && file && state.action) {
+      recordAiActionMemory({
+        accepted: false,
+        action: state.action,
+        filePath: file.path,
+        symbolLabel: state.contextSummary?.symbolLabel ?? null,
+        explanation: state.response.explanation,
+        riskLevel: risk?.level ?? null,
+      });
+    }
+    close();
   };
 
   const handleCopy = () => {
@@ -120,9 +153,10 @@ export function AIActionDialog({
             </div>
             {spec.mode !== 'findings' && (
               <div className="flex items-center gap-2">
-                <Button variant="secondary" size="sm" onClick={close}>Reject</Button>
+                {acceptError && <span className="text-[12px] text-danger">{acceptError}</span>}
+                <Button variant="secondary" size="sm" onClick={handleReject}>Reject</Button>
                 <Button variant="primary" size="sm" icon={accepted ? 'check' : undefined} loading={accepting} onClick={handleAccept}>
-                  {accepted ? 'Applied' : 'Accept Changes'}
+                  {accepted ? 'Applied' : acceptError ? 'Retry' : 'Accept Changes'}
                 </Button>
               </div>
             )}

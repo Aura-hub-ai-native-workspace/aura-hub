@@ -24,3 +24,6 @@ apps/desktop/src-tauri/gen
 # Logs
 *.log
 npm-debug.log*
+
+# TypeScript incremental build cache
+*.tsbuildinfo

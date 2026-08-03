@@ -52,7 +52,7 @@ export function AddProjectDialog({ open, onClose }: { open: boolean; onClose: ()
       <div className="space-y-4">
         <label className="block">
           <span className="mb-1.5 block text-[12px] font-medium text-text-muted">Project folder (absolute path)</span>
-          <Input icon="folder" placeholder="/home/you/code/my-project" value={path} onChange={(e) => setPath(e.target.value)} autoFocus />
+          <Input icon="folder" placeholder="/path/to/your/project" value={path} onChange={(e) => setPath(e.target.value)} autoFocus />
         </label>
         <label className="block">
           <span className="mb-1.5 block text-[12px] font-medium text-text-muted">Display name <span className="text-text-subtle">(optional)</span></span>

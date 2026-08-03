@@ -12,11 +12,7 @@
  * set of checks than a single patch's.
  */
 import type { ExtractedIntent, GoalGraph, MissionSignals, MissionTask, RiskAnalysis } from './types';
-
-function capUnit(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  return Math.min(1, Math.max(0, n));
-}
+import { capUnit } from './utils';
 
 const ARCHITECTURE_FOCUS_KEYWORDS = ['architecture', 'layer', 'boundary', 'dependency-direction', 'migration-path', 'compatibility'];
 

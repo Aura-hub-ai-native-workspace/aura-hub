@@ -91,20 +91,12 @@ export function storeModels(providerId: string, models: DiscoveredModel[]): void
   save(store);
 }
 
-export function getModels(providerId: string): DiscoveredModel[] {
-  return load().models[providerId] ?? [];
-}
-
 export function storeHealth(providerId: string, health: ProviderHealth): void {
   const store = load();
   store.health[providerId] = health;
   const entry = store.credentials[providerId];
   if (entry) entry.lastValidated = new Date().toISOString();
   save(store);
-}
-
-export function getHealth(providerId: string): ProviderHealth | null {
-  return load().health[providerId] ?? null;
 }
 
 export function getFingerprint(providerId: string): string | null {
@@ -125,10 +117,6 @@ export function getActive(): { providerId: string | null; model: string } {
 
 export function isConnected(providerId: string): boolean {
   return !!load().credentials[providerId];
-}
-
-export function getConnectedIds(): string[] {
-  return Object.keys(load().credentials);
 }
 
 export function getAllProviderStores(): { id: string; fingerprint: string; models: DiscoveredModel[]; health: ProviderHealth | null }[] {

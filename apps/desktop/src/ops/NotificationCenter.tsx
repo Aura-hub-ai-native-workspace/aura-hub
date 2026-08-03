@@ -9,13 +9,14 @@
  */
 import { Icon } from '@aura/ui';
 import type { IconName } from '@aura/ui';
+import { useAppStore } from '@aura/core';
 import { useLayoutStore } from './layoutStore';
 import { NOTIFICATION_KIND_META, unreadCount, useNotificationsStore, type AuraNotification } from './notificationsStore';
 import { relTime } from '../screens/missions/missionMeta';
 import { VirtualList } from '../editor/VirtualList';
 import { PanelBody, PanelHeader } from './panelFrame';
 
-export function NotificationCenter({ embedded = false }: { embedded?: boolean }) {
+export function NotificationCenter({ embedded = false, onNavigate }: { embedded?: boolean; onNavigate?: () => void }) {
   const items = useNotificationsStore((s) => s.items);
   const markAllRead = useNotificationsStore((s) => s.markAllRead);
   const clearRead = useNotificationsStore((s) => s.clearRead);
@@ -54,26 +55,31 @@ export function NotificationCenter({ embedded = false }: { embedded?: boolean })
         items={items}
         itemHeight={58}
         className="min-h-0 flex-1"
-        renderItem={(n) => <NotificationRow n={n} />}
+        renderItem={(n) => <NotificationRow n={n} onNavigate={onNavigate} />}
       />
     </PanelBody>
   );
 }
 
-function NotificationRow({ n }: { n: AuraNotification }) {
+function NotificationRow({ n, onNavigate }: { n: AuraNotification; onNavigate?: () => void }) {
   const markRead = useNotificationsStore((s) => s.markRead);
   const openPanel = useLayoutStore((s) => s.openPanel);
   const setFocused = useLayoutStore((s) => s.setFocused);
+  const setNav = useAppStore((s) => s.setNav);
   const meta = NOTIFICATION_KIND_META[n.kind];
 
   const open = () => {
     if (!n.read) markRead(n.id);
     if (n.missionId) {
       setFocused({ projectId: n.projectId ?? null, missionId: n.missionId });
+      setNav('workspace');
       openPanel('mission-detail');
+      onNavigate?.();
     } else if (n.diagnosisId) {
       setFocused({ projectId: n.projectId ?? null, diagnosisId: n.diagnosisId });
+      setNav('workspace');
       openPanel('diagnostics');
+      onNavigate?.();
     }
   };
 

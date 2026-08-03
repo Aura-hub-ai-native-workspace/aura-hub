@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Icon, type IconName } from '@aura/ui';
+import { Icon, Skeleton, type IconName } from '@aura/ui';
 import { aiClient, type ProviderInfo } from '../ai/aiClient';
 import { ProviderCard } from './ProviderCard';
 import { ApiKeyInput, type KeyStatus } from './ApiKeyInput';
@@ -13,6 +13,7 @@ const PROVIDER_ICON: Record<string, IconName> = {
   anthropic: 'spark',
   gemini: 'spark',
   mistral: 'spark',
+  cerebras: 'cpu',
   kimi: 'spark',
   openrouter: 'link',
 };
@@ -23,6 +24,7 @@ const PROVIDER_ACCENT: Record<string, string> = {
   anthropic: '#f472b6',
   gemini: '#a78bfa',
   mistral: '#fbbf24',
+  cerebras: '#ef4444',
   openrouter: '#60a5fa',
   kimi: '#2dd4bf',
 };
@@ -30,6 +32,8 @@ const FALLBACK_ACCENT = '#8892a6';
 const PROVIDER_BADGES: Record<string, string[]> = {
   groq: ['Free', 'Ultra Fast', 'Recommended'],
   nvidia: ['Free', 'High Performance'],
+  mistral: ['Free Tier', 'EU-Based'],
+  cerebras: ['Ultra Fast', 'High Throughput'],
 };
 
 export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: () => void; onOffline: () => void }) {
@@ -60,7 +64,9 @@ export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: (
 
   const groq = providers?.find((p) => p.id === 'groq');
   const nvidia = providers?.find((p) => p.id === 'nvidia');
-  const others = providers?.filter((p) => p.id !== 'groq' && p.id !== 'nvidia') ?? [];
+  const mistral = providers?.find((p) => p.id === 'mistral');
+  const cerebras = providers?.find((p) => p.id === 'cerebras');
+  const others = providers?.filter((p) => p.id !== 'groq' && p.id !== 'nvidia' && p.id !== 'mistral' && p.id !== 'cerebras') ?? [];
 
   // Live "auto-detect provider" from key prefix — never overrides an
   // explicit manual card selection unless the key clearly belongs to a
@@ -147,8 +153,9 @@ export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: (
           {providersError}
         </div>
       ) : !providers ? (
-        <div className="mt-10 flex justify-center">
-          <span className="h-6 w-6 animate-spin rounded-full border-2 border-white/15 border-t-white/60" />
+        <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Skeleton className="h-28 bg-white/10" />
+          <Skeleton className="h-28 bg-white/10" />
         </div>
       ) : (
         <>
@@ -177,6 +184,32 @@ export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: (
                 connected={connectedIds.has('nvidia')}
                 onSelect={() => selectProvider('nvidia')}
                 onGetKey={() => openExternal(nvidia.docsUrl)}
+              />
+            )}
+            {mistral && (
+              <ProviderCard
+                icon={PROVIDER_ICON.mistral}
+                name={mistral.name}
+                description={mistral.description || 'Powerful open-weight and frontier models with a free tier.'}
+                badges={PROVIDER_BADGES.mistral}
+                accent={PROVIDER_ACCENT.mistral}
+                selected={selectedId === 'mistral'}
+                connected={connectedIds.has('mistral')}
+                onSelect={() => selectProvider('mistral')}
+                onGetKey={() => openExternal(mistral.docsUrl)}
+              />
+            )}
+            {cerebras && (
+              <ProviderCard
+                icon={PROVIDER_ICON.cerebras}
+                name={cerebras.name}
+                description={cerebras.description || 'Blazing-fast inference on purpose-built silicon.'}
+                badges={PROVIDER_BADGES.cerebras}
+                accent={PROVIDER_ACCENT.cerebras}
+                selected={selectedId === 'cerebras'}
+                connected={connectedIds.has('cerebras')}
+                onSelect={() => selectProvider('cerebras')}
+                onGetKey={() => openExternal(cerebras.docsUrl)}
               />
             )}
           </div>
@@ -247,7 +280,7 @@ export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: (
               <div className="min-w-0">
                 <div className="text-[13px] font-semibold text-white">New to AI providers?</div>
                 <p className="mt-1 text-[12px] leading-relaxed text-white/50">
-                  Groq and NVIDIA both offer free API access for many users. Connect one to get started in minutes.
+                  Groq, NVIDIA, Mistral and Cerebras all offer fast API access for many users. Connect one to get started in minutes.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button onClick={() => openExternal(groq?.docsUrl)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11.5px] font-medium text-white/70 hover:text-white">
@@ -255,6 +288,12 @@ export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: (
                   </button>
                   <button onClick={() => openExternal(nvidia?.docsUrl)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11.5px] font-medium text-white/70 hover:text-white">
                     Get NVIDIA API Key
+                  </button>
+                  <button onClick={() => openExternal(mistral?.docsUrl)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11.5px] font-medium text-white/70 hover:text-white">
+                    Get Mistral API Key
+                  </button>
+                  <button onClick={() => openExternal(cerebras?.docsUrl)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11.5px] font-medium text-white/70 hover:text-white">
+                    Get Cerebras API Key
                   </button>
                 </div>
               </div>

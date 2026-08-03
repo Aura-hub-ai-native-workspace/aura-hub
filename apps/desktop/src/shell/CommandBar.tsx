@@ -1,13 +1,20 @@
-import { NAV_TITLES, useAppStore, cn } from '@aura/core';
+import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { NAV_TITLES, useAppStore, cn, popVariants } from '@aura/core';
 import { Icon, IconButton, Tooltip } from '@aura/ui';
 import { useWorkspace } from '../data/useWorkspace';
 import { useUnreadCount } from '../ops/useNotificationsFeed';
-import { useLayoutStore } from '../ops/layoutStore';
+import { NotificationCenter } from '../ops/NotificationCenter';
 
 /**
  * Top command / search bar. The search field is a *portal* into the
  * command palette — clicking it (or ⌘K) opens the universal action
  * surface. Also hosts the breadcrumb and quick view controls.
+ *
+ * Notifications are deliberately ambient chrome, not a dockable Workspace
+ * tool: the bell shows an unread badge and opens a small popover (the
+ * same NotificationCenter the old dockable panel used), never a full
+ * inbox panel a user has to arrange windows around.
  */
 export function CommandBar() {
   const nav = useAppStore((s) => s.nav);
@@ -18,16 +25,25 @@ export function CommandBar() {
   const toggleRightPanel = useAppStore((s) => s.toggleRightPanel);
   const theme = useAppStore((s) => s.theme);
   const rightPanelOpen = useAppStore((s) => s.rightPanelOpen);
-  const setNav = useAppStore((s) => s.setNav);
   const unread = useUnreadCount();
-  const openPanel = useLayoutStore((s) => s.openPanel);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
 
   const project = useWorkspace((s) => s.projects.find((p) => p.id === activeProjectId));
 
-  const openNotifications = () => {
-    setNav('workspace');
-    openPanel('notifications');
-  };
+  useEffect(() => {
+    if (!notifOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setNotifOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setNotifOpen(false);
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [notifOpen]);
 
   return (
     <header className="flex h-16 shrink-0 items-center gap-4 border-b border-line bg-surface/50 px-5 backdrop-blur-xl">
@@ -65,20 +81,36 @@ export function CommandBar() {
         <Tooltip content="Toggle theme">
           <IconButton icon={theme === 'light' ? 'moon' : 'sun'} label="Toggle theme" size="sm" onClick={toggleTheme} />
         </Tooltip>
-        <Tooltip content="Notifications">
-          <button
-            onClick={openNotifications}
-            className="relative grid h-7 w-7 place-items-center rounded-lg text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
-            aria-label="Open notification center"
-          >
-            <Icon name="bell" size={16} />
-            {unread > 0 && (
-              <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[9px] font-bold leading-none text-white">
-                {unread > 99 ? '99+' : unread}
-              </span>
+        <div ref={notifRef} className="relative">
+          <Tooltip content="Notifications">
+            <button
+              onClick={() => setNotifOpen((v) => !v)}
+              className="relative grid h-7 w-7 place-items-center rounded-lg text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
+              aria-label="Notifications"
+              aria-expanded={notifOpen}
+            >
+              <Icon name="bell" size={16} />
+              {unread > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-danger px-1 text-[9px] font-bold leading-none text-white">
+                  {unread > 99 ? '99+' : unread}
+                </span>
+              )}
+            </button>
+          </Tooltip>
+          <AnimatePresence>
+            {notifOpen && (
+              <motion.div
+                variants={popVariants}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                className="absolute right-0 top-full z-50 mt-2 max-h-[70vh] w-[360px] overflow-hidden rounded-2xl border border-line bg-surface shadow-lg"
+              >
+                <NotificationCenter embedded onNavigate={() => setNotifOpen(false)} />
+              </motion.div>
             )}
-          </button>
-        </Tooltip>
+          </AnimatePresence>
+        </div>
         <Tooltip content="Context panel">
           <IconButton
             icon="panel"

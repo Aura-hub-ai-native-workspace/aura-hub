@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { ease } from '@aura/core';
 import { Icon, Input } from '@aura/ui';
 
 /**
@@ -161,8 +163,8 @@ function bounds(nodes: NodeCardData[], pos: Map<string, Pos>) {
 }
 
 export function NodeGraphCanvas({
-  nodes,
-  edges,
+  nodes: allNodes,
+  edges: allEdges,
   groupColors,
   height = 560,
   onSelect,
@@ -175,6 +177,22 @@ export function NodeGraphCanvas({
   onSelect?: (id: string | null) => void;
   selectedId?: string | null;
 }) {
+  const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set());
+  const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set());
+  const toggleGroup = (g: string) => setHiddenGroups((prev) => { const next = new Set(prev); if (next.has(g)) next.delete(g); else next.add(g); return next; });
+  const toggleKind = (k: string) => setHiddenKinds((prev) => { const next = new Set(prev); if (next.has(k)) next.delete(k); else next.add(k); return next; });
+
+  const allGroups = useMemo(() => [...new Set(allNodes.map((n) => n.group))].sort(), [allNodes]);
+  const allKinds = useMemo(() => [...new Set(allEdges.map((e) => e.kind).filter((k): k is string => Boolean(k)))].sort(), [allEdges]);
+
+  // Layer-visibility (group) and relationship-type (kind) filters — applied
+  // before layout, so hidden groups/kinds never affect the force simulation.
+  const nodes = useMemo(() => allNodes.filter((n) => !hiddenGroups.has(n.group)), [allNodes, hiddenGroups]);
+  const edges = useMemo(() => {
+    const visible = new Set(nodes.map((n) => n.id));
+    return allEdges.filter((e) => visible.has(e.from) && visible.has(e.to) && (!e.kind || !hiddenKinds.has(e.kind)));
+  }, [allEdges, nodes, hiddenKinds]);
+
   const pos = useMemo(() => layoutCards(nodes, edges), [nodes, edges]);
   const base = useMemo(() => bounds(nodes, pos), [nodes, pos]);
   const [view, setViewState] = useState(base);
@@ -183,6 +201,21 @@ export function NodeGraphCanvas({
   const containerRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ w: 800, h: height });
   const drag = useRef<{ x: number; y: number } | null>(null);
+
+  // A real layout change (expand/collapse, filter toggle — anything that
+  // changes which nodes/edges exist) briefly enables a position transition
+  // so cards visibly glide to their new spot. Pan/zoom never touches this:
+  // those only change `view`/`viewport`, not `nodes`/`edges`, so dragging
+  // or scrolling stays perfectly 1:1 with the pointer — animating position
+  // during an active drag would make panning feel laggy and rubber-banded.
+  const [justRelaidOut, setJustRelaidOut] = useState(false);
+  const firstLayout = useRef(true);
+  useEffect(() => {
+    if (firstLayout.current) { firstLayout.current = false; return; }
+    setJustRelaidOut(true);
+    const t = setTimeout(() => setJustRelaidOut(false), 260);
+    return () => clearTimeout(t);
+  }, [nodes, edges]);
 
   useEffect(() => setViewState(base), [base]);
 
@@ -250,7 +283,6 @@ export function NodeGraphCanvas({
   }, [edges, selectedId, hover]);
 
   const focus = selectedId ?? hover;
-  const activeGroups = useMemo(() => [...new Set(nodes.map((n) => n.group))].sort(), [nodes]);
 
   return (
     <div
@@ -303,6 +335,7 @@ export function NodeGraphCanvas({
               fill="none"
               stroke={color}
               strokeWidth={active ? 2.4 : 1.6}
+              style={{ transition: 'opacity 0.2s ease' }}
               opacity={active ? 0.95 : focus ? 0.08 : 0.45}
             />
           );
@@ -310,6 +343,7 @@ export function NodeGraphCanvas({
       </svg>
 
       {/* node cards */}
+      <AnimatePresence>
       {nodes.map((node) => {
         const p = pos.get(node.id);
         if (!p) return null;
@@ -326,23 +360,36 @@ export function NodeGraphCanvas({
         // *real* rendered height silently drifted from what the layout and
         // overlap-resolution math above assumed — nodes would overlap on
         // screen even though the solver reported a clean, gap-padded layout.
-        if (s.x + CARD_W * scale < -40 || s.x > viewport.w + 40 || s.y + h * scale < -40 || s.y > viewport.h + 40) return null;
+        //
+        // Off-screen nodes are hidden via `display: none`, not omitted from
+        // the tree — omitting them (returning null) would remove their key
+        // from AnimatePresence's view every time they pan out of frame,
+        // which reads to Framer as a genuine removal and replays the exit/
+        // enter fade on every ordinary pan. `display: none` keeps the exit
+        // animation reserved for real removals (expand/collapse, filtering)
+        // while still fully skipping layout/paint cost for hidden cards.
+        const offscreen = s.x + CARD_W * scale < -40 || s.x > viewport.w + 40 || s.y + h * scale < -40 || s.y > viewport.h + 40;
         const isFocus = focus === node.id;
         const isNeighbor = neighbors.has(node.id);
         const dim = focus && !isFocus && !isNeighbor;
         const color = groupColors[node.group] ?? '#8892a6';
         return (
-          <div
+          <motion.div
             key={node.id}
-            className="absolute cursor-pointer overflow-hidden rounded-lg border text-[11px] shadow-lg transition-opacity"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: dim ? 0.32 : 1 }}
+            exit={{ opacity: 0 }}
+            transition={ease.out}
+            className="absolute cursor-pointer overflow-hidden rounded-lg border text-[11px] shadow-lg"
             style={{
+              display: offscreen ? 'none' : undefined,
               left: s.x,
               top: s.y,
               width: CARD_W,
               height: h,
               transform: `scale(${scale})`,
               transformOrigin: 'top left',
-              opacity: dim ? 0.32 : 1,
+              transition: justRelaidOut ? 'left 0.22s ease-out, top 0.22s ease-out' : 'none',
               background: '#1c1f26',
               borderColor: isFocus ? color : 'rgba(255,255,255,0.08)',
               borderWidth: isFocus ? 1.5 : 1,
@@ -372,22 +419,50 @@ export function NodeGraphCanvas({
               ))}
               {node.note && <p className="mt-1 line-clamp-2 text-[0.92em] text-white/40">{node.note}</p>}
             </div>
-          </div>
+          </motion.div>
         );
       })}
+      </AnimatePresence>
 
       <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-white/40">
         <span>{nodes.length} nodes · {edges.length} connections · scroll to zoom · drag to pan</span>
       </div>
-      <div className="pointer-events-none absolute bottom-3 right-3 max-w-[45%]">
-        <div className="pointer-events-auto flex flex-wrap justify-end gap-x-3 gap-y-1">
-          {activeGroups.slice(0, 10).map((g) => (
-            <span key={g} className="inline-flex items-center gap-1.5 text-[10.5px] capitalize text-white/50">
-              <span className="h-2 w-2 rounded-full" style={{ background: groupColors[g] ?? '#8892a6' }} />
-              {g}
-            </span>
-          ))}
-        </div>
+      <div className="pointer-events-none absolute bottom-3 right-3 max-w-[55%]">
+        {allKinds.length > 1 && (
+          <div className="pointer-events-auto mb-1 flex flex-wrap justify-end gap-x-3 gap-y-1">
+            {allKinds.slice(0, 8).map((k) => {
+              const isHidden = hiddenKinds.has(k);
+              return (
+                <button
+                  key={k}
+                  onClick={() => toggleKind(k)}
+                  className={`text-[10.5px] capitalize transition-colors ${isHidden ? 'text-white/25 line-through' : 'text-white/50 hover:text-white/80'}`}
+                  title={isHidden ? `Show "${k}" relationships` : `Hide "${k}" relationships`}
+                >
+                  {k}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {allGroups.length > 1 && (
+          <div className="pointer-events-auto flex flex-wrap justify-end gap-x-3 gap-y-1">
+            {allGroups.slice(0, 10).map((g) => {
+              const isHidden = hiddenGroups.has(g);
+              return (
+                <button
+                  key={g}
+                  onClick={() => toggleGroup(g)}
+                  className={`inline-flex items-center gap-1.5 text-[10.5px] capitalize transition-colors ${isHidden ? 'text-white/25 line-through' : 'text-white/50 hover:text-white/80'}`}
+                  title={isHidden ? `Show ${g}` : `Hide ${g}`}
+                >
+                  <span className="h-2 w-2 rounded-full" style={{ background: groupColors[g] ?? '#8892a6', opacity: isHidden ? 0.35 : 1 }} />
+                  {g}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

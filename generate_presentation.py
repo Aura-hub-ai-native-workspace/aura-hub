@@ -155,14 +155,14 @@ def text(
 
 def pill(slide, value: str, x: float, y: float, w: float, color=BLUE, fill=None, size=8.5):
     fill = fill or color
-    rect(slide, x, y, w, 0.25, fill=fill, line=None, radius=True, transparency=84 if fill == color else 0)
-    text(slide, value, x + 0.07, y + 0.035, w - 0.14, 0.16, size, color, True, align=PP_ALIGN.CENTER, caps=True)
+    rect(slide, x, y, w, 0.25, fill=fill, line=None, radius=True)
+    text(slide, value, x + 0.07, y + 0.035, w - 0.14, 0.16, size, BG, True, align=PP_ALIGN.CENTER, caps=True)
 
 
 def status_pill(slide, value: str, x: float, y: float, w: float, tone=MINT):
-    rect(slide, x, y, w, 0.27, fill=tone, line=None, radius=True, transparency=82)
-    circle(slide, x + 0.08, y + 0.085, 0.09, tone, None)
-    text(slide, value, x + 0.22, y + 0.045, w - 0.27, 0.16, 8.5, tone, True, caps=True)
+    rect(slide, x, y, w, 0.27, fill=tone, line=None, radius=True)
+    circle(slide, x + 0.08, y + 0.085, 0.09, BG, None)
+    text(slide, value, x + 0.22, y + 0.045, w - 0.27, 0.16, 8.5, BG, True, caps=True)
 
 
 def footer(slide, number: int):
@@ -179,8 +179,8 @@ def base(slide, number: int, eyebrow: str, title: str, subtitle: str, tag: str |
         line(slide, x, 0.36, x, 6.92, C("0E1726"), 0.55)
     line(slide, 0.76, 0.36, 12.56, 0.36, C("142137"), 0.6)
     text(slide, eyebrow, 0.78, 0.51, 7.8, 0.18, 8.2, CYAN, True, caps=True)
-    text(slide, title, 0.78, 0.76, 10.7, 0.55, 27, TEXT, True, font=DISPLAY)
-    text(slide, subtitle, 0.80, 1.36, 10.9, 0.36, 11.5, MUTED)
+    text(slide, title, 0.78, 0.76, 10.7, 0.78, 25.5, TEXT, True, font=DISPLAY)
+    text(slide, subtitle, 0.80, 1.70, 10.9, 0.22, 11.2, MUTED)
     if tag:
         pill(slide, tag, 10.95, 0.52, 1.55, MINT)
     footer(slide, number)
@@ -519,11 +519,11 @@ def slide_8(prs):
     # Planning path.
     text(slide, "PLANNING PIPELINE", 0.84, 2.00, 2.0, 0.16, 8.2, CYAN, True, caps=True)
     plan = [
-        ("INTENT", "classification +\nrefinement", CYAN),
-        ("SIGNALS", "health · hotspots\nchanges · debt", BLUE),
-        ("GOAL GRAPH", "goals · tasks\ndependencies", PURPLE),
-        ("RISK", "deterministic\nanalysis", AMBER),
-        ("REVIEW", "adversarial\nquality score", MINT),
+        ("INTENT", "classify +\nrefine", CYAN),
+        ("SIGNAL", "health +\ndebt", BLUE),
+        ("GOALS", "goals +\ndeps", PURPLE),
+        ("RISK", "risk\nfloor", AMBER),
+        ("REVIEW", "quality\nscore", MINT),
     ]
     for i, (title, sub, accent) in enumerate(plan):
         x = 0.84 + i * 1.48

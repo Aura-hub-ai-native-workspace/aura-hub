@@ -9,38 +9,53 @@
 import { Suspense, lazy, type ComponentType } from 'react';
 import type { PanelKind } from './layoutStore';
 
-const OverviewPanel = lazy(() => import('./panels/OverviewPanel'));
 const MissionsPanel = lazy(() => import('./panels/MissionsPanel'));
 const MissionDetailPanel = lazy(() => import('./panels/MissionDetailPanel'));
 const SearchPanel = lazy(() => import('./panels/SearchPanel'));
-const NotificationsPanel = lazy(() => import('./panels/NotificationsPanel'));
-const FeedPanel = lazy(() => import('./panels/FeedPanel'));
 const KnowledgePanel = lazy(() => import('./panels/KnowledgePanel'));
-const MemoryPanel = lazy(() => import('./panels/MemoryPanel'));
 const DiagnosticsPanel = lazy(() => import('./panels/DiagnosticsPanel'));
 const FilesPanel = lazy(() => import('./panels/FilesPanel'));
 const DocsPanel = lazy(() => import('./panels/DocsPanel'));
+const EngineeringMemoryPanel = lazy(() => import('./panels/EngineeringMemoryPanel'));
+const EngineeringLearningPanel = lazy(() => import('./panels/EngineeringLearningPanel'));
+const AgentPanel = lazy(() => import('./panels/AgentPanel'));
+const AiChatPanel = lazy(() => import('./panels/AiChatPanel'));
+const DashboardPanel = lazy(() => import('./panels/DashboardPanel'));
+const TwinPanel = lazy(() => import('./panels/TwinPanel'));
+const GovernancePanel = lazy(() => import('./panels/GovernancePanel'));
 
 export const PANELS: Record<PanelKind, ComponentType> = {
-  overview: OverviewPanel,
   missions: MissionsPanel,
   'mission-detail': MissionDetailPanel,
   search: SearchPanel,
-  notifications: NotificationsPanel,
-  feed: FeedPanel,
   knowledge: KnowledgePanel,
-  memory: MemoryPanel,
   diagnostics: DiagnosticsPanel,
   files: FilesPanel,
   docs: DocsPanel,
+  'engineering-memory': EngineeringMemoryPanel,
+  'engineering-learning': EngineeringLearningPanel,
+  'engineering-agent': AgentPanel,
+  'ai-chat': AiChatPanel,
+  dashboard: DashboardPanel,
+  twin: TwinPanel,
+  governance: GovernancePanel,
 };
 
 export function PanelContent({ kind }: { kind: PanelKind }) {
   const Component = PANELS[kind];
+  if (!Component) return <UnregisteredPanel />;
   return (
     <Suspense fallback={<PanelSkeleton />}>
       <Component />
     </Suspense>
+  );
+}
+
+function UnregisteredPanel() {
+  return (
+    <div className="flex h-full items-center justify-center p-4 text-sm text-fg-muted">
+      This panel type is no longer part of the workspace.
+    </div>
   );
 }
 

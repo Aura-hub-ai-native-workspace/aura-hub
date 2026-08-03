@@ -1,0 +1,11 @@
+{
+  "name": "@aura/automation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AURA Automation Engine — event-driven engineering workflows. Rules react to real platform moments (mission completed, diagnosis accepted, file / README / dependency changes, PR merged) by running chains of real actions (diagnosis, governance audits, knowledge update, engineering memory) with conditions, retries, logs, history and an execution timeline. The package is a pure state machine over persisted state — all side effects are injected by the host.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": { ".": "./src/index.ts", "./*": "./src/*" },
+  "scripts": { "typecheck": "tsc -p tsconfig.json --noEmit" }
+}

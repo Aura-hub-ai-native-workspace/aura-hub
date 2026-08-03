@@ -26,32 +26,6 @@ export const SECTION_IDENTITY: Record<NavKey, SectionIdentity> = {
     tagline: 'Your environment at a glance.',
     chips: [],
   },
-  projects: {
-    hue: '#3b6bff',
-    motif: 'projects',
-    tagline: 'Every project is its own environment.',
-    chips: [],
-  },
-  knowledge: {
-    hue: '#1fb567',
-    motif: 'knowledge',
-    tagline: 'A living fabric of everything your environment knows.',
-    chips: [
-      { icon: 'doc', label: 'Import documents' },
-      { icon: 'link', label: 'Connect a source' },
-      { icon: 'note', label: 'Write a note' },
-    ],
-  },
-  ai: {
-    hue: '#7c5cff',
-    motif: 'spark',
-    tagline: 'The reserved stage where intelligence will live.',
-    chips: [
-      { icon: 'cpu', label: 'Configure models' },
-      { icon: 'spark', label: 'Define an agent' },
-      { icon: 'memory', label: 'Attach memory' },
-    ],
-  },
   workflows: {
     hue: '#f5a524',
     motif: 'workflows',
@@ -60,36 +34,6 @@ export const SECTION_IDENTITY: Record<NavKey, SectionIdentity> = {
       { icon: 'plus', label: 'New workflow' },
       { icon: 'workflows', label: 'From template' },
       { icon: 'activity', label: 'View runs' },
-    ],
-  },
-  missions: {
-    hue: '#e0475e',
-    motif: 'deploy',
-    tagline: 'Turn a real goal into a grounded, human-approved plan.',
-    chips: [
-      { icon: 'deploy', label: 'New mission' },
-      { icon: 'activity', label: 'Health signals' },
-      { icon: 'architecture', label: 'Architecture layers' },
-    ],
-  },
-  dashboard: {
-    hue: '#3b6bff',
-    motif: 'activity',
-    tagline: "The mission engine's global control plane.",
-    chips: [
-      { icon: 'activity', label: 'Task flow' },
-      { icon: 'shield', label: 'Human gates' },
-      { icon: 'refresh', label: 'Replays' },
-    ],
-  },
-  governance: {
-    hue: '#8b5cf6',
-    motif: 'shield',
-    tagline: 'Continuous protection from architectural decay.',
-    chips: [
-      { icon: 'activity', label: 'Health scorecard' },
-      { icon: 'bug', label: 'Debt tracking' },
-      { icon: 'shield', label: 'Security review' },
     ],
   },
   workspace: {

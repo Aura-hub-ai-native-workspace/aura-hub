@@ -41,7 +41,7 @@ export class MissionStore {
       out.push({
         id: rec.id, projectId: rec.projectId, text: rec.text, createdAt: rec.createdAt,
         category: rec.classification?.category ?? 'unknown',
-        goalCount: rec.goalGraph?.goals.length ?? 0, taskCount: rec.goalGraph?.tasks.length ?? 0,
+        goalCount: rec.goalGraph?.goals?.length ?? 0, taskCount: rec.goalGraph?.tasks?.length ?? 0,
         approval: rec.approval,
         qualityOverall: rec.quality?.overall ?? null,
         execution: rec.execution ?? null,

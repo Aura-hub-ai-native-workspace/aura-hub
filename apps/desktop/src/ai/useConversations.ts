@@ -11,6 +11,8 @@
 
 import { create } from 'zustand';
 import { aiClient, type ConversationSummary, type InspectResult, type StreamDone, type StreamError } from './aiClient';
+import { useWorkspace } from '../data/useWorkspace';
+import { answerLearningQuestion } from '../ops/learningEngine';
 
 export type Phase = 'idle' | 'retrieving' | 'generating';
 
@@ -124,6 +126,30 @@ export const useConversations = create<ConvState>((set, get) => ({
     const { projectId, phase } = get();
     if (!trimmed || !projectId || phase !== 'idle') return;
 
+    // Engineering Learning answers: deterministic replies grounded in real
+    // engineering memory, delivered locally without a backend stream.
+    const project = useWorkspace.getState().projects.find((p) => p.id === projectId);
+    const scopeLabel = project?.name ?? projectId;
+    const learningAnswer = answerLearningQuestion(trimmed, projectId, scopeLabel);
+    if (learningAnswer) {
+      let cid = get().activeId;
+      if (!cid) cid = await get().newConversation();
+      if (!cid) return;
+      const userId = nid();
+      const assistantId = nid();
+      set({
+        messages: [
+          ...get().messages,
+          { id: userId, role: 'user', content: trimmed, status: 'done' },
+          { id: assistantId, role: 'assistant', content: learningAnswer, status: 'done' },
+        ],
+      });
+      void aiClient.appendMessage(projectId, cid, { role: 'user', content: trimmed }).catch(() => {});
+      void aiClient.appendMessage(projectId, cid, { role: 'assistant', content: learningAnswer, meta: { learning: true } }).catch(() => {});
+      void get().reloadList();
+      return;
+    }
+
     let cid = get().activeId;
     if (!cid) cid = await get().newConversation();
     if (!cid) return;
@@ -138,11 +164,6 @@ export const useConversations = create<ConvState>((set, get) => ({
       ],
     });
 
-    console.error('[TRACE:FRONTEND] ========================');
-    console.error('[TRACE:FRONTEND] SEND START');
-    console.error('[TRACE:FRONTEND] Project ID:', projectId);
-    console.error('[TRACE:FRONTEND] Conversation ID:', cid);
-    console.error('[TRACE:FRONTEND] User text:', trimmed.slice(0, 80));
     aiClient.appendMessage(projectId, cid, { role: 'user', content: trimmed }).then(() => get().reloadList()).catch(() => {});
     await runStream(trimmed, assistantId, cid);
   },
@@ -160,6 +181,10 @@ export const useConversations = create<ConvState>((set, get) => ({
     const text = messages[lastUser].content;
     const assistantId = nid();
     set({ messages: [...messages.slice(0, lastUser + 1), { id: assistantId, role: 'assistant', content: '', status: 'streaming' }] });
+    // Discard the persisted answer being replaced — otherwise it stays
+    // saved underneath the new one and reopening the conversation would
+    // show both, back-to-back, forever.
+    await aiClient.removeLastAssistantMessage(projectId, activeId).catch(() => {});
     await runStream(text, assistantId, activeId);
   },
 }));
@@ -171,7 +196,6 @@ async function runStream(text: string, assistantId: string, cid: string): Promis
   const patch = (fn: (m: ChatMessage) => ChatMessage) =>
     setState({ messages: getState().messages.map((m) => (m.id === assistantId ? fn(m) : m)) });
 
-  console.error('[TRACE:FRONTEND] runStream called:', { projectId, cid, textLen: text.length });
   setState({ phase: 'retrieving' });
   const ac = new AbortController();
   abort = ac;
@@ -184,24 +208,19 @@ async function runStream(text: string, assistantId: string, cid: string): Promis
     text,
     {
       onMeta: (meta) => {
-        console.error('[TRACE:FRONTEND] onMeta:', { projectId: meta.projectId, engines: meta.engines, contextTokens: meta.contextTokens });
         capturedMeta = meta; patch((m) => ({ ...m, meta }));
       },
       onToken: (t) => {
-        if (firstToken) { firstToken = false; setState({ phase: 'generating' }); console.error('[TRACE:FRONTEND] FIRST TOKEN at', Date.now()); }
+        if (firstToken) { firstToken = false; setState({ phase: 'generating' }); }
         patch((m) => ({
           ...m,
           content: t.startsWith(m.content) ? t : m.content + t,
         }));
-        const patched = getState().messages.find((m) => m.id === assistantId);
-        console.error('[TRACE:FRONTEND] onToken:', { deltaLen: t.length, totalLen: patched?.content?.length ?? 0 });
       },
       onDone: (done) => {
-        console.error('[TRACE:FRONTEND] onDone:', { finishReason: done.finishReason, usage: done.usage, latencyMs: done.latencyMs, provider: done.provider });
         capturedDone = done; patch((m) => ({ ...m, done, status: 'done' }));
       },
       onError: (error) => {
-        console.error('[TRACE:FRONTEND] onError:', error);
         capturedError = error; patch((m) => ({ ...m, error, status: 'error' }));
       },
     },
@@ -214,8 +233,6 @@ async function runStream(text: string, assistantId: string, cid: string): Promis
   abort = null;
 
   const finalContent = getState().messages.find((m) => m.id === assistantId)?.content ?? '';
-  console.error('[TRACE:FRONTEND] STREAM COMPLETE:', { finalContentLen: finalContent.length, hasError: !!capturedError });
-  console.error('[TRACE:FRONTEND] ========================');
   if (finalContent && !capturedError) {
     aiClient
       .appendMessage(projectId, cid, { role: 'assistant', content: finalContent, meta: { inspect: capturedMeta, done: capturedDone } })
