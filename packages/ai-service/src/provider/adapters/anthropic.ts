@@ -1,5 +1,6 @@
 import type { ProviderAdapter, DiscoveredModel, ProviderHealth, ModelCapabilities } from '../types';
 import type { Runtime, GenerateRequest, GenerateResponse, StreamChunk, ModelInfo, HealthStatus } from '@aura/runtime';
+import { ProviderHttpError } from '../errorTranslator';
 
 const ANTHROPIC_MODELS: { id: string; name: string; caps: Partial<ModelCapabilities> }[] = [
   { id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet 4', caps: { contextWindow: 200000, vision: true, reasoning: true, streaming: true, toolCalling: true, jsonMode: true } },
@@ -9,7 +10,7 @@ const ANTHROPIC_MODELS: { id: string; name: string; caps: Partial<ModelCapabilit
 ];
 
 export class AnthropicAdapter implements ProviderAdapter {
-  readonly metadata = { id: 'anthropic', name: 'Anthropic', description: 'Claude models by Anthropic', docsUrl: 'https://console.anthropic.com/settings/keys' };
+  readonly metadata = { id: 'anthropic', name: 'Anthropic', description: 'Claude models by Anthropic', docsUrl: 'https://console.anthropic.com/settings/keys', defaultModel: 'claude-sonnet-4-20250514' };
 
   detect(apiKey: string): boolean { return apiKey.startsWith('sk-ant-'); }
 
@@ -30,7 +31,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   createRuntime(apiKey: string, model?: string): Runtime {
-    return new AnthropicRuntime(apiKey, model || 'claude-sonnet-4-20250514');
+    return new AnthropicRuntime(apiKey, model || this.metadata.defaultModel);
   }
 
   async checkHealth(apiKey: string): Promise<ProviderHealth> {
@@ -75,7 +76,7 @@ class AnthropicRuntime implements Runtime {
     this.ac = new AbortController();
     const signal = AbortSignal.any([this.ac.signal, AbortSignal.timeout(this.timeoutMs)]);
     const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: this.headers(), body, signal });
-    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Anthropic error ${res.status}: ${t || res.statusText}`); }
+    if (!res.ok) { const t = await res.text().catch(() => ''); throw new ProviderHttpError('Anthropic', res.status, t || res.statusText); }
     const json = await res.json() as { content: { text: string }[]; model: string; usage?: { input_tokens: number; output_tokens: number } };
     const usage = json.usage;
     return {
@@ -95,7 +96,7 @@ class AnthropicRuntime implements Runtime {
     this.ac = new AbortController();
     const signal = AbortSignal.any([this.ac.signal, AbortSignal.timeout(this.timeoutMs)]);
     const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: this.headers(), body, signal });
-    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Anthropic error ${res.status}: ${t || res.statusText}`); }
+    if (!res.ok) { const t = await res.text().catch(() => ''); throw new ProviderHttpError('Anthropic', res.status, t || res.statusText); }
     const reader = res.body?.pipeThrough(new TextDecoderStream()).getReader();
     if (!reader) throw new Error('No stream body');
     let buf = '';

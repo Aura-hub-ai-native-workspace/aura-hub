@@ -2,6 +2,7 @@ import type {
   Runtime, GenerateRequest, GenerateResponse, StreamChunk, ModelInfo, HealthStatus, RuntimeMessage,
 } from '@aura/runtime';
 import type { ProviderAdapter, DiscoveredModel, ProviderHealth, ModelCapabilities } from '../types';
+import { ProviderHttpError } from '../errorTranslator';
 
 /** Classify an OpenAI-compatible HTTP status into a user-facing validation state. */
 function classifyError(status: number): string {
@@ -12,7 +13,7 @@ function classifyError(status: number): string {
 }
 
 export abstract class BaseOpenAICompatible implements ProviderAdapter {
-  abstract readonly metadata: { id: string; name: string; description: string; docsUrl?: string };
+  abstract readonly metadata: { id: string; name: string; description: string; docsUrl?: string; defaultModel: string };
 
   protected abstract baseUrl: string;
 
@@ -71,7 +72,7 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
   }
 
   protected makeRuntime(config: { baseUrl: string; apiKey: string; defaultModel?: string }): Runtime {
-    return new OpenAICompatibleRuntime(config);
+    return new OpenAICompatibleRuntime({ ...config, providerName: this.metadata.name });
   }
 }
 
@@ -79,13 +80,15 @@ class OpenAICompatibleRuntime implements Runtime {
   private baseUrl: string;
   private apiKey: string;
   private defaultModel: string;
+  private providerName: string;
   private timeoutMs = 30000;
   private ac: AbortController | null = null;
 
-  constructor(config: { baseUrl: string; apiKey: string; defaultModel?: string; timeoutMs?: number }) {
+  constructor(config: { baseUrl: string; apiKey: string; defaultModel?: string; providerName?: string; timeoutMs?: number }) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.apiKey = config.apiKey;
     this.defaultModel = config.defaultModel ?? '';
+    this.providerName = config.providerName ?? 'The AI provider';
     this.timeoutMs = config.timeoutMs ?? 30000;
   }
 
@@ -129,7 +132,7 @@ class OpenAICompatibleRuntime implements Runtime {
     this.ac = new AbortController();
     const signal = AbortSignal.any([this.ac.signal, AbortSignal.timeout(this.timeoutMs)]);
     const response = await fetch(`${this.baseUrl}/chat/completions`, { method: 'POST', headers: this.headers(), body, signal });
-    if (!response.ok) { const t = await response.text().catch(() => ''); throw new Error(`API error ${response.status}: ${t || response.statusText}`); }
+    if (!response.ok) { const t = await response.text().catch(() => ''); throw new ProviderHttpError(this.providerName, response.status, t || response.statusText); }
     const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
     if (!reader) throw new Error('No stream body');
     let buf = '';
@@ -175,7 +178,7 @@ class OpenAICompatibleRuntime implements Runtime {
   private async post<T>(path: string, body: string): Promise<T> {
     const signal = AbortSignal.any([this.ac?.signal ?? new AbortController().signal, AbortSignal.timeout(this.timeoutMs)].filter(Boolean));
     const res = await fetch(`${this.baseUrl}${path}`, { method: 'POST', headers: this.headers(), body, signal });
-    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`API error ${res.status}: ${t || res.statusText}`); }
+    if (!res.ok) { const t = await res.text().catch(() => ''); throw new ProviderHttpError(this.providerName, res.status, t || res.statusText); }
     return res.json() as Promise<T>;
   }
 }

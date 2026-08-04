@@ -5,6 +5,7 @@ import type { FieldSpec, NodeSpecInfo, WfNode } from '../../ai/aiClient';
 import { useWorkflows } from '../../data/useWorkflows';
 import { useWorkspace } from '../../data/useWorkspace';
 import { AiMarkdown } from '../../ai/AiMarkdown';
+import { AiBuilderPanel } from './AiBuilderPanel';
 import { CATEGORY, NODE_W, inPortY, nodeHeight, outPortY } from './shared';
 
 /**
@@ -453,6 +454,9 @@ export function WorkflowEditor() {
             </div>
           )}
         </div>
+
+        {/* AI Workflow Builder — permanent, alongside the inspector */}
+        <AiBuilderPanel />
       </div>
 
       {/* run panel */}

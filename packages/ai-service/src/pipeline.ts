@@ -12,6 +12,8 @@ import { ProjectMemory, type MemoryItem } from './memory';
 import { loadProfile, type ProjectProfile } from './profile';
 import { homePath } from './persist';
 import { RuntimeManager } from './provider';
+import { isModelValidForProvider } from './provider/modelValidation';
+import { ProviderHttpError, translateProviderError } from './provider/errorTranslator';
 import { runGraphify } from './graphify';
 import {
   runIntelligencePipeline,
@@ -55,31 +57,35 @@ export interface NormalizedError { type: string; message: string; retryable: boo
 
 /**
  * Classifies thrown errors into a stable, user-facing shape. Provider
- * adapters throw `Error(\`API error ${status}: ...\`)` on non-2xx HTTP
- * responses (see provider/adapters/base.ts and friends) and surface
- * `AbortError`/`TimeoutError` on cancellation or timeout — this is the one
- * place that turns those into `{ type, retryable }` so 401/404 stop
- * retrying immediately while 429/5xx/timeouts/network failures retry.
+ * adapters throw `ProviderHttpError` on non-2xx HTTP responses (see
+ * provider/adapters/base.ts and friends), which carries the real status +
+ * response body — errorTranslator.ts turns that into a friendly, correctly
+ * categorized message (e.g. a 403 body of "NOT_ENOUGH_BALANCE" becomes a
+ * billing error, not "Authentication failed"), never a raw provider
+ * payload. `AbortError`/`TimeoutError` and generic network failures are
+ * handled here directly since they never reach a provider response at all.
  */
-function normalize(e: unknown): NormalizedError {
+function normalize(e: unknown, providerLabel?: string): NormalizedError {
   const err = e as Error;
-  const message = err?.message ?? String(e);
   if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
-    return { type: 'timeout', message: 'The request timed out.', retryable: true };
+    return { type: 'timeout', message: providerLabel ? `The request to ${providerLabel} timed out.` : 'The request timed out.', retryable: true };
   }
-  // Every adapter throws its own `"<Provider> error <status>: ..."` string
-  // (see provider/adapters/{base,anthropic,gemini}.ts) — match any of them.
-  const statusMatch = /\berror (\d{3}):/i.exec(message);
+  if (e instanceof ProviderHttpError) {
+    return translateProviderError(e.providerName, e.status, e.body);
+  }
+  const message = err?.message ?? String(e);
+  // Defensive fallback for any error that reaches here as a plain Error
+  // instead of a ProviderHttpError (e.g. a future adapter that forgets to
+  // throw the structured form) — parses the same "<Provider> error
+  // <status>: <body>" shape adapters format their messages as, so nothing
+  // regresses to a raw, uncategorized provider string.
+  const statusMatch = /\berror (\d{3}):\s*([\s\S]*)$/i.exec(message);
   if (statusMatch) {
-    const status = Number(statusMatch[1]);
-    if (status === 401 || status === 403) return { type: 'auth', message, retryable: false };
-    if (status === 404) return { type: 'not_found', message, retryable: false };
-    if (status === 429) return { type: 'rate_limit', message, retryable: true };
-    if (status >= 500) return { type: 'server_error', message, retryable: true };
-    return { type: 'http_error', message, retryable: false };
+    return translateProviderError(providerLabel ?? 'The AI provider', Number(statusMatch[1]), statusMatch[2]);
   }
   if (/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network/i.test(message)) {
-    return { type: 'network', message, retryable: true };
+    const label = providerLabel ?? 'the AI provider';
+    return { type: 'network', message: `Could not reach ${label}.\n\nCheck your network connection and try again.`, retryable: true };
   }
   return { type: 'unknown', message, retryable: false };
 }
@@ -101,7 +107,7 @@ function withTimeout<T>(fn: () => Promise<T>, timeoutMs: number, onTimeout: () =
 /** Retries only classifications marked `retryable`, with capped exponential backoff. */
 async function withRetry<T>(
   fn: () => Promise<T>,
-  opts: { maxRetries: number; signal?: AbortSignal },
+  opts: { maxRetries: number; signal?: AbortSignal; providerLabel?: string },
 ): Promise<{ ok: true; value: T } | { ok: false; error: NormalizedError }> {
   let lastError: NormalizedError = { type: 'unknown', message: 'Unknown error', retryable: false };
   for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
@@ -109,7 +115,7 @@ async function withRetry<T>(
     try {
       return { ok: true, value: await fn() };
     } catch (e) {
-      lastError = normalize(e);
+      lastError = normalize(e, opts.providerLabel);
       if (!lastError.retryable || attempt === opts.maxRetries) break;
       await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** attempt, 4000)));
     }
@@ -120,6 +126,18 @@ async function withRetry<T>(
 const NO_PROVIDER: NormalizedError = {
   type: 'no_provider',
   message: 'No AI provider connected. Add your API key in Settings to use AURA\'s AI.',
+  retryable: false,
+};
+
+// Sent instead of ever making a request for a provider/model pair that
+// isn't real — this is what stands between the user and a raw provider
+// 404. See provider/modelValidation.ts for what "valid" means. Type
+// 'configuration' matches errorTranslator's category scheme (this is the
+// "invalid provider/model combination" case caught before a request is
+// ever sent, rather than one translated from a provider's response).
+const INVALID_MODEL: NormalizedError = {
+  type: 'configuration',
+  message: 'The selected model is not available for the active provider.',
   retryable: false,
 };
 
@@ -457,6 +475,9 @@ export class PipelineManager {
     const meta = await this.inspect(text);
     const runtime = this.runtimeManager.runtime;
     if (!runtime) return { ok: false as const, error: NO_PROVIDER, meta };
+    if (!isModelValidForProvider(this.runtimeManager.getProviderId(), this.runtimeManager.getModel())) {
+      return { ok: false as const, error: INVALID_MODEL, meta };
+    }
     const t0 = performance.now();
     const onAbort = () => runtime.cancel();
     signal?.addEventListener('abort', onAbort);
@@ -467,12 +488,12 @@ export class PipelineManager {
         temperature: this.settings.temperature,
         maxTokens: this.settings.maxTokens,
       };
+      const providerLabel = this.runtimeManager.providerLabel;
       const result = await withRetry(
         () => withTimeout(() => runtime.generate(request), this.settings.timeoutMs, () => runtime.cancel()),
-        { maxRetries: this.settings.maxRetries, signal },
+        { maxRetries: this.settings.maxRetries, signal, providerLabel },
       );
       if (!result.ok) return { ok: false as const, error: result.error, meta };
-      const providerLabel = this.runtimeManager.providerLabel;
       const latencyMs = Math.round(performance.now() - t0);
       return {
         ok: true as const,
@@ -488,7 +509,7 @@ export class PipelineManager {
         trace: [{ stage: 'generation', startedAt: t0, durationMs: latencyMs, ok: true }],
       };
     } catch (e) {
-      return { ok: false as const, error: normalize(e), meta };
+      return { ok: false as const, error: normalize(e, this.runtimeManager.providerLabel), meta };
     } finally {
       signal?.removeEventListener('abort', onAbort);
     }
@@ -500,6 +521,9 @@ export class PipelineManager {
   ): Promise<{ ok: true; text: string; usage: unknown } | { ok: false; error: NormalizedError }> {
     const runtime = this.runtimeManager.runtime;
     if (!runtime) return { ok: false, error: NO_PROVIDER };
+    if (!isModelValidForProvider(this.runtimeManager.getProviderId(), this.runtimeManager.getModel())) {
+      return { ok: false, error: INVALID_MODEL };
+    }
     const onAbort = () => runtime.cancel();
     signal?.addEventListener('abort', onAbort);
     try {
@@ -517,14 +541,15 @@ export class PipelineManager {
         maxTokens: this.settings.maxTokens,
       };
       if (input.json) request.maxTokens = Math.min(request.maxTokens ?? 4096, 8096);
+      const providerLabel = this.runtimeManager.providerLabel;
       const result = await withRetry(
         () => withTimeout(() => runtime.generate(request), this.settings.timeoutMs, () => runtime.cancel()),
-        { maxRetries: this.settings.maxRetries, signal },
+        { maxRetries: this.settings.maxRetries, signal, providerLabel },
       );
       if (!result.ok) return { ok: false, error: result.error };
       return { ok: true, text: result.value.content, usage: result.value.usage };
     } catch (e) {
-      return { ok: false, error: normalize(e) };
+      return { ok: false, error: normalize(e, this.runtimeManager.providerLabel) };
     } finally {
       signal?.removeEventListener('abort', onAbort);
     }
@@ -541,6 +566,10 @@ export class PipelineManager {
     }
     const runtime = this.runtimeManager.runtime;
     if (!runtime) { emit({ type: 'error', error: NO_PROVIDER }); return; }
+    if (!isModelValidForProvider(this.runtimeManager.getProviderId(), this.runtimeManager.getModel())) {
+      emit({ type: 'error', error: INVALID_MODEL });
+      return;
+    }
     const onAbort = () => runtime.cancel();
     signal?.addEventListener('abort', onAbort);
     const t0 = performance.now();
@@ -576,7 +605,7 @@ export class PipelineManager {
         signal?.removeEventListener('abort', onAbort);
         return;
       } catch (e) {
-        lastError = normalize(e);
+        lastError = normalize(e, this.runtimeManager.providerLabel);
         if (emittedAnyToken || !lastError.retryable || attempt === this.settings.maxRetries) break;
         await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** attempt, 4000)));
       }

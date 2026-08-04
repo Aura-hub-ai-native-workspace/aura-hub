@@ -140,7 +140,7 @@ export interface HealthResult {
 }
 
 /* ── Mission Control types now live in `missionClient.ts` (its own file, mirroring `diagnosisClient.ts`'s split from this one) ── */
-export interface AiSettings { model: string; streaming: boolean; temperature: number; maxTokens: number; timeoutMs: number; maxRetries: number }
+export interface AiSettings { streaming: boolean; temperature: number; maxTokens: number; timeoutMs: number; maxRetries: number }
 export interface SettingsResult { settings: AiSettings; key: { configured: boolean; fingerprint: string } }
 
 export interface InspectResult {
@@ -303,6 +303,8 @@ export const aiClient = {
   duplicateWorkflow: (id: string) => jpost<Workflow>(`/workflows/${id}/duplicate`, {}),
   removeWorkflow: (id: string) => jsend<{ ok: boolean }>('DELETE', `/workflows/${id}`),
   importWorkflow: (def: unknown) => jpost<Workflow>('/workflows/import', { def }),
+  /** The AI Workflow Builder — natural language to a real, saved, validated workflow graph. */
+  generateWorkflow: (text: string) => jpost<Workflow | { error: string }>('/workflows/generate', { text }),
 
   async runWorkflow(id: string, inputs: Record<string, string>, onEvent: (e: WfRunEvent) => void, signal?: AbortSignal): Promise<void> {
     let res: Response;

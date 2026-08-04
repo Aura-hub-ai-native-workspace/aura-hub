@@ -877,7 +877,7 @@ export class WorkspaceManager {
     } catch { models = []; }
     const health = await adapter.checkHealth(apiKey);
     storeHealth(providerId, health);
-    this.pipeline.runtimeManager.switchToProvider(providerId, models[0]?.id);
+    await this.pipeline.runtimeManager.switchToProvider(providerId, models[0]?.id);
     return { ok: true, fingerprint, models };
   }
 
@@ -893,7 +893,7 @@ export class WorkspaceManager {
     this.pipeline.runtimeManager.deactivate();
   }
 
-  switchToProvider(providerId: string, model?: string): { ok: boolean; error?: string } {
+  async switchToProvider(providerId: string, model?: string): Promise<{ ok: boolean; error?: string }> {
     const adapter = getAdapter(providerId);
     if (!adapter) return { ok: false, error: 'Unknown provider' };
     const apiKey = getKey(providerId);
@@ -901,7 +901,7 @@ export class WorkspaceManager {
     // RuntimeManager.switchToProvider() persists the active pointer itself
     // (credentialStore.setActive) — only on success, so a failed switch never
     // leaves the store pointing at a provider with no working runtime.
-    const switched = this.pipeline.runtimeManager.switchToProvider(providerId, model);
+    const switched = await this.pipeline.runtimeManager.switchToProvider(providerId, model);
     return switched ? { ok: true } : { ok: false, error: 'Failed to activate runtime' };
   }
 

@@ -4,8 +4,10 @@ import { WorkspaceManager } from './workspace';
 import type { PipelineOptions, StreamEmit } from './pipeline';
 import { DEFAULT_SETTINGS } from './settings';
 import type { MemoryKind } from './memory';
+import type { ConfidenceLevel, ImportanceLevel, MemoryCategory } from '@aura/engineering-memory';
 import { nodeSpecInfos } from './workflow/nodes';
 import { TEMPLATES, instantiateTemplate } from './workflow/templates';
+import { generateWorkflow } from './workflow/generate';
 import type { RunEvent, Workflow } from './workflow/types';
 import { setupProviders } from './provider';
 import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
@@ -142,7 +144,7 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           return json(res, 200, { ok: true, status: p.providerStatus });
         }
         const model = String(b.model ?? '');
-        const result = manager.switchToProvider(providerId, model || undefined);
+        const result = await manager.switchToProvider(providerId, model || undefined);
         return json(res, result.ok ? 200 : 400, { ok: result.ok, status: p.providerStatus, error: result.error });
       }
       if ((method === 'GET' || method === 'POST') && seg[0] === 'providers' && seg[1] === 'models') {
@@ -229,6 +231,31 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             return item ? json(res, 200, item) : json(res, 404, { error: 'no such memory' });
           }
           if (seg.length === 4 && method === 'DELETE') return json(res, 200, { ok: manager.removeMemory(id, memId) });
+        }
+        if (seg[2] === 'engineering-memory') {
+          // The richer Engineering Memory platform (missions/diagnoses/decisions/
+          // patches) — distinct from the simple Project Memory above. The manager
+          // methods already exist (used internally on mission/diagnosis events);
+          // this just exposes them over HTTP for the first time.
+          if (method === 'GET') return json(res, 200, { items: manager.listEngineeringMemory(id) });
+          if (method === 'POST') {
+            const b = await readJson(req);
+            const item = manager.addEngineeringMemory({
+              projectId: id,
+              category: (b.category as MemoryCategory) ?? 'knowledge-update',
+              importance: (b.importance as ImportanceLevel) ?? 'medium',
+              confidence: (b.confidence as ConfidenceLevel) ?? 'medium',
+              relatedFiles: Array.isArray(b.relatedFiles) ? b.relatedFiles.map(String) : [],
+              relatedSymbols: Array.isArray(b.relatedSymbols) ? b.relatedSymbols.map(String) : [],
+              relatedMissionId: typeof b.relatedMissionId === 'string' ? b.relatedMissionId : undefined,
+              relatedDiagnosisId: typeof b.relatedDiagnosisId === 'string' ? b.relatedDiagnosisId : undefined,
+              tags: Array.isArray(b.tags) ? b.tags.map(String) : [],
+              summary: String(b.summary ?? ''),
+              detailedRecord: String(b.detailedRecord ?? ''),
+              references: Array.isArray(b.references) ? b.references : [],
+            });
+            return json(res, 200, item);
+          }
         }
         if (seg[2] === 'diagnose') {
           if (seg.length === 3 && method === 'GET') return json(res, 200, { diagnoses: manager.listDiagnoses(id) });
@@ -386,6 +413,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         if (seg[1] === 'specs' && method === 'GET') return json(res, 200, { specs: nodeSpecInfos() });
         if (seg[1] === 'templates' && method === 'GET') return json(res, 200, { templates: TEMPLATES.map((t) => ({ id: t.id, name: t.name, description: t.description, category: t.category, nodeCount: t.nodes.length })) });
         if (seg[1] === 'import' && method === 'POST') { const b = await readJson(req); return json(res, 200, wfs.import((b.def ?? b) as Partial<Workflow>)); }
+        if (seg[1] === 'generate' && method === 'POST') {
+          const b = await readJson(req);
+          const result = await generateWorkflow(p, String(b.text ?? ''));
+          if (!result.ok) return json(res, 400, { error: result.error });
+          const { ok: _ok, ...graph } = result;
+          const wf = wfs.create({ name: graph.name, description: graph.description, category: 'AI Generated', nodes: graph.nodes, edges: graph.edges });
+          return json(res, 200, wf);
+        }
         if (seg.length === 1) {
           if (method === 'GET') return json(res, 200, { workflows: wfs.list() });
           if (method === 'POST') {
@@ -397,7 +432,15 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         }
         const id = seg[1];
         if (seg[2] === 'duplicate' && method === 'POST') { const wf = wfs.duplicate(id); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
-        if (seg[2] === 'export' && method === 'GET') { const wf = wfs.get(id); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
+        if (seg[2] === 'export' && method === 'GET') {
+          const wf = wfs.get(id);
+          if (!wf) return json(res, 404, { error: 'no such workflow' });
+          // Export is for sharing/portability (copy elsewhere, check into
+          // version control) — never include this workflow's private
+          // trigger secret in that.
+          const { webhookToken: _drop, ...portable } = wf;
+          return json(res, 200, portable);
+        }
         if (seg[2] === 'run' && method === 'POST') {
           const wf = wfs.get(id);
           if (!wf) return json(res, 404, { error: 'no such workflow' });
@@ -413,6 +456,31 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           }
           if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
           return;
+        }
+        if (seg[2] === 'webhook-token' && method === 'POST') {
+          const b = await readJson(req);
+          const token = b.rotate === true ? wfs.rotateWebhookToken(id) : wfs.ensureWebhookToken(id);
+          if (!token) return json(res, 404, { error: 'no such workflow' });
+          return json(res, 200, { token, path: `/workflows/${id}/trigger/${token}` });
+        }
+        // Inbound trigger — an external system (GitHub's own webhook config,
+        // or anything else) can start a run by POSTing here with the token
+        // from the endpoint above. This is a fire-and-forget receiver, not
+        // an SSE stream: webhook senders expect a fast ack, and there's no
+        // client waiting to consume run events here, so the run executes in
+        // the background against whichever project is currently mounted —
+        // the same constraint the manual Run button already has.
+        if (seg[2] === 'trigger' && method === 'POST') {
+          const token = seg[3] ?? '';
+          const wf = wfs.verifyWebhookToken(id, token);
+          if (!wf) return json(res, 404, { error: 'no such workflow, or an invalid trigger token' });
+          const payload = await readJson(req);
+          const inputs: Record<string, string> = {};
+          for (const n of wf.nodes) if (n.type === 'user-input') inputs[n.id] = JSON.stringify(payload);
+          void manager.runWorkflow(wf, inputs, () => {}).catch((e) => {
+            console.error(`[workflow trigger] run failed for ${id}:`, (e as Error).message);
+          });
+          return json(res, 202, { accepted: true });
         }
         if (seg.length === 2) {
           if (method === 'GET') { const wf = wfs.get(id); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }

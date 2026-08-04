@@ -1,5 +1,4 @@
 export interface AiSettings {
-  model: string;
   streaming: boolean;
   temperature: number;
   maxTokens: number;
@@ -8,7 +7,6 @@ export interface AiSettings {
 }
 
 export const DEFAULT_SETTINGS: AiSettings = {
-  model: '',
   streaming: true,
   temperature: 0.4,
   maxTokens: 4096,

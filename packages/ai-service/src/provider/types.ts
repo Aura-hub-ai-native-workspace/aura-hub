@@ -25,6 +25,8 @@ export interface ProviderMetadata {
   name: string;
   description: string;
   docsUrl?: string;
+  /** The model `createRuntime()` falls back to when none is supplied — the single source both runtime construction and model validation (see provider/modelValidation.ts) read from, instead of a literal only `createRuntime()` could see. */
+  defaultModel: string;
 }
 
 export interface ProviderHealth {

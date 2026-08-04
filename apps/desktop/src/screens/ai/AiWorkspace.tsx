@@ -46,7 +46,7 @@ export function AiWorkspace() {
   useEffect(() => {
     let alive = true;
     aiClient.health().then((h) => alive && setHealth(h)).catch(() => alive && setHealth(null));
-    aiClient.getSettings().then((s) => alive && setModel(s.settings.model)).catch(() => {});
+    aiClient.getProviders().then((r) => alive && setModel(r.status?.model ?? '')).catch(() => {});
     return () => { alive = false; };
   }, []);
 
@@ -405,7 +405,11 @@ function Kv({ k, v, clamp }: { k: string; v: string; clamp?: boolean }) {
 function errorTitle(type?: string): string {
   switch (type) {
     case 'auth': return 'Authentication failed';
+    case 'authorization': return 'Permission denied';
+    case 'billing': return 'No credits remaining';
     case 'rate_limit': return 'Rate limited';
+    case 'model': return 'Model unavailable';
+    case 'configuration': return 'Invalid provider/model configuration';
     case 'timeout': return 'Request timed out';
     case 'network': return 'Cannot reach provider';
     case 'server_error': return 'Provider error';
