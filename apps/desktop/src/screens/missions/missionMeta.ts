@@ -7,7 +7,6 @@
 import type { StatusTone } from '@aura/core';
 import type { IconName } from '@aura/ui';
 import type {
-  CheckpointStatus,
   ExecutionStatus,
   ExecutionTaskStatus,
   MissionCategory,
@@ -102,21 +101,6 @@ export const RUNTIME_STATUS_LABEL: Record<ExecutionTaskStatus, string> = {
   rollback: 'Rollback',
 };
 
-export const RUNTIME_STATUS_TONE: Record<ExecutionTaskStatus, StatusTone> = {
-  queued: 'neutral',
-  waiting: 'neutral',
-  blocked: 'critical',
-  running: 'info',
-  paused: 'attention',
-  review: 'info',
-  completed: 'positive',
-  rejected: 'critical',
-  cancelled: 'neutral',
-  retrying: 'attention',
-  failed: 'critical',
-  rollback: 'critical',
-};
-
 export const TASK_STATUS_TONE: Record<TaskStatus, StatusTone> = {
   pending: 'neutral',
   proposed: 'info',
@@ -162,14 +146,6 @@ export const CHECKPOINT_LABEL: Record<string, string> = {
   execution: 'Execution',
   review: 'Mission review',
   completion: 'Completion',
-};
-
-export const CHECKPOINT_STATUS_TONE: Record<CheckpointStatus, StatusTone> = {
-  'not-started': 'neutral',
-  pending: 'info',
-  passed: 'positive',
-  failed: 'critical',
-  skipped: 'neutral',
 };
 
 export const STAGE_LABEL: Record<CreationStage, string> = {
