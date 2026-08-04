@@ -163,21 +163,11 @@ keeps the gallery honest.
 - **Description:** AI Settings (`screens/ai/AiSettings.tsx`) with 3+ providers connected and one active.
 - **Camera / frame:** Full window or full panel.
 - **Window layout:** Settings → AI Provider screen.
-- **UI state:** At least 3 connected providers listed (mix of the 10 supported: OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, OpenRouter, Novita), one clearly marked Active with a green health/latency indicator, model dropdown showing real discovered models for the active provider.
+- **UI state:** At least 3 connected providers listed (mix of the 9 supported: OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, OpenRouter), one clearly marked Active with a green health/latency indicator, model dropdown showing real discovered models for the active provider.
 - **Data:** Real provider connections (fingerprinted key display, not raw keys — the product already redacts these).
 - **Filename:** `12-provider-settings.png`
 
-### 13 — Provider Validation (error handling)
-
-- **Purpose:** Prove the platform's reliability engineering, not just its happy path — this is a differentiator most AI tools don't bother to show.
-- **Description:** A friendly, translated provider error in context (e.g. AI Chat or the Workflow Builder), demonstrating the provider error translator: a category-specific message (billing / rate-limit / model), never raw provider JSON.
-- **Camera / frame:** The panel showing the error state, cropped tightly enough to read the message clearly.
-- **Window layout:** Whichever surface naturally shows the error state best (AI Chat's inline error card is recommended — `screens/ai/AiWorkspace.tsx`'s error rendering).
-- **UI state:** A real triggered error (e.g. temporarily using an exhausted-quota key, or a genuinely rate-limited provider) with the friendly title + explanation shown, plus a visible "Try again" affordance.
-- **Data:** A real captured error — do not hand-type a fake error message into the DOM for the screenshot; trigger a genuine one.
-- **Filename:** `13-provider-validation.png`
-
-### 14 — Command Bar / Universal Search
+### 13 — Command Bar / Universal Search
 
 - **Purpose:** Shows the "environment" feel — keyboard-first, everything reachable from one place.
 - **Description:** The command palette (`shell/CommandBar.tsx`) or Universal Search (`ops/UniversalSearch.tsx`) open mid-query with results.
@@ -185,7 +175,7 @@ keeps the gallery honest.
 - **Window layout:** Palette open over the Home or Workspace screen.
 - **UI state:** A real query typed with a results list showing a mix of result types (commands, projects, files, panels) — not an empty "type to search" state.
 - **Data:** Real matched results from the sample project.
-- **Filename:** `14-command-palette.png`
+- **Filename:** `13-command-palette.png`
 
 ---
 
@@ -193,4 +183,4 @@ keeps the gallery honest.
 
 1. Drop each PNG into this folder using the exact filename above.
 2. Optimize file size (`pngquant` or similar) — target under ~400KB per image without visible quality loss.
-3. Remove this note once all 14 are in place — the README gallery is already wired to these paths and needs no further edits.
+3. Remove this note once all 13 are in place — the README gallery is already wired to these paths and needs no further edits.

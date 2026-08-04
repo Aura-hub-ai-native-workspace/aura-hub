@@ -1495,8 +1495,8 @@ To integrate with the Engineering Memory Platform:
 
 ## 20. References
 
-- [Engineering Intelligence Platform Architecture](../ENGINEERING_INTELLIGENCE_PLATFORM.md)
-- [AURA Main Architecture](../../ARCHITECTURE.md)
+- [Engineering Intelligence Platform Architecture](ENGINEERING_INTELLIGENCE_PLATFORM.md)
+- [AURA Main Architecture](../ARCHITECTURE.md)
 - [Knowledge Fabric Implementation](../../packages/knowledge-fullstack/)
 - [Retrieval System Implementation](../../packages/retrieval/)
 

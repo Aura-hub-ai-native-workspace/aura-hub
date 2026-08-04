@@ -87,7 +87,7 @@ All data is stored in `~/.aura/engineering-memory/` with the following structure
 
 ## API Reference
 
-See [Engineering Memory Architecture Documentation](../docs/architecture/ENGINEERING_MEMORY_ARCHITECTURE.md) for complete API reference.
+See [Engineering Memory Architecture Documentation](../../docs/architecture/ENGINEERING_MEMORY_ARCHITECTURE.md) for complete API reference.
 
 ## Integration
 

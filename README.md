@@ -47,7 +47,7 @@ every feature, works identically regardless of which one you pick.
   this diff remove a public export) are answered by real parsing and
   arithmetic. The model's job is narrowed to what only a model can do:
   explain a cause in prose, draft a plausible patch.
-- **No vendor lock-in.** Ten AI providers are supported today through
+- **No vendor lock-in.** Nine AI providers are supported today through
   one shared adapter interface. Switching providers — or model, mid
   conversation — is a first-class, validated operation, never a
   reconfiguration.
@@ -72,8 +72,7 @@ every feature, works identically regardless of which one you pick.
 | 🏗️ **Architecture Blueprint** | A layered, structural view of the system — modules, dependencies, boundaries — distinct from the raw code graph, built from the same real analysis. |
 | 🧩 **Engineering Intelligence** | The umbrella layer tying knowledge, governance, and prediction together: health scoring, architecture drift detection, technical debt tracking, and deterministic risk prediction — all evidence-based, zero fabricated metrics. |
 | 💾 **Engineering Memory** | A persistent, queryable memory of engineering decisions, patterns, and learnings — grounded in real project history, so the platform gains experience instead of re-deriving everything every session. |
-| 🔌 **Multi-Provider AI** | Ten BYOAK (bring-your-own-key) providers behind one shared adapter interface — OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, OpenRouter, and Novita AI. Adding a provider is a ~15-line adapter, not a rewrite. |
-| ✅ **Provider Validation** | The application can never send a request with an invalid provider/model pair — validated on provider switch, on startup, and immediately before every request, with provider errors translated into friendly, categorized messages instead of raw JSON. |
+| 🔌 **Multi-Provider AI** | Nine BYOAK (bring-your-own-key) providers behind one shared adapter interface — OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, and OpenRouter. Adding a provider is a small, self-contained adapter, not a rewrite. |
 
 <details>
 <summary><strong>How these fit together</strong> (click to expand)</summary>
@@ -107,7 +106,7 @@ to features built after this sentence was written.
 | ![Automation Studio](docs/assets/screenshots/07-automation-studio.png) **Automation Studio**<br>The workflow library — 10 real starter templates organized by category. | ![Knowledge Graph](docs/assets/screenshots/08-knowledge-graph.png) **Knowledge Graph**<br>AST-based structural graph with god-node and community detection. |
 | ![Architecture Blueprint](docs/assets/screenshots/09-architecture-blueprint.png) **Architecture Blueprint**<br>Layered module structure and dependency boundaries. | ![Engineering Memory](docs/assets/screenshots/10-engineering-memory.png) **Engineering Memory**<br>Persistent decisions, patterns, and learnings over time. |
 | ![Engineering Governance](docs/assets/screenshots/11-engineering-governance.png) **Engineering Governance**<br>Health scoring, drift detection, and release readiness. | ![Multi-Provider AI Settings](docs/assets/screenshots/12-provider-settings.png) **Multi-Provider AI**<br>Multiple BYOAK providers connected, one active, model discovery live. |
-| ![Provider Validation](docs/assets/screenshots/13-provider-validation.png) **Provider Validation**<br>A translated, friendly provider error — never raw JSON. | ![Command Bar](docs/assets/screenshots/14-command-palette.png) **Command Bar**<br>Keyboard-first navigation across the whole environment. |
+| ![Command Bar](docs/assets/screenshots/13-command-palette.png) **Command Bar**<br>Keyboard-first navigation across the whole environment. | |
 
 ## Product Architecture
 
@@ -115,7 +114,7 @@ to features built after this sentence was written.
 graph TD
     subgraph Desktop["apps/desktop — React 18 + Vite + Tauri v2"]
         Shell["App Shell<br/>nav · command bar · status bar"]
-        Workspace["Window Manager<br/>floating panels, workspace canvas"]
+        Workspace["Window Manager<br/>dockable, floating panels"]
         Screens["Mission Control · Workflows ·<br/>Governance · Knowledge · Settings"]
     end
 
@@ -139,7 +138,7 @@ graph TD
         Automation["Automation Engine"]
     end
 
-    Providers[("OpenAI · Anthropic · Gemini · Groq<br/>Mistral · Cerebras · Kimi · NVIDIA<br/>OpenRouter · Novita AI")]
+    Providers[("OpenAI · Anthropic · Gemini · Groq<br/>Mistral · Cerebras · Kimi · NVIDIA<br/>OpenRouter")]
 
     Desktop --> Design
     Desktop -->|"HTTP + SSE"| Backend
@@ -177,7 +176,7 @@ and theming: [`docs/DESIGN.md`](docs/DESIGN.md). Provider system detail:
 <table>
 <tr><td><strong>Frontend</strong></td><td>React 18.3 · TypeScript 5.4 · Vite 5.3 · Tailwind CSS 3.4 · Framer Motion · Zustand · Monaco Editor</td></tr>
 <tr><td><strong>Backend</strong></td><td>Node.js ≥18.18 · a flat <code>http.createServer</code> router (no framework) + Server-Sent Events for streaming</td></tr>
-<tr><td><strong>AI</strong></td><td>Provider-agnostic BYOAK runtime — 10 adapters (OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, OpenRouter, Novita AI) behind one shared interface</td></tr>
+<tr><td><strong>AI</strong></td><td>Provider-agnostic BYOAK runtime — 9 adapters (OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, OpenRouter) behind one shared interface</td></tr>
 <tr><td><strong>Storage</strong></td><td>Local filesystem only — encrypted (AES-256-GCM) credential store, JSON-backed project/mission/memory/automation state under <code>~/.aura</code>. No external database.</td></tr>
 <tr><td><strong>Native shell</strong></td><td>Tauri v2 (Rust 1.77+) — thin native core, small binaries, the same web build runs in-browser or natively</td></tr>
 <tr><td><strong>Monorepo</strong></td><td>npm workspaces + TypeScript project references — packages are consumed as source, no per-package build step, instant HMR</td></tr>

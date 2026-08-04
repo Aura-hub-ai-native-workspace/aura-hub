@@ -9,8 +9,8 @@ land on any `0.x` release.
 
 ## [Unreleased]
 
-Substantial platform expansion beyond the `v0.1` presentation build,
-currently on `main` pending the next tagged release:
+Committed to `presentation-v0.1`, pending review before any merge to
+`main`:
 
 - **Mission Control v3** — a real DAG execution engine on top of
   planning/approval: dependency-aware task ordering, blocked/waiting/
@@ -33,18 +33,26 @@ currently on `main` pending the next tagged release:
   dependency changes, PR merged) with conditions, retries, and a full
   execution timeline. See
   [`docs/architecture/AUTOMATION_ENGINE.md`](docs/architecture/AUTOMATION_ENGINE.md).
-- **Provider system hardening** — centralized provider/model validation
-  so an invalid provider/model pair can never be sent to a request path;
-  startup and provider-switch auto-repair; a dedicated error translator
-  that classifies provider failures (billing, auth, authorization, rate
-  limit, model, network) into friendly messages instead of raw provider
-  JSON. See [`docs/architecture/PROVIDER_INTEGRATION.md`](docs/architecture/PROVIDER_INTEGRATION.md).
-- **Novita AI provider** — added as a full first-class BYOAK adapter.
-- **Window manager rework** — floating-window workspace canvas, window
-  switcher, and a consolidated panel system replacing the earlier
-  single-pane workspace.
 - Repository productization: LICENSE, community health files, screenshot
   gallery infrastructure, and this changelog.
+- **CI reliability fix** — every historical CI run had failed (100%,
+  including on `main`): committed `.tsbuildinfo` incremental-build
+  caches made `tsc -b` falsely believe composite packages were already
+  built on a fresh checkout, when their `dist/` output was correctly
+  never committed. Untracked the stale caches and fixed the typecheck
+  script's build order. CI is green as of this release.
+- **Repository cleanup** — untracked `graphify-out/`'s AST cache and
+  historical daily snapshot backups (unbounded growth, ~35MB), removed
+  a dead unreferenced static asset, and removed an unused `three`
+  dependency.
+- Fixed three broken relative-path links across existing architecture
+  docs.
+
+Not yet committed to this branch (real, working locally, pending a
+separate, deliberate commit — not included here to avoid claiming
+unshipped work as shipped): provider system hardening (centralized
+provider/model validation, error translation), the Novita AI adapter,
+and a window-manager rework (floating panels, workspace canvas).
 
 ## [0.1.0] - 2026-07-31 — AURA Presentation Build
 
