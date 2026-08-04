@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "AURA Engineering Memory Platform — persistent memory, pattern recognition, experience tracking, and decision history for engineering intelligence.",
+  "license": "Apache-2.0",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {

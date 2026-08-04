@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "AURA Hub desktop app — the operating environment shell (React + Vite + Tauri).",
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

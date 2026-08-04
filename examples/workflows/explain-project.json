@@ -1,0 +1,126 @@
+{
+  "name": "Explain Project",
+  "description": "The canonical chain: Project → Memory → Coding KE → FullStack KE → Groq → saved answer.",
+  "category": "Docs",
+  "nodes": [
+    {
+      "id": "proj",
+      "type": "current-project",
+      "x": 40,
+      "y": 160,
+      "config": {}
+    },
+    {
+      "id": "mem",
+      "type": "project-memory",
+      "x": 320,
+      "y": 40,
+      "config": {}
+    },
+    {
+      "id": "code",
+      "type": "coding-engine",
+      "x": 320,
+      "y": 160,
+      "config": {}
+    },
+    {
+      "id": "fs",
+      "type": "fullstack-engine",
+      "x": 320,
+      "y": 280,
+      "config": {}
+    },
+    {
+      "id": "prompt",
+      "type": "prompt",
+      "x": 620,
+      "y": 160,
+      "config": {
+        "template": "Explain this project to a new engineer: what it is, how it works, and where to start reading.\n\n{{input}}"
+      }
+    },
+    {
+      "id": "ai",
+      "type": "groq",
+      "x": 900,
+      "y": 160,
+      "config": {}
+    },
+    {
+      "id": "save",
+      "type": "save-memory",
+      "x": 1180,
+      "y": 60,
+      "config": {
+        "kind": "learning",
+        "title": "Project explanation"
+      }
+    },
+    {
+      "id": "out",
+      "type": "output",
+      "x": 1180,
+      "y": 260,
+      "config": {
+        "title": "Project explanation"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-proj-out-mem",
+      "from": "proj",
+      "fromPort": "out",
+      "to": "mem"
+    },
+    {
+      "id": "e-proj-out-code",
+      "from": "proj",
+      "fromPort": "out",
+      "to": "code"
+    },
+    {
+      "id": "e-proj-out-fs",
+      "from": "proj",
+      "fromPort": "out",
+      "to": "fs"
+    },
+    {
+      "id": "e-mem-out-prompt",
+      "from": "mem",
+      "fromPort": "out",
+      "to": "prompt"
+    },
+    {
+      "id": "e-code-out-prompt",
+      "from": "code",
+      "fromPort": "out",
+      "to": "prompt"
+    },
+    {
+      "id": "e-fs-out-prompt",
+      "from": "fs",
+      "fromPort": "out",
+      "to": "prompt"
+    },
+    {
+      "id": "e-prompt-out-ai",
+      "from": "prompt",
+      "fromPort": "out",
+      "to": "ai"
+    },
+    {
+      "id": "e-ai-out-save",
+      "from": "ai",
+      "fromPort": "out",
+      "to": "save"
+    },
+    {
+      "id": "e-ai-out-out",
+      "from": "ai",
+      "fromPort": "out",
+      "to": "out"
+    }
+  ]
+}

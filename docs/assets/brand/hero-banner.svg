@@ -1,0 +1,46 @@
+<svg width="1280" height="360" viewBox="0 0 1280 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AURA Hub — an AI Operating Environment">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="360" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b0d11"/>
+      <stop offset="1" stop-color="#14171d"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.65">
+      <stop offset="0" stop-color="#1d34b5" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#1d34b5" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#00c0f7"/>
+      <stop offset="1" stop-color="#3b6bff"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#ffffff" stroke-opacity="0.035" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="360" fill="url(#bg)"/>
+  <rect width="1280" height="360" fill="url(#grid)"/>
+  <rect width="1280" height="360" fill="url(#glow)"/>
+
+  <!-- AURA mark: two rounded legs meeting at a peak + the signature dot -->
+  <g transform="translate(110,84) scale(0.62)" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 8 190 L 118 12 Q 130 -6 142 12 L 252 190"
+          fill="none" stroke="url(#mark)" stroke-width="34"/>
+    <circle cx="130" cy="150" r="19" fill="url(#mark)"/>
+  </g>
+
+  <text x="280" y="150" font-family="Inter, 'Segoe UI', 'Liberation Sans', sans-serif" font-size="58" font-weight="700" fill="#f7f8fa" letter-spacing="-1">AURA Hub</text>
+  <text x="282" y="192" font-family="Inter, 'Segoe UI', 'Liberation Sans', sans-serif" font-size="21" font-weight="500" fill="#9aa2b2">An AI Operating Environment</text>
+
+  <text x="282" y="252" font-family="Inter, 'Segoe UI', 'Liberation Sans', sans-serif" font-size="16" fill="#6b7385">Knowledge graphs · Workflow automation · Provider-agnostic AI runtime — one coherent environment</text>
+
+  <g font-family="Inter, 'Segoe UI', 'Liberation Sans', sans-serif" font-size="14" fill="#4c5364">
+    <circle cx="286" cy="298" r="3" fill="#1fb567"/>
+    <text x="298" y="303">Apache 2.0</text>
+    <circle cx="402" cy="298" r="3" fill="#3b6bff"/>
+    <text x="414" y="303">TypeScript</text>
+    <circle cx="522" cy="298" r="3" fill="#f5a524"/>
+    <text x="534" y="303">Tauri v2</text>
+    <circle cx="622" cy="298" r="3" fill="#00c0f7"/>
+    <text x="634" y="303">Bring-your-own-key AI</text>
+  </g>
+</svg>

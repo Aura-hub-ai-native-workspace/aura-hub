@@ -8,6 +8,7 @@ dist-ssr
 .aura-index
 .aura-fullstack
 .DS_Store
+Thumbs.db
 .env
 .env.*
 !.env.example
@@ -27,3 +28,11 @@ npm-debug.log*
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# Coverage / test output
+coverage
+*.lcov
+
+# Local AI/agent tooling state — never publish agent config or session state
+.claude
+.openharness

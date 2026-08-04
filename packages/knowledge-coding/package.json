@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "AURA Hub — production Coding Knowledge Engine. Real recursive filesystem indexing, incremental updates, and keyword retrieval over actual project files. No embeddings, no vector search, no mock data.",
+  "license": "Apache-2.0",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {

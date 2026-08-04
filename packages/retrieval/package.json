@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "AURA Hub retrieval & memory foundation — provider-independent interfaces + dummy engines. No embeddings, no indexing, no vector DB, no coupling to any provider/UI/runtime.",
+  "license": "Apache-2.0",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {

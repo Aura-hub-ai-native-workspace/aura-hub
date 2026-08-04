@@ -1,0 +1,101 @@
+{
+  "name": "Security Audit",
+  "description": "Audits auth, secrets and input handling; critical findings are saved to memory.",
+  "category": "Review",
+  "nodes": [
+    {
+      "id": "code",
+      "type": "coding-engine",
+      "x": 40,
+      "y": 60,
+      "config": {
+        "query": "auth token secret password env validation input sanitize"
+      }
+    },
+    {
+      "id": "fs",
+      "type": "fullstack-engine",
+      "x": 40,
+      "y": 260,
+      "config": {
+        "query": "auth guard endpoint middleware database"
+      }
+    },
+    {
+      "id": "md",
+      "type": "generate-markdown",
+      "x": 340,
+      "y": 160,
+      "config": {
+        "instruction": "Security audit: secrets handling, authentication/authorization, input validation, injection risks. Mark each finding LOW/MEDIUM/HIGH/CRITICAL."
+      }
+    },
+    {
+      "id": "cond",
+      "type": "condition",
+      "x": 640,
+      "y": 160,
+      "config": {
+        "check": "matches-regex",
+        "value": "HIGH|CRITICAL"
+      }
+    },
+    {
+      "id": "mem",
+      "type": "save-memory",
+      "x": 920,
+      "y": 60,
+      "config": {
+        "kind": "decision",
+        "title": "Security findings"
+      }
+    },
+    {
+      "id": "out",
+      "type": "output",
+      "x": 920,
+      "y": 260,
+      "config": {
+        "title": "Security audit"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-code-out-md",
+      "from": "code",
+      "fromPort": "out",
+      "to": "md"
+    },
+    {
+      "id": "e-fs-out-md",
+      "from": "fs",
+      "fromPort": "out",
+      "to": "md"
+    },
+    {
+      "id": "e-md-out-cond",
+      "from": "md",
+      "fromPort": "out",
+      "to": "cond"
+    },
+    {
+      "id": "e-cond-true-mem",
+      "from": "cond",
+      "fromPort": "true",
+      "to": "mem"
+    },
+    {
+      "id": "e-cond-true-out",
+      "from": "cond",
+      "fromPort": "true",
+      "to": "out"
+    },
+    {
+      "id": "e-cond-false-out",
+      "from": "cond",
+      "fromPort": "false",
+      "to": "out"
+    }
+  ]
+}

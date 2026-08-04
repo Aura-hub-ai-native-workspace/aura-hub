@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "AURA Hub — production FullStack Knowledge Engine. Understands an entire software system: extracts entities + cross-layer relationships from real files into a persistent project graph. Reuses the frozen Coding Knowledge Engine. No embeddings, no vector search, no mock data.",
+  "license": "Apache-2.0",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {

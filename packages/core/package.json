@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "AURA Hub core — design tokens, motion presets, types, global store, navigation model, mock data.",
+  "license": "Apache-2.0",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {

@@ -1,0 +1,110 @@
+{
+  "name": "Bug Investigation",
+  "description": "Describe a bug; the engines gather suspect code and system paths, Groq proposes root causes.",
+  "category": "Debug",
+  "nodes": [
+    {
+      "id": "ask",
+      "type": "user-input",
+      "x": 40,
+      "y": 160,
+      "config": {
+        "prompt": "Describe the bug",
+        "default": ""
+      }
+    },
+    {
+      "id": "code",
+      "type": "coding-engine",
+      "x": 320,
+      "y": 60,
+      "config": {}
+    },
+    {
+      "id": "fs",
+      "type": "fullstack-engine",
+      "x": 320,
+      "y": 260,
+      "config": {}
+    },
+    {
+      "id": "prompt",
+      "type": "prompt",
+      "x": 620,
+      "y": 160,
+      "config": {
+        "template": "Bug report: {{input}}\n\nInvestigate: likely root causes ranked, the exact code paths involved, and how to verify each hypothesis."
+      }
+    },
+    {
+      "id": "ai",
+      "type": "groq",
+      "x": 900,
+      "y": 160,
+      "config": {}
+    },
+    {
+      "id": "mem",
+      "type": "save-memory",
+      "x": 1180,
+      "y": 60,
+      "config": {
+        "kind": "learning",
+        "title": "Bug investigation"
+      }
+    },
+    {
+      "id": "out",
+      "type": "output",
+      "x": 1180,
+      "y": 260,
+      "config": {
+        "title": "Investigation"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-ask-out-code",
+      "from": "ask",
+      "fromPort": "out",
+      "to": "code"
+    },
+    {
+      "id": "e-ask-out-fs",
+      "from": "ask",
+      "fromPort": "out",
+      "to": "fs"
+    },
+    {
+      "id": "e-code-out-prompt",
+      "from": "code",
+      "fromPort": "out",
+      "to": "prompt"
+    },
+    {
+      "id": "e-fs-out-prompt",
+      "from": "fs",
+      "fromPort": "out",
+      "to": "prompt"
+    },
+    {
+      "id": "e-prompt-out-ai",
+      "from": "prompt",
+      "fromPort": "out",
+      "to": "ai"
+    },
+    {
+      "id": "e-ai-out-mem",
+      "from": "ai",
+      "fromPort": "out",
+      "to": "mem"
+    },
+    {
+      "id": "e-ai-out-out",
+      "from": "ai",
+      "fromPort": "out",
+      "to": "out"
+    }
+  ]
+}

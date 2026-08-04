@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "AURA Hub — runtime contract (provider-neutral Runtime interface + message types) for ai-service.",
+  "license": "Apache-2.0",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {

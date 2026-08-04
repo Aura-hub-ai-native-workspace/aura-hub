@@ -1,0 +1,76 @@
+{
+  "name": "Generate Documentation",
+  "description": "Generates real documentation from the project profile and code, saved as a note.",
+  "category": "Docs",
+  "nodes": [
+    {
+      "id": "proj",
+      "type": "current-project",
+      "x": 40,
+      "y": 160,
+      "config": {}
+    },
+    {
+      "id": "code",
+      "type": "coding-engine",
+      "x": 320,
+      "y": 160,
+      "config": {
+        "query": "public API exported functions modules usage"
+      }
+    },
+    {
+      "id": "md",
+      "type": "generate-markdown",
+      "x": 620,
+      "y": 160,
+      "config": {
+        "instruction": "Write developer documentation: what this project does, how it is structured, and how to use its main modules."
+      }
+    },
+    {
+      "id": "note",
+      "type": "create-note",
+      "x": 920,
+      "y": 60,
+      "config": {
+        "title": "Generated documentation"
+      }
+    },
+    {
+      "id": "out",
+      "type": "output",
+      "x": 920,
+      "y": 260,
+      "config": {
+        "title": "Documentation"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-proj-out-code",
+      "from": "proj",
+      "fromPort": "out",
+      "to": "code"
+    },
+    {
+      "id": "e-code-out-md",
+      "from": "code",
+      "fromPort": "out",
+      "to": "md"
+    },
+    {
+      "id": "e-md-out-note",
+      "from": "md",
+      "fromPort": "out",
+      "to": "note"
+    },
+    {
+      "id": "e-md-out-out",
+      "from": "md",
+      "fromPort": "out",
+      "to": "out"
+    }
+  ]
+}

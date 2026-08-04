@@ -3,6 +3,24 @@
   "private": true,
   "version": "0.1.0",
   "description": "AURA Hub — an AI Operating Environment. Application shell and architecture.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Aura-hub-ai-native-workspace/aura-hub#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aura-hub-ai-native-workspace/aura-hub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Aura-hub-ai-native-workspace/aura-hub/issues"
+  },
+  "keywords": [
+    "ai",
+    "developer-tools",
+    "workflow-automation",
+    "knowledge-graph",
+    "monorepo",
+    "tauri",
+    "engineering-intelligence"
+  ],
   "type": "module",
   "workspaces": [
     "apps/*",

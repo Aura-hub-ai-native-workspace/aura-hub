@@ -1,0 +1,44 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="AURA Hub — an AI Operating Environment">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b0d11"/>
+      <stop offset="1" stop-color="#14171d"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.4" r="0.6">
+      <stop offset="0" stop-color="#1d34b5" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#1d34b5" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#00c0f7"/>
+      <stop offset="1" stop-color="#3b6bff"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#ffffff" stroke-opacity="0.035" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <!-- AURA mark, centered above the wordmark -->
+  <g transform="translate(496,140) scale(1.15)" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 8 190 L 118 12 Q 130 -6 142 12 L 252 190"
+          fill="none" stroke="url(#mark)" stroke-width="34"/>
+    <circle cx="130" cy="150" r="19" fill="url(#mark)"/>
+  </g>
+
+  <text x="640" y="430" text-anchor="middle" font-family="Inter, 'Segoe UI', 'Liberation Sans', sans-serif" font-size="68" font-weight="700" fill="#f7f8fa" letter-spacing="-1">AURA Hub</text>
+  <text x="640" y="474" text-anchor="middle" font-family="Inter, 'Segoe UI', 'Liberation Sans', sans-serif" font-size="24" font-weight="500" fill="#9aa2b2">An AI Operating Environment</text>
+
+  <text x="640" y="524" text-anchor="middle" font-family="Inter, 'Segoe UI', 'Liberation Sans', sans-serif" font-size="17" fill="#6b7385">Knowledge graphs · Workflow automation · Provider-agnostic AI runtime</text>
+
+  <g font-family="Inter, 'Segoe UI', 'Liberation Sans', sans-serif" font-size="15" fill="#4c5364">
+    <circle cx="466" cy="574" r="3.5" fill="#1fb567"/>
+    <text x="480" y="580">Apache 2.0</text>
+    <circle cx="600" cy="574" r="3.5" fill="#3b6bff"/>
+    <text x="614" y="580">TypeScript</text>
+    <circle cx="732" cy="574" r="3.5" fill="#f5a524"/>
+    <text x="746" y="580">Tauri v2</text>
+  </g>
+</svg>

@@ -1,0 +1,48 @@
+{
+  "name": "Dependency Analysis",
+  "description": "Reads the real manifest and produces a structured JSON dependency assessment.",
+  "category": "Engineering",
+  "nodes": [
+    {
+      "id": "files",
+      "type": "selected-files",
+      "x": 40,
+      "y": 160,
+      "config": {
+        "paths": "package.json"
+      }
+    },
+    {
+      "id": "json",
+      "type": "generate-json",
+      "x": 340,
+      "y": 160,
+      "config": {
+        "instruction": "Assess the dependencies: {\"dependencies\":[{\"name\":\"...\",\"purpose\":\"...\",\"risk\":\"low|medium|high\",\"note\":\"...\"}]}"
+      }
+    },
+    {
+      "id": "out",
+      "type": "output",
+      "x": 640,
+      "y": 160,
+      "config": {
+        "title": "Dependency analysis"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-files-out-json",
+      "from": "files",
+      "fromPort": "out",
+      "to": "json"
+    },
+    {
+      "id": "e-json-out-out",
+      "from": "json",
+      "fromPort": "out",
+      "to": "out"
+    }
+  ]
+}
