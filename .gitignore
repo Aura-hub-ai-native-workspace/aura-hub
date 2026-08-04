@@ -36,3 +36,10 @@ coverage
 # Local AI/agent tooling state — never publish agent config or session state
 .claude
 .openharness
+
+# graphify — keep the current graph (graphify-out/graph.json, GRAPH_REPORT.md,
+# manifest.json, graph.html, .graphify_*) tracked as the live deliverable; its
+# dated backup snapshots and AST/semantic cache are local-only and unbounded
+# (a new ~2-5MB folder every day the tool runs) — never commit them.
+graphify-out/cache/
+graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
