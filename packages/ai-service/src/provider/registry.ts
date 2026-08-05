@@ -9,6 +9,7 @@ import { MistralAdapter } from './adapters/mistral';
 import { CerebrasAdapter } from './adapters/cerebras';
 import { KimiAdapter } from './adapters/kimi';
 import { NovitaAdapter } from './adapters/novita';
+import { QwenAdapter } from './adapters/qwen';
 
 // Bring-your-own-key providers. There is NO built-in default — the hub has
 // no AI until the user connects one of these with their own API key.
@@ -23,6 +24,7 @@ const ALL: ProviderAdapter[] = [
   new CerebrasAdapter(),
   new KimiAdapter(),
   new NovitaAdapter(),
+  new QwenAdapter(),
 ];
 
 const adapters: Map<string, ProviderAdapter> = new Map(ALL.map((a) => [a.metadata.id, a]));
