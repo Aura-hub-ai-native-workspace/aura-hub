@@ -26,6 +26,26 @@ npx netlify deploy --dir=website --prod
 # Settings → Pages → Deploy from branch → /website
 ```
 
+## Before this goes live — placeholders to replace
+
+- **Contact email.** Every `mailto:` on the page (footer "Contact" link,
+  the "Early Access" modal's submit handler) currently points at
+  `hello@aurahub.dev` — a placeholder, not a real registered address.
+  Replace every occurrence with the real project contact before sharing
+  this publicly, or the mail simply won't deliver.
+- **"Download AURA Hub."** There's no signed installer yet. The button
+  opens an "Early Access" modal that collects an email via `mailto:`
+  (no backend — this repo has none, and Artifacts have no storage
+  capability either) rather than a fake "you're on the list" that goes
+  nowhere. Swap in a real form backend (Formspree, your own API, an
+  email service) when one exists; the modal markup/JS is isolated in
+  `#modal` / the `early-access-form` handler for an easy swap.
+- **"Watch Demo."** No video has been recorded. The Demo section is an
+  interactive real-screenshot carousel instead of a fake video embed —
+  see `#demo-frame` / the carousel script at the bottom of the file.
+  Drop in a real `<video>` there once one exists; nothing else on the
+  page needs to change.
+
 ## Updating
 
 If a section's copy or a stat (provider count, template count) goes
