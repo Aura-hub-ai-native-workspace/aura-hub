@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AURA Hub — The AI-Native Engineering Environment</title>
+<meta name="description" content="AURA Hub is an AI-native engineering environment — a real knowledge graph, workflow automation, and 11 BYOAK AI providers including Qwen. No built-in model, no vendor lock-in." />
+<style>
+  :root {
+    --canvas: #0b0d11;
+    --surface: #14171d;
+    --surface-2: #191d24;
+    --line: #232833;
+    --line-strong: #2c3240;
+    --text: #edeff3;
+    --text-muted: #a7afc0;
+    --text-subtle: #6b7386;
+    --accent: #5c86ff;
+    --accent-100: #1b2440;
+    --accent-ink: #0b0d11;
+    --positive: #34d399;
+    --attention: #fbbf24;
+    --danger: #f87171;
+    --radius-lg: 20px;
+    --radius-md: 14px;
+    --shadow: 0 20px 60px -20px rgba(0,0,0,0.55);
+    --font-body: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Roboto Mono", monospace;
+  }
+  :root[data-theme="light"] {
+    --canvas: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f7f8fa;
+    --line: #e6e9ef;
+    --line-strong: #d5d9e2;
+    --text: #10131a;
+    --text-muted: #565f73;
+    --text-subtle: #8b93a3;
+    --accent: #3b6bff;
+    --accent-100: #e8edff;
+    --accent-ink: #ffffff;
+    --shadow: 0 20px 50px -24px rgba(20,30,60,0.18);
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --canvas: #ffffff;
+      --surface: #ffffff;
+      --surface-2: #f7f8fa;
+      --line: #e6e9ef;
+      --line-strong: #d5d9e2;
+      --text: #10131a;
+      --text-muted: #565f73;
+      --text-subtle: #8b93a3;
+      --accent: #3b6bff;
+      --accent-100: #e8edff;
+      --accent-ink: #ffffff;
+      --shadow: 0 20px 50px -24px rgba(20,30,60,0.18);
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  img { max-width: 100%; display: block; }
+  a { color: inherit; }
+  h1, h2, h3, h4 { text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+  code, .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 32px; }
+  section { padding: 100px 0; border-bottom: 1px solid var(--line); }
+  section:last-of-type { border-bottom: none; }
+  .eyebrow {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--accent); margin-bottom: 14px; display: block;
+  }
+  .lede { color: var(--text-muted); font-size: 17px; max-width: 640px; line-height: 1.65; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px;
+    border-radius: 12px; font-size: 14px; font-weight: 600; text-decoration: none;
+    border: 1px solid transparent; cursor: pointer; transition: transform 0.15s ease, opacity 0.15s ease;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); }
+  .btn-secondary { background: var(--surface); border-color: var(--line-strong); color: var(--text); }
+  .btn-ghost { background: transparent; border-color: var(--line-strong); color: var(--text-muted); }
+
+  /* nav */
+  nav.top {
+    position: sticky; top: 0; z-index: 40; backdrop-filter: blur(14px);
+    background: color-mix(in srgb, var(--canvas) 78%, transparent);
+    border-bottom: 1px solid var(--line);
+  }
+  nav.top .wrap { display: flex; align-items: center; justify-content: space-between; padding: 16px 32px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+  .brand .mark { width: 26px; height: 26px; }
+  .navlinks { display: flex; gap: 28px; font-size: 13.5px; color: var(--text-muted); }
+  .navlinks a { text-decoration: none; }
+  .navlinks a:hover { color: var(--text); }
+  .navcta { display: flex; gap: 10px; }
+
+  /* hero */
+  .hero {
+    position: relative; overflow: hidden; padding: 128px 0 96px; border-bottom: 1px solid var(--line);
+  }
+  .hero-bg {
+    position: absolute; inset: 0; z-index: 0;
+    background-image:
+      radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 45%),
+      radial-gradient(circle at 80% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 40%),
+      linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: auto, auto, 42px 42px, 42px 42px;
+    opacity: 0.55;
+    -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 20%, black 40%, transparent 85%);
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 20%, black 40%, transparent 85%);
+  }
+  .hero .wrap { position: relative; z-index: 1; }
+  .hero-top { text-align: center; max-width: 780px; margin: 0 auto; }
+  .badge-row { display: flex; justify-content: center; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; }
+  .pill {
+    font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 100px;
+    background: var(--surface); border: 1px solid var(--line-strong); color: var(--text-muted);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--positive); }
+  h1.headline {
+    font-size: 56px; line-height: 1.06; font-weight: 700; letter-spacing: -0.025em;
+    margin-bottom: 22px;
+  }
+  h1.headline .accent-text { color: var(--accent); }
+  .hero-sub { font-size: 18px; color: var(--text-muted); max-width: 620px; margin: 0 auto 36px; line-height: 1.6; }
+  .hero-cta { display: flex; gap: 12px; justify-content: center; margin-bottom: 64px; flex-wrap: wrap; }
+  .hero-shot {
+    border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--line-strong);
+    box-shadow: var(--shadow); max-width: 980px; margin: 0 auto;
+  }
+  .hero-shot img { width: 100%; }
+
+  /* stat strip */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; margin-top: 56px; }
+  .stat { background: var(--surface); padding: 24px 20px; text-align: center; }
+  .stat .n { font-family: var(--font-mono); font-size: 28px; font-weight: 700; color: var(--text); }
+  .stat .l { font-size: 12px; color: var(--text-subtle); margin-top: 4px; }
+
+  /* generic section head */
+  .section-head { max-width: 640px; margin-bottom: 56px; }
+  .section-head h2 { font-size: 34px; font-weight: 700; margin-bottom: 14px; }
+
+  /* feature grid */
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+    padding: 28px; transition: border-color 0.2s ease, transform 0.2s ease;
+  }
+  .card:hover { border-color: var(--line-strong); }
+  .card .icn {
+    width: 40px; height: 40px; border-radius: 11px; background: var(--accent-100); color: var(--accent);
+    display: grid; place-items: center; margin-bottom: 18px;
+  }
+  .card h3 { font-size: 16.5px; margin-bottom: 10px; font-weight: 650; }
+  .card p { color: var(--text-muted); font-size: 14px; line-height: 1.6; margin: 0; }
+
+  /* why list */
+  .why-item { display: flex; gap: 18px; padding: 26px 0; border-top: 1px solid var(--line); }
+  .why-item:last-child { border-bottom: 1px solid var(--line); }
+  .why-num { font-family: var(--font-mono); color: var(--text-subtle); font-size: 13px; padding-top: 3px; width: 28px; flex-shrink: 0; }
+  .why-item h3 { font-size: 16px; margin-bottom: 6px; }
+  .why-item p { color: var(--text-muted); font-size: 14px; margin: 0; max-width: 640px; }
+
+  /* platform rows (AI Runtime, Workflow Automation, Knowledge Graph) */
+  .platform-row { display: grid; grid-template-columns: 0.85fr 1.15fr; gap: 56px; align-items: center; padding: 72px 0; border-top: 1px solid var(--line); }
+  .platform-row:first-of-type { border-top: none; padding-top: 0; }
+  .platform-row.reverse { grid-template-columns: 1.15fr 0.85fr; }
+  .platform-row.reverse .platform-copy { order: 2; }
+  .platform-copy .eyebrow { margin-bottom: 12px; }
+  .platform-copy h3 { font-size: 26px; margin-bottom: 14px; font-weight: 700; }
+  .platform-copy p { color: var(--text-muted); font-size: 14.5px; line-height: 1.65; margin-bottom: 18px; }
+  .taglist { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tag { font-family: var(--font-mono); font-size: 11.5px; padding: 5px 10px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); color: var(--text-muted); }
+  .platform-visual img { border-radius: var(--radius-lg); border: 1px solid var(--line-strong); box-shadow: var(--shadow); }
+
+  /* architecture */
+  .arch-diagram {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+    padding: 40px; display: flex; flex-direction: column; gap: 14px;
+  }
+  .arch-tier { display: flex; gap: 12px; flex-wrap: wrap; }
+  .arch-node {
+    flex: 1; min-width: 150px; background: var(--surface-2); border: 1px solid var(--line-strong);
+    border-radius: 12px; padding: 16px 18px;
+  }
+  .arch-node .t { font-size: 13.5px; font-weight: 650; margin-bottom: 4px; }
+  .arch-node .d { font-size: 12px; color: var(--text-subtle); line-height: 1.5; }
+  .arch-node.accent { border-color: color-mix(in srgb, var(--accent) 45%, var(--line-strong)); background: var(--accent-100); }
+  .arch-arrow { text-align: center; color: var(--text-subtle); font-size: 12px; font-family: var(--font-mono); }
+  .providers-strip { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; padding: 18px; background: var(--surface-2); border: 1px dashed var(--line-strong); border-radius: 12px; }
+
+  /* screenshots gallery */
+  .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .gallery figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
+  .gallery figure img { width: 100%; display: block; }
+  .gallery figcaption { padding: 14px 16px; font-size: 13px; color: var(--text-muted); }
+  .gallery figcaption strong { color: var(--text); display: block; font-size: 13.5px; margin-bottom: 2px; }
+
+  /* demo */
+  .demo-box { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 48px; text-align: center; }
+  .demo-box .icn { width: 56px; height: 56px; border-radius: 16px; background: var(--accent-100); color: var(--accent); display: grid; place-items: center; margin: 0 auto 20px; }
+  .demo-list { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-top: 32px; text-align: left; }
+  .demo-list .d-item { background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .demo-list .d-item .n { font-family: var(--font-mono); color: var(--accent); font-size: 12px; margin-bottom: 8px; display: block; }
+  .demo-list .d-item h4 { font-size: 13px; margin-bottom: 4px; }
+  .demo-list .d-item p { font-size: 12px; color: var(--text-subtle); margin: 0; line-height: 1.5; }
+
+  /* roadmap */
+  .roadmap-row { display: flex; gap: 22px; }
+  .roadmap-col { flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 26px; }
+  .roadmap-col h4 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-subtle); margin-bottom: 16px; }
+  .roadmap-col ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+  .roadmap-col li { font-size: 13.5px; color: var(--text-muted); padding-left: 18px; position: relative; }
+  .roadmap-col li::before { content: ""; position: absolute; left: 0; top: 7px; width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
+  .roadmap-col.now li::before { background: var(--positive); }
+  .roadmap-col.next li::before { background: var(--attention); }
+
+  /* partnership */
+  .partner-box {
+    background: linear-gradient(160deg, var(--surface), var(--surface-2));
+    border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 56px; text-align: center;
+  }
+  .partner-box .eyebrow { display: block; text-align: center; }
+  .partner-box h2 { font-size: 30px; margin-bottom: 16px; }
+  .partner-box p.lede { margin: 0 auto 32px; text-align: center; }
+  .partner-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 36px; text-align: left; }
+  .partner-grid .p-item { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; font-size: 12px; color: var(--text-muted); }
+  .partner-grid .p-item strong { display: block; color: var(--text); font-size: 12.5px; margin-bottom: 3px; }
+
+  /* footer / contact */
+  footer { padding: 64px 0 48px; }
+  .footer-grid { display: flex; justify-content: space-between; align-items: flex-start; gap: 40px; flex-wrap: wrap; }
+  .footer-links { display: flex; gap: 48px; flex-wrap: wrap; }
+  .footer-col h5 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-subtle); margin-bottom: 14px; }
+  .footer-col a { display: block; font-size: 13.5px; color: var(--text-muted); text-decoration: none; margin-bottom: 10px; }
+  .footer-col a:hover { color: var(--text); }
+  .footer-bottom { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; color: var(--text-subtle); font-size: 12.5px; flex-wrap: wrap; gap: 10px; }
+
+  @media (max-width: 980px) {
+    .grid-3, .grid-2, .demo-list, .partner-grid, .gallery { grid-template-columns: repeat(2, 1fr); }
+    .platform-row, .platform-row.reverse { grid-template-columns: 1fr; }
+    .platform-row.reverse .platform-copy { order: 0; }
+    .roadmap-row { flex-direction: column; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 640px) {
+    .navlinks { display: none; }
+    h1.headline { font-size: 36px; }
+    .grid-3, .grid-2, .demo-list, .partner-grid, .gallery { grid-template-columns: 1fr; }
+    section { padding: 64px 0; }
+    .wrap { padding: 0 20px; }
+    .partner-box { padding: 32px; }
+  }
+</style>
+
+</head>
+<body>
+<nav class="top">
+  <div class="wrap">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 24 24" fill="none"><path d="M12 2L21 20H3L12 2Z" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/></svg>
+      AURA Hub
+    </div>
+    <div class="navlinks">
+      <a href="#features">Features</a>
+      <a href="#architecture">Architecture</a>
+      <a href="#screenshots">Screenshots</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="#partnership">Partnership</a>
+      <a href="#contact">Contact</a>
+    </div>
+    <div class="navcta">
+      <a class="btn btn-ghost" href="https://github.com/Aura-hub-ai-native-workspace/aura-hub" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-primary" href="#quickstart">Quick Start</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="hero-bg"></div>
+  <div class="wrap">
+    <div class="hero-top">
+      <div class="badge-row">
+        <span class="pill"><span class="dot"></span>Open source · Apache 2.0</span>
+        <span class="pill">11 AI providers · bring your own key</span>
+      </div>
+      <h1 class="headline">The <span class="accent-text">AI-native</span><br/>engineering environment</h1>
+      <p class="hero-sub">AURA Hub gives a project a persistent, structural understanding of itself — a real knowledge graph, not a best-effort text search — before any model is ever called. No built-in AI, no vendor lock-in: bring your own key to any of 11 providers, including Qwen.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="https://github.com/Aura-hub-ai-native-workspace/aura-hub" target="_blank" rel="noopener">View on GitHub →</a>
+        <a class="btn btn-secondary" href="#quickstart">Read the Quick Start</a>
+      </div>
+    </div>
+    <div class="hero-shot">
+      <img src="assets/screenshots/01-app-shell-home.png" alt="AURA Hub home screen — real project list, connected AI provider, environment ready" />
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="n">11</div><div class="l">AI providers, one interface</div></div>
+      <div class="stat"><div class="n">10</div><div class="l">real starter workflow templates</div></div>
+      <div class="stat"><div class="n">0</div><div class="l">built-in models — BYOAK only</div></div>
+      <div class="stat"><div class="n">100%</div><div class="l">open source, Apache 2.0</div></div>
+    </div>
+  </div>
+</header>
+
+<section id="intro">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">What it is</span>
+      <h2>Not a chat app. Not an editor. An environment.</h2>
+      <p class="lede">Most developer tools give you an editor with an AI panel bolted onto the side. Ask it something, and it re-derives context from whatever's visible in the buffer — it doesn't know your architecture, doesn't remember yesterday's decisions, and every session starts from zero.</p>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <div class="icn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>
+        <h3>Grounded, not guessed</h3>
+        <p>Every AI answer is built on a real, incrementally-updated knowledge graph — entities, relations, layers, health scores — computed once and queried, never reconstructed from a raw file dump on every keystroke.</p>
+      </div>
+      <div class="card">
+        <div class="icn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>
+        <h3>Deterministic first</h3>
+        <p>Questions with one checkable answer — is this actually dead code, did this diff remove a public export — are answered by real parsing and arithmetic. The model explains and drafts; it doesn't invent facts.</p>
+      </div>
+      <div class="card">
+        <div class="icn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="2"/><rect x="13" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="2"/><rect x="4" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="2"/><rect x="13" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="2"/></svg></div>
+        <h3>Engineering memory that compounds</h3>
+        <p>Decisions, patterns, and learnings persist across sessions and inform future answers, instead of every conversation starting over from a blank context window.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="vision">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Vision</span>
+      <h2>The environment is the product.</h2>
+      <p class="lede">A project opened in AURA gets a persistent, structural understanding of itself before any model is called. Engineering work — multi-step missions, workflow automation, architecture review, governance — runs as first-class, resumable, inspectable processes, not one-shot chat completions. The AI itself is never locked to one vendor.</p>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Core features</span>
+      <h2>Ten platforms, one shared foundation</h2>
+    </div>
+    <div class="grid-3">
+      <div class="card"><h3>Workspace / Window Manager</h3><p>A floating-window "second desktop" inside the app — dock, float, tile, and switch between panels instead of one fixed layout.</p></div>
+      <div class="card"><h3>Mission Control</h3><p>Plans and executes multi-step engineering work as a real dependency-aware DAG — auto-ordered task waves, a critical-path view, a full replay timeline.</p></div>
+      <div class="card"><h3>AI Workflow Builder</h3><p>Describe an automation in plain language; AURA generates a real, validated, runnable node graph against the platform's actual node registry.</p></div>
+      <div class="card"><h3>Automation Studio</h3><p>A visual, node-based workflow engine with 10 real starter templates plus an event-driven automation layer reacting to real platform moments.</p></div>
+      <div class="card"><h3>Knowledge Graph</h3><p>AST-based static analysis builds a real knowledge graph of your codebase — god-node detection, community structure, cross-file relationship queries.</p></div>
+      <div class="card"><h3>Architecture Blueprint</h3><p>A layered, structural view of the system — modules, dependencies, boundaries — built from the same real analysis as the knowledge graph.</p></div>
+      <div class="card"><h3>Engineering Intelligence</h3><p>Health scoring, architecture drift detection, technical debt tracking, and deterministic risk prediction — all evidence-based, zero fabricated metrics.</p></div>
+      <div class="card"><h3>Engineering Memory</h3><p>A persistent, queryable memory of decisions, patterns, and learnings — grounded in real project history.</p></div>
+      <div class="card"><h3>Multi-Provider AI</h3><p>Eleven BYOAK providers behind one shared adapter interface. Adding a provider is a small, self-contained adapter, not a rewrite.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Why AURA Hub</span>
+      <h2>Built for scale, not a demo</h2>
+    </div>
+    <div>
+      <div class="why-item">
+        <span class="why-num">01</span>
+        <div><h3>No vendor lock-in</h3><p>Eleven AI providers are supported today through one shared adapter interface. Switching providers — or model, mid-conversation — is a first-class, validated operation, never a reconfiguration.</p></div>
+      </div>
+      <div class="why-item">
+        <span class="why-num">02</span>
+        <div><h3>A strict, inward-only dependency direction</h3><p><code>apps/desktop → @aura/ui → @aura/core</code> — a design system with zero raw hex values, and an architecture explicitly designed to support years of development rather than a demo.</p></div>
+      </div>
+      <div class="why-item">
+        <span class="why-num">03</span>
+        <div><h3>Nothing is simulated</h3><p>Every workflow node, every mission task, every governance score executes for real against the open project. No mocked data paths in the product surface.</p></div>
+      </div>
+      <div class="why-item">
+        <span class="why-num">04</span>
+        <div><h3>One pipeline, every feature</h3><p>Chat, Ctrl+I inline actions, the Workflow Builder, Mission Control, and diagnosis all funnel through the same three entry points — provider validation, error translation, and retry/timeout handling are implemented once and apply everywhere.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="platforms">
+  <div class="wrap">
+    <div class="platform-row">
+      <div class="platform-copy">
+        <span class="eyebrow">AI Runtime</span>
+        <h3>Bring your own key. Every provider, first class.</h3>
+        <p>AURA has no built-in model and no hidden API account. Connect any of 11 providers — OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, OpenRouter, Novita, or Qwen — and every feature in the platform works identically, automatically, because they all route through the same provider-agnostic pipeline.</p>
+        <div class="taglist">
+          <span class="tag">validate()</span><span class="tag">discoverModels()</span><span class="tag">checkHealth()</span><span class="tag">stream()</span><span class="tag">retry + timeout</span>
+        </div>
+      </div>
+      <div class="platform-visual"><img src="assets/screenshots/12-provider-settings.png" alt="AI Settings — five real BYOAK providers connected, one active" /></div>
+    </div>
+
+    <div class="platform-row reverse">
+      <div class="platform-copy">
+        <span class="eyebrow">Workflow Automation</span>
+        <h3>Natural language becomes a real, runnable graph.</h3>
+        <p>Describe an automation in plain language and the AI Workflow Builder generates a validated node graph against the platform's real node registry — source nodes, knowledge engines, generation, logic, and real actions like save-memory, shell commands, and HTTP requests. Nothing is simulated.</p>
+        <div class="taglist">
+          <span class="tag">10 starter templates</span><span class="tag">webhook triggers</span><span class="tag">undo / redo</span>
+        </div>
+      </div>
+      <div class="platform-visual"><img src="assets/screenshots/07-automation-studio.png" alt="Automation Studio — real workflow library with node counts and dates" /></div>
+    </div>
+
+    <div class="platform-row">
+      <div class="platform-copy">
+        <span class="eyebrow">Mission Control</span>
+        <h3>Multi-step engineering work, planned and executed for real.</h3>
+        <p>Describe a real goal and AURA grounds the plan in the project's real health score, architecture, and change hotspots — then executes it as a dependency-aware DAG with checkpoints, execution waves, and a critical path, never a task without explicit approval.</p>
+        <div class="taglist">
+          <span class="tag">plan → approve → execute</span><span class="tag">deterministic health signals</span><span class="tag">replay timeline</span>
+        </div>
+      </div>
+      <div class="platform-visual"><img src="assets/screenshots/04-mission-control.png" alt="Mission Control — a real, live-created mission with checkpoints and execution waves" /></div>
+    </div>
+
+    <div class="platform-row reverse">
+      <div class="platform-copy">
+        <span class="eyebrow">Knowledge Graph</span>
+        <h3>A structural understanding of the codebase, not a text index.</h3>
+        <p>AST-based static analysis builds a real knowledge graph — god-node detection, community structure, cross-file relationships — incrementally updated as the project changes, and queryable by every AI feature in the platform.</p>
+        <div class="taglist">
+          <span class="tag">graphify</span><span class="tag">Coding Engine</span><span class="tag">FullStack Engine</span>
+        </div>
+      </div>
+      <div class="platform-visual"><img src="assets/screenshots/09-architecture-blueprint.png" alt="Architecture Blueprint — layered module structure derived from real dependency analysis" /></div>
+    </div>
+  </div>
+</section>
+
+<section id="architecture">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Architecture</span>
+      <h2>One clean seam between the environment and the model</h2>
+      <p class="lede">Dependencies point inward only. The design system and core never depend on a feature, and a feature never reaches past the shared pipeline into a provider directly.</p>
+    </div>
+    <div class="arch-diagram">
+      <div class="arch-tier">
+        <div class="arch-node"><div class="t">Desktop — React + Vite + Tauri v2</div><div class="d">App shell, window manager, Mission Control, Workflows, Governance, Knowledge, Settings</div></div>
+      </div>
+      <div class="arch-arrow">↓ HTTP + Server-Sent Events (127.0.0.1:4319)</div>
+      <div class="arch-tier">
+        <div class="arch-node accent"><div class="t">Pipeline Manager</div><div class="d">ask · generate · streamEvents — retry, timeout, error translation, once</div></div>
+        <div class="arch-node"><div class="t">Provider Adapters</div><div class="d">BYOAK, validated, one shared interface</div></div>
+        <div class="arch-node"><div class="t">Workflow Engine</div><div class="d">+ AI Workflow Builder</div></div>
+      </div>
+      <div class="arch-arrow">↓</div>
+      <div class="arch-tier">
+        <div class="arch-node"><div class="t">Knowledge Engines</div><div class="d">Coding · FullStack</div></div>
+        <div class="arch-node"><div class="t">Governance Platform</div><div class="d">Health, drift, debt</div></div>
+        <div class="arch-node"><div class="t">Engineering Memory</div><div class="d">Persistent, queryable</div></div>
+      </div>
+      <div class="arch-arrow">direct, encrypted key, never proxied through AURA ↓</div>
+      <div class="providers-strip">
+        <span class="tag">OpenAI</span><span class="tag">Anthropic</span><span class="tag">Gemini</span><span class="tag">Groq</span><span class="tag">Mistral</span><span class="tag">Cerebras</span><span class="tag">Kimi</span><span class="tag">NVIDIA</span><span class="tag">OpenRouter</span><span class="tag">Novita</span><span class="tag">Qwen</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="screenshots">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Screenshots</span>
+      <h2>Real captures, not mockups</h2>
+      <p class="lede">Every image below is a live capture of the running app against this repository as the open project — including a genuinely live-created Mission Control mission and a real grounded AI Chat answer.</p>
+    </div>
+    <div class="gallery">
+      <figure><img src="assets/screenshots/03-ai-chat.png" alt="AI Chat — grounded conversation with citations" /><figcaption><strong>AI Chat</strong>A real grounded answer with retrieved files, relationships, and memory recalled.</figcaption></figure>
+      <figure><img src="assets/screenshots/13-command-palette.png" alt="Command Bar — keyboard-first navigation" /><figcaption><strong>Command Bar</strong>Keyboard-first navigation across the whole environment.</figcaption></figure>
+      <figure><img src="assets/screenshots/bonus-qwen-connect.png" alt="Connect Provider dialog showing Qwen" /><figcaption><strong>Connect Provider</strong>Qwen, live in the real connect dialog — Alibaba Cloud Model Studio.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section id="demo">
+  <div class="wrap">
+    <div class="demo-box">
+      <div class="icn"><svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/><path d="M10 9l5 3-5 3V9z" fill="currentColor"/></svg></div>
+      <h2 style="font-size:26px;margin-bottom:10px;">No hosted demo video yet — five real ones you can run yourself</h2>
+      <p class="lede" style="margin:0 auto;">Every AURA feature has a scripted walkthrough tied to a real, already-shipped surface of the product — run any of them against the app in a few minutes.</p>
+      <div class="demo-list">
+        <div class="d-item"><span class="n">01</span><h4>AI Chat</h4><p>Grounded conversation, real context strip.</p></div>
+        <div class="d-item"><span class="n">02</span><h4>Code Generation</h4><p>Ctrl+I inline actions + real unit tests.</p></div>
+        <div class="d-item"><span class="n">03</span><h4>Workflow Automation</h4><p>Natural language → a real runnable graph.</p></div>
+        <div class="d-item"><span class="n">04</span><h4>Engineering Analysis</h4><p>Bug investigation grounded in real code.</p></div>
+        <div class="d-item"><span class="n">05</span><h4>Knowledge Graph</h4><p>Structural understanding, saved to memory.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="quickstart">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Get started</span>
+      <h2>Running locally in three commands</h2>
+    </div>
+    <div class="grid-2">
+      <div class="card" style="grid-column: span 2;">
+        <pre class="mono" style="margin:0; white-space:pre-wrap; font-size:13px; line-height:1.8; color:var(--text-muted);">git clone https://github.com/Aura-hub-ai-native-workspace/aura-hub.git
+cd aura-hub && npm install
+npm run dev    <span style="color:var(--text-subtle)"># → http://localhost:1420, no Rust needed</span>
+npm run ai     <span style="color:var(--text-subtle)"># → the local AI service on 127.0.0.1:4319</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="roadmap">
+  <div class="wrap">
+    <div class="section-head">
+      <span class="eyebrow">Roadmap</span>
+      <h2>Now / Next / Future</h2>
+      <p class="lede">Status legend used throughout the repo: done, in progress, planned. See <a href="https://github.com/Aura-hub-ai-native-workspace/aura-hub/blob/presentation-v0.1/ROADMAP.md" target="_blank" rel="noopener" style="color:var(--accent);">ROADMAP.md</a> for the full execution-level detail.</p>
+    </div>
+    <div class="roadmap-row">
+      <div class="roadmap-col now">
+        <h4>Now</h4>
+        <ul>
+          <li>Qwen as a first-class BYOAK provider</li>
+          <li>Real screenshot gallery capture</li>
+          <li>Provider system hardening — centralized validation, error translation</li>
+        </ul>
+      </div>
+      <div class="roadmap-col next">
+        <h4>Next</h4>
+        <ul>
+          <li>Merge presentation-v0.1 into main</li>
+          <li>Signed desktop installers (macOS / Windows / Linux)</li>
+          <li>Mission execution DAG screenshot + recorded demo</li>
+        </ul>
+      </div>
+      <div class="roadmap-col">
+        <h4>Future</h4>
+        <ul>
+          <li>Signed installer distribution channels</li>
+          <li>Deeper Alibaba Cloud / Qwen collaboration</li>
+          <li>Community-contributed workflow templates</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="partnership">
+  <div class="wrap">
+    <div class="partner-box">
+      <span class="eyebrow">Partnership</span>
+      <h2>Building toward a technical collaboration with Alibaba Cloud</h2>
+      <p class="lede">Qwen is integrated as a genuine first-class provider — verified live against the real DashScope endpoint. This is an early-stage, single-maintainer project raising this on the strength of the architecture, not on traction.</p>
+      <div class="partner-grid">
+        <div class="p-item"><strong>API Credits</strong>To close the one remaining verification gap and produce real demo material.</div>
+        <div class="p-item"><strong>Technical Collaboration</strong>A contact to sanity-check the integration's edge cases.</div>
+        <div class="p-item"><strong>Early Model Access</strong>Validate new Qwen tiers against the adapter promptly.</div>
+        <div class="p-item"><strong>Engineering Feedback</strong>A channel to report compatible-mode API findings.</div>
+        <div class="p-item"><strong>Developer Program</strong>Open to whatever fits a project at this stage.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer id="contact">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div>
+        <div class="brand" style="margin-bottom:14px;">
+          <svg class="mark" viewBox="0 0 24 24" fill="none"><path d="M12 2L21 20H3L12 2Z" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/></svg>
+          AURA Hub
+        </div>
+        <p style="color:var(--text-subtle); font-size:13px; max-width:280px;">An AI Operating Environment. Open source, Apache 2.0.</p>
+      </div>
+      <div class="footer-links">
+        <div class="footer-col">
+          <h5>Product</h5>
+          <a href="#features">Features</a>
+          <a href="#architecture">Architecture</a>
+          <a href="#screenshots">Screenshots</a>
+        </div>
+        <div class="footer-col">
+          <h5>Resources</h5>
+          <a href="https://github.com/Aura-hub-ai-native-workspace/aura-hub" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/Aura-hub-ai-native-workspace/aura-hub/tree/presentation-v0.1/docs" target="_blank" rel="noopener">Documentation</a>
+          <a href="https://github.com/Aura-hub-ai-native-workspace/aura-hub/blob/presentation-v0.1/ROADMAP.md" target="_blank" rel="noopener">Roadmap</a>
+        </div>
+        <div class="footer-col">
+          <h5>Contact</h5>
+          <a href="https://github.com/Aura-hub-ai-native-workspace/aura-hub/issues" target="_blank" rel="noopener">Open an issue</a>
+          <a href="https://github.com/Aura-hub-ai-native-workspace/aura-hub/blob/presentation-v0.1/CONTRIBUTING.md" target="_blank" rel="noopener">Contribute</a>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>© 2026 AURA Hub. Licensed under Apache 2.0.</span>
+      <span class="mono">Aura-hub-ai-native-workspace/aura-hub</span>
+    </div>
+  </div>
+</footer>
+</body>
+</html>
