@@ -92,21 +92,20 @@ to features built after this sentence was written.
 
 ## Product Screenshots
 
-> 📸 **Screenshot capture in progress.** The gallery below is fully
-> specified — every image slot, its purpose, and exactly how to capture
-> it — in [`docs/assets/screenshots/SCREENSHOT_GUIDE.md`](docs/assets/screenshots/SCREENSHOT_GUIDE.md).
-> Once captured, images land at the paths already referenced here — no
-> README changes needed.
+> 📸 Real, live captures of the running app against this repository —
+> not mockups. One slot (Mission Execution DAG) is still pending; see
+> [`docs/assets/screenshots/SCREENSHOT_GUIDE.md`](docs/assets/screenshots/SCREENSHOT_GUIDE.md)
+> for the exact capture spec and an honest note on two substituted shots.
 
 | | |
 |---|---|
-| ![Application Shell & Home](docs/assets/screenshots/01-app-shell-home.png) **Application Shell & Home**<br>The full environment on first launch — navigation, command bar, and the project list. | ![Window Manager](docs/assets/screenshots/02-window-manager-workspace.png) **Window Manager**<br>Floating panels — AI Chat, Architecture, Files — tiled together inside one project workspace. |
-| ![AI Chat](docs/assets/screenshots/03-ai-chat.png) **AI Chat**<br>A grounded conversation, showing which knowledge engines and provider were used. | ![Mission Control](docs/assets/screenshots/04-mission-control.png) **Mission Control**<br>Multi-step engineering work tracked as real missions with live status. |
-| ![Mission Execution DAG](docs/assets/screenshots/05-mission-execution-dag.png) **Mission Execution (DAG)**<br>Dependency-aware task waves, critical path, and replay. | ![AI Workflow Builder](docs/assets/screenshots/06-ai-workflow-builder.png) **AI Workflow Builder**<br>Natural language turned into a real, validated automation graph. |
-| ![Automation Studio](docs/assets/screenshots/07-automation-studio.png) **Automation Studio**<br>The workflow library — 10 real starter templates organized by category. | ![Knowledge Graph](docs/assets/screenshots/08-knowledge-graph.png) **Knowledge Graph**<br>AST-based structural graph with god-node and community detection. |
-| ![Architecture Blueprint](docs/assets/screenshots/09-architecture-blueprint.png) **Architecture Blueprint**<br>Layered module structure and dependency boundaries. | ![Engineering Memory](docs/assets/screenshots/10-engineering-memory.png) **Engineering Memory**<br>Persistent decisions, patterns, and learnings over time. |
-| ![Engineering Governance](docs/assets/screenshots/11-engineering-governance.png) **Engineering Governance**<br>Health scoring, drift detection, and release readiness. | ![Multi-Provider AI Settings](docs/assets/screenshots/12-provider-settings.png) **Multi-Provider AI**<br>Multiple BYOAK providers connected, one active, model discovery live. |
-| ![Command Bar](docs/assets/screenshots/13-command-palette.png) **Command Bar**<br>Keyboard-first navigation across the whole environment. | |
+| ![Application Shell & Home](docs/assets/screenshots/01-app-shell-home.png) **Application Shell & Home**<br>The full environment on first launch — navigation, command bar, and the project list. | ![Window Manager](docs/assets/screenshots/02-window-manager-workspace.png) **Window Manager**<br>Floating panels — AI Chat, Mission Control — tiled together inside one project workspace. |
+| ![AI Chat](docs/assets/screenshots/03-ai-chat.png) **AI Chat**<br>A grounded conversation, showing which knowledge engines and provider were used. | ![Mission Control](docs/assets/screenshots/04-mission-control.png) **Mission Control**<br>A real, live-created mission — checkpoints, execution waves, deterministic health signals. |
+| ![AI Workflow Builder](docs/assets/screenshots/06-ai-workflow-builder.png) **AI Workflow Builder**<br>Natural language turned into a real, validated automation graph. | ![Automation Studio](docs/assets/screenshots/07-automation-studio.png) **Automation Studio**<br>The workflow library — real templates with real node/date metadata. |
+| ![Knowledge / Intelligence](docs/assets/screenshots/08-knowledge-graph.png) **Knowledge Intelligence**<br>Live verification score, validation score, and repository statistics. | ![Architecture Blueprint](docs/assets/screenshots/09-architecture-blueprint.png) **Architecture Blueprint**<br>Layered module structure and dependency boundaries. |
+| ![Engineering Memory](docs/assets/screenshots/10-engineering-memory.png) **Engineering Memory**<br>50 real persisted memories — decisions, learnings, agent proposals — filterable by kind and severity. | ![Engineering Intelligence](docs/assets/screenshots/11-engineering-governance.png) **Engineering Intelligence**<br>Module/dependency/API-surface counts derived from the real repository. |
+| ![Multi-Provider AI Settings](docs/assets/screenshots/12-provider-settings.png) **Multi-Provider AI**<br>Five real BYOAK providers connected, one active, model discovery live. | ![Command Bar](docs/assets/screenshots/13-command-palette.png) **Command Bar**<br>Keyboard-first navigation across the whole environment. |
+| ![Project Dashboard](docs/assets/screenshots/14-project-dashboard.png) **Project Dashboard**<br>A single project's real indexed stats — files, chunks, entities, languages. | |
 
 ## Product Architecture
 
@@ -320,6 +319,16 @@ Start here: [`CONTRIBUTING.md`](CONTRIBUTING.md) ·
 [`docs/TEAM_GUIDE.md`](docs/TEAM_GUIDE.md) ·
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) ·
 [`SUPPORT.md`](SUPPORT.md)
+
+## Security
+
+Found a vulnerability? Please don't open a public issue — see
+[`SECURITY.md`](SECURITY.md) for how to report it responsibly.
+
+## Release Notes
+
+See [`CHANGELOG.md`](CHANGELOG.md) for what's shipped on this branch,
+release by release.
 
 ## License
 

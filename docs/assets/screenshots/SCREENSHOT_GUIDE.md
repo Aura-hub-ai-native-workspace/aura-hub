@@ -1,12 +1,14 @@
 # Screenshot Guide
 
 This directory holds the product screenshots referenced by the
-[README](../../../README.md)'s gallery. It is intentionally empty of
-images right now — **every screenshot below is a real, un-photographed
-surface of the app**, not a mockup. This guide is the exact spec for
-capturing them so the gallery reads as one consistent, professional set
-instead of a pile of mismatched grabs from different sessions, themes,
-and window sizes.
+[README](../../../README.md)'s gallery. **12 of 13 are captured** — real,
+live, un-staged screen captures of the actual running app (dev server +
+local AI service) against this repository as the open project, taken via
+headless-browser automation, not mockups or hand-arranged staging.
+
+This guide is the spec those captures were taken against, so the gallery
+reads as one consistent, professional set instead of a pile of mismatched
+grabs from different sessions, themes, and window sizes.
 
 The README links to the stable filenames listed below. Once a screenshot
 is captured and dropped into this folder under its named file, it appears
@@ -15,6 +17,23 @@ in the README automatically — **no documentation changes required.**
 Do not use stock photography, AI-generated UI mockups, or screenshots of
 a different product. Every image here must be a real capture of AURA Hub
 running against a real project.
+
+**Known gap:** `05-mission-execution-dag.png` is not yet captured — the
+mission canvas's node-by-node DAG view needs a mission with running/
+completed tasks across multiple waves to look right, and the one real
+mission created during capture (see below) was left at "plan pending
+approval" rather than actually executed against this repo. The Mission
+Control *detail* view (checkpoints, execution waves, real health signals)
+is captured at `04-mission-control.png`.
+
+**Honest substitution:** `08-knowledge-graph.png` and
+`11-engineering-governance.png` show the real in-app **Knowledge** and
+**Intelligence** tabs (verification score, validation score, module/
+dependency counts, health signals) rather than the raw force-directed
+node-graph visualization — that visualization is `graphify-out/graph.html`,
+a generated artifact, not a live in-app screen reachable during capture.
+Both captured tabs are genuine, live, data-driven surfaces of the product;
+they're just not literally a graph drawing.
 
 ---
 
@@ -177,10 +196,20 @@ keeps the gallery honest.
 - **Data:** Real matched results from the sample project.
 - **Filename:** `13-command-palette.png`
 
+### 14 — Project Dashboard
+
+- **Purpose:** The landing view for a single opened project — the "control center" for one codebase, distinct from the cross-project Home screen.
+- **Description:** A project's Overview tab (`screens/project/...`) — profile, source/chunk/entity/memory stat tiles, language breakdown, detected surfaces.
+- **Camera / frame:** Full window.
+- **Window layout:** Project opened, Overview tab active (the tab bar — Overview, Architecture, Code, Frontend, Backend, Database, Research, Documentation, Knowledge, Intelligence, Memory — visible above the content).
+- **UI state:** Real stat tiles populated (source files, code chunks, system entities, memory items), real language breakdown bars, real detected surfaces (git, CI).
+- **Data:** Real indexed output from the sample project.
+- **Filename:** `14-project-dashboard.png`
+
 ---
 
 ## After capturing
 
 1. Drop each PNG into this folder using the exact filename above.
-2. Optimize file size (`pngquant` or similar) — target under ~400KB per image without visible quality loss.
-3. Remove this note once all 13 are in place — the README gallery is already wired to these paths and needs no further edits.
+2. Optimize file size (`pngquant` or similar, or resize the 2x capture down to 1440 wide) — target under ~400KB per image without visible quality loss.
+3. ~~Remove this note once all 13 are in place~~ — 12 of 14 are in place (see the known gap and honest substitution notes above). The README gallery is already wired to these paths and needs no further edits when the remaining ones land.
