@@ -32,17 +32,17 @@ const PROVIDER_ACCENT: Record<string, string> = {
 };
 const FALLBACK_ACCENT = '#8892a6';
 const PROVIDER_BADGES: Record<string, string[]> = {
-  groq: ['Free', 'Ultra Fast', 'Recommended'],
+  groq: ['Free', 'Ultra Fast'],
   nvidia: ['Free', 'High Performance'],
   mistral: ['Free Tier', 'EU-Based'],
   cerebras: ['Ultra Fast', 'High Throughput'],
-  qwen: ['Multilingual', 'Alibaba Cloud'],
+  qwen: ['Recommended', 'Multilingual', 'Alibaba Cloud'],
 };
 
 export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: () => void; onOffline: () => void }) {
   const [providers, setProviders] = useState<ProviderInfo[] | null>(null);
   const [providersError, setProvidersError] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>('qwen');
   const [apiKey, setApiKey] = useState('');
   const [keyStatus, setKeyStatus] = useState<KeyStatus>('idle');
   const [keyError, setKeyError] = useState<string>();
@@ -164,6 +164,19 @@ export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: (
       ) : (
         <>
           <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {qwen && (
+              <ProviderCard
+                icon={PROVIDER_ICON.qwen}
+                name={qwen.name}
+                description={qwen.description || 'Alibaba Cloud’s flagship model family, strong at multilingual tasks.'}
+                badges={PROVIDER_BADGES.qwen}
+                accent={PROVIDER_ACCENT.qwen}
+                selected={selectedId === 'qwen'}
+                connected={connectedIds.has('qwen')}
+                onSelect={() => selectProvider('qwen')}
+                onGetKey={() => openExternal(qwen.docsUrl)}
+              />
+            )}
             {groq && (
               <ProviderCard
                 icon={PROVIDER_ICON.groq}
@@ -214,19 +227,6 @@ export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: (
                 connected={connectedIds.has('cerebras')}
                 onSelect={() => selectProvider('cerebras')}
                 onGetKey={() => openExternal(cerebras.docsUrl)}
-              />
-            )}
-            {qwen && (
-              <ProviderCard
-                icon={PROVIDER_ICON.qwen}
-                name={qwen.name}
-                description={qwen.description || 'Alibaba Cloud’s flagship model family, strong at multilingual tasks.'}
-                badges={PROVIDER_BADGES.qwen}
-                accent={PROVIDER_ACCENT.qwen}
-                selected={selectedId === 'qwen'}
-                connected={connectedIds.has('qwen')}
-                onSelect={() => selectProvider('qwen')}
-                onGetKey={() => openExternal(qwen.docsUrl)}
               />
             )}
           </div>
@@ -300,6 +300,9 @@ export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: (
                   Groq, NVIDIA, Mistral and Cerebras all offer fast API access for many users. Connect one to get started in minutes.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
+                  <button onClick={() => openExternal(qwen?.docsUrl)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11.5px] font-medium text-white/70 hover:text-white">
+                    Get Qwen API Key
+                  </button>
                   <button onClick={() => openExternal(groq?.docsUrl)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11.5px] font-medium text-white/70 hover:text-white">
                     Get Groq API Key
                   </button>
