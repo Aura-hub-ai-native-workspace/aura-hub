@@ -11,7 +11,7 @@
 [![Node](https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[Quick Start](#quick-start) · [Features](#core-features) · [Screenshots](#product-screenshots) · [Architecture](#product-architecture) · [Installation](#installation) · [Contributing](#contributing) · [Roadmap](ROADMAP.md)
+[Quick Start](#quick-start) · [Features](#core-features) · [Screenshots](#product-screenshots) · [Demo](#demo) · [Architecture](#product-architecture) · [Installation](#installation) · [Contributing](#contributing) · [Roadmap](ROADMAP.md)
 
 </div>
 
@@ -106,6 +106,15 @@ to features built after this sentence was written.
 | ![Engineering Memory](docs/assets/screenshots/10-engineering-memory.png) **Engineering Memory**<br>50 real persisted memories — decisions, learnings, agent proposals — filterable by kind and severity. | ![Engineering Intelligence](docs/assets/screenshots/11-engineering-governance.png) **Engineering Intelligence**<br>Module/dependency/API-surface counts derived from the real repository. |
 | ![Multi-Provider AI Settings](docs/assets/screenshots/12-provider-settings.png) **Multi-Provider AI**<br>Five real BYOAK providers connected, one active, model discovery live. | ![Command Bar](docs/assets/screenshots/13-command-palette.png) **Command Bar**<br>Keyboard-first navigation across the whole environment. |
 | ![Project Dashboard](docs/assets/screenshots/14-project-dashboard.png) **Project Dashboard**<br>A single project's real indexed stats — files, chunks, entities, languages. | |
+
+## Demo
+
+There's no hosted demo video yet — see
+[`docs/QWEN_DEMOS.md`](docs/QWEN_DEMOS.md) for five scripted walkthroughs
+(AI Chat, Code Generation, Workflow Automation, Engineering Analysis,
+Knowledge Graph) you can run yourself against the real app in a few
+minutes, and [`examples/`](examples/) for real, importable workflow
+templates you can run without writing anything.
 
 ## Product Architecture
 
