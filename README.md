@@ -118,6 +118,8 @@ templates you can run without writing anything.
 
 ## Product Architecture
 
+> One-page executive summary (PDF): [`docs/assets/AURA_HUB_ARCHITECTURE_OVERVIEW.pdf`](docs/assets/AURA_HUB_ARCHITECTURE_OVERVIEW.pdf).
+
 ```mermaid
 graph TD
     subgraph Desktop["apps/desktop — React 18 + Vite + Tauri v2"]
