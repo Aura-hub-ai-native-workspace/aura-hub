@@ -36,6 +36,8 @@ Registered today (`packages/ai-service/src/provider/registry.ts`):
 | `mistral` | **Mistral AI** | `adapters/mistral.ts` | `mistral-large-latest` |
 | `cerebras` | **Cerebras** | `adapters/cerebras.ts` | `llama3.3-70b` |
 | `kimi` | Kimi | `adapters/kimi.ts` | — |
+| `novita` | **Novita AI** | `adapters/novita.ts` | `deepseek/deepseek-r1` |
+| `qwen` | **Qwen** | `adapters/qwen.ts` | `qwen-plus` |
 
 ---
 
@@ -257,7 +259,7 @@ Mistral is a full peer of Groq and NVIDIA:
 
 ---
 
-## 8. Cerebras — first-class provider
+## 9. Cerebras — first-class provider
 
 Cerebras is a full peer of Groq, NVIDIA and Mistral:
 
@@ -287,7 +289,62 @@ Cerebras is a full peer of Groq, NVIDIA and Mistral:
 
 ---
 
-## 9. API Surface
+## 10. Novita AI — first-class provider
+
+Novita is a full peer of Groq, NVIDIA, Mistral and Cerebras:
+
+- **Adapter** — `packages/ai-service/src/provider/adapters/novita.ts`,
+  extends `BaseOpenAICompatible`, base URL `https://api.novita.ai/openai/v1`,
+  default model `deepseek/deepseek-r1`, docs link to
+  `https://novita.ai/docs/api-reference/basic-authentication`. Novita keys
+  have no distinctive prefix, so `detect()` returns `false` and the user
+  picks Novita explicitly (Settings connect dialog).
+- **Validation** — real `GET /models` call through the shared
+  `BaseOpenAICompatible` implementation; same classified states as every
+  other OpenAI-compatible adapter (§3.1).
+- **Discovery** — dynamic via Novita's Models API; the stored model list
+  feeds the model dropdown in **AI Settings**.
+- **Runtime** — streaming SSE `chat/completions` through the shared
+  OpenAI-compatible runtime: generate, stream, cancel, health.
+- **Switching** — identical to any provider via `RuntimeManager`.
+- **UI** — generic Settings connect dialog, status card, model dropdown
+  and Status Bar — no bespoke UI, same as Kimi/OpenRouter/NVIDIA.
+
+## 11. Qwen (Alibaba Cloud Model Studio) — first-class provider
+
+Qwen is a full peer of every provider above:
+
+- **Adapter** — `packages/ai-service/src/provider/adapters/qwen.ts`,
+  extends `BaseOpenAICompatible`, base URL
+  `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` (the
+  international/Singapore DashScope endpoint — deliberately not the
+  workspace-scoped `{WorkspaceId}.{region}.maas.aliyuncs.com` variant
+  Alibaba also documents, which would require collecting a second piece
+  of per-user config beyond an API key), default model `qwen-plus` (a
+  real model id from Alibaba's own quickstart examples), docs link to
+  `https://www.alibabacloud.com/help/en/model-studio/first-api-call-to-qwen`.
+  DashScope keys share the generic `sk-` prefix OpenAI's adapter already
+  claims, so `detect()` returns `false` — the user picks Qwen explicitly,
+  same honest choice as Novita/NVIDIA/OpenRouter/Gemini.
+- **Validation** — real `GET /models` call through the shared
+  `BaseOpenAICompatible` implementation; same classified states as every
+  other OpenAI-compatible adapter (§3.1). Verified live against the real
+  endpoint: an unauthenticated request returns 401 (not 404 — the route
+  exists) and a fabricated key through the full `/providers/connect` path
+  returns `{"ok":false,"error":"Invalid API key (401)"}` from Alibaba's
+  actual servers.
+- **Discovery** — dynamic via DashScope's OpenAI-compatible Models API;
+  the stored model list feeds the model dropdown in **AI Settings**.
+- **Runtime** — streaming SSE `chat/completions` through the shared
+  OpenAI-compatible runtime: generate, stream, cancel, health.
+- **Switching** — identical to any provider via `RuntimeManager`.
+- **UI** — generic Settings connect dialog, status card, model dropdown
+  and Status Bar; `spark` icon in `AiSettings.tsx::providerIcon()`. No
+  bespoke UI or provider-specific branches anywhere in the codebase.
+
+---
+
+## 12. API Surface
 
 `GET /providers` — known providers, connected providers (fingerprint,
 models, health), active id/model, pipeline status.
@@ -306,7 +363,7 @@ deactivates if it was active.
 
 ---
 
-## 10. UI Surfaces
+## 13. UI Surfaces
 
 - **Onboarding** (`apps/desktop/src/onboarding/WorkspaceActivation.tsx`)
   — featured provider cards, live debounced key validation through the

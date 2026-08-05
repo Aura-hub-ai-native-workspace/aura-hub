@@ -163,7 +163,7 @@ keeps the gallery honest.
 - **Description:** AI Settings (`screens/ai/AiSettings.tsx`) with 3+ providers connected and one active.
 - **Camera / frame:** Full window or full panel.
 - **Window layout:** Settings → AI Provider screen.
-- **UI state:** At least 3 connected providers listed (mix of the 9 supported: OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, OpenRouter), one clearly marked Active with a green health/latency indicator, model dropdown showing real discovered models for the active provider.
+- **UI state:** At least 3 connected providers listed (mix of the 11 supported: OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, OpenRouter, Novita, Qwen), one clearly marked Active with a green health/latency indicator, model dropdown showing real discovered models for the active provider. Qwen connected and active makes a strong candidate for this shot — it demonstrates a non-Western, enterprise-cloud provider working through the exact same generic UI as every other one.
 - **Data:** Real provider connections (fingerprinted key display, not raw keys — the product already redacts these).
 - **Filename:** `12-provider-settings.png`
 

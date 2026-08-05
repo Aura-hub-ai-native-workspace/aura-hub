@@ -16,6 +16,7 @@ const PROVIDER_ICON: Record<string, IconName> = {
   cerebras: 'cpu',
   kimi: 'spark',
   openrouter: 'link',
+  qwen: 'spark',
 };
 const PROVIDER_ACCENT: Record<string, string> = {
   groq: '#f97316',
@@ -27,6 +28,7 @@ const PROVIDER_ACCENT: Record<string, string> = {
   cerebras: '#ef4444',
   openrouter: '#60a5fa',
   kimi: '#2dd4bf',
+  qwen: '#818cf8',
 };
 const FALLBACK_ACCENT = '#8892a6';
 const PROVIDER_BADGES: Record<string, string[]> = {
@@ -34,6 +36,7 @@ const PROVIDER_BADGES: Record<string, string[]> = {
   nvidia: ['Free', 'High Performance'],
   mistral: ['Free Tier', 'EU-Based'],
   cerebras: ['Ultra Fast', 'High Throughput'],
+  qwen: ['Multilingual', 'Alibaba Cloud'],
 };
 
 export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: () => void; onOffline: () => void }) {
@@ -66,7 +69,8 @@ export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: (
   const nvidia = providers?.find((p) => p.id === 'nvidia');
   const mistral = providers?.find((p) => p.id === 'mistral');
   const cerebras = providers?.find((p) => p.id === 'cerebras');
-  const others = providers?.filter((p) => p.id !== 'groq' && p.id !== 'nvidia' && p.id !== 'mistral' && p.id !== 'cerebras') ?? [];
+  const qwen = providers?.find((p) => p.id === 'qwen');
+  const others = providers?.filter((p) => p.id !== 'groq' && p.id !== 'nvidia' && p.id !== 'mistral' && p.id !== 'cerebras' && p.id !== 'qwen') ?? [];
 
   // Live "auto-detect provider" from key prefix — never overrides an
   // explicit manual card selection unless the key clearly belongs to a
@@ -210,6 +214,19 @@ export function WorkspaceActivation({ onActivated, onOffline }: { onActivated: (
                 connected={connectedIds.has('cerebras')}
                 onSelect={() => selectProvider('cerebras')}
                 onGetKey={() => openExternal(cerebras.docsUrl)}
+              />
+            )}
+            {qwen && (
+              <ProviderCard
+                icon={PROVIDER_ICON.qwen}
+                name={qwen.name}
+                description={qwen.description || 'Alibaba Cloud’s flagship model family, strong at multilingual tasks.'}
+                badges={PROVIDER_BADGES.qwen}
+                accent={PROVIDER_ACCENT.qwen}
+                selected={selectedId === 'qwen'}
+                connected={connectedIds.has('qwen')}
+                onSelect={() => selectProvider('qwen')}
+                onGetKey={() => openExternal(qwen.docsUrl)}
               />
             )}
           </div>

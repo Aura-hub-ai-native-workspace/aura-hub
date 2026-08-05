@@ -37,6 +37,16 @@ executes for real against whichever project is open.
 | [`explain-project`](workflows/explain-project.json) | Docs | The canonical chain: Project → Memory → Coding Engine → FullStack Engine → AI → saved answer. |
 | [`release-notes`](workflows/release-notes.json) | Docs | Turns real recent git history into human-readable release notes. |
 
+## Using these with Qwen (or any provider)
+
+Every template's AI node runs against whichever provider is currently
+active in **AI Settings** — connect and activate Qwen there and every
+template above becomes a Qwen-powered workflow with zero edits to the
+JSON. (The AI node's internal type is historically named `groq`, from
+when Groq was the first provider wired up — it is not Groq-specific; it
+calls the shared `pipeline.generate()` seam like every other AI surface
+in the app. See [`packages/ai-service/src/workflow/nodes.ts`](../packages/ai-service/src/workflow/nodes.ts).)
+
 ## Using an example
 
 **In the app:** open **Automation Studio → Workflow Library** — every
