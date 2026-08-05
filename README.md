@@ -109,7 +109,10 @@ to features built after this sentence was written.
 
 ## Demo
 
-There's no hosted demo video yet — see
+There's no hosted demo video yet — a full script and shot list for one
+is ready to record at
+[`docs/DEMO_VIDEO_SCRIPT.md`](docs/DEMO_VIDEO_SCRIPT.md) (2:40, scene-by-
+scene, voice-over included). In the meantime, see
 [`docs/QWEN_DEMOS.md`](docs/QWEN_DEMOS.md) for five scripted walkthroughs
 (AI Chat, Code Generation, Workflow Automation, Engineering Analysis,
 Knowledge Graph) you can run yourself against the real app in a few
