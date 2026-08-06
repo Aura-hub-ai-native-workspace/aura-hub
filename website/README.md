@@ -1,5 +1,14 @@
 # AURA Hub — Website Source
 
+> **This folder is mirrored, not canonical.** The website now deploys from
+> its own repository, [`aura-hub-website`](https://github.com/Aura-hub-ai-native-workspace/aura-hub-website),
+> which is what Cloudflare Pages is connected to. Cloudflare was
+> misdetecting this monorepo as a Worker/Node project when connected here
+> directly, so the deployable site was split out. Make edits in the
+> `aura-hub-website` repo directly, or edit here first and copy
+> `index.html` / `assets/` across afterward; either way, do not connect
+> Cloudflare Pages to this path.
+
 A single, self-contained static page (`index.html` + `assets/`) — no build
 step, no framework, no dependencies. It's the same content published as a
 live preview at the Artifact link in the PR/task that added it; this
