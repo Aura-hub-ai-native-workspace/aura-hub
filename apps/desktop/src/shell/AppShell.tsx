@@ -22,6 +22,14 @@ import { ScreenRouter } from '../screens/ScreenRouter';
  */
 export function AppShell() {
   const rightPanelOpen = useAppStore((s) => s.rightPanelOpen);
+  const activeProjectId = useAppStore((s) => s.activeProjectId);
+  const projectTab = useAppStore((s) => s.projectTab);
+
+  // The Code Workspace supplies its own file-aware AI Context panel —
+  // showing the generic project panel alongside it would be duplicate
+  // chrome. This doesn't touch the user's sidebar toggle state, so the
+  // global panel reappears exactly as they left it on any other tab.
+  const showRightPanel = rightPanelOpen && !(activeProjectId && projectTab === 'code');
 
   return (
     <div
@@ -42,7 +50,7 @@ export function AppShell() {
 
             {/* Right context panel — collapsible, spring-animated width. */}
             <AnimatePresence initial={false}>
-              {rightPanelOpen && (
+              {showRightPanel && (
                 <motion.aside
                   key="right-panel"
                   initial={{ width: 0, opacity: 0 }}

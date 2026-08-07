@@ -15,10 +15,11 @@ export interface DropdownProps {
   placeholder?: string;
   className?: string;
   size?: 'sm' | 'md';
+  disabled?: boolean;
 }
 
 /** A value-selecting dropdown (the "select" primitive). Fully custom UI. */
-export function Dropdown({ value, options, onChange, placeholder = 'Select…', className, size = 'md' }: DropdownProps) {
+export function Dropdown({ value, options, onChange, placeholder = 'Select…', className, size = 'md', disabled = false }: DropdownProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const selected = options.find((o) => o.value === value);
@@ -35,10 +36,12 @@ export function Dropdown({ value, options, onChange, placeholder = 'Select…', 
   return (
     <div ref={ref} className={cn('relative', className)}>
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => !disabled && setOpen((o) => !o)}
+        disabled={disabled}
         className={cn(
           'flex w-full items-center justify-between gap-2 rounded-xl border border-line bg-surface text-left transition-colors',
           'hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30',
+          disabled && 'cursor-not-allowed opacity-50 hover:bg-surface',
           size === 'sm' ? 'h-8 px-3 text-[12px]' : 'h-9 px-3.5 text-[13px]',
         )}
       >

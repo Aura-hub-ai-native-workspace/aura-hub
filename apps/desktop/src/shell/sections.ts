@@ -26,32 +26,6 @@ export const SECTION_IDENTITY: Record<NavKey, SectionIdentity> = {
     tagline: 'Your environment at a glance.',
     chips: [],
   },
-  projects: {
-    hue: '#3b6bff',
-    motif: 'projects',
-    tagline: 'Every project is its own environment.',
-    chips: [],
-  },
-  knowledge: {
-    hue: '#1fb567',
-    motif: 'knowledge',
-    tagline: 'A living fabric of everything your environment knows.',
-    chips: [
-      { icon: 'doc', label: 'Import documents' },
-      { icon: 'link', label: 'Connect a source' },
-      { icon: 'note', label: 'Write a note' },
-    ],
-  },
-  ai: {
-    hue: '#7c5cff',
-    motif: 'spark',
-    tagline: 'The reserved stage where intelligence will live.',
-    chips: [
-      { icon: 'cpu', label: 'Configure models' },
-      { icon: 'spark', label: 'Define an agent' },
-      { icon: 'memory', label: 'Attach memory' },
-    ],
-  },
   workflows: {
     hue: '#f5a524',
     motif: 'workflows',
@@ -60,6 +34,16 @@ export const SECTION_IDENTITY: Record<NavKey, SectionIdentity> = {
       { icon: 'plus', label: 'New workflow' },
       { icon: 'workflows', label: 'From template' },
       { icon: 'activity', label: 'View runs' },
+    ],
+  },
+  workspace: {
+    hue: '#3b6bff',
+    motif: 'layout',
+    tagline: 'Dock every engineering surface into one command center.',
+    chips: [
+      { icon: 'deploy', label: 'Open Mission Control' },
+      { icon: 'search', label: 'Search everything' },
+      { icon: 'layout', label: 'Save a layout' },
     ],
   },
   marketplace: {

@@ -96,9 +96,11 @@ function makeArrowTex(color: string): THREE.CanvasTexture {
   return tex;
 }
 
-export function ArchitectureDiagram3D({ layers: dynamicLayers }: { layers?: LayerDef[] } = {}) {
+export function ArchitectureDiagram3D({ layers: dynamicLayers, onRenderFailure }: { layers?: LayerDef[]; onRenderFailure?: () => void } = {}) {
   const cleanupRef = useRef<(() => void) | null>(null);
   const layersRef = useRef<LayerDef[]>(dynamicLayers ?? DEFAULT_LAYERS);
+  const failureRef = useRef(onRenderFailure);
+  failureRef.current = onRenderFailure;
 
   // Update layers when prop changes
   if (dynamicLayers && dynamicLayers.length) layersRef.current = dynamicLayers;
@@ -117,7 +119,21 @@ export function ArchitectureDiagram3D({ layers: dynamicLayers }: { layers?: Laye
     const camera = new THREE.PerspectiveCamera(50, w / h, 0.1, 200);
     camera.position.set(0, -2, 34);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    // WebGL context creation can fail (or silently degrade) in some embedded
+    // webviews — never leave a blank pane, fall back to the 2D graph view.
+    let renderer: any;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+    } catch {
+      failureRef.current?.();
+      return;
+    }
+    const gl = renderer.getContext();
+    if (!gl) {
+      renderer.dispose();
+      failureRef.current?.();
+      return;
+    }
     renderer.setSize(w, h);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(renderer.domElement);

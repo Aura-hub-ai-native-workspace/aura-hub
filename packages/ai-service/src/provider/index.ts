@@ -2,6 +2,7 @@ import type { Runtime } from '@aura/runtime';
 import { getAdapter, registerAdapter, getAllAdapters } from './registry';
 import type { ProviderAdapter, ActiveRuntime, ProviderHealth, ModelCapabilities } from './types';
 import * as credentialStore from './credentialStore';
+import { cachedModelsFor, resolveModel } from './modelValidation';
 
 /* ── types ──────────────────────────────────────────────────────────── */
 
@@ -124,11 +125,26 @@ export class RuntimeManager {
   private active: ActiveRuntime | null = null;
 
   constructor() {
-    // Restore the previously-active provider if its key is still stored.
-    const saved = credentialStore.getActive();
-    if (saved.providerId) {
-      try { this.switchToProvider(saved.providerId, saved.model || undefined); }
-      catch { this.active = null; }
+    // Restore the previously-active provider if its key is still stored —
+    // validated/repaired against ALREADY-CACHED model data only (no
+    // network call at boot, so startup stays fast and doesn't depend on
+    // network reachability). A full re-check against the live catalog
+    // happens on the next explicit switch (see switchToProvider) or a
+    // manual model refresh, not silently on every launch.
+    try {
+      const saved = credentialStore.getActive();
+      if (!saved.providerId) return;
+      const adapter = getAdapter(saved.providerId);
+      const apiKey = credentialStore.getKey(saved.providerId);
+      if (!adapter || !apiKey) return;
+      const known = cachedModelsFor(saved.providerId);
+      const model = resolveModel(saved.providerId, saved.model || undefined, known);
+      this.active = { type: 'byoak', providerId: saved.providerId, runtime: adapter.createRuntime(apiKey, model || undefined), model };
+      // The saved pointer only gets rewritten if it was actually repaired —
+      // an unnecessary write on every boot is not "hardening," it's noise.
+      if (model !== saved.model) credentialStore.setActive(saved.providerId, model);
+    } catch {
+      this.active = null;
     }
   }
 
@@ -150,19 +166,38 @@ export class RuntimeManager {
     return this.active?.model ?? '';
   }
 
-  /** Activate a connected provider. Fails (returns false) without a key. */
-  switchToProvider(providerId: string, model?: string): boolean {
+  /**
+   * Activate a connected provider. Fails (returns false) without a key.
+   * Fetches that provider's models fresh and replaces the cache
+   * immediately, then resolves the requested model against what's
+   * actually known — never leaves an invalid provider/model pair active.
+   * A discovery failure falls back to whatever's already cached rather
+   * than blocking a switch to a provider we already have data for over a
+   * transient network blip.
+   */
+  async switchToProvider(providerId: string, model?: string): Promise<boolean> {
     const adapter = getAdapter(providerId);
     if (!adapter) return false;
     const apiKey = credentialStore.getKey(providerId);
     if (!apiKey) return false;
+    let known = cachedModelsFor(providerId);
+    try {
+      const fresh = await adapter.discoverModels(apiKey);
+      if (fresh.length) {
+        known = fresh;
+        credentialStore.storeModels(providerId, fresh);
+      }
+    } catch {
+      /* keep whatever was already cached */
+    }
+    const resolved = resolveModel(providerId, model, known);
     this.active = {
       type: 'byoak',
       providerId,
-      runtime: adapter.createRuntime(apiKey, model),
-      model: model ?? '',
+      runtime: adapter.createRuntime(apiKey, resolved || undefined),
+      model: resolved,
     };
-    credentialStore.setActive(providerId, model);
+    credentialStore.setActive(providerId, resolved);
     return true;
   }
 

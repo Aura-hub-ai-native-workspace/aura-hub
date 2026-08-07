@@ -17,6 +17,7 @@ export type WfNodeType =
   | 'changed-files'
   | 'current-conversation'
   | 'project-memory'
+  | 'engineering-memory'
   // intelligence — frozen engines
   | 'coding-engine'
   | 'fullstack-engine'
@@ -44,6 +45,8 @@ export type WfNodeType =
   | 'git-diff'
   | 'git-commit'
   | 'git-branch'
+  | 'http-request'
+  | 'slack-notify'
   // io
   | 'output';
 
@@ -74,6 +77,8 @@ export interface Workflow {
   updatedAt: string;
   nodes: WfNode[];
   edges: WfEdge[];
+  /** Lazily generated on first request (see WorkflowStore.ensureWebhookToken) — lets an external system (e.g. GitHub's own webhook config) start a run without AURA needing an API client for that system. Never included in list responses. */
+  webhookToken?: string;
 }
 
 export interface WorkflowSummary {

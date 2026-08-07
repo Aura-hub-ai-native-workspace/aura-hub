@@ -1,0 +1,21 @@
+{
+  "name": "@aura/governance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AURA Engineering Governance Platform — architecture drift detection, health scoring, technical debt tracking, release readiness, security reviews, documentation governance, quality gates, daily audits, project insights, and architecture council. Consumes only public APIs from Mission Control, Engineering Memory, Knowledge Fabric, and Diagnosis Engine.",
+  "license": "Apache-2.0",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "dependencies": {
+    "@aura/knowledge-coding": "*",
+    "@aura/knowledge-fullstack": "*"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

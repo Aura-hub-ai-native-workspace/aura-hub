@@ -46,7 +46,7 @@ export function entityId(kind: EntityKind, relPath: string, name: string): strin
   return `${kind}:${relPath}#${name}`;
 }
 
-export interface EntitySpec {
+interface EntitySpec {
   kind: EntityKind;
   layer: Layer;
   name: string;

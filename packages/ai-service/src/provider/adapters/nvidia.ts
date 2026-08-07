@@ -2,7 +2,7 @@ import { BaseOpenAICompatible } from './base';
 import type { Runtime } from '@aura/runtime';
 
 export class NvidiaAdapter extends BaseOpenAICompatible {
-  readonly metadata = { id: 'nvidia', name: 'NVIDIA', description: 'NVIDIA NIM and AI models', docsUrl: 'https://build.nvidia.com' };
+  readonly metadata = { id: 'nvidia', name: 'NVIDIA', description: 'NVIDIA NIM and AI models', docsUrl: 'https://build.nvidia.com', defaultModel: 'meta/llama-3.1-8b-instruct' };
   protected baseUrl = 'https://integrate.api.nvidia.com/v1';
 
   detect(_apiKey: string): boolean { return false; }
@@ -25,6 +25,6 @@ export class NvidiaAdapter extends BaseOpenAICompatible {
   }
 
   createRuntime(apiKey: string, model?: string): Runtime {
-    return this.makeRuntime({ baseUrl: this.baseUrl, apiKey, defaultModel: model || 'meta/llama-3.1-8b-instruct' });
+    return this.makeRuntime({ baseUrl: this.baseUrl, apiKey, defaultModel: model || this.metadata.defaultModel });
   }
 }

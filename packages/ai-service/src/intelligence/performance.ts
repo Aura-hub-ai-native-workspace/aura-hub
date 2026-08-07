@@ -228,32 +228,3 @@ export class LazyFileLoader {
     return { size: this.cache.size, max_size: this.maxCacheSize };
   }
 }
-
-/**
- * Parallel index runner.
- * Runs multiple index operations concurrently.
- */
-export async function runParallelIndex<T>(
-  items: T[],
-  indexFn: (item: T) => Promise<void>,
-  concurrency: number = 4,
-): Promise<{ processed: number; durationMs: number }> {
-  const startTime = performance.now();
-  let processed = 0;
-
-  // Process items in batches
-  for (let i = 0; i < items.length; i += concurrency) {
-    const batch = items.slice(i, i + concurrency);
-    await Promise.all(batch.map(async (item) => {
-      try {
-        await indexFn(item);
-        processed++;
-      } catch {
-        // Skip failed items
-      }
-    }));
-  }
-
-  const durationMs = Math.round(performance.now() - startTime);
-  return { processed, durationMs };
-}

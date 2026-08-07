@@ -20,7 +20,8 @@ export type MemoryKind =
   | 'rejected'
   | 'correction'
   | 'pinned'
-  | 'learning';
+  | 'learning'
+  | 'diagnosis';
 
 export interface MemoryItem {
   id: string;

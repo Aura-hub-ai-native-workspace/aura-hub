@@ -1,7 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { Button, Icon } from '@aura/ui';
 
-interface Props { children: ReactNode; fallback?: ReactNode; onError?: (error: Error) => void }
+interface Props { children: ReactNode; fallback?: ReactNode; title?: string; onError?: (error: Error) => void }
 interface State { error: Error | null }
 
 export class ErrorBoundary extends Component<Props, State> {
@@ -19,7 +19,7 @@ export class ErrorBoundary extends Component<Props, State> {
     return (
       <div className="mx-auto max-w-lg px-8 py-20 text-center">
         <Icon name="cpu" size={32} className="mx-auto text-text-subtle" />
-        <h2 className="mt-4 text-[18px] font-semibold text-text">Unable to load AI Settings</h2>
+        <h2 className="mt-4 text-[18px] font-semibold text-text">{this.props.title ?? 'Unable to load this page'}</h2>
         <p className="mt-2 text-[13px] text-text-muted">
           Something went wrong while rendering this page. This is usually a temporary issue.
         </p>

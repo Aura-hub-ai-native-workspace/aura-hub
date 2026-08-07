@@ -9,10 +9,8 @@
 /** Top-level navigation destinations (permanent left rail). */
 export type NavKey =
   | 'home'
-  | 'projects'
-  | 'knowledge'
-  | 'ai'
   | 'workflows'
+  | 'workspace'
   | 'marketplace'
   | 'settings';
 
@@ -20,6 +18,7 @@ export type NavKey =
 export type ProjectTab =
   | 'overview'
   | 'architecture'
+  | 'code'
   | 'frontend'
   | 'backend'
   | 'database'
@@ -46,15 +45,6 @@ export interface Project {
   status: StatusTone;
 }
 
-export interface RunningTask {
-  id: string;
-  label: string;
-  project: string;
-  progress: number;
-  eta: string;
-  tone: StatusTone;
-}
-
 export interface ActivityEntry {
   id: string;
   actor: string;
@@ -64,30 +54,12 @@ export interface ActivityEntry {
   tone: StatusTone;
 }
 
-export interface KnowledgeUpdate {
-  id: string;
-  title: string;
-  source: string;
-  at: string;
-  kind: 'document' | 'index' | 'note' | 'link';
-}
-
 export interface QuickAction {
   id: string;
   label: string;
   hint: string;
   /** Icon name resolved by @aura/ui icon registry. */
   icon: string;
-}
-
-/** A placeholder model descriptor. No inference happens here — shell only. */
-export interface ModelStatus {
-  id: string;
-  name: string;
-  provider: string;
-  state: 'ready' | 'loading' | 'offline';
-  latencyMs: number | null;
-  contextWindow: number;
 }
 
 /** A command-palette entry — the environment's universal action surface. */

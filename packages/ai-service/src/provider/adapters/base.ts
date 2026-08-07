@@ -2,9 +2,18 @@ import type {
   Runtime, GenerateRequest, GenerateResponse, StreamChunk, ModelInfo, HealthStatus, RuntimeMessage,
 } from '@aura/runtime';
 import type { ProviderAdapter, DiscoveredModel, ProviderHealth, ModelCapabilities } from '../types';
+import { ProviderHttpError } from '../errorTranslator';
+
+/** Classify an OpenAI-compatible HTTP status into a user-facing validation state. */
+function classifyError(status: number): string {
+  if (status === 401) return 'Invalid API key (401)';
+  if (status === 403) return 'Unauthorized (403)';
+  if (status === 429) return 'Rate limited (429)';
+  return `HTTP ${status}`;
+}
 
 export abstract class BaseOpenAICompatible implements ProviderAdapter {
-  abstract readonly metadata: { id: string; name: string; description: string; docsUrl?: string };
+  abstract readonly metadata: { id: string; name: string; description: string; docsUrl?: string; defaultModel: string };
 
   protected abstract baseUrl: string;
 
@@ -19,9 +28,9 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
         headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
         signal: AbortSignal.timeout(10000),
       });
-      return res.ok ? { ok: true } : { ok: false, error: `HTTP ${res.status}` };
+      return res.ok ? { ok: true } : { ok: false, error: classifyError(res.status) };
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return { ok: false, error: `Network error — could not reach ${this.metadata.name} (${(e as Error).message})` };
     }
   }
 
@@ -36,7 +45,6 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
       const json = await res.json() as { data?: { id: string; object?: string; created?: number; owned_by?: string }[] };
       if (!json.data) return [];
       return json.data
-        .filter((m) => m.id.startsWith('gpt-') || m.id.startsWith('o1') || m.id.startsWith('o3') || m.id.startsWith('claude') || m.id.startsWith('llama') || m.id.startsWith('mixtral') || m.id.startsWith('gemma') || m.id.startsWith('qwen') || true)
         .map((m) => {
           const caps: ModelCapabilities = {};
           if (m.id.includes('vision') || m.id.includes('turbo')) caps.vision = true;
@@ -57,14 +65,14 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
         headers: { authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(5000),
       });
-      return { ok: res.ok, latencyMs: Math.round(performance.now() - start), error: res.ok ? undefined : `HTTP ${res.status}`, lastChecked: new Date().toISOString() };
+      return { ok: res.ok, latencyMs: Math.round(performance.now() - start), error: res.ok ? undefined : classifyError(res.status), lastChecked: new Date().toISOString() };
     } catch (e) {
-      return { ok: false, latencyMs: Math.round(performance.now() - start), error: (e as Error).message, lastChecked: new Date().toISOString() };
+      return { ok: false, latencyMs: Math.round(performance.now() - start), error: `Network error — could not reach ${this.metadata.name} (${(e as Error).message})`, lastChecked: new Date().toISOString() };
     }
   }
 
   protected makeRuntime(config: { baseUrl: string; apiKey: string; defaultModel?: string }): Runtime {
-    return new OpenAICompatibleRuntime(config);
+    return new OpenAICompatibleRuntime({ ...config, providerName: this.metadata.name });
   }
 }
 
@@ -72,13 +80,15 @@ class OpenAICompatibleRuntime implements Runtime {
   private baseUrl: string;
   private apiKey: string;
   private defaultModel: string;
+  private providerName: string;
   private timeoutMs = 30000;
   private ac: AbortController | null = null;
 
-  constructor(config: { baseUrl: string; apiKey: string; defaultModel?: string; timeoutMs?: number }) {
+  constructor(config: { baseUrl: string; apiKey: string; defaultModel?: string; providerName?: string; timeoutMs?: number }) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.apiKey = config.apiKey;
     this.defaultModel = config.defaultModel ?? '';
+    this.providerName = config.providerName ?? 'The AI provider';
     this.timeoutMs = config.timeoutMs ?? 30000;
   }
 
@@ -122,7 +132,7 @@ class OpenAICompatibleRuntime implements Runtime {
     this.ac = new AbortController();
     const signal = AbortSignal.any([this.ac.signal, AbortSignal.timeout(this.timeoutMs)]);
     const response = await fetch(`${this.baseUrl}/chat/completions`, { method: 'POST', headers: this.headers(), body, signal });
-    if (!response.ok) { const t = await response.text().catch(() => ''); throw new Error(`API error ${response.status}: ${t || response.statusText}`); }
+    if (!response.ok) { const t = await response.text().catch(() => ''); throw new ProviderHttpError(this.providerName, response.status, t || response.statusText); }
     const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
     if (!reader) throw new Error('No stream body');
     let buf = '';
@@ -148,7 +158,13 @@ class OpenAICompatibleRuntime implements Runtime {
           } catch { /* skip */ }
         }
       }
-    } finally { try { reader.cancel(); } catch { /* ignore */ } }
+    } finally {
+      // Tear the connection down via the controller: aborting the fetch
+      // cancels the body cleanly, whereas reader.cancel() mid-flight can
+      // surface an undici unhandled rejection (reason undefined).
+      this.ac?.abort();
+      this.ac = null;
+    }
   }
 
   async listModels(): Promise<ModelInfo[]> { return []; }
@@ -162,7 +178,7 @@ class OpenAICompatibleRuntime implements Runtime {
   private async post<T>(path: string, body: string): Promise<T> {
     const signal = AbortSignal.any([this.ac?.signal ?? new AbortController().signal, AbortSignal.timeout(this.timeoutMs)].filter(Boolean));
     const res = await fetch(`${this.baseUrl}${path}`, { method: 'POST', headers: this.headers(), body, signal });
-    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`API error ${res.status}: ${t || res.statusText}`); }
+    if (!res.ok) { const t = await res.text().catch(() => ''); throw new ProviderHttpError(this.providerName, res.status, t || res.statusText); }
     return res.json() as Promise<T>;
   }
 }

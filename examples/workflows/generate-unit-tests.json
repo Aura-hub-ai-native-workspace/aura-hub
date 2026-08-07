@@ -1,0 +1,63 @@
+{
+  "name": "Generate Unit Tests",
+  "description": "Generates unit tests for a module from its real source code.",
+  "category": "Engineering",
+  "nodes": [
+    {
+      "id": "ask",
+      "type": "user-input",
+      "x": 40,
+      "y": 160,
+      "config": {
+        "prompt": "Which module/file needs tests?"
+      }
+    },
+    {
+      "id": "code",
+      "type": "coding-engine",
+      "x": 320,
+      "y": 160,
+      "config": {
+        "limit": 8
+      }
+    },
+    {
+      "id": "gen",
+      "type": "generate-code",
+      "x": 620,
+      "y": 160,
+      "config": {
+        "instruction": "Write thorough unit tests for the code below: happy paths, edge cases, and failure modes."
+      }
+    },
+    {
+      "id": "out",
+      "type": "output",
+      "x": 920,
+      "y": 160,
+      "config": {
+        "title": "Unit tests"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-ask-out-code",
+      "from": "ask",
+      "fromPort": "out",
+      "to": "code"
+    },
+    {
+      "id": "e-code-out-gen",
+      "from": "code",
+      "fromPort": "out",
+      "to": "gen"
+    },
+    {
+      "id": "e-gen-out-out",
+      "from": "gen",
+      "fromPort": "out",
+      "to": "out"
+    }
+  ]
+}

@@ -16,6 +16,7 @@ import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { KeywordIntentClassifier, TemplatePromptEnhancer, createRequest } from '@aura/intelligence';
+import { engineeringMemory } from '@aura/engineering-memory';
 import type { PipelineManager } from '../pipeline';
 import { ProjectConversations } from '../conversations';
 import { loadProfile } from '../profile';
@@ -92,6 +93,43 @@ function safeShell(ctx: RunCtx, command: string): Promise<string> {
       resolve((stdout + (stderr ? `\n${stderr}` : '')).trim());
     });
   });
+}
+
+const MAX_HTTP_RESPONSE = 512 * 1024; // enough for a real API response, not enough to hang a run on a large download
+
+/** Real outbound fetch, bounded by timeout and response size. AURA is a single-user local desktop app (no multi-tenant boundary), so the proportionate safety measure here is the same bounded-timeout/maxBuffer pattern already used for git/shell above — not an IP allow/deny list, which would be solving a threat model that doesn't apply. */
+async function sandboxedFetch(url: string, opts: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<{ status: number; text: string }> {
+  if (!/^https?:\/\//i.test(url)) throw new Error('only http(s) URLs are allowed');
+  const timeout = Math.max(1000, Math.min(30_000, opts.timeoutMs ?? 10_000));
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeout);
+  const onOuterAbort = () => ac.abort();
+  opts.signal?.addEventListener('abort', onOuterAbort, { once: true });
+  try {
+    const res = await fetch(url, { method: opts.method ?? 'GET', headers: opts.headers, body: opts.body, signal: ac.signal });
+    const buf = await res.arrayBuffer();
+    const text = Buffer.from(buf.slice(0, MAX_HTTP_RESPONSE)).toString('utf8');
+    return { status: res.status, text };
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') throw new Error(`request timed out after ${timeout}ms`);
+    throw err;
+  } finally {
+    clearTimeout(t);
+    opts.signal?.removeEventListener('abort', onOuterAbort);
+  }
+}
+
+/** `Key: Value` per line — real HTTP header syntax, distinct from the `variables` node's `KEY=value` convention. */
+function parseHeaderLines(text: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    const sep = t.indexOf(':');
+    if (sep <= 0) continue;
+    headers[t.slice(0, sep).trim()] = t.slice(sep + 1).trim();
+  }
+  return headers;
 }
 
 async function generate(ctx: RunCtx, system: string, user: string, opts: { json?: boolean } = {}): Promise<string> {
@@ -182,6 +220,19 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
     const items = memory.recall(q, Math.max(1, Math.min(12, n(config.limit, 5))));
     const text = items.length ? items.map((m) => `[${m.kind}] ${m.title}: ${m.body}`).join('\n') : 'No relevant memory.';
     return { text, data: items, summary: `${items.length} recalled` };
+  }),
+
+  'engineering-memory': spec('engineering-memory', 'Engineering Memory', 'source', "Queries this project's Engineering Memory platform (missions, diagnoses, decisions, patches — richer than Project Memory).", {
+    inputs: 0,
+    fields: [field('limit', 'Items', 'number', { default: 10 })],
+  }, async (ctx, _input, config) => {
+    const records = engineeringMemory.queryProject(ctx.projectId);
+    const limit = Math.max(1, Math.min(50, n(config.limit, 10)));
+    const items = [...records].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, limit);
+    const text = items.length
+      ? items.map((r) => `[${r.category}] ${r.summary}${r.detailedRecord ? ` — ${clip(r.detailedRecord, 120)}` : ''}`).join('\n')
+      : 'No engineering memory recorded for this project yet.';
+    return { text, data: items, summary: `${items.length} record${items.length === 1 ? '' : 's'}` };
   }),
 
   /* ── intelligence (frozen engines) ──────────────────────────────── */
@@ -444,6 +495,43 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
     }
     const { out } = await git(ctx, ['branch', '--show-current']);
     return { text: out || '(detached)', summary: out || '(detached)' };
+  }),
+
+  'http-request': spec('http-request', 'HTTP Request', 'action', 'Calls an external HTTP(S) URL. The input becomes the request body when no body template is set.', {
+    inputs: 'many',
+    fields: [
+      field('method', 'Method', 'select', { options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'], default: 'GET' }),
+      field('url', 'URL', 'text', { placeholder: 'https://api.example.com/endpoint' }),
+      field('headers', 'Headers (Key: Value per line)', 'textarea', { placeholder: 'Content-Type: application/json' }),
+      field('body', 'Body (optional — falls back to input)', 'textarea'),
+      field('timeoutMs', 'Timeout (ms)', 'number', { default: 10_000 }),
+    ],
+  }, async (ctx, input, config) => {
+    const url = interpolate(s(config.url), ctx, input);
+    if (!url.trim()) throw new Error('no URL configured');
+    const method = s(config.method, 'GET').toUpperCase();
+    const headers = parseHeaderLines(interpolate(s(config.headers), ctx, input));
+    const bodyTemplate = s(config.body);
+    const body = method === 'GET' || method === 'DELETE' ? undefined : (bodyTemplate.trim() ? interpolate(bodyTemplate, ctx, input) : (input.text || undefined));
+    const { status, text } = await sandboxedFetch(url, { method, headers, body, timeoutMs: n(config.timeoutMs, 10_000), signal: ctx.signal });
+    if (status >= 400) throw new Error(`HTTP ${status}: ${clip(text, 200)}`);
+    return { text, summary: `${status} · ${clip(url, 30)}` };
+  }),
+
+  'slack-notify': spec('slack-notify', 'Slack Notify', 'action', "Posts a message to a Slack Incoming Webhook URL — create one in Slack's own app settings, no AURA-side setup needed.", {
+    inputs: 'many',
+    fields: [
+      field('webhookUrl', 'Slack Incoming Webhook URL', 'text', { placeholder: 'https://hooks.slack.com/services/...' }),
+      field('message', 'Message (optional — falls back to input)', 'textarea'),
+    ],
+  }, async (ctx, input, config) => {
+    const url = s(config.webhookUrl).trim();
+    if (!url) throw new Error('no Slack webhook URL configured');
+    const text = interpolate(s(config.message), ctx, input) || input.text;
+    if (!text.trim()) throw new Error('nothing to send — connect an upstream node or set a message');
+    const { status, text: respText } = await sandboxedFetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), timeoutMs: 10_000, signal: ctx.signal });
+    if (status >= 400) throw new Error(`Slack webhook rejected the message (${status}): ${clip(respText, 200)}`);
+    return { ...input, summary: 'sent to Slack' };
   }),
 
   /* ── io ─────────────────────────────────────────────────────────── */

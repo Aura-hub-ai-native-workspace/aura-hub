@@ -1,0 +1,61 @@
+{
+  "name": "Code Review",
+  "description": "Reviews the real uncommitted diff with related code context.",
+  "category": "Review",
+  "nodes": [
+    {
+      "id": "diff",
+      "type": "git-diff",
+      "x": 40,
+      "y": 60,
+      "config": {}
+    },
+    {
+      "id": "code",
+      "type": "coding-engine",
+      "x": 40,
+      "y": 260,
+      "config": {
+        "query": "related modules of the changed code"
+      }
+    },
+    {
+      "id": "md",
+      "type": "generate-markdown",
+      "x": 360,
+      "y": 160,
+      "config": {
+        "instruction": "Review this diff like a senior engineer: correctness, naming, edge cases, and anything risky. Cite files and lines."
+      }
+    },
+    {
+      "id": "out",
+      "type": "output",
+      "x": 680,
+      "y": 160,
+      "config": {
+        "title": "Code review"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-diff-out-md",
+      "from": "diff",
+      "fromPort": "out",
+      "to": "md"
+    },
+    {
+      "id": "e-code-out-md",
+      "from": "code",
+      "fromPort": "out",
+      "to": "md"
+    },
+    {
+      "id": "e-md-out-out",
+      "from": "md",
+      "fromPort": "out",
+      "to": "out"
+    }
+  ]
+}

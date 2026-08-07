@@ -18,6 +18,7 @@ import {
   type ProjectProfile,
   type ProjectRecord,
 } from '../ai/aiClient';
+import { useMemoryStore } from '../ops/memoryStore';
 
 interface WorkspaceState {
   reachable: boolean | null;
@@ -125,6 +126,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   async remove(id) {
     await aiClient.removeProject(id);
     if (get().openId === id) set({ openId: null, profile: null, status: null, graph: null, kg: null, memory: [] });
+    useMemoryStore.getState().purgeProject(id);
     await get().refresh();
   },
   async reindex() {

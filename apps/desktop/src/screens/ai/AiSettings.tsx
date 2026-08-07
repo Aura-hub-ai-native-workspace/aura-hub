@@ -19,7 +19,8 @@ const EMPTY_DIALOG: DialogState = { open: false, step: 'provider', providerId: '
 function providerIcon(id: string): 'spark' | 'cpu' {
   const icons: Record<string, 'spark' | 'cpu'> = {
     openai: 'spark', anthropic: 'spark', groq: 'cpu', gemini: 'spark',
-    mistral: 'spark', kimi: 'spark', openrouter: 'cpu', nvidia: 'cpu',
+    mistral: 'spark', kimi: 'spark', openrouter: 'cpu', nvidia: 'cpu', cerebras: 'cpu',
+    novita: 'cpu', qwen: 'spark',
   };
   return icons[id] ?? 'cpu';
 }
@@ -37,6 +38,8 @@ export function AiSettings() {
   const [dialog, setDialog] = useState<DialogState>(EMPTY_DIALOG);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [switchingProvider, setSwitchingProvider] = useState<string | null>(null);
+  const [switchingModel, setSwitchingModel] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -126,16 +129,34 @@ export function AiSettings() {
 
   const activateProvider = async (id: string) => {
     setActionError(null);
-    const r = await aiClient.switchProvider(id).catch(() => null);
-    if (r?.ok) { await refreshProviderState(); if (r.error) setActionError(r.error); }
-    else setActionError(r?.error ?? 'Could not activate provider');
+    setSwitchingProvider(id);
+    try {
+      const r = await aiClient.switchProvider(id).catch(() => null);
+      if (r?.ok) { await refreshProviderState(); if (r.error) setActionError(r.error); }
+      else setActionError(r?.error ?? 'Could not activate provider');
+    } finally {
+      setSwitchingProvider(null);
+    }
+  };
+
+  const changeModel = async (id: string) => {
+    if (!activeProvider || !id) return;
+    setActionError(null);
+    setSwitchingModel(true);
+    try {
+      const r = await aiClient.switchProvider(activeProvider, id).catch(() => null);
+      if (r?.ok) { await refreshProviderState(); if (r.error) setActionError(r.error); }
+      else setActionError(r?.error ?? 'Could not switch model');
+    } finally {
+      setSwitchingModel(false);
+    }
   };
 
   const hasProvider = status?.type === 'byoak' && Boolean(activeProvider);
   const activeInfo = connected.find((c) => c.id === activeProvider);
   const models = activeInfo?.models?.length
     ? activeInfo.models.map((m) => m.id ?? '')
-    : (settings?.model ? [settings.model] : []);
+    : (status?.model ? [status.model] : []);
 
   if (error && !settings) {
     return (
@@ -187,7 +208,8 @@ export function AiSettings() {
                   return (
                     <div key={c.id} className={cn('flex items-center justify-between gap-4 rounded-xl border px-4 py-3 transition-colors', isActive ? 'border-accent bg-accent/5' : 'border-line')}>
                       <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
-                        <input type="radio" name="provider" checked={isActive} onChange={() => activateProvider(c.id)} className="accent-[var(--accent)]" />
+                        <input type="radio" name="provider" checked={isActive} onChange={() => activateProvider(c.id)} disabled={switchingProvider !== null} className="accent-[var(--accent)]" />
+                        {switchingProvider === c.id && <Icon name="activity" size={13} className="shrink-0 animate-pulse text-accent" />}
                         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-active text-text-muted"><Icon name={providerIcon(c.id)} size={15} /></span>
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
@@ -214,6 +236,7 @@ export function AiSettings() {
               <div className="flex items-center justify-between"><span className="text-text-muted">Provider</span><span className="font-medium text-text">{status?.label ?? 'Not connected'}</span></div>
               <div className="flex items-center justify-between"><span className="text-text-muted">Model</span><span className="font-medium text-text">{status?.model || '—'}</span></div>
               <div className="flex items-center justify-between"><span className="text-text-muted">Latency</span><span className="font-medium text-text">{hasProvider && health ? `${health.latencyMs ?? '—'}ms` : '—'}</span></div>
+              <div className="flex items-center justify-between"><span className="text-text-muted">Last validation</span><span className="font-medium text-text">{activeInfo?.health?.lastChecked ? new Date(activeInfo.health.lastChecked).toLocaleString() : '—'}</span></div>
             </div>
             <Button variant="secondary" icon="activity" onClick={test} loading={testing} block className="mt-3" disabled={!hasProvider}>Test connection</Button>
             {hasProvider && health ? (
@@ -231,8 +254,8 @@ export function AiSettings() {
           <Card>
             <CardHeader title="Generation" />
             <div className="mt-4 space-y-4">
-              <Row label="Model">
-                <Dropdown value={settings.model ?? ''} options={models.map((m) => ({ value: m, label: m }))} onChange={(v) => patch({ model: v })} className="w-64" />
+              <Row label="Model" hint={!hasProvider ? 'Connect a provider first' : undefined}>
+                <Dropdown value={status?.model ?? ''} options={models.map((m) => ({ value: m, label: m }))} onChange={changeModel} disabled={!hasProvider || switchingModel} className="w-64" />
               </Row>
               <Row label="Streaming" hint="Stream tokens as they generate">
                 <Toggle on={settings.streaming ?? true} onChange={(v) => patch({ streaming: v })} />

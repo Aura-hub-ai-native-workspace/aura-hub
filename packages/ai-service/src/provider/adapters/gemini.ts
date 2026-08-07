@@ -1,8 +1,9 @@
 import type { ProviderAdapter, DiscoveredModel, ProviderHealth, ModelCapabilities } from '../types';
 import type { Runtime, GenerateRequest, GenerateResponse, StreamChunk, ModelInfo, HealthStatus, RuntimeMessage } from '@aura/runtime';
+import { ProviderHttpError } from '../errorTranslator';
 
 export class GeminiAdapter implements ProviderAdapter {
-  readonly metadata = { id: 'gemini', name: 'Google Gemini', description: 'Gemini models by Google', docsUrl: 'https://aistudio.google.com/app/apikey' };
+  readonly metadata = { id: 'gemini', name: 'Google Gemini', description: 'Gemini models by Google', docsUrl: 'https://aistudio.google.com/app/apikey', defaultModel: 'gemini-2.0-flash' };
   private baseUrl = 'https://generativelanguage.googleapis.com/v1beta';
 
   detect(_apiKey: string): boolean { return false; }
@@ -30,7 +31,7 @@ export class GeminiAdapter implements ProviderAdapter {
   }
 
   createRuntime(apiKey: string, model?: string): Runtime {
-    return new GeminiRuntime(apiKey, model || 'gemini-2.0-flash');
+    return new GeminiRuntime(apiKey, model || this.metadata.defaultModel);
   }
 
   async checkHealth(apiKey: string): Promise<ProviderHealth> {
@@ -72,7 +73,7 @@ class GeminiRuntime implements Runtime {
     this.ac = new AbortController();
     const signal = AbortSignal.any([this.ac.signal, AbortSignal.timeout(this.timeoutMs)]);
     const res = await fetch(`${this.url(model)}:generateContent${this.auth()}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(p), signal });
-    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Gemini error ${res.status}: ${t || res.statusText}`); }
+    if (!res.ok) { const t = await res.text().catch(() => ''); throw new ProviderHttpError('Google Gemini', res.status, t || res.statusText); }
     const json = await res.json() as { candidates?: { content?: { parts?: { text?: string }[] }; finishReason?: string }[]; usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; totalTokenCount?: number } };
     const candidate = json.candidates?.[0];
     return { content: candidate?.content?.parts?.map((p) => p.text).join('') ?? '', model, usage: { promptTokens: json.usageMetadata?.promptTokenCount ?? 0, completionTokens: json.usageMetadata?.candidatesTokenCount ?? 0, totalTokens: json.usageMetadata?.totalTokenCount ?? 0 }, finishReason: candidate?.finishReason ?? 'stop' };
@@ -92,7 +93,7 @@ class GeminiRuntime implements Runtime {
     this.ac = new AbortController();
     const signal = AbortSignal.any([this.ac.signal, AbortSignal.timeout(this.timeoutMs)]);
     const res = await fetch(`${this.url(model)}:streamGenerateContent${this.auth()}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(p), signal });
-    if (!res.ok) { const t = await res.text().catch(() => ''); throw new Error(`Gemini error ${res.status}: ${t || res.statusText}`); }
+    if (!res.ok) { const t = await res.text().catch(() => ''); throw new ProviderHttpError('Google Gemini', res.status, t || res.statusText); }
     const reader = res.body?.pipeThrough(new TextDecoderStream()).getReader();
     if (!reader) throw new Error('No stream body');
     let buf = '';

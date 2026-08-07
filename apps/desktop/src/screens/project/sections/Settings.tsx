@@ -42,15 +42,27 @@ export function Settings({ projectId }: { projectId: string }) {
           <Card className="h-full">
             <CardHeader title="Actions" />
             <div className="mt-4 space-y-2.5">
-              <Action icon="knowledge" title="Re-index project" desc={status ? `${status.coding.chunks} chunks · ${status.fullstack.entities} entities` : 'Rebuild code + system indexes'} onClick={() => { void reindex(); push({ title: 'Re-indexing', description: 'Rebuilding the knowledge index.', tone: 'info' }); }} />
-              <Action icon="pin" title={project.favorite ? 'Remove favorite' : 'Mark as favorite'} desc="Show at the top of your library" onClick={() => void favorite(project.id, !project.favorite)} />
-              <Action icon="note" title="Rename project" desc="Change the display name" onClick={() => { const n = window.prompt('Rename project', project.name); if (n && n.trim()) void rename(project.id, n.trim()); }} />
+              <Action icon="knowledge" title="Re-index project" desc={status ? `${status.coding.chunks} chunks · ${status.fullstack.entities} entities` : 'Rebuild code + system indexes'} onClick={() => {
+                void reindex().catch(() => push({ title: 'Re-index failed', description: 'Could not rebuild the index. Try again.', tone: 'critical' }));
+                push({ title: 'Re-indexing', description: 'Rebuilding the knowledge index.', tone: 'info' });
+              }} />
+              <Action icon="pin" title={project.favorite ? 'Remove favorite' : 'Mark as favorite'} desc="Show at the top of your library" onClick={() => {
+                void favorite(project.id, !project.favorite).catch(() => push({ title: 'Could not update favorite', description: 'Try again.', tone: 'critical' }));
+              }} />
+              <Action icon="note" title="Rename project" desc="Change the display name" onClick={() => {
+                const n = window.prompt('Rename project', project.name);
+                if (n && n.trim()) void rename(project.id, n.trim()).catch(() => push({ title: 'Rename failed', description: 'Could not rename the project. Try again.', tone: 'critical' }));
+              }} />
               <Action icon="settings" title="AI provider settings" desc="AI runtime, model, streaming" onClick={() => setNav('settings')} />
               <button
                 onClick={() => {
                   if (window.confirm(`Remove "${project.name}" from AURA? The folder on disk is not deleted.`)) {
-                    void remove(project.id); closeProject();
-                    push({ title: 'Project removed', description: 'The folder was left untouched.', tone: 'info' });
+                    // Only navigate away / claim success once the removal actually
+                    // succeeds — a failed request must never look like it worked.
+                    void remove(project.id).then(
+                      () => { closeProject(); push({ title: 'Project removed', description: 'The folder was left untouched.', tone: 'info' }); },
+                      () => push({ title: 'Could not remove project', description: 'The project was not removed. Try again.', tone: 'critical' }),
+                    );
                   }
                 }}
                 className="flex w-full items-center gap-3 rounded-xl border border-critical/30 bg-critical/5 px-3.5 py-3 text-left transition-colors hover:bg-critical/10"

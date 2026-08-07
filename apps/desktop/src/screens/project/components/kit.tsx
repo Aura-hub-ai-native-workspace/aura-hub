@@ -1,7 +1,7 @@
 import { type ReactNode } from 'react';
 import { motion } from 'framer-motion';
 import { cn, spring, staggerContainer, staggerItem, type StatusTone } from '@aura/core';
-import { Badge, Card, Icon, type IconName } from '@aura/ui';
+import { Card, Icon, type IconName } from '@aura/ui';
 
 /**
  * Project section kit — small, reusable compositions built on top of the
@@ -101,16 +101,6 @@ export function StatTile({
   );
 }
 
-/** A subtle status dot + label. */
-export function StatusDot({ tone, label }: { tone: StatusTone; label: ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-text-muted">
-      <span className={cn('h-1.5 w-1.5 rounded-full', toneBg[tone])} />
-      {label}
-    </span>
-  );
-}
-
 /** Labelled meter bar. */
 export function Meter({ label, value, tone = 'info' }: { label: string; value: number; tone?: StatusTone }) {
   return (
@@ -131,27 +121,3 @@ export function Meter({ label, value, tone = 'info' }: { label: string; value: n
   );
 }
 
-/** A right-aligned metadata row inside cards. */
-export function Row({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn('flex items-center gap-3 py-2.5', className)}>{children}</div>;
-}
-
-/** HTTP method tag. */
-export function MethodTag({ method }: { method: 'GET' | 'POST' | 'PUT' | 'DELETE' }) {
-  const map = {
-    GET: 'text-accent bg-accent-50 dark:bg-accent/15',
-    POST: 'text-positive bg-positive/10',
-    PUT: 'text-attention bg-attention/12',
-    DELETE: 'text-danger bg-danger/10',
-  } as const;
-  return (
-    <span className={cn('inline-block w-14 rounded-md px-1.5 py-0.5 text-center text-[10.5px] font-semibold tracking-wide', map[method])}>
-      {method}
-    </span>
-  );
-}
-
-/** Section tone → Badge passthrough (keeps neutral usable). */
-export function TonePill({ tone, children }: { tone: StatusTone; children: ReactNode }) {
-  return <Badge tone={tone} dot>{children}</Badge>;
-}

@@ -7,7 +7,7 @@
  * deliberately provider-agnostic: nothing here references Groq, Claude,
  * OpenAI, a local runtime, or any SDK. A concrete provider maps its own
  * request/response shape onto `ProviderRequest` / `ProviderResponse` at
- * the adapter seam (see providers/adapter.ts) — and only there.
+ * the adapter seam (see @aura/runtime) — and only there.
  *
  * The data flows one direction, each stage enriching an evolving
  * envelope:

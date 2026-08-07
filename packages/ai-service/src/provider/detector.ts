@@ -10,6 +10,7 @@ const KEY_PREFIX_RULES: { prefix: string; providerId: string }[] = [
   { prefix: 'gsk_', providerId: 'groq' },
   { prefix: 'sk-ant-', providerId: 'anthropic' },
   { prefix: 'sk-', providerId: 'openai' },
+  { prefix: 'csk_', providerId: 'cerebras' },
 ];
 
 export function detectByKeyPrefix(apiKey: string): string | null {
@@ -32,7 +33,6 @@ export async function detectProvider(apiKey: string): Promise<{ adapter: Provide
 
   const adapters = getAllAdapters();
   for (const adapter of adapters) {
-    if (adapter.metadata.id === 'aura') continue;
     try {
       const result = await adapter.validate(apiKey);
       if (result.ok) return { adapter, strategy: DetectionStrategy.ValidationEndpoint };

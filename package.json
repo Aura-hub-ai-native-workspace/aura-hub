@@ -3,6 +3,24 @@
   "private": true,
   "version": "0.1.0",
   "description": "AURA Hub — an AI Operating Environment. Application shell and architecture.",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Aura-hub-ai-native-workspace/aura-hub#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aura-hub-ai-native-workspace/aura-hub.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Aura-hub-ai-native-workspace/aura-hub/issues"
+  },
+  "keywords": [
+    "ai",
+    "developer-tools",
+    "workflow-automation",
+    "knowledge-graph",
+    "monorepo",
+    "tauri",
+    "engineering-intelligence"
+  ],
   "type": "module",
   "workspaces": [
     "apps/*",
@@ -10,11 +28,11 @@
   ],
   "scripts": {
     "dev": "npm run dev --workspace @aura/desktop",
-    "ai": "esbuild packages/ai-service/src/start.ts --bundle --platform=node --format=esm --outfile=.aura/ai-service.mjs && node .aura/ai-service.mjs",
+    "ai": "esbuild packages/ai-service/src/start.ts --bundle --platform=node --format=esm --external:typescript --outfile=.aura/ai-service.mjs && node .aura/ai-service.mjs",
     "build": "npm run build --workspace @aura/desktop",
     "preview": "npm run preview --workspace @aura/desktop",
     "tauri": "npm run tauri --workspace @aura/desktop",
-    "typecheck": "tsc -p packages/ai-service/tsconfig.json --noEmit && tsc -p apps/desktop/tsconfig.json --noEmit",
+    "typecheck": "tsc -p packages/ai-service/tsconfig.json --noEmit && tsc -b apps/desktop/tsconfig.json",
     "clean": "rimraf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist"
   },
   "devDependencies": {
@@ -29,7 +47,6 @@
     "esbuild@0.21.5": true
   },
   "dependencies": {
-    "3d-force-graph": "^1.80.0",
     "three": "^0.185.1"
   }
 }

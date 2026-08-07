@@ -2,7 +2,6 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { NAV_ITEMS, spring, useAppStore, cn } from '@aura/core';
 import { Icon, IconButton, Tooltip } from '@aura/ui';
 import { AuraTile } from '../brand/AuraLogo';
-import { useWorkspace } from '../data/useWorkspace';
 
 const EXPANDED = 244;
 const RAIL = 76;
@@ -19,8 +18,6 @@ export function LeftNav() {
 
   const primary = NAV_ITEMS.filter((i) => i.group === 'primary');
   const system = NAV_ITEMS.filter((i) => i.group === 'system');
-  // Real badge: number of projects in the library, shown on Projects.
-  const projectCount = useWorkspace((s) => s.projects.length);
 
   return (
     <motion.nav
@@ -48,7 +45,7 @@ export function LeftNav() {
       </div>
 
       {/* Primary destinations */}
-      <div className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
+      <div className="flex flex-1 flex-col space-y-1 overflow-y-auto px-3 py-2">
         {primary.map((item) => (
           <NavButton
             key={item.key}
@@ -56,14 +53,13 @@ export function LeftNav() {
             label={item.label}
             expanded={expanded}
             active={nav === item.key}
-            badge={item.key === 'projects' ? projectCount : undefined}
             onClick={() => setNav(item.key)}
           />
         ))}
       </div>
 
       {/* System + collapse control */}
-      <div className="space-y-1 border-t border-line px-3 py-3">
+      <div className="flex flex-col space-y-1 border-t border-line px-3 py-3">
         {system.map((item) => (
           <NavButton
             key={item.key}
@@ -92,14 +88,12 @@ function NavButton({
   label,
   expanded,
   active,
-  badge,
   onClick,
 }: {
   icon: string;
   label: string;
   expanded: boolean;
   active: boolean;
-  badge?: number;
   onClick: () => void;
 }) {
   const body = (
@@ -135,16 +129,6 @@ function NavButton({
           </motion.span>
         )}
       </AnimatePresence>
-      {badge !== undefined && badge > 0 && (
-        <span
-          className={cn(
-            'relative z-10 grid h-5 min-w-[20px] place-items-center rounded-full bg-accent px-1 text-[10px] font-semibold text-white',
-            !expanded && 'absolute -right-0.5 -top-0.5 h-4 min-w-[16px]',
-          )}
-        >
-          {badge}
-        </span>
-      )}
     </motion.button>
   );
 

@@ -46,7 +46,7 @@ export function AiWorkspace() {
   useEffect(() => {
     let alive = true;
     aiClient.health().then((h) => alive && setHealth(h)).catch(() => alive && setHealth(null));
-    aiClient.getSettings().then((s) => alive && setModel(s.settings.model)).catch(() => {});
+    aiClient.getProviders().then((r) => alive && setModel(r.status?.model ?? '')).catch(() => {});
     return () => { alive = false; };
   }, []);
 
@@ -58,11 +58,6 @@ export function AiWorkspace() {
   const connected = health?.health.ok && health?.key.configured;
   const streaming = conv.phase !== 'idle';
 
-  useMemo(() => {
-    const asst = conv.messages.filter((m) => m.role === 'assistant');
-    console.log(`[AiWorkspace] render  totalMsgs=${conv.messages.length}  assistants=${asst.length}  ids=${asst.map(m => m.id.slice(0,12)).join(',')}  statuses=${asst.map(m => m.status).join(',')}`);
-  }, [conv.messages]);
-
   if (!openId || !project) {
     return (
       <div className="grid h-full place-items-center p-10">
@@ -70,7 +65,7 @@ export function AiWorkspace() {
           icon="spark"
           title="Open a project to talk to its brain"
           description="AURA has no global chat. Each project has its own conversations, memory and knowledge. Open a project, then Ask AURA."
-          action={<Button icon="projects" onClick={() => setNav('projects')}>Go to Projects</Button>}
+          action={<Button icon="home" onClick={() => setNav('home')}>Go to Home</Button>}
         />
       </div>
     );
@@ -410,10 +405,15 @@ function Kv({ k, v, clamp }: { k: string; v: string; clamp?: boolean }) {
 function errorTitle(type?: string): string {
   switch (type) {
     case 'auth': return 'Authentication failed';
+    case 'authorization': return 'Permission denied';
+    case 'billing': return 'No credits remaining';
     case 'rate_limit': return 'Rate limited';
+    case 'model': return 'Model unavailable';
+    case 'configuration': return 'Invalid provider/model configuration';
     case 'timeout': return 'Request timed out';
     case 'network': return 'Cannot reach provider';
-    case 'server': return 'Provider error';
+    case 'server_error': return 'Provider error';
+    case 'no_provider': return 'No AI provider connected';
     default: return 'Something went wrong';
   }
 }

@@ -177,6 +177,22 @@ textarea,
   50% { transform: translate3d(2%, -3%, 0) scale(1.08); opacity: 1; }
 }
 
+/* ── Workflow canvas ──────────────────────────────────────────────────
+   Dependency edges stream forward along the path while execution runs. */
+.edge-flow {
+  stroke-dasharray: 7 5;
+  animation: edge-flow 1.4s linear infinite;
+}
+@keyframes edge-flow {
+  to { stroke-dashoffset: -12; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .edge-flow {
+    animation: none;
+    stroke-dasharray: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -6,6 +6,25 @@ mature engineering teams (Kubernetes, VS Code, React): contributors propose
 changes through Pull Requests, and the repository owner has final say on
 everything that lands on `main`.
 
+By participating in this project, you agree to abide by the
+[Code of Conduct](CODE_OF_CONDUCT.md). Need help before opening a PR?
+See [`SUPPORT.md`](SUPPORT.md). Found a security issue? See
+[`SECURITY.md`](SECURITY.md) instead of opening a public issue.
+
+## Getting your dev environment running
+
+Full setup, requirements, and available scripts are in the README's
+[Installation](README.md#installation) and
+[Development](README.md#installation) sections — start there before your
+first PR. The short version: `npm install`, then `npm run dev`.
+
+## License
+
+AURA Hub is licensed under [Apache License 2.0](LICENSE). Any
+contribution you intentionally submit for inclusion is licensed under
+the same terms (Apache 2.0 §5), without any additional terms or
+conditions, unless you explicitly state otherwise.
+
 ## Roles & Permissions
 
 See [docs/TEAM_GUIDE.md](docs/TEAM_GUIDE.md) for the full breakdown of

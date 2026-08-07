@@ -1,0 +1,63 @@
+{
+  "name": "Release Notes",
+  "description": "Turns the real recent git history into human release notes.",
+  "category": "Docs",
+  "nodes": [
+    {
+      "id": "log",
+      "type": "shell-command",
+      "x": 40,
+      "y": 160,
+      "config": {
+        "command": "git log --oneline -n 25"
+      }
+    },
+    {
+      "id": "md",
+      "type": "generate-markdown",
+      "x": 340,
+      "y": 160,
+      "config": {
+        "instruction": "Turn this commit history into release notes: group by theme, highlight breaking changes, plain language."
+      }
+    },
+    {
+      "id": "note",
+      "type": "create-note",
+      "x": 640,
+      "y": 60,
+      "config": {
+        "title": "Release notes"
+      }
+    },
+    {
+      "id": "out",
+      "type": "output",
+      "x": 640,
+      "y": 260,
+      "config": {
+        "title": "Release notes"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-log-out-md",
+      "from": "log",
+      "fromPort": "out",
+      "to": "md"
+    },
+    {
+      "id": "e-md-out-note",
+      "from": "md",
+      "fromPort": "out",
+      "to": "note"
+    },
+    {
+      "id": "e-md-out-out",
+      "from": "md",
+      "fromPort": "out",
+      "to": "out"
+    }
+  ]
+}

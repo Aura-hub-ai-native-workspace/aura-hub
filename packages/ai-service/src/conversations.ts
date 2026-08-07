@@ -114,6 +114,25 @@ export class ProjectConversations {
     return m;
   }
 
+  /**
+   * Removes the conversation's trailing assistant message — used by
+   * "Regenerate" to replace a discarded answer instead of leaving it
+   * persisted underneath the new one (re-opening the conversation would
+   * otherwise show both, back-to-back, forever). No-op (returns false)
+   * if the conversation has no messages or its last message isn't from
+   * the assistant, so it can never remove a user turn.
+   */
+  removeLastAssistant(id: string): boolean {
+    const c = this.get(id);
+    if (!c) return false;
+    const last = c.messages[c.messages.length - 1];
+    if (!last || last.role !== 'assistant') return false;
+    c.messages.pop();
+    c.updatedAt = new Date().toISOString();
+    this.save();
+    return true;
+  }
+
   /** Recent turns as kernel history (last `n` messages of a conversation). */
   history(id: string, n = 8): ConversationTurn[] {
     const c = this.get(id);

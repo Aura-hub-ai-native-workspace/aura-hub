@@ -8,5 +8,3 @@ export function abortError(message: string): Error {
   return err;
 }
 
-export const isAbortError = (err: unknown): boolean =>
-  err instanceof Error && err.name === 'AbortError';

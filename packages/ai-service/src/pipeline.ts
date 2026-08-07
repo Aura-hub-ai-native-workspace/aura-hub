@@ -12,6 +12,8 @@ import { ProjectMemory, type MemoryItem } from './memory';
 import { loadProfile, type ProjectProfile } from './profile';
 import { homePath } from './persist';
 import { RuntimeManager } from './provider';
+import { isModelValidForProvider } from './provider/modelValidation';
+import { ProviderHttpError, translateProviderError } from './provider/errorTranslator';
 import { runGraphify } from './graphify';
 import {
   runIntelligencePipeline,
@@ -52,14 +54,90 @@ interface Mount {
 }
 
 export interface NormalizedError { type: string; message: string; retryable: boolean }
-function normalize(e: unknown): NormalizedError {
+
+/**
+ * Classifies thrown errors into a stable, user-facing shape. Provider
+ * adapters throw `ProviderHttpError` on non-2xx HTTP responses (see
+ * provider/adapters/base.ts and friends), which carries the real status +
+ * response body — errorTranslator.ts turns that into a friendly, correctly
+ * categorized message (e.g. a 403 body of "NOT_ENOUGH_BALANCE" becomes a
+ * billing error, not "Authentication failed"), never a raw provider
+ * payload. `AbortError`/`TimeoutError` and generic network failures are
+ * handled here directly since they never reach a provider response at all.
+ */
+function normalize(e: unknown, providerLabel?: string): NormalizedError {
   const err = e as Error;
-  return { type: 'unknown', message: err?.message ?? String(e), retryable: false };
+  if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
+    return { type: 'timeout', message: providerLabel ? `The request to ${providerLabel} timed out.` : 'The request timed out.', retryable: true };
+  }
+  if (e instanceof ProviderHttpError) {
+    return translateProviderError(e.providerName, e.status, e.body);
+  }
+  const message = err?.message ?? String(e);
+  // Defensive fallback for any error that reaches here as a plain Error
+  // instead of a ProviderHttpError (e.g. a future adapter that forgets to
+  // throw the structured form) — parses the same "<Provider> error
+  // <status>: <body>" shape adapters format their messages as, so nothing
+  // regresses to a raw, uncategorized provider string.
+  const statusMatch = /\berror (\d{3}):\s*([\s\S]*)$/i.exec(message);
+  if (statusMatch) {
+    return translateProviderError(providerLabel ?? 'The AI provider', Number(statusMatch[1]), statusMatch[2]);
+  }
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|network/i.test(message)) {
+    const label = providerLabel ?? 'the AI provider';
+    return { type: 'network', message: `Could not reach ${label}.\n\nCheck your network connection and try again.`, retryable: true };
+  }
+  return { type: 'unknown', message, retryable: false };
+}
+
+/** Races `fn` against `timeoutMs`, cancelling the in-flight runtime call on timeout. */
+function withTimeout<T>(fn: () => Promise<T>, timeoutMs: number, onTimeout: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      onTimeout();
+      const e = new Error('Request timed out');
+      e.name = 'TimeoutError';
+      reject(e);
+    }, timeoutMs);
+  });
+  return Promise.race([fn(), timeout]).finally(() => clearTimeout(timer));
+}
+
+/** Retries only classifications marked `retryable`, with capped exponential backoff. */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  opts: { maxRetries: number; signal?: AbortSignal; providerLabel?: string },
+): Promise<{ ok: true; value: T } | { ok: false; error: NormalizedError }> {
+  let lastError: NormalizedError = { type: 'unknown', message: 'Unknown error', retryable: false };
+  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    if (opts.signal?.aborted) return { ok: false, error: { type: 'aborted', message: 'Cancelled', retryable: false } };
+    try {
+      return { ok: true, value: await fn() };
+    } catch (e) {
+      lastError = normalize(e, opts.providerLabel);
+      if (!lastError.retryable || attempt === opts.maxRetries) break;
+      await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** attempt, 4000)));
+    }
+  }
+  return { ok: false, error: lastError };
 }
 
 const NO_PROVIDER: NormalizedError = {
   type: 'no_provider',
   message: 'No AI provider connected. Add your API key in Settings to use AURA\'s AI.',
+  retryable: false,
+};
+
+// Sent instead of ever making a request for a provider/model pair that
+// isn't real — this is what stands between the user and a raw provider
+// 404. See provider/modelValidation.ts for what "valid" means. Type
+// 'configuration' matches errorTranslator's category scheme (this is the
+// "invalid provider/model combination" case caught before a request is
+// ever sent, rather than one translated from a provider's response).
+const INVALID_MODEL: NormalizedError = {
+  type: 'configuration',
+  message: 'The selected model is not available for the active provider.',
   retryable: false,
 };
 
@@ -175,6 +253,13 @@ export class PipelineManager {
 
   async reindex(): Promise<IndexStatus> {
     if (!this.mounted) return this.indexStatus();
+    // Coalesce concurrent reindex calls (e.g. an impatient double-click) onto
+    // the run already in flight, rather than starting a second full pass
+    // that races the first over the same on-disk store.
+    if (this.status.phase === 'indexing' && this.indexing) {
+      await this.indexing;
+      return this.indexStatus();
+    }
     this.indexing = this.runIndex(true);
     await this.indexing;
     return this.indexStatus();
@@ -183,16 +268,24 @@ export class PipelineManager {
   private async runIndex(force: boolean): Promise<void> {
     const m = this.mounted;
     if (!m) return;
+    // Guards every status write below: if the user switches projects while
+    // this run is still in flight, `this.mounted` moves on to the new
+    // project and this now-superseded run must stop touching shared status
+    // instead of corrupting it with stale progress from a project that's no
+    // longer active.
+    const isCurrent = () => this.mounted?.id === m.id;
     this.status = { ...this.status, phase: 'indexing', message: 'Indexing code…', error: undefined, startedAt: new Date().toISOString(), finishedAt: null };
     try {
       if (force || !(await m.coding.load())) {
-        await m.coding.index({ onProgress: (p) => { this.status.coding.processed = p.processed; this.status.coding.total = p.total ?? this.status.coding.total; } });
+        await m.coding.index({ onProgress: (p) => { if (!isCurrent()) return; this.status.coding.processed = p.processed; this.status.coding.total = p.total ?? this.status.coding.total; } });
       }
+      if (!isCurrent()) return;
       this.status.coding.chunks = m.coding.stats().chunks;
       this.status.message = 'Analyzing system graph…';
       if (force || !(await m.fullstack.load())) {
-        await m.fullstack.analyze({ onProgress: (p) => { this.status.fullstack.processed = p.processed; this.status.fullstack.total = p.total ?? this.status.fullstack.total; } });
+        await m.fullstack.analyze({ onProgress: (p) => { if (!isCurrent()) return; this.status.fullstack.processed = p.processed; this.status.fullstack.total = p.total ?? this.status.fullstack.total; } });
       }
+      if (!isCurrent()) return;
       const g = m.fullstack.stats();
       this.status.fullstack.entities = g.entities;
       this.status.fullstack.relations = g.relations;
@@ -201,6 +294,7 @@ export class PipelineManager {
       // This is non-blocking — the graph.html will appear once it finishes.
       try { runGraphify(m.id, m.path); } catch { /* graphify failure is non-fatal */ }
     } catch (e) {
+      if (!isCurrent()) return;
       this.status = { ...this.status, phase: 'error', error: (e as Error).message, message: 'Indexing failed', finishedAt: new Date().toISOString() };
     }
   }
@@ -381,33 +475,43 @@ export class PipelineManager {
     const meta = await this.inspect(text);
     const runtime = this.runtimeManager.runtime;
     if (!runtime) return { ok: false as const, error: NO_PROVIDER, meta };
+    if (!isModelValidForProvider(this.runtimeManager.getProviderId(), this.runtimeManager.getModel())) {
+      return { ok: false as const, error: INVALID_MODEL, meta };
+    }
     const t0 = performance.now();
+    const onAbort = () => runtime.cancel();
+    signal?.addEventListener('abort', onAbort);
     try {
       const { messages } = this.buildContextMessages(text, meta, history);
-      signal?.addEventListener('abort', () => runtime.cancel());
       const request: GenerateRequest = {
         messages,
         temperature: this.settings.temperature,
         maxTokens: this.settings.maxTokens,
       };
-      const res = await runtime.generate(request);
       const providerLabel = this.runtimeManager.providerLabel;
+      const result = await withRetry(
+        () => withTimeout(() => runtime.generate(request), this.settings.timeoutMs, () => runtime.cancel()),
+        { maxRetries: this.settings.maxRetries, signal, providerLabel },
+      );
+      if (!result.ok) return { ok: false as const, error: result.error, meta };
       const latencyMs = Math.round(performance.now() - t0);
       return {
         ok: true as const,
-        answer: res.content,
+        answer: result.value.content,
         meta,
         intent: meta.intent,
         engineId: providerLabel.toLowerCase().replace(/\s+/g, '-'),
         provider: providerLabel,
         citations: [],
-        usage: res.usage,
-        finishReason: res.finishReason,
+        usage: result.value.usage,
+        finishReason: result.value.finishReason,
         latencyMs,
         trace: [{ stage: 'generation', startedAt: t0, durationMs: latencyMs, ok: true }],
       };
     } catch (e) {
-      return { ok: false as const, error: normalize(e), meta };
+      return { ok: false as const, error: normalize(e, this.runtimeManager.providerLabel), meta };
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -417,7 +521,11 @@ export class PipelineManager {
   ): Promise<{ ok: true; text: string; usage: unknown } | { ok: false; error: NormalizedError }> {
     const runtime = this.runtimeManager.runtime;
     if (!runtime) return { ok: false, error: NO_PROVIDER };
-    signal?.addEventListener('abort', () => runtime.cancel());
+    if (!isModelValidForProvider(this.runtimeManager.getProviderId(), this.runtimeManager.getModel())) {
+      return { ok: false, error: INVALID_MODEL };
+    }
+    const onAbort = () => runtime.cancel();
+    signal?.addEventListener('abort', onAbort);
     try {
       const messages: RuntimeMessage[] = [];
       const m = this.mounted;
@@ -433,10 +541,17 @@ export class PipelineManager {
         maxTokens: this.settings.maxTokens,
       };
       if (input.json) request.maxTokens = Math.min(request.maxTokens ?? 4096, 8096);
-      const res = await runtime.generate(request);
-      return { ok: true, text: res.content, usage: res.usage };
+      const providerLabel = this.runtimeManager.providerLabel;
+      const result = await withRetry(
+        () => withTimeout(() => runtime.generate(request), this.settings.timeoutMs, () => runtime.cancel()),
+        { maxRetries: this.settings.maxRetries, signal, providerLabel },
+      );
+      if (!result.ok) return { ok: false, error: result.error };
+      return { ok: true, text: result.value.content, usage: result.value.usage };
     } catch (e) {
-      return { ok: false, error: normalize(e) };
+      return { ok: false, error: normalize(e, this.runtimeManager.providerLabel) };
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -451,27 +566,52 @@ export class PipelineManager {
     }
     const runtime = this.runtimeManager.runtime;
     if (!runtime) { emit({ type: 'error', error: NO_PROVIDER }); return; }
-    const t0 = performance.now();
-    signal?.addEventListener('abort', () => runtime.cancel());
-    try {
-      const { messages } = this.buildContextMessages(text, meta, history);
-      const request: GenerateRequest = {
-        messages,
-        temperature: this.settings.temperature,
-        maxTokens: this.settings.maxTokens,
-      };
-      for await (const chunk of runtime.stream(request)) {
-        if (chunk.delta) emit({ type: 'token', text: chunk.delta });
-        if (chunk.done) {
-          const providerLabel = this.runtimeManager.providerLabel;
-          const latencyMs = Math.round(performance.now() - t0);
-          emit({ type: 'done', usage: chunk.usage, finishReason: chunk.finishReason ?? 'stop', citations: [], latencyMs, trace: [{ stage: 'generation', startedAt: t0, durationMs: latencyMs, ok: true }], provider: providerLabel, engineId: providerLabel.toLowerCase().replace(/\s+/g, '-') });
-          return;
-        }
-      }
-    } catch (e) {
-      emit({ type: 'error', error: normalize(e) });
+    if (!isModelValidForProvider(this.runtimeManager.getProviderId(), this.runtimeManager.getModel())) {
+      emit({ type: 'error', error: INVALID_MODEL });
+      return;
     }
+    const onAbort = () => runtime.cancel();
+    signal?.addEventListener('abort', onAbort);
+    const t0 = performance.now();
+    const { messages } = this.buildContextMessages(text, meta, history);
+    const request: GenerateRequest = {
+      messages,
+      temperature: this.settings.temperature,
+      maxTokens: this.settings.maxTokens,
+    };
+
+    // Retries only cover the case where a failure (timeout/429/5xx/network) happens
+    // before any token reached the client — once tokens have streamed, retrying
+    // would duplicate output, so a mid-stream failure is reported as-is.
+    let lastError: NormalizedError | null = null;
+    for (let attempt = 0; attempt <= this.settings.maxRetries; attempt++) {
+      if (signal?.aborted) { signal.removeEventListener('abort', onAbort); return; }
+      let emittedAnyToken = false;
+      try {
+        const iterator = runtime.stream(request)[Symbol.asyncIterator]();
+        while (true) {
+          const next = await withTimeout(() => iterator.next(), this.settings.timeoutMs, () => runtime.cancel());
+          if (next.done) break;
+          const chunk = next.value;
+          if (chunk.delta) { emit({ type: 'token', text: chunk.delta }); emittedAnyToken = true; }
+          if (chunk.done) {
+            const providerLabel = this.runtimeManager.providerLabel;
+            const latencyMs = Math.round(performance.now() - t0);
+            emit({ type: 'done', usage: chunk.usage, finishReason: chunk.finishReason ?? 'stop', citations: [], latencyMs, trace: [{ stage: 'generation', startedAt: t0, durationMs: latencyMs, ok: true }], provider: providerLabel, engineId: providerLabel.toLowerCase().replace(/\s+/g, '-') });
+            signal?.removeEventListener('abort', onAbort);
+            return;
+          }
+        }
+        signal?.removeEventListener('abort', onAbort);
+        return;
+      } catch (e) {
+        lastError = normalize(e, this.runtimeManager.providerLabel);
+        if (emittedAnyToken || !lastError.retryable || attempt === this.settings.maxRetries) break;
+        await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** attempt, 4000)));
+      }
+    }
+    signal?.removeEventListener('abort', onAbort);
+    emit({ type: 'error', error: lastError ?? { type: 'unknown', message: 'Unknown error', retryable: false } });
   }
 }
 

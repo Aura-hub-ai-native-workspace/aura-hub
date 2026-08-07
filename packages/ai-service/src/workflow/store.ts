@@ -7,6 +7,7 @@
  */
 
 import { mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { homePath, readJsonFile, writeJsonFile } from '../persist';
 import { genId, type WfEdge, type WfNode, type Workflow, type WorkflowSummary } from './types';
@@ -37,6 +38,7 @@ function sanitize(wf: Partial<Workflow>, id: string): Workflow {
     updatedAt: now(),
     nodes,
     edges,
+    webhookToken: typeof wf.webhookToken === 'string' && wf.webhookToken ? wf.webhookToken : undefined,
   };
 }
 
@@ -80,7 +82,9 @@ export class WorkflowStore {
   duplicate(id: string): Workflow | null {
     const existing = this.get(id);
     if (!existing) return null;
-    return this.create({ ...existing, name: `${existing.name} copy`, favorite: false });
+    // Never carries the original's webhook token — a copy is a distinct
+    // workflow and gets its own secret, lazily, the first time it needs one.
+    return this.create({ ...existing, name: `${existing.name} copy`, favorite: false, webhookToken: undefined });
   }
 
   remove(id: string): boolean {
@@ -95,5 +99,31 @@ export class WorkflowStore {
   /** Import an exported definition (gets a fresh id). */
   import(def: Partial<Workflow>): Workflow {
     return this.create({ ...def, name: def.name ? `${def.name}` : 'Imported workflow' });
+  }
+
+  /** Lazily creates (once) and returns this workflow's inbound-trigger token, so an external system's own webhook config (GitHub, or anything else) can start a run without AURA needing an API client for that system. Idempotent — repeat calls return the same token until it's rotated. */
+  ensureWebhookToken(id: string): string | null {
+    const existing = this.get(id);
+    if (!existing) return null;
+    if (existing.webhookToken) return existing.webhookToken;
+    const token = randomBytes(24).toString('hex');
+    this.save(id, { ...existing, webhookToken: token });
+    return token;
+  }
+
+  /** Invalidates the current token (if any) and issues a fresh one. */
+  rotateWebhookToken(id: string): string | null {
+    const existing = this.get(id);
+    if (!existing) return null;
+    const token = randomBytes(24).toString('hex');
+    this.save(id, { ...existing, webhookToken: token });
+    return token;
+  }
+
+  /** Constant-time-enough equality for a local single-user app — proportionate to this codebase's existing safety posture (see nodes.ts's sandboxedFetch comment), not a multi-tenant secret-comparison threat model. */
+  verifyWebhookToken(id: string, token: string): Workflow | null {
+    const wf = this.get(id);
+    if (!wf?.webhookToken || !token || wf.webhookToken !== token) return null;
+    return wf;
   }
 }

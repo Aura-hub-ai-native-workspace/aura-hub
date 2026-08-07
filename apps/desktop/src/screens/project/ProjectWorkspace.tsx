@@ -5,6 +5,7 @@ import { Badge, Button, Icon } from '@aura/ui';
 import { ProjectSection } from './sections';
 import { EmptyState } from '../../components/EmptyState';
 import { useWorkspace } from '../../data/useWorkspace';
+import { useLayoutStore } from '../../ops/layoutStore';
 
 /**
  * ProjectWorkspace — a real project rendered as its own operating
@@ -18,6 +19,7 @@ export function ProjectWorkspace() {
   const setTab = useAppStore((s) => s.setProjectTab);
   const closeProject = useAppStore((s) => s.closeProject);
   const setNav = useAppStore((s) => s.setNav);
+  const openPanel = useLayoutStore((s) => s.openPanel);
   const { projects, openId, status, open } = useWorkspace();
 
   const project = projects.find((p) => p.id === activeProjectId) ?? null;
@@ -33,21 +35,26 @@ export function ProjectWorkspace() {
         <EmptyState
           icon="folder"
           title="Project not found"
-          description="It may have been removed. Return to the library to pick another."
-          action={<Button icon="projects" onClick={() => setNav('projects')}>Back to Projects</Button>}
+          description="It may have been removed. Return to Home to pick another."
+          action={<Button icon="home" onClick={() => setNav('home')}>Back to Home</Button>}
         />
       </div>
     );
   }
 
   const indexing = status?.phase === 'indexing';
+  // The Code Workspace doesn't depend on Knowledge Fabric indexing (it
+  // reads/writes real files directly) and owns a fixed-viewport layout
+  // with its own internal scroll regions — it never waits on the
+  // indexing gate and never sits inside the page's normal scroll flow.
+  const isCode = tab === 'code';
 
   return (
-    <div className="flex min-h-full flex-col">
-      <div className="border-b border-line bg-surface/40 px-8 pt-6 backdrop-blur-sm sm:px-10 lg:px-12">
+    <div className={cn('flex flex-col', isCode ? 'h-full min-h-full' : 'min-h-full')}>
+      <div className="shrink-0 border-b border-line bg-surface/40 px-8 pt-6 backdrop-blur-sm sm:px-10 lg:px-12">
         <button onClick={closeProject} className="mb-4 inline-flex items-center gap-1.5 text-[12px] font-medium text-text-muted transition-colors hover:text-text">
           <Icon name="chevron-right" size={14} className="rotate-180" />
-          Back to Projects
+          Back to Home
         </button>
 
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -69,7 +76,7 @@ export function ProjectWorkspace() {
             </div>
           </div>
           <div className="flex gap-2.5">
-            <Button variant="secondary" icon="spark" onClick={() => setNav('ai')}>Ask AURA</Button>
+            <Button variant="secondary" icon="spark" onClick={() => { setNav('workspace'); openPanel('ai-chat'); }}>Ask AURA</Button>
           </div>
         </div>
 
@@ -80,9 +87,11 @@ export function ProjectWorkspace() {
         </div>
       </div>
 
-      <div className="flex-1">
-        {indexing && tab !== 'settings' && tab !== 'memory' ? (
+      <div className={cn('flex-1', isCode ? 'flex min-h-0 overflow-hidden' : '')}>
+        {indexing && !isCode && tab !== 'settings' && tab !== 'memory' ? (
           <EmptyState icon="knowledge" title="Indexing your project…" description={`${status?.message ?? 'Working'} — ${status?.coding.processed ?? 0}/${status?.coding.total || '…'} files.`} />
+        ) : isCode ? (
+          <ProjectSection tab={tab} projectId={project.id} />
         ) : (
           <motion.div key={tab} variants={pageVariants} initial="initial" animate="animate">
             <ProjectSection tab={tab} projectId={project.id} />

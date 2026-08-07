@@ -79,7 +79,7 @@ export interface IndexStatus {
   finishedAt: string | null;
 }
 
-export type MemoryKind = 'conversation' | 'decision' | 'code' | 'accepted' | 'rejected' | 'correction' | 'pinned' | 'learning';
+export type MemoryKind = 'conversation' | 'decision' | 'code' | 'accepted' | 'rejected' | 'correction' | 'pinned' | 'learning' | 'diagnosis';
 export interface MemoryItem { id: string; kind: MemoryKind; title: string; body: string; pinned: boolean; at: string }
 
 export interface GraphEntity { id: string; kind: string; layer: string; name: string; relPath: string; line?: number; summary?: string }
@@ -87,6 +87,41 @@ export interface GraphRelation { id: string; from: string; to: string; kind: str
 export interface GraphView { entities: GraphEntity[]; relations: GraphRelation[]; stats: unknown }
 
 export interface RetrieveResult { entries: { source: string; score: number; snippet: string; lines: { start: number; end: number }[] }[]; totalTokens: number }
+
+/* ── Code Workspace AI actions (real, single-shot, grounded in the graph) ── */
+export type ActionKind =
+  | 'explain' | 'refactor' | 'optimize'
+  | 'generate-tests' | 'add-docs' | 'review-security' | 'simplify'
+  | 'convert' | 'rename' | 'custom';
+export type RiskLevel = 'safe' | 'medium' | 'high';
+export interface CodeRelationRef { id: string; name: string; kind: string; relPath: string }
+export interface CodeActionRequest {
+  projectId?: string;
+  action: ActionKind;
+  filePath: string;
+  language: string;
+  selectedCode: string;
+  selectionRange: { startLine: number; startColumn: number; endLine: number; endColumn: number } | null;
+  surroundingContext: { before: string; after: string };
+  symbol: { id: string; name: string; kind: string; line: number } | null;
+  dependencies: CodeRelationRef[];
+  dependents: CodeRelationRef[];
+  dependentFileCount: number;
+  customInstruction?: string;
+  riskFloor: { level: RiskLevel; reasons: string[] };
+}
+export interface CodeActionFinding { severity: 'info' | 'warning' | 'critical'; title: string; detail: string; line?: number }
+export interface CodeActionResponse {
+  ok: boolean;
+  action: ActionKind;
+  mode: 'diff' | 'findings' | 'new-file';
+  explanation: string;
+  newCode: string | null;
+  newFilePath?: string;
+  findings: CodeActionFinding[] | null;
+  risk: { level: RiskLevel; reasons: string[] };
+  error?: { type: string; message: string; retryable: boolean };
+}
 
 /* ── architecture layers (from graphify graph.json) ─────────────── */
 export interface ArchitectureLayer {
@@ -103,8 +138,10 @@ export interface HealthResult {
   index?: IndexStatus;
   project?: ProjectRecord | null;
 }
-export interface AiSettings { model: string; streaming: boolean; temperature: number; maxTokens: number; timeoutMs: number; maxRetries: number }
-export interface SettingsResult { settings: AiSettings; models: string[]; key: { configured: boolean; fingerprint: string } }
+
+/* ── Mission Control types now live in `missionClient.ts` (its own file, mirroring `diagnosisClient.ts`'s split from this one) ── */
+export interface AiSettings { streaming: boolean; temperature: number; maxTokens: number; timeoutMs: number; maxRetries: number }
+export interface SettingsResult { settings: AiSettings; key: { configured: boolean; fingerprint: string } }
 
 export interface InspectResult {
   intent: string;
@@ -144,6 +181,7 @@ export interface ConnectedProvider {
   fingerprint: string;
   models: { id: string; name: string }[];
   activeModel: string;
+  health?: { ok: boolean; latencyMs: number; error?: string; lastChecked: string } | null;
 }
 export interface ProviderStatus {
   type: 'byoak' | 'none';
@@ -199,6 +237,7 @@ export const aiClient = {
   clearKey: () => jsend('DELETE', '/settings/key'),
   inspect: (text: string) => jpost<InspectResult>('/inspect', { text }),
   reindex: () => jpost<IndexStatus>('/reindex', {}),
+  codeAction: (req: CodeActionRequest) => jpost<CodeActionResponse>('/code/action', req),
 
   /* BYOAK providers */
   getProviders: () => jget<ProvidersResult>('/providers'),
@@ -245,6 +284,7 @@ export const aiClient = {
   renameConversation: (id: string, cid: string, title: string) => jsend<Conversation>('PATCH', `/projects/${id}/conversations/${cid}`, { title }),
   removeConversation: (id: string, cid: string) => jsend<{ ok: boolean }>('DELETE', `/projects/${id}/conversations/${cid}`),
   appendMessage: (id: string, cid: string, msg: { role: 'user' | 'assistant'; content: string; meta?: unknown; error?: boolean }) => jpost<ConvMessage>(`/projects/${id}/conversations/${cid}/message`, msg),
+  removeLastAssistantMessage: (id: string, cid: string) => jsend<{ ok: boolean }>('DELETE', `/projects/${id}/conversations/${cid}/message/last`),
 
   /* memory */
   listMemory: (id: string) => jget<{ items: MemoryItem[] }>(`/projects/${id}/memory`),
@@ -263,6 +303,8 @@ export const aiClient = {
   duplicateWorkflow: (id: string) => jpost<Workflow>(`/workflows/${id}/duplicate`, {}),
   removeWorkflow: (id: string) => jsend<{ ok: boolean }>('DELETE', `/workflows/${id}`),
   importWorkflow: (def: unknown) => jpost<Workflow>('/workflows/import', { def }),
+  /** The AI Workflow Builder — natural language to a real, saved, validated workflow graph. */
+  generateWorkflow: (text: string) => jpost<Workflow | { error: string }>('/workflows/generate', { text }),
 
   async runWorkflow(id: string, inputs: Record<string, string>, onEvent: (e: WfRunEvent) => void, signal?: AbortSignal): Promise<void> {
     let res: Response;
@@ -304,11 +346,9 @@ export const aiClient = {
     signal?: AbortSignal,
     scope?: { projectId?: string; conversationId?: string },
   ): Promise<void> {
-    console.error('[TRACE:AICLIENT] stream() called:', { textLen: text.length, projectId: scope?.projectId, conversationId: scope?.conversationId });
     let res: Response;
     try {
       const body = { text, ...scope };
-      console.error('[TRACE:AICLIENT] POST /stream body keys:', Object.keys(body));
       res = await fetch(BASE + '/stream', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
     } catch (e) {
       handlers.onError?.({ type: 'network', message: (e as Error).message || 'Service unreachable', retryable: true });
@@ -318,7 +358,6 @@ export const aiClient = {
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
-    console.error('[TRACE:AICLIENT] stream() parsing SSE');
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -330,13 +369,18 @@ export const aiClient = {
           buf = buf.slice(nl + 1);
           if (!line.startsWith('data:')) continue;
           const d = line.slice(5).trim();
-          if (d === '[DONE]') { console.error('[TRACE:AICLIENT] SSE [DONE]'); return; }
-          const ev = JSON.parse(d);
-          console.error('[TRACE:AICLIENT] SSE event:', ev.type, ev.type === 'token' ? { textLen: ev.text?.length } : ev.type === 'done' ? { finishReason: ev.finishReason, usage: ev.usage } : ev.type === 'error' ? ev.error : '');
-          if (ev.type === 'meta') handlers.onMeta?.(ev.meta);
-          else if (ev.type === 'token') handlers.onToken?.(ev.text);
-          else if (ev.type === 'done') handlers.onDone?.(ev);
-          else if (ev.type === 'error') handlers.onError?.(ev.error);
+          if (d === '[DONE]') return;
+          let ev: { type: string; [k: string]: unknown };
+          try {
+            ev = JSON.parse(d);
+          } catch {
+            handlers.onError?.({ type: 'parse_error', message: 'Received malformed data from the server.', retryable: false });
+            continue;
+          }
+          if (ev.type === 'meta') handlers.onMeta?.(ev.meta as InspectResult);
+          else if (ev.type === 'token') handlers.onToken?.(ev.text as string);
+          else if (ev.type === 'done') handlers.onDone?.(ev as unknown as StreamDone);
+          else if (ev.type === 'error') handlers.onError?.(ev.error as StreamError);
         }
       }
     } catch (e) {
