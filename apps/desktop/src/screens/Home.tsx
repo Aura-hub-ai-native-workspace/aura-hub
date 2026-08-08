@@ -46,6 +46,7 @@ export function Home() {
   const [reachable, setReachable] = useState<boolean | null>(null);
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [isAskAuraOpen, setIsAskAuraOpen] = useState(false);
+  const { push } = useToast();
 
   useEffect(() => {
     void refresh();
@@ -83,7 +84,15 @@ export function Home() {
               <h1 className="text-[32px] font-semibold tracking-[-0.02em] text-text">{greeting}, Groot</h1>
               <p className="mt-2 max-w-lg text-[14px] text-text-muted">{subtitle}</p>
             </div>
-            <div className="flex gap-2.5">
+            <div className="flex flex-wrap gap-2.5">
+              <Button
+                variant="primary"
+                icon="folder"
+                onClick={() => push({ title: 'Create Project', description: 'Project creation is coming soon.', tone: 'info' })}
+                className="bg-purple-500 shadow-sm hover:bg-purple-600 active:bg-purple-700 focus-visible:ring-purple-400/40"
+              >
+                Create Project
+              </Button>
               <Button variant="primary" icon="plus" onClick={openAddProjectDialog}>Add Project</Button>
               <Button variant="secondary" icon="command" onClick={() => setPaletteOpen(true)}>Command Bar</Button>
             </div>
