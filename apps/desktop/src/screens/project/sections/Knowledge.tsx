@@ -36,6 +36,7 @@ export function Knowledge({ projectId }: { projectId: string }) {
   const [searchBusy, setSearchBusy] = useState(false);
   const [selectedGroup, setSelectedGroup] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [focusRequestId, setFocusRequestId] = useState<string | null>(null);
 
   const loadIntelligence = useCallback(async () => {
     try {
@@ -80,7 +81,7 @@ export function Knowledge({ projectId }: { projectId: string }) {
   const kgNodeCount = kg?.nodes.length ?? 0;
   const clustering = kgNodeCount > CLUSTER_THRESHOLD;
 
-  const { cards, cardEdges } = useMemo(() => {
+  const { cards, cardEdges, seedHints } = useMemo(() => {
     const kgNodes = kg?.nodes ?? [];
     const kgEdges = kg?.edges ?? [];
     const idToGroup = new Map<string, string>();
@@ -95,10 +96,17 @@ export function Knowledge({ projectId }: { projectId: string }) {
     const isExpanded = (g: string) => !clustering || expandedGroups.has(g);
 
     const nodes: NodeCardData[] = [];
+    // Positional continuity for expand/collapse: a group that just
+    // expanded should have its member cards bloom outward from the
+    // cluster card's last position; a cluster that just collapsed should
+    // reappear near where its members were. NodeGraphCanvas consults
+    // this once, the first time an id actually appears in its simulation.
+    const seedHints = new Map<string, string>();
     for (const g of groups) {
       const items = grouped.get(g) ?? [];
       if (isExpanded(g)) {
         for (const n of items) {
+          seedHints.set(n.id, `cluster:${g}`);
           nodes.push({
             id: n.id,
             title: n.label,
@@ -121,6 +129,7 @@ export function Knowledge({ projectId }: { projectId: string }) {
         if (n.relPath) files.add(n.relPath);
       }
       const topType = [...typeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—';
+      if (items[0]) seedHints.set(`cluster:${g}`, items[0].id);
       nodes.push({
         id: `cluster:${g}`,
         title: `${g} (${items.length})`,
@@ -153,8 +162,22 @@ export function Knowledge({ projectId }: { projectId: string }) {
       const [from, to, kind] = key.split('|');
       return { from, to, kind };
     });
-    return { cards: nodes, cardEdges: edges };
+    return { cards: nodes, cardEdges: edges, seedHints };
   }, [kg, clustering, expandedGroups]);
+
+  // Search reaches into collapsed clusters: NodeGraphCanvas's own search
+  // only matches currently-rendered node titles, so a node inside a still-
+  // collapsed group is otherwise unfindable. On a miss, look it up among
+  // every real KG node, expand its group, and hand the canvas a focus
+  // request it'll satisfy as soon as that node actually renders.
+  const handleSearchMiss = useCallback((query: string) => {
+    const q = query.toLowerCase();
+    const hit = kg?.nodes.find((n) => n.label.toLowerCase().includes(q));
+    if (!hit) return;
+    setExpandedGroups((prev) => (prev.has(hit.group) ? prev : new Set(prev).add(hit.group)));
+    setFocusRequestId(hit.id);
+    window.setTimeout(() => setFocusRequestId((cur) => (cur === hit.id ? null : cur)), 500);
+  }, [kg]);
 
   // Clicking a collapsed cluster card expands it; clicking a real entity
   // card selects it (existing highlight/detail behavior, unchanged).
@@ -365,7 +388,17 @@ export function Knowledge({ projectId }: { projectId: string }) {
                   ))}
                 </div>
               )}
-              <NodeGraphCanvas nodes={cards} edges={cardEdges} groupColors={KG_COLORS} height={450} onSelect={handleGraphSelect} selectedId={selectedGroup} />
+              <NodeGraphCanvas
+                nodes={cards}
+                edges={cardEdges}
+                groupColors={KG_COLORS}
+                height={450}
+                onSelect={handleGraphSelect}
+                selectedId={selectedGroup}
+                seedHints={seedHints}
+                onSearchMiss={handleSearchMiss}
+                focusRequestId={focusRequestId}
+              />
             </div>
           )}
         </SectionCard>

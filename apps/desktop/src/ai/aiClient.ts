@@ -132,6 +132,13 @@ export interface ArchitectureLayer {
   width?: number;
 }
 
+/** A real inter-layer dependency: `from` depends on `to`, `weight` is how many entity-level relations it represents. Joined against `ArchitectureLayer.title`. */
+export interface ArchitectureLayerEdge {
+  from: string;
+  to: string;
+  weight: number;
+}
+
 export interface HealthResult {
   health: { ok: boolean; latencyMs: number; status?: number; models?: string[]; error?: string };
   key: { configured: boolean; fingerprint: string };
@@ -274,7 +281,7 @@ export const aiClient = {
     fetch(`${BASE}/projects/${id}/graphify/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
       .then((r) => (r.ok ? r.json() : { ok: false, unavailable: true }))
       .catch(() => ({ ok: false, unavailable: true })),
-  projectArchitectureLayers: (id: string): Promise<{ layers: ArchitectureLayer[] }> =>
+  projectArchitectureLayers: (id: string): Promise<{ layers: ArchitectureLayer[]; edges: ArchitectureLayerEdge[] }> =>
     jget(`/projects/${id}/architecture-layers`),
 
   /* conversations (per project) */
@@ -305,6 +312,8 @@ export const aiClient = {
   importWorkflow: (def: unknown) => jpost<Workflow>('/workflows/import', { def }),
   /** The AI Workflow Builder — natural language to a real, saved, validated workflow graph. */
   generateWorkflow: (text: string) => jpost<Workflow | { error: string }>('/workflows/generate', { text }),
+  ensureWorkflowWebhook: (id: string) => jpost<{ token: string; path: string } | { error: string }>(`/workflows/${id}/webhook-token`, {}),
+  rotateWorkflowWebhook: (id: string) => jpost<{ token: string; path: string } | { error: string }>(`/workflows/${id}/webhook-token`, { rotate: true }),
 
   async runWorkflow(id: string, inputs: Record<string, string>, onEvent: (e: WfRunEvent) => void, signal?: AbortSignal): Promise<void> {
     let res: Response;

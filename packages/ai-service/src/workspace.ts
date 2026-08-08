@@ -1,7 +1,7 @@
 import { PipelineManager, type IndexStatus, type PipelineOptions } from './pipeline';
 import { ProjectRegistry, type ProjectRecord } from './projects';
 import { getOrBuildProfile, loadProfile, type ProjectProfile } from './profile';
-import { extractArchitectureLayers, layersFromFullstack, type LayerDef } from './architectureExtractor';
+import { extractArchitectureLayers, layersFromFullstack, type LayerStack } from './architectureExtractor';
 import { graphifyJsonPath } from './graphify';
 import { ProjectMemory, type MemoryItem, type MemoryKind } from './memory';
 import { engineeringMemory, decisionMemory, missionMemory, type BaseMemoryRecord, type DecisionAlternative } from '@aura/engineering-memory';
@@ -312,16 +312,16 @@ export class WorkspaceManager {
     return runProjectIntelligence(id, project.path);
   }
 
-  /** Real architecture layers — prefers the rich graphify graph, falls back to the FullStack graph for the mounted project. */
-  resolveArchitectureLayers(id: string): LayerDef[] {
+  /** Real architecture layers (+ the real inter-layer dependency edges the extractor computes alongside them) — prefers the rich graphify graph, falls back to the FullStack graph for the mounted project. */
+  resolveArchitectureLayers(id: string): LayerStack {
     const name = this.registry.get(id)?.name;
     const jp = graphifyJsonPath(id);
-    let layers = jp ? extractArchitectureLayers(jp, name) : [];
-    if (layers.length <= 1 && this.pipeline.currentProjectId === id) {
+    let stack = jp ? extractArchitectureLayers(jp, name) : { layers: [], edges: [] };
+    if (stack.layers.length <= 1 && this.pipeline.currentProjectId === id) {
       const g = this.pipeline.graphView() as { entities?: { id: string; name: string; relPath: string }[]; relations?: { from: string; to: string }[] };
-      if (g.entities?.length) layers = layersFromFullstack(g.entities, g.relations ?? [], name);
+      if (g.entities?.length) stack = layersFromFullstack(g.entities, g.relations ?? [], name);
     }
-    return layers;
+    return stack;
   }
 
   /**

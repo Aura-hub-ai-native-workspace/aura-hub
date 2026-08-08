@@ -39,7 +39,7 @@ export async function gatherMissionSignals(manager: WorkspaceManager, projectId:
   return {
     health: health?.score ?? null,
     healthIssues: health?.issues ?? [],
-    architectureLayers: manager.resolveArchitectureLayers(projectId),
+    architectureLayers: manager.resolveArchitectureLayers(projectId).layers,
     hotspots: intel?.change.hotspots ?? [],
     changeVelocity: intel?.change.velocity ?? 0,
     verificationScore: intel?.verification.overallScore ?? 0,

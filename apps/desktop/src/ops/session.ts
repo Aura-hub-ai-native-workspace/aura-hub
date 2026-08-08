@@ -2,17 +2,18 @@
  * session — workspace session persistence (Part 4).
  * ------------------------------------------------------------------
  * On relaunch, AURA restores the state of the whole engineering
- * environment: the selected project, the mission/diagnosis focus, the
- * open editor tabs and the workspace layout (the layout itself persists
- * separately via ops/layoutStore, but session owns project + focus so
- * relaunch lands exactly where you left off).
+ * environment: the selected project, the mission/diagnosis focus and the
+ * open editor tabs. The Workspace's docked layout is deliberately NOT
+ * part of this — it always starts empty; only named layout presets
+ * (ops/layoutStore's `presets`) are restored, as data the user can
+ * explicitly load, never as windows opened on their behalf.
  *
  * Restore is best-effort: if the backend is down or a project was
  * removed, the environment simply boots clean instead of erroring.
  */
 import { useWorkspace } from '../data/useWorkspace';
 import { useEditorStore } from '../editor/editorStore';
-import { hydrateLayouts, hydratePresets, useLayoutStore, type DetailFocus } from './layoutStore';
+import { clearStaleLayoutCache, hydratePresets, useLayoutStore, type DetailFocus } from './layoutStore';
 
 const KEY = 'aura.ops.session';
 
@@ -61,12 +62,18 @@ export function hydrateSession(): SessionSnapshot | null {
 
 /** Reopen a project and its editor tabs, then restore the focus. */
 export async function restoreSession(): Promise<void> {
+  // Wipe any leftover ambient layout cache from an older build unconditionally,
+  // before the snapshot check below — so it can never be read back as if it
+  // were a real layout, regardless of whether a session snapshot exists.
+  clearStaleLayoutCache();
+
   const snap = hydrateSession();
   if (!snap) return;
 
   const layout = useLayoutStore.getState();
-  // Restore the saved docked layout + presets (or default for new users).
-  if (!layout.root) layout.setRoot(hydrateLayouts());
+  // `root` is deliberately never auto-populated here — a workspace starts
+  // empty on every launch. Only named presets are restored (as data the
+  // user can explicitly load, never as windows opened on their behalf).
   const presets = hydratePresets();
   if (Object.keys(presets).length) useLayoutStore.setState({ presets });
   layout.setFocused(snap.focused);

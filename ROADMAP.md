@@ -26,10 +26,10 @@ What's actively being hardened on top of the existing platform:
   description). Adding real test coverage for the provider system,
   workflow engine, and knowledge engines is the next reliability
   investment.
-- 🚧 **Screenshot gallery** — the README's product gallery is fully
-  specified (see
-  [`docs/assets/screenshots/SCREENSHOT_GUIDE.md`](docs/assets/screenshots/SCREENSHOT_GUIDE.md))
-  but not yet populated with captured images.
+- 🚧 **Screenshot gallery** — 12 of 14 real, live-captured product
+  screenshots are in (see
+  [`docs/assets/screenshots/SCREENSHOT_GUIDE.md`](docs/assets/screenshots/SCREENSHOT_GUIDE.md)
+  for the two documented gaps); the README gallery is populated.
 
 ## Next
 

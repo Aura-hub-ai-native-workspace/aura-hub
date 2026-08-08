@@ -28,7 +28,7 @@ export interface ToolCategory {
 export const TOOL_CATEGORIES: ToolCategory[] = [
   { id: 'ai', label: 'AI', kinds: ['ai-chat', 'engineering-agent'] },
   { id: 'engineering', label: 'Engineering', kinds: ['missions', 'mission-detail', 'dashboard', 'twin', 'governance'] },
-  { id: 'knowledge', label: 'Knowledge', kinds: ['knowledge', 'engineering-memory', 'engineering-learning', 'docs'] },
+  { id: 'knowledge', label: 'Knowledge', kinds: ['knowledge', 'architecture', 'engineering-memory', 'engineering-learning', 'docs'] },
   { id: 'project', label: 'Project', kinds: ['files'] },
   { id: 'diagnostics', label: 'Diagnostics', kinds: ['diagnostics'] },
   { id: 'git', label: 'Git', kinds: [] },

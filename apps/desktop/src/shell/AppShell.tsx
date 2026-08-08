@@ -24,12 +24,15 @@ export function AppShell() {
   const rightPanelOpen = useAppStore((s) => s.rightPanelOpen);
   const activeProjectId = useAppStore((s) => s.activeProjectId);
   const projectTab = useAppStore((s) => s.projectTab);
+  const nav = useAppStore((s) => s.nav);
 
-  // The Code Workspace supplies its own file-aware AI Context panel —
-  // showing the generic project panel alongside it would be duplicate
-  // chrome. This doesn't touch the user's sidebar toggle state, so the
-  // global panel reappears exactly as they left it on any other tab.
-  const showRightPanel = rightPanelOpen && !(activeProjectId && projectTab === 'code');
+  // The Code Workspace supplies its own file-aware AI Context panel, and
+  // the Workspace screen supplies its own per-window contextual inspector
+  // (see WorkspaceScreen.tsx) — showing the generic project panel
+  // alongside either would be duplicate chrome. Neither touches the
+  // user's sidebar toggle state, so the global panel reappears exactly as
+  // they left it on any other screen.
+  const showRightPanel = rightPanelOpen && !(activeProjectId && projectTab === 'code') && nav !== 'workspace';
 
   return (
     <div

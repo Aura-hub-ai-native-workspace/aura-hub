@@ -30,6 +30,25 @@ export interface LayerDef {
   width?: number;
 }
 
+/**
+ * A real inter-layer dependency, aggregated from actual relation edges
+ * whose endpoints resolve to two different modules. `from` depends on
+ * `to` (same direction already used to rank layers top-to-bottom below —
+ * `from` is the net "consumer" side of the relation, `to` the "foundation"
+ * side); `weight` is how many individual entity-level relations it
+ * represents. Layer titles are the join key (stable per response).
+ */
+export interface LayerEdge {
+  from: string;
+  to: string;
+  weight: number;
+}
+
+export interface LayerStack {
+  layers: LayerDef[];
+  edges: LayerEdge[];
+}
+
 /** Distinct, vivid palette (looks good under the diagram's bloom pass). */
 const PALETTE = [
   '#3b82f6', '#06b6d4', '#8b5cf6', '#a855f7', '#ec4899', '#f43f5e',
@@ -44,10 +63,10 @@ const MAX_MODULE_LAYERS = 9;
 /**
  * The module a file belongs to: keep leading container dirs, then take the
  * first meaningful directory. e.g.
- *   packages/ai-service/src/pipeline.ts → "packages/ai-service"
- *   src/screens/project/x.tsx           → "src/screens"
- *   kernel/main.c                       → "kernel"
- *   README.md                           → "(root)"
+ *   packages/ai-service/src/pipeline.ts -> "packages/ai-service"
+ *   src/screens/project/x.tsx           -> "src/screens"
+ *   kernel/main.c                       -> "kernel"
+ *   README.md                           -> "(root)"
  */
 function moduleOf(sourceFile: string): string {
   const parts = sourceFile.split('/').filter(Boolean);
@@ -68,7 +87,7 @@ function prettyTitle(moduleKey: string): string {
 }
 
 function clip(s: string, n = 30): string {
-  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+  return s.length > n ? s.slice(0, n - 1) + '...' : s;
 }
 
 /** A source record + its module, plus the edge list — the common input both
@@ -84,9 +103,16 @@ function itemsFor(recs: Rec[], degree: Map<string, number>): string[] {
     .slice(0, 5);
 }
 
+/** Increments a two-level counter (outer key -> inner key -> count) without ever joining the keys into a single string. */
+function bumpNested(map: Map<string, Map<string, number>>, outer: string, inner: string): void {
+  let row = map.get(outer);
+  if (!row) { row = new Map<string, number>(); map.set(outer, row); }
+  row.set(inner, (row.get(inner) ?? 0) + 1);
+}
+
 /** Assemble a per-project layer stack from records + edges. */
-function buildLayerStack(recs: Rec[], edges: Edge[], projectName?: string): LayerDef[] {
-  if (recs.length === 0) return [];
+function buildLayerStack(recs: Rec[], edges: Edge[], projectName?: string): LayerStack {
+  if (recs.length === 0) return { layers: [], edges: [] };
 
   const degree = new Map<string, number>();
   const moduleOfNode = new Map<string, string>();
@@ -95,8 +121,13 @@ function buildLayerStack(recs: Rec[], edges: Edge[], projectName?: string): Laye
     moduleOfNode.set(r.id, r.module);
     (modules.get(r.module) ?? modules.set(r.module, []).get(r.module)!).push(r);
   }
+
   const outDeg = new Map<string, number>();
   const inDeg = new Map<string, number>();
+  // Per-module-pair relation counts, computed alongside outDeg/inDeg (same
+  // loop, same direction) so the real inter-layer connections don't get
+  // thrown away after only their aggregate net-direction survives below.
+  const pairWeight = new Map<string, Map<string, number>>();
   for (const e of edges) {
     degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
     degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
@@ -105,17 +136,21 @@ function buildLayerStack(recs: Rec[], edges: Edge[], projectName?: string): Laye
     if (!gs || !gt || gs === gt) continue;
     outDeg.set(gs, (outDeg.get(gs) ?? 0) + 1);
     inDeg.set(gt, (inDeg.get(gt) ?? 0) + 1);
+    bumpNested(pairWeight, gs, gt);
   }
 
   let entries = [...modules.entries()].filter(([, ns]) => ns.length >= 2);
   if (entries.length === 0) entries = [...modules.entries()];
   entries.sort((a, b) => b[1].length - a[1].length);
   let overflow: Rec[] = [];
+  let overflowModuleKeys: string[] = [];
   if (entries.length > MAX_MODULE_LAYERS) {
-    overflow = entries.slice(MAX_MODULE_LAYERS).flatMap(([, ns]) => ns);
+    const dropped = entries.slice(MAX_MODULE_LAYERS);
+    overflow = dropped.flatMap(([, ns]) => ns);
+    overflowModuleKeys = dropped.map(([key]) => key);
     entries = entries.slice(0, MAX_MODULE_LAYERS);
   }
-  // Order top→bottom: consumers (high out−in) first, foundations (high in) last.
+  // Order top-to-bottom: consumers (high out-in) first, foundations (high in) last.
   entries.sort((a, b) => {
     const sa = (outDeg.get(a[0]) ?? 0) - (inDeg.get(a[0]) ?? 0);
     const sb = (outDeg.get(b[0]) ?? 0) - (inDeg.get(b[0]) ?? 0);
@@ -124,24 +159,53 @@ function buildLayerStack(recs: Rec[], edges: Edge[], projectName?: string): Laye
 
   const layers: LayerDef[] = [{
     title: (projectName ?? 'Repository').toUpperCase(),
-    subtitle: `${recs.length} entities · ${edges.length} relationships · ${entries.length} modules`,
+    subtitle: `${recs.length} entities, ${edges.length} relationships, ${entries.length} modules`,
     color: '#6366f1',
     width: 15,
   }];
+  // Every module key that ends up represented in the diagram (kept, or
+  // folded into "Other Modules") maps to the exact layer title it renders
+  // as — needed to translate the module-pair counts above into the
+  // layer-pair edges returned below.
+  const titleForModule = new Map<string, string>();
   entries.forEach(([key, ns], i) => {
     const items = itemsFor(ns, degree);
-    layers.push({ title: prettyTitle(key), subtitle: `${ns.length} entities · ${key}`, items, color: PALETTE[i % PALETTE.length], width: items.length >= 4 ? 14 : 12 });
+    const title = prettyTitle(key);
+    titleForModule.set(key, title);
+    layers.push({ title, subtitle: `${ns.length} entities, ${key}`, items, color: PALETTE[i % PALETTE.length], width: items.length >= 4 ? 14 : 12 });
   });
   if (overflow.length) {
-    layers.push({ title: 'Other Modules', subtitle: `${overflow.length} entities across smaller modules`, items: itemsFor(overflow, degree), color: '#64748b', width: 13 });
+    const title = 'Other Modules';
+    for (const key of overflowModuleKeys) titleForModule.set(key, title);
+    layers.push({ title, subtitle: `${overflow.length} entities across smaller modules`, items: itemsFor(overflow, degree), color: '#64748b', width: 13 });
   }
-  return layers;
+
+  const layerEdgeWeight = new Map<string, Map<string, number>>();
+  for (const [gs, row] of pairWeight) {
+    const fromTitle = titleForModule.get(gs);
+    if (!fromTitle) continue;
+    for (const [gt, count] of row) {
+      const toTitle = titleForModule.get(gt);
+      // Both sides folded into the same bucket (e.g. two overflow modules
+      // both landing in "Other Modules") — no real inter-layer edge to show.
+      if (!toTitle || fromTitle === toTitle) continue;
+      let outRow = layerEdgeWeight.get(fromTitle);
+      if (!outRow) { outRow = new Map<string, number>(); layerEdgeWeight.set(fromTitle, outRow); }
+      outRow.set(toTitle, (outRow.get(toTitle) ?? 0) + count);
+    }
+  }
+  const layerEdges: LayerEdge[] = [];
+  for (const [from, row] of layerEdgeWeight) {
+    for (const [to, weight] of row) layerEdges.push({ from, to, weight });
+  }
+
+  return { layers, edges: layerEdges };
 }
 
 /** Primary source: graphify's graph.json (rich AST-level graph). */
-export function extractArchitectureLayers(graphJsonPath: string, projectName?: string): LayerDef[] {
+export function extractArchitectureLayers(graphJsonPath: string, projectName?: string): LayerStack {
   const data = readJsonFile<GraphJson | null>(graphJsonPath, null);
-  if (!data?.nodes?.length) return [];
+  if (!data?.nodes?.length) return { layers: [], edges: [] };
   let nodes = data.nodes.filter((n) => n._origin === 'ast' && n.source_file);
   if (nodes.length === 0) nodes = data.nodes.filter((n) => n.source_file);
   const recs: Rec[] = nodes.map((n) => ({ id: n.id, label: n.label, module: moduleOf(n.source_file) }));
@@ -155,7 +219,7 @@ export function layersFromFullstack(
   entities: { id: string; name: string; relPath: string }[],
   relations: { from: string; to: string }[],
   projectName?: string,
-): LayerDef[] {
+): LayerStack {
   const recs: Rec[] = entities.filter((e) => e.relPath).map((e) => ({ id: e.id, label: e.name, module: moduleOf(e.relPath) }));
   const edges: Edge[] = relations.map((r) => ({ source: r.from, target: r.to }));
   return buildLayerStack(recs, edges, projectName);

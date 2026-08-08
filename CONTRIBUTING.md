@@ -14,9 +14,8 @@ See [`SUPPORT.md`](SUPPORT.md). Found a security issue? See
 ## Getting your dev environment running
 
 Full setup, requirements, and available scripts are in the README's
-[Installation](README.md#installation) and
-[Development](README.md#installation) sections — start there before your
-first PR. The short version: `npm install`, then `npm run dev`.
+[Development](README.md#development) section — start there before your
+first PR. The short version: `npm install`, then `npm run tauri dev`.
 
 ## License
 

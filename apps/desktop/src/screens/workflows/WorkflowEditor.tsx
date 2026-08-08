@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Badge, Button, Dialog, Icon, IconButton, Input, useToast } from '@aura/ui';
-import type { FieldSpec, NodeSpecInfo, WfNode } from '../../ai/aiClient';
+import { aiClient, type FieldSpec, type NodeSpecInfo, type WfNode } from '../../ai/aiClient';
 import { useWorkflows } from '../../data/useWorkflows';
 import { useWorkspace } from '../../data/useWorkspace';
 import { AiMarkdown } from '../../ai/AiMarkdown';
@@ -451,6 +451,7 @@ export function WorkflowEditor() {
                 <div><kbd className="rounded bg-surface-active px-1">⌘S</kbd> save · <kbd className="rounded bg-surface-active px-1">⌘D</kbd> duplicate</div>
                 <div><kbd className="rounded bg-surface-active px-1">Del</kbd> delete · <kbd className="rounded bg-surface-active px-1">⇧drag</kbd> multi-select</div>
               </div>
+              <WebhookTrigger workflowId={def.id} />
             </div>
           )}
         </div>
@@ -516,6 +517,48 @@ export function WorkflowEditor() {
           ))}
         </div>
       </Dialog>
+    </div>
+  );
+}
+
+/** Surfaces this workflow's inbound trigger URL — an external system's own webhook config (GitHub, or anything else) can POST here to start a run, without AURA needing an API client for that system. Lazy: nothing is generated until asked for. */
+function WebhookTrigger({ workflowId }: { workflowId: string }) {
+  const [path, setPath] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const reveal = async (rotate: boolean) => {
+    setBusy(true);
+    try {
+      const res = rotate ? await aiClient.rotateWorkflowWebhook(workflowId) : await aiClient.ensureWorkflowWebhook(workflowId);
+      if ('path' in res) setPath(`${aiClient.base}${res.path}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-4 border-t border-line pt-3">
+      <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-subtle">Inbound trigger</div>
+      {path ? (
+        <>
+          <p className="mb-1.5 break-all font-mono text-[10.5px] text-text-muted">{path}</p>
+          <div className="flex gap-1.5">
+            <Button
+              variant="secondary" size="sm" icon={copied ? 'check' : 'clipboard'}
+              onClick={() => { void navigator.clipboard.writeText(path); setCopied(true); setTimeout(() => setCopied(false), 1200); }}
+            >
+              {copied ? 'Copied' : 'Copy'}
+            </Button>
+            <Button variant="ghost" size="sm" icon="refresh" onClick={() => void reveal(true)} disabled={busy}>Rotate</Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="mb-2 text-[11px] leading-relaxed text-text-subtle">Point an external system's own webhook (e.g. a GitHub repo's Settings → Webhooks) at a URL here to start a run — no AURA-side setup needed on their end.</p>
+          <Button variant="secondary" size="sm" icon="link" onClick={() => void reveal(false)} disabled={busy}>{busy ? 'Generating…' : 'Show trigger URL'}</Button>
+        </>
+      )}
     </div>
   );
 }

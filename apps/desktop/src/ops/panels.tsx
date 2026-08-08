@@ -13,6 +13,7 @@ const MissionsPanel = lazy(() => import('./panels/MissionsPanel'));
 const MissionDetailPanel = lazy(() => import('./panels/MissionDetailPanel'));
 const SearchPanel = lazy(() => import('./panels/SearchPanel'));
 const KnowledgePanel = lazy(() => import('./panels/KnowledgePanel'));
+const ArchitecturePanel = lazy(() => import('./panels/ArchitecturePanel'));
 const DiagnosticsPanel = lazy(() => import('./panels/DiagnosticsPanel'));
 const FilesPanel = lazy(() => import('./panels/FilesPanel'));
 const DocsPanel = lazy(() => import('./panels/DocsPanel'));
@@ -29,6 +30,7 @@ export const PANELS: Record<PanelKind, ComponentType> = {
   'mission-detail': MissionDetailPanel,
   search: SearchPanel,
   knowledge: KnowledgePanel,
+  architecture: ArchitecturePanel,
   diagnostics: DiagnosticsPanel,
   files: FilesPanel,
   docs: DocsPanel,

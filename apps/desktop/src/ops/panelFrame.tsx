@@ -3,8 +3,8 @@ import { cn } from '@aura/core';
 
 /**
  * PanelBody — shared chrome for every panel's content: consistent
- * padding + independent scroll. The tab bar itself lives in
- * PanelWorkspace; panels only render their body.
+ * padding + independent scroll. Window chrome (title bar, minimize/
+ * maximize/close) lives in FloatingWindow; panels only render their body.
  */
 export function PanelBody({ children, className, padded = true }: { children: ReactNode; className?: string; padded?: boolean }) {
   return (

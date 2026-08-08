@@ -82,7 +82,7 @@ function NavContext() {
 
   const actions = [
     { icon: 'plus' as const, label: 'Add Project', hint: 'Import a real folder', run: () => { setNav('home'); openAddProjectDialog(); } },
-    { icon: 'spark' as const, label: 'Ask AURA', hint: 'Chat over your project', run: () => { setNav('workspace'); openPanel('ai-chat'); } },
+    { icon: 'spark' as const, label: 'Help Chat Assistant', hint: 'Chat over your project', run: () => { setNav('workspace'); openPanel('ai-chat'); } },
     { icon: 'command' as const, label: 'Command Bar', hint: 'Run any command', run: () => setPaletteOpen(true) },
   ];
 

@@ -76,7 +76,7 @@ export function ProjectWorkspace() {
             </div>
           </div>
           <div className="flex gap-2.5">
-            <Button variant="secondary" icon="spark" onClick={() => { setNav('workspace'); openPanel('ai-chat'); }}>Ask AURA</Button>
+            <Button variant="secondary" icon="spark" onClick={() => { setNav('workspace'); openPanel('ai-chat'); }}>Help Chat Assistant</Button>
           </div>
         </div>
 

@@ -37,7 +37,7 @@ export function useCommands(): Command[] {
         // own nav destinations — they're Workspace panels now (see 'Actions'
         // section below), consistent with every other panel-opening command.
         { id: 'open-knowledge', title: 'Open Knowledge', section: 'Actions', icon: 'knowledge', run: inWorkspace(() => openPanel('knowledge')) },
-        { id: 'open-ai-chat', title: 'Ask AURA', section: 'Actions', icon: 'spark', run: inWorkspace(() => openPanel('ai-chat')) },
+        { id: 'open-ai-chat', title: 'Help Chat Assistant', section: 'Actions', icon: 'spark', run: inWorkspace(() => openPanel('ai-chat')) },
         { id: 'open-dashboard', title: 'Open Engineering Dashboard', section: 'Actions', icon: 'activity', run: inWorkspace(() => openPanel('dashboard')) },
         { id: 'open-twin', title: 'Open Engineering Twin', section: 'Actions', icon: 'cpu', run: inWorkspace(() => openPanel('twin')) },
         { id: 'open-governance', title: 'Open Governance', section: 'Actions', icon: 'shield', run: inWorkspace(() => openPanel('governance')) },

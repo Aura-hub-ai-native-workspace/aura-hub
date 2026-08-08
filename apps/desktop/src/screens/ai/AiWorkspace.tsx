@@ -64,7 +64,7 @@ export function AiWorkspace() {
         <EmptyScreen
           icon="spark"
           title="Open a project to talk to its brain"
-          description="AURA has no global chat. Each project has its own conversations, memory and knowledge. Open a project, then Ask AURA."
+          description="AURA has no global chat. Each project has its own conversations, memory and knowledge. Open a project, then open Help Chat Assistant."
           action={<Button icon="home" onClick={() => setNav('home')}>Go to Home</Button>}
         />
       </div>

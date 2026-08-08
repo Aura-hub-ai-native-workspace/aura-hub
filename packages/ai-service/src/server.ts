@@ -212,7 +212,8 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           return;
         }
         if (seg[2] === 'architecture-layers' && method === 'GET') {
-          return json(res, 200, { layers: manager.resolveArchitectureLayers(id) });
+          const stack = manager.resolveArchitectureLayers(id);
+          return json(res, 200, { layers: stack.layers, edges: stack.edges });
         }
         if (seg[2] === 'changes' && method === 'GET') {
           const log = manager.changeLog(id);
