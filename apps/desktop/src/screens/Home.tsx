@@ -4,9 +4,9 @@ import { Badge, Button, Card, CardHeader, Icon, IconButton, Input, Menu, useToas
 import { PageContainer, PageBlock } from './PageContainer';
 import { EmptyState } from '../components/EmptyState';
 import { AddProjectDialog } from '../components/AddProjectDialog';
+import { AskAuraChatbox } from '../components/AskAuraChatbox';
 import { useWorkspace } from '../data/useWorkspace';
 import { hasUnsavedWorkFor } from '../editor/editorStore';
-import { useLayoutStore } from '../ops/layoutStore';
 import { aiClient, type HealthResult } from '../ai/aiClient';
 
 type Segment = 'all' | 'favorites' | 'recent';
@@ -41,11 +41,11 @@ export function Home() {
   const addProjectDialogOpen = useAppStore((s) => s.addProjectDialogOpen);
   const openAddProjectDialog = useAppStore((s) => s.openAddProjectDialog);
   const closeAddProjectDialog = useAppStore((s) => s.closeAddProjectDialog);
-  const openWorkspacePanel = useLayoutStore((s) => s.openPanel);
   const { projects, status, refresh, open } = useWorkspace();
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [reachable, setReachable] = useState<boolean | null>(null);
   const [showAllProjects, setShowAllProjects] = useState(false);
+  const [chatboxOpen, setChatboxOpen] = useState(false);
 
   useEffect(() => {
     void refresh();
@@ -60,7 +60,7 @@ export function Home() {
     void open(id);
     openProjectNav(id);
   };
-  const askAura = () => { setNav('workspace'); openWorkspacePanel('ai-chat'); };
+  const askAura = () => setChatboxOpen(true);
 
   const subtitle = projects.length === 0
     ? 'No projects yet — add a real folder to begin.'
@@ -69,6 +69,7 @@ export function Home() {
   return (
     <PageContainer wide>
       <AddProjectDialog open={addProjectDialogOpen} onClose={closeAddProjectDialog} />
+      <AskAuraChatbox open={chatboxOpen} onClose={() => setChatboxOpen(false)} />
 
       <PageBlock className="mb-8">
         <div className="relative overflow-hidden rounded-3xl border border-line bg-surface p-8">
