@@ -45,7 +45,7 @@ export function Home() {
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [reachable, setReachable] = useState<boolean | null>(null);
   const [showAllProjects, setShowAllProjects] = useState(false);
-  const [chatboxOpen, setChatboxOpen] = useState(false);
+  const [isAskAuraOpen, setIsAskAuraOpen] = useState(false);
 
   useEffect(() => {
     void refresh();
@@ -60,7 +60,7 @@ export function Home() {
     void open(id);
     openProjectNav(id);
   };
-  const askAura = () => setChatboxOpen(true);
+  const askAura = () => setIsAskAuraOpen(true);
 
   const subtitle = projects.length === 0
     ? 'No projects yet — add a real folder to begin.'
@@ -69,7 +69,7 @@ export function Home() {
   return (
     <PageContainer wide>
       <AddProjectDialog open={addProjectDialogOpen} onClose={closeAddProjectDialog} />
-      <AskAuraChatbox open={chatboxOpen} onClose={() => setChatboxOpen(false)} />
+      <AskAuraChatbox isOpen={isAskAuraOpen} onClose={() => setIsAskAuraOpen(false)} />
 
       <PageBlock className="mb-8">
         <div className="relative overflow-hidden rounded-3xl border border-line bg-surface p-8">
