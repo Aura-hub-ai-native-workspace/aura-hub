@@ -26,8 +26,7 @@ const SUGGESTIONS = [
   'Tips for the frontend',
 ];
 
-const GREETING =
-  'Hi! I\'m AURA, your workspace assistant. Ask me about your projects, the AURA Hub environment, or how to get things done here.';
+const GREETING = 'Hi! I\'m AURA. How can I help you?';
 
 const MOCK_ANSWERS: { match: RegExp; answer: string }[] = [
   {
@@ -112,7 +111,7 @@ function mockAnswer(question: string): string {
   return hit ? hit.answer : FALLBACK;
 }
 
-export function AskAuraChatbox({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
   const [typing, setTyping] = useState(false);
@@ -129,7 +128,7 @@ export function AskAuraChatbox({ open, onClose }: { open: boolean; onClose: () =
 
   // Seed the greeting once, the first time the chatbox opens.
   useEffect(() => {
-    if (!open || seeded.current) return;
+    if (!isOpen || seeded.current) return;
     seeded.current = true;
     const id = nextId();
     setMessages([{ id, role: 'assistant', content: '' }]);
@@ -142,11 +141,11 @@ export function AskAuraChatbox({ open, onClose }: { open: boolean; onClose: () =
       else setTyping(false);
     };
     timers.current.push(window.setTimeout(step, 350));
-  }, [open]);
+  }, [isOpen]);
 
   // Escape to close + body scroll lock (same behaviour as <Dialog>).
   useEffect(() => {
-    if (!open) return;
+    if (!isOpen) return;
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
@@ -154,18 +153,18 @@ export function AskAuraChatbox({ open, onClose }: { open: boolean; onClose: () =
       window.removeEventListener('keydown', onKey);
       document.body.style.overflow = '';
     };
-  }, [open, onClose]);
+  }, [isOpen, onClose]);
 
   // Focus the composer whenever the chatbox opens.
   useEffect(() => {
-    if (!open) return;
+    if (!isOpen) return;
     timers.current.push(window.setTimeout(() => inputRef.current?.focus(), 120));
-  }, [open]);
+  }, [isOpen]);
 
   // Keep the thread scrolled to the newest message.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, typing, open]);
+  }, [messages, typing, isOpen]);
 
   // Stop any pending mock work on unmount.
   useEffect(() => clearTimers, []);
@@ -205,7 +204,7 @@ export function AskAuraChatbox({ open, onClose }: { open: boolean; onClose: () =
 
   return createPortal(
     <AnimatePresence>
-      {open && (
+      {isOpen && (
         <div className="fixed inset-0 z-[100] grid place-items-center p-0 sm:p-6">
           <motion.div
             variants={scrimVariants}
