@@ -5,6 +5,7 @@ import { useAppStore } from '@aura/core';
 import { ACTION_SPECS, type WorkspaceActionId } from './actionSpecs';
 import { ensureMonacoConfigured } from './monacoSetup';
 import { useEditorStore } from './editorStore';
+import { registerActiveEditor } from './editorRegistry';
 
 ensureMonacoConfigured();
 
@@ -64,8 +65,20 @@ export function MonacoEditor({
     return () => ro.disconnect();
   }, []);
 
+  // Editor-adjacent features (AuraBug) hold a reference to the live
+  // instance via editorRegistry; clear it when the editor goes away so
+  // nothing ever acts on a disposed editor.
+  useEffect(() => {
+    return () => registerActiveEditor(null);
+  }, []);
+
   const handleMount: OnMount = (editorInstance, monacoInstance) => {
     editorRef.current = editorInstance;
+    // Expose the live instance so editor-adjacent features (AuraBug)
+    // can read the current model and drive navigation without coupling
+    // to this component's internals. Un-registration lives in the
+    // unmount effect below; handleMount re-registers on re-mount.
+    registerActiveEditor(editorInstance);
     editorInstance.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
       void saveFile(pathRef.current);
     });

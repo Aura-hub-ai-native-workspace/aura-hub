@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useAppStore, cn } from '@aura/core';
+import { motion } from 'framer-motion';
+import { useAppStore, cn, spring } from '@aura/core';
 import { Badge, Button, Card, CardHeader, Icon, IconButton, Input, Menu, useToast } from '@aura/ui';
 import { PageContainer, PageBlock } from './PageContainer';
 import { EmptyState } from '../components/EmptyState';
 import { AddProjectDialog } from '../components/AddProjectDialog';
+import { CreateProjectDialog } from '../components/CreateProjectDialog';
 import { AskAuraChatbox } from '../components/AskAuraChatbox';
 import { useWorkspace } from '../data/useWorkspace';
 import { hasUnsavedWorkFor } from '../editor/editorStore';
-import { aiClient, type HealthResult } from '../ai/aiClient';
+import { aiClient, type HealthResult, type ProjectRecord } from '../ai/aiClient';
 
 type Segment = 'all' | 'favorites' | 'recent';
 
@@ -41,7 +43,10 @@ export function Home() {
   const addProjectDialogOpen = useAppStore((s) => s.addProjectDialogOpen);
   const openAddProjectDialog = useAppStore((s) => s.openAddProjectDialog);
   const closeAddProjectDialog = useAppStore((s) => s.closeAddProjectDialog);
-  const { projects, status, refresh, open } = useWorkspace();
+  const createProjectDialogOpen = useAppStore((s) => s.createProjectDialogOpen);
+  const openCreateProjectDialog = useAppStore((s) => s.openCreateProjectDialog);
+  const closeCreateProjectDialog = useAppStore((s) => s.closeCreateProjectDialog);
+  const { projects, localProjects, status, refresh, open } = useWorkspace();
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [reachable, setReachable] = useState<boolean | null>(null);
   const [showAllProjects, setShowAllProjects] = useState(false);
@@ -55,21 +60,27 @@ export function Home() {
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-  const recents = projects.slice(0, 4);
+  const allProjects = useMemo(() => [...localProjects, ...projects], [localProjects, projects]);
+  const recents = allProjects.slice(0, 4);
   const enter = (id: string) => {
+    if (id.startsWith('local-')) {
+      push({ title: 'Local draft', description: 'Register the folder with Add Project to profile and open it.', tone: 'info' });
+      return;
+    }
     if (hasUnsavedWorkFor(id) && !window.confirm('You have unsaved changes in the current project\'s Code Workspace. Switch projects anyway?')) return;
     void open(id);
     openProjectNav(id);
   };
   const askAura = () => setIsAskAuraOpen(true);
 
-  const subtitle = projects.length === 0
+  const subtitle = allProjects.length === 0
     ? 'No projects yet — add a real folder to begin.'
-    : `${projects.length} project${projects.length > 1 ? 's' : ''} in your workspace.`;
+    : `${allProjects.length} project${allProjects.length > 1 ? 's' : ''} in your workspace.`;
 
   return (
     <PageContainer wide>
       <AddProjectDialog open={addProjectDialogOpen} onClose={closeAddProjectDialog} />
+      <CreateProjectDialog open={createProjectDialogOpen} onClose={closeCreateProjectDialog} />
       <AskAuraChatbox isOpen={isAskAuraOpen} onClose={() => setIsAskAuraOpen(false)} />
 
       <PageBlock className="mb-8">
@@ -85,14 +96,17 @@ export function Home() {
               <p className="mt-2 max-w-lg text-[14px] text-text-muted">{subtitle}</p>
             </div>
             <div className="flex flex-wrap gap-2.5">
-              <Button
-                variant="primary"
-                icon="folder"
-                onClick={() => push({ title: 'Create Project', description: 'Project creation is coming soon.', tone: 'info' })}
-                className="bg-purple-500 shadow-sm hover:bg-purple-600 active:bg-purple-700 focus-visible:ring-purple-400/40"
+              <motion.button
+                type="button"
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.95 }}
+                transition={spring.snappy}
+                onClick={openCreateProjectDialog}
+                className="relative inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-[#00b3ff] px-4 text-[13px] font-medium text-white shadow-[0_0_16px_rgba(0,179,255,0.45)] outline-none select-none transition-all duration-200 hover:bg-[#2fc2ff] hover:shadow-[0_0_26px_rgba(0,179,255,0.65)] active:bg-[#0093d4] active:shadow-[0_0_12px_rgba(0,179,255,0.35)] focus-visible:ring-2 focus-visible:ring-cyan-300/60"
               >
-                Create Project
-              </Button>
+                <Icon name="folder" size={16} />
+                <span className="truncate">Create Project</span>
+              </motion.button>
               <Button variant="primary" icon="plus" onClick={openAddProjectDialog}>Add Project</Button>
               <Button variant="secondary" icon="command" onClick={() => setPaletteOpen(true)}>Command Bar</Button>
             </div>
@@ -106,7 +120,7 @@ export function Home() {
           <Card padding="none" className="overflow-hidden">
             <div className="flex items-center justify-between px-6 pt-5">
               <CardHeader title="Continue working" subtitle="Your recent projects" />
-              {projects.length > 0 && (
+              {allProjects.length > 0 && (
                 <Button size="sm" variant="ghost" iconRight={showAllProjects ? 'chevron-down' : 'chevron-right'} onClick={() => setShowAllProjects((v) => !v)}>
                   {showAllProjects ? 'Hide' : 'All projects'}
                 </Button>
@@ -198,7 +212,7 @@ export function Home() {
 
       {showAllProjects && (
         <PageBlock className="mt-5">
-          <ProjectLibrary onEnter={enter} onAdd={openAddProjectDialog} />
+          <ProjectLibrary projects={allProjects} onEnter={enter} onAdd={openAddProjectDialog} />
         </PageBlock>
       )}
     </PageContainer>
@@ -211,8 +225,8 @@ export function Home() {
  * expanded here from Home's "All projects" toggle rather than its own
  * top-level nav destination.
  */
-function ProjectLibrary({ onEnter, onAdd }: { onEnter: (id: string) => void; onAdd: () => void }) {
-  const { projects, reachable, favorite, remove, rename } = useWorkspace();
+function ProjectLibrary({ onEnter, onAdd, projects }: { onEnter: (id: string) => void; onAdd: () => void; projects: ProjectRecord[] }) {
+  const { reachable, favorite, remove, rename } = useWorkspace();
   const { push } = useToast();
   const [query, setQuery] = useState('');
   const [segment, setSegment] = useState<Segment>('all');
@@ -289,36 +303,46 @@ function ProjectLibrary({ onEnter, onAdd }: { onEnter: (id: string) => void; onA
                     </div>
                   </div>
                   <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
-                    <IconButton
-                      icon="pin"
-                      label={p.favorite ? 'Unfavorite' : 'Favorite'}
-                      className={p.favorite ? 'text-accent' : 'text-text-subtle'}
-                      onClick={() => void favorite(p.id, !p.favorite)}
-                    />
+                    {!p.id.startsWith('local-') && (
+                      <IconButton
+                        icon="pin"
+                        label={p.favorite ? 'Unfavorite' : 'Favorite'}
+                        className={p.favorite ? 'text-accent' : 'text-text-subtle'}
+                        onClick={() => void favorite(p.id, !p.favorite)}
+                      />
+                    )}
                     <Menu
                       align="end"
                       trigger={<IconButton icon="more" label="Project actions" />}
-                      items={[
-                        { id: 'open', label: 'Open', icon: 'arrow-right', onSelect: () => onEnter(p.id) },
-                        {
-                          id: 'rename', label: 'Rename', icon: 'note',
-                          onSelect: () => { const n = window.prompt('Rename project', p.name); if (n && n.trim()) void rename(p.id, n.trim()); },
-                        },
-                        {
-                          id: 'fav', label: p.favorite ? 'Remove favorite' : 'Add favorite', icon: 'pin',
-                          onSelect: () => void favorite(p.id, !p.favorite),
-                        },
-                        'separator',
-                        {
-                          id: 'remove', label: 'Remove from AURA', icon: 'close', tone: 'danger',
-                          onSelect: () => {
-                            if (window.confirm(`Remove "${p.name}" from AURA? The folder on disk is not deleted.`)) {
-                              void remove(p.id);
-                              push({ title: 'Project removed', description: 'The folder was left untouched.', tone: 'info' });
-                            }
-                          },
-                        },
-                      ]}
+                      items={
+                        p.id.startsWith('local-')
+                          ? [
+                              { id: 'open', label: 'Open', icon: 'arrow-right', onSelect: () => onEnter(p.id) },
+                              'separator',
+                              { id: 'note', label: 'Frontend draft — add it via Add Project to register it', onSelect: () => {} },
+                            ]
+                          : [
+                              { id: 'open', label: 'Open', icon: 'arrow-right', onSelect: () => onEnter(p.id) },
+                              {
+                                id: 'rename', label: 'Rename', icon: 'note',
+                                onSelect: () => { const n = window.prompt('Rename project', p.name); if (n && n.trim()) void rename(p.id, n.trim()); },
+                              },
+                              {
+                                id: 'fav', label: p.favorite ? 'Remove favorite' : 'Add favorite', icon: 'pin',
+                                onSelect: () => void favorite(p.id, !p.favorite),
+                              },
+                              'separator',
+                              {
+                                id: 'remove', label: 'Remove from AURA', icon: 'close', tone: 'danger',
+                                onSelect: () => {
+                                  if (window.confirm(`Remove "${p.name}" from AURA? The folder on disk is not deleted.`)) {
+                                    void remove(p.id);
+                                    push({ title: 'Project removed', description: 'The folder was left untouched.', tone: 'info' });
+                                  }
+                                },
+                              },
+                            ]
+                      }
                     />
                   </div>
                 </div>
