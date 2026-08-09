@@ -13,6 +13,8 @@
   },
   "dependencies": {
     "@aura/automation": "*",
+    "@aura/capability-fabric": "*",
+    "@aura/connected-environment": "*",
     "@aura/engineering-memory": "*",
     "@aura/governance": "*",
     "@aura/intelligence": "*",

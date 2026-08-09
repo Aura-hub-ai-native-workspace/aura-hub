@@ -13,7 +13,8 @@
  * before any task runs, and each proposal needs an explicit Accept before
  * it is ever written to disk.
  */
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { fabricClient, type ApprovalRequest } from '../../ai/fabricClient';
 import {
   missionClient,
   type ExtractedIntent,
@@ -56,6 +57,8 @@ export function useMissions(projectId: string | null) {
   const [loadingList, setLoadingList] = useState(false);
   const [creation, setCreation] = useState<CreationState>(IDLE_CREATION);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
   const [batchBusy, setBatchBusy] = useState(false);
   const [replay, setReplay] = useState<MissionReplayPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -192,6 +195,22 @@ export function useMissions(projectId: string | null) {
     void refreshList();
   }, [projectId, active, refreshList]);
 
+  /**
+   * Pending authorization requests, refreshed from the service.
+   *
+   * Deliberately not cached beyond a render: the service owns approval
+   * state, so a reload, a reconnect or a second window all converge on
+   * the same list rather than on anything this hook remembers.
+   */
+  const refreshApprovals = useCallback(async () => {
+    try {
+      const res = await fabricClient.approvals();
+      setApprovals(res.approvals ?? []);
+    } catch {
+      /* the gate is service-side; a failed poll just means no update */
+    }
+  }, []);
+
   const runTask = useCallback(async (taskId: string) => {
     if (!projectId || !active) return;
     setBusyTaskId(taskId);
@@ -199,13 +218,39 @@ export function useMissions(projectId: string | null) {
     try {
       const result = await missionClient.runTask(projectId, active.id, taskId);
       if (result.mission) setActive(result.mission);
-      if (!result.ok && result.error) setError(result.error);
+      // A parked task is not an error — it is a question. Surfacing it as
+      // one would push the user toward Retry when they need Approve.
+      if (!result.ok && result.error && !result.awaitingApproval) setError(result.error);
+      if (result.awaitingApproval) await refreshApprovals();
     } catch (e) {
       setError((e as Error).message || 'Could not run the task.');
     } finally {
       setBusyTaskId(null);
     }
-  }, [projectId, active]);
+  }, [projectId, active, refreshApprovals]);
+
+  /**
+   * Answer an authorization request. The service resumes the same mission
+   * task on approval and declines it on refusal, so this only reports the
+   * outcome — it never runs anything itself and never names a capability.
+   */
+  const decideApproval = useCallback(async (id: string, granted: boolean, reason?: string) => {
+    setApprovalBusyId(id);
+    setError(null);
+    try {
+      const result = await fabricClient.decide(id, granted, reason);
+      if (result.error && !result.approval) setError(result.error);
+      if (projectId && active) {
+        const rec = await missionClient.get(projectId, active.id);
+        if (!('error' in rec)) setActive(rec);
+      }
+    } catch (e) {
+      setError((e as Error).message || 'Could not record that decision.');
+    } finally {
+      setApprovalBusyId(null);
+      await refreshApprovals();
+    }
+  }, [projectId, active, refreshApprovals]);
 
   const acceptTask = useCallback(async (taskId: string) => {
     if (!projectId || !active) return;
@@ -319,8 +364,14 @@ export function useMissions(projectId: string | null) {
     }
   }, [projectId, active]);
 
+  // Rehydrate the gate whenever a mission is opened — including after a
+  // reload, which is the whole point: the pending request is on the
+  // service, so it comes back on its own with no duplicate created.
+  useEffect(() => { void refreshApprovals(); }, [active?.id, refreshApprovals]);
+
   return {
     missions, active, loadingList, creation, busyTaskId, batchBusy, replay, error,
+    approvals, approvalBusyId, decideApproval, refreshApprovals,
     refreshList, selectMission, createMission, approve, rejectPlan,
     startExecution, runBatch, runTask, acceptTask, rejectTask, retryTask, completeTask,
     pause, resume, cancel, reviewCheckpoint, loadReplay,

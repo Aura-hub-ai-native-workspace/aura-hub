@@ -20,7 +20,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'home', label: 'Home', icon: 'home', group: 'primary' },
   { key: 'workflows', label: 'Automation', icon: 'workflows', group: 'primary' },
   { key: 'workspace', label: 'Workspace', icon: 'layout', group: 'primary' },
-  { key: 'marketplace', label: 'Extended Environment', icon: 'marketplace', group: 'primary' },
+  { key: 'environment', label: 'Connected Environment', icon: 'link', group: 'primary' },
   { key: 'settings', label: 'Settings', icon: 'settings', group: 'system' },
 ];
 
@@ -52,6 +52,6 @@ export const NAV_TITLES: Record<NavKey, string> = {
   home: 'Home',
   workflows: 'Automation',
   workspace: 'Workspace',
-  marketplace: 'Extended Environment',
+  environment: 'Connected Environment',
   settings: 'Settings',
 };

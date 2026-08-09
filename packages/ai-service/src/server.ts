@@ -12,6 +12,11 @@ import type { RunEvent, Workflow } from './workflow/types';
 import { setupProviders } from './provider';
 import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
 import { handleCodeAction, type CodeActionRequest } from './codeAction';
+import { CATALOG, catalogEntry } from '@aura/connected-environment';
+import { probeNode, scanEnvironment } from './environment';
+import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext } from '@aura/capability-fabric';
+import { createFabric } from './fabric';
+import { savePolicy, policyFilePath } from './fabric/policyStore';
 import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate } from '@aura/automation';
 import type { AutomationEvent, AutomationRule } from '@aura/automation';
 import { automationEvent } from './automation';
@@ -93,11 +98,53 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   setupProviders();
   const manager = new WorkspaceManager(opts);
 
+  /**
+   * One Fabric for the process lifetime, so the audit trail is continuous.
+   * Node availability is read at decision time from the last environment
+   * scan, so connecting a tool takes effect without a restart.
+   */
+  let providedNodeCapabilities = new Set<string>();
+  const fabric = createFabric({
+    manager,
+    providedNodeCapabilities: () => providedNodeCapabilities,
+  });
+  // Closes the loop: mission tasks now execute THROUGH this same Fabric
+  // instance, so a task inherits the identical policy, approval,
+  // verification, recovery and audit path as a direct /fabric/invoke.
+  manager.attachFabric(fabric);
+
+  /**
+   * Scan the machine and publish what is genuinely reachable.
+   *
+   * Shared by boot and by `POST /environment/scan` so there is exactly one
+   * place that decides what "available" means — a node counts only when it
+   * actually answered a probe. Nothing is assumed present.
+   */
+  const refreshNodeAvailability = async (ids?: string[], refresh = false) => {
+    const scan = await scanEnvironment(ids, refresh);
+    const provided = new Set<string>();
+    for (const [id, result] of Object.entries(scan.results)) {
+      if (!result.present) continue;
+      for (const capability of catalogEntry(id)?.capabilities ?? []) provided.add(capability);
+    }
+    providedNodeCapabilities = provided;
+    return scan;
+  };
+
   // Auto-connect providers configured through environment variables
   // (e.g. MISTRAL_API_KEY) so an env-configured key is active on startup.
   await manager.connectEnvProviders().catch((e) => {
     console.warn('[providers] env auto-connect failed:', (e as Error).message);
   });
+
+  // Discover the environment before serving. Without this a restart left
+  // every node-backed capability denied as `no-provider` until someone
+  // happened to trigger a scan — git would be installed and working, and
+  // the Fabric would still refuse `git.diff`.
+  await refreshNodeAvailability().then(
+    (scan) => console.log(`[environment] ${scan.found ?? providedNodeCapabilities.size} node(s) present · ${providedNodeCapabilities.size} capabilities available`),
+    (e) => console.warn('[environment] boot scan failed:', (e as Error).message),
+  );
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -157,6 +204,166 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       /* ── index status ─────────────────────────────────────────── */
       if (method === 'GET' && seg[0] === 'index') return json(res, 200, manager.indexStatus());
       if (method === 'POST' && seg[0] === 'reindex') return json(res, 200, await p.reindex());
+
+      /* ── connected environment ────────────────────────────────
+         Real capability detection. The command a probe runs always
+         comes from the catalog entry looked up by id — never from the
+         request — so no request can reach arbitrary execution. See
+         environment.ts for the full boundary. */
+      if (seg[0] === 'environment') {
+        if (method === 'GET' && seg[1] === 'catalog') return json(res, 200, { catalog: CATALOG });
+        if (method === 'POST' && seg[1] === 'scan') {
+          const b = await readJson(req);
+          const ids = Array.isArray(b.ids) ? b.ids.filter((x): x is string => typeof x === 'string') : undefined;
+          // A scan is also the Fabric's view of what is reachable: every
+          // capability of every node that answered becomes available for
+          // policy evaluation, with no separate connect step to drift from.
+          const scan = await refreshNodeAvailability(ids, Boolean(b.refresh));
+          return json(res, 200, { ...scan, providedCapabilities: [...providedNodeCapabilities].sort() });
+        }
+        if (method === 'POST' && seg[1] === 'probe') {
+          const b = await readJson(req);
+          const id = String(b.id ?? '');
+          if (!id) return json(res, 400, { error: 'a node id is required' });
+          return json(res, 200, { id, result: await probeNode(id, Boolean(b.refresh)) });
+        }
+      }
+
+      /* ── capability fabric ─────────────────────────────────────
+         The single governed path to a side effect. `invoke` runs the
+         full chain: policy → approval → execute → verify → audit.
+         Approval is per-call (`approvedCapabilities`); this service has
+         no UI and therefore never grants one implicitly. */
+      if (seg[0] === 'fabric') {
+        if (method === 'GET' && seg[1] === 'capabilities') {
+          const supported = new Set(fabric.supported());
+          return json(res, 200, {
+            capabilities: CAPABILITY_MANIFEST.map((c) => ({ ...c, supported: supported.has(c.id) })),
+            supportedCount: supported.size,
+            providedNodeCapabilities: [...providedNodeCapabilities].sort(),
+            policy: fabric.getPolicy(),
+          });
+        }
+        if (method === 'GET' && seg[1] === 'audit') {
+          return json(res, 200, { audit: fabric.audit() });
+        }
+        /* POST /fabric/policy — the operator's caution settings. Held
+           service-side so the desktop can display them but never be the
+           authority on them. Sanitized, then persisted to ~/.aura so it
+           survives a restart. */
+        if (method === 'POST' && seg[1] === 'policy') {
+          const b = await readJson(req);
+          const current = fabric.getPolicy();
+          const merged = {
+            byRisk: (b.byRisk as typeof current.byRisk) ?? current.byRisk,
+            overrides: (b.overrides as typeof current.overrides) ?? current.overrides,
+            allowAutonomous: typeof b.allowAutonomous === 'boolean' ? b.allowAutonomous : current.allowAutonomous,
+          };
+          const saved = savePolicy(merged);
+          fabric.setPolicy(saved);
+          return json(res, 200, { policy: saved, file: policyFilePath() });
+        }
+
+        /* ── approval gate ─────────────────────────────────────────
+           The authoritative approval surface. The desktop reads pending
+           requests here and answers them here; it never names a
+           capability itself. */
+        if (method === 'GET' && seg[1] === 'approvals') {
+          return json(res, 200, { approvals: fabric.pendingApprovals() });
+        }
+
+        if (method === 'POST' && seg[1] === 'approvals' && seg[2] && seg[3] === 'decide') {
+          const b = await readJson(req);
+          const granted = b.granted === true;
+          const reason = typeof b.reason === 'string' ? b.reason : undefined;
+
+          const request = fabric.approvalById(seg[2]);
+          if (!request) return json(res, 404, { error: 'no such approval request' });
+          // Already decided — a replayed request, a second tab, or a
+          // double-click. Report the existing decision rather than
+          // authorizing anything a second time.
+          if (request.state !== 'pending') {
+            return json(res, 409, { error: `This request was already ${request.state}.`, approval: request });
+          }
+
+          const decided = fabric.decideApproval(seg[2], granted, 'user', reason);
+          if (!decided) return json(res, 409, { error: 'This request is no longer pending.' });
+
+          // The grant is derived from the STORED request, never from the
+          // client. A caller can say "I approve request X"; it can never
+          // say "I approve filesystem.write".
+          const capabilities = decided.items.map((i) => i.capabilityId);
+          const pid = decided.projectId;
+          const mid = decided.missionId;
+          const tid = decided.taskId;
+
+          if (!pid || !mid || !tid) {
+            return json(res, 200, { approval: decided, resumed: false, detail: 'Recorded. This request is not attached to a mission task.' });
+          }
+
+          if (!granted) {
+            // Nothing executes. The task is left declined with the reason
+            // on Mission Control's timeline, which stays the authority on
+            // mission history.
+            const r = manager.rejectMissionTask(pid, mid, tid, reason ?? 'Approval declined by operator');
+            return json(res, 200, { approval: decided, resumed: false, declined: true, mission: r.mission });
+          }
+
+          // Resume the SAME task with the server-derived grant.
+          const ac = new AbortController();
+          res.on('close', () => ac.abort());
+          const result = await manager.runMissionTask(pid, mid, tid, ac.signal, capabilities);
+          return json(res, 200, { approval: decided, resumed: true, ...result });
+        }
+        /* GET /fabric/mission/:projectId/:missionId — the additive
+           annotation over a finished plan (assumptions, open questions,
+           per-task capability bindings, gaps). Read-only and derived on
+           demand: nothing here is persisted onto the MissionRecord, and
+           nothing here re-plans. See CONSOLIDATION_MAP.md §2.1/§2.2. */
+        if (method === 'GET' && seg[1] === 'mission' && seg[2] && seg[3]) {
+          const mission = manager.getMission(seg[2], seg[3]);
+          if (!mission) return json(res, 404, { error: 'mission not found' });
+          return json(
+            res,
+            200,
+            annotateMissionCapabilities(
+              mission.intent,
+              mission.signals,
+              mission.goalGraph?.tasks ?? [],
+              fabric.supported(),
+            ),
+          );
+        }
+        if (method === 'POST' && seg[1] === 'invoke') {
+          const b = await readJson(req);
+          const capabilityId = String(b.capabilityId ?? '');
+          if (!capabilityId) return json(res, 400, { error: 'capabilityId is required' });
+          const raw = (b.context ?? {}) as Record<string, unknown>;
+          const projectId = typeof raw.projectId === 'string' ? raw.projectId : null;
+          // The working directory is resolved from the registry, never
+          // taken from the request — a caller cannot point execution at an
+          // arbitrary directory on the machine.
+          const project = projectId
+            ? (manager.listProjects() as { id: string; path: string }[]).find((p) => p.id === projectId)
+            : undefined;
+          const context: InvocationContext = {
+            actor: {
+              kind: (raw.actorKind as 'agent' | 'human' | 'system') ?? 'human',
+              id: typeof raw.actorId === 'string' ? raw.actorId : 'user',
+            },
+            projectId,
+            cwd: project?.path,
+            missionId: typeof raw.missionId === 'string' ? raw.missionId : undefined,
+            taskId: typeof raw.taskId === 'string' ? raw.taskId : undefined,
+            timeoutMs: typeof raw.timeoutMs === 'number' ? raw.timeoutMs : undefined,
+            approvedCapabilities: Array.isArray(b.approvedCapabilities)
+              ? b.approvedCapabilities.filter((x): x is string => typeof x === 'string')
+              : undefined,
+          };
+          const input = (b.input ?? {}) as Record<string, unknown>;
+          return json(res, 200, await fabric.invoke(capabilityId, input, context));
+        }
+      }
 
       /* ── global engineering dashboard (across all projects) ────── */
       if (method === 'GET' && seg[0] === 'missions' && seg[1] === 'dashboard') {
@@ -378,12 +585,29 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             if (seg[6] === 'run') {
               const ac = new AbortController();
               res.on('close', () => ac.abort());
+              // No grant is accepted from the caller. A gated task is
+              // resumed only through POST /fabric/approvals/:id/decide,
+              // which derives the capability from the stored request — so
+              // a crafted body can never authorize an action.
               const result = await manager.runMissionTask(id, mid, taskId, ac.signal);
-              return json(res, result.ok ? 200 : 400, result);
+              // 202 for an approval gate: the request was understood and the
+              // task is parked, which is not the same as a bad request.
+              return json(res, result.ok ? 200 : result.awaitingApproval ? 202 : 400, result);
             }
-            if (seg[6] === 'accept') return json(res, 200, manager.acceptMissionTask(id, mid, taskId));
+            if (seg[6] === 'accept') {
+              // Accept IS the operator's authorization for the write, so the
+              // grant is derived from the act of accepting — server-side,
+              // with no capability list crossing the wire.
+              const r = await manager.acceptMissionTask(id, mid, taskId);
+              return json(res, r.ok ? 200 : 400, r);
+            }
             if (seg[6] === 'reject') {
-              const r = manager.rejectMissionTask(id, mid, taskId);
+              // Also the decline path for a task parked at a Fabric approval
+              // gate: the reason is recorded on the mission timeline, and the
+              // Fabric already holds its own audit record of the gate.
+              const rb = await readJson(req).catch(() => ({}) as Record<string, unknown>);
+              const reason = typeof rb.reason === 'string' ? rb.reason : undefined;
+              const r = manager.rejectMissionTask(id, mid, taskId, reason);
               return json(res, r.ok ? 200 : 400, r);
             }
             if (seg[6] === 'complete') return json(res, 200, manager.completeManualTask(id, mid, taskId));

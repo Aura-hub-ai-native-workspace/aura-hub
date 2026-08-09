@@ -5,12 +5,14 @@ import { pageVariants, enterSpaceVariants, useAppStore } from '@aura/core';
 import { Skeleton } from '@aura/ui';
 import { Home } from './Home';
 import { ProjectWorkspace } from './project/ProjectWorkspace';
-import { PlaceholderScreen } from './PlaceholderScreen';
 import { ErrorBoundary } from './ErrorBoundary';
 
 const AiSettings = lazy(() => import('./ai/AiSettings').then((m) => ({ default: m.AiSettings })));
 const Workflows = lazy(() => import('./workflows/Workflows').then((m) => ({ default: m.Workflows })));
 const WorkspaceScreen = lazy(() => import('./WorkspaceScreen').then((m) => ({ default: m.WorkspaceScreen })));
+const ConnectedEnvironment = lazy(() =>
+  import('../environment/ConnectedEnvironment').then((m) => ({ default: m.ConnectedEnvironment })),
+);
 
 /** Content-shaped placeholder — screens lazy-load on first visit. */
 function ScreenLoading() {
@@ -64,7 +66,9 @@ export function ScreenRouter() {
   // The workflow editor and the Code Workspace are fixed-viewport canvases
   // (their own internal scrolling regions); every other screen scrolls the
   // page normally.
-  const fixedViewport = (!inProject && (nav === 'workflows' || nav === 'workspace')) || (inProject && projectTab === 'code');
+  const fixedViewport =
+    (!inProject && (nav === 'workflows' || nav === 'workspace' || nav === 'environment')) ||
+    (inProject && projectTab === 'code');
 
   return (
     <motion.div
@@ -90,13 +94,11 @@ function renderScreen(nav: string, inProject: boolean) {
       return lazyScreen(<Workflows />);
     case 'workspace':
       return lazyScreen(<WorkspaceScreen />);
-    case 'marketplace':
+    case 'environment':
       return (
-        <PlaceholderScreen
-          navKey="marketplace"
-          title="Extend your environment"
-          hint="Modules, models and templates install into the same design language and command surface you already use."
-        />
+        <ErrorBoundary title="Unable to load the Connected Environment">
+          {lazyScreen(<ConnectedEnvironment />)}
+        </ErrorBoundary>
       );
     case 'settings':
       return (

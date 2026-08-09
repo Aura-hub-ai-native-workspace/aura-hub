@@ -17,7 +17,7 @@
  * The rail offers search, category and execution-status filters; list
  * rows carry live progress from the execution metrics.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge, Button, Icon } from '@aura/ui';
 import { useWorkspace } from '../../data/useWorkspace';
 import { EmptyState } from '../../components/EmptyState';
@@ -39,6 +39,13 @@ export function MissionControl() {
   const [q, setQ] = useState('');
   const [cat, setCat] = useState<MissionCategory | 'all'>('all');
   const [exec, setExec] = useState<ExecutionStatus | 'all'>('all');
+
+  // Load the list when the panel opens, and whenever the open project
+  // changes. Without this the panel showed "No missions yet" until some
+  // other action happened to refresh it — `MissionDetailPanel` had the
+  // effect, the main Missions panel never did.
+  const { refreshList } = missions;
+  useEffect(() => { void refreshList(); }, [openId, refreshList]);
 
   if (!openId || !project) {
     return (

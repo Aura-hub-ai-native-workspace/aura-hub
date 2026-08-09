@@ -51,6 +51,27 @@ export interface RunTaskResult {
   error?: string;
   proposal?: TaskProposal;
   mode?: TaskMode;
+  /**
+   * Terminal planning status the hook resolved the task to, overriding the
+   * default `ok ? 'proposed' : 'error'`.
+   *
+   * This exists because the proposal path is no longer the only way a task
+   * can resolve: a task executed through the Capability Fabric can succeed
+   * outright (`done`), be refused by policy (`rejected`), or be parked at
+   * an approval gate having run nothing (`pending`). All three are members
+   * of the **existing** `TaskStatus` union — the engine gains no new states
+   * and remains the only thing that writes them.
+   */
+  status?: TaskStatus;
+  /** Human-readable outcome for the timeline, when richer than `error`. */
+  detail?: string;
+  /**
+   * True when the hook resolved without performing the task and without
+   * failing — today, an approval gate. Keeps the task's timeline entry
+   * from being phrased as either success or failure, because it is
+   * neither.
+   */
+  pending?: boolean;
 }
 
 export interface EngineHooks {
@@ -343,20 +364,31 @@ export class MissionExecutionEngine {
     return record;
   }
 
-  /** Run a single task through proposal generation. */
-  async runTask(record: MissionRecord, taskId: string): Promise<{ ok: boolean; error?: string; record: MissionRecord }> {
+  /** Run a single task — through the Fabric where it can be, else proposal generation. */
+  async runTask(record: MissionRecord, taskId: string): Promise<{ ok: boolean; error?: string; awaitingApproval?: boolean; record: MissionRecord }> {
     if (!record.execution) return { ok: false, error: 'no execution state', record };
     const task = record.goalGraph?.tasks.find((t) => t.id === taskId);
     if (!task) return { ok: false, error: 'no such task', record };
     if (record.execution.status !== 'running') return { ok: false, error: 'execution is not running', record };
-    await this.runOne(record, task);
+    const result = await this.runOne(record, task);
+
+    // Success is read from what the task actually resolved to, not from
+    // whether a proposal exists: a Fabric-executed task completes outright
+    // and never produces one, and reporting that as a failure would make a
+    // completed task look broken to every caller.
     const run = record.taskRuns.find((r) => r.taskId === taskId);
-    const ok = !!run?.proposal && !run.proposal.error;
+    const status = record.goalGraph?.tasks.find((t) => t.id === taskId)?.status;
+    const ok = status === 'done' || (status === 'proposed' && !!run?.proposal && !run.proposal.error);
     this.commit(record);
-    return { ok, error: ok ? undefined : run?.proposal?.error?.message, record };
+    return {
+      ok,
+      error: ok ? undefined : result.detail ?? result.error ?? run?.proposal?.error?.message,
+      awaitingApproval: result.pending || undefined,
+      record,
+    };
   }
 
-  private async runOne(record: MissionRecord, task: MissionTask): Promise<void> {
+  private async runOne(record: MissionRecord, task: MissionTask): Promise<RunTaskResult> {
     const ex = record.execution!;
     ex.timeline.push(timeline('task-started', 'ai', `Running: ${task.title}`, { taskId: task.id }));
     ex.activity.push(activity('ai', 'task-started', `Started task: ${task.title}`, { taskId: task.id }));
@@ -376,25 +408,54 @@ export class MissionExecutionEngine {
       result = { ok: false, error: (e as Error).message || 'Task execution failed unexpectedly' };
     }
 
+    const status: TaskStatus = result.status ?? (result.ok ? 'proposed' : 'error');
     const toPlan = new Map<string, { status: TaskStatus; mode?: TaskMode }>();
-    toPlan.set(task.id, { status: result.ok ? 'proposed' : 'error', mode: result.mode });
+    toPlan.set(task.id, { status, mode: result.mode });
     if (result.proposal) {
       record.taskRuns = [
         ...record.taskRuns.filter((r) => r.taskId !== task.id),
-        { taskId: task.id, status: result.ok ? 'proposed' : 'error', proposal: result.proposal, updatedAt: new Date().toISOString() },
+        { taskId: task.id, status, proposal: result.proposal, updatedAt: new Date().toISOString() },
       ];
     }
-    ex.timeline.push(
-      result.ok
-        ? timeline('task-proposed', 'ai', `Proposal ready: ${task.title}`, { taskId: task.id, detail: result.proposal?.explanation })
-        : timeline('task-failed', 'ai', `Failed: ${task.title}`, { taskId: task.id, detail: result.error }),
-    );
-    ex.activity.push(
-      result.ok
-        ? activity('ai', 'task-proposed', `Proposal generated for: ${task.title} — awaiting accept`, { taskId: task.id })
-        : activity('ai', 'task-failed', `Task failed: ${task.title} — ${result.error ?? 'unknown error'}`, { taskId: task.id }),
-    );
-    this.apply(record, () => undefined, result.ok ? 'task' : 'state', toPlan);
+
+    // Three shapes of outcome, not two. A task parked at an approval gate
+    // has neither succeeded nor failed, and saying either would be a lie
+    // in the one place the operator looks to find out what happened.
+    if (result.pending) {
+      ex.timeline.push(timeline('checkpoint', 'system', `Waiting on your go-ahead: ${task.title}`, { taskId: task.id, detail: result.detail }));
+      ex.activity.push(activity('system', 'checkpoint', `${task.title} — ${result.detail ?? 'awaiting approval'}`, { taskId: task.id }));
+    } else if (result.ok) {
+      const done = status === 'done';
+      ex.timeline.push(
+        done
+          ? timeline('task-completed', 'ai', `Completed: ${task.title}`, { taskId: task.id, detail: result.detail })
+          : timeline('task-proposed', 'ai', `Proposal ready: ${task.title}`, { taskId: task.id, detail: result.proposal?.explanation }),
+      );
+      ex.activity.push(
+        done
+          ? activity('ai', 'task-completed', `Completed: ${task.title}${result.detail ? ` — ${result.detail}` : ''}`, { taskId: task.id })
+          : activity('ai', 'task-proposed', `Proposal generated for: ${task.title} — awaiting accept`, { taskId: task.id }),
+      );
+    } else {
+      const refused = status === 'rejected';
+      ex.timeline.push(
+        refused
+          ? timeline('task-rejected', 'system', `Refused: ${task.title}`, { taskId: task.id, detail: result.detail ?? result.error })
+          : timeline('task-failed', 'ai', `Failed: ${task.title}`, { taskId: task.id, detail: result.detail ?? result.error }),
+      );
+      ex.activity.push(
+        activity(refused ? 'system' : 'ai', refused ? 'task-rejected' : 'task-failed',
+          `${refused ? 'Refused' : 'Task failed'}: ${task.title} — ${result.detail ?? result.error ?? 'unknown error'}`,
+          { taskId: task.id }),
+      );
+    }
+
+    this.apply(record, () => undefined, result.ok || result.pending ? 'task' : 'state', toPlan);
+    // A Fabric-executed task can reach a terminal state without passing
+    // through acceptTask/rejectTask, so the mission-level completion check
+    // has to run here too or the review checkpoint would never open.
+    if (status === 'done' || status === 'accepted' || status === 'rejected') this.maybeComplete(record);
+    return result;
   }
 
   /** Human Accept — the ONLY path that allows a write to disk. */

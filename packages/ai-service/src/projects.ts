@@ -35,7 +35,7 @@ export interface ProjectRecord {
 const COLORS = ['#3b6bff', '#1fb567', '#f5a524', '#7c5cff', '#e5484d', '#0ea5e9'];
 const REGISTRY = () => homePath('projects.json');
 
-function slug(name: string): string {
+export function slug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
 }
 
