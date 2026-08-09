@@ -43,7 +43,10 @@ export function NotificationCenter({ embedded = false, onNavigate }: { embedded?
 
   return (
     <PanelBody padded={false} className="flex flex-col">
-      <div className="px-3 pt-3">
+      {/* `shrink-0` keeps the bulk actions pinned: without it the flex
+          column compresses the header first when the list is long, and the
+          actions scroll away with the rows. */}
+      <div className="shrink-0 px-3 pt-3">
         <PanelHeader title="Notifications" hint={unread > 0 ? `${unread} unread` : 'all read'} />
         <div className="mb-2 flex items-center gap-1.5">
           <ActionChip icon="check" label="Mark all read" onClick={markAllRead} disabled={unread === 0} />
@@ -51,10 +54,15 @@ export function NotificationCenter({ embedded = false, onNavigate }: { embedded?
           <ActionChip icon="close" label="Clear all" onClick={clearAll} tone="danger" />
         </div>
       </div>
+      {/* VirtualList scrolls itself — it owns the `onScroll` that drives
+          windowing, but takes its overflow from the caller (see FileTree).
+          Without `overflow-y-auto` here the rows spilled into PanelBody's
+          scroller, which scrolled the header along with them and left the
+          windowing inert. */}
       <VirtualList
         items={items}
         itemHeight={58}
-        className="min-h-0 flex-1"
+        className="min-h-0 flex-1 overflow-y-auto"
         renderItem={(n) => <NotificationRow n={n} onNavigate={onNavigate} />}
       />
     </PanelBody>
