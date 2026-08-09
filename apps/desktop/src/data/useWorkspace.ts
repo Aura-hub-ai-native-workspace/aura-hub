@@ -24,6 +24,10 @@ interface WorkspaceState {
   reachable: boolean | null;
   loading: boolean;
   projects: ProjectRecord[];
+  /** Frontend-only projects created via the "Create Project" flow. They live
+   *  in the UI session only — the backend registry (and therefore
+   *  persistence/indexing) is intentionally not involved. */
+  localProjects: ProjectRecord[];
 
   // Currently open project
   openId: string | null;
@@ -35,6 +39,8 @@ interface WorkspaceState {
 
   refresh: () => Promise<void>;
   addProject: (path: string, name?: string) => Promise<{ ok: boolean; error?: string }>;
+  /** Frontend-only: prepend a project to the local session list (no backend). */
+  createLocalProject: (name: string, path: string) => void;
   open: (id: string) => Promise<void>;
   rename: (id: string, name: string) => Promise<void>;
   favorite: (id: string, fav: boolean) => Promise<void>;
@@ -53,6 +59,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   reachable: null,
   loading: false,
   projects: [],
+  localProjects: [],
   openId: null,
   profile: null,
   status: null,
@@ -79,6 +86,22 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
+  },
+
+  createLocalProject(name, path) {
+    const record: ProjectRecord = {
+      id: `local-${Date.now().toString(36)}`,
+      name: name.trim(),
+      path: path.trim(),
+      type: 'Application',
+      language: '—',
+      icon: 'folder',
+      color: '#00b3ff',
+      favorite: false,
+      createdAt: new Date().toISOString(),
+      lastOpenedAt: null,
+    };
+    set((s) => ({ localProjects: [record, ...s.localProjects] }));
   },
 
   async open(id) {
