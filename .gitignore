@@ -46,3 +46,5 @@ graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 
 # UI approval-test screenshots (local evidence only)
 scripts/.ui-*.png
+# Hub verification screenshot (local evidence only)
+scripts/.hub-*.png
