@@ -27,6 +27,8 @@ import type {
   Invocation,
   InvocationContext,
   InvocationResult,
+  NodeRef,
+  NodeResolution,
   PolicyConfig,
   PolicyEvaluation,
   VerificationReport,
@@ -61,8 +63,31 @@ export interface FabricHost {
   /**
    * Is the node capability this action needs currently provided?
    * `null` when the capability declares none.
+   *
+   * Retained for compatibility and still the input to the `no-provider`
+   * floor. Hosts implementing `resolveNode` should derive this from it so
+   * the two can never disagree.
    */
   nodeAvailable(capability: CapabilityDescriptor): boolean | null;
+  /**
+   * Which node should perform this, honouring `context.nodeId` when the
+   * caller named one.
+   *
+   * Synchronous by design: it reads the last environment scan rather than
+   * probing, so it can run inside the policy step without turning a
+   * decision into an I/O wait. Optional — a host that omits it keeps the
+   * old boolean-only behaviour.
+   */
+  resolveNode?(
+    capability: CapabilityDescriptor,
+    context: InvocationContext,
+    /**
+     * Whether the registered executor can actually drive a candidate.
+     * Supplied by the Fabric so routing stays here while the knowledge of
+     * what is drivable stays in the executor.
+     */
+    canUse?: (node: NodeRef) => boolean,
+  ): NodeResolution;
   /**
    * Ask the human. The host owns the UI; the Fabric owns the record.
    * Resolves `true` on grant. A host with no UI should resolve `false`
@@ -382,12 +407,39 @@ export class CapabilityFabric {
       }, started, startedAt, 1);
     }
 
-    /* 2. policy */
+    /* 2. routing — which node, before anything is decided about it.
+       Resolution feeds policy rather than bypassing it: naming a node
+       changes WHICH node is evaluated, never WHETHER evaluation happens. */
+    const routingExecutor = this.executors.get(capabilityId);
+    const resolution: NodeResolution = this.host.resolveNode
+      ? this.host.resolveNode(
+          capability,
+          context,
+          routingExecutor?.supportsNode
+            ? (node) => routingExecutor.supportsNode!(node)
+            : undefined,
+        )
+      : { ok: true };
+
+    if (!resolution.ok) {
+      this.emit({ type: 'invocation.denied', at: new Date().toISOString(), invocationId: invocation.id, reason: resolution.reason });
+      return this.settle(invocation, capability, 'denied', resolution.reason, NO_VERIFICATION, {
+        decision: 'deny', rule: resolution.code, risk: capability.risk, reason: resolution.reason,
+      }, started, startedAt, 0);
+    }
+    // The executor is handed its node; it discovers nothing itself.
+    invocation.node = resolution.node;
+
+    /* 3. policy */
     const evaluation = evaluatePolicy({
       capability,
       config: this.policy,
       granted: grantsFor(this.host.permissionsFor(capability, context)),
-      nodeAvailable: this.host.nodeAvailable(capability),
+      // Derived from the same resolution when the host does routing, so
+      // the boolean floor and the router can never disagree.
+      nodeAvailable: this.host.resolveNode
+        ? (capability.requiresNodeCapability ? !!resolution.node : null)
+        : this.host.nodeAvailable(capability),
     });
 
     if (evaluation.decision === 'deny') {
@@ -395,7 +447,7 @@ export class CapabilityFabric {
       return this.settle(invocation, capability, 'denied', evaluation.reason, NO_VERIFICATION, evaluation, started, startedAt, 0);
     }
 
-    /* 3. approval */
+    /* 4. approval */
     if (evaluation.decision !== 'auto-execute') {
       // Identity of the QUESTION, not of the attempt. Pressing Run three
       // times on a gated task asks one question three times, and must not
@@ -463,7 +515,7 @@ export class CapabilityFabric {
       }
     }
 
-    /* 4. execute — with bounded recovery */
+    /* 5. execute — with bounded recovery */
     const executor = this.executors.get(capabilityId);
     if (!executor) {
       return this.settle(invocation, capability, 'unsupported',
@@ -512,7 +564,7 @@ export class CapabilityFabric {
         NO_VERIFICATION, evaluation, started, startedAt, attempts, undefined, last.output);
     }
 
-    /* 5. verify */
+    /* 6. verify */
     let verification = NO_VERIFICATION;
     if (capability.verify && executor.verify) {
       try {
@@ -604,10 +656,12 @@ export class CapabilityFabric {
       verified: verification.passed,
       durationMs,
       inputSummary: capability ? summarizeInput(capability, invocation.input) : '(unknown capability)',
-      // Which node actually did the work, when the executor named one.
-      // Recorded from the executor's report only — never inferred — so the
-      // audit trail can answer "which agent touched this project?".
-      nodeId: this.nodeIdOfOutput(output),
+      // Routing is recorded in full: what was asked for, what the Fabric
+      // chose, and what actually ran. Collapsing these would hide a
+      // substitution — the one thing routing must never do quietly.
+      nodeId: this.nodeIdOfOutput(output) ?? invocation.node?.id,
+      requestedNodeId: invocation.context.nodeId,
+      executedNodeId: this.nodeIdOfOutput(output) ?? invocation.node?.id,
     });
 
     this.emit({ type: 'invocation.completed', at: endedAt, result });

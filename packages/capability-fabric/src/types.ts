@@ -140,6 +140,41 @@ export interface InvocationActor {
  * and `taskId` point into the authoritative `MissionRecord` — they are
  * correlation keys for the audit trail, never a mission model.
  */
+/**
+ * A connected environment node, reduced to what routing needs.
+ * ------------------------------------------------------------------
+ * Deliberately NOT a registry. This is a projection of the catalogue plus
+ * the last environment scan, built where the provided-capability set is
+ * already built and carrying the same freshness. The catalogue stays the
+ * only source of truth for what a node is; this says only which node, what
+ * it provides, and what to run.
+ */
+export interface NodeRef {
+  id: string;
+  name: string;
+  /** Node capabilities this node provides, e.g. `coding-agent`. */
+  capabilities: string[];
+  /** Executable name from the catalogue entry's probe, when it has one. */
+  binary?: string;
+}
+
+/** Why a node could not be resolved. Every one denies before execution. */
+export type NodeResolutionFailure =
+  | 'unknown-node'
+  | 'node-not-connected'
+  | 'node-lacks-capability'
+  /** Provides the capability, but AURA cannot drive this particular tool. */
+  | 'node-unsupported'
+  | 'no-provider';
+
+/**
+ * The outcome of routing. `ok` with no `node` means the capability needs
+ * none — an AURA-internal action, or one with no `requiresNodeCapability`.
+ */
+export type NodeResolution =
+  | { ok: true; node?: NodeRef }
+  | { ok: false; code: NodeResolutionFailure; reason: string };
+
 export interface InvocationContext {
   actor: InvocationActor;
   projectId: string | null;
@@ -156,6 +191,16 @@ export interface InvocationContext {
    * the next one. Absent means nothing was approved.
    */
   approvedCapabilities?: string[];
+  /**
+   * The node the caller wants this to run on — routing **intent**, not a
+   * report of what ran.
+   *
+   * Optional: omitting it preserves existing behaviour exactly. Naming a
+   * node narrows the choice and can only ever *deny* — an unknown,
+   * disconnected, or unsuitable node fails resolution rather than being
+   * quietly replaced with a working one.
+   */
+  nodeId?: string;
 }
 
 export interface Invocation {
@@ -164,6 +209,14 @@ export interface Invocation {
   input: Record<string, unknown>;
   context: InvocationContext;
   requestedAt: string;
+  /**
+   * The node the Fabric resolved for this call, handed to the executor.
+   *
+   * This is why executors no longer discover anything: routing is decided
+   * once, under policy, and the result is passed down. Absent when the
+   * capability needs no node.
+   */
+  node?: NodeRef;
 }
 
 export type InvocationOutcome =
@@ -309,6 +362,19 @@ export interface ExecutorResult {
  */
 export interface Executor {
   capabilityId: string;
+  /**
+   * Can this executor actually drive that node?
+   *
+   * Routing decides *which* node by capability; only the executor knows
+   * which nodes it can really operate — six tools may all declare
+   * `coding-agent` while AURA has a verified non-interactive invocation
+   * for one of them. Consulted during resolution so an unusable node is
+   * refused before policy rather than discovered at spawn time.
+   *
+   * Omitting it means "any node providing the capability will do", which
+   * is the correct default for executors that shell out generically.
+   */
+  supportsNode?(node: NodeRef): boolean;
   run(invocation: Invocation): Promise<ExecutorResult>;
   /**
    * Optional read-back check. Called only when the capability declares a
@@ -366,8 +432,15 @@ export interface AuditRecord {
    * one. Several nodes can provide the same capability, so `capabilityId`
    * alone cannot answer "which agent touched this project?" — this can.
    * Absent means unattributable, never a guess.
+   *
+   * Kept as the executed node. `requestedNodeId` below records what was
+   * asked for, so a routing decision is never hidden by collapsing the two.
    */
   nodeId?: string;
+  /** The node the caller asked for, when they named one. */
+  requestedNodeId?: string;
+  /** The node the Fabric resolved and handed to the executor. */
+  executedNodeId?: string;
   /**
    * Present only on records written for a **human authorization decision**
    * rather than an execution. `approvalId` above identifies which request

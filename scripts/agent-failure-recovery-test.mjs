@@ -97,9 +97,13 @@ try {
 
   /* ── D. invalid / unknown agent ───────────────────────────────── */
   const unknown = await invoke({ task: 'x', nodeId: 'not-a-real-agent' }, { approve: true });
-  check('D. an unknown agent fails honestly and runs nothing',
-    unknown.outcome === 'failed' && !claimsSuccess(unknown) && /not a known coding-agent node/.test(unknown.detail),
-    `${String(unknown.detail).slice(0, 80)}`);
+  // Since §22 this is refused during ROUTING — `denied` before anything is
+  // attempted — rather than failing inside the executor. Stronger, and the
+  // assertion follows the behaviour rather than the other way round.
+  check('D. an unknown agent is refused before execution and runs nothing',
+    unknown.outcome === 'denied' && !claimsSuccess(unknown)
+    && (unknown.attempts ?? 0) === 0 && /is not a connected node/.test(unknown.detail),
+    `outcome=${unknown.outcome} attempts=${unknown.attempts} · ${String(unknown.detail).slice(0, 60)}`);
 
   /* ── B. timeout ───────────────────────────────────────────────── */
   info('B. forcing a timeout (2s deadline on a real agent run)…');

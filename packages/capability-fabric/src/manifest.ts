@@ -185,9 +185,12 @@ const LOCAL: CapabilityDescriptor[] = [
     input: [
       f('task', 'string', true, 'What the agent should do, in plain language'),
       f('model', 'string', false, 'Optional provider/model override, e.g. "anthropic/claude-sonnet-4"'),
-      // Narrows which installed agent runs. It can never widen the set:
-      // candidates always come from the catalogue, never from the caller.
-      f('nodeId', 'string', false, 'Which coding-agent node to use, e.g. "opencode"'),
+      // `nodeId` is deliberately NOT an input any more. Which node runs an
+      // action is routing, not an argument, and it now lives on
+      // `InvocationContext.nodeId` (§22.2). The transport still accepts it
+      // in the input position as a compatibility alias — honoured as
+      // routing intent, never ignored — so an older caller naming a bad
+      // node is refused rather than quietly served by a different one.
     ],
     output: 'stdout + stderr, exit code',
     verify: 'exit-code',

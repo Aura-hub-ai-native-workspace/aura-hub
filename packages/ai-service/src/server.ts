@@ -12,9 +12,9 @@ import type { RunEvent, Workflow } from './workflow/types';
 import { setupProviders } from './provider';
 import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
 import { handleCodeAction, type CodeActionRequest } from './codeAction';
-import { CATALOG, catalogEntry } from '@aura/connected-environment';
+import { CATALOG } from '@aura/connected-environment';
 import { probeNode, scanEnvironment } from './environment';
-import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext } from '@aura/capability-fabric';
+import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext, type NodeRef } from '@aura/capability-fabric';
 import { createFabric } from './fabric';
 import { savePolicy, policyFilePath } from './fabric/policyStore';
 import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate } from '@aura/automation';
@@ -104,9 +104,16 @@ export async function startService(opts: PipelineOptions & { port?: number; open
    * scan, so connecting a tool takes effect without a restart.
    */
   let providedNodeCapabilities = new Set<string>();
+  /**
+   * Nodes that answered a probe, in catalogue order — the routing view of
+   * the same scan that produces `providedNodeCapabilities`. Built here,
+   * beside it, so the two can never describe different machines.
+   */
+  let presentNodes: NodeRef[] = [];
   const fabric = createFabric({
     manager,
     providedNodeCapabilities: () => providedNodeCapabilities,
+    presentNodes: () => presentNodes,
   });
   // Closes the loop: mission tasks now execute THROUGH this same Fabric
   // instance, so a task inherits the identical policy, approval,
@@ -123,11 +130,23 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   const refreshNodeAvailability = async (ids?: string[], refresh = false) => {
     const scan = await scanEnvironment(ids, refresh);
     const provided = new Set<string>();
-    for (const [id, result] of Object.entries(scan.results)) {
-      if (!result.present) continue;
-      for (const capability of catalogEntry(id)?.capabilities ?? []) provided.add(capability);
+    const nodes: NodeRef[] = [];
+    // CATALOG order is the tie-break when several nodes provide the same
+    // capability and the caller named none (§22.4 rule 4), so this is
+    // walked in catalogue order rather than scan-result order.
+    for (const entry of CATALOG) {
+      const result = scan.results[entry.id];
+      if (!result?.present) continue;
+      for (const capability of entry.capabilities) provided.add(capability);
+      nodes.push({
+        id: entry.id,
+        name: entry.name,
+        capabilities: [...entry.capabilities],
+        binary: entry.probe?.command,
+      });
     }
     providedNodeCapabilities = provided;
+    presentNodes = nodes;
     return scan;
   };
 
@@ -359,6 +378,20 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             approvedCapabilities: Array.isArray(b.approvedCapabilities)
               ? b.approvedCapabilities.filter((x): x is string => typeof x === 'string')
               : undefined,
+            // Routing intent. Only an id — never a path or a binary — so a
+            // caller can narrow which connected node runs the action but
+            // can never point execution at something off the catalogue.
+            //
+            // Also accepted in the INPUT position, where `agent.delegate`
+            // used to declare it. Honouring the alias matters: dropping it
+            // would mean a caller who named a node got a different one
+            // without being told, which is precisely the silent
+            // substitution routing exists to prevent.
+            nodeId: typeof raw.nodeId === 'string'
+              ? raw.nodeId
+              : typeof (b.input as Record<string, unknown> | undefined)?.nodeId === 'string'
+                ? ((b.input as Record<string, unknown>).nodeId as string)
+                : undefined,
           };
           const input = (b.input ?? {}) as Record<string, unknown>;
           return json(res, 200, await fabric.invoke(capabilityId, input, context));

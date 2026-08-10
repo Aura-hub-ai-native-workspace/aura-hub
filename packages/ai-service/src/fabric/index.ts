@@ -18,6 +18,8 @@ import {
   type CapabilityDescriptor,
   type FabricHost,
   type InvocationContext,
+  type NodeRef,
+  type NodeResolution,
 } from '@aura/capability-fabric';
 import { allExecutors } from './executors';
 import { loadPolicy } from './policyStore';
@@ -42,6 +44,91 @@ export interface FabricDeps {
    * are denied with a connect suggestion rather than failing mid-run.
    */
   providedNodeCapabilities?: () => Set<string>;
+  /**
+   * Nodes present on this machine right now, in catalogue order.
+   *
+   * Same freshness and same source as `providedNodeCapabilities` — both
+   * are projections of the last environment scan, built together. This is
+   * not a second registry: the catalogue remains authoritative, and these
+   * refs carry only what routing needs.
+   */
+  presentNodes?: () => NodeRef[];
+}
+
+/**
+ * Route a capability to a node. §22.4.
+ *
+ * The rules, in order:
+ *   1. No `requiresNodeCapability` → no node needed.
+ *   2. `aura-internal` → runs inside AURA, no node needed.
+ *   3. A node was REQUESTED → it must exist, be present, and provide the
+ *      capability. Any failure denies. A requested node is never silently
+ *      swapped for one that would have worked.
+ *   4. Nothing requested → the first present provider in catalogue order.
+ *      Deterministic and documented, never arbitrary.
+ */
+function resolveNodeFor(
+  capability: CapabilityDescriptor,
+  context: InvocationContext,
+  present: NodeRef[],
+  canUse?: (node: NodeRef) => boolean,
+): NodeResolution {
+  const needed = capability.requiresNodeCapability;
+  if (!needed) return { ok: true };
+  if (capability.surface === 'aura-internal') return { ok: true };
+
+  const usable = (node: NodeRef) => (canUse ? canUse(node) : true);
+
+  const requested = context.nodeId?.trim();
+  if (requested) {
+    const node = present.find((n) => n.id === requested);
+    if (!node) {
+      // Deliberately does not distinguish "never existed" from "not
+      // running" here — both mean the caller cannot have what they asked
+      // for, and the reason names the node so it is actionable.
+      return {
+        ok: false,
+        code: 'unknown-node',
+        reason: `'${requested}' is not a connected node on this machine. Connect it, or omit the node to let AURA choose.`,
+      };
+    }
+    if (!node.capabilities.includes(needed)) {
+      return {
+        ok: false,
+        code: 'node-lacks-capability',
+        reason: `${node.name} does not provide ${needed}, which ${capability.name.toLowerCase()} needs.`,
+      };
+    }
+    if (!usable(node)) {
+      // Refused, not redirected. Substituting a different agent here is
+      // exactly the silent behaviour routing exists to prevent.
+      return {
+        ok: false,
+        code: 'node-unsupported',
+        reason: `${node.name} provides ${needed}, but AURA has no verified way to drive it yet, so nothing was run.`,
+      };
+    }
+    return { ok: true, node };
+  }
+
+  // Catalogue order, filtered to what the executor can actually drive.
+  const node = present.find((n) => n.capabilities.includes(needed) && usable(n));
+  if (!node) {
+    const providers = present.filter((n) => n.capabilities.includes(needed));
+    if (providers.length > 0) {
+      return {
+        ok: false,
+        code: 'node-unsupported',
+        reason: `${providers.map((p) => p.name).join(', ')} provide ${needed}, but AURA has no verified way to drive any of them yet.`,
+      };
+    }
+    return {
+      ok: false,
+      code: 'no-provider',
+      reason: `Nothing connected provides ${needed} yet. Connect a node that does and this becomes available.`,
+    };
+  }
+  return { ok: true, node };
 }
 
 export function createFabric(deps: FabricDeps): CapabilityFabric {
@@ -57,6 +144,14 @@ export function createFabric(deps: FabricDeps): CapabilityFabric {
       const provided = deps.providedNodeCapabilities?.();
       if (!provided) return false;
       return provided.has(capability.requiresNodeCapability);
+    },
+
+    resolveNode(
+      capability: CapabilityDescriptor,
+      context: InvocationContext,
+      canUse?: (node: NodeRef) => boolean,
+    ): NodeResolution {
+      return resolveNodeFor(capability, context, deps.presentNodes?.() ?? [], canUse);
     },
 
     async requestApproval(request, context) {

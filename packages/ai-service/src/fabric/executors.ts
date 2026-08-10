@@ -18,10 +18,8 @@
 
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { CATALOG } from '@aura/connected-environment';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
 import { git, parseCommand, resolveAgentBinary, runAgent, safeShellWithCode } from '../exec/process';
-import { probeNode } from '../environment';
 import type { WorkspaceManager } from '../workspace';
 
 const MAX_READ_BYTES = 512 * 1024;
@@ -165,54 +163,23 @@ const AGENT_INVOCATIONS: Record<string, AgentInvocation> = {
   },
 };
 
-interface AgentTarget {
-  nodeId: string;
-  name: string;
-  bin: string;
-  invocation: AgentInvocation;
-}
-
-/**
- * Find an installed coding agent, using the environment detection that
- * already exists.
- *
- * The candidate set comes from the catalogue (`coding-agent`), presence
- * comes from the same `probeNode` the Workspace shows the user, and the
- * binary name comes from that entry's own probe. Nothing is hardcoded and
- * nothing is taken from the caller, so this cannot be pointed at an
- * arbitrary executable.
- */
-async function resolveAgent(preferredNodeId?: string): Promise<{ target?: AgentTarget; reason: string }> {
-  const candidates = CATALOG.filter((e) => e.capabilities.includes('coding-agent') && !!e.probe);
-  const ordered = preferredNodeId
-    ? candidates.filter((e) => e.id === preferredNodeId)
-    : candidates;
-
-  if (preferredNodeId && ordered.length === 0) {
-    return { reason: `'${preferredNodeId}' is not a known coding-agent node.` };
-  }
-
-  const seen: string[] = [];
-  for (const entry of ordered) {
-    const bin = entry.probe!.command;
-    const invocation = AGENT_INVOCATIONS[bin];
-    // Refuse rather than improvise for an agent whose CLI we have not
-    // verified — see AGENT_INVOCATIONS.
-    if (!invocation) { seen.push(`${entry.name} (no verified invocation)`); continue; }
-    if (!resolveAgentBinary(bin).ok) { seen.push(`${entry.name} (not on the agent allow-list)`); continue; }
-
-    const probe = await probeNode(entry.id);
-    if (!probe.present) { seen.push(`${entry.name} (not installed)`); continue; }
-
-    return { target: { nodeId: entry.id, name: entry.name, bin, invocation }, reason: '' };
-  }
-  return {
-    reason: `No usable coding agent was found. Checked: ${seen.join(', ') || 'nothing in the catalogue'}.`,
-  };
-}
-
 const agentDelegate: Executor = {
   capabilityId: 'agent.delegate',
+
+  /**
+   * Which coding agents AURA can actually drive.
+   *
+   * Six catalogue entries declare `coding-agent`, but a node is only
+   * usable if its binary is on the agent allow-list AND has a verified
+   * non-interactive invocation. Declaring that here lets the Fabric route
+   * around an unusable agent before policy, instead of choosing one and
+   * failing at spawn time.
+   */
+  supportsNode(node) {
+    const bin = node.binary;
+    return !!bin && resolveAgentBinary(bin).ok && !!AGENT_INVOCATIONS[bin];
+  },
+
   async run(inv) {
     // Confinement first: the agent runs in the project directory the
     // server resolved from the registry, never one the caller supplied.
@@ -221,11 +188,35 @@ const agentDelegate: Executor = {
     if (!task) return no('No task was given for the agent to carry out.');
     const model = s(inv.input.model).trim() || undefined;
 
-    // `nodeId` narrows which agent runs; it can never widen the set,
-    // because the candidates come from the catalogue either way.
-    const { target, reason } = await resolveAgent(s(inv.input.nodeId).trim() || undefined);
-    if (!target) return no(reason);
+    /* Routing is the Fabric's job now (§22). This executor no longer
+       searches the catalogue or probes anything: it is handed the node
+       that policy was evaluated against, and refuses if it was not. */
+    const node = inv.node;
+    if (!node) {
+      return no('No coding-agent node was resolved for this call, so nothing was run.');
+    }
 
+    const bin = node.binary;
+    if (!bin) {
+      return no(`${node.name} has no executable recorded in the catalogue, so it cannot be run.`);
+    }
+    // The allow-list is still enforced here, at the point of execution —
+    // routing decides WHICH node, never whether its binary may be spawned.
+    if (!resolveAgentBinary(bin).ok) {
+      return no(`${node.name} is not on the coding-agent allow-list, so it was not run.`);
+    }
+    const invocationSpec = AGENT_INVOCATIONS[bin];
+    // A resolved node whose CLI has not been verified FAILS. It is never
+    // silently swapped for one that would have worked — that substitution
+    // is exactly what routing must not do.
+    if (!invocationSpec) {
+      return no(
+        `${node.name} is connected, but AURA has no verified non-interactive invocation for it yet, `
+        + `so nothing was run. Verified today: ${Object.keys(AGENT_INVOCATIONS).join(', ')}.`,
+      );
+    }
+
+    const target = { nodeId: node.id, name: node.name, bin, invocation: invocationSpec };
     const args = target.invocation.args(task, cwd, model);
     let res: Awaited<ReturnType<typeof runAgent>>;
     try {

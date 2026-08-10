@@ -644,6 +644,90 @@ means enriching the planner's output, not adding a second inference path.
 
 ---
 
+## 22. First-class node routing (resolves §21.9)
+
+### 22.1 The problem
+
+`FabricHost.nodeAvailable(capability)` answers a boolean: *"does some node provide this?"* It
+cannot answer *"which node, and route there."* So `agent.delegate` discovered its own node inside
+`resolveAgent()` — correct behaviour, wrong layer. Selection policy was per-executor, and a second
+node-bound capability would have had to repeat it.
+
+### 22.2 Where NodeRef enters
+
+Exactly four places, each a distinct concept. The critical distinction is **requested ≠ executed**:
+
+| Concept | Carrier | Meaning |
+|---|---|---|
+| **Requested** | `InvocationContext.nodeId?: string` | Routing *intent* from the caller. Optional. |
+| **Resolved** | `Invocation.node?: NodeRef` | What the Fabric chose. Handed to the executor. |
+| **Executed** | `ExecutorResult.output.nodeId` | What actually ran, reported by the executor. |
+| **Recorded** | `AuditRecord.requestedNodeId` / `.executedNodeId` | Both, never collapsed. |
+
+An executor no longer discovers anything: it receives `invocation.node`.
+
+### 22.3 NodeRef
+
+```ts
+interface NodeRef { id: string; name: string; capabilities: string[]; binary?: string }
+```
+
+Minimal by design and **not a registry**. It is a projection of the catalogue plus the last
+environment scan — built where `providedNodeCapabilities` is already built (`server.ts`), from the
+same scan results, with the same freshness. The catalogue remains the only source of truth for what
+a node is; `NodeRef` only carries what routing needs.
+
+### 22.4 Resolution
+
+`FabricHost.resolveNode(capability, context): NodeResolution` — synchronous, like `nodeAvailable`,
+because it reads the last scan rather than probing. `nodeAvailable()` **remains** and is derived
+from the same resolution, so the `no-provider` floor is unchanged.
+
+```
+NodeResolution = { ok: true; node: NodeRef }
+               | { ok: false; code: NodeResolutionFailure; reason: string }
+```
+
+Failure codes, all denied **before execution**: `unknown-node`, `node-not-connected`,
+`node-lacks-capability`, `node-unsupported`, `no-provider`.
+
+**`Executor.supportsNode?(node)` — added during implementation, and the design would have been
+wrong without it.** Routing by capability alone picked Cursor, the first present `coding-agent`
+provider in catalogue order, which AURA has no verified way to drive; the run then failed at spawn
+time. The Fabric cannot know which tools are drivable — that is executor knowledge — and the
+executor must not do discovery. So the executor *declares* what it can drive, the Fabric passes
+that predicate into resolution, and an unusable node is refused before policy instead of chosen and
+then failed. Executors that shell out generically omit it and accept any provider.
+
+**Selection policy, documented as required:**
+
+1. Capability declares no `requiresNodeCapability` → `{ ok: true }` with no node. Unchanged path.
+2. `aura-internal` surface → runs inside AURA, no node.
+3. A node **was** requested → it must exist, be present, provide the capability, and be drivable
+   by the executor. If any check fails the invocation is **denied**. A requested node is *never*
+   silently substituted — refusing is the whole point.
+4. No node requested → the first present provider **in catalogue order** that the executor can
+   drive. Deterministic and documented; it is not arbitrary, and attribution stays exact because
+   the executor still reports what ran.
+
+### 22.5 Ordering, and why policy cannot be bypassed
+
+```
+validate → resolveNode → policy(nodeAvailable ← resolution) → approval → execute → verify → audit
+```
+
+Resolution runs *before* policy and feeds it. A requested node therefore cannot skip a gate: it
+changes *which* node is evaluated, never *whether* evaluation happens. The irreversible floor,
+approval, actor, project confinement and audit are all untouched.
+
+### 22.6 Compatibility
+
+Capabilities without `requiresNodeCapability` are unaffected — resolution returns no node and every
+existing executor behaves exactly as before. `InvocationContext.nodeId` is optional; omitting it
+preserves current behaviour end to end.
+
+---
+
 ## Proof obligation
 
 Before this reconstruction is called complete, the branch must show:
