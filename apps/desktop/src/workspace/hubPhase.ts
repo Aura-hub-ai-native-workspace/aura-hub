@@ -206,19 +206,38 @@ export function buildCapabilityNodeMap(capabilities: CapabilityDescriptorView[])
   );
 }
 
+/** Work that is happening but cannot be pinned to one node. */
+export interface UnattributedWork {
+  taskId: string;
+  capabilityId: string;
+  /** The placed nodes that could each have done it. */
+  candidates: string[];
+  phase: NodeActivityPhase;
+}
+
+export interface NodeActivityProjection {
+  byNode: Map<string, NodeActivityPhase>;
+  /** Never guessed at — surfaced so the Hub can say "unknown". */
+  unattributed: UnattributedWork[];
+}
+
 /**
  * Which nodes are involved in what the mission is doing *right now*.
  *
- * The chain is entirely real and entirely deterministic:
+ * Attribution runs in two tiers, strongest first:
  *
- *   in-flight task  → `annotation.bindings[].requires` (the Fabric's own
- *                      per-task projection)
- *                   → `requiresNodeCapability` from the manifest
- *                   → the placed node whose catalogue entry provides it
+ *   1. **Reported.** The executor named the node it used
+ *      (`taskRun.nodeId`). This is authoritative and exact — it is how
+ *      `agent.delegate` lights only OpenCode when six coding agents could
+ *      each have served the same capability.
+ *   2. **Unambiguous.** No node was reported, but exactly ONE placed node
+ *      provides the required capability, so there is nothing to guess
+ *      between. This is what keeps `git.diff` lighting the git node.
  *
- * A task that needs no external capability lights up nothing. A required
- * capability nothing provides lights up nothing either — the gap is
- * reported by `annotation.gaps`, not by animating an unrelated node.
+ * When neither holds — several placed nodes could have done it and none
+ * was reported — nothing lights and the work is listed as unattributed.
+ * Lighting all the candidates would be a guess presented as fact, which is
+ * precisely what this projection exists to avoid.
  */
 export function projectNodeActivity(
   mission: MissionRecord | null,
@@ -226,10 +245,16 @@ export function projectNodeActivity(
   nodes: EnvironmentNode[],
   approvals: ApprovalRequest[],
   capabilityToNode: CapabilityNodeMap,
-): Map<string, NodeActivityPhase> {
+): NodeActivityProjection {
   const activity = new Map<string, NodeActivityPhase>();
+  const unattributed: UnattributedWork[] = [];
   const dag = mission?.execution?.dag;
-  if (!dag || !annotation) return activity;
+  if (!dag || !annotation) return { byNode: activity, unattributed };
+
+  /** taskId → the node the executor said did the work. */
+  const reportedNode = new Map<string, string>(
+    (mission?.taskRuns ?? []).flatMap((r) => (r.nodeId ? [[r.taskId, r.nodeId] as const] : [])),
+  );
 
   const bindingFor = new Map(annotation.bindings.map((b) => [b.taskId, b]));
 
@@ -264,14 +289,33 @@ export function projectNodeActivity(
     const binding = bindingFor.get(task.id);
     if (!binding) continue;
 
+    // Tier 1 — the executor named the node. Exact, and it ends the matter
+    // for this task: no capability-level fallback may widen it.
+    const reported = reportedNode.get(task.id);
+    if (reported) {
+      if (nodes.some((n) => n.id === reported)) mark(reported, phase);
+      continue;
+    }
+
     for (const capabilityId of binding.requires) {
       const nodeCapability = capabilityToNode.get(capabilityId);
       if (!nodeCapability) continue; // runs inside AURA — no node to light up
-      for (const provider of providersOf(nodeCapability)) mark(provider.id, phase);
+      const providers = providersOf(nodeCapability);
+      if (providers.length === 1) {
+        // Tier 2 — only one placed node can have done it.
+        mark(providers[0].id, phase);
+      } else if (providers.length > 1) {
+        unattributed.push({
+          taskId: task.id,
+          capabilityId,
+          candidates: providers.map((p) => p.id),
+          phase,
+        });
+      }
     }
   }
 
-  return activity;
+  return { byNode: activity, unattributed };
 }
 
 export const ACTIVITY_LABEL: Record<NodeActivityPhase, string> = {

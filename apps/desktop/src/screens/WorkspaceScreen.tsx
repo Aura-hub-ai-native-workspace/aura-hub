@@ -146,10 +146,11 @@ export function WorkspaceScreen() {
     [creation, active, annotation, missionApprovals],
   );
 
-  const activity = useMemo(
+  const projection = useMemo(
     () => projectNodeActivity(active, annotation, placedNodes, missionApprovals, capabilityToNode),
     [active, annotation, placedNodes, missionApprovals, capabilityToNode],
   );
+  const activity = projection.byNode;
 
   const missing = useMemo(
     () => missingNodesFor(annotation, placedNodes, capabilityToNode),
@@ -202,6 +203,7 @@ export function WorkspaceScreen() {
               progress={progress}
               mission={active}
               missing={missing}
+              unattributed={projection.unattributed}
               error={errorText}
               onSubmit={(text) => void createMission(text)}
               onApprove={() => void approve()}

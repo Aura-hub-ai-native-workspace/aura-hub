@@ -72,6 +72,16 @@ export interface RunTaskResult {
    * neither.
    */
   pending?: boolean;
+  /**
+   * The environment node that actually performed the work, when the
+   * executor could name one (e.g. `opencode`).
+   *
+   * Carried so activity can be attributed to the exact node rather than
+   * inferred from the capability. A capability like `agent.delegate` has
+   * six possible providers; without this the Workspace could only light
+   * all of them. Absent means "not attributable" — never a guess.
+   */
+  nodeId?: string;
 }
 
 export interface EngineHooks {
@@ -411,10 +421,20 @@ export class MissionExecutionEngine {
     const status: TaskStatus = result.status ?? (result.ok ? 'proposed' : 'error');
     const toPlan = new Map<string, { status: TaskStatus; mode?: TaskMode }>();
     toPlan.set(task.id, { status, mode: result.mode });
-    if (result.proposal) {
+    // A run record is written for a proposal OR for a task a node performed
+    // outright. Fabric-executed tasks produce no proposal, so keying this on
+    // `result.proposal` alone would silently discard the only record of
+    // which node did the work.
+    if (result.proposal || result.nodeId) {
       record.taskRuns = [
         ...record.taskRuns.filter((r) => r.taskId !== task.id),
-        { taskId: task.id, status, proposal: result.proposal, updatedAt: new Date().toISOString() },
+        {
+          taskId: task.id,
+          status,
+          proposal: result.proposal ?? null,
+          updatedAt: new Date().toISOString(),
+          ...(result.nodeId ? { nodeId: result.nodeId } : {}),
+        },
       ];
     }
 

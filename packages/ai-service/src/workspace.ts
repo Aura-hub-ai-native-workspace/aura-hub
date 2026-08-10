@@ -599,6 +599,12 @@ export class WorkspaceManager {
       approvedCapabilities,
     });
 
+    // The node that did the work, as the executor itself reported it.
+    // Read only from the executor's output — never inferred from the
+    // capability, which several nodes can provide.
+    const reported = (result.output as { nodeId?: unknown } | undefined)?.nodeId;
+    const nodeId = typeof reported === 'string' && reported ? reported : undefined;
+
     const attempted = result.attempts > 1 ? ` after ${result.attempts} attempts` : '';
     const verified = result.verification.passed === true ? ' Verified.'
       : result.verification.passed === null ? ` Not independently verifiable (${result.verification.detail}).`
@@ -606,13 +612,13 @@ export class WorkspaceManager {
 
     switch (result.outcome) {
       case 'succeeded':
-        return { ok: true, status: 'done', detail: `${result.detail}${verified}${attempted}` };
+        return { ok: true, status: 'done', detail: `${result.detail}${verified}${attempted}`, nodeId };
 
       // Ran but could not be shown to have done what it claimed. Treated as
       // a failure on purpose — an unverified effect the operator believes
       // succeeded is worse than one they know to re-check.
       case 'unverified':
-        return { ok: false, status: 'error', detail: result.detail };
+        return { ok: false, status: 'error', detail: result.detail, nodeId };
 
       case 'awaiting-approval':
         // `pending` keeps the task queued and still runnable, so granting
@@ -626,7 +632,9 @@ export class WorkspaceManager {
         return { ok: false, status: 'error', detail: result.detail };
 
       case 'failed':
-        return { ok: false, status: 'error', detail: `${result.detail}${attempted}` };
+        // A failed run is still attributable — the operator needs to know
+        // WHICH node failed, not merely that something did.
+        return { ok: false, status: 'error', detail: `${result.detail}${attempted}`, nodeId };
     }
   }
 

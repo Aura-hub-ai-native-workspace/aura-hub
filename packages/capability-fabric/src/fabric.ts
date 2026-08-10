@@ -503,9 +503,13 @@ export class CapabilityFabric {
       // exited non-zero did complete, and saying otherwise misdescribes
       // what the user needs to look at.
       const tried = attempts === 1 ? '' : ` after ${attempts} attempts`;
+      // The executor's own output is carried through on failure too. It is
+      // what distinguishes "timed out at 124, half-done" from "exited 1",
+      // and it names the node that failed — all of which the operator needs
+      // precisely when something went wrong.
       return this.settle(invocation, capability, 'failed',
         `${capability.name} did not succeed${tried}. ${last.detail}`,
-        NO_VERIFICATION, evaluation, started, startedAt, attempts);
+        NO_VERIFICATION, evaluation, started, startedAt, attempts, undefined, last.output);
     }
 
     /* 5. verify */
@@ -543,6 +547,16 @@ export class CapabilityFabric {
   }
 
   /* ── audit + result assembly ──────────────────────────────────── */
+
+  /**
+   * The node an executor reported doing the work, if it reported one.
+   * Deliberately narrow: only a string `nodeId` on the executor's own
+   * output counts, so nothing here can invent attribution.
+   */
+  private nodeIdOfOutput(output: unknown): string | undefined {
+    const id = (output as { nodeId?: unknown } | undefined)?.nodeId;
+    return typeof id === 'string' && id ? id : undefined;
+  }
 
   private settle(
     invocation: Invocation,
@@ -590,6 +604,10 @@ export class CapabilityFabric {
       verified: verification.passed,
       durationMs,
       inputSummary: capability ? summarizeInput(capability, invocation.input) : '(unknown capability)',
+      // Which node actually did the work, when the executor named one.
+      // Recorded from the executor's report only — never inferred — so the
+      // audit trail can answer "which agent touched this project?".
+      nodeId: this.nodeIdOfOutput(output),
     });
 
     this.emit({ type: 'invocation.completed', at: endedAt, result });

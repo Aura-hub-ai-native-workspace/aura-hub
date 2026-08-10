@@ -18,8 +18,10 @@
 
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { CATALOG } from '@aura/connected-environment';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
-import { git, parseCommand, safeShellWithCode } from '../exec/process';
+import { git, parseCommand, resolveAgentBinary, runAgent, safeShellWithCode } from '../exec/process';
+import { probeNode } from '../environment';
 import type { WorkspaceManager } from '../workspace';
 
 const MAX_READ_BYTES = 512 * 1024;
@@ -129,6 +131,135 @@ const terminalExecute: Executor = {
     return exit === 0
       ? pass('exit-code', 'The command exited 0.')
       : fail('exit-code', `The command exited ${exit ?? 'unknown'}.`);
+  },
+};
+
+/* ══════════════════════════════════════════════════════════════════
+   Coding agents
+   ══════════════════════════════════════════════════════════════════ */
+
+/**
+ * How to ask each agent to do one task and then exit.
+ *
+ * Only agents whose CLI has actually been run and checked appear here.
+ * Guessing a flag would produce the exact failure this file exists to
+ * avoid — a capability that reports success while nothing happened — so an
+ * installed agent with no verified entry is refused by name instead.
+ *
+ * `args` receives an already-confined absolute `cwd` and returns argv.
+ * The task text is always the LAST element and is never concatenated into
+ * a string, so it reaches `execFile` as a single opaque argument.
+ */
+interface AgentInvocation {
+  args: (task: string, cwd: string, model?: string) => string[];
+  verifiedAgainst: string;
+}
+
+const AGENT_INVOCATIONS: Record<string, AgentInvocation> = {
+  // `opencode run` is the documented non-interactive mode: it performs the
+  // work and exits, where the bare `opencode` command opens a TUI.
+  // `--dir` pins it to the project directory.
+  opencode: {
+    args: (task, cwd, model) => ['run', '--dir', cwd, ...(model ? ['--model', model] : []), task],
+    verifiedAgainst: 'OpenCode 1.18.16',
+  },
+};
+
+interface AgentTarget {
+  nodeId: string;
+  name: string;
+  bin: string;
+  invocation: AgentInvocation;
+}
+
+/**
+ * Find an installed coding agent, using the environment detection that
+ * already exists.
+ *
+ * The candidate set comes from the catalogue (`coding-agent`), presence
+ * comes from the same `probeNode` the Workspace shows the user, and the
+ * binary name comes from that entry's own probe. Nothing is hardcoded and
+ * nothing is taken from the caller, so this cannot be pointed at an
+ * arbitrary executable.
+ */
+async function resolveAgent(preferredNodeId?: string): Promise<{ target?: AgentTarget; reason: string }> {
+  const candidates = CATALOG.filter((e) => e.capabilities.includes('coding-agent') && !!e.probe);
+  const ordered = preferredNodeId
+    ? candidates.filter((e) => e.id === preferredNodeId)
+    : candidates;
+
+  if (preferredNodeId && ordered.length === 0) {
+    return { reason: `'${preferredNodeId}' is not a known coding-agent node.` };
+  }
+
+  const seen: string[] = [];
+  for (const entry of ordered) {
+    const bin = entry.probe!.command;
+    const invocation = AGENT_INVOCATIONS[bin];
+    // Refuse rather than improvise for an agent whose CLI we have not
+    // verified — see AGENT_INVOCATIONS.
+    if (!invocation) { seen.push(`${entry.name} (no verified invocation)`); continue; }
+    if (!resolveAgentBinary(bin).ok) { seen.push(`${entry.name} (not on the agent allow-list)`); continue; }
+
+    const probe = await probeNode(entry.id);
+    if (!probe.present) { seen.push(`${entry.name} (not installed)`); continue; }
+
+    return { target: { nodeId: entry.id, name: entry.name, bin, invocation }, reason: '' };
+  }
+  return {
+    reason: `No usable coding agent was found. Checked: ${seen.join(', ') || 'nothing in the catalogue'}.`,
+  };
+}
+
+const agentDelegate: Executor = {
+  capabilityId: 'agent.delegate',
+  async run(inv) {
+    // Confinement first: the agent runs in the project directory the
+    // server resolved from the registry, never one the caller supplied.
+    const cwd = cwdOf(inv);
+    const task = s(inv.input.task).trim();
+    if (!task) return no('No task was given for the agent to carry out.');
+    const model = s(inv.input.model).trim() || undefined;
+
+    // `nodeId` narrows which agent runs; it can never widen the set,
+    // because the candidates come from the catalogue either way.
+    const { target, reason } = await resolveAgent(s(inv.input.nodeId).trim() || undefined);
+    if (!target) return no(reason);
+
+    const args = target.invocation.args(task, cwd, model);
+    let res: Awaited<ReturnType<typeof runAgent>>;
+    try {
+      res = await runAgent(target.bin, args, { cwd, timeoutMs: inv.context.timeoutMs });
+    } catch (e) {
+      return no(`${target.name} could not be run: ${(e as Error).message}`);
+    }
+
+    // `nodeId` travels with the result so the work is attributable to the
+    // agent that did it rather than to "some coding agent".
+    const output = {
+      stdout: res.out,
+      exitCode: res.code,
+      nodeId: target.nodeId,
+      agent: target.name,
+      args,
+      timedOut: res.timedOut ?? false,
+      signal: res.signal,
+    };
+    if (res.code === 0) return ok(`${target.name} completed the task. Exit code 0.`, output);
+    // A run that was cut short is reported as cut short, not as a
+    // generic failure — the operator needs to know it may be half-done.
+    const why = res.timedOut
+      ? `${target.name} ran out of time and was stopped. Its changes, if any, are partial.`
+      : res.signal
+        ? `${target.name} was terminated by ${res.signal}.`
+        : `${target.name} exited ${res.code}.`;
+    return { ok: false, detail: `${why} ${res.out.slice(0, 400)}`.trim(), output };
+  },
+  async verify(_inv, result) {
+    const exit = (result.output as { exitCode?: number } | undefined)?.exitCode;
+    return exit === 0
+      ? pass('exit-code', 'The agent exited 0.')
+      : fail('exit-code', `The agent exited ${exit ?? 'unknown'}.`);
   },
 };
 
@@ -379,6 +510,7 @@ export function allExecutors(manager: WorkspaceManager): Executor[] {
   return [
     filesystemList, filesystemRead, filesystemWrite,
     terminalExecute,
+    agentDelegate,
     gitStatus, gitDiff, gitBranch, gitCommit, gitPush,
     httpRequest,
     ...internalExecutors(manager),

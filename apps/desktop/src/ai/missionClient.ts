@@ -101,7 +101,18 @@ export interface GoalGraph { goals: MissionGoal[]; tasks: MissionTask[] }
 
 /* ── Stage 6 — Execution ──────────────────────────────────────────── */
 export interface TaskProposal { explanation: string; newCode: string | null; error?: { type: string; message: string; retryable: boolean } }
-export interface MissionTaskRun { taskId: string; status: TaskStatus; proposal: TaskProposal | null; updatedAt: string }
+export interface MissionTaskRun {
+  taskId: string;
+  status: TaskStatus;
+  proposal: TaskProposal | null;
+  updatedAt: string;
+  /**
+   * The environment node that performed this task, as the executor
+   * reported it. Absent means the work is not attributable to a specific
+   * node — the Workspace says so rather than guessing.
+   */
+  nodeId?: string;
+}
 
 /* ── Stage 7 — Risk Analysis ──────────────────────────────────────── */
 export interface RiskAnalysis {

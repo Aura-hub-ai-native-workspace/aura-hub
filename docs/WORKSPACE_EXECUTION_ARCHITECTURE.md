@@ -605,6 +605,38 @@ gap.
 **21.7 — The package boundary is convention, not enforcement.** `capability-fabric` must not
 depend on `ai-service`; nothing in CI checks this.
 
+**21.9 — Node selection lives in the executor, not the Fabric.** `agent.delegate` picks which
+coding agent runs inside its own executor (`fabric/executors.ts` → `resolveAgent()`), by filtering
+the catalogue for `coding-agent` and probing for presence. The Fabric itself still has no concept
+of routing: `nodeAvailable()` (`ai-service/src/fabric/index.ts:53`) answers only the boolean
+question *"does some node provide this capability?"*, never *"run it via that node."*
+
+This works and is honest — the executor reports the node it used, and that `nodeId` now travels
+through `ExecutorResult.output` → `InvocationResult.output` → `AuditRecord.nodeId` →
+`RunTaskResult.nodeId` → `MissionTaskRun.nodeId` → the Workspace projection, so activity lands on
+the exact node. But the selection *policy* is per-executor, so a second node-bound capability
+would have to repeat it.
+
+**Promoting node routing into the invocation contract would require, in order:**
+
+1. `InvocationContext` gains an optional `nodeId` — the caller's *request* for a specific node,
+   distinct from the executor's *report* of which one ran.
+2. `FabricHost.nodeAvailable()` becomes `resolveNode(capability, context): NodeRef | null`,
+   returning the chosen node rather than a boolean. The `no-provider` policy floor keeps its
+   current meaning: `null` still denies.
+3. `Invocation` carries the resolved `NodeRef`, so an executor receives its node instead of
+   discovering it. `resolveAgent()` then collapses into a lookup of the argv builder.
+4. Every existing executor is unaffected: capabilities with no `requiresNodeCapability` resolve
+   to `null` and behave exactly as today. Only the four node-bound families (terminal, git, http,
+   agent) would gain a resolved node.
+5. Policy could then gate *per node* ("this agent may run, that one may not"), which is not
+   expressible today and is the main reason to do this at all.
+
+The reason not to do it now: step 2 changes a host interface that the whole Fabric depends on, and
+step 3 changes the shape every executor receives. That is a wide, mechanical change best made when
+a second node-bound agent capability actually needs it — not speculatively. Until then the debt is
+one function in one executor, and it is contained.
+
 **21.8 — Capability discovery is structural, not semantic.** Requirements are derived from
 `TaskKind`/`targetFile`/`mode` produced by the planner, not from understanding the prompt. A
 mission whose plan does not name a file will not discover that it needs Docker. Improving this

@@ -174,6 +174,41 @@ const LOCAL: CapabilityDescriptor[] = [
   }),
 
   cap({
+    id: 'agent.delegate', name: 'Delegate to coding agent', category: 'agent', surface: 'local-process',
+    description:
+      'Hands a task to a coding agent installed on this machine, which reads and edits files in the project root on its own. '
+      + 'Broad by nature: the agent decides which files to touch, so this is never auto-executed.',
+    // High is the honest reading: the blast radius is "whatever the agent
+    // decides to change". The default policy maps high → require-approval,
+    // so this needs no override to be gated.
+    risk: 'high', permissions: ['project.read', 'project.write', 'process.execute', 'network.outbound'],
+    input: [
+      f('task', 'string', true, 'What the agent should do, in plain language'),
+      f('model', 'string', false, 'Optional provider/model override, e.g. "anthropic/claude-sonnet-4"'),
+      // Narrows which installed agent runs. It can never widen the set:
+      // candidates always come from the catalogue, never from the caller.
+      f('nodeId', 'string', false, 'Which coding-agent node to use, e.g. "opencode"'),
+    ],
+    output: 'stdout + stderr, exit code',
+    verify: 'exit-code',
+    // The only real link to a node. Provided by cursor, claude-code,
+    // codex-cli, gemini-cli, qwen-cli and opencode — and by nothing else,
+    // which is what keeps activity attributable to the agent that ran.
+    requiresNodeCapability: 'coding-agent',
+    /**
+     * Irreversible *by the Fabric*, which is the precise claim this flag
+     * makes. `filesystem.write` touches one path the Fabric could read
+     * back and restore; an agent decides its own edit set across files
+     * nobody named in advance, so there is nothing here to undo it with.
+     *
+     * This also puts it behind the `irreversible-floor`, which no policy
+     * configuration can lower — so delegation stays gated even on a
+     * machine whose operator has set high risk to auto-execute.
+     */
+    irreversible: true,
+  }),
+
+  cap({
     id: 'git.status', name: 'Git status', category: 'git', surface: 'local-process',
     description: 'Working tree status of the project.',
     risk: 'low', permissions: ['project.read'],

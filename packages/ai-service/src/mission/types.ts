@@ -224,6 +224,13 @@ export interface MissionTaskRun {
   status: TaskStatus;
   proposal: TaskProposal | null;
   updatedAt: string;
+  /**
+   * The environment node that performed this task, when one can be named.
+   * Written only from an executor's own report — never inferred from the
+   * capability, because several nodes can provide the same one. Absent
+   * means the work is not attributable to a specific node.
+   */
+  nodeId?: string;
 }
 
 /* ── Stage 7 — Risk Analysis (deterministic) ──────────────────────── */

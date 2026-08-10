@@ -362,6 +362,13 @@ export interface AuditRecord {
   /** Redacted, bounded summary of the input. Never raw secrets. */
   inputSummary: string;
   /**
+   * The environment node that performed the work, when the executor named
+   * one. Several nodes can provide the same capability, so `capabilityId`
+   * alone cannot answer "which agent touched this project?" — this can.
+   * Absent means unattributable, never a guess.
+   */
+  nodeId?: string;
+  /**
    * Present only on records written for a **human authorization decision**
    * rather than an execution. `approvalId` above identifies which request
    * was decided; this says which way, and `decidedBy` says by whom.

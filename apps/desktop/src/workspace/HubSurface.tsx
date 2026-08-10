@@ -24,7 +24,7 @@ import { Icon } from '@aura/ui';
 import type { EnvironmentNode } from '@aura/connected-environment';
 import type { ProjectRecord } from '../ai/aiClient';
 import type { MissionRecord } from '../ai/missionClient';
-import type { HubPhase, HubProgress } from './hubPhase';
+import type { HubPhase, HubProgress, UnattributedWork } from './hubPhase';
 
 export interface HubReadiness {
   connected: number;
@@ -78,6 +78,7 @@ export function HubSurface({
   progress,
   mission,
   missing,
+  unattributed,
   error,
   onSubmit,
   onApprove,
@@ -94,6 +95,8 @@ export function HubSurface({
   mission: MissionRecord | null;
   /** Placed nodes a planned mission needs but cannot use, from real gaps. */
   missing: { node: EnvironmentNode; capabilityId: string }[];
+  /** In-flight work that could not be pinned to one node. Never guessed. */
+  unattributed: UnattributedWork[];
   error: string | null;
   onSubmit: (text: string) => void;
   onApprove: () => void;
@@ -246,6 +249,22 @@ export function HubSurface({
               </span>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Work in flight that no executor claimed. Shown as unknown rather
+          than lighting every candidate node, which would be a guess. */}
+      {unattributed.length > 0 && (
+        <div
+          data-testid="hub-unattributed"
+          className="mt-2 flex items-start gap-1.5 rounded-xl border border-line bg-surface-active px-2.5 py-1.5 text-[11px] text-text-muted"
+        >
+          <Icon name="dot" size={12} className="mt-px shrink-0" />
+          <span className="min-w-0">
+            {unattributed.length} task{unattributed.length === 1 ? '' : 's'} running on an
+            unidentified node — {unattributed[0].candidates.length} could have run{' '}
+            <span className="font-medium">{unattributed[0].capabilityId}</span>.
+          </span>
         </div>
       )}
 
