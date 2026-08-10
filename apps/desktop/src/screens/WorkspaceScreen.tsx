@@ -15,7 +15,7 @@
  * nodes: closing one never removes the capability, and the canvas stays
  * visible behind it.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { Icon } from '@aura/ui';
 import { useEnvironmentStore } from '../environment/environmentStore';
@@ -23,10 +23,22 @@ import { useWindowManager } from '../environment/windows/windowManager';
 import { FloatingSurface } from '../environment/windows/FloatingSurface';
 import { NodeInspector } from '../environment/NodeInspector';
 import { CATEGORY_ICON, STATUS_TONE, TONE_DOT } from '../environment/presentation';
+import { fabricClient, type MissionCapabilityAnnotation } from '../ai/fabricClient';
+import { useWorkspace } from '../data/useWorkspace';
+import { useMissions } from './missions/useMissions';
 import { HubCanvas } from '../workspace/HubCanvas';
 import { HubSurface, readinessOf } from '../workspace/HubSurface';
 import { AddNodeDialog } from '../workspace/AddNodeDialog';
+import {
+  buildCapabilityNodeMap,
+  deriveHubPhase,
+  missingNodesFor,
+  projectNodeActivity,
+  type CapabilityNodeMap,
+} from '../workspace/hubPhase';
 import { useHubStore } from '../workspace/hubStore';
+
+const HUB_PROJECT_KEY = 'aura.workspace.projectId';
 
 export function WorkspaceScreen() {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -42,24 +54,119 @@ export function WorkspaceScreen() {
   const scan = useEnvironmentStore((s) => s.scan);
   const openWindow = useWindowManager((s) => s.open);
 
+  /* ── Mission wiring ──────────────────────────────────────────────
+     Missions plan against real files, so they are project-scoped. The
+     Hub is global, so it remembers the last project the user *chose*
+     and never invents or creates one. */
+  const projects = useWorkspace((s) => s.projects);
+  const refreshProjects = useWorkspace((s) => s.refresh);
+  const [projectId, setProjectId] = useState<string | null>(
+    () => (typeof localStorage === 'undefined' ? null : localStorage.getItem(HUB_PROJECT_KEY)),
+  );
+
+  // The entire mission lifecycle, reused as-is. No second engine.
+  const m = useMissions(projectId);
+  const { active, creation, approvals, createMission, approve, startExecution, runBatch } = m;
+
+  const [annotation, setAnnotation] = useState<MissionCapabilityAnnotation | null>(null);
+  const [capabilityToNode, setCapabilityToNode] = useState<CapabilityNodeMap>(() => new Map());
+
+  useEffect(() => { void refreshProjects(); }, [refreshProjects]);
+
+  // The capability→node mapping, read from the running service so it can
+  // never disagree with the Fabric that will actually execute.
+  useEffect(() => {
+    let cancelled = false;
+    void fabricClient.capabilities()
+      .then((res) => { if (!cancelled) setCapabilityToNode(buildCapabilityNodeMap(res.capabilities)); })
+      .catch(() => { /* service unreachable — nodes simply show no activity */ });
+    return () => { cancelled = true; };
+  }, []);
+
   // Measure the machine once on arrival. Without this the canvas would
   // show every node as "Not scanned", which is honest but useless.
   useEffect(() => {
     if (!lastScanAt) void scan();
   }, [lastScanAt, scan]);
 
+  // A remembered project that no longer exists must not silently target
+  // a missing id — clear it and let the user choose again.
+  useEffect(() => {
+    if (projectId && projects.length > 0 && !projects.some((p) => p.id === projectId)) {
+      setProjectId(null);
+      localStorage.removeItem(HUB_PROJECT_KEY);
+    }
+  }, [projectId, projects]);
+
+  const selectProject = useCallback((id: string) => {
+    setProjectId(id || null);
+    setAnnotation(null);
+    if (id) localStorage.setItem(HUB_PROJECT_KEY, id);
+    else localStorage.removeItem(HUB_PROJECT_KEY);
+  }, []);
+
+  /* What the plan actually needs, read from the Fabric's existing
+     annotation route. Re-read whenever the plan changes. */
+  useEffect(() => {
+    if (!projectId || !active?.goalGraph) { setAnnotation(null); return; }
+    let cancelled = false;
+    void fabricClient.missionCapabilities(projectId, active.id).then((res) => {
+      if (cancelled) return;
+      setAnnotation('error' in res ? null : res);
+    }).catch(() => { if (!cancelled) setAnnotation(null); });
+    return () => { cancelled = true; };
+  }, [projectId, active?.id, active?.goalGraph]);
+
+  // Once execution is running, keep pulling waves so the canvas reflects
+  // real progress rather than a single frozen snapshot.
+  useEffect(() => {
+    if (active?.execution?.status === 'running' && !m.batchBusy) void runBatch();
+  }, [active?.execution?.status, active?.execution?.batchIndex, m.batchBusy, runBatch]);
+
   const canvasNodes = useMemo(
     () => placed.map((p) => ({ placed: p, node: envNodes.find((n) => n.id === p.nodeId) ?? null })),
     [placed, envNodes],
   );
 
+  const placedNodes = useMemo(
+    () => canvasNodes.map((c) => c.node).filter((n): n is NonNullable<typeof n> => !!n),
+    [canvasNodes],
+  );
+
+  /* The Fabric's approval queue is global. Only the requests raised by
+     THIS mission may speak for it — otherwise an unrelated mission's gate
+     would make the Hub claim this one is waiting on the user. */
+  const missionApprovals = useMemo(
+    () => (active ? approvals.filter((a) => a.missionId === active.id) : []),
+    [approvals, active],
+  );
+
+  const progress = useMemo(
+    () => deriveHubPhase(creation, active, annotation, missionApprovals),
+    [creation, active, annotation, missionApprovals],
+  );
+
+  const activity = useMemo(
+    () => projectNodeActivity(active, annotation, placedNodes, missionApprovals, capabilityToNode),
+    [active, annotation, placedNodes, missionApprovals, capabilityToNode],
+  );
+
+  const missing = useMemo(
+    () => missingNodesFor(annotation, placedNodes, capabilityToNode),
+    [annotation, placedNodes, capabilityToNode],
+  );
+
+  /* Both failure channels reach the user. `useMissions` reports action
+     failures through `error`, but a planning failure arrives as a stream
+     event and only lands in `creation.errorMessage` — without this, a
+     mission that could not be planned would show a phase and no reason. */
+  const errorText =
+    m.error ?? (creation.stage === 'error' ? creation.errorMessage : null) ?? active?.error ?? null;
+
   // Readiness reflects the nodes actually in this workspace, not all 110
   // catalogue entries — otherwise the count would describe a machine the
   // user never asked about.
-  const readiness = useMemo(
-    () => readinessOf(canvasNodes.map((c) => c.node).filter((n): n is NonNullable<typeof n> => !!n)),
-    [canvasNodes],
-  );
+  const readiness = useMemo(() => readinessOf(placedNodes), [placedNodes]);
 
   return (
     <div className="relative flex h-full min-h-full flex-col">
@@ -82,12 +189,23 @@ export function WorkspaceScreen() {
           nodes={canvasNodes}
           canvasRef={canvasRef}
           onInspect={openWindow}
+          activity={activity}
           hub={
             <HubSurface
               readiness={readiness}
               scanning={scanning}
               lastScanAt={lastScanAt}
               onScan={() => void scan(true)}
+              projects={projects}
+              projectId={projectId}
+              onSelectProject={selectProject}
+              progress={progress}
+              mission={active}
+              missing={missing}
+              error={errorText}
+              onSubmit={(text) => void createMission(text)}
+              onApprove={() => void approve()}
+              onStart={() => void startExecution()}
             />
           }
         />

@@ -222,8 +222,13 @@ async function main() {
   const surface = page.locator('[data-testid="hub-surface"]');
   await surface.waitFor({ timeout: 20000 }).catch(() => {});
   check('workspace screen renders the Hub surface', await surface.count() > 0);
-  check('Hub composer is honestly disabled this phase',
-    await page.locator('[data-testid="hub-composer"]').isDisabled());
+  // Phase 2 wired the composer to the real mission system, so it is live.
+  // What must still hold is that it refuses to guess a target: missions
+  // plan against real files, so no project means no submit.
+  // Mission behaviour itself is covered by scripts/hub-mission-verify.mjs.
+  check('Hub composer is live', !(await page.locator('[data-testid="hub-composer"]').isDisabled()));
+  check('Hub will not submit without a real project',
+    await page.locator('[data-testid="hub-submit"]').isDisabled());
 
   let chips = await readChips(page);
   const renderedIds = chips.map((c) => c.id).sort().join(',');

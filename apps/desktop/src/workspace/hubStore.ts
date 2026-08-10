@@ -52,7 +52,11 @@ export function radialPlacement(index: number, total: number): { x: number; y: n
   // the outer ring don't hide directly behind inner ones.
   const step = (Math.PI * 2) / Math.max(1, ringTotal);
   const angle = -Math.PI / 2 + inRing * step + (ring % 2 ? step / 2 : 0);
-  const radius = 0.26 + ring * 0.17;
+  // The first ring has to clear the Hub itself, which carries a composer,
+  // a project picker and its gates — roughly 380×340. Sized against the
+  // Hub's half-height rather than eyeballed, so nodes directly above and
+  // below it cannot overlap the thing they orbit.
+  const radius = 0.36 + ring * 0.15;
   return {
     x: HUB_CENTRE.x + Math.cos(angle) * radius,
     y: HUB_CENTRE.y + Math.sin(angle) * radius * 0.82, // canvases are wider than tall

@@ -20,6 +20,7 @@ import { cn } from '@aura/core';
 import { Icon } from '@aura/ui';
 import type { EnvironmentNode } from '@aura/connected-environment';
 import { CATEGORY_ICON, STATUS_LABEL, STATUS_TONE, TONE_DOT, TONE_TEXT } from '../environment/presentation';
+import { ACTIVITY_LABEL, type NodeActivityPhase } from './hubPhase';
 import { useHubStore, type PlacedNode } from './hubStore';
 
 /** Nodes whose capability is genuinely present get a solid edge. */
@@ -30,6 +31,7 @@ export function HubCanvas({
   canvasRef,
   onInspect,
   hub,
+  activity,
 }: {
   /** Placed nodes paired with their live measured state (null = catalogue miss). */
   nodes: { placed: PlacedNode; node: EnvironmentNode | null }[];
@@ -37,13 +39,19 @@ export function HubCanvas({
   onInspect: (nodeId: string) => void;
   /** The Hub surface, rendered at the centre of the canvas. */
   hub: React.ReactNode;
+  /**
+   * Live execution phase per node, projected from the running mission.
+   * Empty whenever nothing is executing — a node is never animated
+   * without a real in-flight task behind it.
+   */
+  activity: Map<string, NodeActivityPhase>;
 }) {
   // The ref is owned and attached by the screen (matching how the
   // Connected Environment does it); this component only reads it for drag
   // maths, so it must not attach it a second time.
   return (
     <div className="absolute inset-0 overflow-hidden">
-      <EdgeLayer nodes={nodes} />
+      <EdgeLayer nodes={nodes} activity={activity} />
 
       {/* Hub — centred, above the edges. */}
       <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
@@ -56,6 +64,7 @@ export function HubCanvas({
           placed={placed}
           node={node}
           canvasRef={canvasRef}
+          activity={activity.get(placed.nodeId) ?? 'idle'}
           onInspect={() => onInspect(placed.nodeId)}
         />
       ))}
@@ -67,11 +76,18 @@ export function HubCanvas({
  * The connector lines. Drawn in a single SVG beneath the nodes so an edge
  * can never sit on top of the thing it connects.
  */
-function EdgeLayer({ nodes }: { nodes: { placed: PlacedNode; node: EnvironmentNode | null }[] }) {
+function EdgeLayer({
+  nodes,
+  activity,
+}: {
+  nodes: { placed: PlacedNode; node: EnvironmentNode | null }[];
+  activity: Map<string, NodeActivityPhase>;
+}) {
   return (
     <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
       {nodes.map(({ placed, node }) => {
         const live = node ? LIVE_STATUSES.has(node.health.status) : false;
+        const busy = (activity.get(placed.nodeId) ?? 'idle') !== 'idle';
         return (
           <line
             key={placed.nodeId}
@@ -80,8 +96,8 @@ function EdgeLayer({ nodes }: { nodes: { placed: PlacedNode; node: EnvironmentNo
             x2={`${placed.x * 100}%`}
             y2={`${placed.y * 100}%`}
             stroke="currentColor"
-            className={live ? 'text-accent/35' : 'text-line'}
-            strokeWidth={live ? 1.5 : 1}
+            className={busy ? 'text-accent' : live ? 'text-accent/35' : 'text-line'}
+            strokeWidth={busy ? 2 : live ? 1.5 : 1}
             // A capability that isn't actually there gets a broken line —
             // the connection is catalogued, not established.
             strokeDasharray={live ? undefined : '4 5'}
@@ -96,11 +112,13 @@ function NodeChip({
   placed,
   node,
   canvasRef,
+  activity,
   onInspect,
 }: {
   placed: PlacedNode;
   node: EnvironmentNode | null;
   canvasRef: RefObject<HTMLDivElement | null>;
+  activity: NodeActivityPhase;
   onInspect: () => void;
 }) {
   const move = useHubStore((s) => s.move);
@@ -167,20 +185,35 @@ function NodeChip({
         data-testid="hub-node"
         data-node-id={placed.nodeId}
         data-status={status}
+        data-activity={activity}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        title={`${name} — ${STATUS_LABEL[status]}`}
-        className="group flex w-[132px] cursor-grab flex-col items-center gap-1.5 rounded-2xl border border-line bg-surface/95 px-3 py-2.5 shadow-sm backdrop-blur-sm transition-colors hover:border-line-strong active:cursor-grabbing"
+        title={`${name} — ${STATUS_LABEL[status]}${activity === 'idle' ? '' : ` · ${ACTIVITY_LABEL[activity]}`}`}
+        className={cn(
+          'group flex w-[132px] cursor-grab flex-col items-center gap-1.5 rounded-2xl border bg-surface/95 px-3 py-2.5 shadow-sm backdrop-blur-sm transition-colors hover:border-line-strong active:cursor-grabbing',
+          activity === 'idle' ? 'border-line' : 'border-accent',
+        )}
       >
-        <span className="grid h-9 w-9 place-items-center rounded-xl bg-surface-active text-text-muted">
+        <span className="relative grid h-9 w-9 place-items-center rounded-xl bg-surface-active text-text-muted">
           <Icon name={node ? CATEGORY_ICON[node.entry.category] : 'dot'} size={17} />
+          {/* Pulses only while a real task is in flight on this node. */}
+          {activity === 'running' && (
+            <span className="absolute -inset-1 animate-ping rounded-xl border border-accent/40" />
+          )}
         </span>
         <span className="w-full truncate text-center text-[12px] font-medium text-text">{name}</span>
         <span className={cn('flex items-center gap-1.5 text-[10px]', TONE_TEXT[tone])}>
           <span className={cn('h-1.5 w-1.5 rounded-full', TONE_DOT[tone])} />
           {STATUS_LABEL[status]}
         </span>
+        {/* Axis B, shown alongside status rather than replacing it: a node
+            is `status × phase`, never one masquerading as the other. */}
+        {activity !== 'idle' && (
+          <span className="w-full truncate text-center text-[9.5px] font-medium text-accent">
+            {ACTIVITY_LABEL[activity]}
+          </span>
+        )}
         {node?.health.version && (
           <span className="w-full truncate text-center font-mono text-[9.5px] text-text-subtle">
             {node.health.version}

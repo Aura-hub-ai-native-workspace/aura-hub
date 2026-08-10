@@ -47,6 +47,27 @@ export interface ApprovalRequest {
   target?: string;
 }
 
+/**
+ * One capability as the *running service* describes it. Only the fields
+ * the desktop actually reads are typed here — notably
+ * `requiresNodeCapability`, which is the sole real link between a Fabric
+ * capability and a Connected Environment node.
+ */
+export interface CapabilityDescriptorView {
+  id: string;
+  name: string;
+  risk: RiskLevel;
+  supported: boolean;
+  requiresNodeCapability?: string;
+}
+
+export interface CapabilityCatalogue {
+  capabilities: CapabilityDescriptorView[];
+  supportedCount: number;
+  providedNodeCapabilities: string[];
+  policy: PolicyConfig;
+}
+
 export interface PolicyConfig {
   byRisk: Record<RiskLevel, PolicyDecision>;
   overrides: Record<string, PolicyDecision>;
@@ -60,6 +81,37 @@ export interface DecideResult {
   ok?: boolean;
   error?: string;
   detail?: string;
+}
+
+/* ── Mission capability annotation ────────────────────────────────── */
+
+/** One task's capability projection. Mirrors `CapabilityBinding`. */
+export interface CapabilityBinding {
+  taskId: string;
+  requires: string[];
+  rationale: string;
+  risk: RiskLevel;
+  unsupported: string[];
+}
+
+/** A required capability with nothing behind it. Mirrors `CapabilityGap`. */
+export interface CapabilityGap {
+  capabilityId: string;
+  reason: string;
+  taskIds: string[];
+}
+
+/**
+ * The additive annotation over a finished plan. Derived on demand by the
+ * service and never persisted onto the `MissionRecord` — which is exactly
+ * why this is a read, not a second store.
+ */
+export interface MissionCapabilityAnnotation {
+  assumptions: string[];
+  openQuestions: string[];
+  requiredCapabilities: string[];
+  bindings: CapabilityBinding[];
+  gaps: CapabilityGap[];
 }
 
 export const fabricClient = {
@@ -84,6 +136,22 @@ export const fabricClient = {
   policy: (): Promise<{ policy: PolicyConfig }> =>
     fetch(`${BASE}/fabric/capabilities`).then((r) => r.json()),
 
+  /**
+   * The full manifest as the running service holds it, including each
+   * capability's `requiresNodeCapability`.
+   *
+   * Read over HTTP rather than by importing `@aura/capability-fabric`:
+   * the desktop has never depended on that package, and a compile-time
+   * copy of the manifest could disagree with the service actually
+   * answering — which is exactly the kind of confident-but-wrong state
+   * this architecture avoids.
+   */
+  capabilities: (): Promise<CapabilityCatalogue> =>
+    fetch(`${BASE}/fabric/capabilities`).then(async (r) => {
+      if (!r.ok) throw new Error(`Capability catalogue failed (${r.status})`);
+      return r.json();
+    }),
+
   setPolicy: (patch: Partial<PolicyConfig>): Promise<{ policy: PolicyConfig; file: string }> =>
     fetch(`${BASE}/fabric/policy`, {
       method: 'POST',
@@ -93,4 +161,18 @@ export const fabricClient = {
 
   audit: (): Promise<{ audit: unknown[] }> =>
     fetch(`${BASE}/fabric/audit`).then((r) => r.json()),
+
+  /**
+   * What a planned mission will actually need, and what is missing.
+   *
+   * This route already existed and had no client: the service computes it
+   * with `annotateMissionCapabilities()` over the stored plan. Reading it
+   * is how the Hub can say "Docker is required but isn't installed"
+   * without inferring anything of its own.
+   */
+  missionCapabilities: (
+    projectId: string,
+    missionId: string,
+  ): Promise<MissionCapabilityAnnotation | { error: string }> =>
+    fetch(`${BASE}/fabric/mission/${projectId}/${missionId}`).then((r) => r.json()),
 };
