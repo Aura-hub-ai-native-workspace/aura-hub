@@ -43,6 +43,9 @@ interface AppState {
    *  and the command palette's "Add Project" command, so both trigger the
    *  same dialog instance instead of each owning a local copy. */
   addProjectDialogOpen: boolean;
+  /** "Create project" dialog open state — a frontend-only scaffold flow,
+   *  kept separate from "Add project" (which registers a real folder). */
+  createProjectDialogOpen: boolean;
   /** Whether the boot/intro sequence has finished. */
   booted: boolean;
   /** Whether the first-run onboarding experience has been completed. */
@@ -68,6 +71,8 @@ interface AppState {
   toggleTheme: () => void;
   openAddProjectDialog: () => void;
   closeAddProjectDialog: () => void;
+  openCreateProjectDialog: () => void;
+  closeCreateProjectDialog: () => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -78,6 +83,7 @@ export const useAppStore = create<AppState>((set) => ({
   rightPanelOpen: false,
   paletteOpen: false,
   addProjectDialogOpen: false,
+  createProjectDialogOpen: false,
   booted: false,
   onboarded: initialOnboarded(),
   recentCommandIds: [],
@@ -103,6 +109,8 @@ export const useAppStore = create<AppState>((set) => ({
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   openAddProjectDialog: () => set({ addProjectDialogOpen: true }),
   closeAddProjectDialog: () => set({ addProjectDialogOpen: false }),
+  openCreateProjectDialog: () => set({ createProjectDialogOpen: true }),
+  closeCreateProjectDialog: () => set({ createProjectDialogOpen: false }),
   toggleTheme: () =>
     set((s) => {
       const theme = s.theme === 'light' ? 'dark' : 'light';
