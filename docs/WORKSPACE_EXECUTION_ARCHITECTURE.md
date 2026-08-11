@@ -817,6 +817,97 @@ change to the escalate-only invariant, and should not be smuggled in as a node r
 
 ---
 
+## 24. Desktop packaging (Tauri)
+
+### 24.1 Why Tauri and not a second shell
+
+The packaging milestone was briefed as "package AURA Hub as an Electron application". The
+repository already had a **working Tauri v2 shell** — `apps/desktop/src-tauri` with five
+`#[tauri::command]`s, a path-confinement guard (`resolve_within_root`), a capability ACL,
+icons and bundle configuration; the renderer calls it through `fsClient.ts`, and the service's
+CORS allowlist already trusts `tauri://localhost`.
+
+Introducing Electron would therefore have created a **second desktop application
+architecture** — the thing this document exists to prevent — and would have required
+reimplementing security-critical filesystem confinement in Node and widening the service's
+origin allowlist. The decision, taken explicitly rather than by default, was to complete the
+existing shell. Every functional requirement of the brief (self-starting service, health
+gating, port safety, `~/.aura` state, Linux packaging) is framework-neutral and is met below.
+
+### 24.2 What the shell owns
+
+    launch
+      ↓  identify port 4319
+      ├─ AURA already there ────────────→ reuse (do not supervise)
+      ├─ something else there ──────────→ refuse, with the reason
+      └─ free
+           ↓  resolve Node + packaged ai-service.mjs
+           ↓  spawn with seeded PATH, AURA_HOME, AI_PORT
+           ↓  poll /health until AURA answers  (never "spawned == ready")
+           ↓  show window
+           ↓  ...
+           ↓  SIGTERM on exit → wait → SIGKILL fallback
+
+`service.rs` owns this and nothing else. It is not an execution path: the only process the
+desktop shell ever starts is AURA's own service, running a resolved Node interpreter. Tool
+execution continues to travel the governed path (Fabric → policy → approval → audit), and the
+shell adds no way around it.
+
+### 24.3 Identifying the port, not assuming it
+
+Port 4319 being open is not evidence that AURA is behind it. The shell fingerprints it on two
+endpoints — `/health` answering in AURA's shape **and** `/fabric/capabilities` returning both a
+capability catalogue and a policy — before reusing anything. Anything else is reported as
+occupied and left strictly alone: AURA never kills the owner of a port it did not open.
+
+### 24.4 PATH is a correctness concern, not a convenience
+
+`environment.ts` probes every external tool with `execFile(probe.command, …)`, which resolves
+through the **inherited PATH**. A desktop launcher gives a GUI process a minimal PATH, so a
+naively packaged AURA would report OpenCode, cargo, go and everything else in a user bin
+directory as "not installed" — a confident, wrong answer.
+
+The shell therefore seeds the service's PATH: inherited PATH first (a developer's shell wins),
+then the resolved interpreter's directory, then the conventional user tool directories
+(`~/.local/bin`, `~/.opencode/bin`, `~/.cargo/bin`, …). `packaging-verify` launches the app
+with `PATH=/usr/bin:/bin` specifically to prove this works.
+
+### 24.5 Node is required, not bundled
+
+The application does not ship a Node runtime. AURA already treats `node` as an external
+execution node — it is in the catalogue and in `SAFE_BINARIES` — so requiring the real one is
+consistent with how every other tool is handled, and bundling a second copy would mean the app
+runs on a different Node than the one it reports detecting. The `.deb` declares a `nodejs`
+dependency; a missing interpreter produces a clear message, not a silent failure.
+
+### 24.6 User state
+
+`persist.ts` already resolved `AURA_HOME || ~/.aura`, so state was never inside the
+application. The shell reinforces this: the service is started with `AURA_HOME` set and its
+working directory set to that home (never the installed tree, which may be read-only), and its
+log is written to `~/.aura/logs/ai-service.log`.
+
+### 24.7 Development is unchanged
+
+`npm run dev` and `npm run ai` work exactly as before. `npm run desktop:dev` runs the shell
+against the Vite dev server; because a compatible service is *reused*, a developer already
+running `npm run ai` keeps ownership of it and quitting the app does not kill it.
+
+### 24.8 Known limitations
+
+1. **Linux only.** `bundle.targets` is `["appimage", "deb"]`. Windows and macOS were out of
+   scope and are not configured; no cross-platform claim is made.
+2. **Node must be installed.** See §24.5. This is a deliberate architectural choice, but it
+   does mean the AppImage is not fully self-contained.
+3. **The port is fixed at 4319.** The renderer bakes the base URL in at build time
+   (`aiClient.ts`), so the shell cannot fall back to a different port without the UI
+   following — it reports the conflict instead of silently relocating.
+4. **A failed start still opens a window.** The window is shown even when the service could
+   not start, carrying the reason via `service_status`, because a permanently invisible
+   application would be the least honest outcome. There is no dedicated failure screen yet.
+
+---
+
 ## Proof obligation
 
 Before this reconstruction is called complete, the branch must show:
