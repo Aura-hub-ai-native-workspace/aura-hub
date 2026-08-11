@@ -363,11 +363,33 @@ export class CapabilityFabric {
   evaluate(capabilityId: string, context: InvocationContext): PolicyEvaluation | null {
     const capability = describeFabricCapability(capabilityId);
     if (!capability) return null;
+
+    // Resolve the node here too. A pre-flight check that ignored routing
+    // would tell the mission engine "this will run" for a node the real
+    // invocation is about to refuse — the two must agree.
+    const executor = this.executors.get(capabilityId);
+    const resolution: NodeResolution = this.host.resolveNode
+      ? this.host.resolveNode(
+          capability, context,
+          executor?.supportsNode ? (node) => executor.supportsNode!(node) : undefined,
+        )
+      : { ok: true };
+
+    if (!resolution.ok) {
+      return { decision: 'deny', rule: resolution.code, risk: capability.risk, reason: resolution.reason };
+    }
+
     return evaluatePolicy({
       capability,
       config: this.policy,
       granted: grantsFor(this.host.permissionsFor(capability, context)),
-      nodeAvailable: this.host.nodeAvailable(capability),
+      nodeAvailable: this.host.resolveNode
+        ? (capability.requiresNodeCapability ? !!resolution.node : null)
+        : this.host.nodeAvailable(capability),
+      subject: this.subjectFor(
+        { id: '', capabilityId, input: {}, context, requestedAt: '' },
+        resolution.node,
+      ),
     });
   }
 
@@ -440,6 +462,7 @@ export class CapabilityFabric {
       nodeAvailable: this.host.resolveNode
         ? (capability.requiresNodeCapability ? !!resolution.node : null)
         : this.host.nodeAvailable(capability),
+      subject: this.subjectFor(invocation, resolution.node),
     });
 
     if (evaluation.decision === 'deny') {
@@ -601,6 +624,24 @@ export class CapabilityFabric {
   /* ── audit + result assembly ──────────────────────────────────── */
 
   /**
+   * Node identity plus correlation keys for the policy engine.
+   *
+   * Only identity travels — not the whole `NodeRef` — so policy never ends
+   * up holding a second copy of catalogue metadata.
+   */
+  private subjectFor(invocation: Invocation, node?: NodeRef) {
+    return {
+      node: node ? { id: node.id, name: node.name } : undefined,
+      requestedNodeId: invocation.context.nodeId,
+      actorKind: invocation.context.actor.kind,
+      actorId: invocation.context.actor.id,
+      projectId: invocation.context.projectId,
+      missionId: invocation.context.missionId,
+      taskId: invocation.context.taskId,
+    };
+  }
+
+  /**
    * The node an executor reported doing the work, if it reported one.
    * Deliberately narrow: only a string `nodeId` on the executor's own
    * output counts, so nothing here can invent attribution.
@@ -608,6 +649,16 @@ export class CapabilityFabric {
   private nodeIdOfOutput(output: unknown): string | undefined {
     const id = (output as { nodeId?: unknown } | undefined)?.nodeId;
     return typeof id === 'string' && id ? id : undefined;
+  }
+
+  /**
+   * The node work actually ran on, or `undefined` when nothing ran.
+   *
+   * Prefers the executor's own report; falls back to the resolved node
+   * only once an executor was genuinely invoked. Never guesses.
+   */
+  private executedNodeId(invocation: Invocation, attempts: number, output: unknown): string | undefined {
+    return this.nodeIdOfOutput(output) ?? (attempts > 0 ? invocation.node?.id : undefined);
   }
 
   private settle(
@@ -659,9 +710,15 @@ export class CapabilityFabric {
       // Routing is recorded in full: what was asked for, what the Fabric
       // chose, and what actually ran. Collapsing these would hide a
       // substitution — the one thing routing must never do quietly.
-      nodeId: this.nodeIdOfOutput(output) ?? invocation.node?.id,
+      //
+      // `executedNodeId` means EXECUTED, not resolved. A call denied by
+      // policy resolves a node and then never runs on it, so falling back
+      // to `invocation.node` there would have the audit assert execution
+      // that did not happen. `attempts > 0` is the honest gate: every
+      // non-executing exit settles with zero attempts.
+      nodeId: this.executedNodeId(invocation, attempts, output),
       requestedNodeId: invocation.context.nodeId,
-      executedNodeId: this.nodeIdOfOutput(output) ?? invocation.node?.id,
+      executedNodeId: this.executedNodeId(invocation, attempts, output),
     });
 
     this.emit({ type: 'invocation.completed', at: endedAt, result });

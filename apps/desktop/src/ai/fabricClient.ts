@@ -71,6 +71,14 @@ export interface CapabilityCatalogue {
 export interface PolicyConfig {
   byRisk: Record<RiskLevel, PolicyDecision>;
   overrides: Record<string, PolicyDecision>;
+  /**
+   * Per-node rules, keyed `"@<nodeId>"` or `"<capabilityId>@<nodeId>"`.
+   * Deny-only in effect: these can exclude a node, never lower what
+   * acting through it costs.
+   */
+  nodeOverrides?: Record<string, PolicyDecision>;
+  /** capability id → node ids permitted to perform it. */
+  nodeAllowlists?: Record<string, string[]>;
   allowAutonomous: boolean;
 }
 

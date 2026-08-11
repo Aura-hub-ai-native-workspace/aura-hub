@@ -273,9 +273,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         if (method === 'POST' && seg[1] === 'policy') {
           const b = await readJson(req);
           const current = fabric.getPolicy();
+          // Field-by-field on purpose: this merge is an allow-list, so an
+          // unknown key in the request body can never reach the policy.
+          // Anything genuinely new must be added here deliberately.
           const merged = {
             byRisk: (b.byRisk as typeof current.byRisk) ?? current.byRisk,
             overrides: (b.overrides as typeof current.overrides) ?? current.overrides,
+            nodeOverrides: (b.nodeOverrides as typeof current.nodeOverrides) ?? current.nodeOverrides,
+            nodeAllowlists: (b.nodeAllowlists as typeof current.nodeAllowlists) ?? current.nodeAllowlists,
             allowAutonomous: typeof b.allowAutonomous === 'boolean' ? b.allowAutonomous : current.allowAutonomous,
           };
           const saved = savePolicy(merged);

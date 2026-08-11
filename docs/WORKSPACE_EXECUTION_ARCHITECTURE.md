@@ -728,6 +728,95 @@ preserves current behaviour end to end.
 
 ---
 
+## 23. Per-node governance (extends §22)
+
+### 23.1 The audit finding that shapes this
+
+The existing engine is **monotonically escalate-only**. Every configurable layer is folded with
+`stricter()` (`policy.ts:102`), and the file states the guarantee outright: *"A configuration
+mistake can make the Fabric more cautious than intended. It cannot make it less cautious than the
+hard floors."*
+
+The precedence sketched in the brief — floors → node deny → **node allow** → capability policy →
+risk — cannot be implemented as written. "Node allow overriding capability policy" is a *weakening*:
+it would let a node rule lower `require-approval` to `auto-execute`. That breaks the engine's
+central invariant and directly contradicts the brief's own Phase 4 (*"Node policy says 'OpenCode
+allowed' must NOT mean 'OpenCode may execute without approval'"*).
+
+Both cannot hold. The invariant wins, because it is the security argument of the whole Fabric.
+
+### 23.2 What "allow" therefore means
+
+Node policy is **admission control**, not a fast path:
+
+- **deny** — this node may not perform this capability. Escalates to `deny`. Fully expressible.
+- **allow** — this node is *not excluded*. Contributes **no** escalation, and therefore never
+  lowers an existing requirement. `agent.delegate` on OpenCode still hits the irreversible floor
+  and still requires approval.
+
+So node identity can *restrict* who may act, never *relax* what acting costs. Node authorization
+and execution authorization stay separate, exactly as Phase 4 demands.
+
+### 23.3 Configuration
+
+Two additions to the existing `PolicyConfig` — no second policy store, no new engine:
+
+```ts
+nodeOverrides?: Record<string, PolicyDecision>  // "@<nodeId>" | "<capabilityId>@<nodeId>"
+nodeAllowlists?: Record<string, string[]>       // capabilityId → node ids permitted
+```
+
+`nodeAllowlists` is how *"unknown/untrusted node → denied"* is expressed: absent means no
+allowlist and current behaviour is unchanged; present means a resolved node outside the list is
+denied. Both are sanitized by the existing `sanitizePolicy`, which treats the file as hostile.
+
+### 23.4 Evaluation order (actual, not assumed)
+
+**One control-flow change was required, and it strengthens the model.** The three
+`require-approval` floors used to `return` immediately, which made them a *ceiling* as well as a
+floor: nothing could be stricter than "needs approval", so a rule denying a specific node could not
+be expressed for precisely the capabilities where it matters most — the irreversible ones. They now
+**seed** the decision instead. Because every layer below folds with `stricter()`, no configuration
+can go beneath a floor, while a denial can still rise above one. The two `deny` floors
+(`no-provider`, `permission-denied`) still return early, since nothing can exceed `deny`.
+
+A candidate claims the reported `rule` only when it escalates, or when it restates the current
+level from a more specific position. A weaker candidate changes nothing and must not relabel a
+floor it never overcame.
+
+Within the configurable layers, candidates are folded least-specific to most-specific through
+`stricter()`:
+
+```
+risk default → capability override → node-wide (@node) → capability@node → allowlist → autonomy
+```
+
+More specific wins **in the only direction the model permits**: it can escalate, and when two
+candidates are equally strict the more specific one supplies the reported rule name. So a node rule
+"overrides" a capability rule by being stricter, never by being laxer.
+
+### 23.5 Policy input
+
+`PolicyInput` gains the resolved node — **identity only** (`{ id, name }`), not the whole
+`NodeRef`, so catalogue metadata is not duplicated into policy. Actor, project, mission, task and
+the *requested* node id are threaded through as context for transparency and future rules; §23.7
+records honestly that no rule keys off them yet.
+
+### 23.6 Transparency
+
+Every decision already carries `rule` and `reason`. Node rules extend that vocabulary with
+`node-denied:<id>`, `node-override:<capability>@<id>` and `node-not-allowlisted:<capability>`, each
+with a sentence naming the node and the reason. Reasons name ids and capability names only — never
+policy file contents or credentials.
+
+### 23.7 Limits
+
+Node policy is deny-only by construction (23.2). A future "trusted node runs with less friction"
+feature is **not** reachable by extending this; it would require a deliberate, separately reviewed
+change to the escalate-only invariant, and should not be smuggled in as a node rule.
+
+---
+
 ## Proof obligation
 
 Before this reconstruction is called complete, the branch must show:

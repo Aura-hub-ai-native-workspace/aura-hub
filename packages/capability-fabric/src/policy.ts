@@ -83,12 +83,29 @@ export function sanitizePolicy(raw: unknown): PolicyConfig {
   // Absent means "never configured" → the shipped default. Present but not
   // a boolean means a corrupt or tampered file, and the safe reading of a
   // damaged autonomy setting is the cautious one, not the permissive one.
+  // Node rules get the same hostile-input treatment: an unrecognised
+  // decision is dropped rather than carried into the engine, and a
+  // malformed allowlist becomes an EMPTY list, not a missing one — a
+  // corrupt allowlist must fail closed (deny everything) rather than open.
+  const nodeOverrides: Record<string, PolicyDecision> = {};
+  for (const [key, v] of Object.entries((input.nodeOverrides ?? {}) as Record<string, unknown>)) {
+    if (typeof key === 'string' && key.includes('@') && isDecision(v)) nodeOverrides[key] = v;
+  }
+
+  const nodeAllowlists: Record<string, string[]> = {};
+  for (const [capabilityId, v] of Object.entries((input.nodeAllowlists ?? {}) as Record<string, unknown>)) {
+    if (typeof capabilityId !== 'string' || !capabilityId) continue;
+    nodeAllowlists[capabilityId] = Array.isArray(v)
+      ? v.filter((x): x is string => typeof x === 'string' && !!x)
+      : [];
+  }
+
   const rawAutonomy = (input as Record<string, unknown>).allowAutonomous;
   const allowAutonomous = rawAutonomy === undefined
     ? DEFAULT_POLICY.allowAutonomous
     : typeof rawAutonomy === 'boolean' ? rawAutonomy : false;
 
-  return { byRisk, overrides, allowAutonomous };
+  return { byRisk, overrides, nodeOverrides, nodeAllowlists, allowAutonomous };
 }
 
 const RANK: Record<PolicyDecision, number> = {
@@ -101,6 +118,27 @@ const RANK: Record<PolicyDecision, number> = {
 /** The stricter of two decisions. Policy only ever escalates. */
 function stricter(a: PolicyDecision, b: PolicyDecision): PolicyDecision {
   return RANK[a] >= RANK[b] ? a : b;
+}
+
+/**
+ * Who and what a decision is about, beyond the capability itself.
+ *
+ * Only `node` is consulted by a rule today (§23.5). The rest is threaded
+ * through for the audit trail and for rules that may key off it later;
+ * saying so plainly is better than implying a governance surface that
+ * does not exist yet.
+ */
+export interface PolicySubject {
+  /** The node that will actually perform this. Identity only — not the
+   *  whole `NodeRef`, so catalogue metadata is not duplicated here. */
+  node?: { id: string; name: string };
+  /** What the caller asked for, when they named a node. */
+  requestedNodeId?: string;
+  actorKind?: string;
+  actorId?: string;
+  projectId?: string | null;
+  missionId?: string;
+  taskId?: string;
 }
 
 export interface PolicyInput {
@@ -116,6 +154,8 @@ export interface PolicyInput {
    * by a connected node. `null` when the capability needs none.
    */
   nodeAvailable: boolean | null;
+  /** Node identity and correlation keys. Absent for node-free calls. */
+  subject?: PolicySubject;
 }
 
 export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
@@ -150,53 +190,98 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
     };
   }
 
+  /**
+   * The `require-approval` floors are a LOWER BOUND, not a final answer.
+   *
+   * They used to return immediately, which made them a ceiling as well as
+   * a floor: nothing could ever be *stricter* than "needs approval", so a
+   * rule denying a specific node could not be expressed for exactly the
+   * capabilities where it matters most — the irreversible ones.
+   *
+   * Seeding the decision instead keeps the guarantee intact, because every
+   * layer below folds with `stricter()` and can only escalate. No
+   * configuration can go beneath a floor; a denial can still rise above
+   * one.
+   */
+  let decision: PolicyDecision = config.byRisk[risk];
+  let rule = `risk-default:${risk}`;
+  let reason = '';
+
+  const floor = (name: string, why: string) => {
+    decision = stricter(decision, 'require-approval');
+    rule = name;
+    reason = why;
+  };
+
   if (capability.irreversible) {
     // An action the Fabric cannot undo is never silent, no matter how the
     // policy is configured. This is the floor that makes "autonomous" safe
     // to switch on at all.
-    return {
-      decision: 'require-approval',
-      rule: 'irreversible-floor',
-      risk,
-      reason: `${capability.name} cannot be undone from here, so it always needs your explicit go-ahead.`,
-    };
+    floor('irreversible-floor',
+      `${capability.name} cannot be undone from here, so it always needs your explicit go-ahead.`);
+  } else if (capability.permissions.includes('resource.destroy')) {
+    floor('destructive-floor', `${capability.name} destroys something. That is always your call.`);
+  } else if (capability.permissions.includes('account.authorize')) {
+    floor('authorization-floor',
+      `${capability.name} acts against your account, so you authorize it yourself.`);
   }
 
-  if (capability.permissions.includes('resource.destroy')) {
-    return {
-      decision: 'require-approval',
-      rule: 'destructive-floor',
-      risk,
-      reason: `${capability.name} destroys something. That is always your call.`,
-    };
-  }
+  /* 2–6. Configurable layers, each only able to escalate. */
 
-  if (capability.permissions.includes('account.authorize')) {
-    return {
-      decision: 'require-approval',
-      rule: 'authorization-floor',
-      risk,
-      reason: `${capability.name} acts against your account, so you authorize it yourself.`,
-    };
-  }
+  /**
+   * Fold one candidate in, and decide whether it earns the reported rule.
+   *
+   * A candidate claims the rule when it genuinely escalates, or when it
+   * restates the current level from a more specific position (candidates
+   * arrive least-specific first, so a later equal is more specific). A
+   * candidate weaker than the standing decision changes nothing and must
+   * NOT claim it — otherwise a permissive capability override would
+   * relabel an irreversible floor it never actually overcame, and the
+   * decision would be reported under a rule that did not cause it.
+   */
+  const apply = (candidate: PolicyDecision | undefined, name: string, why: string) => {
+    if (!candidate) return;
+    const escalates = RANK[candidate] > RANK[decision];
+    const confirms = RANK[candidate] === RANK[decision] && candidate === decision;
+    if (escalates || confirms) { rule = name; reason = why; }
+    decision = stricter(decision, candidate);
+  };
 
-  /* 2–5. Configurable layers, each only able to escalate. */
+  apply(config.overrides[capability.id], `override:${capability.id}`, '');
 
-  let decision = config.byRisk[risk];
-  let rule = `risk-default:${risk}`;
+  const node = input.subject?.node;
+  if (node) {
+    // Least specific first: node-wide, then this capability on this node.
+    apply(
+      config.nodeOverrides?.[`@${node.id}`],
+      `node-override:@${node.id}`,
+      `${node.name} is restricted by the workspace policy.`,
+    );
+    apply(
+      config.nodeOverrides?.[`${capability.id}@${node.id}`],
+      `node-override:${capability.id}@${node.id}`,
+      `${node.name} is not permitted to perform ${capability.name.toLowerCase()} under the workspace policy.`,
+    );
 
-  const override = config.overrides[capability.id];
-  if (override) {
-    decision = stricter(decision, override);
-    rule = `override:${capability.id}`;
+    // An allowlist that exists and excludes this node is a denial. An
+    // absent allowlist is not an empty one — it means "no list configured".
+    const allowlist = config.nodeAllowlists?.[capability.id];
+    if (allowlist && !allowlist.includes(node.id)) {
+      apply(
+        'deny',
+        `node-not-allowlisted:${capability.id}`,
+        `${node.name} is not on the list of nodes permitted to perform ${capability.name.toLowerCase()}.`,
+      );
+    }
   }
 
   if (!config.allowAutonomous && decision === 'auto-execute') {
     decision = 'ask-user';
     rule = 'autonomy-disabled';
+    reason = '';
   }
 
-  return { decision, rule, risk, reason: reasonFor(decision, capability) };
+  return { decision, rule, risk, reason: reason || reasonFor(decision, capability) };
 }
 
 function reasonFor(decision: PolicyDecision, capability: CapabilityDescriptor): string {

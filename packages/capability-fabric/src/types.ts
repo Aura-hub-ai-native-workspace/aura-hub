@@ -276,6 +276,25 @@ export interface PolicyConfig {
   /** Capability-id overrides, highest precedence after hard floors. */
   overrides: Record<string, PolicyDecision>;
   /**
+   * Per-node decisions, keyed `"@<nodeId>"` (that node, any capability) or
+   * `"<capabilityId>@<nodeId>"` (that node, that capability).
+   *
+   * **Deny-only in effect.** Like every configurable layer these are
+   * folded with `stricter()`, so a rule can exclude a node but can never
+   * lower what acting through it costs — see §23.2. Writing
+   * `auto-execute` here does not skip an approval; it simply adds no
+   * escalation.
+   */
+  nodeOverrides?: Record<string, PolicyDecision>;
+  /**
+   * Capability id → the node ids permitted to perform it.
+   *
+   * Absent means no allowlist and unchanged behaviour. Present means a
+   * resolved node outside the list is denied — this is how "unknown or
+   * untrusted node" becomes a decision rather than an assumption.
+   */
+  nodeAllowlists?: Record<string, string[]>;
+  /**
    * When false, every decision that would be `auto-execute` becomes
    * `ask-user`. The single switch a cautious user reaches for.
    */
