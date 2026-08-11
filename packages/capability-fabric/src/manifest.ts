@@ -212,6 +212,55 @@ const LOCAL: CapabilityDescriptor[] = [
   }),
 
   cap({
+    id: 'system.install', name: 'Install a tool', category: 'system', surface: 'local-process',
+    description:
+      'Installs a catalogued tool that is missing from this machine, using the package manager that tool '
+      + 'declares. The caller names a NODE, never a command: the package and arguments come from the '
+      + 'catalogue, so this can never be turned into "run anything". Installs that need administrator '
+      + 'rights are not performed — AURA hands you the exact verified command instead.',
+    // High is the honest reading: this changes software on the machine
+    // itself, outside any project root. `DEFAULT_POLICY.byRisk.high`
+    // resolves to require-approval, so it is gated with no override.
+    // `system.modify` is what makes this ungated-proof. `risk: high` alone
+    // resolves to require-approval only under the DEFAULT policy — a
+    // machine with `byRisk.high = auto-execute` would install software
+    // silently. This scope triggers the non-configurable `system-floor`,
+    // and no node permission flag can ever grant it.
+    risk: 'high', permissions: ['process.execute', 'system.modify'],
+    input: [
+      f('nodeId', 'string', true, 'Catalogue id of the node to install, e.g. "pnpm"'),
+    ],
+    output: 'InstallResult — installOutcome, privilege, command, probe',
+    /**
+     * `read-back`, not `exit-code`, and the distinction is the point.
+     *
+     * An installer exiting 0 is a claim, not evidence. Verification
+     * re-probes through the existing environment scanner and passes only
+     * when a real version comes back — so a node reaching `available` by
+     * installation has met exactly the same bar as one that was always
+     * there (§25.5).
+     */
+    verify: 'read-back',
+    /**
+     * Deliberately no `requiresNodeCapability`. Installing is how a node
+     * comes to exist, so demanding one already be present would make this
+     * capability unreachable in precisely the case it exists for.
+     *
+     * The consequence is intended (§25.2 C4): the Fabric resolves no
+     * acting node, `executedNodeId` stays empty, and the node being
+     * installed travels in the result payload — because it is the OBJECT
+     * of the work, not the actor performing it.
+     */
+    /**
+     * Not irreversible: adding a package is undone by removing it, and the
+     * `require-approval` gate already comes from `risk: high`. Claiming the
+     * irreversible floor here would be dishonest about what an install is,
+     * and would devalue the flag where it genuinely applies.
+     */
+    irreversible: false,
+  }),
+
+  cap({
     id: 'git.status', name: 'Git status', category: 'git', surface: 'local-process',
     description: 'Working tree status of the project.',
     risk: 'low', permissions: ['project.read'],

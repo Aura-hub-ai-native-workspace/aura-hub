@@ -908,6 +908,169 @@ running `npm run ai` keeps ownership of it and quitting the app does not kill it
 
 ---
 
+## 25. Governed installation — `system.install` (resolves §21 P5)
+
+§6 designed this. §25 is the implementation record, and it corrects four things §6 got wrong.
+
+### 25.1 The result contract
+
+A guided installation means **AURA executed nothing**. That is neither success nor failure, and
+the honest reporting of it drove the only cross-cutting decision here.
+
+The global `InvocationResult['outcome']` union is **not widened**. It is consumed by policy,
+audit, the Hub phase mapping and the mission engine; adding a fifth value for a distinction
+only one capability makes would push a special case through four single-authority systems.
+
+Instead `system.install` returns a strongly-typed payload of its own, and the outer Fabric
+contract stays as it is (`ok: false` for anything not verified-installed):
+
+```ts
+type InstallOutcome = 'installed' | 'guided' | 'failed' | 'unverified';
+
+interface InstallResult {
+  installOutcome: InstallOutcome;
+  nodeId: string;
+  privilege: 'user' | 'root';
+  requiresUserAction: boolean;
+  command?: string;      // guided only — exactly what the user should run
+  why?: string;          // guided only — why AURA will not run it
+  exitCode?: number;
+  timedOut?: boolean;
+  stdout?: string;
+  probe?: { present: boolean; version?: string; detail: string };
+}
+```
+
+`installOutcome` is the authoritative field. `ok` exists only to satisfy the existing contract,
+and **the Hub and Inspector must branch on `installOutcome`, never on `ok`** — a guided result
+rendered as "installation failed" would be a lie about what happened.
+
+The four outcomes are distinct claims:
+
+| `installOutcome` | Meaning | `ok` |
+|---|---|---|
+| `installed` | Installer ran **and** the post-install probe found a real version | `true` |
+| `guided` | AURA ran nothing. A verified command is handed to the user | `false` |
+| `failed` | The installer ran and did not succeed (non-zero, signal, timeout) | `false` |
+| `unverified` | The installer exited 0 but the probe still cannot find the tool | `false` |
+
+**`unverified` is the reason this design exists.** Exit code 0 never means installed.
+
+### 25.2 Four corrections to §6
+
+**C1 — privilege cannot be static.** §6 declared `privilege` a fixed field of `InstallSpec`.
+For `npm-global` the truth is machine-dependent: on this machine `npm config get prefix` is
+`~/.npm-global` (user-writable, no sudo); on a default Arch install it is `/usr` and needs
+root. A hardcoded `user` produces an `EACCES` that looks like an AURA bug; a hardcoded `root`
+sends the user to a terminal they did not need. Privilege is therefore **resolved at runtime by
+probing writability**, with the catalogue value as a floor the runtime may only **raise**,
+never lower. Escalation is always safe; de-escalation never happens.
+
+**C2 — writability must walk to the nearest existing ancestor.** `~/.cargo/bin` does not exist
+until the first `cargo install` creates it. Stat'ing the leaf reports "not writable" and
+wrongly escalates a userspace install to root tier.
+
+**C3 — AUR helpers are not userspace.** `yay` and `paru` run as the user but invoke
+`sudo pacman` internally. Treating one as user-tier would have AURA spawn a process that blocks
+on a password prompt it must never answer. They are root tier, and AURA **never substitutes an
+AUR helper for a guided `pacman` instruction**.
+
+**C4 — the installed node is an object, not an actor.** `system.install` declares no
+`requiresNodeCapability`, so `invocation.node` is undefined and `executedNodeId` stays empty.
+That is correct and deliberate: in §22/§23 those fields mean *who performed the work*. The node
+being installed is what the work is *about*. Recording it as `executedNodeId` would corrupt the
+attribution semantics those sections established, so the target travels in the input summary
+and the result payload instead.
+
+Enforcing this needed one change in the Fabric: `executedNodeId()` now returns `undefined` for
+any capability with no `requiresNodeCapability`. Without it, the `nodeId` field of the install
+payload was read as attribution and the audit claimed a not-yet-installed tool had executed its
+own installation. The first run of `install-verify` recorded exactly that (`executedNodeId=pnpm`).
+
+**C5 — `risk: high` is NOT a gate.** §6 asserted that `risk: high` makes this
+require-approval. That is only true under `DEFAULT_POLICY`. The verification suite found the
+real behaviour on a machine whose persisted policy sets `byRisk.high = auto-execute`:
+**`system.install` auto-executed and installed software with no approval at all.**
+
+`agent.delegate` is safe from this because `irreversible: true` puts it behind the
+`irreversible-floor`. An install genuinely *is* reversible, so claiming that flag would be a lie
+and would devalue it where it matters. The fix is a new permission scope, `system.modify`, and a
+fourth hard floor:
+
+```
+system-floor — capability.permissions.includes('system.modify') → require-approval
+```
+
+`system.modify` joins `HUMAN_ONLY_SCOPES`, so no node permission flag can grant it, exactly like
+`resource.destroy` and `account.authorize`. Configuration can now make installation *stricter*
+and can never make it silent. Verified against a machine actually configured with
+`byRisk.high = auto-execute`.
+
+### 25.3 The privilege boundary is permanent
+
+AURA never executes a root-tier install. It does not invoke `sudo`; it does not request, store
+or cache a password; it does not run a privileged helper; it does not fall back to an AUR
+helper. Automating system packages requires either a stored credential or a privileged daemon,
+and this architecture opens neither.
+
+```
+root tier:  detect privilege → build command from catalogue InstallSpec → verify it
+            → present it → EXECUTE NOTHING → wait for the user
+            → re-probe with the existing scanner → available only if the probe succeeds
+```
+
+### 25.4 A third allowlist, disjoint from both existing ones
+
+`INSTALLER_BINARIES` is a peer of `SAFE_BINARIES` and `AGENT_BINARIES`, never merged with
+either. The separation is the security property: merging installers into `SAFE_BINARIES` would
+let medium-risk `terminal.execute` install arbitrary software, and merging into
+`AGENT_BINARIES` would let a delegated agent do it. All three sets are asserted mutually
+disjoint by the verification suite.
+
+The caller supplies **a catalogue node id and nothing else**. Package names and argument vectors
+are built from the catalogue's `InstallSpec` — never from request text — which is the same
+invariant that makes probing safe (`environment.ts`) and delegation safe (`resolveAgentBinary`).
+
+**Name-level disjointness is impossible, so the guarantee is enforced on the verb.** `npm` and
+`cargo` were already on `SAFE_BINARIES`, because `npm test` and `cargo build` are ordinary
+project work; they cannot be removed without breaking missions. Building this milestone
+surfaced the consequence as a **pre-existing hole**: `terminal.execute` — medium risk,
+ask-user — could already run `npm install --global <anything>`, installing software with no
+approval and no probe, entirely outside `system.install`.
+
+`parseCommand` now refuses install verbs on shared binaries (`npm install -g`, `cargo install`,
+`go install`, `python3 -m pip install`), so the two grants remain separated by *capability*
+even where they share a binary name. `npm test`, `npm run build`, `cargo build` and `go build`
+are unaffected, and both directions are asserted by `install-verify` (1a2, 1a3).
+
+### 25.5 Verification
+
+Identical evidence to any other node's presence: `probeNode(id, refresh: true)` must find the
+binary and parse a version. A node that becomes `available` after an install is available on
+exactly the same basis as one that was always there — there is no second, weaker path to
+`available`.
+
+### 25.6 Known limitations
+
+1. **`ok: false` for a guided result.** The outer flag reads as failure to anything that does
+   not inspect `installOutcome`. This is the accepted cost of not widening the core union; the
+   Hub and Inspector branch on `installOutcome`, and §25.1 records the imprecision rather than
+   hiding it.
+2. **Root-tier installs are never automatic**, on any distro. Permanent, by design.
+3. **Only a verified subset of catalogue entries carries an `InstallSpec`.** An entry without
+   one is honestly reported as not installable by AURA rather than guessed at.
+4. **No uninstall.** Out of scope; `system.install` has no inverse.
+5. **`npx` remains unguarded.** `npx <pkg>` fetches and executes an arbitrary remote package,
+   which has the reach of an install without the word. It is on `SAFE_BINARIES` and was not
+   changed here: blocking it would alter existing mission behaviour, which is beyond this
+   milestone. Recorded as a known gap rather than silently closed or silently ignored.
+6. **The `installing` status is not yet driven by the UI.** The state exists, is typed and is
+   rendered, but the Inspector currently moves from "not installed" to a completed result — it
+   does not hold the node in `installing` while the installer runs. Honest, but not yet the full
+   transition §25.3 describes.
+
+---
+
 ## Proof obligation
 
 Before this reconstruction is called complete, the branch must show:

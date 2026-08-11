@@ -657,7 +657,23 @@ export class CapabilityFabric {
    * Prefers the executor's own report; falls back to the resolved node
    * only once an executor was genuinely invoked. Never guesses.
    */
-  private executedNodeId(invocation: Invocation, attempts: number, output: unknown): string | undefined {
+  private executedNodeId(
+    invocation: Invocation,
+    capability: CapabilityDescriptor | undefined,
+    attempts: number,
+    output: unknown,
+  ): string | undefined {
+    /**
+     * A capability that routes to no node has no acting node, so nothing
+     * in its output may claim one.
+     *
+     * `system.install` is why this guard exists: its result names the node
+     * being INSTALLED, which is the object of the work, not the actor
+     * performing it. Without this, `output.nodeId` would be read as
+     * attribution and the audit would report that a not-yet-installed tool
+     * executed its own installation.
+     */
+    if (!capability?.requiresNodeCapability) return undefined;
     return this.nodeIdOfOutput(output) ?? (attempts > 0 ? invocation.node?.id : undefined);
   }
 
@@ -716,9 +732,9 @@ export class CapabilityFabric {
       // to `invocation.node` there would have the audit assert execution
       // that did not happen. `attempts > 0` is the honest gate: every
       // non-executing exit settles with zero attempts.
-      nodeId: this.executedNodeId(invocation, attempts, output),
+      nodeId: this.executedNodeId(invocation, capability, attempts, output),
       requestedNodeId: invocation.context.nodeId,
-      executedNodeId: this.executedNodeId(invocation, attempts, output),
+      executedNodeId: this.executedNodeId(invocation, capability, attempts, output),
     });
 
     this.emit({ type: 'invocation.completed', at: endedAt, result });

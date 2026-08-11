@@ -41,8 +41,18 @@ const NODE_PHRASES: Record<NodeStatus, (node: EnvironmentNode) => Phrase> = {
   }),
   'not-installed': (n) => ({
     headline: `${n.entry.name} is not on this machine`,
-    nextStep: `Install it from ${n.entry.homepage}, or let the Hub suggest an alternative that already provides the same capability.`,
+    // The forward step now depends on whether AURA can genuinely do it. An
+    // entry with no InstallSpec still points at the project's own
+    // instructions rather than offering something AURA cannot deliver.
+    nextStep: n.entry.install
+      ? `The Hub can install it for you — it will ask first, and confirm afterwards by looking for it again.`
+      : `Install it from ${n.entry.homepage}, or let the Hub suggest an alternative that already provides the same capability.`,
     tone: 'attention',
+  }),
+  installing: (n) => ({
+    headline: `${n.entry.name} is being installed`,
+    nextStep: 'The Hub will look for it again when this finishes, and only then call it available.',
+    tone: 'progress',
   }),
   degraded: (n) => ({
     headline: `${n.entry.name} answered, but not healthily`,

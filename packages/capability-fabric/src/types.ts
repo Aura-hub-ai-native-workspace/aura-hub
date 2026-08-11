@@ -46,6 +46,16 @@ export type PermissionScope =
   | 'network.outbound'
   | 'account.authorize'
   | 'resource.destroy'
+  /**
+   * Changes software on the machine itself, outside any project root.
+   *
+   * Like `account.authorize` and `resource.destroy`, no node permission
+   * flag can grant this — it is satisfied only by a human decision, and
+   * the `system-floor` in `policy.ts` makes that non-negotiable. Without
+   * it, a machine configured with `byRisk.high = auto-execute` would
+   * install software silently, which is never an acceptable default.
+   */
+  | 'system.modify'
   | 'aura.read'
   | 'aura.write';
 

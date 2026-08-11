@@ -122,9 +122,63 @@ export interface MissionCapabilityAnnotation {
   gaps: CapabilityGap[];
 }
 
+/* ── system.install (§25) ─────────────────────────────────────────── */
+
+/**
+ * The four outcomes an install can honestly report.
+ *
+ * `guided` means **AURA executed nothing** — it is a handoff, not a
+ * failure, and any surface showing it must say so. The outer
+ * `InvocationResult.ok` is `false` for everything except `installed`
+ * (§25.1), so UI branches on THIS field and never on `ok`.
+ */
+export type InstallOutcome = 'installed' | 'guided' | 'failed' | 'unverified';
+
+export interface InstallResultView {
+  installOutcome: InstallOutcome;
+  nodeId: string;
+  privilege: 'user' | 'root';
+  requiresUserAction: boolean;
+  /** Guided only: exactly what the user should run. Never run by AURA. */
+  command?: string;
+  why?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  stdout?: string;
+  probe?: { present: boolean; version?: string; detail: string };
+}
+
+/** What `/fabric/invoke` returns. Only the fields this app reads. */
+export interface InvocationResultView {
+  invocationId: string;
+  outcome: 'succeeded' | 'failed' | 'denied' | 'awaiting-approval' | 'unsupported';
+  detail: string;
+  output?: unknown;
+  policy?: { decision: PolicyDecision; rule: string; risk: RiskLevel; reason: string };
+}
+
 export const fabricClient = {
   approvals: (): Promise<{ approvals: ApprovalRequest[] }> =>
     fetch(`${BASE}/fabric/approvals`).then((r) => r.json()),
+
+  /**
+   * Run a capability through the Fabric.
+   *
+   * Carries no authority of its own: the service decides policy, raises
+   * the approval and records the audit. A caller cannot smuggle a grant
+   * through here — `awaiting-approval` comes back, and the existing
+   * approval gate is the only way past it.
+   */
+  invoke: (
+    capabilityId: string,
+    input: Record<string, unknown>,
+    context: Record<string, unknown> = {},
+  ): Promise<InvocationResultView> =>
+    fetch(`${BASE}/fabric/invoke`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ capabilityId, input, context }),
+    }).then((r) => r.json()),
 
   /**
    * Answer one request. `granted` is the whole decision — the capability,

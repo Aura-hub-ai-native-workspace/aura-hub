@@ -26,7 +26,14 @@
  */
 
 import type { CapabilityId } from './capabilities';
-import type { AuthKind, CatalogEntry, LicenseKind, NodeCategory, TransportKind } from './types';
+import type {
+  AuthKind,
+  CatalogEntry,
+  InstallSpec,
+  LicenseKind,
+  NodeCategory,
+  TransportKind,
+} from './types';
 
 interface EntryInput {
   id: string;
@@ -41,6 +48,7 @@ interface EntryInput {
   maintained?: boolean;
   probe?: string | [string, ...string[]];
   endpoint?: string;
+  install?: InstallSpec;
 }
 
 function make(category: NodeCategory, input: EntryInput): CatalogEntry {
@@ -63,8 +71,22 @@ function make(category: NodeCategory, input: EntryInput): CatalogEntry {
     homepage: input.homepage,
     probe,
     endpoint: input.endpoint,
+    install: input.install,
   };
 }
+
+/* Install shorthands. Keeping these next to `make` means an entry states
+   its package and privilege FLOOR in one line, and nothing else in the
+   codebase gets to invent either (§25.4). */
+
+/** Installed into the user's own npm prefix — usually. See §25.2 C1: the
+ *  runtime re-checks writability, because a `/usr` prefix needs root. */
+const npmGlobal = (pkg: string): InstallSpec =>
+  ({ method: 'npm-global', package: pkg, privilege: 'user' });
+
+/** A distro package. Always root, always guided, never executed by AURA. */
+const systemPackage = (pkg: string, distro?: Record<string, string>): InstallSpec =>
+  ({ method: 'system-package', package: pkg, privilege: 'root', distro });
 
 /* ══════════════════════════════════════════════════════════════════
    Hub subsystems — always live, no network, no auth.
@@ -107,15 +129,15 @@ const HUB: CatalogEntry[] = [
 const DEVELOPMENT: CatalogEntry[] = [
   make('development', { id: 'git', name: 'Git', caps: ['source-control'], probe: 'git', summary: 'Distributed version control.', homepage: 'https://git-scm.com' }),
   make('development', { id: 'github-cli', name: 'GitHub CLI', caps: ['code-hosting', 'ci-cd', 'issue-tracker'], probe: 'gh', auth: 'cli-session', summary: 'Repositories, pull requests, issues and Actions from the terminal.', homepage: 'https://cli.github.com' }),
-  make('development', { id: 'glab', name: 'GitLab CLI', caps: ['code-hosting', 'ci-cd', 'issue-tracker'], probe: 'glab', auth: 'cli-session', summary: 'GitLab projects, merge requests and pipelines from the terminal.', homepage: 'https://gitlab.com/gitlab-org/cli' }),
+  make('development', { id: 'glab', name: 'GitLab CLI', caps: ['code-hosting', 'ci-cd', 'issue-tracker'], probe: 'glab', install: systemPackage('glab'), auth: 'cli-session', summary: 'GitLab projects, merge requests and pipelines from the terminal.', homepage: 'https://gitlab.com/gitlab-org/cli' }),
 
   make('development', { id: 'vscode', name: 'Visual Studio Code', caps: ['code-editor'], probe: 'code', license: 'free-tier', summary: 'Opens files, folders and diffs in the editor.', homepage: 'https://code.visualstudio.com' }),
   make('development', { id: 'cursor', name: 'Cursor', caps: ['code-editor', 'coding-agent'], probe: 'cursor', license: 'free-tier', summary: 'AI-native editor with in-repo code generation.', homepage: 'https://cursor.com' }),
   make('development', { id: 'claude-code', name: 'Claude Code', caps: ['coding-agent', 'terminal'], probe: 'claude', license: 'commercial', auth: 'cli-session', summary: 'Agentic coding in the terminal.', homepage: 'https://claude.com/claude-code' }),
   make('development', { id: 'codex-cli', name: 'Codex CLI', caps: ['coding-agent'], probe: 'codex', license: 'commercial', auth: 'cli-session', summary: 'Terminal coding agent.', homepage: 'https://github.com/openai/codex' }),
-  make('development', { id: 'gemini-cli', name: 'Gemini CLI', caps: ['coding-agent'], probe: 'gemini', license: 'free-tier', auth: 'cli-session', summary: 'Terminal coding agent.', homepage: 'https://github.com/google-gemini/gemini-cli' }),
-  make('development', { id: 'qwen-cli', name: 'Qwen Code', caps: ['coding-agent'], probe: 'qwen', auth: 'cli-session', summary: 'Terminal coding agent.', homepage: 'https://github.com/QwenLM/qwen-code' }),
-  make('development', { id: 'opencode', name: 'OpenCode', caps: ['coding-agent', 'terminal'], probe: 'opencode', auth: 'cli-session', summary: 'Open-source terminal coding agent.', homepage: 'https://opencode.ai' }),
+  make('development', { id: 'gemini-cli', name: 'Gemini CLI', caps: ['coding-agent'], probe: 'gemini', install: npmGlobal('@google/gemini-cli'), license: 'free-tier', auth: 'cli-session', summary: 'Terminal coding agent.', homepage: 'https://github.com/google-gemini/gemini-cli' }),
+  make('development', { id: 'qwen-cli', name: 'Qwen Code', caps: ['coding-agent'], probe: 'qwen', install: npmGlobal('@qwen-code/qwen-code'), auth: 'cli-session', summary: 'Terminal coding agent.', homepage: 'https://github.com/QwenLM/qwen-code' }),
+  make('development', { id: 'opencode', name: 'OpenCode', caps: ['coding-agent', 'terminal'], probe: 'opencode', install: npmGlobal('opencode-ai'), auth: 'cli-session', summary: 'Open-source terminal coding agent.', homepage: 'https://opencode.ai' }),
 
   make('development', { id: 'bash', name: 'Bash', caps: ['terminal'], probe: 'bash', summary: 'POSIX shell.', homepage: 'https://www.gnu.org/software/bash' }),
   make('development', { id: 'zsh', name: 'Zsh', caps: ['terminal'], probe: 'zsh', summary: 'Z shell.', homepage: 'https://zsh.sourceforge.io' }),
@@ -131,13 +153,13 @@ const DEVELOPMENT: CatalogEntry[] = [
   make('development', { id: 'rust', name: 'Rust', caps: ['language-runtime', 'package-manager'], probe: 'cargo', summary: 'Cargo toolchain for Rust.', homepage: 'https://rust-lang.org' }),
 
   make('development', { id: 'npm', name: 'npm', caps: ['package-manager'], probe: 'npm', summary: 'Default Node package manager.', homepage: 'https://npmjs.com' }),
-  make('development', { id: 'pnpm', name: 'pnpm', caps: ['package-manager'], probe: 'pnpm', summary: 'Content-addressed Node package manager.', homepage: 'https://pnpm.io' }),
+  make('development', { id: 'pnpm', name: 'pnpm', caps: ['package-manager'], probe: 'pnpm', install: npmGlobal('pnpm'), summary: 'Content-addressed Node package manager.', homepage: 'https://pnpm.io' }),
   make('development', { id: 'bun', name: 'Bun', caps: ['package-manager', 'language-runtime', 'testing-framework'], probe: 'bun', summary: 'JavaScript runtime, bundler and package manager.', homepage: 'https://bun.sh' }),
 
-  make('development', { id: 'docker', name: 'Docker', caps: ['container-runtime', 'container-registry'], probe: 'docker', license: 'free-tier', summary: 'Builds and runs containers locally.', homepage: 'https://docker.com' }),
-  make('development', { id: 'podman', name: 'Podman', caps: ['container-runtime'], probe: 'podman', summary: 'Daemonless container engine.', homepage: 'https://podman.io' }),
+  make('development', { id: 'docker', name: 'Docker', caps: ['container-runtime', 'container-registry'], probe: 'docker', install: systemPackage('docker', { debian: 'docker.io' }), license: 'free-tier', summary: 'Builds and runs containers locally.', homepage: 'https://docker.com' }),
+  make('development', { id: 'podman', name: 'Podman', caps: ['container-runtime'], probe: 'podman', install: systemPackage('podman'), summary: 'Daemonless container engine.', homepage: 'https://podman.io' }),
   make('development', { id: 'kubectl', name: 'Kubernetes CLI', caps: ['app-hosting', 'observability'], probe: ['kubectl', 'version', '--client'], auth: 'cli-session', summary: 'Deploys and inspects Kubernetes workloads.', homepage: 'https://kubernetes.io' }),
-  make('development', { id: 'terraform', name: 'Terraform', caps: ['virtual-machine', 'secrets-management'], probe: 'terraform', license: 'free-tier', auth: 'cli-session', summary: 'Declarative infrastructure provisioning.', homepage: 'https://terraform.io' }),
+  make('development', { id: 'terraform', name: 'Terraform', caps: ['virtual-machine', 'secrets-management'], probe: 'terraform', install: systemPackage('terraform'), license: 'free-tier', auth: 'cli-session', summary: 'Declarative infrastructure provisioning.', homepage: 'https://terraform.io' }),
 
   make('development', { id: 'flutter', name: 'Flutter', caps: ['mobile-build', 'language-runtime'], probe: 'flutter', summary: 'Cross-platform application toolkit.', homepage: 'https://flutter.dev' }),
   make('development', { id: 'android-platform-tools', name: 'Android Platform Tools', caps: ['mobile-build'], probe: ['adb', 'version'], license: 'free-tier', summary: 'Device bridge for Android builds.', homepage: 'https://developer.android.com/studio' }),
@@ -153,9 +175,9 @@ const DEVELOPMENT: CatalogEntry[] = [
    ══════════════════════════════════════════════════════════════════ */
 
 const CLOUD: CatalogEntry[] = [
-  make('cloud', { id: 'vercel', name: 'Vercel', caps: ['static-hosting', 'serverless-compute', 'edge-network'], probe: 'vercel', license: 'free-tier', auth: 'cli-session', summary: 'Frontend and serverless hosting with preview deployments.', homepage: 'https://vercel.com' }),
+  make('cloud', { id: 'vercel', name: 'Vercel', caps: ['static-hosting', 'serverless-compute', 'edge-network'], probe: 'vercel', install: npmGlobal('vercel'), license: 'free-tier', auth: 'cli-session', summary: 'Frontend and serverless hosting with preview deployments.', homepage: 'https://vercel.com' }),
   make('cloud', { id: 'netlify', name: 'Netlify', caps: ['static-hosting', 'serverless-compute'], probe: 'netlify', license: 'free-tier', auth: 'cli-session', summary: 'Static and edge-function hosting.', homepage: 'https://netlify.com' }),
-  make('cloud', { id: 'cloudflare', name: 'Cloudflare', caps: ['edge-network', 'serverless-compute', 'object-storage', 'static-hosting'], probe: 'wrangler', license: 'free-tier', auth: 'cli-session', summary: 'Workers, Pages, R2 and the edge network.', homepage: 'https://cloudflare.com' }),
+  make('cloud', { id: 'cloudflare', name: 'Cloudflare', caps: ['edge-network', 'serverless-compute', 'object-storage', 'static-hosting'], probe: 'wrangler', install: npmGlobal('wrangler'), license: 'free-tier', auth: 'cli-session', summary: 'Workers, Pages, R2 and the edge network.', homepage: 'https://cloudflare.com' }),
   make('cloud', { id: 'fly', name: 'Fly.io', caps: ['app-hosting', 'virtual-machine'], probe: ['flyctl', 'version'], license: 'free-tier', auth: 'cli-session', summary: 'Runs containers close to users.', homepage: 'https://fly.io' }),
   make('cloud', { id: 'railway', name: 'Railway', caps: ['app-hosting', 'sql-database'], probe: 'railway', license: 'free-tier', auth: 'cli-session', summary: 'Deploys apps and managed databases from a repository.', homepage: 'https://railway.app' }),
   make('cloud', { id: 'supabase', name: 'Supabase', caps: ['sql-database', 'auth-service', 'object-storage'], probe: 'supabase', license: 'open-source', auth: 'cli-session', summary: 'Postgres, auth and storage as a managed service.', homepage: 'https://supabase.com' }),

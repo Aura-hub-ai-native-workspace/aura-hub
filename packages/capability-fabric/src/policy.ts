@@ -48,7 +48,11 @@ export const DEFAULT_POLICY: PolicyConfig = {
  * Scopes no node flag can ever grant. Only a human authorization
  * satisfies these — see the floors in `evaluatePolicy`.
  */
-const HUMAN_ONLY_SCOPES = new Set<PermissionScope>(['account.authorize', 'resource.destroy']);
+const HUMAN_ONLY_SCOPES = new Set<PermissionScope>([
+  'account.authorize',
+  'resource.destroy',
+  'system.modify',
+]);
 
 const DECISIONS = new Set<PolicyDecision>(['auto-execute', 'ask-user', 'require-approval', 'deny']);
 
@@ -224,6 +228,14 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
   } else if (capability.permissions.includes('account.authorize')) {
     floor('authorization-floor',
       `${capability.name} acts against your account, so you authorize it yourself.`);
+  } else if (capability.permissions.includes('system.modify')) {
+    // Changing what software exists on the machine reaches outside every
+    // project boundary the rest of this engine reasons about, so it is
+    // never silent — not even where an operator has set high risk to
+    // auto-execute. Reversible (you can uninstall), which is why it is not
+    // the irreversible floor, but still always the user's call.
+    floor('system-floor',
+      `${capability.name} changes software on this machine, so it always needs your go-ahead.`);
   }
 
   /* 2–6. Configurable layers, each only able to escalate. */

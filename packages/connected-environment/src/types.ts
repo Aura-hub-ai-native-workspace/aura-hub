@@ -85,7 +85,49 @@ export interface CatalogEntry {
   probe?: { command: string; args: string[] };
   /** For `http` nodes: a public endpoint that answers a liveness check. */
   endpoint?: string;
+  /**
+   * How AURA could install this, if it can (§25).
+   *
+   * Optional on purpose: an entry without it is simply not installable by
+   * AURA and says so. Absence is an honest answer, not a gap to paper over
+   * with a guessed package name.
+   */
+  install?: InstallSpec;
 }
+
+/**
+ * How a tool is installed — catalogue knowledge, never request input.
+ *
+ * The package name lives here rather than travelling with the invocation.
+ * That is the whole security argument for `system.install`: the caller
+ * names a NODE, and the command is assembled from trusted data. It mirrors
+ * the same invariant that keeps probing safe.
+ */
+export interface InstallSpec {
+  method: InstallMethod;
+  /** The package as its own ecosystem names it. */
+  package: string;
+  /**
+   * The privilege floor declared by the catalogue.
+   *
+   * A FLOOR, not a verdict. `npm-global` is userspace on a machine whose
+   * npm prefix is user-owned and root on one where it is `/usr`, so the
+   * runtime probes writability and may only ever RAISE this (§25.2 C1).
+   * Nothing may lower it — escalation is safe, de-escalation is not.
+   */
+  privilege: InstallPrivilege;
+  /** Package name per distro where it differs from `package`. */
+  distro?: Record<string, string>;
+}
+
+export type InstallMethod =
+  | 'npm-global'
+  | 'pipx'
+  | 'cargo'
+  | 'gh-extension'
+  | 'system-package';
+
+export type InstallPrivilege = 'user' | 'root';
 
 /**
  * The live state of one node. Every field is either measured or explicitly
@@ -102,6 +144,15 @@ export type NodeStatus =
   | 'degraded'
   /** Probed and genuinely not present on this machine. */
   | 'not-installed'
+  /**
+   * A governed install is running right now (§25).
+   *
+   * The one forward transition out of `not-installed`, and deliberately
+   * transient: it is never persisted and never a resting state. Only a
+   * real post-install probe moves a node on to `available`, so this can
+   * never be mistaken for "installed".
+   */
+  | 'installing'
   /** Present but needs credentials the Hub does not hold. */
   | 'needs-auth'
   /** Catalogued, but no connector has been built for it yet. */

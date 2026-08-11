@@ -52,6 +52,77 @@ export const AGENT_BINARIES = new Set([
   'opencode', 'claude', 'codex', 'gemini', 'qwen', 'cursor-agent',
 ]);
 
+/**
+ * Installers `system.install` may launch (§25.4). A **third** allow-list,
+ * disjoint from both of the above and never merged into either.
+ *
+ * The disjointness is load-bearing in two directions:
+ *
+ *   • merged into `SAFE_BINARIES`, medium-risk `terminal.execute` could
+ *     install arbitrary software;
+ *   • merged into `AGENT_BINARIES`, a delegated coding agent could.
+ *
+ * Note what is absent: `sudo`, `pacman`, `apt`, `dnf`, `yay`, `paru`.
+ * Root-tier installs are never executed by AURA (§25.3), so no privileged
+ * or privilege-escalating binary appears here — and an AUR helper is
+ * privilege-escalating despite running as the user, because it calls
+ * `sudo pacman` itself (§25.2 C3).
+ */
+export const INSTALLER_BINARIES = new Set([
+  'npm', 'pipx', 'cargo', 'gh',
+]);
+
+/**
+ * Decide whether a binary may be launched as an installer.
+ *
+ * Same shape and same guarantees as `resolveAgentBinary`: anything
+ * path-like is refused before the list is consulted, so a caller must name
+ * an installer and can never locate one.
+ */
+export function resolveInstallerBinary(bin: string): ResolvedAgent {
+  const name = (bin ?? '').trim();
+  if (!name || name.includes('/') || name.includes('\\') || name.includes('..')) {
+    return { ok: false, bin: name, reason: 'An installer must be named, not given as a path.' };
+  }
+  if (!INSTALLER_BINARIES.has(name)) {
+    return {
+      ok: false,
+      bin: name,
+      reason: `'${name}' is not on the installer allow-list (${[...INSTALLER_BINARIES].join(', ')}).`,
+    };
+  }
+  return { ok: true, bin: name, reason: '' };
+}
+
+/**
+ * Run an installer with pre-built arguments.
+ *
+ * Arguments arrive as an array from the catalogue's `InstallSpec` and go
+ * straight to `execFile` — never joined into a string, never shell-parsed.
+ * stdin is closed immediately for the same reason it is for agents: an
+ * installer that stops to ask a question would otherwise hang until the
+ * timeout. A prompt AURA cannot answer must fail fast, not stall.
+ */
+export function runInstaller(bin: string, args: string[], opts: SpawnOptions): Promise<ProcessOutput> {
+  const resolved = resolveInstallerBinary(bin);
+  if (!resolved.ok) return Promise.reject(new Error(resolved.reason));
+  const timeout = opts.timeoutMs ?? INSTALL_TIMEOUT_MS;
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      resolved.bin,
+      args,
+      { cwd: opts.cwd, timeout, maxBuffer: MAX_BUFFER, signal: opts.signal },
+      (err, stdout, stderr) => {
+        if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+          return reject(new Error(`${resolved.bin} is not installed`));
+        }
+        resolve(settle(err, stdout, stderr, timeout));
+      },
+    );
+    child.stdin?.end();
+  });
+}
+
 export interface ResolvedAgent {
   ok: boolean;
   bin: string;
@@ -130,6 +201,8 @@ const GIT_TIMEOUT_MS = 20_000;
 const SHELL_TIMEOUT_MS = 30_000;
 /** Agents plan, read and edit across several model round-trips. */
 const AGENT_TIMEOUT_MS = 10 * 60_000;
+/** Installers fetch over the network and may compile. Bounded, not generous. */
+const INSTALL_TIMEOUT_MS = 5 * 60_000;
 const MAX_BUFFER = 4 * 1024 * 1024;
 
 export interface ProcessOutput {
@@ -252,7 +325,54 @@ export function parseCommand(command: string): ParsedCommand {
       reason: `'${bin}' is not on the allow-list (${[...SAFE_BINARIES].join(', ')}).`,
     };
   }
+  const installing = installSubcommand(bin, parts.slice(1));
+  if (installing) {
+    return {
+      ok: false, bin, args: [],
+      reason:
+        `Installing software is not something this can do. '${installing}' changes what is installed on `
+        + `this machine, which goes through system.install — where it is gated by approval and verified `
+        + `by a real probe.`,
+    };
+  }
   return { ok: true, bin, args: parts.slice(1), reason: '' };
+}
+
+/**
+ * Is this allow-listed command actually an INSTALL in disguise?
+ *
+ * `npm` and `cargo` are on `SAFE_BINARIES` because `npm test` and
+ * `cargo build` are ordinary project work. They are also how software gets
+ * installed, which means the binary name alone cannot separate "run the
+ * tests" from "add a global package" — and without this guard,
+ * `terminal.execute` (medium risk, ask-user) could install anything, side-
+ * stepping the `system-floor` entirely.
+ *
+ * So the separation between the two grants is enforced on the verb rather
+ * than only on the binary. `SAFE_BINARIES` and `INSTALLER_BINARIES` do
+ * share two names; what they do not share is the ability to install.
+ */
+function installSubcommand(bin: string, args: string[]): string | null {
+  const sub = args.find((a) => !a.startsWith('-'));
+  if (!sub) return null;
+  const verb = `${bin} ${sub}`;
+  switch (bin) {
+    case 'npm':
+      // `npm install` inside a project is legitimate; `-g`/`--global` is
+      // what reaches outside it. `npm ci` is project-local by definition.
+      return /^(install|i|add)$/.test(sub) && args.some((a) => a === '-g' || a === '--global')
+        ? `${verb} --global`
+        : null;
+    case 'cargo':
+      return sub === 'install' ? verb : null;
+    case 'go':
+      return sub === 'install' ? verb : null;
+    case 'python3':
+      // `python3 -m pip install ...`
+      return args.includes('pip') && args.includes('install') ? 'python3 -m pip install' : null;
+    default:
+      return null;
+  }
 }
 
 /** Allow-listed, argument-only execution. No shell interpretation. */

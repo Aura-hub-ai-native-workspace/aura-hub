@@ -19,7 +19,10 @@
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
-import { git, parseCommand, resolveAgentBinary, runAgent, safeShellWithCode } from '../exec/process';
+import { git, parseCommand, resolveAgentBinary, runAgent, runInstaller, safeShellWithCode } from '../exec/process';
+import { isPlan, planInstall } from '../exec/install';
+import { catalogEntry } from '@aura/connected-environment';
+import { probeNode } from '../environment';
 import type { WorkspaceManager } from '../workspace';
 
 const MAX_READ_BYTES = 512 * 1024;
@@ -251,6 +254,174 @@ const agentDelegate: Executor = {
     return exit === 0
       ? pass('exit-code', 'The agent exited 0.')
       : fail('exit-code', `The agent exited ${exit ?? 'unknown'}.`);
+  },
+};
+
+/* ══════════════════════════════════════════════════════════════════
+   Installation (§25)
+   ══════════════════════════════════════════════════════════════════ */
+
+/** The four honest answers an install can give. Never widened. */
+type InstallOutcome = 'installed' | 'guided' | 'failed' | 'unverified';
+
+interface InstallResult {
+  installOutcome: InstallOutcome;
+  nodeId: string;
+  privilege: 'user' | 'root';
+  requiresUserAction: boolean;
+  command?: string;
+  why?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  stdout?: string;
+  probe?: { present: boolean; version?: string; detail: string };
+}
+
+/**
+ * Re-probe the node, bypassing the scan cache.
+ *
+ * `refresh: true` is mandatory here. The cached answer was taken before
+ * the install and would happily report the tool still missing — or, worse,
+ * still present after a failure. Verification must look at the machine as
+ * it is now.
+ */
+const probeAfterInstall = (nodeId: string) => probeNode(nodeId, true);
+
+const systemInstall: Executor = {
+  capabilityId: 'system.install',
+
+  async run(inv) {
+    const nodeId = s(inv.input.nodeId).trim();
+    if (!nodeId) return no('No node was named, so there is nothing to install.');
+
+    // The catalogue is the only source of truth for what may be installed.
+    // An id that is not in it is refused before anything else happens.
+    const entry = catalogEntry(nodeId);
+    if (!entry) {
+      return no(`'${nodeId}' is not a node in AURA's catalogue, so there is nothing to install.`);
+    }
+
+    const plan = planInstall(entry);
+
+    // No InstallSpec, or nothing verified for this machine. An honest
+    // "AURA does not know how" — never a guessed package name.
+    if (!isPlan(plan)) {
+      return no(plan.reason);
+    }
+
+    /* ── root tier: AURA executes NOTHING (§25.3) ─────────────────── */
+    if (plan.privilege === 'root') {
+      const result: InstallResult = {
+        installOutcome: 'guided',
+        nodeId,
+        privilege: 'root',
+        requiresUserAction: true,
+        command: plan.command,
+        why: plan.why,
+      };
+      // `ok: false` satisfies the existing Fabric contract; the payload
+      // carries the real answer. Callers branch on `installOutcome`, never
+      // on `ok` — a guided handoff is not a failure (§25.1).
+      return {
+        ok: false,
+        detail:
+          `${entry.name} needs administrator rights to install, so AURA did not run anything. `
+          + `Run this yourself, then re-scan: ${plan.command}`,
+        output: result,
+      };
+    }
+
+    /* ── user tier: governed, bounded, then VERIFIED ──────────────── */
+    let res: Awaited<ReturnType<typeof runInstaller>>;
+    try {
+      // cwd is the user's home rather than a project: installing a global
+      // tool is not project work, and pointing an installer at a project
+      // root invites it to write lockfiles there.
+      res = await runInstaller(plan.bin, plan.args, {
+        cwd: process.env.HOME || '/',
+        timeoutMs: inv.context.timeoutMs,
+      });
+    } catch (e) {
+      return no(`${entry.name} could not be installed: ${(e as Error).message}`);
+    }
+
+    const base = {
+      nodeId,
+      privilege: 'user' as const,
+      command: plan.command,
+      exitCode: res.code,
+      timedOut: res.timedOut ?? false,
+      stdout: res.out.slice(0, 4000),
+    };
+
+    if (res.code !== 0) {
+      const why = res.timedOut
+        ? `The installer ran out of time and was stopped.`
+        : res.signal
+          ? `The installer was terminated by ${res.signal}.`
+          : `The installer exited ${res.code}.`;
+      const result: InstallResult = { ...base, installOutcome: 'failed', requiresUserAction: false, why };
+      return { ok: false, detail: `${entry.name} was not installed. ${why} ${res.out.slice(0, 300)}`.trim(), output: result };
+    }
+
+    /**
+     * Exit 0 is a claim. The probe is the evidence.
+     *
+     * An installer can succeed while leaving nothing runnable — wrong
+     * package, a binary outside PATH, a partial write. Reporting that as
+     * installed is exactly the confident-but-wrong failure this codebase
+     * refuses, so a clean exit with no detectable tool is `unverified`.
+     */
+    const probe = await probeAfterInstall(nodeId);
+    if (!probe.present) {
+      const result: InstallResult = {
+        ...base,
+        installOutcome: 'unverified',
+        requiresUserAction: true,
+        why: `The installer finished without an error, but ${entry.name} still cannot be found on this machine.`,
+        probe: { present: false, detail: probe.detail },
+      };
+      return {
+        ok: false,
+        detail:
+          `${entry.name} reported a successful install, but AURA still cannot find it, so it is NOT `
+          + `being reported as installed. ${probe.detail}`,
+        output: result,
+      };
+    }
+
+    const result: InstallResult = {
+      ...base,
+      installOutcome: 'installed',
+      requiresUserAction: false,
+      probe: { present: true, version: probe.version, detail: probe.detail },
+    };
+    return ok(
+      `${entry.name} is installed and verified${probe.version ? ` (${probe.version})` : ''}.`,
+      result,
+    );
+  },
+
+  /**
+   * Verification re-states the probe, and passes ONLY for `installed`.
+   *
+   * `guided` deliberately fails verification: nothing was installed, so
+   * there is nothing to verify. The distinction the user sees comes from
+   * `installOutcome`, not from this report.
+   */
+  async verify(_inv, result) {
+    const out = result.output as InstallResult | undefined;
+    if (!out) return fail('read-back', 'The installer returned no result to verify.');
+    switch (out.installOutcome) {
+      case 'installed':
+        return pass('read-back', `A fresh probe found ${out.nodeId}${out.probe?.version ? ` ${out.probe.version}` : ''}.`);
+      case 'guided':
+        return fail('read-back', 'Nothing was installed — this needs administrator rights and is waiting on you.');
+      case 'unverified':
+        return fail('read-back', `The installer exited 0 but a fresh probe still cannot find ${out.nodeId}.`);
+      case 'failed':
+        return fail('read-back', out.why ?? 'The installer did not succeed.');
+    }
   },
 };
 
@@ -502,6 +673,7 @@ export function allExecutors(manager: WorkspaceManager): Executor[] {
     filesystemList, filesystemRead, filesystemWrite,
     terminalExecute,
     agentDelegate,
+    systemInstall,
     gitStatus, gitDiff, gitBranch, gitCommit, gitPush,
     httpRequest,
     ...internalExecutors(manager),
