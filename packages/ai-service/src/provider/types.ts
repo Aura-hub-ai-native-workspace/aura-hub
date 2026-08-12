@@ -29,11 +29,23 @@ export interface ProviderMetadata {
   defaultModel: string;
 }
 
+/**
+ * Why a provider is (un)healthy, when the adapter can tell them apart.
+ *
+ * `ok` alone cannot separate "the key is wrong" from "the gateway is down"
+ * from "it answered but offers no models" — three failures with three
+ * different fixes. Optional because most adapters only ever learn a
+ * boolean and an HTTP status; an adapter that knows more says so here
+ * rather than growing a second health system.
+ */
+export type ProviderHealthState = 'connected' | 'unauthorized' | 'unreachable' | 'no-models' | 'error';
+
 export interface ProviderHealth {
   ok: boolean;
   latencyMs: number;
   error?: string;
   lastChecked: string;
+  state?: ProviderHealthState;
 }
 
 export interface ProviderAdapter {
