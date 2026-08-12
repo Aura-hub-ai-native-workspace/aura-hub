@@ -35,20 +35,35 @@ jobs:
   # own runner: AppImage + deb on Linux, NSIS on Windows, .app + .dmg on
   # macOS. A compile on Linux is not a build on Windows/macOS, so nothing
   # here is cross-compiled — every artifact is produced by its native
-  # toolchain. Runtime verification of these artifacts happens outside CI
-  # where a desktop session is available; CI proves the artifact exists.
+  # toolchain, and then RUNS what it built on that same OS. A build is not a
+  # run: `desktop-runtime-verify` boots the packaged service natively, checks
+  # the health gate, measures the real machine, exercises the port and
+  # shutdown paths, and launches the packaged shell. That is what lets
+  # Windows and macOS be reported as runtime-verified instead of merely
+  # compiled — and where a step genuinely cannot run, it says so rather
+  # than passing quietly.
+  #
+  # macOS is built twice on purpose: macos-latest is Apple Silicon and
+  # macos-13 is the last Intel runner, so each architecture is produced and
+  # tested on its own hardware rather than cross-compiled and assumed.
   desktop-build:
-    name: Desktop packaging (${{ matrix.os }})
+    name: Desktop packaging (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
+            label: linux-x64
             bundles: appimage,deb
           - os: windows-latest
+            label: windows-x64
             bundles: nsis
           - os: macos-latest
+            label: macos-arm64
+            bundles: app,dmg
+          - os: macos-13
+            label: macos-x64
             bundles: app,dmg
     steps:
       - uses: actions/checkout@v4
@@ -72,15 +87,29 @@ jobs:
       - name: Build desktop application
         run: npm run tauri --workspace @aura/desktop -- build
 
-      - name: Upload packaged artifacts
+      # Native runtime verification. Linux runners have no display, so the
+      # shell phase runs under a virtual one; Windows and macOS runners have
+      # a real session already. Without xvfb the Linux shell phase reports
+      # NOT RUNTIME VERIFIED rather than failing — but a virtual display is
+      # cheap, so it is provided and the phase genuinely runs.
+      - name: Install a virtual display (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y xvfb
+
+      - name: Runtime verification (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a node scripts/desktop-runtime-verify.mjs
+
+      - name: Runtime verification (Windows/macOS)
+        if: runner.os != 'Linux'
+        run: node scripts/desktop-runtime-verify.mjs
+
+      - name: Stage release artifacts
+        run: node scripts/stage-release-artifacts.mjs
+
+      - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: aura-hub-${{ matrix.os }}
+          name: AURA-Hub-${{ matrix.label }}
           if-no-files-found: error
-          path: |
-            apps/desktop/src-tauri/target/release/bundle/**/*.AppImage
-            apps/desktop/src-tauri/target/release/bundle/**/*.deb
-            apps/desktop/src-tauri/target/release/bundle/**/*.exe
-            apps/desktop/src-tauri/target/release/bundle/**/*.msi
-            apps/desktop/src-tauri/target/release/bundle/**/*.dmg
-            apps/desktop/src-tauri/target/release/bundle/**/*.app
+          path: dist-release/*

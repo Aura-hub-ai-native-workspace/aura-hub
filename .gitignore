@@ -53,3 +53,8 @@ graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
 scripts/.ui-*.png
 # Hub verification screenshot (local evidence only)
 scripts/.hub-*.png
+
+# Release installers, renamed out of target/ by scripts/stage-release-artifacts.mjs.
+# Build output — reproducible from a tagged commit, ~100 MB per platform, and
+# distributed through CI artifacts and GitHub Releases rather than through git.
+dist-release/
