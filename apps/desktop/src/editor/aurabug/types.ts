@@ -28,8 +28,11 @@ export interface AuraBugFixPatch {
 
 /** Bug Bot lifecycle for a single finding. Mirrors the required statuses:
  *  detected → analyzed → fix-proposed → awaiting-approval → approved →
- *  fixing → verifying → verified | verification-failed | rejected, with
- *  `failed` reserved for operation errors (e.g. a disk write that broke). */
+ *  fixing → verifying → verified | verification-failed → reverted | rejected,
+ *  with `failed` reserved for operation errors (e.g. a disk write that broke).
+ *  `reverted` means the user rolled back a fix whose verification failed and
+ *  the original content was restored — distinct from `rejected`, where no
+ *  change was ever applied. */
 export type BugBotStatus =
   | 'detected'
   | 'analyzing'
@@ -41,6 +44,7 @@ export type BugBotStatus =
   | 'verifying'
   | 'verified'
   | 'verification-failed'
+  | 'reverted'
   | 'rejected'
   | 'failed';
 

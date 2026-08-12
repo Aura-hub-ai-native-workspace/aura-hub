@@ -19,6 +19,7 @@ import { contextForSelection, riskFloor } from '../aiContext';
 import { useEditorStore } from '../editorStore';
 import { fsReadDir, fsReadFile } from '../fsClient';
 import { splicePatch, type OpenFile } from '../editorTypes';
+import { languageFromPath } from '../fileIcons';
 import type { AuraBugAiStatus, AuraBugIssue, AuraBugSeverity, AuraBugVerification } from './types';
 
 /* ── Marker collection: wait for the language service to settle ────── */
@@ -501,6 +502,7 @@ export interface ScanTarget {
 export interface ScanResult {
   issues: AuraBugIssue[];
   filesScanned: number;
+  /** Files skipped during collection (unreadable, non-scannable, byte-capped). */
   skipped: number;
   message?: string;
 }
@@ -528,9 +530,9 @@ export function collectOpenFileTargets(): ScanTarget[] {
  * unavailable (browser preview) this returns an honest empty result with a
  * message — never a fake scan.
  */
-export async function collectProjectTargets(): Promise<{ targets: ScanTarget[]; message?: string }> {
+export async function collectProjectTargets(): Promise<{ targets: ScanTarget[]; skipped: number; message?: string }> {
   const { root, openFiles } = useEditorStore.getState();
-  if (!root) return { targets: [], message: 'No project is open.' };
+  if (!root) return { targets: [], skipped: 0, message: 'No project is open.' };
 
   const targets: ScanTarget[] = [];
   const seenPaths = new Set<string>();
@@ -566,12 +568,12 @@ export async function collectProjectTargets(): Promise<{ targets: ScanTarget[]; 
         if (live && !live.loading && !live.error) {
           targets.push({ path: live.path, name: live.name, language: live.language, content: live.content });
         } else {
-          targets.push({ path: child.path, name: child.name, language: 'plaintext', content: '' });
+          targets.push({ path: child.path, name: child.name, language: languageFromPath(child.path), content: '' });
         }
       }
     }
   } catch {
-    return { targets, message: 'Desktop file access unavailable — fell back to open files only.' };
+    return { targets, skipped, message: 'Desktop file access unavailable — fell back to open files only.' };
   }
 
   // Read disk content for the targets we did not already have in memory,
@@ -594,6 +596,7 @@ export async function collectProjectTargets(): Promise<{ targets: ScanTarget[]; 
   const capped = targets.length >= PROJECT_MAX_FILES;
   return {
     targets: targets.filter((t) => t.content !== ''),
+    skipped,
     message: capped ? `Project scan capped at ${PROJECT_MAX_FILES} files.` : undefined,
   };
 }
@@ -615,8 +618,10 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R
 
 /** Scan a set of targets. Monaco markers are only collected when the file
  *  actually has a live model (open tabs); everything else gets the
- *  deterministic heuristic pass — honestly labeled by source per issue. */
-export async function scanTargets(targets: ScanTarget[]): Promise<ScanResult> {
+ *  deterministic heuristic pass — honestly labeled by source per issue.
+ *  `skipped` is the caller's count of files it chose not to scan (skipped
+ *  during collection: unreadable, non-scannable, or byte-capped). */
+export async function scanTargets(targets: ScanTarget[], skipped = 0): Promise<ScanResult> {
   const scanned = await mapLimit(targets, READ_CONCURRENCY, async (t) => {
     const uri = monaco.Uri.parse(t.path);
     let markers: monaco.editor.IMarker[] = [];
@@ -643,7 +648,7 @@ export async function scanTargets(targets: ScanTarget[]): Promise<ScanResult> {
     return [...markersToIssues(markers, file), ...analyzeHeuristics(t.content, file)];
   });
   const issues = scanned.flat();
-  return { issues, filesScanned: targets.length, skipped: 0 };
+  return { issues, filesScanned: targets.length, skipped };
 }
 
 /* ── Bug Bot: post-fix verification ────────────────────────────────── */

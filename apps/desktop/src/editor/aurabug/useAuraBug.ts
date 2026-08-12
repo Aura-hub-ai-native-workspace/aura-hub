@@ -73,6 +73,7 @@ export const STATUS_LABEL: Record<AuraBugIssue['status'], string> = {
   verifying: 'Verifying',
   verified: 'Verified',
   'verification-failed': 'Verification failed',
+  reverted: 'Reverted',
   rejected: 'Rejected',
   failed: 'Failed',
 };
@@ -87,6 +88,9 @@ export interface AuraBugController {
   scope: AuraBugScope;
   setScope: (scope: AuraBugScope) => void;
   filesScanned: number;
+  /** Files skipped during a multi-file scan (unreadable, non-scannable,
+   *  byte-capped). Zero for the single-file scope. */
+  skippedFiles: number;
   scopeMessage: string | null;
   reviewId: string | null;
   reviewing: AuraBugIssue | null;
@@ -114,6 +118,7 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [scope, setScopeState] = useState<AuraBugScope>('file');
   const [filesScanned, setFilesScanned] = useState(0);
+  const [skippedFiles, setSkippedFiles] = useState(0);
   const [scopeMessage, setScopeMessage] = useState<string | null>(null);
   const [reviewId, setReviewId] = useState<string | null>(null);
 
@@ -166,6 +171,7 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
     setReviewId(null);
     clearHighlight();
     setFilesScanned(1);
+    setSkippedFiles(0);
     setScopeMessage(null);
 
     let deterministic: AuraBugIssue[] = [];
@@ -204,10 +210,12 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
     setScopeMessage(null);
 
     let targets;
+    let skipped = 0;
     let message: string | undefined;
     if (target === 'project') {
       const res = await collectProjectTargets();
       targets = res.targets;
+      skipped = res.skipped;
       message = res.message;
     } else {
       targets = collectOpenFileTargets();
@@ -218,16 +226,18 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
       setIssues([]);
       setAiStatus('unavailable');
       setFilesScanned(0);
+      setSkippedFiles(skipped);
       setScopeMessage(message ?? 'No files to scan.');
       setPhase('done');
       return;
     }
 
-    const res = await scanTargets(targets);
+    const res = await scanTargets(targets, skipped);
     if (scanId !== scanIdRef.current) return;
     setIssues(dedupeIssues(res.issues));
     setAiStatus('unavailable');
     setFilesScanned(res.filesScanned);
+    setSkippedFiles(res.skipped);
     setScopeMessage(message ?? null);
     setPhase('done');
   }, [clearHighlight]);
@@ -415,7 +425,10 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
     [patchIssue],
   );
 
-  /** Roll back a fix whose verification failed — restore the exact pre-fix content. */
+  /** Roll back a fix whose verification failed — restore the exact pre-fix content.
+   *  Deliberately does NOT gate on `appliedRef`: approval already marked this id
+   *  applied, so gating here would make the revert a silent no-op. Instead the id
+   *  is un-marked on success so the user may review and re-approve the fix. */
   const revertFix = useCallback(
     async (issueId: string) => {
       const issue = issuesRef.current.find((i) => i.id === issueId);
@@ -423,9 +436,7 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
       const state = useEditorStore.getState();
       const file = state.openFiles[issue.filePath];
       if (!file) return;
-      if (appliedRef.current.has(issueId)) return;
       if (fixInFlightRef.current) return;
-      appliedRef.current.add(issueId);
       fixInFlightRef.current = true;
       patchIssue(issueId, { applying: true });
       try {
@@ -433,8 +444,9 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
         await state.saveFile(issue.filePath);
         const after = useEditorStore.getState().openFiles[issue.filePath];
         if (after?.saveError) throw new Error(after.saveError);
+        appliedRef.current.delete(issueId);
         patchIssue(issueId, {
-          status: 'rejected',
+          status: 'reverted',
           applying: false,
           verification: undefined,
           preFixContent: undefined,
@@ -475,6 +487,7 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
     scope,
     setScope,
     filesScanned,
+    skippedFiles,
     scopeMessage,
     reviewId,
     reviewing,

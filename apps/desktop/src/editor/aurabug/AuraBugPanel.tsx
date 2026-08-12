@@ -50,6 +50,7 @@ const STATUS_TONE: Record<AuraBugIssue['status'], StatusTone> = {
   verifying: 'info',
   verified: 'positive',
   'verification-failed': 'critical',
+  reverted: 'neutral',
   rejected: 'neutral',
   failed: 'critical',
 };
@@ -82,6 +83,7 @@ export function AuraBugPanel({
     scope,
     setScope,
     filesScanned,
+    skippedFiles,
     scopeMessage,
     reviewing,
     clearReview,
@@ -148,7 +150,7 @@ export function AuraBugPanel({
       footer={
         <div className="flex w-full items-center justify-end">
           <Button variant="secondary" size="sm" onClick={onClose}>
-            {reviewing ? 'Close' : 'Close'}
+            Close
           </Button>
         </div>
       }
@@ -217,7 +219,8 @@ export function AuraBugPanel({
             {scope !== 'file' && !scanning && issues.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-[12px]">
                 <span className="text-text-muted">
-                  {filesScanned} file{filesScanned === 1 ? '' : 's'} scanned · {issues.length} finding{issues.length === 1 ? '' : 's'}
+                  {filesScanned} file{filesScanned === 1 ? '' : 's'} scanned{skippedFiles > 0 ? ` · ${skippedFiles} skipped` : ''} · {issues.length}{' '}
+                  finding{issues.length === 1 ? '' : 's'}
                 </span>
                 {bySeverity.error > 0 && <Badge tone="critical">{bySeverity.error} error{bySeverity.error === 1 ? '' : 's'}</Badge>}
                 {bySeverity.bug > 0 && <Badge tone="attention">{bySeverity.bug} bug{bySeverity.bug === 1 ? '' : 's'}</Badge>}
@@ -261,7 +264,13 @@ export function AuraBugPanel({
                 {issues.map((issue) => {
                   const vis = severityIcon(issue);
                   const selected = issue.id === selectedId;
-                  const canReview = !!issue.fix && (issue.status === 'fix-proposed' || issue.status === 'analyzed' || issue.status === 'rejected');
+                  const canReview =
+                    !!issue.fix &&
+                    (issue.status === 'fix-proposed' ||
+                      issue.status === 'analyzed' ||
+                      issue.status === 'verification-failed' ||
+                      issue.status === 'reverted' ||
+                      issue.status === 'rejected');
                   return (
                     <li
                       key={issue.id}
@@ -345,7 +354,8 @@ function FixReview({
 }) {
   const open = fileIsOpen(issue.filePath);
   const busy = busyId === issue.id;
-  const canApprove = !!issue.fix && open && !busy && (issue.status === 'awaiting-approval' || issue.status === 'fix-proposed');
+  const canApprove =
+    !!issue.fix && open && !busy && (issue.status === 'awaiting-approval' || issue.status === 'fix-proposed' || issue.status === 'reverted');
   const canRevert = issue.status === 'verification-failed' && !!issue.preFixContent && open && !busy;
 
   return (
@@ -429,10 +439,9 @@ function FixReview({
             Revert Fix
           </Button>
         )}
-        {issue.status === 'rejected' && (
-          <Badge tone="neutral">Fix declined — no change was made</Badge>
-        )}
-        <Button variant="secondary" size="sm" onClick={onReject} disabled={busy || issue.status === 'rejected'}>
+        {issue.status === 'reverted' && <Badge tone="neutral">Fix reverted — original content restored</Badge>}
+        {issue.status === 'rejected' && <Badge tone="neutral">Fix declined — no change was made</Badge>}
+        <Button variant="secondary" size="sm" onClick={onReject} disabled={busy || issue.status === 'rejected' || issue.status === 'reverted'}>
           Reject
         </Button>
         <Button
