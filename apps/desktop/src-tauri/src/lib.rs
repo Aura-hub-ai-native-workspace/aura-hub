@@ -194,14 +194,44 @@ pub struct ServiceState {
 fn resolve_service_script(app: &tauri::App) -> Option<PathBuf> {
     if let Ok(packaged) = app.path().resolve("resources/ai-service.mjs", BaseDirectory::Resource) {
         if packaged.is_file() {
-            return Some(packaged);
+            return Some(strip_verbatim(packaged));
         }
     }
     // `CARGO_MANIFEST_DIR` is apps/desktop/src-tauri; the repo root is three up.
     let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
         .join(".aura/ai-service.mjs");
-    dev.canonicalize().ok().filter(|p| p.is_file())
+    dev.canonicalize().ok().filter(|p| p.is_file()).map(strip_verbatim)
+}
+
+/// Turn a Windows verbatim path back into an ordinary one.
+///
+/// `canonicalize` and Tauri's resource resolver both hand back verbatim
+/// paths on Windows (`\\?\D:\…`). Rust and the Win32 API are perfectly
+/// happy with those; **Node is not**. Given one as its main module it
+/// parses the device root, tries to `lstat` the bare drive letter, and
+/// dies with `EISDIR: illegal operation on a directory, lstat 'D:'` —
+/// which surfaces to the user as the service "stopping while starting up"
+/// with no indication that a path form was the cause.
+///
+/// The prefix exists to lift MAX_PATH and separator normalisation, neither
+/// of which matters for a path we are about to hand to another program, so
+/// dropping it costs nothing and makes the child able to read it.
+/// Guarded with `cfg!` rather than `#[cfg]` on purpose: a `#[cfg(windows)]`
+/// body is not compiled on Linux, so the one branch that only ever runs on
+/// Windows would be the one branch no Linux build ever type-checks. This
+/// way the developer machine and the Linux CI runner both compile it, and
+/// only its execution is platform-specific. No Unix path begins with
+/// `\\?\`, so the check is inert there in any case.
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return p;
+    }
+    let s = p.to_string_lossy().to_string();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => p,
+    }
 }
 
 /// The service's current condition, re-checked on every call.

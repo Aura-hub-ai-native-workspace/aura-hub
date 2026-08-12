@@ -557,6 +557,14 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
         .map_err(|e| format!("Could not open {}: {e}", log_path.display()))?;
     let log_err = log.try_clone().map_err(|e| e.to_string())?;
 
+    // What we resolved, on the shell's own stderr. When a service dies during
+    // startup the failure is otherwise indistinguishable between "wrong Node",
+    // "wrong script path" and "the service itself crashed" — and the path form
+    // alone has already caused one silent failure on Windows (see
+    // `strip_verbatim`). Two lines, printed once per launch.
+    eprintln!("[aura] node   : {}", node.display());
+    eprintln!("[aura] service: {}", script.display());
+
     let child = Command::new(&node)
         .arg(&script)
         // Without this the service resolves `process.cwd()` as a project to
