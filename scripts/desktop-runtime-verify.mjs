@@ -201,10 +201,19 @@ try {
   await post('/projects', { id: 'rt-proj', path: RUN_DIR });
   const low = await post('/fabric/invoke', { capabilityId: 'git.status', input: {}, context: { projectId: 'rt-proj' } });
   info(`git.status → ${low.body?.outcome} (${String(low.body?.detail ?? '').slice(0, 60)})`);
+  /**
+   * Which floor catches this depends on the machine, so the assertion must
+   * not. Where a coding agent is installed the request reaches
+   * `irreversible-floor` and waits for a human; where none is (a clean CI
+   * runner) `no-provider` denies it earlier. Both are correct refusals —
+   * the property being verified is that a high-risk capability NEVER
+   * auto-executes, which is true in both and is what is asserted.
+   */
   const high = await post('/fabric/invoke', { capabilityId: 'agent.delegate', input: { task: 'must not run' }, context: { projectId: 'rt-proj' } });
-  check('4a. a high-risk capability is still gated by the floor',
-    high.body?.outcome === 'awaiting-approval' && high.body?.policy?.rule === 'irreversible-floor',
-    `outcome=${high.body?.outcome} rule=${high.body?.policy?.rule}`);
+  const refused = high.body?.outcome !== 'succeeded' && (high.body?.attempts ?? 0) === 0
+    && ['awaiting-approval', 'denied'].includes(high.body?.outcome);
+  check('4a. a high-risk capability never auto-executes',
+    refused, `outcome=${high.body?.outcome} attempts=${high.body?.attempts ?? 0} rule=${high.body?.policy?.rule}`);
   /**
    * The property that matters is that nothing was installed — not which
    * gate stopped it. On a fresh AURA_HOME the approval gate catches this
@@ -304,6 +313,19 @@ try {
     const shellUp = await waitFor(async () => (await get('/health', 3000)).status === 200, 120000);
     check('9a. the packaged shell launches and brings its own service up', shellUp,
       shellUp ? `shell pid ${shellProc.pid}` : `no service within 120s · ${shellLog.slice(-300)}`);
+    if (!shellUp) {
+      // The shell reports only that the service "stopped while starting up";
+      // the reason is in the service's own log. Without this the failure is
+      // undiagnosable from CI, where the runner's temp directory is gone by
+      // the time anyone looks.
+      const svcLog = path.join(AURA_HOME, 'logs', 'ai-service.log');
+      info(`--- service log (${svcLog}) ---`);
+      info(fs.existsSync(svcLog) ? fs.readFileSync(svcLog, 'utf8').slice(-2000) : 'the shell never created a service log');
+      info(`--- shell stdout/stderr ---`);
+      info(shellLog.slice(-1500) || '(nothing on the shell\'s own streams)');
+      info(`shell binary: ${shellBin}`);
+      info(`shell exit code: ${shellProc.exitCode}`);
+    }
     if (shellUp) {
       const sid = await get('/fabric/capabilities');
       check('9b. the shell-started service has AURA identity', sid.status === 200 && !!sid.body?.policy);
