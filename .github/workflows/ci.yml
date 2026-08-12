@@ -84,8 +84,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Retried because Tauri fetches its bundler tooling at build time —
+      # AppRun and linuxdeploy on Linux, the NSIS binaries on Windows — and
+      # GitHub's CDN intermittently drops those connections, surfacing as
+      # `failed to bundle project: io: Peer disconnected`. That flake hit two
+      # different platforms in three runs and says nothing about the code, so
+      # it is retried rather than re-run by hand. A genuine build error still
+      # fails: it simply fails three times.
       - name: Build desktop application
-        run: npm run tauri --workspace @aura/desktop -- build
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if npm run tauri --workspace @aura/desktop -- build; then exit 0; fi
+            echo "::warning::desktop build attempt $attempt failed; retrying"
+            sleep 20
+          done
+          echo "::error::desktop build failed after 3 attempts"
+          exit 1
 
       # Native runtime verification. Linux runners have no display, so the
       # shell phase runs under a virtual one; Windows and macOS runners have
