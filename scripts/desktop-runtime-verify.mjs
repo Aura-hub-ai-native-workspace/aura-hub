@@ -330,10 +330,36 @@ try {
       const sid = await get('/fabric/capabilities');
       check('9b. the shell-started service has AURA identity', sid.status === 200 && !!sid.body?.policy);
       const sp = shellProc.pid;
-      shellProc.kill();
+      /**
+       * Close it the way a user closes it.
+       *
+       * This distinction is the whole point of the check. Node's `kill()`
+       * on Windows is `TerminateProcess` — an abrupt kill that gives Tauri
+       * no chance to run `RunEvent::Exit`, so the service it started is
+       * never told to stop. That is *abnormal* termination, and testing
+       * only that would report a failure the product does not have on the
+       * path users actually take. `taskkill` without `/F` posts WM_CLOSE,
+       * which is what clicking the window's X does. On Unix, SIGTERM is
+       * both the normal signal and the one `service.rs` installs handlers
+       * for.
+       */
+      if (IS_WIN) {
+        try { execFileSync('taskkill', ['/PID', String(sp)], { stdio: 'ignore' }); }
+        catch { shellProc.kill(); }
+      } else {
+        shellProc.kill('SIGTERM');
+      }
       const shellClosed = await waitFor(async () => !(await portOpen()), 30000);
-      check('9c. quitting the shell releases the port', shellClosed);
-      check('9d. no orphan service process is left behind', !alive(sp) || true, 'shell exited');
+      check('9c. closing the shell normally releases the port', shellClosed);
+      check('9d. no orphan service process is left behind', !(await portOpen()),
+        shellClosed ? 'port free, service gone with its shell' : 'a service still holds the port');
+
+      // Abnormal termination is reported, not asserted. Unix kills the
+      // service from a signal handler; Windows has no equivalent, so a
+      // hard-killed shell can outlive its service ownership. Recorded as a
+      // known limitation rather than hidden behind a passing test.
+      if (IS_WIN) info('NOTE: a hard TerminateProcess of the shell (Task Manager "End task") cannot run '
+        + 'Tauri\'s exit handler; see the release report\'s Windows limitations.');
       shellProc = null;
     }
   }
