@@ -26,6 +26,39 @@ export interface AuraBugFixPatch {
   newText: string;
 }
 
+/** Bug Bot lifecycle for a single finding. Mirrors the required statuses:
+ *  detected → analyzed → fix-proposed → awaiting-approval → approved →
+ *  fixing → verifying → verified | verification-failed | rejected, with
+ *  `failed` reserved for operation errors (e.g. a disk write that broke). */
+export type BugBotStatus =
+  | 'detected'
+  | 'analyzing'
+  | 'analyzed'
+  | 'fix-proposed'
+  | 'awaiting-approval'
+  | 'approved'
+  | 'fixing'
+  | 'verifying'
+  | 'verified'
+  | 'verification-failed'
+  | 'rejected'
+  | 'failed';
+
+/** Outcome of the post-fix verification re-scan. Honest by construction:
+ *  `passed` is set only when a real re-scan no longer reports the same
+ *  signature; `skipped` means no re-scan was possible (no fix / no model). */
+export interface AuraBugVerification {
+  checkedAt: string;
+  method: string;
+  passed: boolean | null;
+  detail: string;
+}
+
+/** What the scan covers. `file` is the existing single-active-file scan;
+ *  `open` covers every open tab's live buffer; `project` walks the real
+ *  project tree (bounded) through the existing confined fs bridge. */
+export type AuraBugScope = 'file' | 'open' | 'project';
+
 export interface AuraBugIssue {
   id: string;
   severity: AuraBugSeverity;
@@ -44,8 +77,18 @@ export interface AuraBugIssue {
   suggestedFix?: string;
   /** Optional safe patch — enables the "Apply Fix" flow. */
   fix?: AuraBugFixPatch;
-  /** Set true after the user confirms a fix (until the next rescan). */
-  applied?: boolean;
+  /** Deterministic (never AI-fabricated) statement of the likely cause,
+   *  derived from the diagnostic itself. Always an INFERENCE, never a fact. */
+  rootCause?: string;
+  /** Bug Bot lifecycle status (defaults to `detected` until analyzed). */
+  status: BugBotStatus;
+  /** Set after an approved fix has been re-scanned. */
+  verification?: AuraBugVerification;
+  /** The exact pre-fix file text, captured when a fix is approved so the
+   *  change can be reverted deterministically if verification fails. */
+  preFixContent?: string;
+  /** True while this finding's fix is being written/verified. */
+  applying?: boolean;
 }
 
 export type AuraBugPhase = 'idle' | 'scanning' | 'done' | 'error';
