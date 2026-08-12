@@ -358,9 +358,50 @@ try {
       // service from a signal handler; Windows has no equivalent, so a
       // hard-killed shell can outlive its service ownership. Recorded as a
       // known limitation rather than hidden behind a passing test.
-      if (IS_WIN) info('NOTE: a hard TerminateProcess of the shell (Task Manager "End task") cannot run '
-        + 'Tauri\'s exit handler; see the release report\'s Windows limitations.');
       shellProc = null;
+
+      /* ── 10. Windows: abnormal termination must not orphan ────────── */
+      if (IS_WIN) {
+        section('10. WINDOWS ABNORMAL TERMINATION (Job Object)');
+        const abrupt = spawn(shellBin, [], {
+          cwd: RUN_DIR, env: { ...process.env, AURA_HOME, AI_PORT: String(PORT) },
+          stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+        });
+        const back = await waitFor(async () => (await get('/health', 3000)).status === 200, 120000);
+        check('10a. the shell is up again for the abnormal-termination test', back, `shell pid ${abrupt.pid}`);
+
+        // The service is a node.exe child of the shell. Ask Windows which,
+        // rather than assuming — the pid must be real for the check to mean
+        // anything.
+        let svcPid = 0;
+        try {
+          const out = execFileSync('powershell', ['-NoProfile', '-Command',
+            `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${abrupt.pid}" | Select-Object -First 1 -ExpandProperty ProcessId)`],
+            { encoding: 'utf8', timeout: 30000 });
+          svcPid = Number(String(out).trim()) || 0;
+        } catch { /* reported by the check below */ }
+        check('10b. the service process was located as a child of the shell', svcPid > 0, `service pid ${svcPid}`);
+
+        // TerminateProcess — no WM_CLOSE, no exit handler, no chance to
+        // clean up. Exactly what Task Manager's "End task" does.
+        execFileSync('taskkill', ['/F', '/PID', String(abrupt.pid)], { stdio: 'ignore' });
+        check('10c. the shell was killed abnormally (no exit handler ran)', true, 'taskkill /F');
+
+        const portFree = await waitFor(async () => !(await portOpen()), 45000);
+        check('10d. the Job Object released port 4319 without any graceful shutdown', portFree);
+        const svcGone = svcPid > 0
+          ? await waitFor(async () => {
+            try {
+              const o = execFileSync('powershell', ['-NoProfile', '-Command',
+                `(Get-Process -Id ${svcPid} -ErrorAction SilentlyContinue | Measure-Object).Count`],
+                { encoding: 'utf8', timeout: 20000 });
+              return String(o).trim() === '0';
+            } catch { return true; }
+          }, 45000)
+          : portFree;
+        check('10e. the service process was killed with its shell — no orphan', svcGone, `pid ${svcPid}`);
+        try { abrupt.kill(); } catch { /* already gone */ }
+      }
     }
   }
 } catch (e) {

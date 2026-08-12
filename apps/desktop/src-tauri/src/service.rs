@@ -165,6 +165,102 @@ impl Default for ServiceHandle {
     }
 }
 
+/* ── Windows: dying together ─────────────────────────────────────── */
+
+/// Tie the service's lifetime to this process, on the platform that has no
+/// signals to do it with.
+///
+/// On Unix `install_termination_handlers` catches SIGTERM/SIGINT/SIGHUP and
+/// kills the service before re-raising, so a `kill`, a logout or a
+/// supervisor stop cannot orphan it. Windows has no equivalent: a
+/// `TerminateProcess` — which is what Task Manager's "End task" and a hard
+/// crash both are — runs no handler, no `RunEvent::Exit`, and nothing gets
+/// the chance to stop the service. It survives, holding port 4319, and the
+/// next launch refuses to start because the port is occupied.
+///
+/// A Job Object closes that gap in the kernel rather than in our code. The
+/// service is assigned to a job marked `KILL_ON_JOB_CLOSE`; the job's only
+/// handle is held by this process, so however this process ends — cleanly,
+/// killed, or crashed — the handle closes, the job closes, and Windows
+/// terminates everything in it.
+///
+/// Two properties are deliberate:
+///
+///   • **only a service we spawned is ever assigned.** `attach_to_job` is
+///     called from exactly one place, immediately after our own `spawn`. A
+///     reused service belongs to whoever started it and must outlive us; a
+///     foreign process on the port is never touched at all.
+///   • **graceful shutdown is unaffected.** The job is a backstop for
+///     abnormal death only. A normal quit still runs the ordinary path —
+///     `/shutdown` first, force only if ignored — so the service still gets
+///     to close its server and flush state.
+#[cfg(windows)]
+mod job {
+    use std::sync::OnceLock;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
+    /// A raw job handle. `HANDLE` is a bare pointer and therefore not `Send`
+    /// or `Sync` by default; a kernel handle is process-wide and safe to use
+    /// from any thread, and this one is only ever read.
+    struct Job(HANDLE);
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    /// Created once and then deliberately never closed: the handle must stay
+    /// open for the life of the process, because closing it is precisely what
+    /// kills the service.
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+
+    fn handle() -> Option<HANDLE> {
+        JOB.get_or_init(|| unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let set = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if set == 0 {
+                // A job we cannot configure would kill nothing on close, so
+                // it is worse than none: drop it and fall back to the
+                // ordinary shutdown path.
+                CloseHandle(job);
+                return None;
+            }
+            Some(Job(job))
+        })
+        .as_ref()
+        .map(|j| j.0)
+    }
+
+    /// Put one pid in the job. Returns false if the OS declined, which is
+    /// not fatal — graceful shutdown still works; only the abnormal-death
+    /// backstop is missing, and the caller says so in the log.
+    pub fn attach(pid: u32) -> bool {
+        let Some(job) = handle() else { return false };
+        unsafe {
+            let proc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if proc.is_null() {
+                return false;
+            }
+            let ok = AssignProcessToJobObject(job, proc) != 0;
+            CloseHandle(proc);
+            ok
+        }
+    }
+}
+
 /* ── termination signals ─────────────────────────────────────────── */
 
 /// Take the service down when this process is terminated by a signal.
@@ -580,6 +676,18 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
         .stderr(Stdio::from(log_err))
         .spawn()
         .map_err(|e| format!("Could not start AURA's local service using {}: {e}", node.display()))?;
+
+    // Bind the service's lifetime to ours on Windows. This is the only call
+    // site, and it is reached only for a service THIS process just spawned —
+    // a reused service belongs to its own owner and a foreign process on the
+    // port is never touched.
+    #[cfg(windows)]
+    if !job::attach(child.id()) {
+        eprintln!(
+            "[aura] warning: could not put the service in a job object; it may survive an \
+             abnormal termination of this process and keep port {port} open."
+        );
+    }
 
     handle.adopt(child);
 

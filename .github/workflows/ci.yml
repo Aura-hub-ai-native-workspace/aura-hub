@@ -122,6 +122,70 @@ jobs:
       - name: Stage release artifacts
         run: node scripts/stage-release-artifacts.mjs
 
+      # Installer verification. An artifact existing is not an artifact that
+      # installs, so each platform installs its own and launches what the
+      # installer put on disk — not what the build left in target/.
+      - name: Verify the .deb installs and launches (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          sudo apt-get install -y ./dist-release/*.deb
+          test -x "/usr/bin/aura-hub" || test -x "/usr/local/bin/aura-hub"
+          echo "installed binary: $(command -v aura-hub)"
+          xvfb-run -a env AURA_HOME="$RUNNER_TEMP/deb-home" AI_PORT=4319 aura-hub &
+          for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
+          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: installed .deb launched and its service is healthy"
+          curl -sf -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const s=JSON.parse(d);if(!s.results.node?.present)process.exit(1);console.log('OK: detection through the installed app — node',s.results.node.version,'| git',s.results.git?.version)})"
+          pkill -f 'aura-hub' || true
+          sudo apt-get remove -y aura-hub && echo "OK: uninstalled cleanly"
+
+      - name: Verify the AppImage executes directly (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          chmod +x dist-release/*.AppImage
+          xvfb-run -a env AURA_HOME="$RUNNER_TEMP/appimage-home" AI_PORT=4319 ./dist-release/*.AppImage &
+          for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
+          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: AppImage ran directly and its service is healthy"
+          pkill -f 'AURA' || true
+
+      - name: Verify the NSIS installer installs and launches (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist-release/*.exe)[0].FullName
+          # /S is NSIS silent mode; the installer is what a user double-clicks.
+          Start-Process -FilePath $exe -ArgumentList '/S' -Wait
+          $app = Get-ChildItem "$env:LOCALAPPDATA\Programs","${env:ProgramFiles}" -Recurse -Filter 'aura-hub.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $app) { throw 'NSIS installer did not place aura-hub.exe anywhere expected' }
+          Write-Host "installed to: $($app.FullName)"
+          $env:AURA_HOME = "$env:RUNNER_TEMP\nsis-home"
+          Start-Process -FilePath $app.FullName
+          $ok = $false
+          foreach ($i in 1..60) {
+            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:4319/health | Out-Null; $ok = $true; break } catch { Start-Sleep 2 }
+          }
+          if (-not $ok) { throw 'the installed application never brought its service up' }
+          Write-Host 'OK: installed NSIS build launched and its service is healthy'
+          Get-Process aura-hub -ErrorAction SilentlyContinue | Stop-Process -Force
+
+      - name: Verify the DMG mounts, copies and launches (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          DMG=$(ls dist-release/*.dmg | head -1)
+          hdiutil attach "$DMG" -mountpoint /Volumes/AURA -nobrowse -quiet
+          cp -R "/Volumes/AURA/AURA Hub.app" "$RUNNER_TEMP/AURA Hub.app"
+          hdiutil detach /Volumes/AURA -quiet
+          echo "OK: DMG mounted and the .app copied out of it"
+          AURA_HOME="$RUNNER_TEMP/dmg-home" AI_PORT=4319 "$RUNNER_TEMP/AURA Hub.app/Contents/MacOS/aura-hub" &
+          for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
+          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: the installed .app launched and its service is healthy"
+          curl -sf -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const s=JSON.parse(d);if(!s.results.node?.present)process.exit(1);console.log('OK: detection through the installed app — node',s.results.node.version,'| git',s.results.git?.version)})"
+          pkill -f 'aura-hub' || true
+
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
