@@ -71,11 +71,15 @@ pub enum Startup {
 /// started it — quitting AURA must not take it down.
 pub struct ServiceHandle {
     child: Mutex<Option<Child>>,
+    /// Port the supervised service listens on, for a graceful shutdown
+    /// request on platforms without POSIX signals (Windows).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    port: u16,
 }
 
 impl ServiceHandle {
-    pub fn new() -> Self {
-        Self { child: Mutex::new(None) }
+    pub fn new(port: u16) -> Self {
+        Self { child: Mutex::new(None), port }
     }
 
     fn adopt(&self, child: Child) {
@@ -104,10 +108,15 @@ impl ServiceHandle {
     /// Stop the service we started, politely first.
     ///
     /// `start.ts` installs SIGTERM/SIGINT handlers that close the server
-    /// and flush state, so SIGTERM is the correct signal and SIGKILL is
-    /// the fallback for a process that ignores it. A service we did not
-    /// start is never signalled — `child` is only ever populated by
-    /// `adopt`, which only `ensure_running` calls after spawning.
+    /// and flush state, so on Unix SIGTERM is the correct signal and
+    /// SIGKILL is the fallback for a process that ignores it. Windows has
+    /// no SIGTERM at all — a hard `TerminateProcess` (what `kill` becomes
+    /// there) would deny the service its graceful close — so the shell
+    /// asks the service to shut itself down over its own loopback port
+    /// first, and only force-terminates a process that ignores that.
+    /// A service we did not start is never signalled — `child` is only
+    /// ever populated by `adopt`, which only `ensure_running` calls after
+    /// spawning.
     pub fn shutdown(&self) {
         let mut guard = self.child.lock().unwrap();
         SERVICE_PID.store(0, Ordering::SeqCst);
@@ -122,6 +131,17 @@ impl ServiceHandle {
         #[cfg(unix)]
         unsafe {
             libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+        }
+
+        #[cfg(windows)]
+        {
+            // Ask the service to close gracefully. `x-aura-shutdown` is a
+            // required header the renderer can never send cross-origin
+            // (browsers would need a CORS preflight that this service does
+            // not allow), which keeps the endpoint no more exposed to other
+            // local processes than the SIGTERM any local user can send on
+            // Unix.
+            let _ = request_graceful_shutdown(self.port);
         }
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -141,7 +161,7 @@ impl ServiceHandle {
 
 impl Default for ServiceHandle {
     fn default() -> Self {
-        Self::new()
+        Self::new(DEFAULT_PORT)
     }
 }
 
@@ -218,6 +238,46 @@ fn http_get(port: u16, path: &str, timeout: Duration) -> Result<(u16, String), S
     Ok((status, body))
 }
 
+/// One HTTP/1.0 POST against loopback, with no body.
+///
+/// The same dependency-free reasoning as `http_get`: this only ever talks
+/// to AURA's own service on 127.0.0.1. The `x-aura-shutdown` header is
+/// part of the request the service requires before it will stop itself.
+#[cfg(windows)]
+fn http_post(port: u16, path: &str, timeout: Duration) -> Result<(u16, String), String> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| e.to_string())?;
+    stream.set_read_timeout(Some(READ_TIMEOUT)).ok();
+    stream.set_write_timeout(Some(READ_TIMEOUT)).ok();
+
+    let req = format!(
+        "POST {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-aura-shutdown: 1\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    );
+    stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&raw).to_string();
+
+    let status = text
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse::<u16>().ok())
+        .ok_or_else(|| "no HTTP status line".to_string())?;
+
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("").to_string();
+    Ok((status, body))
+}
+
+/// Ask AURA's own service to close itself, on platforms that have no
+/// SIGTERM. Only ever called for a child this process spawned (the handle
+/// is only populated by `adopt`), so this never reaches an unknown process.
+#[cfg(windows)]
+fn request_graceful_shutdown(port: u16) -> bool {
+    matches!(http_post(port, "/shutdown", CONNECT_TIMEOUT), Ok((200, _)))
+}
+
 /// Is the thing on this port actually AURA's service?
 ///
 /// Fingerprinted on two endpoints rather than one. `/health` alone is a
@@ -248,8 +308,27 @@ fn identify(port: u16) -> PortState {
 
 /* ── locating what we need to run ────────────────────────────────── */
 
+/// The user's home directory on the platform that is actually running.
+///
+/// Windows shells rarely set `HOME`: the canonical variable is
+/// `USERPROFILE`, with `HOMEDRIVE`+`HOMEPATH` as the legacy fallback.
+/// `HOME` is still honoured last — git-bash and WSL interop export it, and
+/// a user who sets it deliberately should keep it. The fallback for an
+/// unset-everything case is the current directory rather than `/`, which
+/// has no meaning on Windows.
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    #[cfg(windows)]
+    {
+        if let Some(p) = std::env::var_os("USERPROFILE") {
+            return PathBuf::from(p);
+        }
+        if let (Some(drive), Some(path)) = (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH")) {
+            return PathBuf::from(format!("{}{}", drive.to_string_lossy(), path.to_string_lossy()));
+        }
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
 }
 
 /// Where AURA keeps user state. Mirrors `persist.ts`, which resolves
@@ -273,22 +352,25 @@ fn aura_home() -> PathBuf {
 /// built to avoid.
 ///
 /// So the inherited PATH is kept first (a developer's shell wins), and the
-/// conventional user tool directories are appended behind it.
+/// conventional user tool directories of the running platform are appended
+/// behind it. The joined value uses the platform's own separator
+/// (`:` on Unix, `;` on Windows) via `join_paths`, never a hardcoded one.
 fn augmented_path(node_dir: Option<&PathBuf>) -> String {
     let home = home_dir();
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts: Vec<PathBuf> = Vec::new();
 
     if let Some(existing) = std::env::var_os("PATH") {
-        parts.extend(std::env::split_paths(&existing).map(|p| p.to_string_lossy().to_string()));
+        parts.extend(std::env::split_paths(&existing));
     }
 
     // Whatever interpreter we resolved must itself stay reachable: `node`
     // and `npm` are catalogue entries and SAFE_BINARIES members, so the
     // service is expected to be able to run them.
     if let Some(dir) = node_dir {
-        parts.push(dir.to_string_lossy().to_string());
+        parts.push(dir.clone());
     }
 
+    #[cfg(unix)]
     for candidate in [
         home.join(".local/bin"),
         home.join("bin"),
@@ -297,6 +379,10 @@ fn augmented_path(node_dir: Option<&PathBuf>) -> String {
         home.join(".bun/bin"),
         home.join("go/bin"),
         home.join(".deno/bin"),
+        // Homebrew's two prefixes: Intel (/usr/local) and Apple Silicon
+        // (/opt/homebrew). macOS is not a Linux install — it gets its own
+        // search rather than inheriting one by accident.
+        PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/usr/bin"),
         PathBuf::from("/bin"),
@@ -304,12 +390,43 @@ fn augmented_path(node_dir: Option<&PathBuf>) -> String {
         PathBuf::from("/usr/sbin"),
         PathBuf::from("/sbin"),
     ] {
-        parts.push(candidate.to_string_lossy().to_string());
+        parts.push(candidate);
+    }
+
+    #[cfg(windows)]
+    {
+        // npm installs global binaries into %APPDATA%\npm; chocolatey and
+        // scoop shim their own directories. Each of these is where a
+        // GUI-launched process would otherwise fail to find a tool the
+        // user genuinely installed.
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            parts.push(PathBuf::from(appdata).join("npm"));
+        }
+        if let Some(program_data) = std::env::var_os("ProgramData") {
+            parts.push(PathBuf::from(program_data).join("chocolatey/bin"));
+        }
+        for candidate in [
+            home.join(".opencode/bin"),
+            home.join(".local/bin"),
+            home.join(".cargo/bin"),
+            home.join(".bun/bin"),
+            home.join("go/bin"),
+            home.join(".deno/bin"),
+            home.join("scoop/shims"),
+            home.join("AppData/Roaming/npm"),
+        ] {
+            parts.push(candidate);
+        }
     }
 
     let mut seen = std::collections::HashSet::new();
-    parts.retain(|p| !p.is_empty() && seen.insert(p.clone()));
-    parts.join(":")
+    let parts: Vec<PathBuf> = parts
+        .into_iter()
+        .filter(|p| !p.as_os_str().is_empty() && seen.insert(p.clone()))
+        .collect();
+    std::env::join_paths(parts)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// Find a Node interpreter without trusting the launcher's environment.
@@ -331,11 +448,17 @@ fn resolve_node() -> Result<PathBuf, String> {
     let home = home_dir();
     let mut candidates: Vec<PathBuf> = Vec::new();
 
+    // Windows ships Node as node.exe; Unix as node. The interpreter name is
+    // a platform fact, not a preference.
+    let exe = if cfg!(windows) { "node.exe" } else { "node" };
+
     if let Some(path) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path) {
-            candidates.push(dir.join("node"));
+            candidates.push(dir.join(exe));
         }
     }
+
+    #[cfg(unix)]
     candidates.extend([
         PathBuf::from("/usr/local/bin/node"),
         PathBuf::from("/usr/bin/node"),
@@ -344,11 +467,32 @@ fn resolve_node() -> Result<PathBuf, String> {
         home.join(".bun/bin/node"),
     ]);
 
-    // nvm keeps versions in their own directories and exports them through
-    // a shell hook the GUI never runs, so look directly.
+    #[cfg(windows)]
+    candidates.extend([
+        // Official installer, Chocolatey, Scoop and nvm-windows each have
+        // their own canonical location — checked in that order.
+        PathBuf::from(r"C:\Program Files\nodejs\node.exe"),
+        home.join(r"scoop\apps\nodejs\current\node.exe"),
+        home.join(r"AppData\Roaming\nvm\current\node.exe"),
+    ]);
+
+    // nvm (Unix) keeps versions in their own directories and exports them
+    // through a shell hook the GUI never runs, so look directly.
+    #[cfg(unix)]
     if let Ok(versions) = std::fs::read_dir(home.join(".nvm/versions/node")) {
         for entry in versions.flatten() {
             candidates.push(entry.path().join("bin/node"));
+        }
+    }
+
+    // nvm-windows (Windows) keeps one version folder per install under
+    // %APPDATA%\nvm, with no shell hook to export anything.
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        if let Ok(versions) = std::fs::read_dir(PathBuf::from(appdata).join("nvm")) {
+            for entry in versions.flatten() {
+                candidates.push(entry.path().join("node.exe"));
+            }
         }
     }
 

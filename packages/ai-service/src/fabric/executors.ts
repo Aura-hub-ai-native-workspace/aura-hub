@@ -17,6 +17,7 @@
  */
 
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
 import { git, parseCommand, resolveAgentBinary, runAgent, runInstaller, safeShellWithCode } from '../exec/process';
@@ -336,9 +337,10 @@ const systemInstall: Executor = {
     try {
       // cwd is the user's home rather than a project: installing a global
       // tool is not project work, and pointing an installer at a project
-      // root invites it to write lockfiles there.
+      // root invites it to write lockfiles there. `os.homedir()` is the
+      // fallback rather than `/`, because Windows does not set `HOME`.
       res = await runInstaller(plan.bin, plan.args, {
-        cwd: process.env.HOME || '/',
+        cwd: process.env.HOME || os.homedir(),
         timeoutMs: inv.context.timeoutMs,
       });
     } catch (e) {

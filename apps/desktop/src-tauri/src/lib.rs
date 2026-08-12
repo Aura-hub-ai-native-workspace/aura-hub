@@ -232,7 +232,7 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .manage(ServiceState {
-            handle: ServiceHandle::new(),
+            handle: ServiceHandle::new(port),
             port,
             status: Mutex::new(ServiceStatus {
                 state: "starting".into(),

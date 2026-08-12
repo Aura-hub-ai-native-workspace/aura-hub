@@ -22,7 +22,7 @@
  *
  * Prerequisites (the script checks and tells you):
  *   • the AI service on :4319   — `npm run ai`
- *   • the desktop dev server on :5173 — `npm run dev`
+ *   • the desktop dev server on :1420 — `npm run dev`
  *
  * Usage: node scripts/hub-verify.mjs [--headed]
  *
@@ -36,7 +36,7 @@ import { chromium } from 'playwright-core';
 register(new URL('./ts-loader-hook.mjs', import.meta.url));
 
 const AI = process.env.AI_URL ?? 'http://localhost:4319';
-const APP = process.env.APP_URL ?? 'http://localhost:5173';
+const APP = process.env.APP_URL ?? 'http://localhost:1420';
 const CHROME = process.env.CHROMIUM ?? '/usr/bin/chromium';
 const HEADED = process.argv.includes('--headed');
 const SHOT = process.env.HUB_SHOT ?? 'scripts/.hub-canvas.png';

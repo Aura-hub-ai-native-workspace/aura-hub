@@ -4,7 +4,11 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, presentation-v0.1]
+    branches: [main, presentation-v0.1, feature/workspace-execution-environment]
+  # Release packaging has to be runnable on demand: the Windows and macOS
+  # artifacts cannot be produced on the Linux machine this is developed on,
+  # so their only honest source is a native runner started deliberately.
+  workflow_dispatch:
 
 jobs:
   build:
@@ -26,3 +30,57 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # Native release packaging. Each OS builds its REAL Tauri artifact on its
+  # own runner: AppImage + deb on Linux, NSIS on Windows, .app + .dmg on
+  # macOS. A compile on Linux is not a build on Windows/macOS, so nothing
+  # here is cross-compiled — every artifact is produced by its native
+  # toolchain. Runtime verification of these artifacts happens outside CI
+  # where a desktop session is available; CI proves the artifact exists.
+  desktop-build:
+    name: Desktop packaging (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bundles: appimage,deb
+          - os: windows-latest
+            bundles: nsis
+          - os: macos-latest
+            bundles: app,dmg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build desktop application
+        run: npm run tauri --workspace @aura/desktop -- build
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-hub-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/**/*.AppImage
+            apps/desktop/src-tauri/target/release/bundle/**/*.deb
+            apps/desktop/src-tauri/target/release/bundle/**/*.exe
+            apps/desktop/src-tauri/target/release/bundle/**/*.msi
+            apps/desktop/src-tauri/target/release/bundle/**/*.dmg
+            apps/desktop/src-tauri/target/release/bundle/**/*.app

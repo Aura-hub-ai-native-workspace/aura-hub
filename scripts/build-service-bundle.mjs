@@ -28,7 +28,7 @@
  * published package is `.d.ts` declarations and a CLI, none of which are
  * loaded at runtime. That is ~9 MB instead of ~23 MB.
  */
-import { execFileSync } from 'node:child_process';
+import { build } from 'esbuild';
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,19 +44,26 @@ const TS_OUT = path.join(OUT_DIR, 'node_modules/typescript');
 rmSync(OUT_DIR, { recursive: true, force: true });
 mkdirSync(path.join(TS_OUT, 'lib'), { recursive: true });
 
-execFileSync(
-  'npx',
-  [
-    'esbuild',
-    'packages/ai-service/src/start.ts',
-    '--bundle',
-    '--platform=node',
-    '--format=esm',
-    '--external:typescript',
-    `--outfile=${path.join(OUT_DIR, 'ai-service.mjs')}`,
-  ],
-  { cwd: REPO, stdio: 'inherit' },
-);
+/**
+ * esbuild is called through its JavaScript API rather than through `npx`.
+ *
+ * This is a portability requirement, not a style choice. npm installs
+ * `npx` as `npx.cmd` on Windows, and Node refuses to spawn a `.cmd`
+ * without routing it through the command interpreter — so `execFileSync`
+ * fails with ENOENT there and the packaging step dies before it starts.
+ * The API call has no such problem on any platform, and it removes a
+ * process spawn from the build besides.
+ */
+await build({
+  entryPoints: [path.join(REPO, 'packages/ai-service/src/start.ts')],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  external: ['typescript'],
+  outfile: path.join(OUT_DIR, 'ai-service.mjs'),
+  absWorkingDir: REPO,
+  logLevel: 'info',
+});
 
 for (const rel of ['package.json', 'lib/typescript.js']) {
   const from = path.join(TS_SRC, rel);

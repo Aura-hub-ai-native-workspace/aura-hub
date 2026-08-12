@@ -21,6 +21,7 @@ import { accessSync, constants, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { launchSpec, spawnFlags } from './which';
 import type { CatalogEntry, InstallPrivilege, InstallSpec } from '@aura/connected-environment';
 
 /** What AURA would do about an install, before any of it happens. */
@@ -84,11 +85,24 @@ export function writableWithAncestors(target: string): boolean {
 /** Where `npm install -g` would actually write on this machine. */
 function npmGlobalRoot(): string | null {
   try {
-    const prefix = execFileSync('npm', ['config', 'get', 'prefix'], {
+    // `npm` is `npm.cmd` on Windows, which Node will not spawn directly.
+    // Asking by bare name there throws ENOENT, and the catch below would
+    // read that as "cannot determine the prefix" and escalate an ordinary
+    // userspace install to the root tier — sending every Windows user to a
+    // terminal, with a `sudo` command that does not exist on their OS.
+    const { target } = launchSpec('npm', ['config', 'get', 'prefix']);
+    const prefix = execFileSync(target.file, target.args, {
       encoding: 'utf8',
       timeout: 10_000,
+      ...spawnFlags(target),
     }).trim();
-    return prefix && prefix !== 'undefined' ? path.join(prefix, 'lib', 'node_modules') : null;
+    if (!prefix || prefix === 'undefined') return null;
+    // Layout is a platform fact, not a preference: Windows keeps global
+    // modules directly under the prefix (%APPDATA%\npm\node_modules), Unix
+    // under prefix/lib/node_modules.
+    return process.platform === 'win32'
+      ? path.join(prefix, 'node_modules')
+      : path.join(prefix, 'lib', 'node_modules');
   } catch {
     return null;
   }
@@ -201,6 +215,18 @@ const show = (token: string) => (/^[A-Za-z0-9._@/:+-]+$/.test(token) ? token : `
 const line = (bin: string, args: string[]) => [bin, ...args].map(show).join(' ');
 
 /**
+ * The same command, marked as needing administrator rights on the platform
+ * the user is actually on.
+ *
+ * `sudo` is a Unix program. Printing it to a Windows user would be an
+ * instruction they cannot follow — and this string is the whole deliverable
+ * of the guided path (§25.3), so getting it wrong wastes the one thing AURA
+ * hands over when it refuses to act.
+ */
+const elevated = (cmd: string) =>
+  process.platform === 'win32' ? `${cmd}   (run this in an Administrator terminal)` : `sudo ${cmd}`;
+
+/**
  * Work out what installing this node would take.
  *
  * Returns a `NoInstallPlan` — not a throw and not a guess — when the
@@ -230,7 +256,7 @@ export function planInstall(entry: CatalogEntry): PlanResult {
       // distro package that may not exist.
       const base = userspaceCommand(spec, spec.package);
       return base
-        ? { executable: false, privilege, bin: base.bin, args: base.args, command: `sudo ${line(base.bin, base.args)}`, why }
+        ? { executable: false, privilege, bin: base.bin, args: base.args, command: elevated(line(base.bin, base.args)), why }
         : { executable: false, reason: `AURA has no verified way to install ${entry.name} on this machine.` };
     }
 
@@ -245,7 +271,7 @@ export function planInstall(entry: CatalogEntry): PlanResult {
       privilege,
       bin: distro.manager,
       args: [...distro.installArgs, pkg],
-      command: `sudo ${line(distro.manager, [...distro.installArgs, pkg])}`,
+      command: elevated(line(distro.manager, [...distro.installArgs, pkg])),
       why,
     };
   }

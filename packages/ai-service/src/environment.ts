@@ -20,6 +20,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { launchSpec, spawnFlags } from './exec/which';
 import { CATALOG, catalogEntry } from '@aura/connected-environment';
 import type { CatalogEntry, ProbeResult } from '@aura/connected-environment';
 
@@ -61,11 +62,32 @@ function runProbe(entry: CatalogEntry): Promise<ProbeResult> {
     });
   }
   const started = Date.now();
+  /**
+   * Resolve the probe command to a real file before spawning it.
+   *
+   * On Unix this changes nothing — the resolved path is the same program
+   * the OS would have found. On Windows it is the difference between a
+   * true and a false answer: `gh`, `opencode`, `npm` and everything else
+   * npm installs are `.cmd` shims, which Node will not spawn directly, so
+   * without this every one of them would report ENOENT and AURA would
+   * tell the user a tool they have installed is missing.
+   */
+  let target;
+  try {
+    ({ target } = launchSpec(probe.command, probe.args));
+  } catch (e) {
+    // A catalogue probe the platform's interpreter would rewrite. One
+    // unprobeable entry must not take the whole scan down with it.
+    return Promise.resolve({
+      present: false,
+      detail: `${entry.name} could not be probed safely on this platform: ${(e as Error).message}`,
+    });
+  }
   return new Promise((resolve) => {
     execFile(
-      probe.command,
-      probe.args,
-      { timeout: PROBE_TIMEOUT_MS, windowsHide: true, maxBuffer: 256 * 1024 },
+      target.file,
+      target.args,
+      { timeout: PROBE_TIMEOUT_MS, maxBuffer: 256 * 1024, ...spawnFlags(target) },
       (error, stdout, stderr) => {
         const latencyMs = Date.now() - started;
         // Several tools (notably `java -version`) print to stderr and some

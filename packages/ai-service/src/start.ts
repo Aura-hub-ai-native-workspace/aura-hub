@@ -15,7 +15,23 @@ async function main() {
   const openPath = noProject ? null : path.resolve(arg ?? process.cwd());
   const port = Number(process.env.AI_PORT ?? 4319);
 
-  const svc = await startService({ port });
+  const shutdown = async () => {
+    await svc.close();
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  const svc = await startService({
+    port,
+    onShutdownRequest: () => {
+      // Reached through POST /shutdown — the graceful-stop path a Windows
+      // supervisor uses because Windows has no SIGTERM. The service is
+      // already listening by the time any request can arrive, so `svc` is
+      // always assigned here.
+      shutdown();
+    },
+  });
 
   process.stdout.write(`\nAURA backend ready on ${svc.url}\n`);
 
@@ -38,13 +54,6 @@ async function main() {
   process.stdout.write(`  provider    : ${status.type === 'none' ? 'none — connect an API key in Settings to enable AI' : status.label}\n`);
   process.stdout.write(`  projects    : ${svc.manager.listProjects().length} in registry\n`);
   process.stdout.write(`\nLaunch the app with \`npm run dev\` and open the AI tab.\n`);
-
-  const shutdown = async () => {
-    await svc.close();
-    process.exit(0);
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
 }
 
 main().catch((e) => {

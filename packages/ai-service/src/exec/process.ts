@@ -22,6 +22,37 @@
  */
 
 import { execFile } from 'node:child_process';
+import { launchSpec, spawnFlags } from './which';
+
+/**
+ * Spawn an allow-listed binary by name, on whichever OS is running.
+ *
+ * Every spawn in this module goes through here rather than calling
+ * `execFile(name, …)` directly. The name is resolved to a real file first
+ * (`exec/which`), which is what makes Windows work at all: PATH is split
+ * with `;` there, executables carry a PATHEXT extension, and an
+ * npm-installed tool is a `.cmd` shim that Node will not spawn without
+ * routing it through the command interpreter.
+ *
+ * On Unix the resolved path is the same program the OS would have found,
+ * so behaviour is unchanged; when resolution fails there, the bare name is
+ * still handed to `execFile` so the OS resolver stays the authority and no
+ * tool it can find is ever reported missing by us.
+ */
+function runFile(
+  bin: string,
+  args: string[],
+  opts: { cwd?: string; timeout: number; signal?: AbortSignal },
+  done: (err: unknown, stdout: string, stderr: string) => void,
+) {
+  const { target } = launchSpec(bin, args);
+  return execFile(
+    target.file,
+    target.args,
+    { cwd: opts.cwd, timeout: opts.timeout, maxBuffer: MAX_BUFFER, signal: opts.signal, ...spawnFlags(target) },
+    (err, stdout, stderr) => done(err, stdout, stderr),
+  );
+}
 
 /**
  * Binaries the safe shell will spawn. Deliberately small: a command that
@@ -108,17 +139,19 @@ export function runInstaller(bin: string, args: string[], opts: SpawnOptions): P
   if (!resolved.ok) return Promise.reject(new Error(resolved.reason));
   const timeout = opts.timeoutMs ?? INSTALL_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
-    const child = execFile(
-      resolved.bin,
-      args,
-      { cwd: opts.cwd, timeout, maxBuffer: MAX_BUFFER, signal: opts.signal },
-      (err, stdout, stderr) => {
+    let child;
+    try {
+      child = runFile(resolved.bin, args, { cwd: opts.cwd, timeout, signal: opts.signal }, (err, stdout, stderr) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
           return reject(new Error(`${resolved.bin} is not installed`));
         }
         resolve(settle(err, stdout, stderr, timeout));
-      },
-    );
+      });
+    } catch (e) {
+      // An argument the platform's command interpreter would rewrite. The
+      // install does not happen, and the caller is told why.
+      return reject(e as Error);
+    }
     child.stdin?.end();
   });
 }
@@ -164,18 +197,21 @@ export function resolveAgentBinary(bin: string): ResolvedAgent {
 export function runAgent(bin: string, args: string[], opts: SpawnOptions): Promise<ProcessOutput> {
   const resolved = resolveAgentBinary(bin);
   if (!resolved.ok) return Promise.reject(new Error(resolved.reason));
+  const timeout = opts.timeoutMs ?? AGENT_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
-    const child = execFile(
-      resolved.bin,
-      args,
-      { cwd: opts.cwd, timeout: opts.timeoutMs ?? AGENT_TIMEOUT_MS, maxBuffer: MAX_BUFFER, signal: opts.signal },
-      (err, stdout, stderr) => {
+    let child;
+    try {
+      child = runFile(resolved.bin, args, { cwd: opts.cwd, timeout, signal: opts.signal }, (err, stdout, stderr) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
           return reject(new Error(`${resolved.bin} is not installed`));
         }
-        resolve(settle(err, stdout, stderr, opts.timeoutMs ?? AGENT_TIMEOUT_MS));
-      },
-    );
+        resolve(settle(err, stdout, stderr, timeout));
+      });
+    } catch (e) {
+      // The task text carried something cmd.exe would reinterpret. Refusing
+      // is the only honest option: a rewritten task is not the task asked for.
+      return reject(e as Error);
+    }
     /**
      * Close the agent's stdin immediately.
      *
@@ -285,16 +321,16 @@ function settle(
 
 /** Real `git` in a project directory. */
 export function git(args: string[], opts: SpawnOptions): Promise<ProcessOutput> {
+  const timeout = opts.timeoutMs ?? GIT_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
-    execFile(
-      'git',
-      args,
-      { cwd: opts.cwd, timeout: opts.timeoutMs ?? GIT_TIMEOUT_MS, maxBuffer: MAX_BUFFER, signal: opts.signal },
-      (err, stdout, stderr) => {
+    try {
+      runFile('git', args, { cwd: opts.cwd, timeout, signal: opts.signal }, (err, stdout, stderr) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new Error('git is not installed'));
-        resolve(settle(err, stdout, stderr, opts.timeoutMs ?? GIT_TIMEOUT_MS));
-      },
-    );
+        resolve(settle(err, stdout, stderr, timeout));
+      });
+    } catch (e) {
+      reject(e as Error);
+    }
   });
 }
 
@@ -379,21 +415,21 @@ function installSubcommand(bin: string, args: string[]): string | null {
 export function safeShell(command: string, opts: SpawnOptions): Promise<string> {
   const parsed = parseCommand(command);
   if (!parsed.ok) return Promise.reject(new Error(parsed.reason));
+  const timeout = opts.timeoutMs ?? SHELL_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
-    execFile(
-      parsed.bin,
-      parsed.args,
-      { cwd: opts.cwd, timeout: opts.timeoutMs ?? SHELL_TIMEOUT_MS, maxBuffer: MAX_BUFFER, signal: opts.signal },
-      (err, stdout, stderr) => {
-        const settled = settle(err, stdout, stderr, opts.timeoutMs ?? SHELL_TIMEOUT_MS);
+    try {
+      runFile(parsed.bin, parsed.args, { cwd: opts.cwd, timeout, signal: opts.signal }, (err, stdout, stderr) => {
+        const settled = settle(err, stdout, stderr, timeout);
         // A killed process is a failure even when it printed something
         // first — returning its partial output as the value would let a
         // caller treat a truncated run as a completed one.
         if (settled.killed) return reject(new Error(settled.out));
         if (err && !stdout && !stderr) return reject(new Error((err as Error).message));
         resolve(settled.out);
-      },
-    );
+      });
+    } catch (e) {
+      reject(e as Error);
+    }
   });
 }
 
@@ -405,17 +441,17 @@ export function safeShell(command: string, opts: SpawnOptions): Promise<string> 
 export function safeShellWithCode(command: string, opts: SpawnOptions): Promise<ProcessOutput> {
   const parsed = parseCommand(command);
   if (!parsed.ok) return Promise.reject(new Error(parsed.reason));
+  const timeout = opts.timeoutMs ?? SHELL_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
-    execFile(
-      parsed.bin,
-      parsed.args,
-      { cwd: opts.cwd, timeout: opts.timeoutMs ?? SHELL_TIMEOUT_MS, maxBuffer: MAX_BUFFER, signal: opts.signal },
-      (err, stdout, stderr) => {
+    try {
+      runFile(parsed.bin, parsed.args, { cwd: opts.cwd, timeout, signal: opts.signal }, (err, stdout, stderr) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
           return reject(new Error(`${parsed.bin} is not installed`));
         }
-        resolve(settle(err, stdout, stderr, opts.timeoutMs ?? SHELL_TIMEOUT_MS));
-      },
-    );
+        resolve(settle(err, stdout, stderr, timeout));
+      });
+    } catch (e) {
+      reject(e as Error);
+    }
   });
 }

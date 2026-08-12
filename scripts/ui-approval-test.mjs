@@ -7,14 +7,14 @@
  *
  * Prerequisites (the script checks and tells you):
  *   • the AI service on :4319        — `npm run ai`
- *   • the desktop dev server on :5173 — `npm run dev`
+ *   • the desktop dev server on :1420 — `npm run dev`
  *
  * Usage: node scripts/ui-approval-test.mjs [--headed]
  */
 import { chromium } from 'playwright-core';
 
 const AI = process.env.AI_URL ?? 'http://localhost:4319';
-const APP = process.env.APP_URL ?? 'http://localhost:5173';
+const APP = process.env.APP_URL ?? 'http://localhost:1420';
 const CHROME = process.env.CHROMIUM ?? '/usr/bin/chromium';
 const HEADED = process.argv.includes('--headed');
 
@@ -131,7 +131,18 @@ async function main() {
 
   console.log('\n=== 1. APPROVAL REQUEST RENDERS IN MISSION DETAIL ===');
   const armed = await armGate();
-  if (!armed) { console.error('could not arm an approval gate'); process.exit(2); }
+  if (!armed) {
+    // `armGate` has already set `allowAutonomous: false` globally, and that
+    // setting is PERSISTED (`~/.aura/fabric-policy.json`). Exiting here
+    // without undoing it leaves every other verification script — and the
+    // developer's own machine — gated on approval for everything, across
+    // restarts. The restore at the end of a successful run is not enough;
+    // the failure path has to restore it too.
+    await post('/fabric/policy', { allowAutonomous: true });
+    console.error('could not arm an approval gate (policy restored)');
+    await browser.close();
+    process.exit(2);
+  }
   console.log(`  (service opened request ${armed.id} for ${armed.items[0].capabilityId})`);
 
   await openMissionTasks(page);
@@ -236,4 +247,19 @@ async function main() {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-main().catch((e) => { console.error('UI TEST ERROR', e); process.exit(1); });
+main().catch(async (e) => {
+  console.error('UI TEST ERROR', e);
+  // `armGate` turns autonomous execution OFF globally to force a gate, and
+  // that is PERSISTED to ~/.aura/fabric-policy.json. Any throw between
+  // arming and the restore at the end of `main` would otherwise leave this
+  // machine — and every verification script run after it — gated on
+  // approval for everything, surviving service restarts. A test must not
+  // change the state of the system it failed on.
+  try {
+    await post('/fabric/policy', { allowAutonomous: true });
+    console.error('(policy restored: allowAutonomous=true)');
+  } catch {
+    console.error('(WARNING: could not restore allowAutonomous — set it back manually)');
+  }
+  process.exit(1);
+});

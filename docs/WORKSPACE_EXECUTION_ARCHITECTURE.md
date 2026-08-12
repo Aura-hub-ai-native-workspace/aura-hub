@@ -1071,6 +1071,119 @@ exactly the same basis as one that was always there — there is no second, weak
 
 ---
 
+## 26. Cross-platform behaviour (Linux, Windows, macOS)
+
+AURA is developed on Linux and packaged for three operating systems. The
+distance between "it compiles everywhere" and "it is honest everywhere" is
+where this section lives, because almost every platform assumption in this
+codebase sits in the two places that touch the machine: **finding an
+executable**, and **finding the user**.
+
+### 26.1 The failure this prevents
+
+`environment.ts` decides a tool is absent when the spawn reports `ENOENT`.
+On Windows that inference is wrong for an entire class of tools:
+
+- PATH is separated by `;`, not `:`;
+- an executable carries a PATHEXT extension (`git.exe`), which the user may
+  reconfigure;
+- everything npm installs — `npm`, `npx`, `opencode`, `gh` extensions — is a
+  `.cmd` shim, and since the fix for CVE-2024-27980 Node refuses to spawn a
+  `.cmd` without a command interpreter at all.
+
+Left alone, a Windows user with OpenCode installed would be told OpenCode is
+not installed. That is not a broken feature; it is AURA lying about the
+machine, which §21 forbids more strongly than it forbids missing
+functionality.
+
+### 26.2 One resolver, three consumers
+
+`exec/which.ts` resolves a bare binary name to a real file the way the
+running OS would, and is the only place any of this is decided. It is used
+by the probe path (`environment.ts`), the spawn primitive
+(`exec/process.ts`, and therefore every capability), and the install
+privilege check (`exec/install.ts`).
+
+A resolved `.cmd`/`.bat` is handed to `cmd.exe /d /s /c` with **every
+argument quoted individually**. Arguments are never joined into a command
+line, so shell metacharacters in a task description stay data. Two
+constructs cannot be neutralised by quoting — `%VAR%`, which `cmd` expands
+even inside quotes, and an embedded `"` — so those are **refused with an
+explanation** rather than guessed at. Refusing is the honest outcome: a
+silently rewritten task is not the task the user asked for, and `%` expansion
+would interpolate environment values into a command line.
+
+Resolution deliberately does **not** search the current directory, which
+Windows' own interpreter does. A stray `git.exe` dropped in a project folder
+must never be able to answer a capability probe.
+
+On Unix nothing changes: the resolved path is the same program the OS would
+have found, and a name that fails to resolve still falls through to
+`execFile`, so the OS resolver keeps the last word and no tool it can find is
+ever reported missing by us.
+
+### 26.3 Finding the user, not the developer
+
+User state is `AURA_HOME || ~/.aura` on every platform (`persist.ts`), and
+the desktop shell mirrors that resolution in Rust. `HOME` is a Unix
+variable; the shell resolves `USERPROFILE`, then `HOMEDRIVE`+`HOMEPATH`,
+then `HOME` on Windows.
+
+A GUI launcher hands its child a minimal PATH on every platform, so the
+shell rebuilds one before starting the service: the inherited PATH first,
+then the running platform's conventional tool directories — Homebrew's two
+prefixes on macOS, `%APPDATA%\npm` and the Scoop/Chocolatey shims on
+Windows. It is joined with `std::env::join_paths`, never a hardcoded
+separator. Without this the Connected Environment would report a machine
+far emptier than it is.
+
+Node is located rather than bundled (`node.exe` on Windows), consistent with
+Node being a catalogued execution node like any other: a bundled copy would
+mean AURA runs on a different Node than the one it reports detecting.
+
+### 26.4 Shutdown without signals
+
+Unix gets `SIGTERM`, plus handlers for `SIGTERM`/`SIGINT`/`SIGHUP` so a
+session logout cannot orphan the service on port 4319. Windows has no
+`SIGTERM` — `kill` there is `TerminateProcess`, which would deny the service
+its graceful close — so the shell asks the service to stop over its own
+loopback port (`POST /shutdown`, guarded by a required `x-aura-shutdown`
+header a web page cannot send cross-origin), and force-terminates only a
+process that ignores that.
+
+### 26.5 What is verified, and what is not
+
+`scripts/platform-verify.mjs` drives the Windows *and* POSIX branches with
+platform, PATH, PATHEXT and the file test injected, so the Windows logic is
+executed and asserted from Linux rather than reasoned about. It proves the
+resolution and quoting rules; it does **not** prove AURA runs on Windows,
+and it says so in its own output.
+
+Runtime verification on Windows and macOS requires those operating systems.
+The CI matrix builds the real artifact on each native runner — nothing is
+cross-compiled — but a build is not a run, and this document does not record
+a platform as runtime-verified on the strength of another platform's result.
+
+### 26.6 Honest limitations
+
+- **`terminal.execute` refuses backslashes on every platform.** The guard
+  that blocks shell operators also blocks `\`, which is a path separator on
+  Windows. Loosening it per-platform would weaken a security check to buy
+  convenience, so it stands and Windows path arguments are refused.
+- **macOS has no system-package install path.** `detectDistro()` reads
+  `/etc/os-release`, so macOS falls to the honest refusal ("AURA could not
+  identify this machine's package manager") and points at the project's own
+  instructions. Homebrew is not wired in; adding it is a new install method,
+  not a port.
+- **The guided root-tier command is platform-worded, not platform-tested.**
+  `sudo` is emitted on Unix and an Administrator-terminal instruction on
+  Windows. AURA still executes neither (§25.3).
+- **macOS artifacts are unsigned and unnotarized**, so Gatekeeper will
+  quarantine them until the project has a signing identity.
+
+
+---
+
 ## Proof obligation
 
 Before this reconstruction is called complete, the branch must show:

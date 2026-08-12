@@ -94,7 +94,7 @@ export interface ServiceHandle {
   close: () => Promise<void>;
 }
 
-export async function startService(opts: PipelineOptions & { port?: number; openPath?: string } = {}): Promise<ServiceHandle> {
+export async function startService(opts: PipelineOptions & { port?: number; openPath?: string; onShutdownRequest?: () => void } = {}): Promise<ServiceHandle> {
   setupProviders();
   const manager = new WorkspaceManager(opts);
 
@@ -177,6 +177,25 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     try {
       /* ── health / settings / key ──────────────────────────────── */
       if (method === 'GET' && seg[0] === 'health') return json(res, 200, { health: await p.health(), key: p.keyStatus(), index: manager.indexStatus(), project: manager.currentProject() });
+
+      /**
+       * Graceful shutdown over the loopback port — the desktop shell's
+       * Windows lifecycle path. Unix has SIGTERM (start.ts handles it);
+       * Windows has no SIGTERM, so the supervisor asks the service to
+       * close itself and only force-terminates a process that ignores it.
+       * The `x-aura-shutdown` header is required: a cross-origin webpage
+       * cannot send it (the CORS preflight this server does not allow
+       * would block it), so this stays no more reachable to other local
+       * processes than a signal is on Unix.
+       */
+      if (method === 'POST' && seg[0] === 'shutdown') {
+        if (req.headers['x-aura-shutdown'] !== '1') {
+          return json(res, 403, { error: 'shutdown requires the x-aura-shutdown header' });
+        }
+        json(res, 200, { ok: true, shuttingDown: true });
+        opts.onShutdownRequest?.();
+        return;
+      }
       if (method === 'GET' && (seg.length === 0 || seg[0] === 'settings')) return json(res, 200, { settings: p.getSettings(), defaults: DEFAULT_SETTINGS, key: p.keyStatus() });
       if (method === 'POST' && seg[0] === 'settings' && seg[1] === 'key') { const b = await readJson(req); return json(res, 200, p.setKey(String(b.apiKey ?? ''), Boolean(b.persist))); }
       if (method === 'DELETE' && seg[0] === 'settings' && seg[1] === 'key') { p.clearKey(); return json(res, 200, { ok: true }); }
