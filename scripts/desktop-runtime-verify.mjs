@@ -101,6 +101,45 @@ function findFiles(dir, test, out = [], depth = 0) {
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
+/**
+ * The pid of a process's first child, asked of the OS.
+ *
+ * Used to establish *ownership* — that the service answering on 4319 is the
+ * one this shell started rather than one it found already running. Those two
+ * are indistinguishable over HTTP and behave completely differently on
+ * shutdown, so the distinction has to come from the process table.
+ *
+ * Returns 0 when there is no child, which is itself a meaningful answer.
+ */
+function childPidOf(parentPid) {
+  try {
+    if (IS_WIN) {
+      const out = execFileSync('powershell', ['-NoProfile', '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${parentPid}" | Select-Object -First 1 -ExpandProperty ProcessId)`],
+        { encoding: 'utf8', timeout: 30000 });
+      return Number(String(out).trim()) || 0;
+    }
+    const out = execFileSync('pgrep', ['-P', String(parentPid)], { encoding: 'utf8', timeout: 15000 });
+    return Number(String(out).trim().split('\n')[0]) || 0;
+  } catch {
+    return 0; // no child, or the parent is already gone
+  }
+}
+
+/** Whether a pid is still present, asked of the OS rather than of a handle. */
+function pidAlive(pid) {
+  if (!pid) return false;
+  if (!IS_WIN) return alive(pid);
+  try {
+    const out = execFileSync('powershell', ['-NoProfile', '-Command',
+      `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue | Measure-Object).Count`],
+      { encoding: 'utf8', timeout: 20000 });
+    return String(out).trim() !== '0';
+  } catch {
+    return false;
+  }
+}
+
 /* ── temp state, never the user's ────────────────────────────────── */
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-rt-'));
 const AURA_HOME = path.join(TMP, 'home');
@@ -236,7 +275,11 @@ try {
   let secondLog = '';
   second.stdout?.on('data', (d) => { secondLog += d; });
   second.stderr?.on('data', (d) => { secondLog += d; });
-  await sleep(6000);
+  // Wait for the second instance to reach its bind attempt rather than
+  // assuming it gets there in a fixed six seconds. A cold Node start on a
+  // loaded CI runner can take longer than that, and timing out early reported
+  // a refusal failure the service did not actually have.
+  await waitFor(async () => /EADDRINUSE|already in use/i.test(secondLog) || second.exitCode !== null, 45000);
   const stillOurs = alive(serviceProc.pid) && (await get('/health')).status === 200;
   check('5a. a second service does not displace the first',
     stillOurs, stillOurs ? `original pid ${serviceProc.pid} still serving` : 'original was displaced');
@@ -289,6 +332,15 @@ try {
 
   /* ── 9. the packaged shell (needs a desktop session) ─────────────── */
   section('9. PACKAGED SHELL LAUNCH');
+  // The shell's service checks below only mean something if the shell
+  // actually started a service. If a previous phase left one running, the
+  // shell would reuse it — correct behaviour, but then "closing the shell
+  // releases the port" is testing someone else's process and fails for a
+  // reason that is not a defect. Assert the precondition instead of assuming
+  // it.
+  const portFreeBeforeShell = await waitFor(async () => !(await portOpen()), 30000);
+  check('9pre. the port is free before the shell is launched', portFreeBeforeShell,
+    portFreeBeforeShell ? 'nothing on 4319' : 'a leftover service still holds 4319 — later checks would be meaningless');
   const binDir = path.join(ROOT, 'apps/desktop/src-tauri/target/release');
   const shellBin = IS_WIN
     ? path.join(binDir, 'aura-hub.exe')
@@ -313,6 +365,17 @@ try {
     const shellUp = await waitFor(async () => (await get('/health', 3000)).status === 200, 120000);
     check('9a. the packaged shell launches and brings its own service up', shellUp,
       shellUp ? `shell pid ${shellProc.pid}` : `no service within 120s · ${shellLog.slice(-300)}`);
+
+    // "Its own" is the part that matters, and answering /health does not
+    // prove it — a reused service answers identically. Ask the OS whose
+    // child the service is.
+    const ownPid = shellUp ? childPidOf(shellProc.pid) : 0;
+    check('9a2. the service is the shell\'s own child, not one it reused', ownPid > 0,
+      ownPid > 0 ? `service pid ${ownPid}, parent ${shellProc.pid}` : 'no service child — the shell reused an existing service');
+    // The shell's own account of what it resolved and spawned. Printed
+    // whether or not the launch succeeded, because a check that passes for
+    // the wrong reason is exactly what this phase exists to catch.
+    for (const line of shellLog.split('\n').filter((l) => l.includes('[aura]'))) info(line.trim());
     if (!shellUp) {
       // The shell reports only that the service "stopped while starting up";
       // the reason is in the service's own log. Without this the failure is
@@ -370,16 +433,10 @@ try {
         const back = await waitFor(async () => (await get('/health', 3000)).status === 200, 120000);
         check('10a. the shell is up again for the abnormal-termination test', back, `shell pid ${abrupt.pid}`);
 
-        // The service is a node.exe child of the shell. Ask Windows which,
-        // rather than assuming — the pid must be real for the check to mean
-        // anything.
-        let svcPid = 0;
-        try {
-          const out = execFileSync('powershell', ['-NoProfile', '-Command',
-            `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${abrupt.pid}" | Select-Object -First 1 -ExpandProperty ProcessId)`],
-            { encoding: 'utf8', timeout: 30000 });
-          svcPid = Number(String(out).trim()) || 0;
-        } catch { /* reported by the check below */ }
+        // Whose service is it? A reused one would not be in this shell's job
+        // object and must not be expected to die with it, so the pid has to
+        // be a real child for anything below to mean anything.
+        const svcPid = back ? childPidOf(abrupt.pid) : 0;
         check('10b. the service process was located as a child of the shell', svcPid > 0, `service pid ${svcPid}`);
 
         // TerminateProcess — no WM_CLOSE, no exit handler, no chance to
@@ -390,15 +447,8 @@ try {
         const portFree = await waitFor(async () => !(await portOpen()), 45000);
         check('10d. the Job Object released port 4319 without any graceful shutdown', portFree);
         const svcGone = svcPid > 0
-          ? await waitFor(async () => {
-            try {
-              const o = execFileSync('powershell', ['-NoProfile', '-Command',
-                `(Get-Process -Id ${svcPid} -ErrorAction SilentlyContinue | Measure-Object).Count`],
-                { encoding: 'utf8', timeout: 20000 });
-              return String(o).trim() === '0';
-            } catch { return true; }
-          }, 45000)
-          : portFree;
+          ? await waitFor(async () => !pidAlive(svcPid), 45000)
+          : false;
         check('10e. the service process was killed with its shell — no orphan', svcGone, `pid ${svcPid}`);
         try { abrupt.kill(); } catch { /* already gone */ }
       }
