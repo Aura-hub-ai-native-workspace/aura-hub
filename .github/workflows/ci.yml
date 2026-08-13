@@ -44,8 +44,15 @@ jobs:
   # than passing quietly.
   #
   # macOS is built twice on purpose: macos-latest is Apple Silicon and
-  # macos-13 is the last Intel runner, so each architecture is produced and
-  # tested on its own hardware rather than cross-compiled and assumed.
+  # macos-15-intel is Intel, so each architecture is produced and tested on
+  # its own hardware rather than cross-compiled and assumed.
+  #
+  # The Intel leg was `macos-13`, which never ran: that image was retired in
+  # December 2025, and a retired label does not fail a job, it queues it
+  # forever. Eight consecutive runs sat unassigned for ten hours looking
+  # exactly like runner scarcity. `macos-15-intel` is the current Intel
+  # image and is planned to be the last one, so this leg has a finite life;
+  # when it goes, Intel coverage ends with it rather than silently pretending.
   desktop-build:
     name: Desktop packaging (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
@@ -62,7 +69,7 @@ jobs:
           - os: macos-latest
             label: macos-arm64
             bundles: app,dmg
-          - os: macos-13
+          - os: macos-15-intel
             label: macos-x64
             bundles: app,dmg
     steps:
