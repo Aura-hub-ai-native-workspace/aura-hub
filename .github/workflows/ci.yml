@@ -163,17 +163,33 @@ jobs:
         run: |
           $exe = (Get-ChildItem dist-release/*.exe)[0].FullName
           # /S is NSIS silent mode; the installer is what a user double-clicks.
-          Start-Process -FilePath $exe -ArgumentList '/S' -Wait
+          $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
+          Write-Host "installer exit code: $($p.ExitCode)"
           Start-Sleep 5
-          # The installed binary is named after productName ("AURA Hub.exe"),
-          # not after the crate, and a per-user install lands under
-          # LOCALAPPDATA rather than Program Files. Search for what is
-          # actually installed instead of assuming either.
-          $roots = @("$env:LOCALAPPDATA\Programs", "$env:ProgramFiles", "${env:ProgramFiles(x86)}") |
+          # Ask the installer where it put things rather than guessing. NSIS
+          # writes an uninstall entry with InstallLocation, which is correct
+          # whether the install was per-user or per-machine and whatever the
+          # product is called. The filesystem sweep is only a fallback, and
+          # both are reported so a failure here says what actually happened
+          # instead of just "not found".
+          $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                                    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                                    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' `
+                   -ErrorAction SilentlyContinue |
+                   Where-Object { $_.DisplayName -match 'AURA' } | Select-Object -First 1
+          if ($entry) { Write-Host "registry: $($entry.DisplayName) -> $($entry.InstallLocation)" }
+          else { Write-Host 'registry: no uninstall entry matching AURA' }
+          $roots = @($entry.InstallLocation, "$env:LOCALAPPDATA\Programs", "$env:LOCALAPPDATA",
+                     "$env:ProgramFiles", "${env:ProgramFiles(x86)}") |
                    Where-Object { $_ -and (Test-Path $_) }
           $app = Get-ChildItem $roots -Recurse -Filter '*.exe' -ErrorAction SilentlyContinue |
                  Where-Object { $_.BaseName -match 'AURA' } | Select-Object -First 1
-          if (-not $app) { throw 'NSIS installer placed no AURA executable under LOCALAPPDATA\Programs or Program Files' }
+          if (-not $app) {
+            Write-Host '--- directories matching AURA under the searched roots ---'
+            Get-ChildItem $roots -Recurse -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'AURA' } | Select-Object -First 10 -ExpandProperty FullName
+            throw 'NSIS installer placed no AURA executable anywhere searched'
+          }
           Write-Host "installed to: $($app.FullName)"
           $env:AURA_HOME = "$env:RUNNER_TEMP\nsis-home"
           Start-Process -FilePath $app.FullName
