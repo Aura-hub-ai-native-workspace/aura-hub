@@ -157,8 +157,16 @@ jobs:
           $exe = (Get-ChildItem dist-release/*.exe)[0].FullName
           # /S is NSIS silent mode; the installer is what a user double-clicks.
           Start-Process -FilePath $exe -ArgumentList '/S' -Wait
-          $app = Get-ChildItem "$env:LOCALAPPDATA\Programs","${env:ProgramFiles}" -Recurse -Filter 'aura-hub.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $app) { throw 'NSIS installer did not place aura-hub.exe anywhere expected' }
+          Start-Sleep 5
+          # The installed binary is named after productName ("AURA Hub.exe"),
+          # not after the crate, and a per-user install lands under
+          # LOCALAPPDATA rather than Program Files. Search for what is
+          # actually installed instead of assuming either.
+          $roots = @("$env:LOCALAPPDATA\Programs", "$env:ProgramFiles", "${env:ProgramFiles(x86)}") |
+                   Where-Object { $_ -and (Test-Path $_) }
+          $app = Get-ChildItem $roots -Recurse -Filter '*.exe' -ErrorAction SilentlyContinue |
+                 Where-Object { $_.BaseName -match 'AURA' } | Select-Object -First 1
+          if (-not $app) { throw 'NSIS installer placed no AURA executable under LOCALAPPDATA\Programs or Program Files' }
           Write-Host "installed to: $($app.FullName)"
           $env:AURA_HOME = "$env:RUNNER_TEMP\nsis-home"
           Start-Process -FilePath $app.FullName
@@ -168,7 +176,20 @@ jobs:
           }
           if (-not $ok) { throw 'the installed application never brought its service up' }
           Write-Host 'OK: installed NSIS build launched and its service is healthy'
-          Get-Process aura-hub -ErrorAction SilentlyContinue | Stop-Process -Force
+          $scan = Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Method POST -ContentType 'application/json' -Body '{}' http://127.0.0.1:4319/environment/scan
+          $node = ($scan.Content | ConvertFrom-Json).results.node
+          if (-not $node.present) { throw 'the installed application did not detect Node' }
+          Write-Host "OK: detection through the installed app — node $($node.version)"
+          Get-Process -Name $app.BaseName -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          # Uninstall through the uninstaller the installer itself wrote.
+          $uninst = Join-Path $app.DirectoryName 'uninstall.exe'
+          if (Test-Path $uninst) {
+            Start-Process -FilePath $uninst -ArgumentList '/S' -Wait
+            Start-Sleep 5
+            if (Test-Path $app.FullName) { Write-Host 'NOTE: uninstaller ran but the binary is still present' }
+            else { Write-Host 'OK: uninstalled cleanly' }
+          } else { Write-Host 'NOTE: no uninstall.exe written by the installer' }
 
       - name: Verify the DMG mounts, copies and launches (macOS)
         if: runner.os == 'macOS'
