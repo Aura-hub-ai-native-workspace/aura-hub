@@ -260,7 +260,20 @@ pub fn run() {
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(DEFAULT_PORT);
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // The updater and the restart it needs. Registered before anything
+    // else so the plugin is available for the whole app lifetime.
+    //
+    // `cfg` rather than an unconditional call because the plugins are
+    // declared under the same desktop cfg in Cargo.toml — on any other
+    // target the crates are absent and this would not compile.
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+
+    let app = builder
         .manage(ServiceState {
             handle: ServiceHandle::new(port),
             port,

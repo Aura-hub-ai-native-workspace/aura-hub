@@ -38,6 +38,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["appimage", "deb"],
     "resources": ["resources/**/*"],
     "linux": {
@@ -55,5 +56,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERBMEJEQ0VBQTI1MjYzRUMKUldUc1kxS2k2dHdMMnZENFE1Zjh3SkpWUkdpMUFXUmR4YUtuV0hnYUYxcXJJY1JKS1BNR0JzVG4K",
+      "endpoints": [
+        "https://github.com/Aura-hub-ai-native-workspace/aura-hub/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

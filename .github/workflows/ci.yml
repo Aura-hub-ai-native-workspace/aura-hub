@@ -100,6 +100,19 @@ jobs:
       # fails: it simply fails three times.
       - name: Build desktop application
         shell: bash
+        # The updater's signing key, passed by reference only — the value is
+        # a repository secret and never appears in this file or in a log.
+        #
+        # This is REQUIRED, not optional: `bundle.createUpdaterArtifacts` is
+        # on and `plugins.updater.pubkey` is set, and the Tauri CLI refuses to
+        # build in that state without a private key ("A public key has been
+        # found, but no private key"). It also verifies the pair, and fails if
+        # this key does not match the configured pubkey — so a mismatched or
+        # rotated key is caught at build time rather than by users whose
+        # updates silently stop verifying.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           for attempt in 1 2 3; do
             if npm run tauri --workspace @aura/desktop -- build; then exit 0; fi
