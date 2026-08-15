@@ -22,6 +22,7 @@
 import type { PipelineManager } from '../pipeline';
 import { parseModelJson } from '../jsonMode';
 import { genId } from '../workflow/types';
+import type { TaskNode } from './execution/nodes';
 import type {
   AutomationLevel,
   ExtractedIntent,
@@ -37,7 +38,8 @@ import type {
   TaskRisk,
 } from './types';
 
-const TASK_KINDS: TaskKind[] = ['file-operation', 'manual-operation', 'review', 'approval', 'documentation', 'research'];
+const TASK_KINDS: TaskKind[] = ['file-operation', 'git-operation', 'manual-operation', 'review', 'approval', 'documentation', 'research'];
+const TASK_NODES: TaskNode[] = ['aura-ai', 'git', 'opencode', 'claude-code'];
 const TASK_MODES: TaskMode[] = ['diff', 'new-file'];
 const TASK_PRIORITIES: TaskPriority[] = ['critical', 'high', 'medium', 'low'];
 const TASK_RISKS: TaskRisk[] = ['low', 'medium', 'high'];
@@ -57,9 +59,10 @@ function buildSystemPrompt(strategy: MissionStrategy): string {
     '"relatedEvidence":array of short strings quoting/paraphrasing real evidence you actually used,"priority":"high"|"medium"|"low"}), ' +
     '"tasks" (array of {"id":string,"goalId":string (must match a goal id you produced),"focusAreaId":string,' +
     '"title":string,"description":string,' +
-    `"kind":one of "file-operation"|"manual-operation"|"review"|"approval"|"documentation"|"research", ` +
+    `"kind":one of "file-operation"|"git-operation"|"manual-operation"|"review"|"approval"|"documentation"|"research", ` +
     '"targetFile":string or null (exact relative path from evidence given, or a plausible new file only for genuinely new files, or null if there is no single concrete file),' +
     '"mode":"diff"|"new-file" or null (null when targetFile is null; "new-file" only if the file plausibly does not exist yet),' +
+    '"node": one of "aura-ai"|"git"|"opencode"|"claude-code" or null — include it ONLY if the user\'s mission text explicitly demanded a specific execution tool; otherwise null. ' +
     '"priority":"critical"|"high"|"medium"|"low",' +
     '"dependencies":array of task ids from THIS SAME response that should be done first (empty array if none),' +
     '"estimatedDurationMinutes":number (realistic, not padded),' +
@@ -68,7 +71,8 @@ function buildSystemPrompt(strategy: MissionStrategy): string {
     '"owner":"ai"|"human" (use "human" for anything requiring a real judgment call, external access, or manual verification AI cannot do),' +
     '"automationLevel":"automatic"|"assisted"|"manual"}). ' +
     `The ONLY valid focus area ids for this mission are: "${focusAreaIds}". ` +
-    'Never treat every task equally: not everything is a file edit — use "review"/"approval"/"documentation"/"research" honestly when that is what the work actually is. ' +
+    'Never treat every task equally: not everything is a file edit — use "git-operation" for a task that is purely a repository operation (committing changes, branching, tagging), ' +
+    'and "review"/"approval"/"documentation"/"research" honestly when that is what the work actually is. ' +
     'Ground every goal and task in the REAL evidence given below — invent no files, numbers, or issues that were not given to you. ' +
     'Produce at most 8 goals and at most 4 tasks per goal. Every goal must be traceable to the user\'s actual intent or to a real project signal — never a generic engineering checklist.';
 }
@@ -215,9 +219,10 @@ export async function generateGoalGraph(
       const rawDeps = Array.isArray(t.dependencies) ? (t.dependencies as unknown[]).filter((d): d is string => typeof d === 'string') : [];
       const dependencies = rawDeps.map((d) => taskIdMap.get(d)).filter((d): d is string => Boolean(d));
       const kind = pickEnum(t.kind, TASK_KINDS, targetFile ? 'file-operation' : 'manual-operation');
-      const automationLevel = pickEnum(t.automationLevel, AUTOMATION_LEVELS, kind === 'file-operation' ? 'assisted' : 'manual');
+      const automationLevel = pickEnum(t.automationLevel, AUTOMATION_LEVELS, kind === 'file-operation' || kind === 'git-operation' ? 'assisted' : 'manual');
       const durationRaw = typeof t.estimatedDurationMinutes === 'number' && Number.isFinite(t.estimatedDurationMinutes) ? t.estimatedDurationMinutes : 30;
       const confidenceRaw = typeof t.confidence === 'number' && Number.isFinite(t.confidence) ? t.confidence : 0.5;
+      const requestedNode = typeof t.node === 'string' ? pickEnum(t.node, TASK_NODES, 'aura-ai' as TaskNode) : undefined;
       const task: MissionTask = {
         id: ourId,
         goalId,
@@ -225,20 +230,53 @@ export async function generateGoalGraph(
         title: typeof t.title === 'string' && t.title.trim() ? t.title.trim() : 'Untitled task',
         description: typeof t.description === 'string' ? t.description : '',
         kind,
-        targetFile,
-        mode,
+        targetFile: kind === 'git-operation' ? null : targetFile,
+        mode: kind === 'git-operation' ? null : mode,
+        ...(requestedNode ? { requestedNode } : {}),
         priority: pickEnum(t.priority, TASK_PRIORITIES, 'medium'),
         dependencies,
         estimatedDurationMinutes: Math.max(1, Math.min(480, Math.round(durationRaw))),
         confidence: Math.max(0, Math.min(0.99, confidenceRaw)),
         risk: pickEnum(t.risk, TASK_RISKS, 'medium'),
-        owner: t.owner === 'human' ? 'human' : kind === 'file-operation' ? 'ai' : 'human',
+        owner: t.owner === 'human' ? 'human' : kind === 'file-operation' || kind === 'git-operation' ? 'ai' : 'human',
         automationLevel,
         status: 'pending',
       };
       return task;
     })
     .filter((t): t is MissionTask => t !== null);
+
+  // ── Deterministic working-tree safety ─────────────────────────────
+  // A git operation mutates the shared working tree, so it must always run
+  // AFTER the file-operations whose changes it captures. Planning may or may
+  // not encode this — enforce it here, cycle-safely: for every git-operation
+  // task, add every file-operation task as a dependency UNLESS the file task
+  // already transitively depends on this git task (which would create a cycle).
+  const reachable = new Map<string, Set<string>>();
+  const depsOf = new Map(tasks.map((t) => [t.id, new Set(t.dependencies)] as const));
+  const reach = (seed: string): Set<string> => {
+    const cached = reachable.get(seed);
+    if (cached) return cached;
+    const out = new Set<string>();
+    const stack = [...(depsOf.get(seed) ?? [])];
+    while (stack.length) {
+      const id = stack.pop()!;
+      if (out.has(id)) continue;
+      out.add(id);
+      for (const d of depsOf.get(id) ?? []) stack.push(d);
+    }
+    reachable.set(seed, out);
+    return out;
+  };
+  const fileOpIds = tasks.filter((t) => t.kind === 'file-operation').map((t) => t.id);
+  if (fileOpIds.length) {
+    for (const t of tasks) {
+      if (t.kind !== 'git-operation') continue;
+      const tReach = reach(t.id);
+      const extra = fileOpIds.filter((f) => f !== t.id && !tReach.has(f) && !reach(f).has(t.id));
+      if (extra.length) t.dependencies = [...new Set([...t.dependencies, ...extra])];
+    }
+  }
 
   return { ok: true, goalGraph: { goals, tasks } };
 }

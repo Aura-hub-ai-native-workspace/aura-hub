@@ -68,14 +68,30 @@ function insideProject(root: string, rel: string): string {
   return abs;
 }
 
-function git(ctx: RunCtx, args: string[]): Promise<{ out: string; code: number }> {
+export interface GitRunResult {
+  out: string;
+  code: number;
+}
+
+/**
+ * The governed git runner — the ONLY place git is executed in AURA.
+ * Fixed binary, plain argument array (no shell), project-confinement via
+ * cwd, bounded timeout/maxBuffer, real exit codes. Shared by the workflow
+ * engine's git nodes and the mission node fabric's git executor so there is
+ * exactly one governed git executor in the whole app.
+ */
+export function runGit(cwd: string, args: string[], opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<GitRunResult> {
   return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd: ctx.projectPath, timeout: 20_000, maxBuffer: 4 * 1024 * 1024, signal: ctx.signal }, (err, stdout, stderr) => {
+    execFile('git', args, { cwd, timeout: opts.timeoutMs ?? 20_000, maxBuffer: 4 * 1024 * 1024, signal: opts.signal }, (err, stdout, stderr) => {
       if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new Error('git is not installed'));
       const code = (err as { code?: number } | null)?.code;
       resolve({ out: (stdout + (stderr ? `\n${stderr}` : '')).trim(), code: typeof code === 'number' ? code : 0 });
     });
   });
+}
+
+function git(ctx: RunCtx, args: string[]): Promise<{ out: string; code: number }> {
+  return runGit(ctx.projectPath, args, { signal: ctx.signal });
 }
 
 /** Allow-listed, argument-only shell execution. No shell interpretation. */

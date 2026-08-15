@@ -11,7 +11,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Badge, Button, Icon } from '@aura/ui';
 import type { IconName } from '@aura/ui';
-import type { MissionRecord } from '../../ai/missionClient';
+import type { ExecutionNode, MissionRecord } from '../../ai/missionClient';
+import { missionClient } from '../../ai/missionClient';
 import type { useMissions } from './useMissions';
 import {
   CATEGORY_LABEL, CATEGORY_TONE, EXECUTION_STATUS_ICON,
@@ -46,8 +47,17 @@ export function MissionDetail({
   const ex = mission.execution ?? null;
   const [tab, setTab] = useState<Tab>('overview');
   const [selNode, setSelNode] = useState<string | null>(null);
+  const [nodes, setNodes] = useState<ExecutionNode[] | null>(null);
 
   useEffect(() => { setTab('overview'); setSelNode(null); }, [mission.id]);
+
+  // Real execution-node status from the Capability Fabric (server-side
+  // detection) — what is DETECTED vs CAPABLE vs EXECUTABLE right now.
+  useEffect(() => {
+    let alive = true;
+    missionClient.nodes(mission.projectId).then((r) => { if (alive) setNodes(r.nodes); }).catch(() => {});
+    return () => { alive = false; };
+  }, [mission.projectId, mission.id]);
 
   const metrics = ex?.metrics ?? null;
   const status = ex?.status ?? 'idle';
@@ -92,6 +102,25 @@ export function MissionDetail({
         )}
         {missions.error && (
           <div className="mt-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">{missions.error}</div>
+        )}
+        {nodes && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {nodes.map((n) => {
+              const tone = n.executable ? 'positive' : n.detected ? 'attention' : 'neutral';
+              const label = n.executable ? 'executable' : n.detected ? 'detected · not wired' : 'not detected';
+              return (
+                <span
+                  key={n.id}
+                  title={n.reason}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2 py-0.5 text-[10px] font-medium text-text-muted"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ background: tone === 'positive' ? 'var(--positive)' : tone === 'attention' ? 'var(--attention)' : 'var(--text-muted)' }} />
+                  {n.label}
+                  <span className="text-text-subtle">{label}</span>
+                </span>
+              );
+            })}
+          </div>
         )}
       </div>
 

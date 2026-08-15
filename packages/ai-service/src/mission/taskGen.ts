@@ -51,6 +51,20 @@ export async function generateTaskProposal(
   missionText: string,
   signal?: AbortSignal,
 ): Promise<TaskGenResult> {
+  // This is the AURA AI node's executor. Git operations are executed by the
+  // governed git node — never here.
+  if (task.kind !== 'file-operation' || !task.targetFile) {
+    return {
+      ok: false,
+      isNewFile: false,
+      absFilePath: projectPath,
+      proposal: {
+        explanation: '',
+        newCode: null,
+        error: { type: 'invalid_task', message: `task kind "${task.kind}" is not handled by the AURA AI node`, retryable: false },
+      },
+    };
+  }
   const relPath = task.targetFile as string;
   const absFilePath = resolveInsideProject(projectPath, relPath);
   const isNewFile = !fs.existsSync(absFilePath);

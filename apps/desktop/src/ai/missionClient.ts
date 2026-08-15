@@ -72,11 +72,12 @@ export type GoalPriority = 'high' | 'medium' | 'low';
 export interface MissionGoal { id: string; focusAreaId: string; title: string; rationale: string; relatedEvidence: string[]; priority: GoalPriority }
 
 export type AutomationLevel = 'automatic' | 'assisted' | 'manual';
-export type TaskKind = 'file-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
+export type TaskKind = 'file-operation' | 'git-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
 export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
 export type TaskRisk = 'low' | 'medium' | 'high';
 export type TaskMode = 'diff' | 'new-file';
 export type TaskStatus = 'pending' | 'proposed' | 'accepted' | 'rejected' | 'done' | 'error';
+export type TaskNode = 'aura-ai' | 'git' | 'opencode' | 'claude-code' | 'manual';
 
 export interface MissionTask {
   id: string;
@@ -87,6 +88,8 @@ export interface MissionTask {
   kind: TaskKind;
   targetFile: string | null;
   mode: TaskMode | null;
+  requestedNode?: TaskNode;
+  resolvedNode?: TaskNode;
   priority: TaskPriority;
   dependencies: string[];
   estimatedDurationMinutes: number;
@@ -100,8 +103,21 @@ export interface MissionTask {
 export interface GoalGraph { goals: MissionGoal[]; tasks: MissionTask[] }
 
 /* ── Stage 6 — Execution ──────────────────────────────────────────── */
-export interface TaskProposal { explanation: string; newCode: string | null; error?: { type: string; message: string; retryable: boolean } }
-export interface MissionTaskRun { taskId: string; status: TaskStatus; proposal: TaskProposal | null; updatedAt: string }
+export interface TaskGitOperation {
+  type: 'git';
+  operation: 'status' | 'diff' | 'log' | 'commit' | 'branch' | 'checkout';
+  message?: string;
+  branchName?: string;
+  preview: string;
+  result?: string;
+}
+export interface TaskProposal {
+  explanation: string;
+  newCode: string | null;
+  operation?: TaskGitOperation;
+  error?: { type: string; message: string; retryable: boolean };
+}
+export interface MissionTaskRun { taskId: string; status: TaskStatus; proposal: TaskProposal | null; executedNode?: TaskNode; updatedAt: string }
 
 /* ── Stage 7 — Risk Analysis ──────────────────────────────────────── */
 export interface RiskAnalysis {
@@ -149,7 +165,7 @@ export type ExecutionStatus = 'idle' | 'approved' | 'running' | 'paused' | 'revi
 export interface DagNode {
   id: string; title: string; kind: TaskKind; targetFile: string | null;
   priority: TaskPriority; risk: TaskRisk; owner: 'ai' | 'human';
-  estimatedDurationMinutes: number; depth: number; batch: number;
+  estimatedDurationMinutes: number; node?: TaskNode; depth: number; batch: number;
   dependencies: string[]; blockedBy: string[]; status: ExecutionTaskStatus;
 }
 export interface DagEdge { from: string; to: string; kind: 'dependency' | 'block' }
@@ -243,6 +259,22 @@ export interface MissionDashboard {
   recent: MissionSummary[];
 }
 
+/* ── Execution Node Fabric — real detection, real state ───────────── */
+export type ExecutionNodeId = 'aura-ai' | 'git' | 'opencode' | 'claude-code';
+export type NodeCapability =
+  | 'code-implementation' | 'code-review' | 'git-operations' | 'documentation' | 'research' | 'testing';
+export interface ExecutionNode {
+  id: ExecutionNodeId;
+  label: string;
+  kind: 'ai' | 'git' | 'cli-agent';
+  detected: boolean;
+  executable: boolean;
+  available: boolean;
+  capabilities: NodeCapability[];
+  reason: string;
+}
+export interface ExecutionNodeStatus { nodes: ExecutionNode[]; resolvedAt: string }
+
 export type MissionEvent =
   | { type: 'stage'; stage: string; status: 'start' | 'done'; at: string }
   | { type: 'classification'; classification: IntentClassification }
@@ -293,6 +325,13 @@ export const missionClient = {
   dashboard: (): Promise<MissionDashboard> =>
     fetch(`${BASE}/missions/dashboard`).then(async (r) => {
       if (!r.ok) throw new Error(`Mission dashboard failed (${r.status})`);
+      return r.json();
+    }),
+
+  /** Real execution-node detection from the Capability Fabric (server-side PATH probe). */
+  nodes: (projectId: string): Promise<ExecutionNodeStatus> =>
+    fetch(`${BASE}/projects/${projectId}/nodes`).then(async (r) => {
+      if (!r.ok) throw new Error(`Execution node status failed (${r.status})`);
       return r.json();
     }),
 

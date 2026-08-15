@@ -20,6 +20,7 @@
 import type { HealthIssue, HealthScore } from '../intelligence/types';
 import type { LayerDef } from '../architectureExtractor';
 import type { MissionExecution } from './execution/types';
+import type { TaskNode } from './execution/nodes';
 
 export type { HealthIssue, HealthScore, LayerDef };
 export type ArchitectureLayer = LayerDef;
@@ -178,7 +179,7 @@ export interface MissionGoal {
 export type AutomationLevel = 'automatic' | 'assisted' | 'manual';
 
 /** What a task IS — drives Stage 6's execution routing (§ Execution Planning: never treat every task equally). */
-export type TaskKind = 'file-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
+export type TaskKind = 'file-operation' | 'git-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
 
 export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
 export type TaskRisk = 'low' | 'medium' | 'high';
@@ -195,6 +196,14 @@ export interface MissionTask {
   targetFile: string | null;
   /** Only meaningful once `targetFile` is set — resolved for real (existsSync) at run time, never trusted from planning time. */
   mode: TaskMode | null;
+  /**
+   * Execution node the plan/user asked for. Advisory until execution:
+   * node resolution honors it EXACTLY or fails explicitly — a requested
+   * node is never silently replaced by another.
+   */
+  requestedNode?: TaskNode;
+  /** Set at run time by node resolution (deterministic, deny-only policy). */
+  resolvedNode?: TaskNode;
   priority: TaskPriority;
   /** Ids of other tasks in this same mission that should be resolved first. Advisory — not enforced as a hard block. */
   dependencies: string[];
@@ -213,9 +222,20 @@ export interface GoalGraph {
 
 /* ── Stage 6 — Execution ──────────────────────────────────────────── */
 
+/** Structured non-file side effect carried by a proposal (git node). */
+export interface TaskOperation {
+  type: 'git';
+  operation: 'status' | 'diff' | 'log' | 'commit' | 'branch' | 'checkout';
+  message?: string;
+  branchName?: string;
+  preview: string;
+  result?: string;
+}
+
 export interface TaskProposal {
   explanation: string;
   newCode: string | null;
+  operation?: TaskOperation;
   error?: { type: string; message: string; retryable: boolean };
 }
 
@@ -223,6 +243,8 @@ export interface MissionTaskRun {
   taskId: string;
   status: TaskStatus;
   proposal: TaskProposal | null;
+  /** The node that actually executed (must equal the resolved node). */
+  executedNode?: TaskNode;
   updatedAt: string;
 }
 

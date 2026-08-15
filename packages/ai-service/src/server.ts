@@ -297,6 +297,9 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             return json(res, result.ok ? 200 : 400, result);
           }
         }
+        if (seg[2] === 'nodes' && method === 'GET') {
+          return json(res, 200, await manager.executionNodes());
+        }
         if (seg[2] === 'missions') {
           if (seg.length === 3 && method === 'GET') return json(res, 200, { missions: manager.listMissions(id) });
           if (seg.length === 3 && method === 'POST') {
@@ -380,7 +383,7 @@ export async function startService(opts: PipelineOptions & { port?: number; open
               const result = await manager.runMissionTask(id, mid, taskId, ac.signal);
               return json(res, result.ok ? 200 : 400, result);
             }
-            if (seg[6] === 'accept') return json(res, 200, manager.acceptMissionTask(id, mid, taskId));
+            if (seg[6] === 'accept') return json(res, 200, await manager.acceptMissionTask(id, mid, taskId));
             if (seg[6] === 'reject') {
               const r = manager.rejectMissionTask(id, mid, taskId);
               return json(res, r.ok ? 200 : 400, r);

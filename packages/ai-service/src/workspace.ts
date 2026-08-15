@@ -25,7 +25,9 @@ import { generateTaskProposal } from './mission/taskGen';
 import { MissionExecutionEngine } from './mission/execution/engine';
 import type { RunReadyOptions } from './mission/execution/engine';
 import type { ExecutionEvent } from './mission/execution/types';
-import type { MissionEvent, MissionRecord, MissionSummary } from './mission/types';
+import { resolveNodeForTask, executionNodeStatus, type TaskNode } from './mission/execution/nodes';
+import { planGitOperation, executeGitOperation } from './mission/execution/gitExecutor';
+import type { MissionEvent, MissionRecord, MissionSummary, TaskProposal } from './mission/types';
 import { getAdapter, getAllAdapters, ENV_VAR_BY_PROVIDER } from './provider/registry';
 import { storeKey, removeKey, getKey, getActive, getAllProviderStores, storeModels, storeHealth } from './provider/credentialStore';
 import { detectProvider } from './provider/detector';
@@ -528,13 +530,63 @@ export class WorkspaceManager {
         const project = this.registry.get(id);
         const goal = record.goalGraph?.goals.find((g) => g.id === task.goalId);
         if (!project || !goal) return { ok: false, error: 'invalid mission state' };
-        if (task.kind !== 'file-operation' || !task.targetFile) return { ok: false, error: 'This task has no single target file — complete it manually instead of running it.' };
-        const result = await generateTaskProposal(this.pipeline, project.path, task, goal, record.text, signal);
+
+        // ── Multi-node execution: ONE mission → capability → node ──────
+        // Every task is resolved to exactly one execution node through the
+        // Capability Fabric. The contract is preserved:
+        //   requested ≠ resolved ≠ executed ≠ recorded.
+        // A requested node is honored EXACTLY or fails explicitly — there is
+        // NO silent fallback to another node. Nodes that are detected but not
+        // executable (opencode, claude-code) fail here, on purpose.
+        const fail = (type: string, message: string): { ok: false; executedNode?: TaskNode; proposal: TaskProposal } => ({
+          ok: false,
+          executedNode: undefined,
+          // Failures ride on the proposal so the failure is EXPLICIT and
+          // visible on the task run (statusForTask → 'failed', message shown).
+          proposal: { explanation: '', newCode: null, error: { type, message, retryable: type === 'executor_error' } },
+        });
+        const resolution = await resolveNodeForTask(task);
+        if ('error' in resolution) return fail('node_resolution_failed', `node resolution failed: ${resolution.error}`);
+        if (resolution.node === 'manual') {
+          return fail('manual_node', 'This task has no governed execution node — resolve it manually (Mark Done) instead of running it.');
+        }
+        // Last-writer-wins so the resolved node is never overwritten by a
+        // stale planning field, and it persists with the next commit.
+        const idx = record.goalGraph?.tasks.findIndex((t) => t.id === task.id) ?? -1;
+        if (idx >= 0 && record.goalGraph) {
+          record.goalGraph.tasks[idx] = { ...record.goalGraph.tasks[idx], resolvedNode: resolution.node };
+        }
+
+        let executedNode: TaskNode | undefined;
+        let result: { ok: boolean; proposal?: TaskProposal; mode?: 'diff' | 'new-file' };
+        switch (resolution.node) {
+          case 'aura-ai': {
+            // AURA's own governed proposal generator — the real execution
+            // backend for code implementation. Preserved unchanged.
+            executedNode = 'aura-ai';
+            const gen = await generateTaskProposal(this.pipeline, project.path, task, goal, record.text, signal);
+            result = { ok: gen.ok, proposal: gen.proposal, mode: gen.isNewFile ? 'new-file' : 'diff' };
+            break;
+          }
+          case 'git': {
+            // Governed git node — read-only PREVIEW + one allow-listed plan.
+            // Nothing mutates here; mutation happens on human Accept.
+            executedNode = 'git';
+            const plan = await planGitOperation(this.pipeline, {
+              projectPath: project.path, task, goal, missionText: record.text, signal,
+            });
+            result = { ok: plan.ok, proposal: plan.proposal };
+            break;
+          }
+          default:
+            return fail('executor_not_wired', `resolved node "${resolution.node}" has no governed executor wired into the Capability Fabric`);
+        }
         return {
           ok: result.ok,
-          error: result.ok ? undefined : result.proposal.error?.message,
+          error: result.ok ? undefined : result.proposal?.error?.message,
           proposal: result.proposal,
-          mode: result.isNewFile ? 'new-file' : 'diff',
+          mode: result.mode,
+          executedNode,
         };
       },
       persist: (rec) => { this.missions.save(id, rec); },
@@ -595,28 +647,46 @@ export class WorkspaceManager {
     return { ok: result.ok, error: result.error, mission: result.record };
   }
 
-  /** The only place a mission task's proposal is ever written to disk — requires an explicit human Accept. */
-  acceptMissionTask(id: string, mid: string, taskId: string): { ok: boolean; error?: string; mission?: MissionRecord } {
+  /** The only place a mission task's proposal is ever executed — requires an explicit human Accept. */
+  async acceptMissionTask(id: string, mid: string, taskId: string): Promise<{ ok: boolean; error?: string; mission?: MissionRecord }> {
     const mission = this.missions.get(id, mid);
     if (!mission) return { ok: false, error: 'no such mission' };
     const task = mission.goalGraph?.tasks.find((t) => t.id === taskId);
     const run = mission.taskRuns.find((r) => r.taskId === taskId);
-    if (!task || !run || run.status !== 'proposed' || !run.proposal?.newCode) return { ok: false, error: 'no pending proposal for this task' };
+    if (!task || !run || run.status !== 'proposed' || run.proposal?.error) return { ok: false, error: 'no pending proposal for this task' };
+    if (!run.proposal?.newCode && !run.proposal?.operation) return { ok: false, error: 'no pending proposal for this task' };
     const project = this.registry.get(id);
     if (!project) return { ok: false, error: 'no such project' };
 
-    let abs: string;
-    try {
-      abs = resolveInsideProject(project.path, task.targetFile as string);
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
+    // Governed git node: the human Accept IS the authorization to mutate.
+    // The operation was allow-listed and previewed at plan time; this runs
+    // the exact same governed runner as the workflow engine — no shell,
+    // fixed binary, real exit code — and serializes per working tree.
+    let memoryTitle = '';
+    if (run.proposal.operation?.type === 'git') {
+      const executed = await executeGitOperation(project.path, run.proposal.operation);
+      if (!executed.ok) return { ok: false, error: `git node execution failed: ${executed.error ?? 'unknown error'}`, mission };
+      // Audit trail: attach the governed execution result to the proposal
+      // before the engine records the acceptance.
+      run.proposal.operation.result = executed.output;
+      run.proposal.explanation = `${run.proposal.explanation}\n\nExecuted (human Accept):\n${executed.output}`;
+      memoryTitle = `Git task accepted: ${task.title}`;
+    } else {
+      // File-operation path — proposal write to disk, unchanged.
+      if (!task.targetFile || run.proposal.newCode == null) return { ok: false, error: 'no pending proposal for this task' };
+      try {
+        const abs = resolveInsideProject(project.path, task.targetFile);
+        fs.writeFileSync(abs, run.proposal.newCode);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+      memoryTitle = `Mission task accepted: ${task.title}`;
     }
-    fs.writeFileSync(abs, run.proposal.newCode);
 
     const updated = this.missionEngine(id).acceptTask(mission, taskId);
     if (this.pipeline.currentProjectId === id) void this.pipeline.reindex();
     const memory = this.pipeline.currentProjectId === id ? this.pipeline.memory : this.memoryOf(id);
-    memory?.add({ kind: 'accepted', title: `Mission task accepted: ${task.title}`, body: run.proposal.explanation });
+    memory?.add({ kind: 'accepted', title: memoryTitle, body: run.proposal.explanation });
 
     // Real platform moment → Automation Engine (mission-accepted).
     this.automation.engine.handleEvent(automationEvent('mission-accepted', id, project.path, {
@@ -659,12 +729,12 @@ export class WorkspaceManager {
     return { ok: true, mission: updated };
   }
 
-  /** Manual/review/approval/documentation/research tasks (no single target file) are resolved by the human directly — no AI call, no file write. */
+  /** Manual/review/approval/documentation/research tasks (no governed node) are resolved by the human directly — no AI call, no file write. */
   completeManualTask(id: string, mid: string, taskId: string): { ok: boolean; error?: string; mission?: MissionRecord } {
     const mission = this.missions.get(id, mid);
     const task = mission?.goalGraph?.tasks.find((t) => t.id === taskId);
     if (!mission || !task) return { ok: false, error: 'no such task' };
-    if (task.kind === 'file-operation') return { ok: false, error: 'this task has a target file — run it instead of completing it manually' };
+    if (task.kind === 'file-operation' || task.kind === 'git-operation') return { ok: false, error: 'this task has a governed execution node — run it instead of completing it manually' };
     const updated = this.missionEngine(id).completeManualTask(mission, taskId);
     if (updated) {
       this.recordMissionMemory(id, updated, 'completed', taskId);
@@ -755,6 +825,11 @@ export class WorkspaceManager {
       metrics: mission.execution.metrics,
       checkpoints: mission.execution.checkpoints,
     };
+  }
+
+  /** Real environment detection + executable status of every execution node in the Capability Fabric. */
+  executionNodes() {
+    return executionNodeStatus();
   }
 
   /** Global engineering dashboard — aggregates every mission across every registered project. */
