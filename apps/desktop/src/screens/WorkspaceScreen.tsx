@@ -17,6 +17,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
+import { useAppStore } from '@aura/core';
 import { Icon } from '@aura/ui';
 import { useEnvironmentStore } from '../environment/environmentStore';
 import { useWindowManager } from '../environment/windows/windowManager';
@@ -37,8 +38,7 @@ import {
   type CapabilityNodeMap,
 } from '../workspace/hubPhase';
 import { useHubStore } from '../workspace/hubStore';
-
-const HUB_PROJECT_KEY = 'aura.workspace.projectId';
+import { WorkspaceWindowLayer } from '../ops/WorkspaceCanvas';
 
 export function WorkspaceScreen() {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -55,14 +55,17 @@ export function WorkspaceScreen() {
   const openWindow = useWindowManager((s) => s.open);
 
   /* ── Mission wiring ──────────────────────────────────────────────
-     Missions plan against real files, so they are project-scoped. The
-     Hub is global, so it remembers the last project the user *chose*
-     and never invents or creates one. */
+     Missions plan against real files, so they are project-scoped. The Hub
+     is global, and it now reads the SHELL's active project rather than
+     remembering its own — the Hub used to keep a private
+     `aura.workspace.projectId` because navigating here cleared
+     `activeProjectId`. Now that the active project survives navigation,
+     that second pointer is gone and the Hub and the rest of the shell can
+     no longer disagree about which project is being worked on. */
   const projects = useWorkspace((s) => s.projects);
   const refreshProjects = useWorkspace((s) => s.refresh);
-  const [projectId, setProjectId] = useState<string | null>(
-    () => (typeof localStorage === 'undefined' ? null : localStorage.getItem(HUB_PROJECT_KEY)),
-  );
+  const projectId = useAppStore((s) => s.activeProjectId);
+  const setActiveProject = useAppStore((s) => s.setActiveProject);
 
   // The entire mission lifecycle, reused as-is. No second engine.
   const m = useMissions(projectId);
@@ -89,21 +92,15 @@ export function WorkspaceScreen() {
     if (!lastScanAt) void scan();
   }, [lastScanAt, scan]);
 
-  // A remembered project that no longer exists must not silently target
-  // a missing id — clear it and let the user choose again.
-  useEffect(() => {
-    if (projectId && projects.length > 0 && !projects.some((p) => p.id === projectId)) {
-      setProjectId(null);
-      localStorage.removeItem(HUB_PROJECT_KEY);
-    }
-  }, [projectId, projects]);
+  /* Pruning a project that no longer exists is `useActiveProjectSync`'s job
+     now — it is the single place that reconciles the active project with the
+     registry, and doing it here as well would be a second authority for the
+     same decision. */
 
   const selectProject = useCallback((id: string) => {
-    setProjectId(id || null);
+    setActiveProject(id || null);
     setAnnotation(null);
-    if (id) localStorage.setItem(HUB_PROJECT_KEY, id);
-    else localStorage.removeItem(HUB_PROJECT_KEY);
-  }, []);
+  }, [setActiveProject]);
 
   /* What the plan actually needs, read from the Fabric's existing
      annotation route. Re-read whenever the plan changes. */
@@ -213,6 +210,14 @@ export function WorkspaceScreen() {
         />
 
         <NodeWindows canvasRef={canvasRef} onRemove={remove} />
+
+        {/* The Workspace's panel windows — Mission Control, Knowledge,
+            Diagnostics and the rest. `layoutStore.openPanel()` has always
+            been wired to roughly nineteen command-palette entries, but the
+            component that renders those windows was mounted by nothing, so
+            every one of them silently did nothing (Audit Defect #1). This
+            mounts the EXISTING renderer; no panel was rebuilt. */}
+        <WorkspaceWindowLayer canvasRef={canvasRef} />
 
         {placed.length === 0 && (
           <div className="pointer-events-none absolute inset-x-0 bottom-8 grid place-items-center">

@@ -53,6 +53,19 @@ export interface FabricDeps {
    * refs carry only what routing needs.
    */
   presentNodes?: () => NodeRef[];
+  /**
+   * Compose the canonical AURA prompt for a delegated agent.
+   *
+   * Supplied by the host because composing it needs live service state
+   * (the environment scan, the mission store, the provider) that the
+   * Fabric deliberately does not own. Returning null means "no context
+   * available for this project" — the agent then receives the bare task,
+   * which is honest, rather than a prompt claiming knowledge AURA lacks.
+   *
+   * This is the ONLY way project context reaches an executor. Executors
+   * never collect context themselves (§ agent.delegate in executors.ts).
+   */
+  agentPrompt?: (projectId: string, task: string) => Promise<string | null>;
 }
 
 /**
@@ -163,8 +176,48 @@ export function createFabric(deps: FabricDeps): CapabilityFabric {
     },
   };
 
+  /**
+   * Inject the canonical prompt into `agent.delegate`, and only there.
+   *
+   * Wrapping `run` — rather than changing the Fabric or teaching the
+   * executor to gather context — keeps three properties intact:
+   *
+   *   • The pipeline is untouched. validate → resolveNode → policy →
+   *     approval → execute → verify → audit still runs exactly as before;
+   *     this sits INSIDE execute, after every gate has already decided.
+   *   • `executors.ts` collects nothing. It receives an already-composed
+   *     string and uses it, so there is no second context collector.
+   *   • Correlation, mission and task ids ride on `invocation.context`
+   *     and are never rewritten here.
+   *
+   * A capability other than `agent.delegate` is returned untouched.
+   */
+  const withCanonicalContext = (executor: ReturnType<typeof allExecutors>[number]) => {
+    if (executor.capabilityId !== 'agent.delegate' || !deps.agentPrompt) return executor;
+    const inner = executor.run.bind(executor);
+    return {
+      ...executor,
+      run: async (invocation: Parameters<typeof inner>[0]) => {
+        const projectId = invocation.context.projectId;
+        const task = typeof invocation.input.task === 'string' ? invocation.input.task : '';
+        // No project, no task, or a composition failure ⇒ the agent runs
+        // with what it had before. Context is an improvement to the call,
+        // never a precondition for it.
+        let prompt: string | null = null;
+        if (projectId && task) {
+          try {
+            prompt = await deps.agentPrompt!(projectId, task);
+          } catch {
+            prompt = null;
+          }
+        }
+        return inner(prompt ? { ...invocation, input: { ...invocation.input, auraPrompt: prompt } } : invocation);
+      },
+    };
+  };
+
   const fabric = new CapabilityFabric(host);
-  for (const executor of allExecutors(deps.manager)) fabric.register(executor);
+  for (const executor of allExecutors(deps.manager)) fabric.register(withCanonicalContext(executor));
   // The operator's saved caution settings outlive the process. Loaded
   // through `sanitizePolicy`, so a corrupt file degrades to the shipped
   // default instead of loosening anything.

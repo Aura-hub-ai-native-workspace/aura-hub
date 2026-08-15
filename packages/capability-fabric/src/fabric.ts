@@ -22,6 +22,7 @@ import type {
   AuditRecord,
   CapabilityDescriptor,
   Executor,
+  ExecutorResult,
   FabricEvent,
   FabricEventListener,
   Invocation,
@@ -48,6 +49,29 @@ const BASE_BACKOFF_MS = 400;
  */
 function isTransient(detail: string): boolean {
   return /\b(timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|429|503|temporarily)\b/i.test(detail);
+}
+
+/**
+ * Whether this failure may be retried automatically.
+ *
+ * Being transient is necessary but not sufficient. A transient error says
+ * the *transport* failed; it says nothing about whether the *effect*
+ * happened first. For a reversible capability that distinction does not
+ * matter — repeating it costs a little time. For an irreversible one it is
+ * the whole question: a delegated coding agent that timed out may already
+ * have rewritten the repository, and running it again would compound edits
+ * the user approved exactly once.
+ *
+ * So an irreversible capability is retried only when the executor has
+ * PROVEN the effect never began. Unknown counts as started. This is
+ * decided from `capability.irreversible` — the same metadata the policy
+ * engine's irreversible floor uses — so it governs every capability,
+ * present and future, with no per-capability special cases.
+ */
+function mayRetry(capability: CapabilityDescriptor, result: ExecutorResult): boolean {
+  if (!isTransient(result.detail)) return false;
+  if (!capability.irreversible) return true;
+  return result.effectStarted === false;
 }
 
 /* ── host wiring ────────────────────────────────────────────────── */
@@ -559,7 +583,7 @@ export class CapabilityFabric {
         last = { ok: false, detail: (error as Error).message || 'The executor threw with no message.' };
       }
       if (last.ok) break;
-      if (attempts >= MAX_ATTEMPTS || !isTransient(last.detail)) break;
+      if (attempts >= MAX_ATTEMPTS || !mayRetry(capability, last)) break;
 
       this.emit({
         type: 'invocation.retrying',
@@ -574,6 +598,45 @@ export class CapabilityFabric {
     }
 
     if (!last.ok) {
+      /* An irreversible capability that failed transiently, where the
+         effect may already have happened, is NOT a plain failure and must
+         not be retried silently. It becomes an explicit governed state:
+         the attempt stops here and another one needs a fresh human
+         decision. The existing approval authority carries that question —
+         no second approval mechanism is introduced, and re-invoking with a
+         grant is what authorizes the next attempt. */
+      if (capability.irreversible && isTransient(last.detail) && last.effectStarted !== false) {
+        const retryRequest: ApprovalRequest = {
+          id: `apr-retry-${invocation.id}`,
+          requestedAt: new Date().toISOString(),
+          state: 'pending',
+          summary: `${capability.name} failed part-way and may already have taken effect. Running it again could repeat that effect.`,
+          rule: 'irreversible-retry',
+          projectId: context.projectId ?? undefined,
+          missionId: context.missionId,
+          taskId: context.taskId,
+          target: describeTarget(capability, input),
+          onAccept: `${capability.name} runs AGAIN. It may already have taken effect before failing, so a second run can repeat or compound it.`,
+          onDecline: 'Nothing runs again. The partial outcome stays as it is, recorded, for you to inspect.',
+          items: [{
+            invocationId: invocation.id,
+            capabilityId,
+            title: `Retry ${capability.name}`,
+            detail: summarizeInput(capability, input),
+            risk: capability.risk,
+            irreversible: true,
+          }],
+        };
+        this.approvals.set(retryRequest.id, retryRequest);
+        this.emit({ type: 'approval.required', at: retryRequest.requestedAt, request: retryRequest });
+        this.persistApprovals();
+
+        return this.settle(invocation, capability, 'awaiting-approval',
+          `${capability.name} failed part-way (${last.detail}) and cannot be retried automatically, because it may already have taken effect. `
+          + 'Nothing was run again. Check the result, then decide whether to run it once more.',
+          NO_VERIFICATION, evaluation, started, startedAt, attempts, retryRequest.id, last.output);
+      }
+
       // "did not succeed", not "did not complete" — a command that ran and
       // exited non-zero did complete, and saying otherwise misdescribes
       // what the user needs to look at.
@@ -649,6 +712,23 @@ export class CapabilityFabric {
   private nodeIdOfOutput(output: unknown): string | undefined {
     const id = (output as { nodeId?: unknown } | undefined)?.nodeId;
     return typeof id === 'string' && id ? id : undefined;
+  }
+
+  /**
+   * Whether the executor reported receiving a canonical AURA context.
+   *
+   * Read from the executor's own output for the same reason
+   * `executedNodeId` is: the Fabric never sees the injected prompt. The
+   * host wiring hands the executor a COPY of the invocation carrying it,
+   * so only the executor can attest to what it actually received.
+   *
+   * `undefined` when nothing ran — an invocation parked at approval has no
+   * execution to attribute, and reporting `false` there would read as "it
+   * ran without context".
+   */
+  private contextInjectedOf(output: unknown, attempts: number): boolean | undefined {
+    if (attempts === 0) return undefined;
+    return (output as { contextInjected?: unknown } | undefined)?.contextInjected === true;
   }
 
   /**
@@ -735,6 +815,7 @@ export class CapabilityFabric {
       nodeId: this.executedNodeId(invocation, capability, attempts, output),
       requestedNodeId: invocation.context.nodeId,
       executedNodeId: this.executedNodeId(invocation, capability, attempts, output),
+      contextInjected: this.contextInjectedOf(output, attempts),
     });
 
     this.emit({ type: 'invocation.completed', at: endedAt, result });

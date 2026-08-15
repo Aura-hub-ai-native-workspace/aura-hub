@@ -16,6 +16,12 @@ import { CATALOG } from '@aura/connected-environment';
 import { probeNode, scanEnvironment } from './environment';
 import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext, type NodeRef } from '@aura/capability-fabric';
 import { createFabric } from './fabric';
+import { drivableAgentBinaries } from './fabric/executors';
+import { composeContextView, type ContextSources } from './context/compose';
+import { renderContextContract } from './context/promptContract';
+import { AURA_SYSTEM_PROMPT, buildAgentPrompt, measureAgentPrompt } from './context/systemPrompt';
+import { scanAndDiff } from './intelligence';
+import { CAPABILITIES } from '@aura/connected-environment';
 import { savePolicy, policyFilePath } from './fabric/policyStore';
 import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate } from '@aura/automation';
 import type { AutomationEvent, AutomationRule } from '@aura/automation';
@@ -110,7 +116,132 @@ export async function startService(opts: PipelineOptions & { port?: number; open
    * beside it, so the two can never describe different machines.
    */
   let presentNodes: NodeRef[] = [];
+  let lastScanAt: string | null = null;
+
+  /**
+   * THE assembly of ContextSources. Every consumer — the Context panel
+   * route, Ask AURA, and `agent.delegate` through the Fabric — goes
+   * through this one function, so none of them can be told a different
+   * story about the same project.
+   *
+   * Declared as a hoisted function so `createFabric` below can reference
+   * it; `fabric` is initialised long before any invocation calls it.
+   */
+  async function contextViewFor(projectId: string, changes?: ReturnType<typeof scanAndDiff>['result']) {
+    const proj = manager.registry.get(projectId);
+    if (!proj) return null;
+    const byoak = manager.byoakStatus();
+    const sources: ContextSources = {
+      project: proj,
+      mountedProjectId: manager.pipeline.currentProjectId,
+      profile: manager.profile(projectId),
+      // Versions live in the scan result, not in NodeRef. Reporting null
+      // is honest; inventing one from the catalogue would not be.
+      presentNodes: presentNodes.map((n) => ({
+        id: n.id, name: n.name, capabilities: n.capabilities, binary: n.binary, version: null,
+      })),
+      providedCapabilities: [...providedNodeCapabilities],
+      knownCapabilities: Object.keys(CAPABILITIES),
+      catalogueSize: CATALOG.length,
+      scannedAt: lastScanAt,
+      missions: manager.listMissions(projectId),
+      pendingApprovals: fabric.pendingApprovals().length,
+      // `active` and `model` ONLY. `byoakStatus()` also carries a key
+      // fingerprint per provider; it is deliberately not read here.
+      provider: {
+        id: byoak.active,
+        connected: byoak.active !== null,
+        model: byoak.model || null,
+      },
+      drivableAgentBinaries: drivableAgentBinaries(),
+      // Activity comes from the Fabric's audit log — the existing record
+      // of what actually ran, scoped to this project. No new activity
+      // store is introduced.
+      changes,
+      activity: fabric.audit()
+        .filter((a) => a.projectId === projectId)
+        .slice(-12)
+        .reverse()
+        .map((a) => ({
+          at: a.at,
+          kind: a.capabilityId,
+          summary: `${a.outcome}${a.executedNodeId ? ` via ${a.executedNodeId}` : ''}${a.decision ? ` (${a.decision})` : ''}`,
+        })),
+    };
+    return composeContextView(sources);
+  }
+
+  /** The canonical prompt for a delegated agent. Null when unavailable. */
+  async function agentPromptFor(projectId: string, task: string): Promise<string | null> {
+    const view = await contextViewFor(projectId);
+    return view ? buildAgentPrompt({ view, task }) : null;
+  }
+
+  /**
+   * The canonical context contract for ONE Ask AURA request.
+   *
+   * Returns the contract to pass down that request's call path — it is
+   * never stored anywhere, so two concurrent requests cannot overwrite
+   * each other (P0-2).
+   *
+   * ── One request, one project (P0-1) ──────────────────────────────
+   * The canonical context is composed for the REQUESTED project, while
+   * the retrieval half of the same request (`inspect` → identity,
+   * summary, code excerpts, memory) is hard-scoped to whichever project
+   * the pipeline has MOUNTED. If those differ, a single prompt would
+   * carry `<PROJECT_CONTEXT>` for A alongside A's retrieved code — a
+   * hybrid describing two projects at once.
+   *
+   * A mismatch is therefore refused, not reconciled. Specifically it is
+   * NOT fixed by mounting the requested project: mounting starts
+   * indexing and changes what every other surface sees, and a read must
+   * never do that as a side effect. The caller mounts first, or asks
+   * about the project that is already mounted.
+   */
+  type AuraContextResult =
+    | { ok: true; contract: string | null; scan?: ReturnType<typeof scanAndDiff> }
+    | { ok: false; conflict: { requested: string; mounted: string | null; message: string } };
+
+  async function resolveAuraContext(body: Record<string, unknown>): Promise<AuraContextResult> {
+    const requested = typeof body.projectId === 'string' && body.projectId ? body.projectId : null;
+    const mounted = manager.pipeline.currentProjectId;
+
+    if (requested && requested !== mounted) {
+      return {
+        ok: false,
+        conflict: {
+          requested,
+          mounted,
+          message: mounted
+            ? `This request asks about "${requested}" but AURA currently has "${mounted}" open. `
+              + 'Open the project first — AURA will not answer using two projects at once.'
+            : `This request asks about "${requested}" but AURA has no project open. `
+              + 'Open the project first.',
+        },
+      };
+    }
+
+    const projectId = requested ?? mounted;
+    if (!projectId) return { ok: true, contract: null };
+    try {
+      /* ONE tree walk for the whole request. The view needs the diff for
+         freshness and the pipeline needs it for artifact staleness; they
+         used to take one each, over the same tree, in the same request.
+         The snapshot rides along so the pipeline can rebase the baseline —
+         composing a view still never writes anything. */
+      const proj = manager.registry.get(projectId);
+      const scan = proj ? scanAndDiff(projectId, proj.path) : undefined;
+      const view = await contextViewFor(projectId, scan?.result);
+      return { ok: true, contract: view ? renderContextContract(view) : null, scan };
+    } catch {
+      // Context is an improvement to the answer, never a precondition for
+      // one. A composition failure must not take Ask AURA down with it.
+      return { ok: true, contract: null };
+    }
+  }
+
   const fabric = createFabric({
+    agentPrompt: agentPromptFor,
     manager,
     providedNodeCapabilities: () => providedNodeCapabilities,
     presentNodes: () => presentNodes,
@@ -147,6 +278,9 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     }
     providedNodeCapabilities = provided;
     presentNodes = nodes;
+    // Recorded so the Context Fabric can report WHEN the machine was last
+    // measured. Context that cannot say how old it is has to say "unknown".
+    lastScanAt = scan.scannedAt;
     return scan;
   };
 
@@ -430,7 +564,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       /* ── projects ─────────────────────────────────────────────── */
       if (seg[0] === 'projects') {
         if (seg.length === 1) {
-          if (method === 'GET') return json(res, 200, { projects: manager.listProjects(), current: manager.currentProject() });
+          // `registry.readable` travels with the list so a client can tell
+          // "no projects" from "the registry could not be read". Pruning an
+          // active project on the strength of the latter loses user state.
+          if (method === 'GET') return json(res, 200, {
+            projects: manager.listProjects(),
+            current: manager.currentProject(),
+            registry: { readable: manager.registry.readable, error: manager.registry.readError },
+          });
           if (method === 'POST') {
             const b = await readJson(req);
             try { return json(res, 200, manager.addProject({ name: b.name as string, path: String(b.path ?? ''), icon: b.icon as string })); }
@@ -458,6 +599,54 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         }
         if (seg[2] === 'graph' && method === 'GET') { const kg = manager.knowledgeGraph(id); return kg ? json(res, 200, kg) : json(res, 404, { error: 'project not open' }); }
         if (seg[2] === 'intelligence' && method === 'GET') { const r = manager.projectIntelligence(id); return r ? json(res, 200, r) : json(res, 404, { error: 'no such project' }); }
+        /* GET /projects/:id/context — the Context Fabric read model.
+           The ONE place ContextSources is assembled, so every consumer
+           (Context panel, Ask AURA, later agents) sees the same projection
+           of the same authorities. `?prompt=1` additionally returns the
+           rendered agent contract, so a caller never re-derives it.
+           This never triggers a scan or a re-index: a stale view is
+           reported as stale and refreshed through the existing paths. */
+        /* POST /projects/:id/reindex — a re-index that names its target.
+           The generic POST /reindex acts on whatever is mounted, so the
+           Context panel (which is scoped to a project id) could ask to
+           refresh project A and re-index project B instead.
+
+           A mismatch is refused rather than reconciled, for the same
+           reason as the Ask AURA conflict: mounting is a state change and
+           a refresh must not cause one behind the user's back. */
+        if (seg[2] === 'reindex' && method === 'POST') {
+          if (!manager.registry.get(id)) return json(res, 404, { error: 'no such project' });
+          const mounted = manager.pipeline.currentProjectId;
+          if (mounted !== id) {
+            return json(res, 409, {
+              error: mounted
+                ? `Cannot re-index "${id}" while "${mounted}" is the open project. Open it first.`
+                : `Cannot re-index "${id}" because no project is open. Open it first.`,
+              requested: id,
+              mounted,
+            });
+          }
+          return json(res, 200, await p.reindex());
+        }
+        if (seg[2] === 'context' && method === 'GET') {
+          const view = await contextViewFor(id);
+          if (!view) return json(res, 404, { error: 'no such project' });
+          if (url.searchParams.get('prompt') !== '1') return json(res, 200, { view });
+          // `task` makes this the exact prompt `agent.delegate` would send,
+          // built by the same function — a transparency surface, not a
+          // second builder.
+          const task = url.searchParams.get('task');
+          return json(res, 200, {
+            view,
+            contract: renderContextContract(view),
+            ...(task
+              ? {
+                agentPrompt: buildAgentPrompt({ view, task }),
+                measurement: measureAgentPrompt({ view, task }),
+              }
+              : { systemPrompt: AURA_SYSTEM_PROMPT }),
+          });
+        }
         if (seg[2] === 'graphify' && seg[3] === 'status' && method === 'GET') {
           return json(res, 200, graphifyStatus(id));
         }
@@ -968,7 +1157,11 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         const ac = new AbortController();
         res.on('close', () => ac.abort());
         const history = resolveHistory(manager, b);
-        return json(res, 200, await p.ask(String(b.text ?? ''), ac.signal, history));
+        const ctx = await resolveAuraContext(b);
+        // 409: the request named a project other than the one AURA has
+        // open. Refusing is the only answer that cannot be a hybrid.
+        if (!ctx.ok) return json(res, 409, { error: ctx.conflict.message, ...ctx.conflict });
+        return json(res, 200, await p.ask(String(b.text ?? ''), ac.signal, history, ctx.contract, ctx.scan));
       }
       if (method === 'POST' && seg[0] === 'stream') {
         const b = await readJson(req);
@@ -977,7 +1170,16 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         res.on('close', () => ac.abort());
         const history = resolveHistory(manager, b);
         const emit = (e: StreamEmit) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
-        await p.streamEvents(String(b.text ?? ''), emit, ac.signal, history);
+        const ctx = await resolveAuraContext(b);
+        if (!ctx.ok) {
+          /* The SSE headers are already sent, so the conflict travels as
+             the stream's own error event rather than an HTTP status. The
+             client surfaces it exactly like any other stream failure. */
+          emit({ type: 'error', error: { type: 'project_conflict', message: ctx.conflict.message, retryable: false } });
+          if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+          return;
+        }
+        await p.streamEvents(String(b.text ?? ''), emit, ac.signal, history, ctx.contract, ctx.scan);
         if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
         return;
       }

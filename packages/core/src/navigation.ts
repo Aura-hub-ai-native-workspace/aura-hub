@@ -32,6 +32,9 @@ interface ProjectTabDef {
 
 export const PROJECT_TABS: ProjectTabDef[] = [
   { key: 'overview', label: 'Overview', icon: 'grid' },
+  // Second on purpose: "what does AURA know about this project?" is the
+  // question a user asks before trusting anything else in the workspace.
+  { key: 'context', label: 'Context', icon: 'spark' },
   { key: 'architecture', label: 'Architecture', icon: 'architecture' },
   { key: 'code', label: 'Code', icon: 'code' },
   { key: 'frontend', label: 'Frontend', icon: 'layout' },

@@ -50,6 +50,17 @@ function cwdOf(inv: Invocation): string {
 const ok = (detail: string, output?: unknown): ExecutorResult => ({ ok: true, detail, output });
 const no = (detail: string): ExecutorResult => ({ ok: false, detail });
 
+/**
+ * A refusal made BEFORE anything was spawned or written.
+ *
+ * `effectStarted: false` is a claim the Fabric relies on to decide whether
+ * an irreversible capability may be retried automatically, so it is only
+ * ever used where the code has demonstrably not acted yet — a missing
+ * argument, an unresolved node, a binary that is not on the allow-list.
+ * Never after a process has been started.
+ */
+const notStarted = (detail: string): ExecutorResult => ({ ok: false, detail, effectStarted: false });
+
 const pass = (kind: VerificationReport['kind'], detail: string): VerificationReport =>
   ({ passed: true, kind, detail });
 const fail = (kind: VerificationReport['kind'], detail: string): VerificationReport =>
@@ -167,6 +178,16 @@ const AGENT_INVOCATIONS: Record<string, AgentInvocation> = {
   },
 };
 
+/**
+ * The agent binaries AURA has a VERIFIED non-interactive invocation for.
+ *
+ * Exported so the Context Fabric can report "present but not drivable"
+ * without restating the list. This file stays the authority: a node being
+ * on the agent allow-list is not the same as AURA being able to drive it,
+ * and only the invocation table above knows the difference.
+ */
+export const drivableAgentBinaries = (): string[] => Object.keys(AGENT_INVOCATIONS);
+
 const agentDelegate: Executor = {
   capabilityId: 'agent.delegate',
 
@@ -189,39 +210,56 @@ const agentDelegate: Executor = {
     // server resolved from the registry, never one the caller supplied.
     const cwd = cwdOf(inv);
     const task = s(inv.input.task).trim();
-    if (!task) return no('No task was given for the agent to carry out.');
+    if (!task) return notStarted('No task was given for the agent to carry out.');
     const model = s(inv.input.model).trim() || undefined;
+
+    /* The canonical AURA prompt — system rules + this project's context +
+       the task — composed by the Fabric wiring before this executor was
+       called (see `withCanonicalContext` in fabric/index.ts).
+
+       This executor deliberately does NOT build it. Composing context here
+       would mean a second collector reaching for the registry, the
+       environment scan and the mission store, and a delegated agent could
+       then be told something different from what Ask AURA was told about
+       the same project. Absent ⇒ the agent gets the bare task, exactly as
+       it did before Phase C. */
+    const auraPrompt = s(inv.input.auraPrompt).trim();
+    const payload = auraPrompt || task;
 
     /* Routing is the Fabric's job now (§22). This executor no longer
        searches the catalogue or probes anything: it is handed the node
        that policy was evaluated against, and refuses if it was not. */
     const node = inv.node;
     if (!node) {
-      return no('No coding-agent node was resolved for this call, so nothing was run.');
+      return notStarted('No coding-agent node was resolved for this call, so nothing was run.');
     }
 
     const bin = node.binary;
     if (!bin) {
-      return no(`${node.name} has no executable recorded in the catalogue, so it cannot be run.`);
+      return notStarted(`${node.name} has no executable recorded in the catalogue, so it cannot be run.`);
     }
     // The allow-list is still enforced here, at the point of execution —
     // routing decides WHICH node, never whether its binary may be spawned.
     if (!resolveAgentBinary(bin).ok) {
-      return no(`${node.name} is not on the coding-agent allow-list, so it was not run.`);
+      return notStarted(`${node.name} is not on the coding-agent allow-list, so it was not run.`);
     }
     const invocationSpec = AGENT_INVOCATIONS[bin];
     // A resolved node whose CLI has not been verified FAILS. It is never
     // silently swapped for one that would have worked — that substitution
     // is exactly what routing must not do.
     if (!invocationSpec) {
-      return no(
+      return notStarted(
         `${node.name} is connected, but AURA has no verified non-interactive invocation for it yet, `
         + `so nothing was run. Verified today: ${Object.keys(AGENT_INVOCATIONS).join(', ')}.`,
       );
     }
 
     const target = { nodeId: node.id, name: node.name, bin, invocation: invocationSpec };
-    const args = target.invocation.args(task, cwd, model);
+    // `payload` still travels as the LAST single argv element, never
+    // concatenated into a shell string — the same guarantee the bare task
+    // had. Adding context changes the content of that argument, not the
+    // way it is passed.
+    const args = target.invocation.args(payload, cwd, model);
     let res: Awaited<ReturnType<typeof runAgent>>;
     try {
       res = await runAgent(target.bin, args, { cwd, timeoutMs: inv.context.timeoutMs });
@@ -231,12 +269,20 @@ const agentDelegate: Executor = {
 
     // `nodeId` travels with the result so the work is attributable to the
     // agent that did it rather than to "some coding agent".
+    /* The payload argument is now a multi-kilobyte prompt. Reporting it
+       verbatim would push the whole of it into the executor result and
+       from there into the audit record, which is meant to stay a readable
+       trace of what ran — not a transcript of what was said. The shape of
+       the invocation is preserved; the payload is summarised. */
+    const reportedArgs = args.map((a) => (a === payload ? `<aura-prompt:${payload.length} chars>` : a));
+
     const output = {
       stdout: res.out,
       exitCode: res.code,
       nodeId: target.nodeId,
       agent: target.name,
-      args,
+      args: reportedArgs,
+      contextInjected: auraPrompt.length > 0,
       timedOut: res.timedOut ?? false,
       signal: res.signal,
     };
@@ -248,7 +294,11 @@ const agentDelegate: Executor = {
       : res.signal
         ? `${target.name} was terminated by ${res.signal}.`
         : `${target.name} exited ${res.code}.`;
-    return { ok: false, detail: `${why} ${res.out.slice(0, 400)}`.trim(), output };
+    /* The process ran. Whatever it did to the repository, it did — a
+       timeout in particular is the case where work is most likely to be
+       half-finished. Reporting `effectStarted: true` is what stops the
+       Fabric retrying an approved irreversible action on top of it. */
+    return { ok: false, detail: `${why} ${res.out.slice(0, 400)}`.trim(), output, effectStarted: true };
   },
   async verify(_inv, result) {
     const exit = (result.output as { exitCode?: number } | undefined)?.exitCode;
