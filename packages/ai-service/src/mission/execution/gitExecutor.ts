@@ -16,20 +16,19 @@
 import type { PipelineManager } from '../../pipeline';
 import { runGit } from '../../workflow/nodes';
 import { parseModelJson } from '../../jsonMode';
-import type { MissionGoal, MissionTask, TaskProposal } from '../types';
+import type { MissionGoal, MissionTask, TaskOperation, TaskProposal } from '../types';
 
 export type GitOperation = 'status' | 'diff' | 'log' | 'commit' | 'branch' | 'checkout';
 
 const ALLOWED_OPERATIONS: GitOperation[] = ['status', 'diff', 'log', 'commit', 'branch', 'checkout'];
 
-export interface GitTaskOperation {
-  type: 'git';
-  operation: GitOperation;
-  message?: string;
-  branchName?: string;
-  preview: string;
-  /** Result of the governed execution after human Accept (audit trail). */
-  result?: string;
+/** The mission-domain operation type (`mission/types` TaskOperation) — single definition, no duplicate shape. */
+export type GitTaskOperation = TaskOperation & { type: 'git' };
+
+/** Structured preview: human-readable state + a cleanliness verdict the plan guard can trust. */
+export interface GitPreview {
+  text: string;
+  hasChanges: boolean;
 }
 
 function sanitizeMessage(raw: unknown, maxLen = 100): string {
@@ -48,16 +47,21 @@ function sanitizeBranchName(raw: unknown): string {
 
 /* ── Read-only preview ─────────────────────────────────────────────── */
 
-export async function previewGitState(projectPath: string, signal?: AbortSignal): Promise<string> {
+export async function previewGitState(projectPath: string, signal?: AbortSignal): Promise<GitPreview> {
   const status = await runGit(projectPath, ['status', '--short', '--branch'], { signal });
   const diff = await runGit(projectPath, ['diff', '--stat', '--no-color'], { signal });
   const last = await runGit(projectPath, ['log', '-1', '--oneline', '--no-color'], { signal }).catch(() => ({ out: '', code: 0 }));
+  // `status --short` never prints "nothing to commit": cleanliness must be
+  // derived from the entry lines beyond the `## branch` header. Untracked
+  // files count as changes — `git add -A` at Accept would commit them.
+  const entries = status.out.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('##'));
+  const hasChanges = entries.length > 0;
   const lines = [
     `Branch / status:\n${status.out || '(clean)'}`,
-    diff.out ? `Uncommitted diff stat:\n${diff.out}` : 'No uncommitted diff.',
+    diff.out ? `Uncommitted diff stat:\n${diff.out}` : hasChanges ? 'No tracked diff (untracked/unstaged entries only).' : 'No uncommitted changes.',
     last.out ? `Last commit: ${last.out.split('\n')[0]}` : 'No commits yet.',
   ];
-  return lines.join('\n');
+  return { text: lines.join('\n'), hasChanges };
 }
 
 /* ── Proposal generation (dry run — never mutates) ─────────────────── */
@@ -97,7 +101,7 @@ export async function planGitOperation(
     `Task description: ${task.description}`,
     '',
     'Real repository preview:',
-    preview,
+    preview.text,
     '',
     'Respond with ONLY the JSON object described in the system message.',
   ].join('\n');
@@ -124,14 +128,14 @@ export async function planGitOperation(
   if ((operation === 'branch' || operation === 'checkout') && !sanitizeBranchName(parsed.branchName)) {
     return { ok: false, proposal: { explanation: '', newCode: null, error: { type: 'invalid_plan', message: 'git plan rejected: branch/checkout requires a valid branch name', retryable: true } } };
   }
-  if (operation === 'commit' && preview.includes('nothing to commit')) {
+  if (operation === 'commit' && !preview.hasChanges) {
     return { ok: false, proposal: { explanation: '', newCode: null, error: { type: 'nothing_to_commit', message: 'git plan rejected: there is nothing to commit', retryable: false } } };
   }
 
   const explanation = [
     `Git node plan: ${operation}${operation === 'commit' ? ` — "${sanitizeMessage(parsed.message)}"` : operation === 'branch' || operation === 'checkout' ? ` — "${sanitizeBranchName(parsed.branchName)}"` : ''}`,
     '',
-    preview,
+    preview.text,
   ].join('\n');
 
   return {
@@ -144,7 +148,7 @@ export async function planGitOperation(
         operation,
         message: operation === 'commit' ? sanitizeMessage(parsed.message) : undefined,
         branchName: (operation === 'branch' || operation === 'checkout') ? sanitizeBranchName(parsed.branchName) : undefined,
-        preview,
+        preview: preview.text,
       },
     },
   };
@@ -180,7 +184,7 @@ export async function executeGitOperation(
       case 'log': return ['log', '-5', '--oneline', '--no-color'];
       case 'commit': return ['commit', '-m', op.message ?? 'mission commit'];
       case 'branch': return ['branch', op.branchName ?? 'chore/aura-mission'];
-      case 'checkout': return ['checkout', '-B', op.branchName ?? 'chore/aura-mission'];
+      case 'checkout': return ['checkout', '-b', op.branchName ?? 'chore/aura-mission'];
     }
   };
 
@@ -198,7 +202,10 @@ export async function executeGitOperation(
       if (staged.code !== 0) return { ok: false, output: staged.out, error: staged.out || 'git add failed' };
       const commit = await runGit(projectPath, buildArgs(), { signal });
       if (commit.code !== 0) return { ok: false, output: commit.out, error: commit.out || 'git commit failed' };
-      const verify = await runGit(projectPath, ['log', '-1', '--oneline', '--no-color'], { signal });
+      // `--stat` verify: the audit trail shows EXACTLY which files the
+      // accepted commit carried, so an Accept can never silently sweep in
+      // unrelated working-tree changes.
+      const verify = await runGit(projectPath, ['log', '-1', '--stat', '--oneline', '--no-color'], { signal });
       return { ok: true, output: [commit.out, verify.out].filter(Boolean).join('\n') };
     }
     const res = await runGit(projectPath, buildArgs(), { signal });

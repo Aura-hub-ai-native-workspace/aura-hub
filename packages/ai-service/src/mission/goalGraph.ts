@@ -222,7 +222,9 @@ export async function generateGoalGraph(
       const automationLevel = pickEnum(t.automationLevel, AUTOMATION_LEVELS, kind === 'file-operation' || kind === 'git-operation' ? 'assisted' : 'manual');
       const durationRaw = typeof t.estimatedDurationMinutes === 'number' && Number.isFinite(t.estimatedDurationMinutes) ? t.estimatedDurationMinutes : 30;
       const confidenceRaw = typeof t.confidence === 'number' && Number.isFinite(t.confidence) ? t.confidence : 0.5;
-      const requestedNode = typeof t.node === 'string' ? pickEnum(t.node, TASK_NODES, 'aura-ai' as TaskNode) : undefined;
+      // An invalid node string from the model is treated as NO request — it must
+      // never silently become an explicit request for aura-ai.
+      const requestedNode = typeof t.node === 'string' && (TASK_NODES as string[]).includes(t.node) ? (t.node as TaskNode) : undefined;
       const task: MissionTask = {
         id: ourId,
         goalId,

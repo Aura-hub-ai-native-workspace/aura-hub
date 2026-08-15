@@ -257,7 +257,9 @@ export async function resolveNodeForTask(
     // DENY, and its denial outranks any capability match.
     const denied = spec.denies(task.kind);
     if (denied) return { error: `denied by node policy: ${denied}` };
-    if (capability !== 'manual' && !spec.capabilities.includes(capability)) {
+    // A manual-capability task has NO governed execution path — requesting a
+    // governed node for it must fail explicitly, never resolve.
+    if (capability === 'manual' || !spec.capabilities.includes(capability)) {
       return { error: `${req} cannot perform "${capability}" (capabilities: ${spec.capabilities.join(', ')})` };
     }
     if (!d[req].detected) return { error: `requested node ${req} is not detected on this machine` };
@@ -268,6 +270,10 @@ export async function resolveNodeForTask(
   if (capability === 'manual') return { node: 'manual', reason: 'no governed node — completed manually' };
   const node = DEFAULT_NODE_BY_CAPABILITY[capability];
   if (node === 'manual') return { node: 'manual', reason: 'no governed node — completed manually' };
+  // Node policy is evaluated on the default path too — a denial outranks the
+  // capability default, exactly as it does for a requested node.
+  const denied = NODE_REGISTRY[node].denies(task.kind);
+  if (denied) return { error: `denied by node policy: ${denied}` };
   const det = d[node];
   if (!det.detected || !det.executable) {
     return { error: `no executable node for "${capability}": ${node} — ${det.reason}` };
