@@ -9,9 +9,21 @@ import { nodeSpecInfos } from './workflow/nodes';
 import { TEMPLATES, instantiateTemplate } from './workflow/templates';
 import { generateWorkflow } from './workflow/generate';
 import type { RunEvent, Workflow } from './workflow/types';
+import { WorkflowBridge } from './workflowBridge';
 import { setupProviders } from './provider';
 import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
 import { handleCodeAction, type CodeActionRequest } from './codeAction';
+import { CATALOG } from '@aura/connected-environment';
+import { probeNode, scanEnvironment } from './environment';
+import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext, type NodeRef } from '@aura/capability-fabric';
+import { createFabric } from './fabric';
+import { drivableAgentBinaries } from './fabric/executors';
+import { composeContextView, type ContextSources } from './context/compose';
+import { renderContextContract } from './context/promptContract';
+import { AURA_SYSTEM_PROMPT, buildAgentPrompt, measureAgentPrompt } from './context/systemPrompt';
+import { scanAndDiff } from './intelligence';
+import { CAPABILITIES } from '@aura/connected-environment';
+import { savePolicy, policyFilePath } from './fabric/policyStore';
 import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate } from '@aura/automation';
 import type { AutomationEvent, AutomationRule } from '@aura/automation';
 import { automationEvent } from './automation';
@@ -86,18 +98,233 @@ export interface ServiceHandle {
   port: number;
   url: string;
   manager: WorkspaceManager;
+  bridge: WorkflowBridge;
   close: () => Promise<void>;
 }
 
-export async function startService(opts: PipelineOptions & { port?: number; openPath?: string } = {}): Promise<ServiceHandle> {
+export async function startService(opts: PipelineOptions & { port?: number; openPath?: string; onShutdownRequest?: () => void } = {}): Promise<ServiceHandle> {
   setupProviders();
   const manager = new WorkspaceManager(opts);
+
+  /**
+   * One Fabric for the process lifetime, so the audit trail is continuous.
+   * Node availability is read at decision time from the last environment
+   * scan, so connecting a tool takes effect without a restart.
+   */
+  let providedNodeCapabilities = new Set<string>();
+  /**
+   * Nodes that answered a probe, in catalogue order — the routing view of
+   * the same scan that produces `providedNodeCapabilities`. Built here,
+   * beside it, so the two can never describe different machines.
+   */
+  let presentNodes: NodeRef[] = [];
+  let lastScanAt: string | null = null;
+
+  /**
+   * THE assembly of ContextSources. Every consumer — the Context panel
+   * route, Ask AURA, and `agent.delegate` through the Fabric — goes
+   * through this one function, so none of them can be told a different
+   * story about the same project.
+   *
+   * Declared as a hoisted function so `createFabric` below can reference
+   * it; `fabric` is initialised long before any invocation calls it.
+   */
+  async function contextViewFor(projectId: string, changes?: ReturnType<typeof scanAndDiff>['result']) {
+    const proj = manager.registry.get(projectId);
+    if (!proj) return null;
+    const byoak = manager.byoakStatus();
+    const sources: ContextSources = {
+      project: proj,
+      mountedProjectId: manager.pipeline.currentProjectId,
+      profile: manager.profile(projectId),
+      // Versions live in the scan result, not in NodeRef. Reporting null
+      // is honest; inventing one from the catalogue would not be.
+      presentNodes: presentNodes.map((n) => ({
+        id: n.id, name: n.name, capabilities: n.capabilities, binary: n.binary, version: null,
+      })),
+      providedCapabilities: [...providedNodeCapabilities],
+      knownCapabilities: Object.keys(CAPABILITIES),
+      catalogueSize: CATALOG.length,
+      scannedAt: lastScanAt,
+      missions: manager.listMissions(projectId),
+      pendingApprovals: fabric.pendingApprovals().length,
+      // `active` and `model` ONLY. `byoakStatus()` also carries a key
+      // fingerprint per provider; it is deliberately not read here.
+      provider: {
+        id: byoak.active,
+        connected: byoak.active !== null,
+        model: byoak.model || null,
+      },
+      drivableAgentBinaries: drivableAgentBinaries(),
+      // Activity comes from the Fabric's audit log — the existing record
+      // of what actually ran, scoped to this project. No new activity
+      // store is introduced.
+      changes,
+      activity: fabric.audit()
+        .filter((a) => a.projectId === projectId)
+        .slice(-12)
+        .reverse()
+        .map((a) => ({
+          at: a.at,
+          kind: a.capabilityId,
+          summary: `${a.outcome}${a.executedNodeId ? ` via ${a.executedNodeId}` : ''}${a.decision ? ` (${a.decision})` : ''}`,
+        })),
+    };
+    return composeContextView(sources);
+  }
+
+  /** The canonical prompt for a delegated agent. Null when unavailable. */
+  async function agentPromptFor(projectId: string, task: string): Promise<string | null> {
+    const view = await contextViewFor(projectId);
+    return view ? buildAgentPrompt({ view, task }) : null;
+  }
+
+  /**
+   * The canonical context contract for ONE Ask AURA request.
+   *
+   * Returns the contract to pass down that request's call path — it is
+   * never stored anywhere, so two concurrent requests cannot overwrite
+   * each other (P0-2).
+   *
+   * ── One request, one project (P0-1) ──────────────────────────────
+   * The canonical context is composed for the REQUESTED project, while
+   * the retrieval half of the same request (`inspect` → identity,
+   * summary, code excerpts, memory) is hard-scoped to whichever project
+   * the pipeline has MOUNTED. If those differ, a single prompt would
+   * carry `<PROJECT_CONTEXT>` for A alongside A's retrieved code — a
+   * hybrid describing two projects at once.
+   *
+   * A mismatch is therefore refused, not reconciled. Specifically it is
+   * NOT fixed by mounting the requested project: mounting starts
+   * indexing and changes what every other surface sees, and a read must
+   * never do that as a side effect. The caller mounts first, or asks
+   * about the project that is already mounted.
+   */
+  type AuraContextResult =
+    | { ok: true; contract: string | null; scan?: ReturnType<typeof scanAndDiff> }
+    | { ok: false; conflict: { requested: string; mounted: string | null; message: string } };
+
+  async function resolveAuraContext(body: Record<string, unknown>): Promise<AuraContextResult> {
+    const requested = typeof body.projectId === 'string' && body.projectId ? body.projectId : null;
+    const mounted = manager.pipeline.currentProjectId;
+
+    if (requested && requested !== mounted) {
+      return {
+        ok: false,
+        conflict: {
+          requested,
+          mounted,
+          message: mounted
+            ? `This request asks about "${requested}" but AURA currently has "${mounted}" open. `
+              + 'Open the project first — AURA will not answer using two projects at once.'
+            : `This request asks about "${requested}" but AURA has no project open. `
+              + 'Open the project first.',
+        },
+      };
+    }
+
+    const projectId = requested ?? mounted;
+    if (!projectId) return { ok: true, contract: null };
+    try {
+      /* ONE tree walk for the whole request. The view needs the diff for
+         freshness and the pipeline needs it for artifact staleness; they
+         used to take one each, over the same tree, in the same request.
+         The snapshot rides along so the pipeline can rebase the baseline —
+         composing a view still never writes anything. */
+      const proj = manager.registry.get(projectId);
+      const scan = proj ? scanAndDiff(projectId, proj.path) : undefined;
+      const view = await contextViewFor(projectId, scan?.result);
+      return { ok: true, contract: view ? renderContextContract(view) : null, scan };
+    } catch {
+      // Context is an improvement to the answer, never a precondition for
+      // one. A composition failure must not take Ask AURA down with it.
+      return { ok: true, contract: null };
+    }
+  }
+
+  const fabric = createFabric({
+    agentPrompt: agentPromptFor,
+    manager,
+    providedNodeCapabilities: () => providedNodeCapabilities,
+    presentNodes: () => presentNodes,
+  });
+  // Closes the loop: mission tasks now execute THROUGH this same Fabric
+  // instance, so a task inherits the identical policy, approval,
+  // verification, recovery and audit path as a direct /fabric/invoke.
+  manager.attachFabric(fabric);
+
+  /**
+   * Scan the machine and publish what is genuinely reachable.
+   *
+   * Shared by boot and by `POST /environment/scan` so there is exactly one
+   * place that decides what "available" means — a node counts only when it
+   * actually answered a probe. Nothing is assumed present.
+   */
+  const refreshNodeAvailability = async (ids?: string[], refresh = false) => {
+    const scan = await scanEnvironment(ids, refresh);
+    const provided = new Set<string>();
+    const nodes: NodeRef[] = [];
+    // CATALOG order is the tie-break when several nodes provide the same
+    // capability and the caller named none (§22.4 rule 4), so this is
+    // walked in catalogue order rather than scan-result order.
+    for (const entry of CATALOG) {
+      const result = scan.results[entry.id];
+      if (!result?.present) continue;
+      for (const capability of entry.capabilities) provided.add(capability);
+      nodes.push({
+        id: entry.id,
+        name: entry.name,
+        capabilities: [...entry.capabilities],
+        binary: entry.probe?.command,
+      });
+    }
+    providedNodeCapabilities = provided;
+    presentNodes = nodes;
+    // Recorded so the Context Fabric can report WHEN the machine was last
+    // measured. Context that cannot say how old it is has to say "unknown".
+    lastScanAt = scan.scannedAt;
+    return scan;
+  };
 
   // Auto-connect providers configured through environment variables
   // (e.g. MISTRAL_API_KEY) so an env-configured key is active on startup.
   await manager.connectEnvProviders().catch((e) => {
     console.warn('[providers] env auto-connect failed:', (e as Error).message);
   });
+
+  // Discover the environment before serving. Without this a restart left
+  // every node-backed capability denied as `no-provider` until someone
+  // happened to trigger a scan — git would be installed and working, and
+  // the Fabric would still refuse `git.diff`.
+  await refreshNodeAvailability().then(
+    (scan) => console.log(`[environment] ${scan.found ?? providedNodeCapabilities.size} node(s) present · ${providedNodeCapabilities.size} capabilities available`),
+    (e) => console.warn('[environment] boot scan failed:', (e as Error).message),
+  );
+
+  /**
+   * The workflow bridge — the ONE production seam into @aura/workflow.
+   *
+   * Built after the Fabric exists (so every workflow side effect inherits
+   * the same policy/approval/audit authority as missions), and before the
+   * server accepts traffic. Boot does two things:
+   *   - migrateAll(): the legacy ~/.aura/workflows store is converted
+   *     once into workflow-defs/ (idempotent; legacy entries are kept and
+   *     stay editable in the builder UI);
+   *   - startScheduler(): scheduled/git/file/mission triggers for ready
+   *     definitions begin firing through the host event sources.
+   */
+  const bridge = new WorkflowBridge({ fabric, manager });
+  {
+    const entries = bridge.migrateAll();
+    const migrated = entries.filter((e) => e.outcome === 'migrated').length;
+    const partial = entries.filter((e) => e.outcome === 'partial').length;
+    console.log(`[workflows] boot migration: ${migrated} ready · ${partial} partial (unsupported nodes) · ${entries.length - migrated - partial} skipped/invalid of ${entries.length} legacy workflow(s)`);
+    for (const e of entries.filter((x) => x.outcome === 'partial')) {
+      console.warn(`[workflows] ${e.workflowId} (${e.name}) is not runnable in the new runtime:`);
+      for (const u of e.unsupported) console.warn(`  - node ${u.nodeId} (${u.legacyType}): ${u.reason}`);
+    }
+  }
+  bridge.startScheduler();
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -111,6 +338,25 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     try {
       /* ── health / settings / key ──────────────────────────────── */
       if (method === 'GET' && seg[0] === 'health') return json(res, 200, { health: await p.health(), key: p.keyStatus(), index: manager.indexStatus(), project: manager.currentProject() });
+
+      /**
+       * Graceful shutdown over the loopback port — the desktop shell's
+       * Windows lifecycle path. Unix has SIGTERM (start.ts handles it);
+       * Windows has no SIGTERM, so the supervisor asks the service to
+       * close itself and only force-terminates a process that ignores it.
+       * The `x-aura-shutdown` header is required: a cross-origin webpage
+       * cannot send it (the CORS preflight this server does not allow
+       * would block it), so this stays no more reachable to other local
+       * processes than a signal is on Unix.
+       */
+      if (method === 'POST' && seg[0] === 'shutdown') {
+        if (req.headers['x-aura-shutdown'] !== '1') {
+          return json(res, 403, { error: 'shutdown requires the x-aura-shutdown header' });
+        }
+        json(res, 200, { ok: true, shuttingDown: true });
+        opts.onShutdownRequest?.();
+        return;
+      }
       if (method === 'GET' && (seg.length === 0 || seg[0] === 'settings')) return json(res, 200, { settings: p.getSettings(), defaults: DEFAULT_SETTINGS, key: p.keyStatus() });
       if (method === 'POST' && seg[0] === 'settings' && seg[1] === 'key') { const b = await readJson(req); return json(res, 200, p.setKey(String(b.apiKey ?? ''), Boolean(b.persist))); }
       if (method === 'DELETE' && seg[0] === 'settings' && seg[1] === 'key') { p.clearKey(); return json(res, 200, { ok: true }); }
@@ -158,6 +404,185 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       if (method === 'GET' && seg[0] === 'index') return json(res, 200, manager.indexStatus());
       if (method === 'POST' && seg[0] === 'reindex') return json(res, 200, await p.reindex());
 
+      /* ── connected environment ────────────────────────────────
+         Real capability detection. The command a probe runs always
+         comes from the catalog entry looked up by id — never from the
+         request — so no request can reach arbitrary execution. See
+         environment.ts for the full boundary. */
+      if (seg[0] === 'environment') {
+        if (method === 'GET' && seg[1] === 'catalog') return json(res, 200, { catalog: CATALOG });
+        if (method === 'POST' && seg[1] === 'scan') {
+          const b = await readJson(req);
+          const ids = Array.isArray(b.ids) ? b.ids.filter((x): x is string => typeof x === 'string') : undefined;
+          // A scan is also the Fabric's view of what is reachable: every
+          // capability of every node that answered becomes available for
+          // policy evaluation, with no separate connect step to drift from.
+          const scan = await refreshNodeAvailability(ids, Boolean(b.refresh));
+          return json(res, 200, { ...scan, providedCapabilities: [...providedNodeCapabilities].sort() });
+        }
+        if (method === 'POST' && seg[1] === 'probe') {
+          const b = await readJson(req);
+          const id = String(b.id ?? '');
+          if (!id) return json(res, 400, { error: 'a node id is required' });
+          return json(res, 200, { id, result: await probeNode(id, Boolean(b.refresh)) });
+        }
+      }
+
+      /* ── capability fabric ─────────────────────────────────────
+         The single governed path to a side effect. `invoke` runs the
+         full chain: policy → approval → execute → verify → audit.
+         Approval is per-call (`approvedCapabilities`); this service has
+         no UI and therefore never grants one implicitly. */
+      if (seg[0] === 'fabric') {
+        if (method === 'GET' && seg[1] === 'capabilities') {
+          const supported = new Set(fabric.supported());
+          return json(res, 200, {
+            capabilities: CAPABILITY_MANIFEST.map((c) => ({ ...c, supported: supported.has(c.id) })),
+            supportedCount: supported.size,
+            providedNodeCapabilities: [...providedNodeCapabilities].sort(),
+            policy: fabric.getPolicy(),
+          });
+        }
+        if (method === 'GET' && seg[1] === 'audit') {
+          return json(res, 200, { audit: fabric.audit() });
+        }
+        /* POST /fabric/policy — the operator's caution settings. Held
+           service-side so the desktop can display them but never be the
+           authority on them. Sanitized, then persisted to ~/.aura so it
+           survives a restart. */
+        if (method === 'POST' && seg[1] === 'policy') {
+          const b = await readJson(req);
+          const current = fabric.getPolicy();
+          // Field-by-field on purpose: this merge is an allow-list, so an
+          // unknown key in the request body can never reach the policy.
+          // Anything genuinely new must be added here deliberately.
+          const merged = {
+            byRisk: (b.byRisk as typeof current.byRisk) ?? current.byRisk,
+            overrides: (b.overrides as typeof current.overrides) ?? current.overrides,
+            nodeOverrides: (b.nodeOverrides as typeof current.nodeOverrides) ?? current.nodeOverrides,
+            nodeAllowlists: (b.nodeAllowlists as typeof current.nodeAllowlists) ?? current.nodeAllowlists,
+            allowAutonomous: typeof b.allowAutonomous === 'boolean' ? b.allowAutonomous : current.allowAutonomous,
+          };
+          const saved = savePolicy(merged);
+          fabric.setPolicy(saved);
+          return json(res, 200, { policy: saved, file: policyFilePath() });
+        }
+
+        /* ── approval gate ─────────────────────────────────────────
+           The authoritative approval surface. The desktop reads pending
+           requests here and answers them here; it never names a
+           capability itself. */
+        if (method === 'GET' && seg[1] === 'approvals') {
+          return json(res, 200, { approvals: fabric.pendingApprovals() });
+        }
+
+        if (method === 'POST' && seg[1] === 'approvals' && seg[2] && seg[3] === 'decide') {
+          const b = await readJson(req);
+          const granted = b.granted === true;
+          const reason = typeof b.reason === 'string' ? b.reason : undefined;
+
+          const request = fabric.approvalById(seg[2]);
+          if (!request) return json(res, 404, { error: 'no such approval request' });
+          // Already decided — a replayed request, a second tab, or a
+          // double-click. Report the existing decision rather than
+          // authorizing anything a second time.
+          if (request.state !== 'pending') {
+            return json(res, 409, { error: `This request was already ${request.state}.`, approval: request });
+          }
+
+          const decided = fabric.decideApproval(seg[2], granted, 'user', reason);
+          if (!decided) return json(res, 409, { error: 'This request is no longer pending.' });
+
+          // The grant is derived from the STORED request, never from the
+          // client. A caller can say "I approve request X"; it can never
+          // say "I approve filesystem.write".
+          const capabilities = decided.items.map((i) => i.capabilityId);
+          const pid = decided.projectId;
+          const mid = decided.missionId;
+          const tid = decided.taskId;
+
+          if (!pid || !mid || !tid) {
+            return json(res, 200, { approval: decided, resumed: false, detail: 'Recorded. This request is not attached to a mission task.' });
+          }
+
+          if (!granted) {
+            // Nothing executes. The task is left declined with the reason
+            // on Mission Control's timeline, which stays the authority on
+            // mission history.
+            const r = manager.rejectMissionTask(pid, mid, tid, reason ?? 'Approval declined by operator');
+            return json(res, 200, { approval: decided, resumed: false, declined: true, mission: r.mission });
+          }
+
+          // Resume the SAME task with the server-derived grant.
+          const ac = new AbortController();
+          res.on('close', () => ac.abort());
+          const result = await manager.runMissionTask(pid, mid, tid, ac.signal, capabilities);
+          return json(res, 200, { approval: decided, resumed: true, ...result });
+        }
+        /* GET /fabric/mission/:projectId/:missionId — the additive
+           annotation over a finished plan (assumptions, open questions,
+           per-task capability bindings, gaps). Read-only and derived on
+           demand: nothing here is persisted onto the MissionRecord, and
+           nothing here re-plans. See CONSOLIDATION_MAP.md §2.1/§2.2. */
+        if (method === 'GET' && seg[1] === 'mission' && seg[2] && seg[3]) {
+          const mission = manager.getMission(seg[2], seg[3]);
+          if (!mission) return json(res, 404, { error: 'mission not found' });
+          return json(
+            res,
+            200,
+            annotateMissionCapabilities(
+              mission.intent,
+              mission.signals,
+              mission.goalGraph?.tasks ?? [],
+              fabric.supported(),
+            ),
+          );
+        }
+        if (method === 'POST' && seg[1] === 'invoke') {
+          const b = await readJson(req);
+          const capabilityId = String(b.capabilityId ?? '');
+          if (!capabilityId) return json(res, 400, { error: 'capabilityId is required' });
+          const raw = (b.context ?? {}) as Record<string, unknown>;
+          const projectId = typeof raw.projectId === 'string' ? raw.projectId : null;
+          // The working directory is resolved from the registry, never
+          // taken from the request — a caller cannot point execution at an
+          // arbitrary directory on the machine.
+          const project = projectId
+            ? (manager.listProjects() as { id: string; path: string }[]).find((p) => p.id === projectId)
+            : undefined;
+          const context: InvocationContext = {
+            actor: {
+              kind: (raw.actorKind as 'agent' | 'human' | 'system') ?? 'human',
+              id: typeof raw.actorId === 'string' ? raw.actorId : 'user',
+            },
+            projectId,
+            cwd: project?.path,
+            missionId: typeof raw.missionId === 'string' ? raw.missionId : undefined,
+            taskId: typeof raw.taskId === 'string' ? raw.taskId : undefined,
+            timeoutMs: typeof raw.timeoutMs === 'number' ? raw.timeoutMs : undefined,
+            approvedCapabilities: Array.isArray(b.approvedCapabilities)
+              ? b.approvedCapabilities.filter((x): x is string => typeof x === 'string')
+              : undefined,
+            // Routing intent. Only an id — never a path or a binary — so a
+            // caller can narrow which connected node runs the action but
+            // can never point execution at something off the catalogue.
+            //
+            // Also accepted in the INPUT position, where `agent.delegate`
+            // used to declare it. Honouring the alias matters: dropping it
+            // would mean a caller who named a node got a different one
+            // without being told, which is precisely the silent
+            // substitution routing exists to prevent.
+            nodeId: typeof raw.nodeId === 'string'
+              ? raw.nodeId
+              : typeof (b.input as Record<string, unknown> | undefined)?.nodeId === 'string'
+                ? ((b.input as Record<string, unknown>).nodeId as string)
+                : undefined,
+          };
+          const input = (b.input ?? {}) as Record<string, unknown>;
+          return json(res, 200, await fabric.invoke(capabilityId, input, context));
+        }
+      }
+
       /* ── global engineering dashboard (across all projects) ────── */
       if (method === 'GET' && seg[0] === 'missions' && seg[1] === 'dashboard') {
         return json(res, 200, manager.missionDashboard());
@@ -166,7 +591,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       /* ── projects ─────────────────────────────────────────────── */
       if (seg[0] === 'projects') {
         if (seg.length === 1) {
-          if (method === 'GET') return json(res, 200, { projects: manager.listProjects(), current: manager.currentProject() });
+          // `registry.readable` travels with the list so a client can tell
+          // "no projects" from "the registry could not be read". Pruning an
+          // active project on the strength of the latter loses user state.
+          if (method === 'GET') return json(res, 200, {
+            projects: manager.listProjects(),
+            current: manager.currentProject(),
+            registry: { readable: manager.registry.readable, error: manager.registry.readError },
+          });
           if (method === 'POST') {
             const b = await readJson(req);
             try { return json(res, 200, manager.addProject({ name: b.name as string, path: String(b.path ?? ''), icon: b.icon as string })); }
@@ -194,6 +626,54 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         }
         if (seg[2] === 'graph' && method === 'GET') { const kg = manager.knowledgeGraph(id); return kg ? json(res, 200, kg) : json(res, 404, { error: 'project not open' }); }
         if (seg[2] === 'intelligence' && method === 'GET') { const r = manager.projectIntelligence(id); return r ? json(res, 200, r) : json(res, 404, { error: 'no such project' }); }
+        /* GET /projects/:id/context — the Context Fabric read model.
+           The ONE place ContextSources is assembled, so every consumer
+           (Context panel, Ask AURA, later agents) sees the same projection
+           of the same authorities. `?prompt=1` additionally returns the
+           rendered agent contract, so a caller never re-derives it.
+           This never triggers a scan or a re-index: a stale view is
+           reported as stale and refreshed through the existing paths. */
+        /* POST /projects/:id/reindex — a re-index that names its target.
+           The generic POST /reindex acts on whatever is mounted, so the
+           Context panel (which is scoped to a project id) could ask to
+           refresh project A and re-index project B instead.
+
+           A mismatch is refused rather than reconciled, for the same
+           reason as the Ask AURA conflict: mounting is a state change and
+           a refresh must not cause one behind the user's back. */
+        if (seg[2] === 'reindex' && method === 'POST') {
+          if (!manager.registry.get(id)) return json(res, 404, { error: 'no such project' });
+          const mounted = manager.pipeline.currentProjectId;
+          if (mounted !== id) {
+            return json(res, 409, {
+              error: mounted
+                ? `Cannot re-index "${id}" while "${mounted}" is the open project. Open it first.`
+                : `Cannot re-index "${id}" because no project is open. Open it first.`,
+              requested: id,
+              mounted,
+            });
+          }
+          return json(res, 200, await p.reindex());
+        }
+        if (seg[2] === 'context' && method === 'GET') {
+          const view = await contextViewFor(id);
+          if (!view) return json(res, 404, { error: 'no such project' });
+          if (url.searchParams.get('prompt') !== '1') return json(res, 200, { view });
+          // `task` makes this the exact prompt `agent.delegate` would send,
+          // built by the same function — a transparency surface, not a
+          // second builder.
+          const task = url.searchParams.get('task');
+          return json(res, 200, {
+            view,
+            contract: renderContextContract(view),
+            ...(task
+              ? {
+                agentPrompt: buildAgentPrompt({ view, task }),
+                measurement: measureAgentPrompt({ view, task }),
+              }
+              : { systemPrompt: AURA_SYSTEM_PROMPT }),
+          });
+        }
         if (seg[2] === 'graphify' && seg[3] === 'status' && method === 'GET') {
           return json(res, 200, graphifyStatus(id));
         }
@@ -212,7 +692,8 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           return;
         }
         if (seg[2] === 'architecture-layers' && method === 'GET') {
-          return json(res, 200, { layers: manager.resolveArchitectureLayers(id) });
+          const stack = manager.resolveArchitectureLayers(id);
+          return json(res, 200, { layers: stack.layers, edges: stack.edges });
         }
         if (seg[2] === 'changes' && method === 'GET') {
           const log = manager.changeLog(id);
@@ -380,12 +861,29 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             if (seg[6] === 'run') {
               const ac = new AbortController();
               res.on('close', () => ac.abort());
+              // No grant is accepted from the caller. A gated task is
+              // resumed only through POST /fabric/approvals/:id/decide,
+              // which derives the capability from the stored request — so
+              // a crafted body can never authorize an action.
               const result = await manager.runMissionTask(id, mid, taskId, ac.signal);
-              return json(res, result.ok ? 200 : 400, result);
+              // 202 for an approval gate: the request was understood and the
+              // task is parked, which is not the same as a bad request.
+              return json(res, result.ok ? 200 : result.awaitingApproval ? 202 : 400, result);
             }
-            if (seg[6] === 'accept') return json(res, 200, await manager.acceptMissionTask(id, mid, taskId));
+            if (seg[6] === 'accept') {
+              // Accept IS the operator's authorization for the write, so the
+              // grant is derived from the act of accepting — server-side,
+              // with no capability list crossing the wire.
+              const r = await manager.acceptMissionTask(id, mid, taskId);
+              return json(res, r.ok ? 200 : 400, r);
+            }
             if (seg[6] === 'reject') {
-              const r = manager.rejectMissionTask(id, mid, taskId);
+              // Also the decline path for a task parked at a Fabric approval
+              // gate: the reason is recorded on the mission timeline, and the
+              // Fabric already holds its own audit record of the gate.
+              const rb = await readJson(req).catch(() => ({}) as Record<string, unknown>);
+              const reason = typeof rb.reason === 'string' ? rb.reason : undefined;
+              const r = manager.rejectMissionTask(id, mid, taskId, reason);
               return json(res, r.ok ? 200 : 400, r);
             }
             if (seg[6] === 'complete') return json(res, 200, manager.completeManualTask(id, mid, taskId));
@@ -422,7 +920,31 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (!result.ok) return json(res, 400, { error: result.error });
           const { ok: _ok, ...graph } = result;
           const wf = wfs.create({ name: graph.name, description: graph.description, category: 'AI Generated', nodes: graph.nodes, edges: graph.edges });
+          bridge.syncLegacy(wf);
           return json(res, 200, wf);
+        }
+        // Approval management — the human side of the Fabric's ONE approval
+        // authority. Runs park at approval nodes; the decision is recorded
+        // here and the run resumes (or the parked node fails) in place.
+        if (seg[1] === 'approvals') {
+          if (seg.length === 2 && method === 'GET') return json(res, 200, { approvals: bridge.pendingApprovals() });
+          if (seg.length === 3 && seg[2] === 'pending' && method === 'GET') {
+            return json(res, 200, { approvals: bridge.pendingApprovals() });
+          }
+          if (seg.length === 3) {
+            if (method === 'GET') {
+              const a = bridge.approvalById(seg[2] as string);
+              return a ? json(res, 200, a) : json(res, 404, { error: 'no such approval request' });
+            }
+            if (method === 'POST') {
+              const b = await readJson(req);
+              const ok = bridge.decideApproval(seg[2] as string, Boolean(b.granted), String(b.decidedBy ?? 'user'), typeof b.reason === 'string' ? b.reason : undefined);
+              return ok ? json(res, 200, { ok: true }) : json(res, 404, { error: 'no such approval request' });
+            }
+          }
+        }
+        if (seg[1] === 'runs' && seg[2] === 'resume' && seg.length === 3 && method === 'POST') {
+          return json(res, 200, { ok: bridge.resumeRun(seg[2] as string) });
         }
         if (seg.length === 1) {
           if (method === 'GET') return json(res, 200, { workflows: wfs.list() });
@@ -430,7 +952,9 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             const b = await readJson(req);
             const fromTemplate = typeof b.template === 'string' ? instantiateTemplate(b.template) : null;
             if (typeof b.template === 'string' && !fromTemplate) return json(res, 404, { error: 'no such template' });
-            return json(res, 200, wfs.create(fromTemplate ?? { name: b.name as string | undefined, category: b.category as string | undefined }));
+            const wf = wfs.create(fromTemplate ?? { name: b.name as string | undefined, category: b.category as string | undefined });
+            bridge.syncLegacy(wf);
+            return json(res, 200, wf);
           }
         }
         const id = seg[1];
@@ -453,12 +977,31 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           res.on('close', () => ac.abort());
           const emit = (e: RunEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
           try {
-            await manager.runWorkflow(wf, (b.inputs ?? {}) as Record<string, string>, emit, ac.signal);
+            await bridge.runLegacy(wf, { inputs: (b.inputs ?? {}) as Record<string, string>, projectId: manager.currentProject()?.id ?? null }, emit);
           } catch (e) {
             emit({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message });
           }
           if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
           return;
+        }
+        // Manual trigger — starts the run through the bridge and returns
+        // runId/status immediately (no SSE). The run continues in the
+        // background; GET /workflows/:id/runs/:runId reports its state.
+        if (seg[2] === 'start' && method === 'POST') {
+          const b = await readJson(req);
+          try {
+            const started = await bridge.startManual(id, { inputs: (b.inputs ?? {}) as Record<string, string>, projectId: manager.currentProject()?.id ?? null });
+            return json(res, 200, started);
+          } catch (e) {
+            return json(res, 400, { error: (e as Error).message });
+          }
+        }
+        if (seg[2] === 'runs') {
+          if (seg.length === 3 && method === 'GET') return json(res, 200, { runs: bridge.listRuns(id, { limit: 50 }) });
+          if (seg.length === 4 && method === 'GET') {
+            const run = bridge.getRun(seg[3] as string);
+            return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
+          }
         }
         if (seg[2] === 'webhook-token' && method === 'POST') {
           const b = await readJson(req);
@@ -479,17 +1022,23 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (!wf) return json(res, 404, { error: 'no such workflow, or an invalid trigger token' });
           const payload = await readJson(req);
           const inputs: Record<string, string> = {};
-          for (const n of wf.nodes) if (n.type === 'user-input') inputs[n.id] = JSON.stringify(payload);
-          void manager.runWorkflow(wf, inputs, () => {}).catch((e) => {
+          const userInputs = wf.nodes.filter((n) => n.type === 'user-input');
+          if (userInputs.length === 1) inputs[userInputs[0]!.id] = JSON.stringify(payload);
+          void bridge.startTriggered(id, { inputs, triggerPayload: JSON.stringify(payload) }).catch((e) => {
             console.error(`[workflow trigger] run failed for ${id}:`, (e as Error).message);
           });
           return json(res, 202, { accepted: true });
         }
         if (seg.length === 2) {
           if (method === 'GET') { const wf = wfs.get(id); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
-          if (method === 'PUT') { const b = await readJson(req); const wf = wfs.save(id, b as Partial<Workflow>); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
-          if (method === 'PATCH') { const b = await readJson(req); const wf = wfs.patch(id, b as { name?: string; favorite?: boolean; category?: string }); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
-          if (method === 'DELETE') return json(res, 200, { ok: wfs.remove(id) });
+          if (method === 'PUT') {
+            const b = await readJson(req);
+            const wf = wfs.save(id, b as Partial<Workflow>);
+            if (wf) bridge.syncLegacy(wf);
+            return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' });
+          }
+          if (method === 'PATCH') { const b = await readJson(req); const wf = wfs.patch(id, b as { name?: string; favorite?: boolean; category?: string }); if (wf) bridge.syncLegacy(wf); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
+          if (method === 'DELETE') { const ok = wfs.remove(id); if (ok) bridge.definitions.remove(id); return json(res, 200, { ok }); }
         }
       }
 
@@ -689,7 +1238,11 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         const ac = new AbortController();
         res.on('close', () => ac.abort());
         const history = resolveHistory(manager, b);
-        return json(res, 200, await p.ask(String(b.text ?? ''), ac.signal, history));
+        const ctx = await resolveAuraContext(b);
+        // 409: the request named a project other than the one AURA has
+        // open. Refusing is the only answer that cannot be a hybrid.
+        if (!ctx.ok) return json(res, 409, { error: ctx.conflict.message, ...ctx.conflict });
+        return json(res, 200, await p.ask(String(b.text ?? ''), ac.signal, history, ctx.contract, ctx.scan));
       }
       if (method === 'POST' && seg[0] === 'stream') {
         const b = await readJson(req);
@@ -698,7 +1251,16 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         res.on('close', () => ac.abort());
         const history = resolveHistory(manager, b);
         const emit = (e: StreamEmit) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
-        await p.streamEvents(String(b.text ?? ''), emit, ac.signal, history);
+        const ctx = await resolveAuraContext(b);
+        if (!ctx.ok) {
+          /* The SSE headers are already sent, so the conflict travels as
+             the stream's own error event rather than an HTTP status. The
+             client surfaces it exactly like any other stream failure. */
+          emit({ type: 'error', error: { type: 'project_conflict', message: ctx.conflict.message, retryable: false } });
+          if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+          return;
+        }
+        await p.streamEvents(String(b.text ?? ''), emit, ac.signal, history, ctx.contract, ctx.scan);
         if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
         return;
       }
@@ -712,5 +1274,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   const port = opts.port ?? 4319;
   await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
   const addr = server.address() as { port: number };
-  return { port: addr.port, url: `http://127.0.0.1:${addr.port}`, manager, close: () => new Promise((r) => server.close(() => r())) };
+  return {
+    port: addr.port, url: `http://127.0.0.1:${addr.port}`, manager, bridge,
+    // Graceful shutdown: stop the workflow scheduler first (no new runs,
+    // timers and watchers released), then the HTTP server. Paused runs
+    // stay persisted and resumable by the next boot.
+    close: async () => {
+      bridge.shutdown();
+      await new Promise<void>((r) => server.close(() => r()));
+    },
+  };
 }

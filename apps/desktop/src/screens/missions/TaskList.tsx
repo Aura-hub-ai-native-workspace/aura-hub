@@ -16,6 +16,8 @@ import { DiffEditor } from '@monaco-editor/react';
 import { Badge, Button, Icon } from '@aura/ui';
 import { useAppStore } from '@aura/core';
 import type { DagNode, MissionGoal, MissionTask, MissionTaskRun } from '../../ai/missionClient';
+import type { ApprovalRequest } from '../../ai/fabricClient';
+import { ApprovalGate } from './ApprovalGate';
 import { fsReadFile } from '../../editor/fsClient';
 import {
   KIND_ICON, KIND_LABEL, NODE_LABEL, PRIORITY_TONE, RISK_TONE,
@@ -37,6 +39,10 @@ export interface TaskListProps {
   goals?: MissionGoal[];
   approved: boolean;
   busyTaskId: string | null;
+  /** Service-side authorization requests. The gate's only source of truth. */
+  approvals?: ApprovalRequest[];
+  approvalBusyId?: string | null;
+  onDecideApproval?: (id: string, granted: boolean, reason?: string) => void;
   onRun: (taskId: string) => void;
   onAccept: (taskId: string) => void;
   onReject: (taskId: string) => void;
@@ -76,7 +82,8 @@ export function TaskList(props: TaskListProps) {
 }
 
 function TaskRow({
-  task, projectPath, nodes, runs, approved, busyTaskId, onRun, onAccept, onReject, onRetry, onComplete,
+  task, projectPath, nodes, runs, approved, busyTaskId, approvals, approvalBusyId, onDecideApproval,
+  onRun, onAccept, onReject, onRetry, onComplete,
 }: TaskListProps & { task: MissionTask }) {
   const theme = useAppStore((s) => s.theme);
   const node = nodes.find((n) => n.id === task.id);
@@ -97,6 +104,9 @@ function TaskRow({
   const fill = runtimeFill(runtime);
   const IconCmp = KIND_ICON[task.kind] ?? 'doc';
   const showProposal = run?.status === 'proposed' && run.proposal;
+  // A gated task sits in `queued` like any other — the gate itself is the
+  // only thing that distinguishes it, and it comes from the service.
+  const gate = approvals?.find((a) => a.taskId === task.id && a.state === 'pending');
 
   return (
     <div className="rounded-lg border border-line bg-surface px-3 py-2.5 transition-colors hover:bg-surface-hover">
@@ -135,6 +145,10 @@ function TaskRow({
         </p>
       )}
 
+      {gate && onDecideApproval && (
+        <ApprovalGate request={gate} busy={approvalBusyId === gate.id} onDecide={onDecideApproval} />
+      )}
+
       {showProposal && run?.proposal && (
         <div className="mt-2 space-y-2">
           <div className="flex flex-wrap items-center gap-1.5">
@@ -163,7 +177,10 @@ function TaskRow({
         {isManualKind && (runtime === 'waiting' || runtime === 'queued') && (
           <Button size="sm" variant="secondary" disabled={!approved || !depsMet} loading={busy} onClick={() => onComplete(task.id)}>Mark Done</Button>
         )}
-        {runtime === 'queued' && !isManualKind && (
+        {/* While a gate is open the answer is Approve/Decline on the gate
+            itself — offering Run as well would present two ways to say yes,
+            only one of which is authorized. */}
+        {runtime === 'queued' && !isManualKind && !gate && (
           <Button size="sm" variant="primary" disabled={!approved || !depsMet} loading={busy} onClick={() => onRun(task.id)}>
             {depsMet ? 'Run Task' : 'Waiting on deps'}
           </Button>

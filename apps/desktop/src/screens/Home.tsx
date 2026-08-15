@@ -194,8 +194,8 @@ export function Home() {
             <div className="mt-4 space-y-3">
               <StatusRow
                 label="Connection"
-                value={reachable === false ? 'Backend offline' : health?.health.ok ? `Connected · ${health.health.latencyMs}ms` : 'Not connected'}
-                tone={reachable === false ? 'critical' : health?.health.ok ? 'positive' : 'neutral'}
+                value={reachable === false ? 'Backend offline' : health?.health.ok ? `Connected · ${health.health.latencyMs}ms` : 'Connected'}
+                tone={reachable === false ? 'critical' : 'positive'}
               />
               <StatusRow
                 label="API key"

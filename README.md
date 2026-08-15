@@ -1,17 +1,16 @@
 <div align="center">
 
-<img src="docs/assets/brand/hero-banner.svg" alt="AURA Hub — An AI Operating Environment" width="100%" />
+<img src="docs/assets/brand/hero-banner.svg" alt="AURA Hub — An AI-Native Desktop Engineering Environment" width="100%" />
 
-**An AI Operating Environment** — not a chat app, not an editor, not a browser.
+**An AI-native desktop engineering environment** — not a chat app, not a browser tab, not an editor plugin.
 
 [![CI](https://github.com/Aura-hub-ai-native-workspace/aura-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/Aura-hub-ai-native-workspace/aura-hub/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.4-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app)
-[![Node](https://img.shields.io/badge/Node-%3E%3D18.18-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-3178C6)](#get-aura-hub)
+[![Built with Tauri](https://img.shields.io/badge/Built%20with-Tauri%20v2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[Website](https://claude.ai/code/artifact/8f4a92d5-f946-4b4a-a46e-eb10fe5e33f6) · [Quick Start](#quick-start) · [Features](#core-features) · [Screenshots](#product-screenshots) · [Demo](#demo) · [Architecture](#product-architecture) · [Installation](#installation) · [Contributing](#contributing) · [Roadmap](ROADMAP.md)
+[Website](https://claude.ai/code/artifact/8f4a92d5-f946-4b4a-a46e-eb10fe5e33f6) · [Get AURA Hub](#get-aura-hub) · [Quick Start](#quick-start) · [Features](#core-features) · [Screenshots](#product-screenshots) · [Demo](#demo) · [Architecture](#product-architecture) · [Development](#development) · [Roadmap](ROADMAP.md)
 
 </div>
 
@@ -54,11 +53,10 @@ every feature, works identically regardless of which one you pick.
 - **Engineering memory that compounds.** Decisions, patterns, and
   learnings persist across sessions and inform future answers, instead
   of every conversation starting over.
-- **Built for scale from day one.** A strict, inward-only dependency
-  direction (`apps/desktop → @aura/ui → @aura/core`), a design system
-  with zero raw hex values, and an architecture explicitly designed to
-  support years of development rather than a demo. See
-  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full rationale.
+- **Built for scale from day one.** A strict, inward-only architecture,
+  a design system with zero raw hex values, and internals explicitly
+  designed to support years of development rather than a demo. See the
+  [Development Guide](docs/DEVELOPMENT.md) for the technical deep dive.
 
 ## Core Features
 
@@ -81,12 +79,11 @@ every feature, works identically regardless of which one you pick.
 
 Nothing above is a separate product bolted on. **Every** AI-backed
 feature — chat, Ctrl+I inline actions, the Workflow Builder, Mission
-Control, Diagnosis — funnels through the same three pipeline entry
-points (`ask`, `generate`, `streamEvents` in
-`packages/ai-service/src/pipeline.ts`), which means provider validation,
-error translation, retry/timeout handling, and context assembly are
-implemented **once** and apply **everywhere**, automatically, including
-to features built after this sentence was written.
+Control, Diagnosis — funnels through the same shared engine underneath,
+which means provider validation, error translation, retry/timeout
+handling, and context assembly are implemented **once** and apply
+**everywhere**, automatically, including to features built after this
+sentence was written.
 
 </details>
 
@@ -123,48 +120,24 @@ templates you can run without writing anything.
 
 > One-page executive summary (PDF): [`docs/assets/AURA_HUB_ARCHITECTURE_OVERVIEW.pdf`](docs/assets/AURA_HUB_ARCHITECTURE_OVERVIEW.pdf).
 
-```mermaid
-graph TD
-    subgraph Desktop["apps/desktop — React 18 + Vite + Tauri v2"]
-        Shell["App Shell<br/>nav · command bar · status bar"]
-        Workspace["Window Manager<br/>dockable, floating panels"]
-        Screens["Mission Control · Workflows ·<br/>Governance · Knowledge · Settings"]
-    end
+AURA Hub is three layers working as one environment:
 
-    subgraph Design["Design System"]
-        UI["@aura/ui<br/>components, themeable"]
-        Core["@aura/core<br/>tokens · motion · store · nav model"]
-    end
+- **The desktop application** — the window manager, Mission Control,
+  Automation Studio, Knowledge Graph, and Settings all live in one
+  native window, never separate tools you switch between.
+- **The intelligence layer** — a local, on-device engine that builds
+  and maintains your project's knowledge graph, plans and executes
+  missions, runs workflows, and remembers engineering decisions across
+  sessions.
+- **The model layer** — whichever AI provider you connect. AURA has no
+  built-in model and never proxies your key through a third party; the
+  intelligence layer talks to your chosen provider directly.
 
-    subgraph Backend["packages/ai-service — local HTTP + SSE (127.0.0.1:4319)"]
-        Pipeline["Pipeline Manager<br/>ask · generate · streamEvents"]
-        Provider["Provider Adapters<br/>BYOAK, validated"]
-        Workflow["Workflow Engine<br/>+ AI Workflow Builder"]
-        Mission["Mission Control v3<br/>DAG execution"]
-    end
-
-    subgraph Intelligence["Engineering Intelligence"]
-        Knowledge["Knowledge Engines<br/>coding · fullstack"]
-        Governance["Governance Platform"]
-        Predictive["Predictive Engineering"]
-        Memory["Engineering Memory"]
-        Automation["Automation Engine"]
-    end
-
-    Providers[("OpenAI · Anthropic · Gemini · Groq<br/>Mistral · Cerebras · Kimi · NVIDIA<br/>OpenRouter · Novita · Qwen")]
-
-    Desktop --> Design
-    Desktop -->|"HTTP + SSE"| Backend
-    Backend --> Intelligence
-    Provider -->|"direct, encrypted key,<br/>never proxied"| Providers
-```
-
-Dependencies point **inward only** — the design system and core never
-depend on a feature, and a feature never reaches past the pipeline into
-a provider directly. Full rationale, state architecture, and extension
-points: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). Design language
-and theming: [`docs/DESIGN.md`](docs/DESIGN.md). Provider system detail:
-[`docs/architecture/PROVIDER_INTEGRATION.md`](docs/architecture/PROVIDER_INTEGRATION.md).
+Every AI-backed feature shares the same intelligence layer underneath,
+so provider validation, error handling, and context assembly are
+implemented once and apply everywhere. Full technical architecture,
+dependency direction, and extension points for engineers and
+contributors: [Development Guide](docs/DEVELOPMENT.md).
 
 <details>
 <summary><strong>Every platform, in depth</strong> (click to expand)</summary>
@@ -184,71 +157,24 @@ and theming: [`docs/DESIGN.md`](docs/DESIGN.md). Provider system detail:
 
 </details>
 
-## Technology Stack
+## Get AURA Hub
 
-<table>
-<tr><td><strong>Frontend</strong></td><td>React 18.3 · TypeScript 5.4 · Vite 5.3 · Tailwind CSS 3.4 · Framer Motion · Zustand · Monaco Editor</td></tr>
-<tr><td><strong>Backend</strong></td><td>Node.js ≥18.18 · a flat <code>http.createServer</code> router (no framework) + Server-Sent Events for streaming</td></tr>
-<tr><td><strong>AI</strong></td><td>Provider-agnostic BYOAK runtime — 11 adapters (OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, OpenRouter, Novita, Qwen) behind one shared interface</td></tr>
-<tr><td><strong>Storage</strong></td><td>Local filesystem only — encrypted (AES-256-GCM) credential store, JSON-backed project/mission/memory/automation state under <code>~/.aura</code>. No external database.</td></tr>
-<tr><td><strong>Native shell</strong></td><td>Tauri v2 (Rust 1.77+) — thin native core, small binaries, the same web build runs in-browser or natively</td></tr>
-<tr><td><strong>Monorepo</strong></td><td>npm workspaces + TypeScript project references — packages are consumed as source, no per-package build step, instant HMR</td></tr>
-<tr><td><strong>CI</strong></td><td>GitHub Actions — typecheck + production build on every PR</td></tr>
-</table>
+AURA Hub is a native desktop application for **macOS, Windows, and
+Linux**, built on Tauri v2. It's in active development — signed,
+packaged installers aren't published yet, so today there are two real
+ways to get it:
 
-## Installation
+- **Run it from source.** This is the current, working path — see
+  [Development](#development) below for the exact commands. It's not a
+  "clone a script" affair: you get the full native application, running
+  locally, in a few minutes.
+- **Check the website** at [aurahub.is-a.dev](https://aurahub.is-a.dev)
+  for early access updates as packaged installers become available.
 
-### Requirements
-
-| Requirement | Version | Needed for |
-|---|---|---|
-| [Node.js](https://nodejs.org) | ≥ 18.18 | Everything |
-| npm | bundled with Node | Workspace installs |
-| [Rust](https://www.rust-lang.org/tools/install) | ≥ 1.77.2 | Native desktop builds only (`npm run tauri`) — not needed for browser dev |
-| An API key from **any one** supported AI provider | — | AI features. AURA has no built-in model — nothing AI-related works until you connect one. |
-
-**Platform support:** macOS, Windows, and Linux via Tauri v2
-(`bundle.targets: "all"` in `apps/desktop/src-tauri/tauri.conf.json`).
-Signed installers are not yet published — see [`ROADMAP.md`](ROADMAP.md).
-
-### Clone & install
-
-```bash
-git clone https://github.com/Aura-hub-ai-native-workspace/aura-hub.git
-cd aura-hub
-npm install   # npm workspaces — one install for the entire monorepo
-```
-
-### Run — development
-
-```bash
-# fastest path — no Rust needed, runs in the browser
-npm run dev              # → http://localhost:1420
-
-# native desktop window (requires the Rust toolchain)
-npm run tauri dev
-
-# the local AI service (provider adapters, pipeline, workflow engine)
-npm run ai                # → http://127.0.0.1:4319
-```
-
-> The UI is identical in both modes — Vite serves the React environment
-> directly, and Tauri just hosts that same build in a native window. You
-> can build and verify 100% of the shell with `npm run dev` alone.
-
-### Run — production
-
-```bash
-npm run build        # type-check + production web build
-npm run tauri build  # package native installers (needs Rust + platform build tools)
-```
-
-Other scripts:
-
-```bash
-npm run typecheck   # project-wide TypeScript build, no emit
-npm run clean        # remove node_modules and dist across the workspace
-```
+One thing either path needs: an API key from any one of the 11
+supported AI providers (see [Core Features](#core-features)). AURA has
+no built-in model — nothing AI-related works until you connect one, and
+Groq offers a free tier if you don't have a key handy.
 
 ## Quick Start
 
@@ -272,7 +198,74 @@ npm run clean        # remove node_modules and dist across the workspace
 6. **Run it.** Execute the workflow against your open project and watch
    real node-by-node progress on the canvas.
 
-## Folder Structure
+## Roadmap
+
+See [`ROADMAP.md`](ROADMAP.md) for the current Now / Next / Future
+direction, and [`docs/ROADMAP.md`](docs/ROADMAP.md) for execution-level
+tracking detail. Status legend used throughout this repo: ✅ Implemented
+· 🚧 In Progress · 📅 Planned.
+
+## Development
+
+> Everything below is for people building or contributing to AURA Hub
+> itself. If you just want to use the app, see
+> [Get AURA Hub](#get-aura-hub) and [Quick Start](#quick-start) above.
+
+### Requirements
+
+| Requirement | Version | Needed for |
+|---|---|---|
+| [Node.js](https://nodejs.org) | ≥ 18.18 | Everything |
+| npm | bundled with Node | Workspace installs |
+| [Rust](https://www.rust-lang.org/tools/install) | ≥ 1.77.2 | Building the native desktop app (`npm run tauri`) |
+| An API key from **any one** supported AI provider | — | AI features. AURA has no built-in model — nothing AI-related works until you connect one. |
+
+**Platform support:** macOS, Windows, and Linux via Tauri v2
+(`bundle.targets: "all"` in `apps/desktop/src-tauri/tauri.conf.json`).
+Signed installers are not yet published — see [`ROADMAP.md`](ROADMAP.md).
+
+### Clone & install
+
+```bash
+git clone https://github.com/Aura-hub-ai-native-workspace/aura-hub.git
+cd aura-hub
+npm install   # npm workspaces — one install for the entire monorepo
+```
+
+### Run — development
+
+```bash
+# native desktop window (requires the Rust toolchain) — this is the real app
+npm run tauri dev
+
+# browser-only shell, for fast UI iteration without Rust
+npm run dev               # → http://localhost:1420
+
+# the local AI service (provider adapters, pipeline, workflow engine)
+npm run ai                 # → http://127.0.0.1:4319
+```
+
+> The interface is identical in both modes — Vite serves the React
+> environment, and Tauri hosts that same build in a native window.
+> `npm run dev` is a development convenience for iterating on the UI
+> without the Rust toolchain, not a second product; `npm run tauri dev`
+> is how AURA Hub actually runs.
+
+### Run — production
+
+```bash
+npm run build        # type-check + production build
+npm run tauri build  # package native installers (needs Rust + platform build tools)
+```
+
+Other scripts:
+
+```bash
+npm run typecheck   # project-wide TypeScript build, no emit
+npm run clean        # remove node_modules and dist across the workspace
+```
+
+### Folder Structure
 
 ```
 aura-hub/
@@ -282,6 +275,7 @@ aura-hub/
 │  └─ assets/                  # brand assets, screenshot gallery spec
 ├─ examples/                   # real, importable workflow examples (see examples/README.md)
 ├─ scripts/                    # dev tooling (TS runner, verification scripts, presentation build)
+├─ website/                    # the marketing site (website/README.md for deploy instructions)
 ├─ apps/
 │  └─ desktop/                 # the environment app (React + Vite + Tauri)
 │     ├─ src/
@@ -308,13 +302,6 @@ aura-hub/
 Workspace packages are consumed **as source** (via Vite/TS path
 aliases) — editing any package hot-reloads instantly, no per-package
 build step.
-
-## Roadmap
-
-See [`ROADMAP.md`](ROADMAP.md) for the current Now / Next / Future
-direction, and [`docs/ROADMAP.md`](docs/ROADMAP.md) for execution-level
-tracking detail. Status legend used throughout this repo: ✅ Implemented
-· 🚧 In Progress · 📅 Planned.
 
 ## Contributing
 

@@ -9,7 +9,8 @@
   "references": [
     { "path": "../../packages/core" },
     { "path": "../../packages/ui" },
-    { "path": "../../packages/governance" }
+    { "path": "../../packages/governance" },
+    { "path": "../../packages/connected-environment" }
   ],
   "include": ["src", "vite.config.ts", "tailwind.config.ts"]
 }

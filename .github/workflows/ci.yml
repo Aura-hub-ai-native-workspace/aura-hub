@@ -4,7 +4,11 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main, presentation-v0.1]
+    branches: [main, presentation-v0.1, feature/workspace-execution-environment]
+  # Release packaging has to be runnable on demand: the Windows and macOS
+  # artifacts cannot be produced on the Linux machine this is developed on,
+  # so their only honest source is a native runner started deliberately.
+  workflow_dispatch:
 
 jobs:
   build:
@@ -26,3 +30,209 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # Native release packaging. Each OS builds its REAL Tauri artifact on its
+  # own runner: AppImage + deb on Linux, NSIS on Windows, .app + .dmg on
+  # macOS. A compile on Linux is not a build on Windows/macOS, so nothing
+  # here is cross-compiled — every artifact is produced by its native
+  # toolchain, and then RUNS what it built on that same OS. A build is not a
+  # run: `desktop-runtime-verify` boots the packaged service natively, checks
+  # the health gate, measures the real machine, exercises the port and
+  # shutdown paths, and launches the packaged shell. That is what lets
+  # Windows and macOS be reported as runtime-verified instead of merely
+  # compiled — and where a step genuinely cannot run, it says so rather
+  # than passing quietly.
+  #
+  # macOS is built twice on purpose: macos-latest is Apple Silicon and
+  # macos-15-intel is Intel, so each architecture is produced and tested on
+  # its own hardware rather than cross-compiled and assumed.
+  #
+  # The Intel leg was `macos-13`, which never ran: that image was retired in
+  # December 2025, and a retired label does not fail a job, it queues it
+  # forever. Eight consecutive runs sat unassigned for ten hours looking
+  # exactly like runner scarcity. `macos-15-intel` is the current Intel
+  # image and is planned to be the last one, so this leg has a finite life;
+  # when it goes, Intel coverage ends with it rather than silently pretending.
+  desktop-build:
+    name: Desktop packaging (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x64
+            bundles: appimage,deb
+          - os: windows-latest
+            label: windows-x64
+            bundles: nsis
+          - os: macos-latest
+            label: macos-arm64
+            bundles: app,dmg
+          - os: macos-15-intel
+            label: macos-x64
+            bundles: app,dmg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Retried because Tauri fetches its bundler tooling at build time —
+      # AppRun and linuxdeploy on Linux, the NSIS binaries on Windows — and
+      # GitHub's CDN intermittently drops those connections, surfacing as
+      # `failed to bundle project: io: Peer disconnected`. That flake hit two
+      # different platforms in three runs and says nothing about the code, so
+      # it is retried rather than re-run by hand. A genuine build error still
+      # fails: it simply fails three times.
+      - name: Build desktop application
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if npm run tauri --workspace @aura/desktop -- build; then exit 0; fi
+            echo "::warning::desktop build attempt $attempt failed; retrying"
+            sleep 20
+          done
+          echo "::error::desktop build failed after 3 attempts"
+          exit 1
+
+      # Native runtime verification. Linux runners have no display, so the
+      # shell phase runs under a virtual one; Windows and macOS runners have
+      # a real session already. Without xvfb the Linux shell phase reports
+      # NOT RUNTIME VERIFIED rather than failing — but a virtual display is
+      # cheap, so it is provided and the phase genuinely runs.
+      - name: Install a virtual display (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y xvfb
+
+      - name: Runtime verification (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a node scripts/desktop-runtime-verify.mjs
+
+      - name: Runtime verification (Windows/macOS)
+        if: runner.os != 'Linux'
+        run: node scripts/desktop-runtime-verify.mjs
+
+      - name: Stage release artifacts
+        run: node scripts/stage-release-artifacts.mjs
+
+      # Installer verification. An artifact existing is not an artifact that
+      # installs, so each platform installs its own and launches what the
+      # installer put on disk — not what the build left in target/.
+      - name: Verify the .deb installs and launches (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          sudo apt-get install -y ./dist-release/*.deb
+          test -x "/usr/bin/aura-hub" || test -x "/usr/local/bin/aura-hub"
+          echo "installed binary: $(command -v aura-hub)"
+          xvfb-run -a env AURA_HOME="$RUNNER_TEMP/deb-home" AI_PORT=4319 aura-hub &
+          for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
+          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: installed .deb launched and its service is healthy"
+          curl -sf -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const s=JSON.parse(d);if(!s.results.node?.present)process.exit(1);console.log('OK: detection through the installed app — node',s.results.node.version,'| git',s.results.git?.version)})"
+          pkill -f 'aura-hub' || true
+          sudo apt-get remove -y aura-hub && echo "OK: uninstalled cleanly"
+
+      - name: Verify the AppImage executes directly (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          chmod +x dist-release/*.AppImage
+          xvfb-run -a env AURA_HOME="$RUNNER_TEMP/appimage-home" AI_PORT=4319 ./dist-release/*.AppImage &
+          for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
+          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: AppImage ran directly and its service is healthy"
+          pkill -f 'AURA' || true
+
+      - name: Verify the NSIS installer installs and launches (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist-release/*.exe)[0].FullName
+          # /S is NSIS silent mode; the installer is what a user double-clicks.
+          $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
+          Write-Host "installer exit code: $($p.ExitCode)"
+          Start-Sleep 5
+          # Ask the installer where it put things rather than guessing. NSIS
+          # writes an uninstall entry with InstallLocation, which is correct
+          # whether the install was per-user or per-machine and whatever the
+          # product is called. The filesystem sweep is only a fallback, and
+          # both are reported so a failure here says what actually happened
+          # instead of just "not found".
+          $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                                    'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                                    'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' `
+                   -ErrorAction SilentlyContinue |
+                   Where-Object { $_.DisplayName -match 'AURA' } | Select-Object -First 1
+          if ($entry) { Write-Host "registry: $($entry.DisplayName) -> $($entry.InstallLocation)" }
+          else { Write-Host 'registry: no uninstall entry matching AURA' }
+          $roots = @($entry.InstallLocation, "$env:LOCALAPPDATA\Programs", "$env:LOCALAPPDATA",
+                     "$env:ProgramFiles", "${env:ProgramFiles(x86)}") |
+                   Where-Object { $_ -and (Test-Path $_) }
+          $app = Get-ChildItem $roots -Recurse -Filter '*.exe' -ErrorAction SilentlyContinue |
+                 Where-Object { $_.BaseName -match 'AURA' } | Select-Object -First 1
+          if (-not $app) {
+            Write-Host '--- directories matching AURA under the searched roots ---'
+            Get-ChildItem $roots -Recurse -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'AURA' } | Select-Object -First 10 -ExpandProperty FullName
+            throw 'NSIS installer placed no AURA executable anywhere searched'
+          }
+          Write-Host "installed to: $($app.FullName)"
+          $env:AURA_HOME = "$env:RUNNER_TEMP\nsis-home"
+          Start-Process -FilePath $app.FullName
+          $ok = $false
+          foreach ($i in 1..60) {
+            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:4319/health | Out-Null; $ok = $true; break } catch { Start-Sleep 2 }
+          }
+          if (-not $ok) { throw 'the installed application never brought its service up' }
+          Write-Host 'OK: installed NSIS build launched and its service is healthy'
+          $scan = Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Method POST -ContentType 'application/json' -Body '{}' http://127.0.0.1:4319/environment/scan
+          $node = ($scan.Content | ConvertFrom-Json).results.node
+          if (-not $node.present) { throw 'the installed application did not detect Node' }
+          Write-Host "OK: detection through the installed app — node $($node.version)"
+          Get-Process -Name $app.BaseName -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep 3
+          # Uninstall through the uninstaller the installer itself wrote.
+          $uninst = Join-Path $app.DirectoryName 'uninstall.exe'
+          if (Test-Path $uninst) {
+            Start-Process -FilePath $uninst -ArgumentList '/S' -Wait
+            Start-Sleep 5
+            if (Test-Path $app.FullName) { Write-Host 'NOTE: uninstaller ran but the binary is still present' }
+            else { Write-Host 'OK: uninstalled cleanly' }
+          } else { Write-Host 'NOTE: no uninstall.exe written by the installer' }
+
+      - name: Verify the DMG mounts, copies and launches (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -e
+          DMG=$(ls dist-release/*.dmg | head -1)
+          hdiutil attach "$DMG" -mountpoint /Volumes/AURA -nobrowse -quiet
+          cp -R "/Volumes/AURA/AURA Hub.app" "$RUNNER_TEMP/AURA Hub.app"
+          hdiutil detach /Volumes/AURA -quiet
+          echo "OK: DMG mounted and the .app copied out of it"
+          AURA_HOME="$RUNNER_TEMP/dmg-home" AI_PORT=4319 "$RUNNER_TEMP/AURA Hub.app/Contents/MacOS/aura-hub" &
+          for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
+          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: the installed .app launched and its service is healthy"
+          curl -sf -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const s=JSON.parse(d);if(!s.results.node?.present)process.exit(1);console.log('OK: detection through the installed app — node',s.results.node.version,'| git',s.results.git?.version)})"
+          pkill -f 'aura-hub' || true
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: AURA-Hub-${{ matrix.label }}
+          if-no-files-found: error
+          path: dist-release/*

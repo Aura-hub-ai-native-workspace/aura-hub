@@ -12,7 +12,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { homePath, readJsonFile, writeJsonFile } from './persist';
+import { homePath, readJsonFileResult, writeJsonFile } from './persist';
 
 export interface ProjectRecord {
   id: string;
@@ -35,18 +35,56 @@ export interface ProjectRecord {
 const COLORS = ['#3b6bff', '#1fb567', '#f5a524', '#7c5cff', '#e5484d', '#0ea5e9'];
 const REGISTRY = () => homePath('projects.json');
 
-function slug(name: string): string {
+export function slug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
 }
 
 export class ProjectRegistry {
   private items: ProjectRecord[] = [];
+  /**
+   * Why the registry could not be read, or null when it was read fine.
+   *
+   * A missing file is NOT an error — that is a first run, and an empty
+   * list is the truthful answer. Only an existing-but-unreadable file
+   * sets this.
+   *
+   * Callers must not treat an unreadable registry as "no projects": that
+   * reading is what let a parse error clear the user's active project.
+   */
+  readonly readError: string | null = null;
 
   constructor() {
-    this.items = readJsonFile<ProjectRecord[]>(REGISTRY(), []);
+    const read = readJsonFileResult<ProjectRecord[]>(REGISTRY(), []);
+    if (read.status === 'corrupt') {
+      this.readError = read.error;
+      this.items = [];
+      return;
+    }
+    // A file that parsed to something other than an array is corrupt too —
+    // silently treating it as empty is the same failure by another route.
+    if (!Array.isArray(read.value)) {
+      this.readError = 'projects.json did not contain a list of projects.';
+      this.items = [];
+      return;
+    }
+    this.items = read.value;
+  }
+
+  /** True when the registry on disk could be read. */
+  get readable(): boolean {
+    return this.readError === null;
   }
 
   private save(): void {
+    // Writing now would overwrite a file we could not parse, destroying
+    // whatever the user might still recover from it. Refuse instead — the
+    // caller surfaces the failure rather than losing the data quietly.
+    if (this.readError) {
+      throw new Error(
+        `The project registry could not be read (${this.readError}), so it will not be overwritten. `
+        + 'Fix or move projects.json and restart AURA.',
+      );
+    }
     writeJsonFile(REGISTRY(), this.items);
   }
 

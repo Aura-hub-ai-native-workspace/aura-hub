@@ -32,11 +32,17 @@
     "build": "npm run build --workspace @aura/desktop",
     "preview": "npm run preview --workspace @aura/desktop",
     "tauri": "npm run tauri --workspace @aura/desktop",
-    "typecheck": "tsc -p packages/ai-service/tsconfig.json --noEmit && tsc -b apps/desktop/tsconfig.json",
-    "clean": "rimraf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist"
+    "service:bundle": "npm run service:bundle --workspace @aura/desktop",
+    "desktop:dev": "npm run tauri --workspace @aura/desktop -- dev",
+    "desktop:build": "NO_STRIP=true npm run tauri --workspace @aura/desktop -- build",
+    "typecheck": "tsc -p packages/ai-service/tsconfig.json --noEmit && tsc -p packages/workflow/tsconfig.json --noEmit && tsc -b apps/desktop/tsconfig.json",
+    "clean": "rimraf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist",
+    "test:ui": "node scripts/ui-approval-test.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "esbuild": "0.21.5",
+    "playwright-core": "^1.62.1",
     "rimraf": "^5.0.7",
     "typescript": "^5.4.5"
   },

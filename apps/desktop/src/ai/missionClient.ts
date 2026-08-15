@@ -117,7 +117,19 @@ export interface TaskProposal {
   operation?: TaskGitOperation;
   error?: { type: string; message: string; retryable: boolean };
 }
-export interface MissionTaskRun { taskId: string; status: TaskStatus; proposal: TaskProposal | null; executedNode?: TaskNode; updatedAt: string }
+export interface MissionTaskRun {
+  taskId: string;
+  status: TaskStatus;
+  proposal: TaskProposal | null;
+  executedNode?: TaskNode;
+  updatedAt: string;
+  /**
+   * The environment node that performed this task, as the executor
+   * reported it. Absent means the work is not attributable to a specific
+   * node — the Workspace says so rather than guessing.
+   */
+  nodeId?: string;
+}
 
 /* ── Stage 7 — Risk Analysis ──────────────────────────────────────── */
 export interface RiskAnalysis {
@@ -235,7 +247,18 @@ export interface MissionSummary {
   execution: MissionExecution | null;
 }
 
-export interface MissionTaskActionResult { ok: boolean; error?: string; mission?: MissionRecord }
+export interface MissionTaskActionResult {
+  ok: boolean;
+  error?: string;
+  /**
+   * The task is parked at a Capability Fabric authorization gate: nothing
+   * ran, and nothing failed. Distinct from `ok: false` so the UI offers
+   * Approve rather than Retry. The request itself is read from
+   * `fabricClient.approvals()`, which is authoritative.
+   */
+  awaitingApproval?: boolean;
+  mission?: MissionRecord;
+}
 
 export type ExecutionEvent =
   | { type: 'execution'; record: { id: string; projectId: string; execution: MissionExecution } }

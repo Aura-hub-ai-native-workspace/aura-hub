@@ -264,6 +264,9 @@ export function MissionDetail({
           goals={mission.goalGraph?.goals}
           approved={mission.approval.status === 'approved'}
           busyTaskId={missions.busyTaskId}
+          approvals={missions.approvals}
+          approvalBusyId={missions.approvalBusyId}
+          onDecideApproval={missions.decideApproval}
           onRun={missions.runTask}
           onAccept={missions.acceptTask}
           onReject={missions.rejectTask}
