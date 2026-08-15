@@ -54,25 +54,106 @@ function walk(dir, out = [], depth = 0) {
   return out;
 }
 
-const WANTED = /\.(AppImage|deb|rpm|exe|msi|dmg)$/i;
+/** What a person downloads and runs. */
+const INSTALLER = /\.(AppImage|deb|rpm|exe|msi|dmg)$/i;
 
-const found = walk(BUNDLE).filter((f) => WANTED.test(f));
-if (found.length === 0) {
+/**
+ * What the UPDATER downloads — a different set of files with the same
+ * contents. Tauri emits these only when `bundle.createUpdaterArtifacts`
+ * is on, one per platform, each beside a detached `.sig`.
+ */
+const UPDATER = /\.(AppImage\.tar\.gz|app\.tar\.gz|nsis\.zip)$/i;
+
+/**
+ * Compound suffixes must be matched whole. Taking everything after the
+ * last dot turns `.AppImage.tar.gz` into `gz`, which loses the format and
+ * collides the Linux updater bundle with the macOS one.
+ */
+function extOf(base) {
+  const m = /\.(AppImage\.tar\.gz|app\.tar\.gz|nsis\.zip|tar\.gz)(\.sig)?$/i.exec(base);
+  if (m) return m[1] + (m[2] ?? '');
+  const dot = base.lastIndexOf('.');
+  return dot === -1 ? '' : base.slice(dot + 1);
+}
+
+const all = walk(BUNDLE);
+const installers = all.filter((f) => INSTALLER.test(f));
+const updaters = all.filter((f) => UPDATER.test(f));
+
+/*
+ * A `.sig` is emitted for exactly one thing: an updater artifact. So the
+ * signatures on disk are the authoritative list of what Tauri considers
+ * an updater bundle, and UPDATER above is this pipeline's belief about
+ * what those are called.
+ *
+ * If the two disagree, Tauri has produced an updater artifact under a
+ * name this pipeline does not recognise, and the honest outcome is to
+ * stop. The alternative is a release that looks complete while one
+ * platform is quietly missing from latest.json — which does not fail, it
+ * just means those users never hear about another update.
+ */
+const unrecognised = all
+  .filter((f) => f.endsWith('.sig'))
+  .map((f) => f.slice(0, -'.sig'.length))
+  .filter((artifact) => !UPDATER.test(artifact));
+
+if (unrecognised.length) {
+  console.error('Tauri signed an updater artifact this pipeline does not recognise:');
+  for (const f of unrecognised) console.error(`  ${path.basename(f)}`);
+  console.error('\nAdd its suffix to UPDATER in scripts/stage-release-artifacts.mjs.');
+  console.error('Refusing to continue: staging it under the wrong name would drop a platform from latest.json silently.');
+  process.exit(1);
+}
+
+if (installers.length === 0) {
   console.error(`No installers found under ${BUNDLE}. Build the desktop app first.`);
   process.exit(1);
 }
 
 fs.mkdirSync(OUT, { recursive: true });
 const staged = [];
-for (const src of found) {
-  const base = path.basename(src);
-  const ext = base.slice(base.lastIndexOf('.') + 1);
-  const name = `AURA-Hub-${VERSION}-${OS_NAME}-${archOf(base)}.${ext}`;
+
+/** Copy one file under the canonical name, and report it. */
+function stage(src, name) {
   const dest = path.join(OUT, name);
   fs.copyFileSync(src, dest);
   const mb = (fs.statSync(dest).size / 1024 / 1024).toFixed(1);
-  staged.push({ name, mb, from: base });
-  console.log(`  ${base}\n    → ${name}  (${mb} MB)`);
+  staged.push({ name, mb, from: path.basename(src) });
+  console.log(`  ${path.basename(src)}\n    → ${name}  (${mb} MB)`);
+  return dest;
 }
 
+for (const src of installers) {
+  const base = path.basename(src);
+  stage(src, `AURA-Hub-${VERSION}-${OS_NAME}-${archOf(base)}.${extOf(base)}`);
+}
+
+/*
+ * Updater bundles travel WITH their signatures or not at all.
+ *
+ * A bundle staged without its `.sig` cannot be put in a manifest, and a
+ * `.sig` staged without its bundle signs nothing — either way the release
+ * would look complete while the update path was broken. The only case
+ * where a missing signature is legitimate is an unsigned build
+ * (`--no-sign`), which is for local inspection and never published, so it
+ * is reported rather than treated as normal.
+ */
+for (const src of updaters) {
+  const base = path.basename(src);
+  const name = `AURA-Hub-${VERSION}-${OS_NAME}-${archOf(base)}.${extOf(base)}`;
+  stage(src, name);
+
+  const sig = `${src}.sig`;
+  if (fs.existsSync(sig)) {
+    stage(sig, `${name}.sig`);
+  } else {
+    console.warn(`  !! ${base} has no .sig — this build is UNSIGNED and must not be published.`);
+  }
+}
+
+const signed = staged.filter((s) => s.name.endsWith('.sig')).length;
 console.log(`\n${staged.length} artifact(s) staged in dist-release/ for ${OS_NAME} v${VERSION}`);
+console.log(`  installers: ${installers.length} · updater bundles: ${updaters.length} · signatures: ${signed}`);
+if (updaters.length === 0) {
+  console.warn('  !! no updater bundles were produced — check bundle.createUpdaterArtifacts in tauri.conf.json');
+}

@@ -391,14 +391,32 @@ const offered = (version, extra = {}) => ({
     !/--no-sign/.test(ci), 'no --no-sign escape hatch');
 }
 {
-  // NEGATIVE CONTROL: a private key anywhere in tracked files must fail.
+  /*
+   * NEGATIVE CONTROL: a private key anywhere in tracked files must fail.
+   *
+   * The markers are assembled from fragments so this file does not match
+   * its own pattern. The obvious alternative — skipping the scanner when
+   * scanning — would carve out the one file guaranteed to mention key
+   * formats, and a key pasted into a fixture here would go unseen. Every
+   * tracked file is scanned, this one included.
+   */
+  const SECRET = `${'PRIVATE'} ${'KEY'}`;
+  const KEY_MARKERS = new RegExp(
+    [
+      `minisign encrypted ${'secret'} ${'key'}`,
+      `untrusted comment: minisign ${'secret'} ${'key'}`,
+      `BEGIN (RSA |OPENSSH |EC )?${SECRET}`,
+    ].join('|'),
+    'i',
+  );
+
   const tracked = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n');
   const offenders = [];
   for (const f of tracked) {
     const p = path.join(ROOT, f);
     let text;
     try { text = fs.readFileSync(p, 'utf8'); } catch { continue; }
-    if (/minisign encrypted secret key|untrusted comment: minisign secret key|BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY/i.test(text)) {
+    if (KEY_MARKERS.test(text)) {
       offenders.push(f);
     }
   }

@@ -5,6 +5,10 @@ on:
     branches: [main]
   push:
     branches: [main, presentation-v0.1, feature/workspace-execution-environment]
+    # A version tag is what publishes a release. Nothing else does — a
+    # branch push builds and verifies artifacts but never puts them where
+    # an installed copy of AURA Hub would find them.
+    tags: ['v*']
   # Release packaging has to be runnable on demand: the Windows and macOS
   # artifacts cannot be produced on the Linux machine this is developed on,
   # so their only honest source is a native runner started deliberately.
@@ -269,3 +273,66 @@ jobs:
           name: AURA-Hub-${{ matrix.label }}
           if-no-files-found: error
           path: dist-release/*
+
+  # Publishing. Deliberately a separate job with a separate trigger: the
+  # artifacts above are built and verified on every push, and become an
+  # update that installed copies will fetch only when a version tag says so.
+  #
+  # It waits for all four platform builds because `latest.json` is written
+  # from all of them at once. A manifest missing a platform does not fail
+  # loudly — those users simply stop receiving updates, and nobody notices
+  # until a fix does not reach them. So a release is all four or none.
+  release:
+    name: Publish release
+    needs: desktop-build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      # To create the release and upload assets. Nothing else is granted.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The verification step below bundles the client's own applicability
+      # gate to check the manifest against it, so this job needs the
+      # toolchain even though it compiles nothing.
+      - name: Install dependencies
+        run: npm ci
+
+      # Every platform's staged output, merged into the one directory the
+      # manifest generator reads.
+      - name: Collect artifacts from every platform
+        uses: actions/download-artifact@v4
+        with:
+          pattern: AURA-Hub-*
+          merge-multiple: true
+          path: dist-release
+
+      - name: Show what will be published
+        run: ls -la dist-release
+
+      # Refuses on a missing platform, a missing or empty signature, a
+      # version that disagrees with tauri.conf.json, or two artifacts
+      # claiming the same target.
+      - name: Build the update manifest
+        run: node scripts/build-latest-json.mjs --tag "${GITHUB_REF_NAME}"
+
+      # The manifest is checked before it is published, not after. Once
+      # `latest.json` is on the releases page, every installed copy of AURA
+      # Hub will act on it within a check interval.
+      - name: Verify the release
+        run: node scripts/release-verify.mjs --tag "${GITHUB_REF_NAME}"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "AURA Hub $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist-release/*

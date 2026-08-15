@@ -77,6 +77,71 @@ if (!tool) {
   process.exit(1);
 }
 
+/**
+ * Rebuild and re-sign the updater's copy of a patched AppImage.
+ *
+ * `tauri build` emits TWO Linux artifacts from one AppImage: the file a
+ * person downloads, and `<name>.AppImage.tar.gz` — the one the updater
+ * downloads — plus a detached `.sig` over that tarball. Patching only the
+ * first leaves the second holding the exact white-window build this
+ * script exists to remove, correctly signed and therefore trusted: an
+ * updating user would be handed back the regression, and signature
+ * verification would raise nothing, because nothing was tampered with.
+ *
+ * So the tarball is rebuilt from the patched AppImage and re-signed. Its
+ * name and internal member name are preserved: the updater matches the
+ * artifact by the URL in the manifest, and AppImage expects to unpack a
+ * file it can execute directly.
+ *
+ * Refuses to leave a stale signature behind. If a `.sig` exists but no
+ * key is available to make a new one, that is a hard failure — publishing
+ * the old signature beside new bytes is the one outcome worse than
+ * failing the build.
+ */
+function republishUpdaterBundle(appimage) {
+  const tarball = `${appimage}.tar.gz`;
+  const sig = `${tarball}.sig`;
+  const hadSig = fs.existsSync(sig);
+
+  if (!fs.existsSync(tarball)) {
+    // No updater artifacts in this build (createUpdaterArtifacts off, or
+    // a bundle target that produces none). Nothing to keep in step.
+    return;
+  }
+
+  const dir = path.dirname(appimage);
+  const member = path.basename(appimage);
+
+  // Rebuilt from the patched file on disk, so the tarball cannot contain
+  // anything the AppImage does not.
+  run('tar', ['-czf', tarball, member], { cwd: dir });
+  const mb = (fs.statSync(tarball).size / 1024 / 1024).toFixed(1);
+  console.log(`patch-appimage-linux: rebuilt ${path.basename(tarball)} from the patched AppImage (${mb} MB).`);
+
+  const key = process.env.TAURI_SIGNING_PRIVATE_KEY;
+  const keyPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PATH;
+  if (!key && !keyPath) {
+    if (hadSig) {
+      fs.rmSync(sig);
+      console.error(`patch-appimage-linux: ${path.basename(sig)} signs the OLD bundle and no signing key is available to replace it.`);
+      console.error('The stale signature has been removed rather than left to be published. Set TAURI_SIGNING_PRIVATE_KEY and re-run.');
+      process.exit(1);
+    }
+    // An unsigned build (`--no-sign`): there was no signature to keep in
+    // step, and this is not a build anything will publish.
+    console.log('patch-appimage-linux: no signing key set and the build was unsigned — tarball rebuilt, still unsigned.');
+    return;
+  }
+
+  // The Tauri CLI reads the key from the environment; it is never passed
+  // as an argument, so it cannot land in a process listing or a CI log.
+  run('npx', ['tauri', 'signer', 'sign', tarball], { cwd: ROOT });
+  if (!fs.existsSync(sig)) {
+    throw new Error(`signing reported success but produced no ${path.basename(sig)}`);
+  }
+  console.log(`patch-appimage-linux: re-signed ${path.basename(tarball)} — the updater now carries the patched build.`);
+}
+
 let patched = 0;
 for (const name of appimages) {
   const appimage = path.join(APPIMAGE_DIR, name);
@@ -111,6 +176,11 @@ for (const name of appimages) {
     const mb = (fs.statSync(appimage).size / 1024 / 1024).toFixed(1);
     console.log(`patch-appimage-linux: ${name} — ${EXCLUDED} removed, repacked in place (${mb} MB), verified clean.`);
     patched++;
+
+    // The AppImage a person downloads has just been fixed. The one the
+    // UPDATER downloads is a separate file, and it still contains the
+    // broken build.
+    republishUpdaterBundle(appimage);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
