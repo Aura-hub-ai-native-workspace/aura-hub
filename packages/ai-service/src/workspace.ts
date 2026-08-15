@@ -10,8 +10,6 @@ import { buildKnowledgeGraph, type KnowledgeGraph } from './knowledgeGraph';
 import { runProjectIntelligence, runWorkspaceIntelligence, type ProjectIntelligenceReport, type WorkspaceIntelligenceReport } from './intelligence';
 import { loadChangeLog, analyzeChangePatterns, getChangeVelocity, detectHotspots, type ChangeEntry, type ChangePattern } from './intelligence/changeIntelligence';
 import { WorkflowStore } from './workflow/store';
-import { runWorkflow, type RunResult } from './workflow/engine';
-import type { RunEvent, Workflow } from './workflow/types';
 import { createAutomationRuntime, automationEvent, type AutomationRuntime, type AutomationEvent } from './automation';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -384,20 +382,6 @@ export class WorkspaceManager {
   /* ── workflows ──────────────────────────────────────────────────── */
 
   readonly workflows = new WorkflowStore();
-
-  async runWorkflow(wf: Workflow, inputs: Record<string, string>, emit: (e: RunEvent) => void, signal?: AbortSignal): Promise<RunResult> {
-    const project = this.currentProject();
-    if (!project) throw new Error('open a project before running a workflow');
-    await this.pipeline.whenIndexed();
-    return runWorkflow(wf, {
-      projectId: project.id,
-      projectPath: project.path,
-      projectName: project.name,
-      pipeline: this.pipeline,
-      inputs,
-      signal,
-    }, emit);
-  }
 
   /* ── Automation Engine ─────────────────────────────────────────────
    * Event-driven workflows: rules react to REAL platform moments by

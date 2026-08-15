@@ -9,7 +9,6 @@ export { configHome, homePath } from './persist';
 export { startService, type ServiceHandle } from './server';
 export { DEFAULT_SETTINGS, selectEngines, type AiSettings } from './settings';
 export { WorkflowStore } from './workflow/store';
-export { runWorkflow, type RunOptions, type RunResult } from './workflow/engine';
 export { NODE_SPECS, nodeSpecInfos } from './workflow/nodes';
 export { TEMPLATES, instantiateTemplate, type WorkflowTemplate } from './workflow/templates';
 export type { Workflow, WorkflowSummary, WfNode, WfEdge, WfNodeType, NodeCategory, NodeIO, NodeRunState, RunEvent, NodeSpecInfo, FieldSpec } from './workflow/types';

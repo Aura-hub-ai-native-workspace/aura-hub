@@ -22,6 +22,7 @@ import type {
   AuditRecord,
   CapabilityDescriptor,
   Executor,
+  ExecutorResult,
   FabricEvent,
   FabricEventListener,
   Invocation,
@@ -314,7 +315,9 @@ export class CapabilityFabric {
       risk: item?.risk ?? 'low',
       // The policy decision that opened the gate, kept alongside the human
       // answer so the record shows both why it was asked and what was said.
-      decision: request.rule === 'irreversible-floor' ? 'require-approval' : 'ask-user',
+      decision: request.rule === 'irreversible-floor' || request.rule === 'irreversible-retry'
+        ? 'require-approval'
+        : 'ask-user',
       decisionRule: request.rule ?? 'approval',
       approvalId: request.id,
       outcome: granted ? 'awaiting-approval' : 'denied',
@@ -525,7 +528,7 @@ export class CapabilityFabric {
         if (!granted) {
           return this.settle(invocation, capability, 'awaiting-approval',
             `${capability.name} is ready and waiting on your go-ahead. Nothing has run.`,
-            NO_VERIFICATION, evaluation, started, startedAt, 0, request.id);
+            NO_VERIFICATION, evaluation, started, startedAt, 0, request.id, undefined, false);
         }
         if (request.state === 'pending') {
           request.state = 'granted';
@@ -549,17 +552,50 @@ export class CapabilityFabric {
     this.emit({ type: 'invocation.started', at: new Date().toISOString(), invocationId: invocation.id, capabilityId });
 
     let attempts = 0;
-    let last = { ok: false, detail: 'Not attempted.' } as Awaited<ReturnType<Executor['run']>>;
+    let last: ExecutorResult = { ok: false, detail: 'Not attempted.' };
+    /** Non-null when the loop withheld an automatic retry for governance. */
+    let withheld: { rule: string; effectStarted?: boolean; requestId?: string; output?: unknown } | null = null;
 
     while (attempts < MAX_ATTEMPTS) {
       attempts += 1;
       try {
         last = await executor.run(invocation);
       } catch (error) {
-        last = { ok: false, detail: (error as Error).message || 'The executor threw with no message.' };
+        // An executor that throws mid-flight may already have started its
+        // effect. We cannot prove otherwise, and the safe reading of
+        // "unknown" is "may have started" — never "proven not started".
+        last = {
+          ok: false,
+          detail: (error as Error).message || 'The executor threw with no message.',
+          effectStarted: true,
+        };
       }
       if (last.ok) break;
       if (attempts >= MAX_ATTEMPTS || !isTransient(last.detail)) break;
+
+      /* Capability-aware recovery. An irreversible capability is retried
+         automatically ONLY while its effect is proven not to have
+         started. Any other state — started, or unknown — must not be
+         repeated without a fresh human decision, so the loop parks the
+         invocation on the Fabric's own approval mechanism instead. The
+         decision reads `capability.irreversible`, never a capability id,
+         so a future irreversible capability inherits it for free. */
+      if (capability.irreversible && last.effectStarted !== false) {
+        const authorized = await this.authorizeIrreversibleRetry(invocation, capability, input);
+        if (!authorized.granted) {
+          withheld = {
+            rule: 'irreversible-retry',
+            effectStarted: last.effectStarted,
+            requestId: authorized.requestId,
+            output: last.output,
+          };
+          break;
+        }
+        // A fresh human grant covers exactly ONE more execution. It is not
+        // a licence to keep retrying: the next failure is re-evaluated by
+        // this loop.
+        continue;
+      }
 
       this.emit({
         type: 'invocation.retrying',
@@ -573,6 +609,28 @@ export class CapabilityFabric {
       await new Promise((r) => setTimeout(r, BASE_BACKOFF_MS * 2 ** (attempts - 1)));
     }
 
+    /* An automatic retry was withheld because the action is irreversible
+       and its effect may already exist. This is a governance pause, NOT a
+       normal failure: the invocation is parked awaiting a human decision
+       on the Fabric's own approval request, and is executed again only
+       with a fresh grant. */
+    if (withheld) {
+      const reason =
+        `${capability.name} may already have taken effect. The previous attempt failed while its effect was uncertain, `
+        + 'so an automatic retry was withheld — retrying could repeat or compound the action. '
+        + 'A human grant is therefore required before another execution.';
+      return this.settle(
+        invocation, capability, 'awaiting-approval',
+        `${capability.name} may already have taken effect, and an automatic retry was withheld. `
+          + 'It is waiting on a human go-ahead before it can be attempted again. Nothing further has run.',
+        NO_VERIFICATION,
+        { decision: 'require-approval', rule: withheld.rule, risk: capability.risk, reason },
+        started, startedAt, attempts, withheld.requestId, withheld.output,
+        withheld.effectStarted,
+        { withheld: true, rule: withheld.rule, effectStarted: withheld.effectStarted },
+      );
+    }
+
     if (!last.ok) {
       // "did not succeed", not "did not complete" — a command that ran and
       // exited non-zero did complete, and saying otherwise misdescribes
@@ -584,7 +642,8 @@ export class CapabilityFabric {
       // precisely when something went wrong.
       return this.settle(invocation, capability, 'failed',
         `${capability.name} did not succeed${tried}. ${last.detail}`,
-        NO_VERIFICATION, evaluation, started, startedAt, attempts, undefined, last.output);
+        NO_VERIFICATION, evaluation, started, startedAt, attempts, undefined, last.output,
+        last.effectStarted);
     }
 
     /* 6. verify */
@@ -618,7 +677,91 @@ export class CapabilityFabric {
       ? `${capability.name} ran, but the check did not confirm it. ${verification.detail}`
       : `${capability.name} completed. ${last.detail}`;
 
-    return this.settle(invocation, capability, outcome, detail, verification, evaluation, started, startedAt, attempts, undefined, last.output);
+    return this.settle(invocation, capability, outcome, detail, verification, evaluation, started, startedAt, attempts, undefined, last.output, last.effectStarted);
+  }
+
+  /**
+   * Ask a human whether an irreversible action whose effect may already
+   * exist may be attempted again.
+   *
+   * Uses the SAME approval mechanism as every other gate: an
+   * `ApprovalRequest` on the existing map, persisted through the existing
+   * `ApprovalPersistence`, decided through the existing `decideApproval`
+   * path, with the rule `irreversible-retry`. There is deliberately no
+   * second approval store, no second decision mechanism and no capability
+   * id special case — this is reached only because the descriptor says
+   * `irreversible`.
+   *
+   * One deliberate asymmetry with the step-4 gate: the context's
+   * per-invocation `approvedCapabilities` grant is NOT honoured here.
+   * Authorizing the action once is not authorizing a re-run of an action
+   * that may already have happened — that is a materially different
+   * question, and answering it automatically is exactly the retry the
+   * invariant forbids. Only deciding THIS request can grant the retry.
+   */
+  private async authorizeIrreversibleRetry(
+    invocation: Invocation,
+    capability: CapabilityDescriptor,
+    input: Record<string, unknown>,
+  ): Promise<{ granted: boolean; requestId?: string }> {
+    const key = CapabilityFabric.approvalKey(invocation.capabilityId, invocation.context, invocation.id);
+    const open = this.approvals.get(key);
+
+    // A grant already given out of band and not yet spent covers exactly
+    // this retry — once.
+    const preGranted = open?.state === 'granted' && !open.consumedAt && this.consumeApproval(open.id);
+    if (preGranted) return { granted: true, requestId: open!.id };
+
+    const rule = 'irreversible-retry';
+    const reason =
+      `${capability.name} may already have taken effect. The previous attempt failed while its effect was uncertain, `
+      + 'so an automatic retry was withheld — retrying could repeat or compound the action. '
+      + 'A human grant is therefore required before another execution.';
+    const request: ApprovalRequest = open?.state === 'pending' ? open : {
+      id: `apr-${invocation.id}`,
+      state: 'pending',
+      requestedAt: new Date().toISOString(),
+      summary: reason,
+      rule,
+      projectId: invocation.context.projectId ?? undefined,
+      missionId: invocation.context.missionId,
+      taskId: invocation.context.taskId,
+      target: describeTarget(capability, input),
+      onAccept: `${capability.name} is executed once more with this grant. The prior attempt may already have taken effect, so this can repeat or compound it.`,
+      onDecline: 'No further execution happens. The failure is recorded, and nothing more runs.',
+      items: [{
+        invocationId: invocation.id,
+        capabilityId: capability.id,
+        title: capability.name,
+        detail: summarizeInput(capability, input),
+        risk: capability.risk,
+        irreversible: true,
+      }],
+    };
+
+    if (open?.state !== 'pending') {
+      this.approvals.set(key, request);
+      this.emit({ type: 'approval.required', at: request.requestedAt, request });
+      // Durable the moment it is asked, so a crash between asking and
+      // answering does not lose the question.
+      this.persistApprovals();
+    }
+
+    // The retry is a NEW question, not a continuation of the original
+    // authorization: strip the per-invocation grant so a host that honors
+    // `approvedCapabilities` cannot auto-answer it.
+    const contextForDecision = { ...invocation.context, approvedCapabilities: undefined };
+    const granted = await this.host.requestApproval(request, contextForDecision).catch(() => false);
+    if (!granted) return { granted: false, requestId: request.id };
+    if (request.state === 'pending') {
+      request.state = 'granted';
+      request.decidedAt = new Date().toISOString();
+      request.decidedBy = invocation.context.actor.id;
+      request.consumedAt = request.decidedAt;
+      this.emit({ type: 'approval.granted', at: request.decidedAt, requestId: request.id });
+      this.persistApprovals();
+    }
+    return { granted: true, requestId: request.id };
   }
 
   /* ── audit + result assembly ──────────────────────────────────── */
@@ -689,6 +832,8 @@ export class CapabilityFabric {
     attempts: number,
     approvalId?: string,
     output?: unknown,
+    effectStarted?: boolean,
+    retry?: NonNullable<AuditRecord['retry']>,
   ): InvocationResult {
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - started;
@@ -706,6 +851,8 @@ export class CapabilityFabric {
       durationMs,
       attempts,
     };
+    if (effectStarted !== undefined) result.effectStarted = effectStarted;
+    if (capability?.irreversible === true) result.irreversible = true;
 
     this.auditLog.push({
       invocationId: invocation.id,
@@ -735,6 +882,7 @@ export class CapabilityFabric {
       nodeId: this.executedNodeId(invocation, capability, attempts, output),
       requestedNodeId: invocation.context.nodeId,
       executedNodeId: this.executedNodeId(invocation, capability, attempts, output),
+      ...(retry ? { retry } : {}),
     });
 
     this.emit({ type: 'invocation.completed', at: endedAt, result });

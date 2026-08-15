@@ -264,6 +264,20 @@ export interface InvocationResult {
   durationMs: number;
   /** How many attempts the recovery loop made, including the first. */
   attempts: number;
+  /**
+   * Execution-state attestation of the final attempt, with the same
+   * semantics as `ExecutorResult.effectStarted`: `false` = proven not
+   * started, `true` = may have started, absent = unknown. Never inferred
+   * from a missing success response.
+   */
+  effectStarted?: boolean;
+  /**
+   * True when the executed capability's descriptor declares it
+   * irreversible. Carried so callers (the workflow runtime) can apply the
+   * same no-auto-retry invariant without re-deriving it from the
+   * manifest — the Fabric remains the single authority on both facts.
+   */
+  irreversible?: boolean;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -381,6 +395,23 @@ export interface ExecutorResult {
   ok: boolean;
   detail: string;
   output?: unknown;
+  /**
+   * Execution-state attestation. Every executor for an **irreversible**
+   * capability must report it honestly; the Fabric refuses to auto-retry
+   * an irreversible action unless this is `false`.
+   *
+   *   false     — execution is PROVEN not to have started. Nothing about
+   *               the outside world was touched.
+   *   true      — execution may have started / the effect may have
+   *               happened.
+   *   undefined — unknown.
+   *
+   * Unknown must never be interpreted as safe. A transport failure is
+   * never proof that nothing happened, so an executor that throws
+   * mid-flight is treated as `true`, and an executor that simply never
+   * received a success response must not claim `false`.
+   */
+  effectStarted?: boolean;
 }
 
 /**
@@ -481,4 +512,17 @@ export interface AuditRecord {
    */
   approvalDecision?: 'granted' | 'denied';
   decidedBy?: string;
+  /**
+   * Present when the recovery loop made a governance decision about an
+   * otherwise-permitted automatic retry. Today that is exactly one case:
+   * an irreversible capability failed transiently while its effect may
+   * already exist, so the retry was withheld and the invocation parked
+   * on the Fabric's approval mechanism until a human decides
+   * (`rule: 'irreversible-retry'`).
+   */
+  retry?: {
+    withheld: true;
+    rule: string;
+    effectStarted?: boolean;
+  };
 }
