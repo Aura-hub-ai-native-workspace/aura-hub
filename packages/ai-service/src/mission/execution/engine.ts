@@ -229,7 +229,11 @@ export class MissionExecutionEngine {
 
   /** Ensure a v3 execution block exists (idempotent — call on every read). */
   hydrate(record: MissionRecord): MissionRecord {
-    if (record.execution) return record;
+    // A partial v3 block (e.g. `{ status: 'idle' }` written before
+    // checkpoints existed) is repaired exactly like a missing one — it is
+    // not a usable v3 execution block, and every read path must survive
+    // it rather than crash on missing checkpoints.
+    if (record.execution?.checkpoints) return record;
     if (!record.goalGraph?.tasks?.length) return record;
     const approved = record.approval.status === 'approved';
     const checkpoints = emptyCheckpoints();

@@ -264,6 +264,20 @@ export interface InvocationResult {
   durationMs: number;
   /** How many attempts the recovery loop made, including the first. */
   attempts: number;
+  /**
+   * Execution-state attestation of the final attempt, with the same
+   * semantics as `ExecutorResult.effectStarted`: `false` = proven not
+   * started, `true` = may have started, absent = unknown. Never inferred
+   * from a missing success response.
+   */
+  effectStarted?: boolean;
+  /**
+   * True when the executed capability's descriptor declares it
+   * irreversible. Carried so callers (the workflow runtime) can apply the
+   * same no-auto-retry invariant without re-deriving it from the
+   * manifest — the Fabric remains the single authority on both facts.
+   */
+  irreversible?: boolean;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -382,21 +396,25 @@ export interface ExecutorResult {
   detail: string;
   output?: unknown;
   /**
-   * Whether the executor's side effect had begun when this result was
-   * produced. Consulted only on failure, and only for irreversible
-   * capabilities, to decide whether an automatic retry is safe.
+   * Execution-state attestation. Every executor for an **irreversible**
+   * capability must report it honestly; the Fabric refuses to auto-retry
+   * an irreversible action unless this is `false`.
    *
-   *   false     — PROVEN not started. The executor stopped before doing
-   *               anything observable (a refused binary, a missing node, a
-   *               validation exit). Retrying repeats nothing.
-   *   true      — the effect began. A retry would repeat it.
+   *   false     — execution is PROVEN not to have started. Nothing about
+   *               the outside world was touched (a refused binary, a
+   *               missing node, a validation exit). Retrying repeats
+   *               nothing.
+   *   true      — execution may have started / the effect may have
+   *               happened. A retry would repeat it.
    *   undefined — unknown, and treated as `true` for an irreversible
    *               capability.
    *
-   * Undefined is the default on purpose. A transient error does not prove
-   * that nothing happened — a timeout is the case where something most
-   * likely DID happen and simply never reported back. An executor must
-   * claim `false` deliberately; silence is never taken as safety.
+   * Unknown must never be interpreted as safe. Undefined is the default
+   * on purpose: a transient error does not prove that nothing happened —
+   * a timeout is the case where something most likely DID happen and
+   * simply never reported back. An executor must claim `false`
+   * deliberately; silence is never taken as safety, and an executor that
+   * simply never received a success response must not claim `false`.
    */
   effectStarted?: boolean;
 }
@@ -513,4 +531,17 @@ export interface AuditRecord {
    */
   approvalDecision?: 'granted' | 'denied';
   decidedBy?: string;
+  /**
+   * Present when the recovery loop made a governance decision about an
+   * otherwise-permitted automatic retry. Today that is exactly one case:
+   * an irreversible capability failed transiently while its effect may
+   * already exist, so the retry was withheld and the invocation parked
+   * on the Fabric's approval mechanism until a human decides
+   * (`rule: 'irreversible-retry'`).
+   */
+  retry?: {
+    withheld: true;
+    rule: string;
+    effectStarted?: boolean;
+  };
 }

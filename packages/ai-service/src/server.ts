@@ -9,6 +9,7 @@ import { nodeSpecInfos } from './workflow/nodes';
 import { TEMPLATES, instantiateTemplate } from './workflow/templates';
 import { generateWorkflow } from './workflow/generate';
 import type { RunEvent, Workflow } from './workflow/types';
+import { WorkflowBridge } from './workflowBridge';
 import { setupProviders } from './provider';
 import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
 import { handleCodeAction, type CodeActionRequest } from './codeAction';
@@ -97,6 +98,7 @@ export interface ServiceHandle {
   port: number;
   url: string;
   manager: WorkspaceManager;
+  bridge: WorkflowBridge;
   close: () => Promise<void>;
 }
 
@@ -298,6 +300,31 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     (scan) => console.log(`[environment] ${scan.found ?? providedNodeCapabilities.size} node(s) present · ${providedNodeCapabilities.size} capabilities available`),
     (e) => console.warn('[environment] boot scan failed:', (e as Error).message),
   );
+
+  /**
+   * The workflow bridge — the ONE production seam into @aura/workflow.
+   *
+   * Built after the Fabric exists (so every workflow side effect inherits
+   * the same policy/approval/audit authority as missions), and before the
+   * server accepts traffic. Boot does two things:
+   *   - migrateAll(): the legacy ~/.aura/workflows store is converted
+   *     once into workflow-defs/ (idempotent; legacy entries are kept and
+   *     stay editable in the builder UI);
+   *   - startScheduler(): scheduled/git/file/mission triggers for ready
+   *     definitions begin firing through the host event sources.
+   */
+  const bridge = new WorkflowBridge({ fabric, manager });
+  {
+    const entries = bridge.migrateAll();
+    const migrated = entries.filter((e) => e.outcome === 'migrated').length;
+    const partial = entries.filter((e) => e.outcome === 'partial').length;
+    console.log(`[workflows] boot migration: ${migrated} ready · ${partial} partial (unsupported nodes) · ${entries.length - migrated - partial} skipped/invalid of ${entries.length} legacy workflow(s)`);
+    for (const e of entries.filter((x) => x.outcome === 'partial')) {
+      console.warn(`[workflows] ${e.workflowId} (${e.name}) is not runnable in the new runtime:`);
+      for (const u of e.unsupported) console.warn(`  - node ${u.nodeId} (${u.legacyType}): ${u.reason}`);
+    }
+  }
+  bridge.startScheduler();
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -890,7 +917,31 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (!result.ok) return json(res, 400, { error: result.error });
           const { ok: _ok, ...graph } = result;
           const wf = wfs.create({ name: graph.name, description: graph.description, category: 'AI Generated', nodes: graph.nodes, edges: graph.edges });
+          bridge.syncLegacy(wf);
           return json(res, 200, wf);
+        }
+        // Approval management — the human side of the Fabric's ONE approval
+        // authority. Runs park at approval nodes; the decision is recorded
+        // here and the run resumes (or the parked node fails) in place.
+        if (seg[1] === 'approvals') {
+          if (seg.length === 2 && method === 'GET') return json(res, 200, { approvals: bridge.pendingApprovals() });
+          if (seg.length === 3 && seg[2] === 'pending' && method === 'GET') {
+            return json(res, 200, { approvals: bridge.pendingApprovals() });
+          }
+          if (seg.length === 3) {
+            if (method === 'GET') {
+              const a = bridge.approvalById(seg[2] as string);
+              return a ? json(res, 200, a) : json(res, 404, { error: 'no such approval request' });
+            }
+            if (method === 'POST') {
+              const b = await readJson(req);
+              const ok = bridge.decideApproval(seg[2] as string, Boolean(b.granted), String(b.decidedBy ?? 'user'), typeof b.reason === 'string' ? b.reason : undefined);
+              return ok ? json(res, 200, { ok: true }) : json(res, 404, { error: 'no such approval request' });
+            }
+          }
+        }
+        if (seg[1] === 'runs' && seg[2] === 'resume' && seg.length === 3 && method === 'POST') {
+          return json(res, 200, { ok: bridge.resumeRun(seg[2] as string) });
         }
         if (seg.length === 1) {
           if (method === 'GET') return json(res, 200, { workflows: wfs.list() });
@@ -898,7 +949,9 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             const b = await readJson(req);
             const fromTemplate = typeof b.template === 'string' ? instantiateTemplate(b.template) : null;
             if (typeof b.template === 'string' && !fromTemplate) return json(res, 404, { error: 'no such template' });
-            return json(res, 200, wfs.create(fromTemplate ?? { name: b.name as string | undefined, category: b.category as string | undefined }));
+            const wf = wfs.create(fromTemplate ?? { name: b.name as string | undefined, category: b.category as string | undefined });
+            bridge.syncLegacy(wf);
+            return json(res, 200, wf);
           }
         }
         const id = seg[1];
@@ -921,12 +974,31 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           res.on('close', () => ac.abort());
           const emit = (e: RunEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
           try {
-            await manager.runWorkflow(wf, (b.inputs ?? {}) as Record<string, string>, emit, ac.signal);
+            await bridge.runLegacy(wf, { inputs: (b.inputs ?? {}) as Record<string, string>, projectId: manager.currentProject()?.id ?? null }, emit);
           } catch (e) {
             emit({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message });
           }
           if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
           return;
+        }
+        // Manual trigger — starts the run through the bridge and returns
+        // runId/status immediately (no SSE). The run continues in the
+        // background; GET /workflows/:id/runs/:runId reports its state.
+        if (seg[2] === 'start' && method === 'POST') {
+          const b = await readJson(req);
+          try {
+            const started = await bridge.startManual(id, { inputs: (b.inputs ?? {}) as Record<string, string>, projectId: manager.currentProject()?.id ?? null });
+            return json(res, 200, started);
+          } catch (e) {
+            return json(res, 400, { error: (e as Error).message });
+          }
+        }
+        if (seg[2] === 'runs') {
+          if (seg.length === 3 && method === 'GET') return json(res, 200, { runs: bridge.listRuns(id, { limit: 50 }) });
+          if (seg.length === 4 && method === 'GET') {
+            const run = bridge.getRun(seg[3] as string);
+            return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
+          }
         }
         if (seg[2] === 'webhook-token' && method === 'POST') {
           const b = await readJson(req);
@@ -947,17 +1019,23 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (!wf) return json(res, 404, { error: 'no such workflow, or an invalid trigger token' });
           const payload = await readJson(req);
           const inputs: Record<string, string> = {};
-          for (const n of wf.nodes) if (n.type === 'user-input') inputs[n.id] = JSON.stringify(payload);
-          void manager.runWorkflow(wf, inputs, () => {}).catch((e) => {
+          const userInputs = wf.nodes.filter((n) => n.type === 'user-input');
+          if (userInputs.length === 1) inputs[userInputs[0]!.id] = JSON.stringify(payload);
+          void bridge.startTriggered(id, { inputs, triggerPayload: JSON.stringify(payload) }).catch((e) => {
             console.error(`[workflow trigger] run failed for ${id}:`, (e as Error).message);
           });
           return json(res, 202, { accepted: true });
         }
         if (seg.length === 2) {
           if (method === 'GET') { const wf = wfs.get(id); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
-          if (method === 'PUT') { const b = await readJson(req); const wf = wfs.save(id, b as Partial<Workflow>); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
-          if (method === 'PATCH') { const b = await readJson(req); const wf = wfs.patch(id, b as { name?: string; favorite?: boolean; category?: string }); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
-          if (method === 'DELETE') return json(res, 200, { ok: wfs.remove(id) });
+          if (method === 'PUT') {
+            const b = await readJson(req);
+            const wf = wfs.save(id, b as Partial<Workflow>);
+            if (wf) bridge.syncLegacy(wf);
+            return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' });
+          }
+          if (method === 'PATCH') { const b = await readJson(req); const wf = wfs.patch(id, b as { name?: string; favorite?: boolean; category?: string }); if (wf) bridge.syncLegacy(wf); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
+          if (method === 'DELETE') { const ok = wfs.remove(id); if (ok) bridge.definitions.remove(id); return json(res, 200, { ok }); }
         }
       }
 
@@ -1193,5 +1271,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   const port = opts.port ?? 4319;
   await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
   const addr = server.address() as { port: number };
-  return { port: addr.port, url: `http://127.0.0.1:${addr.port}`, manager, close: () => new Promise((r) => server.close(() => r())) };
+  return {
+    port: addr.port, url: `http://127.0.0.1:${addr.port}`, manager, bridge,
+    // Graceful shutdown: stop the workflow scheduler first (no new runs,
+    // timers and watchers released), then the HTTP server. Paused runs
+    // stay persisted and resumable by the next boot.
+    close: async () => {
+      bridge.shutdown();
+      await new Promise<void>((r) => server.close(() => r()));
+    },
+  };
 }

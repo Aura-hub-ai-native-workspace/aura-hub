@@ -1,294 +1,727 @@
 /**
- * retry-governance-verify — the two findings the P1-5 real-agent run
- * exposed.
+ * retry-governance-verify — the production-gate suite for retry
+ * architecture + audit attribution.
  * ==================================================================
- * FIX 1  Audit context attribution.
- *   The real run proved a canonical prompt reached OpenCode, but the
+ *   node scripts/run-ts.mjs scripts/retry-governance-verify.mjs
+ *
+ * Merged from the two independently-evolved suites:
+ *
+ * FIX 1  Audit context attribution (Workspace/main lineage).
+ *   A real agent run proved a canonical prompt reached the agent, but the
  *   audit record could not say so — `contextInjected` existed only on the
  *   executor's result. Diagnosing a bad delegation after the fact could
- *   not answer "did it run briefed or bare?".
+ *   not answer "did it run briefed or bare?". The Fabric now reads the
+ *   executor's own attestation into the audit record.
  *
- * FIX 2  Irreversible retry governance.
- *   The same run showed `attempts: 2`: the recovery loop automatically
- *   re-ran an irreversible, approval-gated capability after a transient
- *   failure. It was harmless there only because attempt 1 did no work. A
- *   transient error says the TRANSPORT failed; it never proves the EFFECT
- *   did not happen. A delegated agent that times out is precisely the case
- *   where the repository may already be half-rewritten.
+ * FIX 2  Irreversible retry governance (Workflow Engine lineage).
+ *   The recovery loop must never automatically re-run an irreversible,
+ *   approval-gated capability after a transient failure once its effect
+ *   may have started. A transient error says the TRANSPORT failed; it
+ *   never proves the EFFECT did not happen.
  *
  * Both are driven against the REAL CapabilityFabric with stub executors,
  * so the governed pipeline — policy, approval, audit — is the real one.
+ * The workflow-level sections additionally drive the real WorkflowRuntime
+ * so the invariant holds above the Fabric too.
  *
- * Usage: node scripts/retry-governance-verify.mjs
- * Needs no service, no browser and no agent.
+ * Coverage:
+ *   1  reversible + transient            → automatic retries
+ *   2  irreversible + effectStarted=false → automatic retries
+ *   3  irreversible + effectStarted=true  → DOES NOT retry
+ *   4  irreversible + effectStarted=undefined → DOES NOT retry
+ *   5  correlation IDs remain intact
+ *   6  audit contains the retry governance decision
+ *   7  denied retry never reaches the executor (decision + re-invoke)
+ *   8  granted retry executes exactly once; single-use
+ *   9  no prompt/secrets are persisted
+ *  10  structural: no capability id hardcoded; reads the descriptor
+ *  11  NEGATIVE CONTROL — old loop re-executes a started irreversible
+ *      effect; the new one executes it once and parks it
+ *  12  workflow node-level withRetry respects the invariant
+ *  13  the workflow retry control node respects the invariant
+ *  14  workflow park → human grant → exactly one more execution
+ *  15  workflow deny → the executor never runs again
+ *  A   audit.contextInjected === true when context reached the agent
+ *  B   audit.contextInjected === false for a bare agent
+ *  B2  nothing ran → undefined, never a misleading false
+ *  C   the full prompt is never persisted in the audit record
+ *  D   the rest of the audit contract is unchanged
  */
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { CapabilityFabric, CAPABILITY_MANIFEST } from '@aura/capability-fabric';
+import { WorkflowRuntime, WorkflowDefinitionStore, WorkflowRunStore } from '@aura/workflow';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+let passed = 0;
+let failed = 0;
 
-let failed = false;
-const check = (n, ok, extra = '') => {
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${extra ? ` — ${extra}` : ''}`);
-  if (!ok) failed = true;
+function check(name, cond, detail = '') {
+  if (cond) {
+    passed += 1;
+    console.log(`  ok  ${name}`);
+  } else {
+    failed += 1;
+    console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function until(fn, ms = 6000, step = 20) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    if (await fn()) return true;
+    if (Date.now() > deadline) return false;
+    await sleep(step);
+  }
+}
+
+/* ── governed fabric rig ─────────────────────────────────────────── */
+
+const AUTO_POLICY = {
+  byRisk: { low: 'auto-execute', medium: 'auto-execute', high: 'auto-execute' },
+  overrides: {},
+  allowAutonomous: true,
 };
 
-const out = path.join(mkdtempSync(path.join(tmpdir(), 'retry-gov-')), 'fabric.mjs');
-execFileSync('npx', [
-  'esbuild', `${ROOT}/packages/capability-fabric/src/index.ts`,
-  '--bundle', '--platform=node', '--format=esm', `--outfile=${out}`,
-], { cwd: ROOT, stdio: 'pipe' });
-
-const { CapabilityFabric } = await import(out);
-
-/* ── a host that grants inline, so the gate is exercised not bypassed ── */
-const makeHost = () => ({
-  permissionsFor: () => ({ read: true, write: true, execute: true, autonomous: false }),
-  nodeAvailable: () => null,
-  requestApproval: async (_req, ctx) => (ctx.approvedCapabilities ?? []).includes(_req.items[0].capabilityId),
-});
+class SpyFabric extends CapabilityFabric {
+  invocations = 0;
+  async invoke(capabilityId, input, context) {
+    this.invocations += 1;
+    return super.invoke(capabilityId, input, context);
+  }
+}
 
 /**
- * Register a synthetic capability so the rule is exercised through
- * METADATA (`irreversible`) rather than a capability id. If the Fabric
- * ever special-cased `agent.delegate`, these would not behave.
+ * A governed fabric with scriptable executors and the production host
+ * semantics: `requestApproval` grants exactly what THIS call's
+ * `approvedCapabilities` covers — and nothing else. The Fabric strips
+ * the per-invocation grant before asking about a retry-withhold, so a
+ * retry of an uncertain irreversible effect is never auto-granted here,
+ * exactly as in production.
  */
-function fabricWith(capability, executor) {
-  const f = new CapabilityFabric(makeHost());
-  f.describeCapability = undefined;
-  f.register(executor);
-  return f;
-}
-
-/* The Fabric resolves descriptors from its manifest, so exercise the real
-   manifest entries: `terminal.execute` (reversible) and `agent.delegate`
-   (irreversible). The metadata — not the id — is what the rule reads. */
-const TRANSIENT = 'The request timed out.';
-
-/** An executor that fails N times then succeeds, recording every call. */
-function countingExecutor(capabilityId, failures, opts = {}) {
-  const calls = [];
-  return {
-    executor: {
-      capabilityId,
-      async run(inv) {
-        calls.push(inv.id);
-        if (calls.length <= failures) {
-          return { ok: false, detail: TRANSIENT, ...(opts.effectStarted !== undefined ? { effectStarted: opts.effectStarted } : {}) };
-        }
-        return { ok: true, detail: 'done', output: { contextInjected: opts.contextInjected === true, nodeId: 'stub' } };
-      },
+function makeRig() {
+  const execResults = {};
+  const executed = {};
+  const approvals = [];
+  const approvalStore = {
+    load: () => approvals,
+    save: (requests) => {
+      approvals.length = 0;
+      approvals.push(...requests);
     },
-    calls,
   };
+  const fabric = new SpyFabric({
+    permissionsFor: () => ({ read: true, write: true, execute: true, autonomous: false }),
+    nodeAvailable: () => true,
+    resolveNode: () => ({ ok: true, node: { id: 'node-a', name: 'Node A', capabilities: [] } }),
+    requestApproval: async (request, context) => {
+      const approved = new Set(context.approvedCapabilities ?? []);
+      return request.items.every((item) => approved.has(item.capabilityId));
+    },
+  });
+  fabric.setPolicy(AUTO_POLICY);
+  fabric.attachApprovalStore(approvalStore);
+  for (const id of ['http.request', 'git.push', 'agent.delegate']) {
+    fabric.register({
+      capabilityId: id,
+      supportsNode: () => true,
+      run: async () => {
+        executed[id] = (executed[id] ?? 0) + 1;
+        const script = execResults[id];
+        if (!script) return { ok: false, detail: `no executor script for ${id}` };
+        return script();
+      },
+    });
+  }
+  return { fabric, execResults, executed, approvals };
 }
 
+/** Invocation context: workflow-correlated, with a per-call grant for git.push. */
 const ctx = (extra = {}) => ({
-  actor: { kind: 'human', id: 'test' },
-  projectId: 'p1',
-  cwd: '/tmp',
-  missionId: 'm1',
-  taskId: 't1',
-  approvedCapabilities: ['agent.delegate', 'terminal.execute'],
+  actor: { kind: 'agent', id: 'test-agent' },
+  projectId: 'proj-1',
+  missionId: 'mission-1',
+  taskId: 'task-1',
+  approvedCapabilities: ['git.push'],
   ...extra,
 });
 
-/* ══════════════════════════════════════════════════════════════════
-   FIX 2 — retry governance
-   ══════════════════════════════════════════════════════════════════ */
+/* ── workflow harness ────────────────────────────────────────────── */
 
-/* ── 1. reversible + transient → retry allowed ────────────────────── */
-{
-  const { executor, calls } = countingExecutor('terminal.execute', 1);
-  const f = fabricWith(null, executor);
-  const r = await f.invoke('terminal.execute', { command: 'ls' }, ctx());
-  check('1. a REVERSIBLE capability is retried after a transient failure',
-    calls.length === 2 && r.outcome === 'succeeded',
-    `attempts=${r.attempts} calls=${calls.length} outcome=${r.outcome}`);
-}
+const N = (id, type, config = {}) => ({ id, type, x: 0, y: 0, config });
+const E = (from, fromPort, to, toPort = 'in') => ({ id: `e-${from}-${to}`, from, fromPort, to, toPort });
+const DEF = (id, nodes, edges, settings = {}) => ({
+  schemaVersion: 1, id, name: id, description: '', projectId: 'proj-1', status: 'ready', version: 1,
+  nodes, edges, settings, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+});
 
-/* ── 2. irreversible + transient + PROVEN not started → retry ─────── */
-{
-  const { executor, calls } = countingExecutor('agent.delegate', 1, { effectStarted: false });
-  const f = fabricWith(null, executor);
-  const r = await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx());
-  check('2. an IRREVERSIBLE capability retries only when proven not started',
-    calls.length === 2 && r.outcome === 'succeeded',
-    `calls=${calls.length} outcome=${r.outcome}`);
-}
-
-/* ── 3. irreversible + transient AFTER execution → NO retry ───────── */
-{
-  const { executor, calls } = countingExecutor('agent.delegate', 99, { effectStarted: true });
-  const f = fabricWith(null, executor);
-  const r = await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx());
-  check('3. THE FINDING — an irreversible effect that STARTED is not retried',
-    calls.length === 1, `calls=${calls.length}`);
-  check('3b. it becomes an explicit governed state, not a plain failure',
-    r.outcome === 'awaiting-approval', `outcome=${r.outcome}`);
-  check('3c. and says why, in the operator\'s terms',
-    /may already have taken effect/i.test(r.detail), r.detail.slice(0, 120));
-}
-
-/* ── 4. irreversible + transient + UNKNOWN state → NO retry ───────── */
-{
-  const { executor, calls } = countingExecutor('agent.delegate', 99); // no effectStarted
-  const f = fabricWith(null, executor);
-  const r = await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx());
-  check('4. UNKNOWN execution state is treated as started, so no retry',
-    calls.length === 1 && r.outcome === 'awaiting-approval',
-    `calls=${calls.length} outcome=${r.outcome}`);
-}
-
-/* ── 5. a new approval can explicitly authorize another attempt ───── */
-{
-  const { executor, calls } = countingExecutor('agent.delegate', 1, { effectStarted: true });
-  const f = fabricWith(null, executor);
-
-  const first = await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx());
-  check('5a. the first attempt stops for a decision',
-    first.outcome === 'awaiting-approval' && calls.length === 1);
-
-  const pending = f.pendingApprovals().filter((a) => a.id.startsWith('apr-retry-'));
-  check('5b. a retry approval is recorded through the existing approval store',
-    pending.length === 1 && pending[0].rule === 'irreversible-retry',
-    pending.length ? `${pending[0].id} rule=${pending[0].rule}` : 'none');
-  check('5c. the request states the real consequence of saying yes',
-    /repeat or compound/i.test(pending[0]?.onAccept ?? ''), pending[0]?.onAccept?.slice(0, 90));
-
-  // Re-invoking with a grant is what authorizes another attempt.
-  const second = await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx());
-  check('5d. an explicitly authorized re-invocation does run again',
-    calls.length === 2 && second.outcome === 'succeeded',
-    `calls=${calls.length} outcome=${second.outcome}`);
-}
-
-/* ── 6. a denied retry does not execute again ─────────────────────── */
-{
-  const { executor, calls } = countingExecutor('agent.delegate', 99, { effectStarted: true });
-  const f = fabricWith(null, executor);
-  await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx());
-  const after = calls.length;
-  // No grant this time — the gate refuses before the executor is reached.
-  const denied = await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx({ approvedCapabilities: [] }));
-  check('6. a DENIED retry never reaches the executor',
-    calls.length === after && denied.outcome === 'awaiting-approval',
-    `calls=${calls.length} outcome=${denied.outcome}`);
-}
-
-/* ── 7. every invocation is still audited ─────────────────────────── */
-{
-  const { executor } = countingExecutor('agent.delegate', 99, { effectStarted: true });
-  const f = fabricWith(null, executor);
-  await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx());
-  const audit = f.audit();
-  check('7. the withheld-retry invocation is audited', audit.length === 1);
-  const a = audit[0];
-  check('7b. with its correlation ids intact',
-    a.invocationId && a.capabilityId === 'agent.delegate' && a.missionId === 'm1' && a.taskId === 't1'
-    && a.actor?.id === 'test' && a.outcome === 'awaiting-approval',
-    `outcome=${a.outcome}`);
-}
-
-/* ── 8. NEGATIVE CONTROL — the old rule would have re-run it ──────── */
-{
-  // The removed rule: retry on ANY transient failure, regardless of
-  // whether the irreversible effect had begun.
-  const legacyMayRetry = (detail) => /\b(timeout|timed out|429|503)\b/i.test(detail);
-
-  let legacyCalls = 0;
-  let attempts = 0;
-  const MAX = 3;
-  while (attempts < MAX) {
-    attempts += 1;
-    legacyCalls += 1;
-    const res = { ok: false, detail: TRANSIENT, effectStarted: true };
-    if (res.ok) break;
-    if (attempts >= MAX || !legacyMayRetry(res.detail)) break;
-  }
-  check('8. NEGATIVE CONTROL — the old rule re-runs an irreversible effect',
-    legacyCalls === 3,
-    `the approved-once action would have executed ${legacyCalls} times`);
+function workflowHarness(baseDir, rig) {
+  const definitions = new WorkflowDefinitionStore({ baseDir });
+  const runs = new WorkflowRunStore({ baseDir });
+  const runtime = new WorkflowRuntime(
+    {
+      fabric: rig.fabric,
+      ai: { generate: async () => ({ ok: true, output: { text: 'ai' } }) },
+      missions: { update: async () => ({ ok: true }), wait: async () => ({ ok: true, state: 'completed' }) },
+      projectPath: () => path.join(baseDir, 'project'),
+      askApproval: async () => false,
+      sleep,
+    },
+    { definitions, runs },
+  );
+  return { definitions, runs, runtime };
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   FIX 1 — audit context attribution
+   1. reversible + transient → automatic retries
    ══════════════════════════════════════════════════════════════════ */
 
-/* ── A. agent WITH context → audit.contextInjected === true ───────── */
-{
-  const { executor } = countingExecutor('agent.delegate', 0, { contextInjected: true });
-  const f = fabricWith(null, executor);
-  const r = await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx());
-  const a = f.audit()[0];
-  check('A. an agent that received context is audited as contextInjected=true',
-    a.contextInjected === true && r.outcome === 'succeeded',
-    `contextInjected=${a.contextInjected}`);
-}
-
-/* ── B. agent WITHOUT context → false ─────────────────────────────── */
-{
-  const { executor } = countingExecutor('agent.delegate', 0, { contextInjected: false });
-  const f = fabricWith(null, executor);
-  await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx());
-  const a = f.audit()[0];
-  check('B. an agent that ran bare is audited as contextInjected=false',
-    a.contextInjected === false, `contextInjected=${a.contextInjected}`);
-}
-
-/* ── B2. nothing ran → undefined, never a misleading false ────────── */
-{
-  const { executor } = countingExecutor('agent.delegate', 0, { contextInjected: true });
-  const f = fabricWith(null, executor);
-  await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx({ approvedCapabilities: [] }));
-  const a = f.audit()[0];
-  check('B2. an invocation that never executed reports no attribution at all',
-    a.contextInjected === undefined && a.outcome === 'awaiting-approval',
-    `contextInjected=${a.contextInjected}`);
-}
-
-/* ── C. the audit never carries the prompt ────────────────────────── */
-{
-  const bigPrompt = 'X'.repeat(5000);
-  const executor = {
-    capabilityId: 'agent.delegate',
-    async run() { return { ok: true, detail: 'done', output: { contextInjected: true, nodeId: 'stub' } }; },
+async function testReversibleRetries() {
+  console.log('\n[1] reversible + transient → retries');
+  const rig = makeRig();
+  let calls = 0;
+  rig.execResults['http.request'] = async () => {
+    calls += 1;
+    return calls < 3
+      ? { ok: false, detail: `request timed out (attempt ${calls})` }
+      : { ok: true, detail: '200 OK', output: { status: 200 } };
   };
-  const f = fabricWith(null, executor);
-  await f.invoke('agent.delegate', { agent: 'opencode', task: 'x', auraPrompt: bigPrompt }, ctx());
-  const blob = JSON.stringify(f.audit()[0]);
-  check('C. the full prompt is NOT persisted in the audit record',
-    !blob.includes(bigPrompt) && !blob.includes('XXXXXXXXXX'),
-    `record is ${blob.length} bytes`);
-  check('C2. and the record stays small enough to read',
-    blob.length < 2000, `${blob.length} bytes`);
+  const result = await rig.fabric.invoke('http.request', { url: 'http://x' }, ctx({ approvedCapabilities: [] }));
+  check('retries to success', result.outcome === 'succeeded' && calls === 3, `outcome=${result.outcome} calls=${calls}`);
+  check('result records attempts', result.attempts === 3, `attempts=${result.attempts}`);
 }
 
-/* ── D. the rest of the audit contract is unchanged ───────────────── */
-{
-  const { executor } = countingExecutor('agent.delegate', 0, { contextInjected: true });
-  const f = fabricWith(null, executor);
-  await f.invoke('agent.delegate', { agent: 'opencode', task: 'x' }, ctx());
-  const a = f.audit()[0];
-  const required = ['invocationId', 'capabilityId', 'actor', 'missionId', 'taskId', 'outcome', 'verified', 'durationMs', 'risk', 'decision', 'decisionRule'];
-  const missing = required.filter((k) => a[k] === undefined);
-  check('D. every existing audit field survives', missing.length === 0,
-    missing.length ? `missing: ${missing.join(', ')}` : required.join(', '));
-  check('D2. verification is still recorded', a.verified !== undefined);
+/* ══════════════════════════════════════════════════════════════════
+   2. irreversible + effectStarted=false → automatic retries (proven safe)
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testIrreversibleProvenNotStartedRetries() {
+  console.log('\n[2] irreversible + effectStarted=false → retries');
+  const rig = makeRig();
+  let calls = 0;
+  rig.execResults['git.push'] = async () => {
+    calls += 1;
+    return calls < 3
+      ? { ok: false, detail: 'timed out before the push could start', effectStarted: false }
+      : { ok: true, effectStarted: true, detail: 'Pushed main to origin.', output: { exitCode: 0 } };
+  };
+  const result = await rig.fabric.invoke('git.push', { branch: 'main' }, ctx());
+  check('retries to success', result.outcome === 'succeeded' && calls === 3, `outcome=${result.outcome} calls=${calls}`);
+  check('no approval was asked (proven-safe retries stay automatic)', rig.fabric.pendingApprovals().length === 0);
+  check('result effectStarted reported', result.effectStarted === true, String(result.effectStarted));
+  check('result marks the capability irreversible', result.irreversible === true, String(result.irreversible));
 }
 
-/* ── E. the rule is metadata-driven, not id-driven ────────────────── */
-{
-  const src = (await import('node:fs')).readFileSync(path.join(ROOT, 'packages/capability-fabric/src/fabric.ts'), 'utf8');
+/* ══════════════════════════════════════════════════════════════════
+   3. irreversible + effectStarted=true → NO automatic retry
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testIrreversibleStartedNoRetry() {
+  console.log('\n[3] irreversible + effectStarted=true → does NOT retry');
+  const rig = makeRig();
+  let calls = 0;
+  rig.execResults['git.push'] = async () => {
+    calls += 1;
+    return { ok: false, detail: 'timed out mid-push', effectStarted: true };
+  };
+  const result = await rig.fabric.invoke('git.push', { branch: 'main' }, ctx());
+  check('executor ran exactly once', calls === 1, `calls=${calls}`);
+  check('no automatic retry happened', result.attempts === 1, `attempts=${result.attempts}`);
+  check('invocation parked as awaiting-approval', result.outcome === 'awaiting-approval', result.outcome);
+  const pending = rig.fabric.pendingApprovals();
+  check('a pending approval request exists', pending.length === 1, `pending=${pending.length}`);
+  check('approval rule is irreversible-retry', pending[0]?.rule === 'irreversible-retry', pending[0]?.rule);
+  check('approval was persisted to the store', rig.approvals.some((a) => a.id === pending[0]?.id));
+  check('approval summary explains the uncertain effect',
+    /may already have taken effect/.test(pending[0]?.summary ?? '') && /required before another execution/.test(pending[0]?.summary ?? ''),
+    pending[0]?.summary);
+  check('approval states the real consequence of saying yes',
+    /repeat or compound/i.test(pending[0]?.onAccept ?? ''), pending[0]?.onAccept?.slice(0, 90));
+  check('parked result carries the execution-state attestation', result.effectStarted === true, String(result.effectStarted));
+  check('parked result marks the capability irreversible', result.irreversible === true, String(result.irreversible));
+  return { rig, calls: () => calls, result };
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   4. irreversible + effectStarted=undefined → NO automatic retry
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testIrreversibleUnknownNoRetry() {
+  console.log('\n[4] irreversible + effectStarted=undefined → does NOT retry');
+  const rig = makeRig();
+  let calls = 0;
+  rig.execResults['git.push'] = async () => {
+    calls += 1;
+    return { ok: false, detail: 'timed out mid-push' }; // unknown — never treated as safe
+  };
+  const result = await rig.fabric.invoke('git.push', { branch: 'main' }, ctx());
+  check('executor ran exactly once (unknown ≠ safe)', calls === 1, `calls=${calls}`);
+  check('invocation parked as awaiting-approval', result.outcome === 'awaiting-approval', result.outcome);
+  check('result effectStarted is undefined (unknown, not false)', result.effectStarted === undefined, String(result.effectStarted));
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   5. correlation IDs remain intact through the governance pause
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testCorrelationIds() {
+  console.log('\n[5] correlation IDs remain intact');
+  const rig = makeRig();
+  rig.execResults['git.push'] = async () => ({ ok: false, detail: 'timed out mid-push', effectStarted: true });
+  const result = await rig.fabric.invoke('git.push', { branch: 'main' }, ctx());
+  const pending = rig.fabric.pendingApprovals()[0];
+  check('approval request carries mission/task correlation',
+    pending?.missionId === 'mission-1' && pending?.taskId === 'task-1',
+    JSON.stringify({ m: pending?.missionId, t: pending?.taskId }));
+  check('approval request references this invocation',
+    pending?.items[0]?.invocationId === result.invocationId,
+    `${pending?.items[0]?.invocationId} vs ${result.invocationId}`);
+  const audit = rig.fabric.audit().find((a) => a.invocationId === result.invocationId);
+  check('audit record carries mission/task correlation',
+    audit?.missionId === 'mission-1' && audit?.taskId === 'task-1',
+    JSON.stringify({ m: audit?.missionId, t: audit?.taskId }));
+  check('audit record carries the same invocation id', audit?.invocationId === result.invocationId);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   6. audit contains the retry governance decision
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testAuditDecision() {
+  console.log('\n[6] audit contains the retry governance decision');
+  const rig = makeRig();
+  rig.execResults['git.push'] = async () => ({ ok: false, detail: 'timed out mid-push', effectStarted: true });
+  const result = await rig.fabric.invoke('git.push', { branch: 'main' }, ctx());
+  const audit = rig.fabric.audit().find((a) => a.invocationId === result.invocationId);
+  check('audit records retry withheld', audit?.retry?.withheld === true, JSON.stringify(audit?.retry));
+  check('audit records the rule', audit?.retry?.rule === 'irreversible-retry', audit?.retry?.rule);
+  check('audit records the effect state', audit?.retry?.effectStarted === true, String(audit?.retry?.effectStarted));
+  check('audit decisionRule is irreversible-retry', audit?.decisionRule === 'irreversible-retry', audit?.decisionRule);
+  check('audit outcome is awaiting-approval', audit?.outcome === 'awaiting-approval', audit?.outcome);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   7. denied retry never reaches the executor
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testDeniedRetry() {
+  console.log('\n[7] denied retry never reaches the executor');
+  const rig = makeRig();
+  let calls = 0;
+  rig.execResults['git.push'] = async () => {
+    calls += 1;
+    return { ok: false, detail: 'timed out mid-push', effectStarted: true };
+  };
+  const result = await rig.fabric.invoke('git.push', { branch: 'main' }, ctx());
+  const requestId = rig.fabric.pendingApprovals()[0].id;
+  const decided = rig.fabric.decideApproval(requestId, false, 'user', 'do not retry');
+  check('denial recorded', decided?.state === 'denied');
+  check('executor count unchanged after denial', calls === 1, `calls=${calls}`);
+  check('invocation result stayed parked', result.outcome === 'awaiting-approval');
+  // The execution record and the decision record share the approvalId; the
+  // DECISION record is the one carrying approvalDecision.
+  const audit = rig.fabric.audit().find((a) => a.approvalId === requestId && a.approvalDecision === 'denied');
+  check('denial written to the audit trail', !!audit && audit.decidedBy === 'user', JSON.stringify(audit));
+
+  // A re-invocation with no grant must also never reach the executor —
+  // the denial is a hard stop, not a one-time refusal.
+  const callsBefore = calls;
+  const reinvoked = await rig.fabric.invoke('git.push', { branch: 'main' }, ctx({ approvedCapabilities: [] }));
+  check('re-invocation without a grant does not execute', calls === callsBefore, `calls=${calls}`);
+  check('re-invocation without a grant parks again', reinvoked.outcome === 'awaiting-approval', reinvoked.outcome);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   8. granted retry executes exactly once
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testGrantedRetry() {
+  console.log('\n[8] granted retry executes exactly once');
+  const rig = makeRig();
+  let calls = 0;
+  rig.execResults['git.push'] = async () => {
+    calls += 1;
+    return calls === 1
+      ? { ok: false, detail: 'timed out mid-push', effectStarted: true }
+      : { ok: true, effectStarted: true, detail: 'Pushed main to origin.', output: { exitCode: 0 } };
+  };
+  await rig.fabric.invoke('git.push', { branch: 'main' }, ctx());
+  const requestId = rig.fabric.pendingApprovals()[0].id;
+  check('parked after one execution', calls === 1, `calls=${calls}`);
+  rig.fabric.decideApproval(requestId, true, 'user', 'push is fine');
+  check('grant alone does not execute anything', calls === 1, `calls=${calls}`);
+  const resumed = await rig.fabric.invoke('git.push', { branch: 'main' }, ctx());
+  check('re-invocation after grant succeeds', resumed.outcome === 'succeeded', resumed.outcome);
+  check('granted retry executed exactly one more time', calls === 2, `calls=${calls}`);
+  check('grant is single-use (no pending request remains)', rig.fabric.pendingApprovals().length === 0);
+  const audit = rig.fabric.audit().filter((a) => a.outcome === 'succeeded');
+  check('the granted execution is audited', audit.length === 1, String(audit.length));
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   9. no prompt/secrets are persisted by the governance pause
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testNoSecretsPersisted() {
+  console.log('\n[9] no prompt/secrets are persisted');
+  const rig = makeRig();
+  rig.execResults['git.push'] = async () => ({ ok: false, detail: 'timed out mid-push', effectStarted: true });
+  await rig.fabric.invoke('git.push', {
+    branch: 'main',
+    apiKey: 'sk-super-secret-123',
+    token: 'tok-super-secret-456',
+    prompt: 'a long prompt body that must never be persisted anywhere',
+  }, ctx());
+  const persisted = JSON.stringify(rig.approvals);
+  check('no apiKey value persisted', !persisted.includes('sk-super-secret-123'));
+  check('no token value persisted', !persisted.includes('tok-super-secret-456'));
+  check('no prompt body persisted', !persisted.includes('a long prompt body that must never be persisted'));
+  const auditText = JSON.stringify(rig.fabric.audit());
+  check('no apiKey value in the audit trail', !auditText.includes('sk-super-secret-123'));
+  check('no prompt body in the audit trail', !auditText.includes('a long prompt body that must never be persisted'));
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   10. structural: no capability id hardcoded; the decision reads the
+       descriptor — so future irreversible capabilities inherit it
+   ══════════════════════════════════════════════════════════════════ */
+
+function testStructuralScans() {
+  console.log('\n[10] structural scans');
+  const root = path.resolve(import.meta.dirname, '..');
+  const fabricSrc = fs.readFileSync(path.join(root, 'packages/capability-fabric/src/fabric.ts'), 'utf8');
+
+  // The retry logic must key off the descriptor, never off a capability
+  // id — a future irreversible capability gets the same gate for free.
+  const manifestIds = CAPABILITY_MANIFEST.map((c) => c.id);
+  const hardcoded = manifestIds.filter((id) => fabricSrc.includes(`'${id}'`) || fabricSrc.includes(`"${id}"`));
+  check('no capability id is hardcoded in fabric.ts retry logic', hardcoded.length === 0, hardcoded.join(', '));
+  check('retry decision reads CapabilityDescriptor.irreversible', /\.irreversible\b/.test(fabricSrc));
+
+  // The workflow runtime's retry logic must be equally id-free.
+  const wfExecSrc = fs.readFileSync(path.join(root, 'packages/workflow/src/runtime/executors.ts'), 'utf8');
+  const bodyOf = (src, name) => {
+    const m = src.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`, 'm'));
+    return m ? m[0] : '';
+  };
+  const retryLogic = `${bodyOf(wfExecSrc, 'withRetry')}\n${bodyOf(wfExecSrc, 'runRetryNode')}`;
+  const irreversibleIds = CAPABILITY_MANIFEST.filter((c) => c.irreversible).map((c) => c.id);
+  const hardcodedWf = irreversibleIds.filter((id) => retryLogic.includes(`'${id}'`) || retryLogic.includes(`"${id}"`));
+  check('no capability id is hardcoded in workflow retry logic', hardcodedWf.length === 0, hardcodedWf.join(', '));
+
+  // One governed path: the retry decision lives in the Fabric, and the
+  // workflow runtime delegates — it never mints its own approval request.
+  const wfRuntimeFiles = fs.readdirSync(path.join(root, 'packages/workflow/src/runtime'))
+    .filter((f) => f.endsWith('.ts'))
+    .map((f) => fs.readFileSync(path.join(root, 'packages/workflow/src/runtime', f), 'utf8'))
+    .join('\n');
+  check('workflow runtime never builds an ApprovalRequest',
+    !/\bnew\s+ApprovalRequest\b/.test(wfRuntimeFiles) && !/attachApprovalStore/.test(wfRuntimeFiles));
+  check('workflow runtime delegates decisions to the ONE Fabric',
+    /decideApproval/.test(wfRuntimeFiles) && !/new\s+ApprovalPersistence/.test(wfRuntimeFiles));
+
+  // No bypass primitives in the retry-governance code.
+  const bypass = /child_process|\bspawn\s*\(|\bexecFile\s*\(|\bfork\s*\(|new\s+Function\s*\(|\beval\s*\(/;
+  check('fabric.ts has no process/eval bypass primitives', !bypass.test(fabricSrc));
+  const retryGov = `${bodyOf(wfExecSrc, 'withRetry')}\n${bodyOf(wfExecSrc, 'runRetryNode')}`;
+  check('workflow retry logic has no bypass primitives', !bypass.test(retryGov));
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   11. NEGATIVE CONTROL — old loop re-executes a started irreversible
+       effect; the new implementation executes it once and parks it
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testNegativeControl() {
+  console.log('\n[11] negative control — the bug this gate exists to prevent');
+  // The OLD rule was "transient → retry", with no regard for whether the
+  // effect had started. Reconstructed here as the production gate found
+  // it: a started irreversible effect + transient timeout → retried.
+  const TRANSIENT = /\b(timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|429|503|temporarily)\b/i;
+  const oldRetryLoop = (run, maxAttempts = 3) => {
+    let attempts = 0;
+    let last;
+    while (attempts < maxAttempts) {
+      attempts += 1;
+      last = run();
+      if (last.ok) break;
+      if (attempts >= maxAttempts || !TRANSIENT.test(last.detail)) break;
+    }
+    return { attempts, last };
+  };
+  let oldCalls = 0;
+  const startedEffect = () => {
+    oldCalls += 1;
+    return { ok: false, detail: 'timed out mid-push', effectStarted: true };
+  };
+  const old = oldRetryLoop(startedEffect);
+  check('OLD logic retried the started irreversible effect (bug reproduced)',
+    oldCalls >= 2, `calls=${oldCalls}`);
+
+  // The NEW implementation with the identical executor script.
+  const rig = makeRig();
+  let calls = 0;
+  rig.execResults['git.push'] = async () => {
+    calls += 1;
+    return { ok: false, detail: 'timed out mid-push', effectStarted: true };
+  };
+  const first = await rig.fabric.invoke('git.push', { branch: 'main' }, ctx());
+  check('NEW logic executes the effect exactly once', calls === 1, `calls=${calls}`);
+  check('NEW logic parks instead of retrying', first.outcome === 'awaiting-approval', first.outcome);
+
+  // Even after a human grant, it runs exactly once more — and, still
+  // failing with an uncertain effect, parks again rather than looping.
+  const requestId = rig.fabric.pendingApprovals()[0].id;
+  rig.fabric.decideApproval(requestId, true, 'user');
+  const second = await rig.fabric.invoke('git.push', { branch: 'main' }, ctx());
+  check('after a human grant it executes exactly one more time', calls === 2, `calls=${calls}`);
+  check('it parks again instead of auto-retrying the second failure', second.outcome === 'awaiting-approval' && calls === 2, `outcome=${second.outcome} calls=${calls}`);
+  check('a second, fresh approval question is asked', rig.fabric.pendingApprovals().length === 1 && rig.fabric.pendingApprovals()[0].id !== requestId);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   12. workflow node-level withRetry respects the invariant
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testWorkflowWithRetry() {
+  console.log('\n[12] workflow withRetry respects the irreversible-effect invariant');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-retry-gov-'));
+  const rig = makeRig();
+  rig.execResults['git.push'] = async () => ({
+    ok: false, detail: 'remote rejected: update is not fast-forward', effectStarted: true,
+  });
+  const h = workflowHarness(home, rig);
+  const wf = DEF('wf-irr-retry', [
+    N('t', 'manual'),
+    N('c', 'capability', {
+      capabilityId: 'git.push',
+      inputMap: 'branch: main',
+      retry: { maxAttempts: 5, delayMs: 1, backoffFactor: 1 },
+    }),
+  ], [E('t', 'out', 'c')]);
+  h.definitions.record(wf);
+  const run = await h.runtime.startRun('wf-irr-retry', { inputs: {}, approvedCapabilities: ['git.push'] });
+  check('run failed (no automatic re-run)', run.status === 'failed', run.status);
+  check('executor ran exactly once despite retry config', rig.executed['git.push'] === 1, JSON.stringify(rig.executed));
+  check('node recorded the failure', run.nodeRuns.find((n) => n.nodeId === 'c')?.status === 'failed');
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   13. the workflow retry control node respects the invariant
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testWorkflowRetryNode() {
+  console.log('\n[13] workflow retry control node respects the invariant');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-retry-gov-'));
+  const rig = makeRig();
+  rig.execResults['git.push'] = async () => ({
+    ok: false, detail: 'remote rejected: update is not fast-forward', effectStarted: true,
+  });
+  const h = workflowHarness(home, rig);
+  const wf = DEF('wf-retry-node-irr', [
+    N('t', 'manual'),
+    N('rc', 'retry', { maxAttempts: 3, delayMs: 1, backoffFactor: 1 }),
+    N('c', 'capability', { capabilityId: 'git.push', inputMap: 'branch: main' }),
+    N('r', 'result'),
+  ], [E('t', 'out', 'rc'), E('rc', 'out', 'c'), E('rc', 'failed', 'r')]);
+  h.definitions.record(wf);
+  const run = await h.runtime.startRun('wf-retry-node-irr', { inputs: {}, approvedCapabilities: ['git.push'] });
+  check('retry node did not retry the started effect', rig.executed['git.push'] === 1, JSON.stringify(rig.executed));
+  const rc = run.nodeRuns.find((n) => n.nodeId === 'rc');
+  check('retry node fired the failed port immediately', rc?.firedPort === 'failed', `port=${rc?.firedPort} status=${rc?.status}`);
+  // The retry node routed the failure to its failed port, and the subtree
+  // node stayed failed in the record — the run settles failed (pre-existing
+  // run-status semantics, unchanged by this fix). What matters for the
+  // invariant: the effect was NEVER re-run.
+  check('the subtree effect was never re-run', rig.executed['git.push'] === 1, JSON.stringify(rig.executed));
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   14. workflow: park at the Fabric gate → grant → exactly one execution
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testWorkflowGrant() {
+  console.log('\n[14] workflow grant executes exactly once');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-retry-gov-'));
+  const rig = makeRig();
+  let calls = 0;
+  rig.execResults['git.push'] = async () => {
+    calls += 1;
+    return calls === 1
+      ? { ok: false, detail: 'timed out mid-push', effectStarted: true }
+      : { ok: true, effectStarted: true, detail: 'Pushed main to origin.', output: { exitCode: 0 } };
+  };
+  const h = workflowHarness(home, rig);
+  const wf = DEF('wf-irr-gate', [
+    N('t', 'manual'),
+    N('c', 'capability', { capabilityId: 'git.push', inputMap: 'branch: main' }),
+  ], [E('t', 'out', 'c')]);
+  h.definitions.record(wf);
+  const run = await h.runtime.startRun('wf-irr-gate', { inputs: {}, approvedCapabilities: ['git.push'] });
+  check('run parked at the gate', run.status === 'paused', run.status);
+  check('executor ran once before parking', calls === 1, String(calls));
+  const node = run.nodeRuns.find((n) => n.nodeId === 'c');
+  check('node is approval-required', node?.status === 'approval-required', node?.status);
+  check('the gate is the Fabric irreversible-retry request',
+    rig.fabric.pendingApprovals()[0]?.rule === 'irreversible-retry' && node?.approval?.requestId === rig.fabric.pendingApprovals()[0]?.id);
+  const requestId = node?.approval?.requestId;
+  h.runtime.decideApproval(requestId, true, 'user', 'go');
+  const settled = await until(() => h.runtime.getRun(run.runId)?.status === 'completed');
+  check('grant resumes and completes the run', settled, `status=${h.runtime.getRun(run.runId)?.status}`);
+  check('granted retry executed exactly one more time', calls === 2, String(calls));
+  check('grant consumed (single-use)', rig.fabric.pendingApprovals().length === 0);
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   15. workflow: deny → the executor never runs again
+   ══════════════════════════════════════════════════════════════════ */
+
+async function testWorkflowDeny() {
+  console.log('\n[15] workflow deny → the executor never runs again');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-retry-gov-'));
+  const rig = makeRig();
+  let calls = 0;
+  rig.execResults['git.push'] = async () => {
+    calls += 1;
+    return { ok: false, detail: 'timed out mid-push', effectStarted: true };
+  };
+  const h = workflowHarness(home, rig);
+  const wf = DEF('wf-irr-deny', [
+    N('t', 'manual'),
+    N('c', 'capability', { capabilityId: 'git.push', inputMap: 'branch: main' }),
+  ], [E('t', 'out', 'c')]);
+  h.definitions.record(wf);
+  const run = await h.runtime.startRun('wf-irr-deny', { inputs: {}, approvedCapabilities: ['git.push'] });
+  const requestId = run.nodeRuns.find((n) => n.nodeId === 'c')?.approval?.requestId;
+  h.runtime.decideApproval(requestId, false, 'user', 'no');
+  const settled = await until(() => h.runtime.getRun(run.runId)?.status === 'failed');
+  check('denial fails the run', settled, `status=${h.runtime.getRun(run.runId)?.status}`);
+  check('node failed deterministically', h.runtime.getRun(run.runId)?.nodeRuns.find((n) => n.nodeId === 'c')?.status === 'failed');
+  check('executor never ran again after the parked attempt', calls === 1, String(calls));
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   A–D. audit context attribution (FIX 1) — the executor's attestation
+   of whether a canonical AURA prompt reached it is recorded in the audit
+   ══════════════════════════════════════════════════════════════════ */
+
+/** An executor whose result can carry the contextInjected attestation. */
+function attributedExecutor(capabilityId, { contextInjected, fail = false }) {
+  return {
+    capabilityId,
+    supportsNode: () => true,
+    async run() {
+      const base = { contextInjected, nodeId: 'stub' };
+      return fail
+        ? { ok: false, detail: 'timed out mid-push', effectStarted: true, output: base }
+        : { ok: true, detail: 'done', output: base };
+    },
+  };
+}
+
+async function testContextAttribution() {
+  console.log('\n[A] audit context attribution');
+  const root = path.resolve(import.meta.dirname, '..');
+
+  // A. an agent that received the canonical prompt is audited as such.
+  //    agent.delegate sits behind the irreversible floor, so the call is
+  //    granted inline through the SAME host the whole suite uses (the
+  //    per-call approvedCapabilities carry the grant) — the gate is
+  //    exercised, not bypassed.
+  {
+    const rig = makeRig();
+    rig.fabric.register(attributedExecutor('agent.delegate', { contextInjected: true }));
+    const r = await rig.fabric.invoke('agent.delegate', { task: 'x' }, ctx({ approvedCapabilities: ['git.push', 'agent.delegate'] }));
+    const a = rig.fabric.audit()[0];
+    check('A. contextInjected=true when the agent received context',
+      a.contextInjected === true && r.outcome === 'succeeded', `contextInjected=${a.contextInjected}`);
+  }
+
+  // B. an agent that ran bare is audited as contextInjected=false.
+  {
+    const rig = makeRig();
+    rig.fabric.register(attributedExecutor('agent.delegate', { contextInjected: false }));
+    await rig.fabric.invoke('agent.delegate', { task: 'x' }, ctx({ approvedCapabilities: ['git.push', 'agent.delegate'] }));
+    const a = rig.fabric.audit()[0];
+    check('B. contextInjected=false when the agent ran bare', a.contextInjected === false, `contextInjected=${a.contextInjected}`);
+  }
+
+  // B2. nothing ran → undefined, never a misleading false.
+  {
+    const rig = makeRig();
+    rig.fabric.register(attributedExecutor('agent.delegate', { contextInjected: true }));
+    await rig.fabric.invoke('agent.delegate', { task: 'x' }, ctx({ approvedCapabilities: [] }));
+    const a = rig.fabric.audit()[0];
+    check('B2. an invocation that never executed reports no attribution at all',
+      a.contextInjected === undefined && a.outcome === 'awaiting-approval',
+      `contextInjected=${a.contextInjected}`);
+  }
+
+  // C. the full prompt is never persisted in the audit record.
+  {
+    const bigPrompt = 'X'.repeat(5000);
+    const rig = makeRig();
+    rig.fabric.register(attributedExecutor('agent.delegate', { contextInjected: true }));
+    await rig.fabric.invoke('agent.delegate', { task: 'x', auraPrompt: bigPrompt }, ctx());
+    const blob = JSON.stringify(rig.fabric.audit()[0]);
+    check('C. the full prompt is NOT persisted in the audit record',
+      !blob.includes(bigPrompt) && !blob.includes('XXXXXXXXXX'), `record is ${blob.length} bytes`);
+    check('C2. and the record stays small enough to read', blob.length < 2000, `${blob.length} bytes`);
+  }
+
+  // D. the rest of the audit contract is unchanged.
+  {
+    const rig = makeRig();
+    rig.fabric.register(attributedExecutor('agent.delegate', { contextInjected: true }));
+    await rig.fabric.invoke('agent.delegate', { task: 'x' }, ctx());
+    const a = rig.fabric.audit()[0];
+    const required = ['invocationId', 'capabilityId', 'actor', 'missionId', 'taskId', 'outcome', 'verified', 'durationMs', 'risk', 'decision', 'decisionRule'];
+    const missing = required.filter((k) => a[k] === undefined);
+    check('D. every existing audit field survives', missing.length === 0,
+      missing.length ? `missing: ${missing.join(', ')}` : required.join(', '));
+    check('D2. verification is still recorded', a.verified !== undefined);
+  }
+
+  // E. the rule is metadata-driven, not id-driven.
+  const src = fs.readFileSync(path.join(root, 'packages/capability-fabric/src/fabric.ts'), 'utf8');
   const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
   check('E. no capability id is special-cased in the retry rule',
     !stripped.includes("'agent.delegate'") && !stripped.includes('"agent.delegate"'));
-  check('E2. the decision reads capability metadata',
-    stripped.includes('capability.irreversible'));
+  check('E2. the decision reads capability metadata', stripped.includes('capability.irreversible'));
 }
 
-console.log(failed ? '\nFAILED' : '\nAll checks passed.');
-process.exit(failed ? 1 : 0);
+/* ══════════════════════════════════════════════════════════════════ */
+
+async function main() {
+  console.log('retry-governance-verify — the production-gate retry + attribution suite');
+  await testReversibleRetries();
+  await testIrreversibleProvenNotStartedRetries();
+  await testIrreversibleStartedNoRetry();
+  await testIrreversibleUnknownNoRetry();
+  await testCorrelationIds();
+  await testAuditDecision();
+  await testDeniedRetry();
+  await testGrantedRetry();
+  await testNoSecretsPersisted();
+  testStructuralScans();
+  await testNegativeControl();
+  await testWorkflowWithRetry();
+  await testWorkflowRetryNode();
+  await testWorkflowGrant();
+  await testWorkflowDeny();
+  await testContextAttribution();
+
+  console.log(`\nretry-governance-verify: ${passed} passed · ${failed} failed`);
+  if (failed > 0) process.exitCode = 1;
+}
+
+await main().catch((e) => {
+  console.error(e);
+  process.exitCode = 1;
+});

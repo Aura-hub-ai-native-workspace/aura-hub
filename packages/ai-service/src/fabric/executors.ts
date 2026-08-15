@@ -48,7 +48,7 @@ function cwdOf(inv: Invocation): string {
 }
 
 const ok = (detail: string, output?: unknown): ExecutorResult => ({ ok: true, detail, output });
-const no = (detail: string): ExecutorResult => ({ ok: false, detail });
+const no = (detail: string, opts: { effectStarted?: boolean; output?: unknown } = {}): ExecutorResult => ({ ok: false, detail, ...opts });
 
 /**
  * A refusal made BEFORE anything was spawned or written.
@@ -206,9 +206,19 @@ const agentDelegate: Executor = {
   },
 
   async run(inv) {
+    /* Every refusal before the agent CLI is spawned is provably
+       pre-execution: the agent never ran, so nothing it could have done
+       has happened. These report `effectStarted: false` so a retry of
+       this irreversible capability is allowed when the failure is
+       transient. */
     // Confinement first: the agent runs in the project directory the
     // server resolved from the registry, never one the caller supplied.
-    const cwd = cwdOf(inv);
+    let cwd: string;
+    try {
+      cwd = cwdOf(inv);
+    } catch (error) {
+      return no((error as Error).message, { effectStarted: false });
+    }
     const task = s(inv.input.task).trim();
     if (!task) return notStarted('No task was given for the agent to carry out.');
     const model = s(inv.input.model).trim() || undefined;
@@ -264,9 +274,14 @@ const agentDelegate: Executor = {
     try {
       res = await runAgent(target.bin, args, { cwd, timeoutMs: inv.context.timeoutMs });
     } catch (e) {
-      return no(`${target.name} could not be run: ${(e as Error).message}`);
+      // `runAgent` rejects only when the spawn itself failed (binary
+      // missing, arguments the OS refused) — the agent never started.
+      return no(`${target.name} could not be run: ${(e as Error).message}`, { effectStarted: false });
     }
 
+    // The agent ran — it may have read and edited files even if it
+    // exited non-zero or was cut short. `effectStarted: true` from here
+    // on: a missing success response is never proof nothing happened.
     // `nodeId` travels with the result so the work is attributable to the
     // agent that did it rather than to "some coding agent".
     /* The payload argument is now a multi-kilobyte prompt. Reporting it
@@ -286,11 +301,14 @@ const agentDelegate: Executor = {
       timedOut: res.timedOut ?? false,
       signal: res.signal,
     };
-    if (res.code === 0) return ok(`${target.name} completed the task. Exit code 0.`, output);
+    if (res.code === 0) return { ok: true, effectStarted: true, detail: `${target.name} completed the task. Exit code 0.`, output };
     // A run that was cut short is reported as cut short, not as a
     // generic failure — the operator needs to know it may be half-done.
+    // A timeout is named as a timeout so the Fabric's transient
+    // classifier sees it: an irreversible agent run that timed out must
+    // reach the retry-governance gate, never a silent re-run.
     const why = res.timedOut
-      ? `${target.name} ran out of time and was stopped. Its changes, if any, are partial.`
+      ? `${target.name} timed out and was stopped. Its changes, if any, are partial.`
       : res.signal
         ? `${target.name} was terminated by ${res.signal}.`
         : `${target.name} exited ${res.code}.`;
@@ -550,16 +568,46 @@ const gitCommit: Executor = {
   },
 };
 
-const gitPush: Executor = {
+/**
+ * The real git push executor, exported so governed-execution verification
+ * scripts can register the production implementation itself (never a
+ * stand-in) on a disposable fixture. `allExecutors` remains the single
+ * place a running service wires its capabilities.
+ */
+export const gitPush: Executor = {
   capabilityId: 'git.push',
   async run(inv) {
-    const cwd = cwdOf(inv);
+    // Everything before the push process is spawned is provably
+    // pre-execution: a failure here means nothing reached the remote.
+    let cwd: string;
+    try {
+      cwd = cwdOf(inv);
+    } catch (error) {
+      return no((error as Error).message, { effectStarted: false });
+    }
     const remote = s(inv.input.remote, 'origin');
-    const branch = s(inv.input.branch) || (await git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd })).out;
-    const res = await git(['push', remote, branch], { cwd });
+    let branch = s(inv.input.branch);
+    if (!branch) {
+      try {
+        branch = (await git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd })).out;
+      } catch (error) {
+        // The branch probe failed before any push could start.
+        return no((error as Error).message, { effectStarted: false });
+      }
+    }
+    // From here a push process is spawned. The push may reach the remote
+    // even when the transport fails or times out afterwards, so the
+    // honest attestation is "may have started" — a missing success
+    // response is never proof that nothing happened.
+    let res: Awaited<ReturnType<typeof git>>;
+    try {
+      res = await git(['push', remote, branch], { cwd });
+    } catch (error) {
+      return no((error as Error).message, { effectStarted: true });
+    }
     return res.code === 0
-      ? ok(`Pushed ${branch} to ${remote}.`, { remote, branch, exitCode: res.code })
-      : { ok: false, detail: res.out || 'The push failed.', output: { exitCode: res.code } };
+      ? { ok: true, effectStarted: true, detail: `Pushed ${branch} to ${remote}.`, output: { remote, branch, exitCode: res.code } }
+      : { ok: false, effectStarted: true, detail: res.out || 'The push failed.', output: { exitCode: res.code } };
   },
   async verify(_inv, result) {
     const exit = (result.output as { exitCode?: number } | undefined)?.exitCode;
@@ -683,6 +731,40 @@ function internalExecutors(manager: WorkspaceManager): Executor[] {
       },
     },
     {
+      capabilityId: 'mission.create',
+      async run(inv) {
+        const projectId = s(inv.input.projectId);
+        const text = s(inv.input.text);
+        if (!text) return no('A mission description is required.');
+        try {
+          const record = await manager.runMissionCreation(projectId, text, () => {});
+          return ok('Mission created.', record);
+        } catch (e) {
+          return no((e as Error).message || 'Mission creation failed.');
+        }
+      },
+      async verify(inv) {
+        const mission = manager.getMission(s(inv.input.projectId), s(inv.input.text).slice(0, 60));
+        return mission
+          ? pass('read-back', 'The mission is in the store.')
+          : fail('read-back', 'The mission could not be found after creation.');
+      },
+    },
+    {
+      capabilityId: 'mission.start',
+      async run(inv) {
+        const result = manager.startMissionExecution(s(inv.input.projectId), s(inv.input.missionId));
+        return result.ok ? ok('Mission execution started.', result.mission) : no(result.error ?? 'Could not start mission execution.');
+      },
+      async verify(inv) {
+        const mission = manager.getMission(s(inv.input.projectId), s(inv.input.missionId)) as
+          { execution?: { status?: string } } | null;
+        return mission?.execution?.status === 'running'
+          ? pass('read-back', 'The mission is executing.')
+          : fail('read-back', 'The mission is not running after start.');
+      },
+    },
+    {
       capabilityId: 'knowledge.graph',
       async run(inv) {
         const graph = manager.knowledgeGraph(s(inv.input.projectId));
@@ -716,6 +798,47 @@ function internalExecutors(manager: WorkspaceManager): Executor[] {
 /* ══════════════════════════════════════════════════════════════════ */
 
 /**
+ * Late-bound `workflow.run` hook.
+ *
+ * The Fabric registers executors before the WorkflowBridge exists, and
+ * the bridge cannot import the fabric (cycle). So the hook is stored at
+ * module scope here and the bridge registers itself on construction.
+ * The executor reads it at invocation time — a capability is never
+ * half-wired.
+ */
+export interface WorkflowRunHook {
+  runWorkflow(input: {
+    workflowId: string;
+    projectId?: string | null;
+    inputs?: Record<string, string>;
+  }): Promise<{ runId: string; status: 'running' | 'completed' | 'failed' | 'paused'; error?: string }>;
+}
+
+let workflowRunHook: WorkflowRunHook | null = null;
+
+export function registerWorkflowRunHook(hook: WorkflowRunHook | null): void {
+  workflowRunHook = hook;
+}
+
+const workflowRunExecutor: Executor = {
+  capabilityId: 'workflow.run',
+  async run(inv) {
+    const hook = workflowRunHook;
+    if (!hook) return no('workflow.run is not wired in this process');
+    const workflowId = s(inv.input.workflowId);
+    if (!workflowId) return no('workflowId is required');
+    const projectId = s(inv.input.projectId) || null;
+    const inputs = (inv.input.inputs ?? {}) as Record<string, string>;
+    const res = await hook.runWorkflow({ workflowId, projectId, inputs });
+    if (res.status === 'failed') return no(res.error ?? `child workflow ${workflowId} failed`);
+    // A paused child is success for the parent node: the run parked at an
+    // approval and is resumable via the approval API; correlation is
+    // carried in the output so the audit trail connects both runs.
+    return ok(`Child workflow ${res.status} (run ${res.runId}).`, { runId: res.runId, childStatus: res.status });
+  },
+};
+
+/**
  * Every executor that genuinely works today. Capabilities absent from
  * this list (GitHub, browser) stay in the manifest so missions can plan
  * around them, and report `unsupported` when called.
@@ -728,6 +851,7 @@ export function allExecutors(manager: WorkspaceManager): Executor[] {
     systemInstall,
     gitStatus, gitDiff, gitBranch, gitCommit, gitPush,
     httpRequest,
+    workflowRunExecutor,
     ...internalExecutors(manager),
   ];
 }

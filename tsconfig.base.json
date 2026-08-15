@@ -44,7 +44,9 @@
       "@aura/capability-fabric": ["packages/capability-fabric/src/index.ts"],
       "@aura/capability-fabric/*": ["packages/capability-fabric/src/*"],
       "@aura/connected-environment": ["packages/connected-environment/src/index.ts"],
-      "@aura/connected-environment/*": ["packages/connected-environment/src/*"]
+      "@aura/connected-environment/*": ["packages/connected-environment/src/*"],
+      "@aura/workflow": ["packages/workflow/src/index.ts"],
+      "@aura/workflow/*": ["packages/workflow/src/*"]
     }
   }
 }
