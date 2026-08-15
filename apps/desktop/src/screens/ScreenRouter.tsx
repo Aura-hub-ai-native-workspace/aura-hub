@@ -58,17 +58,25 @@ const lazyScreen = (el: ReactNode) => <Suspense fallback={<ScreenLoading />}>{el
 export function ScreenRouter() {
   const nav = useAppStore((s) => s.nav);
   const activeProjectId = useAppStore((s) => s.activeProjectId);
+  const inProjectView = useAppStore((s) => s.inProjectView);
   const projectTab = useAppStore((s) => s.projectTab);
+  const askAuraOpen = useAppStore((s) => s.askAuraOpen);
 
-  const inProject = Boolean(activeProjectId);
+  /* Routing asks "is the project screen showing?", which is `inProjectView`
+     — NOT "is a project active?". Those are now different questions: a
+     project stays active while the user is on Home or the Hub. The
+     `activeProjectId` guard covers the one incoherent combination (in the
+     project view with no project), which the pruning in `useActiveProject`
+     can produce for a frame. */
+  const inProject = inProjectView && Boolean(activeProjectId);
   const key = inProject ? `project:${activeProjectId}` : nav;
 
-  // The workflow editor and the Code Workspace are fixed-viewport canvases
-  // (their own internal scrolling regions); every other screen scrolls the
-  // page normally.
+  // The workflow editor, the Code Workspace and Ask AURA are fixed-viewport
+  // canvases (their own internal scrolling regions); every other screen
+  // scrolls the page normally.
   const fixedViewport =
     (!inProject && (nav === 'workflows' || nav === 'workspace' || nav === 'environment')) ||
-    (inProject && projectTab === 'code');
+    (inProject && (projectTab === 'code' || askAuraOpen));
 
   return (
     <motion.div

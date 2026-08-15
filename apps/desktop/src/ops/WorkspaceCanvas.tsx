@@ -16,7 +16,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { cn, spring } from '@aura/core';
+import { cn, spring, useAppStore } from '@aura/core';
 import { Icon, Menu } from '@aura/ui';
 import type { IconName } from '@aura/ui';
 import { PANEL_META, persistPresets, useLayoutStore, type PanelKind, type WindowState } from './layoutStore';
@@ -29,9 +29,11 @@ export function WorkspaceCanvas() {
   const windows = useLayoutStore((s) => s.windows);
   const presets = useLayoutStore((s) => s.presets);
   const setCanvasSize = useLayoutStore((s) => s.setCanvasSize);
+  const activeProjectId = useAppStore((s) => s.activeProjectId);
   const canvasRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => persistPresets(presets), [presets]);
+  // Saved layouts belong to the project they were arranged for.
+  useEffect(() => persistPresets(activeProjectId, presets), [activeProjectId, presets]);
 
   useEffect(() => {
     const el = canvasRef.current;
@@ -63,14 +65,80 @@ export function WorkspaceCanvas() {
             </div>
           </div>
         ) : (
-          <AnimatePresence>
-            {windows.map((w) => <FloatingWindow key={w.id} window={w} canvasRef={canvasRef} />)}
-          </AnimatePresence>
+          <WorkspaceWindowLayer canvasRef={canvasRef} />
         )}
-        <SuggestionNudge />
-        <WindowTray />
       </div>
     </div>
+  );
+}
+
+/**
+ * WorkspaceWindowLayer — the floating windows, their tray and the
+ * suggestion nudge, as a layer any Workspace host can mount.
+ *
+ * ── Why this is a separate export (Audit Defect #1) ──────────────────
+ * `layoutStore.openPanel()` is called from ten modules and roughly
+ * nineteen command-palette entries ("Open Mission Control", "Open
+ * Knowledge", …), each of which does `setNav('workspace')` and then opens
+ * a panel. But the only component that rendered `windows` was
+ * `WorkspaceCanvas`, and nothing imported it — the Workspace route renders
+ * `WorkspaceScreen` (the Hub). So every one of those commands mutated a
+ * store no mounted component read, and the panels — which are built, and
+ * work — were unreachable.
+ *
+ * The fix is to MOUNT the existing renderer, not to rebuild the panel
+ * system. Extracting the layer lets `WorkspaceScreen` host the same
+ * windows, the same `FloatingWindow`, and the same `layoutStore` that
+ * `WorkspaceCanvas` always used, with one implementation between them.
+ *
+ * ── Following the canonical state model ──────────────────────────────
+ * Windows are project-agnostic containers whose CONTENT resolves a
+ * project when it renders. Left alone across a project switch, a window
+ * opened against project A would still be open under project B and would
+ * repaint with B's data under A's heading. So the layer reconciles itself
+ * to `activeProjectId` — the one authority — rather than tracking a
+ * project of its own.
+ */
+export function WorkspaceWindowLayer({ canvasRef }: { canvasRef: React.RefObject<HTMLDivElement | null> }) {
+  const windows = useLayoutStore((s) => s.windows);
+  const closeAll = useLayoutStore((s) => s.closeAll);
+  const setFocused = useLayoutStore((s) => s.setFocused);
+
+  const activeProjectId = useAppStore((s) => s.activeProjectId);
+  const inProjectView = useAppStore((s) => s.inProjectView);
+  const askAuraOpen = useAppStore((s) => s.askAuraOpen);
+
+  /* The previously-reconciled project, held in a ref rather than in the
+     store on purpose: it is a render-local memo used only to notice a
+     change. Putting it in `layoutStore` would create a second, persisted
+     answer to "which project?" — exactly the duplication the Workspace
+     state model exists to prevent. */
+  const boundProject = useRef<string | null>(activeProjectId);
+
+  useEffect(() => {
+    if (boundProject.current === activeProjectId) return;
+    boundProject.current = activeProjectId;
+    // Windows belong to the project they were opened against. Switching
+    // project retires them rather than silently re-pointing them.
+    closeAll();
+    setFocused({ missionId: null, diagnosisId: null });
+  }, [activeProjectId, closeAll, setFocused]);
+
+  /* Floating panels are a WORKSPACE surface. When the project view — or
+     Ask AURA inside it — owns the screen, they must not float over it.
+     Structurally this cannot happen today (the Workspace route and the
+     project view are different screens), but the layer states the rule
+     itself so it stays true wherever it is mounted. */
+  if (inProjectView || askAuraOpen) return null;
+
+  return (
+    <>
+      <AnimatePresence>
+        {windows.map((w) => <FloatingWindow key={w.id} window={w} canvasRef={canvasRef} />)}
+      </AnimatePresence>
+      <SuggestionNudge />
+      <WindowTray />
+    </>
   );
 }
 

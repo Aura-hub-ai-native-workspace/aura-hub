@@ -401,15 +401,20 @@ export interface ExecutorResult {
    * an irreversible action unless this is `false`.
    *
    *   false     — execution is PROVEN not to have started. Nothing about
-   *               the outside world was touched.
+   *               the outside world was touched (a refused binary, a
+   *               missing node, a validation exit). Retrying repeats
+   *               nothing.
    *   true      — execution may have started / the effect may have
-   *               happened.
-   *   undefined — unknown.
+   *               happened. A retry would repeat it.
+   *   undefined — unknown, and treated as `true` for an irreversible
+   *               capability.
    *
-   * Unknown must never be interpreted as safe. A transport failure is
-   * never proof that nothing happened, so an executor that throws
-   * mid-flight is treated as `true`, and an executor that simply never
-   * received a success response must not claim `false`.
+   * Unknown must never be interpreted as safe. Undefined is the default
+   * on purpose: a transient error does not prove that nothing happened —
+   * a timeout is the case where something most likely DID happen and
+   * simply never reported back. An executor must claim `false`
+   * deliberately; silence is never taken as safety, and an executor that
+   * simply never received a success response must not claim `false`.
    */
   effectStarted?: boolean;
 }
@@ -497,6 +502,20 @@ export interface AuditRecord {
    * asked for, so a routing decision is never hidden by collapsing the two.
    */
   nodeId?: string;
+  /**
+   * Whether a canonical AURA context prompt reached the executor.
+   *
+   * Written ONLY from the executor's own report, exactly like
+   * `executedNodeId` — the Fabric cannot see the injected prompt, because
+   * the host wiring adds it to a copy of the invocation. Absent means
+   * nothing executed, which is distinct from `false` (it ran, with no
+   * context).
+   *
+   * The flag only. The prompt itself is never persisted here: an audit log
+   * is a trace of what ran, not a transcript of what was said, and a
+   * multi-kilobyte prompt in every record would make it neither.
+   */
+  contextInjected?: boolean;
   /** The node the caller asked for, when they named one. */
   requestedNodeId?: string;
   /** The node the Fabric resolved and handed to the executor. */

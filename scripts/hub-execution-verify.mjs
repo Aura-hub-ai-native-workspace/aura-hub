@@ -159,7 +159,10 @@ try {
   await page.goto(UI);
   await page.evaluate((p) => {
     localStorage.setItem('aura-onboarded', 'true');
-    localStorage.setItem('aura.workspace.projectId', p);
+    // The Hub used to keep its own `aura.workspace.projectId`. It now reads
+    // the shell's single active-project authority, so seeding that one key
+    // is what pre-selects the project here.
+    localStorage.setItem('aura.activeProjectId', p);
   }, PROJECT);
   await page.goto(UI);
   await page.waitForFunction(() => !document.querySelector('div.fixed.inset-0.z-\\[300\\]'), { timeout: 25000 });

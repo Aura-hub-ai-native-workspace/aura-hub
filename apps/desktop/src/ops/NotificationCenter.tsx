@@ -10,7 +10,7 @@
 import { Icon } from '@aura/ui';
 import type { IconName } from '@aura/ui';
 import { useAppStore } from '@aura/core';
-import { useLayoutStore } from './layoutStore';
+import { openProjectDetail } from './openDetail';
 import { NOTIFICATION_KIND_META, unreadCount, useNotificationsStore, type AuraNotification } from './notificationsStore';
 import { relTime } from '../screens/missions/missionMeta';
 import { VirtualList } from '../editor/VirtualList';
@@ -71,23 +71,33 @@ export function NotificationCenter({ embedded = false, onNavigate }: { embedded?
 
 function NotificationRow({ n, onNavigate }: { n: AuraNotification; onNavigate?: () => void }) {
   const markRead = useNotificationsStore((s) => s.markRead);
-  const openPanel = useLayoutStore((s) => s.openPanel);
-  const setFocused = useLayoutStore((s) => s.setFocused);
   const setNav = useAppStore((s) => s.setNav);
   const meta = NOTIFICATION_KIND_META[n.kind];
 
+  /* A notification can reference an entity in a project other than the
+     active one. It used to open the panel scoped to that other project
+     WITHOUT switching, so the shell showed A while the panel showed B.
+     Opening it now switches the active project first — visibly, through
+     the one authority — and does nothing at all if that is declined.
+
+     `setNav('workspace')` runs as the `onOpened` step so the user lands on
+     the Workspace only once the panel is genuinely open. */
   const open = () => {
     if (!n.read) markRead(n.id);
     if (n.missionId) {
-      setFocused({ projectId: n.projectId ?? null, missionId: n.missionId });
-      setNav('workspace');
-      openPanel('mission-detail');
-      onNavigate?.();
+      openProjectDetail({
+        projectId: n.projectId ?? null,
+        focus: { missionId: n.missionId },
+        panel: 'mission-detail',
+        onOpened: () => { setNav('workspace'); onNavigate?.(); },
+      });
     } else if (n.diagnosisId) {
-      setFocused({ projectId: n.projectId ?? null, diagnosisId: n.diagnosisId });
-      setNav('workspace');
-      openPanel('diagnostics');
-      onNavigate?.();
+      openProjectDetail({
+        projectId: n.projectId ?? null,
+        focus: { diagnosisId: n.diagnosisId },
+        panel: 'diagnostics',
+        onOpened: () => { setNav('workspace'); onNavigate?.(); },
+      });
     }
   };
 

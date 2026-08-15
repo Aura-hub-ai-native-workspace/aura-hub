@@ -51,6 +51,29 @@ function isTransient(detail: string): boolean {
   return /\b(timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|429|503|temporarily)\b/i.test(detail);
 }
 
+/**
+ * Whether this failure may be retried automatically.
+ *
+ * Being transient is necessary but not sufficient. A transient error says
+ * the *transport* failed; it says nothing about whether the *effect*
+ * happened first. For a reversible capability that distinction does not
+ * matter — repeating it costs a little time. For an irreversible one it is
+ * the whole question: a delegated coding agent that timed out may already
+ * have rewritten the repository, and running it again would compound edits
+ * the user approved exactly once.
+ *
+ * So an irreversible capability is retried only when the executor has
+ * PROVEN the effect never began. Unknown counts as started. This is
+ * decided from `capability.irreversible` — the same metadata the policy
+ * engine's irreversible floor uses — so it governs every capability,
+ * present and future, with no per-capability special cases.
+ */
+function mayRetry(capability: CapabilityDescriptor, result: ExecutorResult): boolean {
+  if (!isTransient(result.detail)) return false;
+  if (!capability.irreversible) return true;
+  return result.effectStarted === false;
+}
+
 /* ── host wiring ────────────────────────────────────────────────── */
 
 export interface FabricHost {
@@ -573,14 +596,16 @@ export class CapabilityFabric {
       if (last.ok) break;
       if (attempts >= MAX_ATTEMPTS || !isTransient(last.detail)) break;
 
-      /* Capability-aware recovery. An irreversible capability is retried
-         automatically ONLY while its effect is proven not to have
-         started. Any other state — started, or unknown — must not be
-         repeated without a fresh human decision, so the loop parks the
-         invocation on the Fabric's own approval mechanism instead. The
-         decision reads `capability.irreversible`, never a capability id,
-         so a future irreversible capability inherits it for free. */
-      if (capability.irreversible && last.effectStarted !== false) {
+      /* Capability-aware recovery — `mayRetry` is the single decision
+         predicate. Being transient is necessary but not sufficient: an
+         irreversible capability is retried automatically ONLY while its
+         effect is proven not to have started. Any other state — started,
+         or unknown — must not be repeated without a fresh human decision,
+         so the loop parks the invocation on the Fabric's own approval
+         mechanism instead. The decision reads `capability.irreversible`,
+         never a capability id, so a future irreversible capability
+         inherits it for free. */
+      if (!mayRetry(capability, last)) {
         const authorized = await this.authorizeIrreversibleRetry(invocation, capability, input);
         if (!authorized.granted) {
           withheld = {
@@ -718,7 +743,7 @@ export class CapabilityFabric {
       + 'so an automatic retry was withheld — retrying could repeat or compound the action. '
       + 'A human grant is therefore required before another execution.';
     const request: ApprovalRequest = open?.state === 'pending' ? open : {
-      id: `apr-${invocation.id}`,
+      id: `apr-retry-${invocation.id}`,
       state: 'pending',
       requestedAt: new Date().toISOString(),
       summary: reason,
@@ -792,6 +817,23 @@ export class CapabilityFabric {
   private nodeIdOfOutput(output: unknown): string | undefined {
     const id = (output as { nodeId?: unknown } | undefined)?.nodeId;
     return typeof id === 'string' && id ? id : undefined;
+  }
+
+  /**
+   * Whether the executor reported receiving a canonical AURA context.
+   *
+   * Read from the executor's own output for the same reason
+   * `executedNodeId` is: the Fabric never sees the injected prompt. The
+   * host wiring hands the executor a COPY of the invocation carrying it,
+   * so only the executor can attest to what it actually received.
+   *
+   * `undefined` when nothing ran — an invocation parked at approval has no
+   * execution to attribute, and reporting `false` there would read as "it
+   * ran without context".
+   */
+  private contextInjectedOf(output: unknown, attempts: number): boolean | undefined {
+    if (attempts === 0) return undefined;
+    return (output as { contextInjected?: unknown } | undefined)?.contextInjected === true;
   }
 
   /**
@@ -882,6 +924,7 @@ export class CapabilityFabric {
       nodeId: this.executedNodeId(invocation, capability, attempts, output),
       requestedNodeId: invocation.context.nodeId,
       executedNodeId: this.executedNodeId(invocation, capability, attempts, output),
+      contextInjected: this.contextInjectedOf(output, attempts),
       ...(retry ? { retry } : {}),
     });
 
