@@ -49,7 +49,19 @@ export type UpdateErrorCode =
   /** Installed, but the relaunch did not happen. */
   | 'RESTART_FAILED'
   /** The user (or the app) stopped it. Not a fault. */
-  | 'UPDATE_CANCELLED';
+  | 'UPDATE_CANCELLED'
+  /**
+   * This installation cannot install its own updates.
+   *
+   * Distinct from INCOMPATIBLE_PLATFORM: the platform is supported and a
+   * valid artifact exists — this particular *installation* just is not
+   * self-updating. A .deb install is the real case: Tauri's Linux updater
+   * replaces an AppImage in place and has nothing to replace here.
+   *
+   * The user's next step is a download, not a retry, so it must not be
+   * folded into INSTALL_FAILED.
+   */
+  | 'UNSUPPORTED_INSTALL';
 
 export interface UpdateError {
   code: UpdateErrorCode;
@@ -132,6 +144,39 @@ export const SUPPORTED_TARGETS: readonly UpdateTarget[] = [
   'darwin-aarch64',
 ] as const;
 
+/* ── Version sentinel ────────────────────────────────────────────── */
+
+/**
+ * The version reported before the running binary has been asked.
+ *
+ * Exported so the service and any renderer agree on what "not yet known"
+ * looks like, instead of each comparing against its own literal. A UI that
+ * hardcoded a version string would be one release away from lying.
+ */
+export const UNRESOLVED_VERSION = '0.0.0';
+
+/* ── Installation shape ──────────────────────────────────────────── */
+
+/**
+ * How this copy of AURA Hub was installed, which decides whether it can
+ * update itself in place.
+ *
+ *   self-updating — Tauri's updater can replace this installation
+ *                   (AppImage on Linux; the normal case on Windows/macOS)
+ *   managed       — installed by a system package manager (.deb). The
+ *                   package manager owns the files; the updater must not
+ *                   fight it, and the honest answer is "get the new one".
+ *   unknown       — could not be determined. Treated as NOT self-updating,
+ *                   because guessing "yes" risks a failed install where
+ *                   guessing "no" only costs a manual download.
+ */
+export type InstallKind = 'self-updating' | 'managed' | 'unknown';
+
+/** Only a self-updating install may run the download/install path. */
+export function canSelfUpdate(kind: InstallKind): boolean {
+  return kind === 'self-updating';
+}
+
 /* ── Diagnostics ─────────────────────────────────────────────────── */
 
 /**
@@ -153,4 +198,6 @@ export interface UpdateDiagnostics {
   lastSuccessfulCheckAt: string | null;
   errorCode: UpdateErrorCode | null;
   errorMessage: string | null;
+  /** How this copy was installed — explains an UNSUPPORTED_INSTALL result. */
+  installKind: InstallKind;
 }

@@ -24,8 +24,9 @@ import { check as tauriCheck, type Update } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
 import { platform as osPlatform, arch as osArch } from '@tauri-apps/plugin-os';
+import { invoke } from '@tauri-apps/api/core';
 import type { AdapterUpdate, UpdaterAdapter } from './updateService';
-import type { DownloadProgress } from './types';
+import type { DownloadProgress, InstallKind } from './types';
 
 /** Host only — a diagnostics label, never a fetchable URL. */
 const SOURCE_HOST = 'github.com';
@@ -92,5 +93,22 @@ export function createTauriUpdaterAdapter(): UpdaterAdapter {
     relaunch: () => relaunch(),
 
     sourceHost: () => SOURCE_HOST,
+
+    /**
+     * Ask the shell what kind of installation this is.
+     *
+     * Anything other than the shell's own confident 'self-updating' is
+     * treated as not self-updating — an unreachable or unexpected answer
+     * must not be read as permission to install.
+     */
+    async installKind(): Promise<InstallKind> {
+      try {
+        const kind = await invoke<string>('update_install_kind');
+        if (kind === 'self-updating' || kind === 'managed') return kind;
+        return 'unknown';
+      } catch {
+        return 'unknown';
+      }
+    },
   };
 }

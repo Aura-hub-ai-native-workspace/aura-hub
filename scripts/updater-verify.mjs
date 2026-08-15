@@ -197,6 +197,10 @@ function stubAdapter(over = {}) {
     check: async () => null,
     relaunch: async () => {},
     sourceHost: () => 'github.com',
+    // What a real desktop adapter reports: an AppImage on Linux, and every
+    // Windows/macOS install, can replace itself. Overridable per case —
+    // the managed (.deb) refusal is exercised at the end of this file.
+    installKind: async () => 'self-updating',
     ...over,
   };
 }
@@ -341,6 +345,41 @@ const offered = (version, extra = {}) => ({
   const blob = JSON.stringify(d);
   check('D2. diagnostics contain no signature or key material',
     !/signature|minisign|BEGIN|privkey|secret/i.test(blob));
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Managed installations · a .deb cannot replace itself
+   ══════════════════════════════════════════════════════════════════ */
+
+{
+  // The updater replaces an AppImage in place. A package-manager install
+  // has nothing for it to replace, so it must refuse BEFORE the network
+  // rather than fail at the last step with a broken half-install.
+  const svc = new S.UpdateService(stubAdapter({
+    installKind: async () => 'managed',
+    check: async () => { throw new Error('the update server must not be contacted'); },
+  }));
+  const st = await svc.check();
+  check('P1. a managed (.deb) install refuses before contacting the server',
+    st.kind === 'failed' && st.error.code === 'UNSUPPORTED_INSTALL', `${st.kind}/${st.error?.code ?? '-'}`);
+  check('P2. …and diagnostics say which kind of install it is',
+    svc.diagnostics().installKind === 'managed', svc.diagnostics().installKind);
+}
+
+{
+  // Fail closed: an adapter that cannot say is never assumed updatable.
+  const svc = new S.UpdateService(stubAdapter({ installKind: async () => 'unknown' }));
+  const st = await svc.check();
+  check('P3. an undetermined install kind is refused, not assumed',
+    st.kind === 'failed' && st.error.code === 'UNSUPPORTED_INSTALL', `${st.kind}/${st.error?.code ?? '-'}`);
+}
+
+{
+  // The gate is re-checked on the install path, not only on check().
+  const svc = new S.UpdateService(stubAdapter({ installKind: undefined }));
+  const st = await svc.check();
+  check('P4. an adapter with no install probe at all is refused',
+    st.kind === 'failed' && st.error.code === 'UNSUPPORTED_INSTALL', `${st.kind}/${st.error?.code ?? '-'}`);
 }
 
 /* ══════════════════════════════════════════════════════════════════

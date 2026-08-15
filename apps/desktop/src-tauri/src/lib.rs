@@ -29,6 +29,34 @@ fn environment_ping() -> String {
     "aura://ready".to_string()
 }
 
+/// How this copy of AURA Hub was installed, which decides whether the
+/// updater can replace it in place.
+///
+/// Read-only and argument-free: it inspects the process's own environment
+/// and nothing else. It executes nothing, downloads nothing, and cannot be
+/// pointed at anything by a caller — the renderer may ask *what am I*, and
+/// that is the whole of it.
+///
+/// Linux is the only platform where this is ambiguous. Tauri's Linux
+/// updater replaces the running AppImage, which sets `APPIMAGE` for the
+/// process it launches; a `.deb` install has no such variable and is owned
+/// by the system package manager, which the updater must not fight.
+/// Windows and macOS installs are always self-updating.
+#[tauri::command]
+fn update_install_kind() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        match std::env::var("APPIMAGE") {
+            Ok(v) if !v.is_empty() => "self-updating".to_string(),
+            _ => "managed".to_string(),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "self-updating".to_string()
+    }
+}
+
 /// Directories the Code Workspace never lists — generated/vendored
 /// trees that would otherwise blow up tree size and response time on
 /// real-world projects.
@@ -291,6 +319,7 @@ pub fn run() {
             code_read_file,
             code_write_file,
             code_create_file,
+            update_install_kind,
         ])
         .setup(move |app| {
             let script = resolve_service_script(app);

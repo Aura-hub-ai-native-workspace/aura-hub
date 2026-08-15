@@ -20,6 +20,7 @@
 import { evaluateRuntimeCandidate, resolveTarget } from './applicability';
 import type {
   DownloadProgress,
+  InstallKind,
   UpdateCandidate,
   UpdateDiagnostics,
   UpdateError,
@@ -27,6 +28,7 @@ import type {
   UpdateState,
   UpdateTarget,
 } from './types';
+import { canSelfUpdate, UNRESOLVED_VERSION } from './types';
 
 /* ── Adapter contract ────────────────────────────────────────────── */
 
@@ -63,6 +65,14 @@ export interface UpdaterAdapter {
   relaunch(): Promise<void>;
   /** Host of the configured endpoint, for diagnostics. Never a full URL. */
   sourceHost(): string | null;
+  /**
+   * Whether this installation can replace itself.
+   *
+   * Optional so an adapter written before this existed keeps working; a
+   * missing implementation reads as 'unknown', which is refused rather
+   * than assumed updatable.
+   */
+  installKind?(): Promise<InstallKind>;
 }
 
 /* ── Errors ──────────────────────────────────────────────────────── */
@@ -79,6 +89,7 @@ const MESSAGES: Record<UpdateErrorCode, string> = {
   INSTALL_FAILED: 'The update could not be installed.',
   RESTART_FAILED: 'The update installed, but AURA Hub could not restart itself.',
   UPDATE_CANCELLED: 'The update was cancelled.',
+  UNSUPPORTED_INSTALL: 'Automatic updates are not available for this installation.',
 };
 
 function err(code: UpdateErrorCode, detail?: string): UpdateError {
@@ -127,7 +138,8 @@ export class UpdateService {
   private candidate: UpdateCandidate | null = null;
   private progress: DownloadProgress | null = null;
   private target: UpdateTarget | null = null;
-  private version = '0.0.0';
+  private version = UNRESOLVED_VERSION;
+  private install: InstallKind = 'unknown';
 
   private lastCheckAt: string | null = null;
   private lastSuccessfulCheckAt: string | null = null;
@@ -183,6 +195,18 @@ export class UpdateService {
       const { os, arch } = await this.adapter.platform();
       this.target = resolveTarget(os, arch);
       this.lastCheckAt = new Date().toISOString();
+
+      /* Can this installation even replace itself?
+         Asked BEFORE the network, so a .deb user gets the honest answer
+         ("download the new one") instead of a download that would fail at
+         the last step. An adapter that cannot say reads as 'unknown' and
+         is refused — guessing "yes" risks a broken install, guessing "no"
+         costs only a manual download. */
+      this.install = this.adapter.installKind ? await this.adapter.installKind() : 'unknown';
+      if (!canSelfUpdate(this.install)) {
+        this.fail(err('UNSUPPORTED_INSTALL', `install kind: ${this.install}`));
+        return this.state;
+      }
 
       let pending: AdapterUpdate | null;
       try {
@@ -248,6 +272,12 @@ export class UpdateService {
     if (this.busy) return this.state;
     if (!this.pending || !this.candidate) {
       this.fail(err('INSTALL_FAILED', 'No update has been offered. Check for updates first.'));
+      return this.state;
+    }
+    // Re-checked here and not only in `check()`: this method is public, and
+    // a gate that only runs on the happy path is not a gate.
+    if (!canSelfUpdate(this.install)) {
+      this.fail(err('UNSUPPORTED_INSTALL', `install kind: ${this.install}`));
       return this.state;
     }
 
@@ -350,6 +380,7 @@ export class UpdateService {
       lastSuccessfulCheckAt: this.lastSuccessfulCheckAt,
       errorCode: this.lastError?.code ?? null,
       errorMessage: this.lastError?.message ?? null,
+      installKind: this.install,
     };
   }
 }

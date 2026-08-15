@@ -13,6 +13,7 @@ import { useNotificationsFeed } from './ops/useNotificationsFeed';
 import { restoreSession, saveSession } from './ops/session';
 import { startMemoryRecorder } from './ops/memoryRecorder';
 import { startAgentEngine } from './ops/agentEngine';
+import { useUpdateNotifications } from './updater/useUpdateNotifications';
 
 /**
  * App root. Owns global keyboard shortcuts, the command palette,
@@ -39,6 +40,11 @@ export function App() {
   // The notification feed: polls real engine state, derives persisted,
   // deduplicated notifications (Part 2).
   useNotificationsFeed();
+
+  // Application updates: one background check per session, raised as a
+  // notification only when a real, applicable update exists. Startup does
+  // not wait for it — see useUpdater.startBackgroundUpdateCheck.
+  useUpdateNotifications();
 
   // Engineering Memory recorder: ingests real events (editor saves, AI
   // actions, missions, diagnoses, conversations, memory items, providers)
