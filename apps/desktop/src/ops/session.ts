@@ -49,7 +49,13 @@ export function hydrateSession(): SessionSnapshot | null {
     if (!parsed || typeof parsed !== 'object') return null;
     return {
       projectId: typeof parsed.projectId === 'string' ? parsed.projectId : null,
-      focused: parsed.focused ?? { projectId: null, missionId: null, diagnosisId: null },
+      // Older snapshots carried a `projectId` here. It is dropped on read:
+      // restoring it would resurrect the second project pointer this focus
+      // model exists to remove.
+      focused: {
+        missionId: typeof parsed.focused?.missionId === 'string' ? parsed.focused.missionId : null,
+        diagnosisId: typeof parsed.focused?.diagnosisId === 'string' ? parsed.focused.diagnosisId : null,
+      },
       editor: {
         openOrder: Array.isArray(parsed.editor?.openOrder) ? parsed.editor.openOrder : [],
         activePath: typeof parsed.editor?.activePath === 'string' ? parsed.editor.activePath : null,
@@ -74,7 +80,9 @@ export async function restoreSession(): Promise<void> {
   // `root` is deliberately never auto-populated here — a workspace starts
   // empty on every launch. Only named presets are restored (as data the
   // user can explicitly load, never as windows opened on their behalf).
-  const presets = hydratePresets();
+  // Scoped to the project the session belongs to. A single global key meant
+  // layouts arranged for project A were restored under project B.
+  const presets = hydratePresets(snap.projectId);
   if (Object.keys(presets).length) useLayoutStore.setState({ presets });
   layout.setFocused(snap.focused);
 

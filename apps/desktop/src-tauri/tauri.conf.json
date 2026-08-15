@@ -7,10 +7,10 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": {
-      "script": "npm run dev",
+      "script": "npm run desktop:prepare",
       "wait": false
     },
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run desktop:prepare:build"
   },
   "app": {
     "windows": [
@@ -28,7 +28,8 @@
         "transparent": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#ffffff",
+        "visible": false
       }
     ],
     "security": {
@@ -37,7 +38,16 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["appimage", "deb"],
+    "resources": ["resources/**/*"],
+    "linux": {
+      "deb": {
+        "depends": ["nodejs"]
+      }
+    },
+    "category": "DeveloperTool",
+    "shortDescription": "AURA Hub — an AI Operating Environment",
+    "longDescription": "AURA Hub is an AI-native operating environment: missions, a governed Capability Fabric, and a Connected Environment of real local tools. External tools stay external — AURA detects what is installed and routes every action through its policy, approval and audit path.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

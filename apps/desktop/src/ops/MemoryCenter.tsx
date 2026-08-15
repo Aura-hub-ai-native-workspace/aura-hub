@@ -25,7 +25,7 @@ import { useAppStore } from '@aura/core';
 import { useEditorStore } from '../editor/editorStore';
 import { VirtualList } from '../editor/VirtualList';
 import { relTime } from '../screens/missions/missionMeta';
-import { useLayoutStore } from './layoutStore';
+import { openProjectDetail } from './openDetail';
 import { MemoryGraphView } from './MemoryGraph';
 import {
   applyFilter,
@@ -395,16 +395,15 @@ function MemoryDetail({
 }) {
   const meta = MEMORY_CATEGORY_META[memory.category];
   const imp = MEMORY_IMPORTANCE_META[memory.importance];
-  const openPanel = useLayoutStore((s) => s.openPanel);
-  const setFocused = useLayoutStore((s) => s.setFocused);
 
+  /* A memory record can belong to another project. Opening its mission or
+     diagnosis switches the active project first rather than scoping the
+     panel privately — see ops/openDetail.ts. */
   const openMission = () => {
-    setFocused({ projectId: memory.projectId, missionId: memory.missionId });
-    openPanel('mission-detail');
+    openProjectDetail({ projectId: memory.projectId, focus: { missionId: memory.missionId }, panel: 'mission-detail' });
   };
   const openDiagnosis = () => {
-    setFocused({ projectId: memory.projectId, diagnosisId: memory.diagnosisId });
-    openPanel('diagnostics');
+    openProjectDetail({ projectId: memory.projectId, focus: { diagnosisId: memory.diagnosisId }, panel: 'diagnostics' });
   };
   const openFile = (path: string) => {
     const editor = useEditorStore.getState();

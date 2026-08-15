@@ -47,6 +47,73 @@ export interface KnowledgeGraph { nodes: KGNode[]; edges: KGEdge[]; counts: Reco
 
 /* ── repository intelligence (Group A engines) ─────────────────────── */
 export interface VerificationSection { name: string; score: number; status: 'pass' | 'warn' | 'fail'; findings: string[] }
+/* ── Context Fabric ────────────────────────────────────────────────
+   Mirrors `packages/ai-service/src/context/types.ts`.
+
+   Restated here rather than imported because the renderer talks to the
+   service over HTTP and deliberately does not depend on the service
+   package — the same convention every other type in this file follows.
+   The service remains the authority for the SHAPE; this is the wire
+   contract as the UI reads it. */
+
+export type FreshnessState = 'fresh' | 'stale' | 'unknown';
+
+export interface ContextView {
+  contextVersion: number;
+  generatedAt: string;
+  freshness: {
+    state: FreshnessState;
+    generatedAt: string | null;
+    reason: string | null;
+    changedFiles: number;
+    addedFiles: number;
+    removedFiles: number;
+    truncated: boolean;
+  };
+  project: { id: string; name: string; root: string; type: string; language: string; mounted: boolean };
+  repository: {
+    purpose: string | null;
+    repositoryType: string | null;
+    architectureStyle: string | null;
+    primaryLanguage: string | null;
+    secondaryLanguages: string[];
+    frameworks: string[];
+    buildSystem: string | null;
+    packageManager: string | null;
+    mainModules: string[];
+    entryPoints: string[];
+    fileCount: number | null;
+    modules: { name: string; path: string; description: string }[];
+    intelligence: 'ready' | 'partial' | 'absent';
+  };
+  git: {
+    available: boolean;
+    branch: string | null;
+    dirty: boolean | null;
+    changedFiles: number | null;
+    recentCommits: { hash: string; subject: string; date: string }[];
+    reason: string | null;
+  };
+  environment: {
+    os: string; platform: string; arch: string; nodeVersion: string; shell: string | null;
+    presentNodes: { id: string; name: string; version: string | null }[];
+    presentCount: number; catalogueCount: number; scannedAt: string | null;
+  };
+  tools: { available: string[]; missing: string[] };
+  agents: {
+    codingAgents: { id: string; name: string; version: string | null; drivable: boolean }[];
+    provider: { id: string | null; connected: boolean; model: string | null };
+  };
+  mission: {
+    active: { id: string; text: string; status: string; createdAt: string } | null;
+    total: number;
+    pendingApprovals: number;
+  };
+  activity: { events: { at: string; kind: string; summary: string }[] };
+  constraints: { id: string; text: string }[];
+  buildMs: number;
+}
+
 export interface ProjectIntelligence {
   verification: { overallScore: number; summary: string; sections: VerificationSection[]; recommendations: string[] };
   architecture: {
@@ -244,6 +311,12 @@ export const aiClient = {
   clearKey: () => jsend('DELETE', '/settings/key'),
   inspect: (text: string) => jpost<InspectResult>('/inspect', { text }),
   reindex: () => jpost<IndexStatus>('/reindex', {}),
+  /**
+   * Re-index a NAMED project. Refuses (409) when that project is not the
+   * one AURA has open, rather than re-indexing whichever is — the generic
+   * `reindex()` above cannot express which project it means.
+   */
+  reindexProject: (id: string) => jpost<IndexStatus | { error: string; requested: string; mounted: string | null }>(`/projects/${id}/reindex`, {}),
   codeAction: (req: CodeActionRequest) => jpost<CodeActionResponse>('/code/action', req),
 
   /* BYOAK providers */
@@ -254,7 +327,12 @@ export const aiClient = {
   discoverModels: (providerId: string, apiKey: string) => jpost<{ models: { id: string; name: string }[] }>(`/providers/models`, { providerId, apiKey }),
 
   /* projects */
-  listProjects: () => jget<{ projects: ProjectRecord[]; current: ProjectRecord | null }>('/projects'),
+  listProjects: () => jget<{
+    projects: ProjectRecord[];
+    current: ProjectRecord | null;
+    /** Absent on older services; treated as readable when missing. */
+    registry?: { readable: boolean; error: string | null };
+  }>('/projects'),
   addProject: (path: string, name?: string) => jpost<{ project: ProjectRecord; profile: ProjectProfile } | { error: string }>('/projects', { path, name }),
   openProject: (id: string) => jpost<{ project: ProjectRecord; profile: ProjectProfile; status: IndexStatus } | { error: string }>(`/projects/${id}/open`, {}),
   renameProject: (id: string, name: string) => jsend<ProjectRecord>('PATCH', `/projects/${id}`, { name }),
@@ -267,6 +345,16 @@ export const aiClient = {
   graph: () => jget<GraphView>('/graph'),
   knowledgeGraph: (id: string) => jget<KnowledgeGraph>(`/projects/${id}/graph`),
   projectIntelligence: (id: string) => jget<ProjectIntelligence>(`/projects/${id}/intelligence`),
+  /**
+   * The Context Fabric read model for one project.
+   *
+   * Takes the project id explicitly rather than reading "the current
+   * project" — the caller passes the canonical `activeProjectId`, so this
+   * client can never become a competing answer to which project is active.
+   * `prompt: true` additionally returns the rendered agent contract.
+   */
+  projectContext: (id: string, opts?: { prompt?: boolean }) =>
+    jget<{ view: ContextView; contract?: string }>(`/projects/${id}/context${opts?.prompt ? '?prompt=1' : ''}`),
   workspaceIntelligence: () => jget<WorkspaceIntelligence>('/workspace/intelligence'),
   retrieve: (text: string) => jpost<RetrieveResult>('/retrieve', { text }),
 

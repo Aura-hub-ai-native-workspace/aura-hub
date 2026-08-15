@@ -16,6 +16,7 @@ export default defineConfig(() => ({
     alias: {
       '@aura/core': r('../../packages/core/src/index.ts'),
       '@aura/ui': r('../../packages/ui/src/index.ts'),
+      '@aura/connected-environment': r('../../packages/connected-environment/src/index.ts'),
       '@': r('./src'),
     },
   },

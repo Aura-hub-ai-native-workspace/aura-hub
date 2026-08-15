@@ -1,0 +1,17 @@
+{
+  "name": "@aura/connected-environment",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AURA Connected Environment — the platform's execution layer. Every external system (CLI, cloud, design, productivity, AI, browser) is modelled as a live execution node with identity, capabilities, health, permissions and telemetry. Prompt Intelligence enriches a request into an engineering brief, the Mission Planner turns it into a dependency graph of tasks, the Orchestrator schedules them in parallel waves onto specialist agents, and the Environment Manager binds each task to a node that actually provides the required capability. The package is pure domain logic — every side effect (process execution, HTTP, auth) is injected by the host through the Transport interface.",
+  "license": "Apache-2.0",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

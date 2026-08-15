@@ -12,7 +12,6 @@
  * an allow-listed binary with plain args (no shell interpretation).
  */
 
-import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { KeywordIntentClassifier, TemplatePromptEnhancer, createRequest } from '@aura/intelligence';
@@ -22,6 +21,7 @@ import { ProjectConversations } from '../conversations';
 import { loadProfile } from '../profile';
 import { homePath } from '../persist';
 import type { FieldSpec, NodeCategory, NodeIO, NodeSpecInfo, WfNodeType } from './types';
+import { git as sharedGit, safeShell as sharedSafeShell, type ProcessOutput } from '../exec/process';
 
 export interface RunCtx {
   projectId: string;
@@ -68,31 +68,18 @@ function insideProject(root: string, rel: string): string {
   return abs;
 }
 
-function git(ctx: RunCtx, args: string[]): Promise<{ out: string; code: number }> {
-  return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd: ctx.projectPath, timeout: 20_000, maxBuffer: 4 * 1024 * 1024, signal: ctx.signal }, (err, stdout, stderr) => {
-      if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new Error('git is not installed'));
-      const code = (err as { code?: number } | null)?.code;
-      resolve({ out: (stdout + (stderr ? `\n${stderr}` : '')).trim(), code: typeof code === 'number' ? code : 0 });
-    });
-  });
+/*
+ * The spawn primitives moved to `../exec/process` so the Workflow Engine
+ * and the Capability Fabric share ONE hardened path to a child process.
+ * Behaviour is identical; these thin wrappers keep the call sites in this
+ * file unchanged by adapting `RunCtx` to the shared options shape.
+ */
+function git(ctx: RunCtx, args: string[]): Promise<ProcessOutput> {
+  return sharedGit(args, { cwd: ctx.projectPath, signal: ctx.signal });
 }
 
-/** Allow-listed, argument-only shell execution. No shell interpretation. */
-const SAFE_BINARIES = new Set(['git', 'ls', 'pwd', 'node', 'npm', 'npx', 'wc', 'du', 'grep', 'find', 'cargo', 'python3', 'go']);
 function safeShell(ctx: RunCtx, command: string): Promise<string> {
-  const trimmed = command.trim();
-  if (!trimmed) throw new Error('no command configured');
-  if (/[;&|<>`$\\]/.test(trimmed)) throw new Error('shell operators are not allowed in the safe shell node');
-  const parts = trimmed.split(/\s+/);
-  const bin = parts[0];
-  if (!SAFE_BINARIES.has(bin)) throw new Error(`'${bin}' is not in the safe command allow-list (${[...SAFE_BINARIES].join(', ')})`);
-  return new Promise((resolve, reject) => {
-    execFile(bin, parts.slice(1), { cwd: ctx.projectPath, timeout: 30_000, maxBuffer: 4 * 1024 * 1024, signal: ctx.signal }, (err, stdout, stderr) => {
-      if (err && !stdout && !stderr) return reject(new Error((err as Error).message));
-      resolve((stdout + (stderr ? `\n${stderr}` : '')).trim());
-    });
-  });
+  return sharedSafeShell(command, { cwd: ctx.projectPath, signal: ctx.signal });
 }
 
 const MAX_HTTP_RESPONSE = 512 * 1024; // enough for a real API response, not enough to hang a run on a large download

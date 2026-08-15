@@ -19,6 +19,27 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Only for SIGTERM on shutdown. `Child::kill` sends SIGKILL, which would
+# deny the service the graceful close its SIGTERM handler performs.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Job Objects, for the one thing Unix signals do that Windows has no
+# equivalent of: killing the service when the shell dies unexpectedly.
+# Pinned to the version Tauri already pulls in, so this adds no second
+# copy of windows-sys to the build.
+[target.'cfg(windows)'.dependencies]
+# `Win32_Security` is not optional here even though no security descriptor is
+# used: windows-sys only emits a function when every type in its signature is
+# feature-enabled, and `CreateJobObjectW` takes a `*const SECURITY_ATTRIBUTES`.
+# Without it the import silently does not exist.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

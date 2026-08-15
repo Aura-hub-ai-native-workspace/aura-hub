@@ -40,7 +40,11 @@
       "@aura/automation": ["packages/automation/src/index.ts"],
       "@aura/automation/*": ["packages/automation/src/*"],
       "@aura/predictive": ["packages/predictive/src/index.ts"],
-      "@aura/predictive/*": ["packages/predictive/src/*"]
+      "@aura/predictive/*": ["packages/predictive/src/*"],
+      "@aura/capability-fabric": ["packages/capability-fabric/src/index.ts"],
+      "@aura/capability-fabric/*": ["packages/capability-fabric/src/*"],
+      "@aura/connected-environment": ["packages/connected-environment/src/index.ts"],
+      "@aura/connected-environment/*": ["packages/connected-environment/src/*"]
     }
   }
 }
