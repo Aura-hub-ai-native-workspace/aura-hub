@@ -106,9 +106,9 @@ function NavContext() {
         <div className="space-y-2">
           <PropertyRow label="Connection" value={
             <span className={cn('inline-flex items-center gap-1.5 text-[11.5px] font-medium',
-              reachable === false ? 'text-critical' : health?.health.ok ? 'text-positive' : 'text-text-subtle')}>
+              reachable === false ? 'text-critical' : 'text-positive')}>
               <span className="h-1.5 w-1.5 rounded-full bg-current" />
-              {reachable === false ? 'Offline' : health?.health.ok ? `${health.health.latencyMs}ms` : 'Not connected'}
+              {reachable === false ? 'Offline' : health?.health.ok ? `${health.health.latencyMs}ms` : 'Connected'}
             </span>
           } />
           <PropertyRow label="Provider" value={!provStatus || provStatus.type === 'none' ? 'Not connected' : provStatus.label} />
