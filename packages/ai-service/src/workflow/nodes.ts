@@ -82,10 +82,14 @@ function safeShell(ctx: RunCtx, command: string): Promise<string> {
   return sharedSafeShell(command, { cwd: ctx.projectPath, signal: ctx.signal });
 }
 
+export async function runGit(projectPath: string, args: string[], opts?: { signal?: AbortSignal }): Promise<ProcessOutput> {
+  return sharedGit(args, { cwd: projectPath, signal: opts?.signal });
+}
+
 const MAX_HTTP_RESPONSE = 512 * 1024; // enough for a real API response, not enough to hang a run on a large download
 
-/** Real outbound fetch, bounded by timeout and response size. AURA is a single-user local desktop app (no multi-tenant boundary), so the proportionate safety measure here is the same bounded-timeout/maxBuffer pattern already used for git/shell above — not an IP allow/deny list, which would be solving a threat model that doesn't apply. */
-async function sandboxedFetch(url: string, opts: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<{ status: number; text: string }> {
+/** Real outbound fetch, bounded by timeout and response size. AURA is a single-user local desktop app (no multi-tenant boundary), so the proportionate safety measure here is the same bounded-time[...]
+async function sandboxedFetch(url: string, opts: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<{ status: number; text: st[...]
   if (!/^https?:\/\//i.test(url)) throw new Error('only http(s) URLs are allowed');
   const timeout = Math.max(1000, Math.min(30_000, opts.timeoutMs ?? 10_000));
   const ac = new AbortController();
@@ -209,7 +213,7 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
     return { text, data: items, summary: `${items.length} recalled` };
   }),
 
-  'engineering-memory': spec('engineering-memory', 'Engineering Memory', 'source', "Queries this project's Engineering Memory platform (missions, diagnoses, decisions, patches — richer than Project Memory).", {
+  'engineering-memory': spec('engineering-memory', 'Engineering Memory', 'source', "Queries this project's Engineering Memory platform (missions, diagnoses, decisions, patches — richer than Pro[...]
     inputs: 0,
     fields: [field('limit', 'Items', 'number', { default: 10 })],
   }, async (ctx, _input, config) => {
@@ -254,7 +258,7 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
     return { text, summary: `${a.hits.length} entities · ${chains.length} chains` };
   }),
 
-  'research-engine': spec('research-engine', 'Research Engine', 'intelligence', 'Future module — disabled until the Research Engine is implemented.', { disabled: true, inputs: 'many' }, async () => {
+  'research-engine': spec('research-engine', 'Research Engine', 'intelligence', 'Future module — disabled until the Research Engine is implemented.', { disabled: true, inputs: 'many' }, async ([...]
     throw new Error('the Research Engine is not implemented yet');
   }),
 
@@ -298,7 +302,7 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
     fields: [field('instruction', 'What to produce', 'textarea', { placeholder: 'An architecture review of this project' })],
   }, async (ctx, input, config) => {
     const ask = interpolate(s(config.instruction), ctx, input) || 'A clear, well-structured document about the material below.';
-    const text = await generate(ctx, `You produce clean Markdown documents (headings, lists, code fences). Project: "${ctx.projectName}". Use ONLY the provided material.`, `${ask}\n\nMaterial:\n${input.text}`);
+    const text = await generate(ctx, `You produce clean Markdown documents (headings, lists, code fences). Project: "${ctx.projectName}". Use ONLY the provided material.`, `${ask}\n\nMaterial:\n$[...]
     return { text, summary: clip(text.replace(/[#*`\n]+/g, ' ').trim(), 46) };
   }),
 
@@ -308,7 +312,7 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
   }, async (ctx, input, config) => {
     const lang = s(config.language, 'the project language');
     const ask = interpolate(s(config.instruction), ctx, input) || 'Generate the most useful code for the material below.';
-    const text = await generate(ctx, `You write production-quality ${lang} code. Reply with code in fenced blocks plus brief notes. Project: "${ctx.projectName}".`, `${ask}\n\nMaterial:\n${input.text}`);
+    const text = await generate(ctx, `You write production-quality ${lang} code. Reply with code in fenced blocks plus brief notes. Project: "${ctx.projectName}".`, `${ask}\n\nMaterial:\n${input.[...]
     return { text, summary: clip(text.replace(/\s+/g, ' ').trim(), 46) };
   }),
 
@@ -516,7 +520,7 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
     if (!url) throw new Error('no Slack webhook URL configured');
     const text = interpolate(s(config.message), ctx, input) || input.text;
     if (!text.trim()) throw new Error('nothing to send — connect an upstream node or set a message');
-    const { status, text: respText } = await sandboxedFetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), timeoutMs: 10_000, signal: ctx.signal });
+    const { status, text: respText } = await sandboxedFetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), timeoutMs: 10_000, signal: ctx.[...]
     if (status >= 400) throw new Error(`Slack webhook rejected the message (${status}): ${clip(respText, 200)}`);
     return { ...input, summary: 'sent to Slack' };
   }),
