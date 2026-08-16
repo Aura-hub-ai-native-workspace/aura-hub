@@ -162,9 +162,20 @@ export function startBackgroundUpdateCheck(delayMs = 4000): () => void {
   startupCheckStarted = true;
 
   const timer = window.setTimeout(() => {
-    void getUpdateService().check().catch(() => {
-      /* The state already records why. A failed background check is not
-         an event the user asked for and must not surface as an error. */
+    /* `check()` settles the state itself, including on an unexpected
+       throw, which it converts to `failed`. This catch is the last
+       resort for a rejection that escapes even that — and it must not be
+       empty. An empty catch here is exactly what hid v0.1.2's permanent
+       `checking` state, behind a comment asserting the state recorded a
+       reason it had never been given.
+
+       It reports INTO the service rather than swallowing, so there stays
+       one place that knows what the updater is doing. A background check
+       is still not an interruption: the failure lands in state, the
+       Updates panel shows it with a retry, and nothing is raised over
+       whatever the user is doing. */
+    void getUpdateService().check().catch((e: unknown) => {
+      getUpdateService().reportCheckFailure(e);
     });
   }, delayMs);
 

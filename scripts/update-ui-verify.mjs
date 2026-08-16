@@ -67,6 +67,11 @@ function stubAdapter(opts = {}) {
     installError = null,
     relaunchError = null,
     progressEvents = [],
+    // Gap between progress callbacks. Real downloads deliver chunks over
+    // time; a burst delivered inside one tick is not a download, it is an
+    // artifact of a stub. Cases that care about intermediate values space
+    // them out, so they exercise the timeline a user actually sees.
+    progressGapMs = 0,
   } = opts;
 
   const calls = { check: 0, downloadAndInstall: 0, relaunch: 0, close: 0, installKind: 0 };
@@ -90,7 +95,10 @@ function stubAdapter(opts = {}) {
           offered,
           async downloadAndInstall(onProgress) {
             calls.downloadAndInstall += 1;
-            for (const p of progressEvents) onProgress(p);
+            for (const p of progressEvents) {
+              onProgress(p);
+              if (progressGapMs) await new Promise((r) => setTimeout(r, progressGapMs));
+            }
             if (installError) throw new Error(installError);
           },
           async close() { calls.close += 1; },
@@ -199,21 +207,47 @@ await check('9. timeout → NETWORK_ERROR, retryable', async () => {
 setGroup('10–15 · download, install, restart');
 
 await check('10. download progress is the adapter\'s, never invented', async () => {
+  const emitted = [
+    { downloaded: 0, total: 1000, percent: 0 },
+    { downloaded: 500, total: 1000, percent: 50 },
+    { downloaded: 1000, total: 1000, percent: 100 },
+  ];
   const seen = [];
-  const { adapter } = stubAdapter({
-    offered: OFFER(),
-    progressEvents: [
-      { downloaded: 0, total: 1000, percent: 0 },
-      { downloaded: 500, total: 1000, percent: 50 },
-      { downloaded: 1000, total: 1000, percent: 100 },
-    ],
-  });
+  const { adapter } = stubAdapter({ offered: OFFER(), progressEvents: emitted, progressGapMs: 130 });
   const svc = new UpdateService(adapter);
   await svc.check();
   svc.subscribe((s) => { if (s.kind === 'downloading') seen.push(s.progress.percent); });
   await svc.downloadAndInstall();
   assert(seen.includes(50) && seen.includes(100), `progress not surfaced: ${seen.join(',')}`);
+  // The invariant this case is named for: nothing surfaced may be a number
+  // the adapter never produced.
+  const produced = new Set([null, ...emitted.map((p) => p.percent)]);
+  assert(seen.every((p) => produced.has(p)), `invented progress: ${seen.join(',')}`);
   return `percent sequence ${seen.join(' → ')}`;
+});
+
+await check('10b. a burst of progress events is coalesced, and the last one always lands', async () => {
+  // A ~100 MB download reports thousands of chunks; every notification used
+  // to re-render the UI. The service coalesces them to ~10/sec. What must
+  // NOT change: the completing chunk is always announced, nothing is
+  // invented, and the download still ends in ready-to-install.
+  const emitted = Array.from({ length: 500 }, (_, i) => ({
+    downloaded: (i + 1) * 2, total: 1000, percent: Math.round(((i + 1) / 500) * 100),
+  }));
+  const seen = [];
+  const { adapter } = stubAdapter({ offered: OFFER(), progressEvents: emitted });
+  const svc = new UpdateService(adapter);
+  await svc.check();
+  svc.subscribe((s) => { if (s.kind === 'downloading') seen.push(s.progress); });
+  const final = await svc.downloadAndInstall();
+
+  assert(seen.length < 50, `500 events produced ${seen.length} notifications`);
+  const last = seen[seen.length - 1];
+  assert(last.percent === 100 && last.downloaded === 1000, `last notification was ${last.downloaded}/${last.total}`);
+  const produced = new Set(emitted.map((p) => p.downloaded));
+  assert(seen.slice(1).every((p) => produced.has(p.downloaded)), 'a coalesced value was never produced by the adapter');
+  assert(final.kind === 'ready-to-install', `got ${final.kind}`);
+  return `${seen.length} notifications for 500 events, ending at 100%`;
 });
 
 await check('11. download completion → ready to restart', async () => {

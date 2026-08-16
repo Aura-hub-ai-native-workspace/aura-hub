@@ -290,14 +290,22 @@ pub fn run() {
 
     let builder = tauri::Builder::default();
 
-    // The updater and the restart it needs. Registered before anything
-    // else so the plugin is available for the whole app lifetime.
+    // The updater, the restart it needs, and the OS identity it asks for
+    // first. Registered before anything else so the plugins are available
+    // for the whole app lifetime.
+    //
+    // `tauri_plugin_os` is what injects the global the renderer reads to
+    // learn its platform and architecture. Without it the updater cannot
+    // name its own target, so it cannot tell which artifact in a manifest
+    // is for this machine — and it fails before it ever reaches the
+    // network. It answers "what am I", nothing more.
     //
     // `cfg` rather than an unconditional call because the plugins are
     // declared under the same desktop cfg in Cargo.toml — on any other
     // target the crates are absent and this would not compile.
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     let builder = builder
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init());
 

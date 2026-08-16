@@ -54,6 +54,7 @@ const FAILURE_DETAIL: Record<UpdateError['code'], string> = {
   UNSUPPORTED_ARCHITECTURE: 'This update is not for this processor.',
   DOWNGRADE_REJECTED: 'AURA Hub is already up to date.',
   MISSING_ARTIFACT: 'This release has no download for this platform yet.',
+  CHECK_FAILED: 'Couldn\'t check for updates. Your current version is unchanged.',
   DOWNLOAD_FAILED: 'The download did not finish. Your current version is unchanged.',
   INSTALL_FAILED: 'The update could not be installed. Your current version is still intact.',
   RESTART_FAILED: 'The update was installed, but AURA Hub could not restart itself. Close and reopen the app to finish.',
@@ -64,6 +65,10 @@ const FAILURE_DETAIL: Record<UpdateError['code'], string> = {
 /** Retrying a signature failure or an unsupported install cannot help. */
 const RETRYABLE: ReadonlySet<UpdateError['code']> = new Set([
   'NETWORK_ERROR', 'INVALID_METADATA', 'DOWNLOAD_FAILED', 'INSTALL_FAILED', 'MISSING_ARTIFACT',
+  // A check that could not complete is the most retryable failure there
+  // is — and offering the retry is what makes a stuck check impossible to
+  // mistake for a working one.
+  'CHECK_FAILED',
 ]);
 
 const IDLE: UpdatePresentation = {

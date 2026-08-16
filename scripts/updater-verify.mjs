@@ -253,6 +253,241 @@ const offered = (version, extra = {}) => ({
   check('11f. an unsupported platform fails closed',
     st.kind === 'failed' && st.error.code === 'INCOMPATIBLE_PLATFORM', st.kind);
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   CHECK MUST SETTLE · X1–X8
+
+   The v0.1.2 regression, in one sentence: `adapter.platform()` threw —
+   on every platform, because the OS plugin's Rust half was never
+   registered — and `check()` guarded only the network call, so the
+   exception escaped and left the state on `checking`. The panel showed
+   "Looking for a newer version…" for ever, with no error and no retry.
+
+   Every stub in this file implemented `platform()` correctly, which is
+   precisely why a green suite said nothing about it. These cases exist
+   so a throw ANYWHERE in the check path is a visible failure, and so
+   `checking` can never be a resting state again.
+   ══════════════════════════════════════════════════════════════════ */
+{
+  // THE REGRESSION ITSELF. `window.__TAURI_OS_PLUGIN_INTERNALS__` is
+  // undefined when the plugin is missing, so reading `.platform` throws
+  // exactly this.
+  const svc = new S.UpdateService(stubAdapter({
+    platform: async () => {
+      throw new TypeError("Cannot read properties of undefined (reading 'platform')");
+    },
+  }));
+  const st = await svc.check();
+  check('X1. THE v0.1.2 DEFECT — platform() throwing settles as failed, not checking',
+    st.kind === 'failed', st.kind);
+  check('X1b. …and never rests on checking',
+    st.kind !== 'checking', st.kind);
+  check('X1c. …reported as a CHECK failure, not a false "install failed"',
+    svc.diagnostics().errorCode === 'CHECK_FAILED', svc.diagnostics().errorCode);
+}
+{
+  // A rejection at the very first await, before anything is known.
+  const svc = new S.UpdateService(stubAdapter({
+    currentVersion: async () => { throw new Error('no version'); },
+  }));
+  const st = await svc.check();
+  check('X2. a throw at the FIRST step also settles as failed', st.kind === 'failed', st.kind);
+}
+{
+  // A synchronous throw, not a rejected promise — a different failure
+  // shape that must not escape either.
+  const svc = new S.UpdateService(stubAdapter({
+    installKind: () => { throw new TypeError('invoke is not a function'); },
+  }));
+  const st = await svc.check();
+  check('X3. a SYNCHRONOUS throw settles as failed too', st.kind === 'failed', st.kind);
+}
+{
+  // Resolution failure, distinct from a throw: the adapter answers, but
+  // with an os/arch this product publishes nothing for. Answered before
+  // the network — an offer-less release must not read as "up to date"
+  // to someone who can never be updated.
+  let reachedNetwork = false;
+  const svc = new S.UpdateService(stubAdapter({
+    platform: async () => ({ os: 'haiku', arch: 'sparc' }),
+    check: async () => { reachedNetwork = true; return null; },
+  }));
+  const st = await svc.check();
+  check('X4. an unresolvable platform fails closed rather than reporting up-to-date',
+    st.kind === 'failed' && st.error.code === 'INCOMPATIBLE_PLATFORM', `${st.kind}/${st.error?.code}`);
+  check('X4b. …and does not touch the network to find that out', !reachedNetwork);
+}
+{
+  // A failed check must be retryable. The v0.1.2 defect also left `busy`
+  // reachable only through a path that never ran, so a stuck check could
+  // not be cleared by asking again.
+  let attempts = 0;
+  const svc = new S.UpdateService(stubAdapter({
+    platform: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new TypeError('undefined is not an object');
+      return { os: 'linux', arch: 'x86_64' };
+    },
+    check: async () => offered('9.9.9'),
+  }));
+  const first = await svc.check();
+  const second = await svc.check();
+  check('X5. a failed check does not wedge the service — retry works',
+    first.kind === 'failed' && second.kind === 'update-available',
+    `${first.kind} → ${second.kind}`);
+}
+{
+  // The background caller's last-resort path. `check()` settles its own
+  // state, so this only fires if a rejection escapes it — and it must
+  // still be observable rather than swallowed.
+  const svc = new S.UpdateService(stubAdapter());
+  svc.reportCheckFailure(new Error('getaddrinfo ENOTFOUND github.com'));
+  check('X6. reportCheckFailure only acts while checking, never clobbering a settled state',
+    svc.getState().kind === 'idle', svc.getState().kind);
+
+  const stuck = new S.UpdateService(stubAdapter({
+    platform: () => new Promise(() => {}), // never settles
+  }));
+  void stuck.check();
+  await new Promise((r) => setTimeout(r, 5));
+  check('X6b. …and a check that cannot settle is still sitting on checking',
+    stuck.getState().kind === 'checking', stuck.getState().kind);
+
+  /* The reporter's contract is ENFORCED, not merely documented: while a
+     check is genuinely in flight it declines to act. Clearing the way for
+     a second check beside a running one is how the first one's `finally`
+     would come back and overwrite the second one's result. The legitimate
+     caller — a `.catch()` on a REJECTED check — is never turned away,
+     because a rejected promise has already run that `finally`. */
+  stuck.reportCheckFailure(new Error('boom'));
+  check('X6c. the reporter refuses to act while a check is still in flight',
+    stuck.getState().kind === 'checking', stuck.getState().kind);
+  check('X6d. …and it never fabricates a successful outcome',
+    !['ready-to-install', 'up-to-date', 'update-available'].includes(stuck.getState().kind));
+}
+{
+  /* The enforcement must be structural, not a comment. */
+  const src = fs.readFileSync(path.join(ROOT, 'apps/desktop/src/updater/updateService.ts'), 'utf8');
+  const body = src.slice(src.indexOf('reportCheckFailure('), src.indexOf('/* ── check'));
+  check('X6e. the guard is in the code, not only in the prose',
+    /checkInFlight/.test(body) && /this\.state\.kind !== 'checking'/.test(body));
+  check('X6f. …and the reporter does not reset the busy flag it no longer owns',
+    !/this\.busy\s*=/.test(body), 'busy is released by check() itself');
+}
+{
+  // NEGATIVE CONTROLS. The fix must not have bought "always fails".
+  const upToDate = new S.UpdateService(stubAdapter());
+  const a = await upToDate.check();
+  check('X7. the normal UP-TO-DATE path still works', a.kind === 'up-to-date', a.kind);
+
+  const available = new S.UpdateService(stubAdapter({ check: async () => offered('9.9.9') }));
+  const b = await available.check();
+  check('X8. the normal UPDATE-AVAILABLE path still works',
+    b.kind === 'update-available' && b.candidate.version === '9.9.9', b.kind);
+}
+{
+  // The source-level invariant, so this cannot regress by deletion:
+  // `check()` must have a catch, and the background caller must not
+  // swallow. An empty catch is what hid the defect for a whole release.
+  const svcSrc = fs.readFileSync(path.join(ROOT, 'apps/desktop/src/updater/updateService.ts'), 'utf8');
+  const body = svcSrc.slice(svcSrc.indexOf('async check('), svcSrc.indexOf('async downloadAndInstall('));
+  check('X9. check() has a catch, not only a finally',
+    /\}\s*catch\s*\(/.test(body) && /finally\s*\{/.test(body));
+
+  const hookSrc = fs.readFileSync(path.join(ROOT, 'apps/desktop/src/updater/useUpdater.ts'), 'utf8');
+  const stripped = hookSrc.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+  check('X10. the background check does not swallow its rejection',
+    /\.catch\(\s*\([^)]*\)\s*=>\s*\{?\s*[a-zA-Z]/.test(stripped), 'catch has a body that does something');
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   PROGRESS COALESCING · C1–C8
+
+   The native updater reports progress once per network chunk — for a
+   ~100 MB artifact, thousands of callbacks, each previously notifying
+   every subscriber and so re-rendering the UI. These cases pin what the
+   coalescing may and may not do: it may reduce how OFTEN subscribers are
+   told, and it may not alter a byte, a state, or an ordering.
+   ══════════════════════════════════════════════════════════════════ */
+
+/** Drive N progress callbacks through a real service and count what escapes. */
+async function runProgress(events, { spreadMs = 0 } = {}) {
+  const seen = [];
+  const svc = new S.UpdateService(stubAdapter({
+    check: async () => ({
+      ...offered('9.9.9'),
+      downloadAndInstall: async (onProgress) => {
+        for (let i = 0; i < events; i += 1) {
+          const downloaded = Math.round(((i + 1) / events) * 1_000_000);
+          onProgress({ downloaded, total: 1_000_000, percent: Math.round(((i + 1) / events) * 100) });
+          if (spreadMs) await new Promise((r) => setTimeout(r, spreadMs));
+        }
+      },
+    }),
+  }));
+  await svc.check();
+  svc.subscribe((s) => { if (s.kind === 'downloading') seen.push(s.progress); });
+  const final = await svc.downloadAndInstall();
+  return { seen, final, svc };
+}
+
+{
+  // 5,000 chunks delivered as fast as the event loop allows — the shape of
+  // a fast local download of a large artifact.
+  const { seen, final, svc } = await runProgress(5000);
+
+  check('C1. thousands of progress events do not become thousands of UI updates',
+    seen.length < 200, `${seen.length} notifications for 5000 events`);
+  check('C2. …and the reduction is large, not cosmetic',
+    seen.length < 5000 / 20, `${(5000 / Math.max(seen.length, 1)).toFixed(0)}x fewer`);
+
+  // The bytes must survive intact: the last notification is the completing
+  // chunk, never a stale one frozen mid-download.
+  const last = seen[seen.length - 1];
+  check('C3. the COMPLETING chunk is always announced, never throttled away',
+    last && last.downloaded === 1_000_000 && last.percent === 100,
+    last ? `${last.downloaded}/${last.total} ${last.percent}%` : 'nothing seen');
+  check('C4. diagnostics still report the exact final byte count',
+    svc.diagnostics().progress?.downloaded === 1_000_000,
+    String(svc.diagnostics().progress?.downloaded));
+
+  // Coalescing must not touch the outcome.
+  check('C5. the state still settles on ready-to-install', final.kind === 'ready-to-install', final.kind);
+  check('C6. …and no automatic restart happened', final.kind !== 'restarting');
+
+  // NEGATIVE CONTROL: no notification may claim more than was downloaded.
+  check('C7. no notification reports progress that never happened',
+    seen.every((p) => p.downloaded <= 1_000_000 && p.percent <= 100 && p.downloaded >= 0));
+  const monotonic = seen.every((p, i) => i === 0 || p.downloaded >= seen[i - 1].downloaded);
+  check('C8. progress never goes backwards', monotonic);
+}
+{
+  // A slow download must still animate: spacing events beyond the coalescing
+  // window must let each one through, or the fix would have traded a storm
+  // for a frozen bar.
+  // `seen` also holds the opening `downloading` state (0 bytes) that
+  // `downloadAndInstall` sets before the first chunk arrives, so six
+  // well-spaced chunks must produce exactly seven notifications.
+  const { seen } = await runProgress(6, { spreadMs: 130 });
+  check('C9. a slow download still updates on every chunk',
+    seen.length === 7, `${seen.length} notifications = 1 opening + ${seen.length - 1}/6 chunks`);
+}
+{
+  // A failed install must still fail, coalescing or not.
+  const svc = new S.UpdateService(stubAdapter({
+    check: async () => ({
+      ...offered('9.9.9'),
+      downloadAndInstall: async (onProgress) => {
+        for (let i = 0; i < 500; i += 1) onProgress({ downloaded: i, total: 500, percent: 0 });
+        throw new Error('permission denied writing to disk');
+      },
+    }),
+  }));
+  await svc.check();
+  const st = await svc.downloadAndInstall();
+  check('C10. an install that throws after a progress storm still fails closed',
+    st.kind === 'failed' && st.error.code === 'INSTALL_FAILED', `${st.kind}/${st.error?.code}`);
+}
 {
   const svc = new S.UpdateService(stubAdapter({
     check: async () => { throw new Error('getaddrinfo ENOTFOUND github.com'); },

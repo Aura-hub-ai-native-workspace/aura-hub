@@ -85,6 +85,7 @@ const MESSAGES: Record<UpdateErrorCode, string> = {
   UNSUPPORTED_ARCHITECTURE: 'This update is not for this processor architecture.',
   DOWNGRADE_REJECTED: 'AURA Hub is already up to date.',
   MISSING_ARTIFACT: 'This release has no download for this platform yet.',
+  CHECK_FAILED: 'AURA Hub could not check for updates.',
   DOWNLOAD_FAILED: 'The update download did not finish.',
   INSTALL_FAILED: 'The update could not be installed.',
   RESTART_FAILED: 'The update installed, but AURA Hub could not restart itself.',
@@ -103,8 +104,17 @@ function err(code: UpdateErrorCode, detail?: string): UpdateError {
  * failure that may indicate tampering rather than bad luck, and folding
  * them into a generic "download failed" would hide exactly the event the
  * signing key exists to surface.
+ *
+ * `fallback` is what an unrecognised error becomes. It defaults to
+ * INSTALL_FAILED, which is right on the install path and wrong on the
+ * check path — "the update could not be installed" is a false statement
+ * to someone whose app never got as far as asking the server. Callers on
+ * the check path pass CHECK_FAILED.
  */
-export function classifyNativeError(e: unknown): UpdateError {
+export function classifyNativeError(
+  e: unknown,
+  fallback: UpdateErrorCode = 'INSTALL_FAILED',
+): UpdateError {
   const raw = e instanceof Error ? e.message : String(e ?? '');
   const text = raw.toLowerCase();
 
@@ -123,10 +133,36 @@ export function classifyNativeError(e: unknown): UpdateError {
   if (/install|permission|denied|disk|space|write/.test(text)) {
     return err('INSTALL_FAILED', raw);
   }
-  return err('INSTALL_FAILED', raw);
+  return err(fallback, raw);
 }
 
 /* ── Service ─────────────────────────────────────────────────────── */
+
+/**
+ * Smallest gap between two `downloading` notifications, in milliseconds.
+ *
+ * The native updater reports progress once per network chunk. For a
+ * ~100 MB artifact that is thousands of callbacks, and each one currently
+ * notifies every subscriber — which, through `useSyncExternalStore`, is a
+ * React render apiece. 100 ms caps that at ~10 renders per second, which
+ * is already faster than a progress bar can usefully be read.
+ *
+ * This changes only the NOTIFICATION rate. `this.progress` still records
+ * every chunk exactly, and no state transition is delayed or invented.
+ * Nothing here can make an install look finished when it is not.
+ *
+ * The completing chunk is announced regardless of the interval — but only
+ * when there is something to recognise it by, which means a declared
+ * content length the byte count reaches. When the server declares no
+ * length there is no "complete" to detect, so the interval alone applies
+ * and the final notification may be up to one interval stale. That is
+ * deliberate: the alternative is inventing a total, and a fabricated
+ * 100% is exactly the lie this file refuses to tell. The stale window is
+ * bounded by PROGRESS_NOTIFY_MS and ends immediately, because the state
+ * moves to `ready-to-install` — which shows no progress at all — as soon
+ * as the native call returns.
+ */
+const PROGRESS_NOTIFY_MS = 100;
 
 export type UpdateListener = (state: UpdateState) => void;
 
@@ -147,6 +183,14 @@ export class UpdateService {
 
   /** Set while a check or download is in flight, to reject re-entry. */
   private busy = false;
+  /**
+   * Set for exactly the duration of `check()`.
+   *
+   * Narrower than `busy`, which a download also holds. This exists so
+   * `reportCheckFailure` can enforce its own contract rather than trust
+   * callers to honour it — see there.
+   */
+  private checkInFlight = false;
   /** Set by `cancel()`; consulted at every await boundary. */
   private cancelRequested = false;
 
@@ -174,6 +218,38 @@ export class UpdateService {
     this.set({ kind: 'failed', error, candidate: this.candidate });
   }
 
+  /**
+   * Record a check failure that escaped `check()` entirely.
+   *
+   * `check()` settles its own state and should never reject, so a caller
+   * reaching this has caught something no path anticipated. It exists so
+   * a background caller has somewhere to put that rejection other than an
+   * empty catch — the state stays the one place that knows what the
+   * updater is doing, and "silently stuck" stays impossible.
+   *
+   * ── Contract, enforced rather than documented ────────────────────
+   * It may only act AFTER `check()` has settled. TypeScript's `private`
+   * cannot express that: the one legitimate caller lives in another
+   * module. So the rule is enforced here instead, by two guards:
+   *
+   *   • a check still in flight is left alone. Clearing `busy` under a
+   *     running check would let a second check start beside it, and the
+   *     first one's `finally` would then overwrite the second one's
+   *     result. Since a rejected promise has already run that `finally`,
+   *     the legitimate caller is never the one turned away.
+   *   • a state that already settled is never overwritten. If `check()`
+   *     recorded a specific reason before rejecting, that reason is
+   *     better than this one.
+   *
+   * Nothing else is touched — `busy` is not reset here, because by the
+   * time this is allowed to act `check()` has already released it.
+   */
+  reportCheckFailure(e: unknown): void {
+    if (this.checkInFlight) return;
+    if (this.state.kind !== 'checking') return;
+    this.fail(classifyNativeError(e, 'CHECK_FAILED'));
+  }
+
   /* ── check ─────────────────────────────────────────────────────── */
 
   /**
@@ -182,10 +258,25 @@ export class UpdateService {
    * A failed check is never fatal: the state records why, and the
    * application carries on. An update server being down must not look
    * like anything being wrong with AURA Hub itself.
+   *
+   * ── This method must SETTLE ───────────────────────────────────────
+   * `checking` is a transient state and the only one with no outcome in
+   * it. Every path out of here therefore ends at `up-to-date`,
+   * `update-available` or `failed` — never at `checking`.
+   *
+   * That is not a stylistic preference. v0.1.2 shipped with only the
+   * narrow try/catch around `adapter.check()` below, so when
+   * `adapter.platform()` threw — which it did on every platform, because
+   * the OS plugin's Rust half was never registered — the exception left
+   * this method with the state still on `checking`. The UI showed
+   * "Looking for a newer version…" forever, offered no retry, and
+   * reported no error. An updater that cannot fail visibly cannot be
+   * trusted to have succeeded.
    */
   async check(): Promise<UpdateState> {
     if (this.busy) return this.state;
     this.busy = true;
+    this.checkInFlight = true;
     this.cancelRequested = false;
     this.lastError = null;
     this.set({ kind: 'checking' });
@@ -195,6 +286,21 @@ export class UpdateService {
       const { os, arch } = await this.adapter.platform();
       this.target = resolveTarget(os, arch);
       this.lastCheckAt = new Date().toISOString();
+
+      /* A machine this product does not publish for, answered BEFORE the
+         network like the install-kind gate below it.
+         `evaluateRuntimeCandidate` refuses an unresolvable target anyway,
+         but only once a candidate has been offered — so a release that
+         happened to offer nothing would have been reported as "up to
+         date" to a user who can never be updated at all.
+         The code and wording are deliberately the ones that gate already
+         uses for a null target, so moving the check earlier changes WHEN
+         the answer arrives and never WHAT it is. */
+      if (!this.target) {
+        this.fail(err('INCOMPATIBLE_PLATFORM',
+          'This platform and architecture are not a target AURA Hub publishes.'));
+        return this.state;
+      }
 
       /* Can this installation even replace itself?
          Asked BEFORE the network, so a .deb user gets the honest answer
@@ -212,7 +318,7 @@ export class UpdateService {
       try {
         pending = await this.adapter.check();
       } catch (e) {
-        this.fail(classifyNativeError(e));
+        this.fail(classifyNativeError(e, 'CHECK_FAILED'));
         return this.state;
       }
 
@@ -251,8 +357,16 @@ export class UpdateService {
       this.candidate = verdict.candidate;
       this.set({ kind: 'update-available', candidate: verdict.candidate });
       return this.state;
+    } catch (e) {
+      /* The backstop. Anything unexpected between here and the top —
+         a missing native plugin, an adapter that rejects, a
+         renderer-side TypeError — becomes a visible failure with a
+         retry, not a spinner nobody can clear. */
+      this.fail(classifyNativeError(e, 'CHECK_FAILED'));
+      return this.state;
     } finally {
       this.busy = false;
+      this.checkInFlight = false;
     }
   }
 
@@ -287,15 +401,35 @@ export class UpdateService {
     this.progress = { downloaded: 0, total: null, percent: null };
     this.set({ kind: 'downloading', candidate, progress: this.progress });
 
+    /* Progress arrives once per network chunk — thousands of times for a
+       ~100 MB artifact — and every notification re-renders whatever is
+       watching. `this.progress` is still updated on EVERY event, so the
+       byte counts this service reports are exact; only how often
+       subscribers are told changes. See PROGRESS_NOTIFY_MS. */
+    let lastNotifyAt = 0;
+
     try {
       await this.pending.downloadAndInstall((p) => {
+        // Exact, every time. Diagnostics and the final state read this,
+        // never the throttled copy.
         this.progress = p;
+
         // A cancel that arrived mid-download is reflected immediately;
         // the native call still runs to completion, and the state below
         // settles on 'cancelled' rather than claiming success.
-        if (!this.cancelRequested) {
-          this.set({ kind: 'downloading', candidate, progress: p });
-        }
+        if (this.cancelRequested) return;
+
+        // A chunk that completes a download of KNOWN length is never
+        // throttled away: stopping at 97% while the install ran would be a
+        // worse lie than a slightly coarse bar. With no declared length
+        // there is nothing to compare against, so this cannot fire — and a
+        // total is not invented to make it fire.
+        const complete = p.total !== null && p.downloaded >= p.total;
+        const now = Date.now();
+        if (!complete && now - lastNotifyAt < PROGRESS_NOTIFY_MS) return;
+
+        lastNotifyAt = now;
+        this.set({ kind: 'downloading', candidate, progress: p });
       });
     } catch (e) {
       this.fail(classifyNativeError(e));

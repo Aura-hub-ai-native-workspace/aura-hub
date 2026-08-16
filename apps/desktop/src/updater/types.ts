@@ -42,6 +42,16 @@ export type UpdateErrorCode =
   | 'DOWNGRADE_REJECTED'
   /** Metadata is valid but carries no artifact for this target. */
   | 'MISSING_ARTIFACT'
+  /**
+   * The check itself could not be completed.
+   *
+   * Distinct from INSTALL_FAILED because nothing was installed and
+   * nothing was even downloaded: telling someone their install failed
+   * when the app never got as far as asking the server is untrue. Raised
+   * for anything unexpected on the path to that question — a missing
+   * native plugin being the case that made this code necessary.
+   */
+  | 'CHECK_FAILED'
   /** The download did not complete. */
   | 'DOWNLOAD_FAILED'
   /** The native installer reported failure. */
