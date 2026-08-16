@@ -526,7 +526,23 @@ const offered = (version, extra = {}) => ({
   };
   const unique = [...new Set(Object.values(versions))];
   check('V. every version source agrees', unique.length === 1, JSON.stringify(versions));
-  check('V2. the release candidate version is preserved', unique[0] === '0.1.1', unique[0]);
+
+  /*
+   * A deliberately HAND-SET pin, and the only place a version is written
+   * down outside the six files the bump tool rewrites.
+   *
+   * V above proves the six agree with each other, which a stray global
+   * find-and-replace would also satisfy. This proves they agree with what
+   * a person last decided to ship. It therefore has to be edited by hand
+   * at each release — that edit IS the check, and `bump-version.mjs`
+   * deliberately does not touch it.
+   *
+   * 0.1.2 is the first updater-enabled release: the first built by the
+   * repaired pipeline, and the first whose artifacts a client can
+   * actually fetch and verify.
+   */
+  const RELEASE_CANDIDATE = '0.1.2';
+  check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);
 }
 
 console.log(failed ? '\nFAILED' : '\nAll checks passed.');
