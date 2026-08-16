@@ -443,11 +443,29 @@ const offered = (version, extra = {}) => ({
   const KEY_MARKERS = new RegExp(
     [
       `minisign encrypted ${'secret'} ${'key'}`,
+      `rsign encrypted ${'secret'} ${'key'}`,
       `untrusted comment: minisign ${'secret'} ${'key'}`,
       `BEGIN (RSA |OPENSSH |EC )?${SECRET}`,
     ].join('|'),
     'i',
   );
+
+  /*
+   * The Tauri CLI writes its key files BASE64-ENCODED, and the comment
+   * naming them a secret key lives inside that base64. A plaintext scan
+   * sees none of it and reports a clean tree while the key sits in it —
+   * so each file is tested as text and, when it is a single base64 blob,
+   * as its decoding. A public key decodes to "public key" and is not a
+   * finding; only a secret is.
+   */
+  const decodedIfBase64 = (src) => {
+    const compact = src.trim();
+    if (compact.length < 40 || compact.length > 100_000) return null;
+    if (!/^[A-Za-z0-9+/=\s]+$/.test(compact)) return null;
+    try { return Buffer.from(compact, 'base64').toString('utf8'); } catch { return null; }
+  };
+  const holdsKeyMaterial = (text) =>
+    [text, decodedIfBase64(text)].filter(Boolean).some((b) => KEY_MARKERS.test(b));
 
   const tracked = execFileSync('git', ['ls-files'], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n');
   const offenders = [];
@@ -455,12 +473,23 @@ const offered = (version, extra = {}) => ({
     const p = path.join(ROOT, f);
     let text;
     try { text = fs.readFileSync(p, 'utf8'); } catch { continue; }
-    if (KEY_MARKERS.test(text)) {
+    if (holdsKeyMaterial(text)) {
       offenders.push(f);
     }
   }
   check('19. SECRET SCAN — no private signing key in any tracked file',
     offenders.length === 0, offenders.join(', ') || 'clean');
+
+  // The scanner must be able to find what it claims to find. Without this,
+  // the base64 blind spot above would have kept case 19 green forever.
+  const asKeyFile = (comment) => Buffer.from(
+    `untrusted comment: ${comment}\nRWRTY0IyaVYydXVCNUl4djhTcTBxa1lvcld4R213SXNL\n`, 'utf8',
+  ).toString('base64');
+  check('19a. …and the scanner FIRES on a base64 Tauri key file',
+    holdsKeyMaterial(asKeyFile(`rsign encrypted ${'secret'} ${'key'}`)),
+    'a committed key would be caught');
+  check('19a2. …while a public key, which is not a secret, passes',
+    !holdsKeyMaterial(asKeyFile('minisign public key')), 'trust anchors are expected in the tree');
 
   const keyPath = path.join(process.env.HOME ?? '', '.aura', 'aura-updater.key');
   check('19b. the operator key lives outside the repository',

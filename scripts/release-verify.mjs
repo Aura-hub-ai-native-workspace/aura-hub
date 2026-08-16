@@ -84,10 +84,19 @@ function generate(files, extraArgs = []) {
   }
 }
 
-/** A complete, well-formed set of staged artifacts. */
+/**
+ * A complete, well-formed set of staged artifacts.
+ *
+ * The REAL names. Tauri CLI 2.11.x with `createUpdaterArtifacts: true`
+ * signs the native bundle in place, so the Linux and Windows updater
+ * artifacts ARE the AppImage and the NSIS installer; macOS keeps
+ * `.app.tar.gz` because a `.app` is a directory. Nothing here is a
+ * `.tar.gz`/`.zip` wrapper — those are `"v1Compatible"` output, which
+ * this project does not build.
+ */
 const BUNDLES = {
-  'linux-x86_64': `AURA-Hub-${VERSION}-linux-x64.AppImage.tar.gz`,
-  'windows-x86_64': `AURA-Hub-${VERSION}-windows-x64.nsis.zip`,
+  'linux-x86_64': `AURA-Hub-${VERSION}-linux-x64.AppImage`,
+  'windows-x86_64': `AURA-Hub-${VERSION}-windows-x64.exe`,
   'darwin-x86_64': `AURA-Hub-${VERSION}-macos-x64.app.tar.gz`,
   'darwin-aarch64': `AURA-Hub-${VERSION}-macos-arm64.app.tar.gz`,
 };
@@ -180,7 +189,7 @@ console.log('\n=== 2. WHAT THE PIPELINE REFUSES ===');
   // Stale artifacts left over from a previous build are exactly how a
   // release ends up advertising a version it did not build.
   const files = completeSet();
-  const stale = 'AURA-Hub-0.0.9-linux-x64.AppImage.tar.gz';
+  const stale = 'AURA-Hub-0.0.9-linux-x64.AppImage';
   files[stale] = 'old bytes';
   files[`${stale}.sig`] = SIG;
   const r = generate(files);
@@ -213,6 +222,36 @@ console.log('\n=== 2. WHAT THE PIPELINE REFUSES ===');
   check('2g. a narrowed release is allowed only when stated explicitly',
     r.ok && Object.keys(r.manifest.platforms).length === 1,
     r.ok ? 'linux only, as asked' : r.stderr);
+}
+{
+  /*
+   * Every Linux release ships a `.deb` beside the AppImage, and Tauri
+   * signs it — `createUpdaterArtifacts` signs every bundle it produces.
+   * Neither fact may put it in the manifest. Tauri's Linux updater
+   * replaces a running AppImage; a package-manager install has nothing
+   * for it to replace, which is what the client reports as `managed` and
+   * refuses with UNSUPPORTED_INSTALL. A `.deb` here would advertise an
+   * update no Linux user could apply.
+   */
+  const files = completeSet();
+  const deb = `AURA-Hub-${VERSION}-linux-x64.deb`;
+  files[deb] = 'deb bytes';
+  files[`${deb}.sig`] = SIG;
+  const dmg = `AURA-Hub-${VERSION}-macos-arm64.dmg`;
+  files[dmg] = 'dmg bytes';
+  files[`${dmg}.sig`] = SIG;
+
+  const r = generate(files);
+  check('2h. a signed .deb and .dmg beside the release do not block it', r.ok, r.stderr ?? '');
+  check('2i. …and neither reaches the manifest',
+    r.ok && !JSON.stringify(r.manifest).includes('.deb') && !JSON.stringify(r.manifest).includes('.dmg'),
+    r.ok ? 'downloads only, as intended' : 'no manifest');
+  check('2j. …and linux-x86_64 still names the AppImage',
+    r.ok && r.manifest.platforms['linux-x86_64'].url.endsWith(`${VERSION}-linux-x64.AppImage`),
+    r.ok ? r.manifest.platforms['linux-x86_64'].url.split('/').pop() : 'no manifest');
+  check('2k. …and the manifest holds exactly the four updater targets',
+    r.ok && Object.keys(r.manifest.platforms).length === 4,
+    r.ok ? Object.keys(r.manifest.platforms).join(', ') : 'no manifest');
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -259,30 +298,56 @@ console.log('\n=== 4. THE PATCHED APPIMAGE ===');
 {
   /*
    * The AppImage is repacked AFTER Tauri builds and signs it, to remove a
-   * bundled library that breaks rendering. The updater downloads a
-   * different file — `<name>.AppImage.tar.gz` — and if that is not rebuilt
-   * from the patched AppImage, an updating user is handed back the exact
-   * regression the patch removes, correctly signed, with nothing to catch
-   * it. This is a source check because reproducing it needs a full Linux
-   * bundle; the behaviour itself is exercised by CI on every tag.
+   * bundled library that breaks rendering.
+   *
+   * With `createUpdaterArtifacts: true`, Tauri 2.11 signs the AppImage
+   * ITSELF — the updater artifact and the download are one file. So the
+   * moment the repack finishes, the signature on disk covers bytes that
+   * no longer exist. Published that way, every Linux client downloads the
+   * patched AppImage and fails verification: INVALID_SIGNATURE, the one
+   * failure AURA never retries because it reads as tampering. The
+   * pipeline would have manufactured a tamper warning out of its own fix.
+   *
+   * The sequence must therefore be BUILD → PATCH → SIGN → STAGE. These
+   * are source checks because reproducing the behaviour needs a real
+   * Linux bundle, a repack tool and a signing key; CI exercises it on
+   * every tag, and it was proven against real artifacts during the
+   * repair that introduced these checks.
    */
   const raw = fs.readFileSync(path.join(ROOT, 'scripts/patch-appimage-linux.mjs'), 'utf8');
-  // Comments stripped first: a defined-but-never-called rebuild is exactly
+  // Comments stripped first: a defined-but-never-called re-sign is exactly
   // the regression this checks for, and it reads identically otherwise.
   const patch = raw
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
 
-  check('4a. the repack rebuilds the updater tarball from the patched AppImage',
-    /tar', \['-czf'/.test(patch) && /function republishUpdaterBundle/.test(patch));
-  check('4a2. …and the rebuild is actually CALLED after the repack',
-    /^\s*republishUpdaterBundle\(/m.test(patch), 'live call site, not just a definition');
-  check('4b. …and re-signs it',
-    /signer', 'sign'/.test(patch));
+  check('4a. the patch re-signs the AppImage itself — the artifact the updater downloads',
+    /signer', 'sign', appimage\]/.test(patch) && /function resignPatchedAppImage/.test(patch));
+  check('4a2. …and the re-sign is actually CALLED after the repack',
+    /^\s*resignPatchedAppImage\(/m.test(patch), 'live call site, not just a definition');
+  check('4b. no obsolete .AppImage.tar.gz path survives in live code',
+    !/AppImage\.tar\.gz/.test(patch),
+    'the v1Compatible wrapper this project does not build');
   check('4c. a stale signature is never left beside new bytes',
     /fs\.rmSync\(sig\)/.test(patch) && /process\.exit\(1\)/.test(patch));
+  check('4c2. …and it is removed BEFORE signing, so a failed signing cannot leave it',
+    patch.indexOf('if (hadSig) fs.rmSync(sig);') < patch.indexOf("'signer', 'sign'"),
+    'removal precedes signing');
   check('4d. the signing key is passed by environment, never as an argument',
     !/--private-key|-k',/.test(patch), 'nothing key-shaped in a process listing');
+
+  // A re-sign the pipeline cannot perform is a build that fails at the
+  // last useful moment. The patch step needs the key the build step has.
+  const ciSrc = fs.readFileSync(path.join(ROOT, '.github/workflows/ci.yml'), 'utf8');
+  const patchStep = ciSrc.slice(
+    ciSrc.indexOf('Patch the AppImage'), ciSrc.indexOf('Install a virtual display'),
+  );
+  check('4e. CI gives the patch step the signing secrets it needs to re-sign',
+    /TAURI_SIGNING_PRIVATE_KEY:\s*\$\{\{\s*secrets\./.test(patchStep)
+    && /TAURI_SIGNING_PRIVATE_KEY_PASSWORD:\s*\$\{\{\s*secrets\./.test(patchStep),
+    'both passed by reference');
+  check('4f. CI patches before it stages, so staging copies the final bytes',
+    ciSrc.indexOf('patch-appimage-linux.mjs') < ciSrc.indexOf('stage-release-artifacts.mjs'));
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -429,7 +494,7 @@ console.log('\n=== 7. VERSION BUMP ===');
 console.log('\n=== 6. REAL ARTIFACTS ===');
 {
   const present = fs.existsSync(DIR)
-    ? fs.readdirSync(DIR).filter((f) => /\.(AppImage\.tar\.gz|app\.tar\.gz|nsis\.zip)$/.test(f))
+    ? fs.readdirSync(DIR).filter((f) => /\.(AppImage|exe|app\.tar\.gz)$/.test(f))
     : [];
 
   if (present.length === 0) {

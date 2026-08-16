@@ -135,8 +135,20 @@ jobs:
       # AppImage without that one library and verify. Everything after this
       # step — staging, the AppImage launch check, the release — exercises
       # the fixed artifact. The .deb needs no patch: it bundles no Wayland.
+      #
+      # This step RE-SIGNS, so it needs the key. Tauri CLI 2.11.x signs the
+      # AppImage in place during the build; repacking it here invalidates
+      # that signature, and a stale signature beside patched bytes would
+      # fail verification on every Linux client as INVALID_SIGNATURE. The
+      # script removes the stale signature and makes a new one over the
+      # final bytes — which it can only do with a key in the environment.
+      # Without these two lines it deletes the signature and fails the
+      # build, which is correct but is not a release.
       - name: Patch the AppImage (Linux only)
         if: runner.os == 'Linux'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: node scripts/patch-appimage-linux.mjs
 
       # Native runtime verification. Linux runners have no display, so the

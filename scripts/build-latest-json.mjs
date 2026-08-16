@@ -100,8 +100,25 @@ const BASE_URL = `https://github.com/${repo[1]}/releases/download/${TAG}`;
 
 if (!fs.existsSync(DIR)) fail(`no artifact directory at ${DIR} — stage the release artifacts first.`);
 
-/** `AURA-Hub-<version>-<os>-<arch>.<ext>`, as the staging script writes it. */
-const NAME = /^AURA-Hub-(.+?)-(linux|windows|macos)-(x64|arm64)\.(AppImage\.tar\.gz|app\.tar\.gz|nsis\.zip)$/;
+/**
+ * `AURA-Hub-<version>-<os>-<arch>.<ext>`, as the staging script writes it.
+ *
+ * The extension alternation is the manifest's whole allow-list, and it is
+ * stated positively for a reason: only what is named here can ever reach
+ * a client. Tauri CLI 2.11.x with `createUpdaterArtifacts: true` signs
+ * the native bundle in place, so on Linux and Windows the updater
+ * artifact IS the AppImage and the NSIS installer; macOS keeps
+ * `.app.tar.gz`, because a `.app` is a directory and has to be archived.
+ *
+ * `.deb` and `.rpm` are absent BY CONSTRUCTION, not by a filter that
+ * could be forgotten. Tauri signs the `.deb` too — with
+ * `createUpdaterArtifacts` on it signs every bundle it produces — but a
+ * package-manager install is owned by its package manager, which is what
+ * the client reports as `managed` and refuses with UNSUPPORTED_INSTALL.
+ * A `.deb` in this manifest would offer an update no Linux user could
+ * apply. `.dmg` and `.msi` are likewise downloads only.
+ */
+const NAME = /^AURA-Hub-(.+?)-(linux|windows|macos)-(x64|arm64)\.(AppImage|exe|app\.tar\.gz)$/;
 
 const platforms = {};
 const seen = new Map();

@@ -150,17 +150,69 @@ publish** when any of the following is true. Each refusal is exercised by
 | No artifacts at all | R5 |
 | Two artifacts claim one target | R6 |
 
-Expected filenames, as `stage-release-artifacts.mjs` writes them:
+### The artifact layout
+
+`bundle.createUpdaterArtifacts` is `true`. In Tauri CLI 2.11.x that means
+**the native bundle is signed in place** — there are no `.tar.gz` /
+`.zip` wrappers. Those belong to the `"v1Compatible"` mode, which this
+project does not build. What the CLI emits:
+
+| Platform | Tauri writes | Signed |
+| --- | --- | --- |
+| Linux | `AURA Hub_<v>_amd64.AppImage` | yes — **this is the updater artifact** |
+| Linux | `AURA Hub_<v>_amd64.deb` | yes — but **never** an updater artifact |
+| Windows | `AURA Hub_<v>_x64-setup.exe` | yes — **this is the updater artifact** |
+| macOS | `AURA Hub.app.tar.gz` | yes — a `.app` is a directory, so it is archived |
+
+So on Linux and Windows **the download and the updater artifact are the
+same file**, staged once and serving both roles. Expected staged names:
 
 ```
-AURA-Hub-<version>-linux-x64.AppImage.tar.gz
-AURA-Hub-<version>-windows-x64.nsis.zip
-AURA-Hub-<version>-macos-x64.app.tar.gz
-AURA-Hub-<version>-macos-arm64.app.tar.gz
+AURA-Hub-<version>-linux-x64.AppImage      ← download + updater
+AURA-Hub-<version>-linux-x64.deb           ← download only
+AURA-Hub-<version>-windows-x64.exe         ← download + updater
+AURA-Hub-<version>-macos-x64.app.tar.gz    ← updater
+AURA-Hub-<version>-macos-arm64.app.tar.gz  ← updater
+AURA-Hub-<version>-macos-<arch>.dmg        ← download only
 ```
+
+**The `.deb` is signed but excluded by construction.**
+`createUpdaterArtifacts` signs every bundle, the `.deb` included; the
+manifest's filename allow-list simply does not contain it, so there is no
+filter to forget. A `.deb` in `latest.json` would advertise an update no
+Linux user could apply — the client already reports that install as
+`managed` and refuses it with `UNSUPPORTED_INSTALL`.
+
+Anything Tauri signs that staging cannot classify **fails the build**
+rather than being skipped. That refusal is what caught this layout in the
+first place (run `31902182292`), and it is deliberately not relaxed.
 
 Manifest URLs point at **permanent GitHub Release assets**
 (`/releases/download/<tag>/`), never at Actions artifacts, which expire.
+
+### The Linux patch sequence
+
+The AppImage bundles a `libwayland-client.so.0` that breaks rendering, so
+it is repacked after the build. Because Tauri signs the AppImage *itself*,
+the order is load-bearing:
+
+```
+build → patch the AppImage → RE-SIGN it → stage
+```
+
+`tauri build` signs first; the repack then changes the bytes. Left alone,
+the signature would cover the pre-patch build while the file beside it is
+the patched one, and every Linux client would fail verification with
+`INVALID_SIGNATURE` — the one error AURA never retries, because it reads
+as tampering. The pipeline would have manufactured a tamper warning out
+of its own fix.
+
+So `patch-appimage-linux.mjs` removes the stale signature **before**
+signing (a failed signing then leaves none, and staging refuses on the
+missing `.sig` — loudly), and the CI patch step is given the signing
+secrets, without which it deletes the signature and fails the build. The
+`.deb` is never touched: it needs no patch, and its signature still
+covers its own unmodified bytes.
 
 ---
 
@@ -201,13 +253,21 @@ Linux ARM and Windows ARM are not built and are not claimed.
 
 Stated so nobody infers otherwise from a green suite:
 
-- **No real minisign verification has been performed outside CI.** Every
-  `.sig` in the local suites is arbitrary bytes. The deterministic tests
-  prove AURA *handles* a signature failure the native layer reports; they
-  prove nothing about the cryptography.
+- **The `.sig` fixtures in the deterministic suites are arbitrary bytes.**
+  Those suites prove AURA *handles* a signature failure the native layer
+  reports; they prove nothing about the cryptography, and a green run is
+  never evidence that signing works.
+- **One real signature chain has been verified — with a disposable key.**
+  During the pipeline repair, a real `tauri build` on Linux was signed,
+  patched, re-signed and staged, and the final signature was verified with
+  Ed25519/BLAKE2b against the patched bytes (and shown to *reject* them
+  under the pre-patch signature). That proves the sequence. It says
+  nothing about the production key, which exists only as a CI secret.
 - **No native update has ever run end to end**, on any platform. There is
   no published `latest.json` and no signed updater artifact to update to.
-- Windows and macOS behaviour is unverified outside CI builds.
+- **Windows and macOS staging names are verified against the filenames CI
+  actually produced, not against locally built bytes.** A Linux machine
+  cannot build an NSIS installer or a `.app`.
 - The `APPIMAGE` probe is compile-verified only; it has not been observed
   running inside a real AppImage or a real `.deb` install.
 
@@ -219,5 +279,5 @@ Stated so nobody infers otherwise from a green suite:
 | --- | --- |
 | `scripts/updater-verify.mjs` | Applicability, state machine, native-boundary confinement, `.deb` refusal (P1–P4) |
 | `scripts/update-ui-verify.mjs` | The 25 UI/lifecycle cases, no-fake-progress, no hardcoded version |
-| `scripts/release-gate-verify.mjs` | Publish refusals, version authority, signing hygiene |
-| `scripts/release-verify.mjs` | Manifest checked before publish (CI) |
+| `scripts/release-gate-verify.mjs` | Publish refusals (R1–R11), staging against the real Tauri layout (T1–T20), the Linux patch sequence (P1–P10), version authority, signing hygiene |
+| `scripts/release-verify.mjs` | Manifest checked before publish (CI), against the client's own applicability gate |
