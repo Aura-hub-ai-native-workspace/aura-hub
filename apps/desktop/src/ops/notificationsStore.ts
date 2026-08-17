@@ -16,7 +16,8 @@ export type NotificationKind =
   | 'diagnosis-ready'
   | 'health-changed'
   | 'documentation-outdated'
-  | 'architecture-warning';
+  | 'architecture-warning'
+  | 'update-available';
 
 export interface AuraNotification {
   id: string;
@@ -150,4 +151,5 @@ export const NOTIFICATION_KIND_META: Record<NotificationKind, { label: string; i
   'health-changed': { label: 'Health changed', icon: 'activity', tone: 'critical' },
   'documentation-outdated': { label: 'Documentation outdated', icon: 'doc', tone: 'attention' },
   'architecture-warning': { label: 'Architecture warning', icon: 'architecture', tone: 'critical' },
+  'update-available': { label: 'Update available', icon: 'deploy', tone: 'info' },
 };

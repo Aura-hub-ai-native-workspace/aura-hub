@@ -1,6 +1,6 @@
 [package]
 name = "aura-hub"
-version = "0.1.0"
+version = "0.1.2"
 description = "AURA Hub — an AI Operating Environment"
 authors = ["AURA"]
 edition = "2021"
@@ -18,6 +18,26 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# The updater and the restart that follows it. Both are desktop-only by
+# construction — there is no mobile target here — and both are declared
+# under the desktop cfg so a future mobile build cannot accidentally pull
+# in an updater that cannot work there.
+#
+# Signature verification lives inside `tauri-plugin-updater`: it checks the
+# minisign signature of the update metadata and artifact against the public
+# key in tauri.conf.json before anything is installed. AURA does not
+# reimplement that, and must never work around it.
+[target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+# The updater asks "which artifact is for this machine?" before it asks for
+# one, and `@tauri-apps/plugin-os` answers that in the renderer by reading a
+# global that the RUST half of this plugin injects. The JS dependency alone
+# is therefore not a dependency at all — it is a read of something nobody
+# provides. Omitting this line is what left v0.1.2 unable to check for
+# updates: `platform()` threw on every call, on every platform.
+tauri-plugin-os = "2"
 
 # Only for SIGTERM on shutdown. `Child::kill` sends SIGKILL, which would
 # deny the service the graceful close its SIGTERM handler performs.
