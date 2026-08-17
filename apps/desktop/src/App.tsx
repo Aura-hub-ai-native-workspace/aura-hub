@@ -10,6 +10,7 @@ import { useEditorStore } from './editor/editorStore';
 import { useLayoutStore } from './ops/layoutStore';
 import { WindowSwitcher } from './ops/WindowSwitcher';
 import { useNotificationsFeed } from './ops/useNotificationsFeed';
+import { AppImageInstallPrompt } from './components/AppImageInstallPrompt';
 import { restoreSession, saveSession } from './ops/session';
 import { startMemoryRecorder } from './ops/memoryRecorder';
 import { startAgentEngine } from './ops/agentEngine';
@@ -112,6 +113,8 @@ export function App() {
         onRun={(cmd) => pushRecentCommand(cmd.id)}
       />
       <WindowSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
+      {/* Renders only for a portable AppImage that is not already installed. */}
+      <AppImageInstallPrompt />
       {!onboarded ? (
         <OnboardingFlow onComplete={completeOnboarding} />
       ) : (

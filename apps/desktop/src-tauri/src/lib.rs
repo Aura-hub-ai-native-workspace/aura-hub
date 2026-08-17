@@ -12,6 +12,7 @@
 //! governed path (Capability Fabric → policy → approval → audit). The
 //! desktop shell must not become a way around that.
 
+mod appimage;
 mod service;
 
 use serde::Serialize;
@@ -278,6 +279,9 @@ pub fn run() {
             code_read_file,
             code_write_file,
             code_create_file,
+            appimage::appimage_status,
+            appimage::appimage_install,
+            appimage::appimage_uninstall,
         ])
         .setup(move |app| {
             let script = resolve_service_script(app);
