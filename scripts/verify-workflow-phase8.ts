@@ -28,6 +28,8 @@
  *       capability, malformed workflow, restart-during-pause
  *   J — security scan: the runtime execution layer has no shell/process
  *       bypass (no child_process/spawn/execFile/fork/eval/new Function)
+ *   K — source integrity: no Workflow Engine source file carries the
+ *       width-truncation marker that took main red in f587371
  *
  * Everything runs in an isolated AURA_HOME temp dir. Failures print
  * FAIL; a non-zero exit is only produced for genuine test failures.
@@ -984,6 +986,73 @@ function testSecurityScan(): void {
 }
 
 /* ══════════════════════════════════════════════════════════════════
+   K — source integrity
+   ══════════════════════════════════════════════════════════════════ */
+
+/**
+ * A tool that reads a file through a width-limited view and then writes
+ * that view back leaves every over-long line cut short with a literal
+ * `[...]` marker. That is exactly how `f587371` landed a `workflow/nodes.ts`
+ * whose long lines had been chopped, taking `main` red for a day.
+ *
+ * Typecheck catches the TypeScript case, but only because the damage there
+ * happened to break the parse. It says nothing about the `.mjs` harnesses,
+ * `package.json` or the docs that this engine also depends on, and nothing
+ * about a truncation that stays syntactically valid. This scan closes that
+ * gap over the whole Workflow Engine surface.
+ *
+ * The signature is deliberately narrow: a line that *ends* with `[...]` and
+ * is long enough to have been truncated. A real empty-spread `[...]` closing
+ * a 120-character line is not something anyone writes, so this does not
+ * collide with legitimate spread syntax.
+ */
+const TRUNCATION_MIN_LEN = 120;
+
+function truncatedLines(src: string): Array<{ n: number; text: string }> {
+  return src
+    .split('\n')
+    .map((text, i) => ({ n: i + 1, text }))
+    .filter(({ text }) => text.length >= TRUNCATION_MIN_LEN && text.endsWith('[...]'));
+}
+
+function testSourceIntegrity(): void {
+  const root = path.resolve(import.meta.dirname, '..');
+
+  console.log('\n[K1] the truncation detector actually fires (negative control)');
+  const intact = "const a = spec('x', 'y', 'source', 'a real description that is quite long indeed and keeps going past the limit', {});";
+  const chopped = `${intact.slice(0, 160)}[...]`;
+  check('a truncated line is detected', truncatedLines(chopped).length === 1);
+  check('an intact line is not flagged', truncatedLines(intact).length === 0);
+  check('a short line ending in [...] is not flagged', truncatedLines('const x = [...]').length === 0);
+  check('legitimate spread is not flagged', truncatedLines(`const merged = [...${'a'.repeat(140)}];`).length === 0);
+
+  console.log('\n[K2] no Workflow Engine source file has been truncated');
+  const targets = [
+    ...fs.readdirSync(path.join(root, 'packages/workflow/src'))
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => `packages/workflow/src/${f}`),
+    ...fs.readdirSync(path.join(root, 'packages/workflow/src/runtime'))
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => `packages/workflow/src/runtime/${f}`),
+    ...fs.readdirSync(path.join(root, 'packages/ai-service/src/workflow'))
+      .filter((f) => f.endsWith('.ts'))
+      .map((f) => `packages/ai-service/src/workflow/${f}`),
+    'packages/workflow/package.json',
+    'packages/ai-service/src/workflowBridge.ts',
+    'packages/ai-service/src/server.ts',
+    'scripts/verify-workflow-domain.ts',
+    'scripts/verify-workflow-runtime.ts',
+    'scripts/verify-workflow-phase6.ts',
+    'scripts/verify-workflow-phase7.ts',
+    'scripts/verify-workflow-phase8.ts',
+  ];
+  for (const rel of targets) {
+    const hits = truncatedLines(fs.readFileSync(path.join(root, rel), 'utf8'));
+    check(`intact: ${rel}`, hits.length === 0, hits.map((h) => `line ${h.n}`).join(', '));
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
    Environment-dependent checks (E1/F2) — honest reporting only
    ══════════════════════════════════════════════════════════════════ */
 
@@ -1019,6 +1088,7 @@ async function main(): Promise<void> {
   await testStateMachine();
   await testFailureInjection();
   testSecurityScan();
+  testSourceIntegrity();
   await testEnvironmentDependent();
 
   console.log(`\nPhase 8: ${passed} passed · ${failed} failed · ${notVerified} not verified`);
