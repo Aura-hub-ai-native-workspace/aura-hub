@@ -77,7 +77,14 @@ fn main() {
 
 console.log('building the integration harness…');
 try {
-  execFileSync('cargo', ['build', '--quiet', '--release'], { cwd: harness, stdio: 'pipe' });
+  // CARGO_TARGET_DIR must not be inherited: a caller that sets it (the release
+  // matrix does) would send this binary to a shared target directory, and the
+  // path below would not exist. The harness keeps its own.
+  execFileSync('cargo', ['build', '--quiet', '--release'], {
+    cwd: harness,
+    stdio: 'pipe',
+    env: { ...process.env, CARGO_TARGET_DIR: path.join(harness, 'target') },
+  });
 } catch (e) {
   console.log('FAIL  harness did not build —', String(e.stderr || e).slice(0, 500));
   process.exit(1);

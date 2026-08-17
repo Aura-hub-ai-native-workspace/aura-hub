@@ -21,11 +21,25 @@ const ONBOARDED_KEY = 'aura-onboarded';
  * about the active project, and nothing reconciled them.
  */
 const ACTIVE_PROJECT_KEY = 'aura.activeProjectId';
+const AUTO_UPDATE_KEY = 'aura-auto-update-check';
 
 /** Read the persisted theme so a relaunch (and its boot) respects it. */
 function initialTheme(): Theme {
   if (typeof localStorage === 'undefined') return 'light';
   return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light';
+}
+
+/**
+ * Whether AURA may look for updates in the background.
+ *
+ * Defaults to ON: a desktop application that silently stops telling users
+ * about security fixes is the worse failure. Checking is a metadata
+ * request and never installs anything on its own — every install still
+ * needs an explicit click.
+ */
+function initialAutoUpdateCheck(): boolean {
+  if (typeof localStorage === 'undefined') return true;
+  return localStorage.getItem(AUTO_UPDATE_KEY) !== 'false';
 }
 
 /** First-run onboarding only ever plays once per install. */
@@ -100,6 +114,8 @@ interface AppState {
   recentCommandIds: string[];
   /** Active theme (also reflected on <html data-theme>). */
   theme: Theme;
+  /** Whether AURA checks for updates in the background at startup. */
+  autoUpdateCheck: boolean;
 
   setNav: (nav: NavKey) => void;
   setBooted: (booted: boolean) => void;
@@ -129,6 +145,7 @@ interface AppState {
   toggleRightPanel: () => void;
   setPaletteOpen: (open: boolean) => void;
   toggleTheme: () => void;
+  setAutoUpdateCheck: (enabled: boolean) => void;
   openAddProjectDialog: () => void;
   closeAddProjectDialog: () => void;
   openCreateProjectDialog: () => void;
@@ -150,6 +167,7 @@ export const useAppStore = create<AppState>((set) => ({
   onboarded: initialOnboarded(),
   recentCommandIds: [],
   theme: initialTheme(),
+  autoUpdateCheck: initialAutoUpdateCheck(),
 
   setBooted: (booted) => set({ booted }),
   completeOnboarding: () => {
@@ -205,6 +223,12 @@ export const useAppStore = create<AppState>((set) => ({
   closeAddProjectDialog: () => set({ addProjectDialogOpen: false }),
   openCreateProjectDialog: () => set({ createProjectDialogOpen: true }),
   closeCreateProjectDialog: () => set({ createProjectDialogOpen: false }),
+  setAutoUpdateCheck: (autoUpdateCheck) => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(AUTO_UPDATE_KEY, autoUpdateCheck ? 'true' : 'false');
+    }
+    set({ autoUpdateCheck });
+  },
   toggleTheme: () =>
     set((s) => {
       const theme = s.theme === 'light' ? 'dark' : 'light';

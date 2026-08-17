@@ -30,6 +30,34 @@ fn environment_ping() -> String {
     "aura://ready".to_string()
 }
 
+/// How this copy of AURA Hub was installed, which decides whether the
+/// updater can replace it in place.
+///
+/// Read-only and argument-free: it inspects the process's own environment
+/// and nothing else. It executes nothing, downloads nothing, and cannot be
+/// pointed at anything by a caller — the renderer may ask *what am I*, and
+/// that is the whole of it.
+///
+/// Linux is the only platform where this is ambiguous. Tauri's Linux
+/// updater replaces the running AppImage, which sets `APPIMAGE` for the
+/// process it launches; a `.deb` install has no such variable and is owned
+/// by the system package manager, which the updater must not fight.
+/// Windows and macOS installs are always self-updating.
+#[tauri::command]
+fn update_install_kind() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        match std::env::var("APPIMAGE") {
+            Ok(v) if !v.is_empty() => "self-updating".to_string(),
+            _ => "managed".to_string(),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "self-updating".to_string()
+    }
+}
+
 /// Directories the Code Workspace never lists — generated/vendored
 /// trees that would otherwise blow up tree size and response time on
 /// real-world projects.
@@ -261,7 +289,28 @@ pub fn run() {
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(DEFAULT_PORT);
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // The updater, the restart it needs, and the OS identity it asks for
+    // first. Registered before anything else so the plugins are available
+    // for the whole app lifetime.
+    //
+    // `tauri_plugin_os` is what injects the global the renderer reads to
+    // learn its platform and architecture. Without it the updater cannot
+    // name its own target, so it cannot tell which artifact in a manifest
+    // is for this machine — and it fails before it ever reaches the
+    // network. It answers "what am I", nothing more.
+    //
+    // `cfg` rather than an unconditional call because the plugins are
+    // declared under the same desktop cfg in Cargo.toml — on any other
+    // target the crates are absent and this would not compile.
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    let builder = builder
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+
+    let app = builder
         .manage(ServiceState {
             handle: ServiceHandle::new(port),
             port,
@@ -282,6 +331,7 @@ pub fn run() {
             appimage::appimage_status,
             appimage::appimage_install,
             appimage::appimage_uninstall,
+            update_install_kind,
         ])
         .setup(move |app| {
             let script = resolve_service_script(app);
