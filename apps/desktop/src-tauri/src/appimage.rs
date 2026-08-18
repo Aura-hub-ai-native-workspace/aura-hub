@@ -98,17 +98,6 @@ pub struct IntegrationStatus {
     pub running_installed: bool,
     pub app_path: Option<String>,
     pub desktop_path: Option<String>,
-    /// Whether the in-app updater can replace THIS copy of the application.
-    ///
-    /// False for a distribution package: `tauri-plugin-updater` replaces a
-    /// file in place, and a .deb or .rpm puts that file under a root-owned
-    /// system prefix. The update would download, verify, and then fail to
-    /// write — which reads to a user as a broken updater rather than as an
-    /// unsupported installation method. Reporting it up front is the fix;
-    /// attempting it silently is the bug.
-    pub updatable: bool,
-    /// Why not, in words the UI can show verbatim. `None` when it is.
-    pub update_note: Option<String>,
 }
 
 fn home() -> Option<PathBuf> {
@@ -151,24 +140,6 @@ fn appdir() -> Option<PathBuf> {
     std::env::var_os("APPDIR").map(PathBuf::from).filter(|p| p.exists())
 }
 
-/// True when this copy was installed by a distribution package manager.
-///
-/// The AppImage never lands under a system prefix — it runs from wherever the
-/// user put it, and installing puts it under `~/.local/lib`. So a binary
-/// under `/usr` or `/opt` with no `$APPIMAGE` set is a .deb or .rpm install,
-/// owned by root and outside this user's authority to replace.
-fn system_wide_install() -> bool {
-    if running_appimage().is_some() {
-        return false;
-    }
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    let path = exe.to_string_lossy().to_string();
-    ["/usr/", "/opt/", "/bin/", "/sbin/"].iter().any(|p| path.starts_with(p))
-}
-
 pub fn status() -> IntegrationStatus {
     let running = running_appimage();
     let app = installed_app();
@@ -181,20 +152,12 @@ pub fn status() -> IntegrationStatus {
         (Some(r), Some(a)) => same_file(r, a),
         _ => false,
     };
-    let packaged = system_wide_install();
     IntegrationStatus {
         is_appimage: running.is_some(),
         installed,
         running_installed,
         app_path: app.map(|p| p.display().to_string()),
         desktop_path: desk.map(|p| p.display().to_string()),
-        updatable: !packaged,
-        update_note: packaged.then(|| {
-            "AURA Hub was installed from a distribution package, so updates come from your \
-             package manager rather than from inside the application. To get updates here \
-             instead, install the Linux download from the AURA Hub website."
-                .to_string()
-        }),
     }
 }
 
