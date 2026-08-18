@@ -171,6 +171,21 @@ jobs:
       - name: Stage release artifacts
         run: node scripts/stage-release-artifacts.mjs
 
+      # The Linux download that can carry a permission bit. A browser writes
+      # every download 0644 — HTTP has no field for mode, so the client picks
+      # it — which means a clicked AppImage cannot execute, and a desktop with
+      # nothing registered for its type hands the file back to the browser,
+      # which downloads it again. Inside a tar archive the mode travels with
+      # the payload, so extracting yields an AppImage that already runs.
+      #
+      # It runs AFTER staging deliberately: it wraps the patched, renamed,
+      # signed artifact byte for byte. Wrapping what the bundler left in
+      # target/ would ship bytes the release never verified. The archive is
+      # not an updater target and is skipped by the manifest builder.
+      - name: Build the Linux tarball
+        if: runner.os == 'Linux'
+        run: node scripts/build-linux-tarball.mjs
+
       # Installer verification. An artifact existing is not an artifact that
       # installs, so each platform installs its own and launches what the
       # installer put on disk — not what the build left in target/.
