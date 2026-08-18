@@ -772,11 +772,13 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * at each release — that edit IS the check, and `bump-version.mjs`
    * deliberately does not touch it.
    *
-   * 0.1.2 is the first updater-enabled release: the first built by the
-   * repaired pipeline, and the first whose artifacts a client can
-   * actually fetch and verify.
+   * 0.1.3 is the first release from the unified mainline: the first to
+   * carry the Workflow Engine, Workspace 2.0 and the AppImage desktop
+   * integration alongside the updater, and the first whose updater can
+   * actually finish a check — 0.1.2 shipped without the OS plugin, so
+   * `platform()` threw and the state machine parked in `checking`.
    */
-  const RELEASE_CANDIDATE = '0.1.2';
+  const RELEASE_CANDIDATE = '0.1.3';
   check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);
 }
 
