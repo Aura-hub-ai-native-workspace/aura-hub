@@ -295,6 +295,47 @@ try {
     .filter((f) => read(path.join('apps/desktop/src', f)).includes('invokeAsUser('));
   check('G7  only the install button uses the direct channel',
     uiCallers.length === 1 && uiCallers[0].endsWith('NodeInspector.tsx'), uiCallers.join(', ') || 'none');
+  /* ══ [H] The governed path can actually be completed ══════════ */
+  section('[H] A gated action can be answered and resumed — the human path');
+
+  const parked = await invoke('system.install', { nodeId: 'terraform' });
+  check('H1  a parked invocation names the approval it is waiting on',
+    typeof parked.approvalId === 'string' && parked.approvalId.length > 0,
+    parked.approvalId ?? 'absent');
+
+  const decided = await (await fetch(`${API}/fabric/approvals/${parked.approvalId}/decide`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ granted: true }),
+  })).json();
+  check('H2  a human can answer it', decided.approval?.state === 'granted', `state ${decided.approval?.state}`);
+
+  const resumed = await invoke('system.install', { nodeId: 'terraform' },
+    { context: { resumeApprovalId: parked.approvalId } });
+  check('H3  naming the answered approval resumes execution',
+    resumed.outcome !== 'awaiting-approval' && !!resumed.output,
+    `outcome ${resumed.outcome}`);
+
+  const replayed = await invoke('system.install', { nodeId: 'terraform' },
+    { context: { resumeApprovalId: parked.approvalId } });
+  check('H4  NEGATIVE — the grant is single-use, a replay parks again',
+    replayed.outcome === 'awaiting-approval', `outcome ${replayed.outcome}`);
+
+  const parkedOther = await invoke('agent.delegate', { task: 'noop' });
+  const crossed = await invoke('system.install', { nodeId: 'terraform' },
+    { context: { resumeApprovalId: parkedOther.approvalId } });
+  check('H5  NEGATIVE — a grant for one capability cannot be spent on another',
+    crossed.outcome === 'awaiting-approval', `outcome ${crossed.outcome}`);
+
+  const invented = await invoke('system.install', { nodeId: 'terraform' },
+    { context: { resumeApprovalId: 'apr-does-not-exist' } });
+  check('H6  NEGATIVE — an invented approval id authorizes nothing',
+    invented.outcome === 'awaiting-approval', `outcome ${invented.outcome}`);
+
+  const undecided = await invoke('system.install', { nodeId: 'terraform' });
+  const unanswered = await invoke('system.install', { nodeId: 'terraform' },
+    { context: { resumeApprovalId: undecided.approvalId } });
+  check('H7  NEGATIVE — a pending (unanswered) approval authorizes nothing',
+    unanswered.outcome === 'awaiting-approval', `outcome ${unanswered.outcome}`);
 } catch (e) {
   check('suite completed', false, e.message);
 } finally {

@@ -234,6 +234,24 @@ export interface InvocationContext {
    * quietly replaced with a working one.
    */
   nodeId?: string;
+  /**
+   * Resume a specific approval the human has already answered.
+   *
+   * A gated invocation parks and the Fabric keys its question by
+   * `approvalKey()`. For a mission task that key is stable
+   * (`mission:task:capability`), so retrying the same task finds the
+   * grant. For a standalone invocation it is `inv:<invocationId>` — and a
+   * retry is a *new* invocation with a new id, so it could never find the
+   * grant its user had just given. The approval sat granted and unspent
+   * while the caller was told to ask again.
+   *
+   * Naming the approval closes that. It grants nothing on its own: the
+   * request must already be `granted` (which only `decideApproval` can
+   * do, from a human answer), must not already be consumed, and must be
+   * for this same capability. It is then spent exactly once, through the
+   * same `consumeApproval` path every other grant uses.
+   */
+  resumeApprovalId?: string;
 }
 
 export interface Invocation {
@@ -287,6 +305,18 @@ export interface InvocationResult {
   durationMs: number;
   /** How many attempts the recovery loop made, including the first. */
   attempts: number;
+  /**
+   * The approval this invocation is parked on, when `outcome` is
+   * `awaiting-approval`.
+   *
+   * Without it a caller is told to wait for a question it cannot name.
+   * A mission task did not need one — its approval key is derived from
+   * the mission and task, so a retry finds the grant — but a standalone
+   * invocation is keyed by its own id, and a retry is a new invocation.
+   * This is the handle that lets such a caller answer the question and
+   * come back (`InvocationContext.resumeApprovalId`).
+   */
+  approvalId?: string;
   /**
    * Execution-state attestation of the final attempt, with the same
    * semantics as `ExecutorResult.effectStarted`: `false` = proven not

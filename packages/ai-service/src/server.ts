@@ -566,6 +566,12 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             // boot minted into the user's config directory, which is what
             // AURA's own window does and nothing else has reason to.
             initiator: isUserDirect(req) ? 'user-direct' : 'request',
+            // Names an approval a human already answered through
+            // `/fabric/approvals/:id/decide`. Unlike the grant this route
+            // used to accept, it authorizes nothing by itself — the
+            // Fabric spends it only if it is genuinely granted, unspent,
+            // and for this same capability.
+            resumeApprovalId: typeof raw.resumeApprovalId === 'string' ? raw.resumeApprovalId : undefined,
             // `approvedCapabilities` is deliberately NOT read here.
             //
             // It used to be, straight from the request body, and that made

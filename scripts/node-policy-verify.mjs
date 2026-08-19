@@ -34,12 +34,35 @@ const post = async (p, body) =>
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   })).json();
 
-const invoke = (capabilityId, input, { nodeId, approve = false, context = {} } = {}) =>
-  post('/fabric/invoke', {
+
+/**
+ * Authorize the way a human does: ask, answer, resume.
+ *
+ * `/fabric/invoke` no longer accepts a grant in the request body — that
+ * made every floor self-satisfiable by any local caller. The real path is
+ * the one the UI takes: the invocation parks with an `approvalId`, a
+ * person answers it through `/fabric/approvals/:id/decide`, and the
+ * caller resumes by naming that approval. The grant is still single-use
+ * and still matched against this capability, so this simulates the human
+ * rather than routing around them.
+ */
+const approveAndRun = async (body) => {
+  const parked = await post('/fabric/invoke', body);
+  if (parked.outcome !== 'awaiting-approval' || !parked.approvalId) return parked;
+  await post(`/fabric/approvals/${parked.approvalId}/decide`, { granted: true });
+  return post('/fabric/invoke', {
+    ...body,
+    context: { ...(body.context ?? {}), resumeApprovalId: parked.approvalId },
+  });
+};
+
+const invoke = (capabilityId, input, { nodeId, approve = false, context = {} } = {}) => {
+  const body = {
     capabilityId, input,
     context: { projectId: PROJECT, ...(nodeId ? { nodeId } : {}), ...context },
-    ...(approve ? { approvedCapabilities: [capabilityId] } : {}),
-  });
+  };
+  return approve ? approveAndRun(body) : post('/fabric/invoke', body);
+};
 
 const setPolicy = (patch) => post('/fabric/policy', patch);
 const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
