@@ -254,7 +254,7 @@ export function planTaskInvocation(task: TaskView, projectId: string | null): Ta
     case 'git-operation':
       return {
         kind: 'unbound',
-        reason: 'Git operations are resolved and executed through Mission Control v3's dedicated git executor, not through direct capability invocation.',
+        reason: 'Git operations are resolved and executed through Mission Control v3\'s dedicated git executor, not through direct capability invocation.',
       };
 
     case 'file-operation':
@@ -299,13 +299,13 @@ function deriveAssumptions(intent: IntentView, signals: SignalsView): string[] {
     out.push('No deadline was given, so the plan is ordered by dependency rather than by time.');
   }
   if (intent.constraints.length === 0) {
-    out.push('No constraints were stated, so the project's existing conventions and stack were taken as the constraints.');
+    out.push('No constraints were stated, so the project\'s existing conventions and stack were taken as the constraints.');
   }
   if (intent.secondaryGoals.length === 0) {
     out.push(`Treated as a single objective: ${intent.primaryGoal}`);
   }
   if (intent.requiredQuality === 'standard') {
-    out.push('Quality bar was not specified, so it was planned to the project's normal standard rather than as a prototype.');
+    out.push('Quality bar was not specified, so it was planned to the project\'s normal standard rather than as a prototype.');
   }
   if (signals.buildStatus.available === false) {
     out.push(`Build status could not be read (${signals.buildStatus.reason}), so no task assumes a currently-passing build.`);
