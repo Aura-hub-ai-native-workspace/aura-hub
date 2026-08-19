@@ -1,6 +1,7 @@
 import { Suspense, lazy } from 'react';
 import type { ProjectTab } from '@aura/core';
 import { Overview } from './Overview';
+import { Context } from './Context';
 import { Architecture } from './Architecture';
 import { Frontend } from './Frontend';
 import { Backend } from './Backend';
@@ -31,6 +32,7 @@ const EditorWorkspace = lazy(() =>
 export function ProjectSection({ tab, projectId }: { tab: ProjectTab; projectId: string }) {
   switch (tab) {
     case 'overview': return <Overview projectId={projectId} />;
+    case 'context': return <Context projectId={projectId} />;
     case 'architecture': return <Architecture projectId={projectId} />;
     case 'code':
       return (

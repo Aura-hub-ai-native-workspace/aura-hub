@@ -188,6 +188,10 @@ export const FloatingWindow = memo(function FloatingWindow({
             : undefined
         }
         onPointerDownCapture={() => focusWindow(win.id)}
+        // Observable identity for verification runs — the same convention the
+        // Hub canvas uses for its nodes. No visual effect.
+        data-testid="workspace-window"
+        data-panel-kind={win.kind}
         className={cn(
           'absolute z-20 flex flex-col overflow-hidden rounded-2xl border bg-surface backdrop-blur-xl',
           focused ? 'border-line-strong' : 'border-line',

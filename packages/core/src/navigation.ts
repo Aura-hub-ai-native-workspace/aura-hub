@@ -20,7 +20,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'home', label: 'Home', icon: 'home', group: 'primary' },
   { key: 'workflows', label: 'Automation', icon: 'workflows', group: 'primary' },
   { key: 'workspace', label: 'Workspace', icon: 'layout', group: 'primary' },
-  { key: 'marketplace', label: 'Extended Environment', icon: 'marketplace', group: 'primary' },
+  { key: 'environment', label: 'Connected Environment', icon: 'link', group: 'primary' },
   { key: 'settings', label: 'Settings', icon: 'settings', group: 'system' },
 ];
 
@@ -32,6 +32,9 @@ interface ProjectTabDef {
 
 export const PROJECT_TABS: ProjectTabDef[] = [
   { key: 'overview', label: 'Overview', icon: 'grid' },
+  // Second on purpose: "what does AURA know about this project?" is the
+  // question a user asks before trusting anything else in the workspace.
+  { key: 'context', label: 'Context', icon: 'spark' },
   { key: 'architecture', label: 'Architecture', icon: 'architecture' },
   { key: 'code', label: 'Code', icon: 'code' },
   { key: 'frontend', label: 'Frontend', icon: 'layout' },
@@ -52,6 +55,6 @@ export const NAV_TITLES: Record<NavKey, string> = {
   home: 'Home',
   workflows: 'Automation',
   workspace: 'Workspace',
-  marketplace: 'Extended Environment',
+  environment: 'Connected Environment',
   settings: 'Settings',
 };

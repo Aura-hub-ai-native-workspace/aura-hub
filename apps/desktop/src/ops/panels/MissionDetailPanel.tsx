@@ -18,10 +18,11 @@ export default function MissionDetailPanel() {
   const focused = useLayoutStore((s) => s.focused);
   const setFocused = useLayoutStore((s) => s.setFocused);
   const openId = useWorkspace((s) => s.openId);
-  const project = useWorkspace((s) => s.projects.find((p) => p.id === (focused.projectId ?? s.openId)));
+  const project = useWorkspace((s) => s.projects.find((p) => p.id === s.openId));
   const profile = useWorkspace((s) => s.profile);
 
-  const projectId = focused.projectId ?? openId;
+  // The open project, always. A detail focus names an entity, never a project.
+  const projectId = openId;
   const missions = useMissions(projectId);
 
   useEffect(() => {
@@ -53,7 +54,7 @@ export default function MissionDetailPanel() {
           {list.map((m) => (
             <button
               key={m.id}
-              onClick={() => setFocused({ projectId: projectId, missionId: m.id })}
+              onClick={() => setFocused({ missionId: m.id })}
               className="flex w-full items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 text-left transition-colors hover:bg-surface-hover"
             >
               <Icon name="deploy" size={14} className="text-text-subtle" />

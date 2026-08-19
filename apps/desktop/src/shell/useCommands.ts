@@ -31,7 +31,7 @@ export function useCommands(): Command[] {
         { id: 'nav-home', title: 'Go to Home', section: 'Navigate', icon: 'home', run: () => setNav('home') },
         { id: 'nav-workflows', title: 'Go to Workflow', section: 'Navigate', icon: 'workflows', run: () => setNav('workflows') },
         { id: 'nav-workspace', title: 'Go to Workspace', section: 'Navigate', icon: 'layout', run: () => setNav('workspace') },
-        { id: 'nav-marketplace', title: 'Go to Extended Environment', section: 'Navigate', icon: 'marketplace', run: () => setNav('marketplace') },
+        { id: 'nav-environment', title: 'Go to Connected Environment', section: 'Navigate', icon: 'link', keywords: ['nodes', 'tools', 'connect', 'integrations'], run: () => setNav('environment') },
         { id: 'nav-settings', title: 'Go to Settings', section: 'Navigate', icon: 'settings', run: () => setNav('settings') },
         // Knowledge/AI/Missions/Dashboard/Twin/Governance no longer have their
         // own nav destinations — they're Workspace panels now (see 'Actions'

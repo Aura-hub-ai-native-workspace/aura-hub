@@ -15,6 +15,7 @@ import { aiClient } from '../ai/aiClient';
 import { missionClient, type MissionSummary } from '../ai/missionClient';
 import { diagnosisClient, type DiagnosisSummary } from '../ai/diagnosisClient';
 import { useLayoutStore, type SearchScope } from './layoutStore';
+import { openProjectDetail } from './openDetail';
 
 export interface SearchHit {
   id: string;
@@ -56,16 +57,17 @@ function openProjectShell(projectId: string): void {
   if (useAppStore.getState().activeProjectId !== projectId) app.openProject(projectId);
 }
 
+/* These used to focus + open the panel and THEN switch project, which had
+   two faults: a declined switch left the panel pointing at a project the
+   user had refused to move to, and the later switch retired the window
+   that had just been opened. `openProjectDetail` does it in the one
+   correct order and abandons everything if the switch is declined. */
 function openMission(projectId: string, missionId: string): void {
-  useLayoutStore.getState().setFocused({ projectId, missionId });
-  useLayoutStore.getState().openPanel('mission-detail');
-  openProjectShell(projectId);
+  openProjectDetail({ projectId, focus: { missionId }, panel: 'mission-detail' });
 }
 
 function openDiagnosis(projectId: string, id: string): void {
-  useLayoutStore.getState().setFocused({ projectId, diagnosisId: id });
-  useLayoutStore.getState().openPanel('diagnostics');
-  openProjectShell(projectId);
+  openProjectDetail({ projectId, focus: { diagnosisId: id }, panel: 'diagnostics' });
 }
 
 async function searchFiles(query: string): Promise<SearchHit[]> {
@@ -263,9 +265,9 @@ async function searchMemory(query: string): Promise<SearchHit[]> {
         subtitle: `${project.name} · ${m.kind}`,
         icon: 'memory' as const,
         action: () => {
-          useLayoutStore.getState().setFocused({ projectId: project.id });
-          useLayoutStore.getState().openPanel('engineering-memory');
-          openProjectShell(project.id);
+          // Memory is project-scoped but names no entity, so the focus is
+          // cleared rather than carrying the previous project's mission.
+          openProjectDetail({ projectId: project.id, focus: {}, panel: 'engineering-memory' });
         },
       });
     }

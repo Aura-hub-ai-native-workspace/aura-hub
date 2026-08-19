@@ -1,16 +1,16 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AURA Hub",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "identifier": "com.aura.hub",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": {
-      "script": "npm run dev",
+      "script": "npm run desktop:prepare",
       "wait": false
     },
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run desktop:prepare:build"
   },
   "app": {
     "windows": [
@@ -28,7 +28,8 @@
         "transparent": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#ffffff",
+        "visible": false
       }
     ],
     "security": {
@@ -37,7 +38,17 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "createUpdaterArtifacts": true,
+    "targets": ["appimage", "deb"],
+    "resources": ["resources/**/*"],
+    "linux": {
+      "deb": {
+        "depends": ["nodejs"]
+      }
+    },
+    "category": "DeveloperTool",
+    "shortDescription": "AURA Hub — an AI Operating Environment",
+    "longDescription": "AURA Hub is an AI-native operating environment: missions, a governed Capability Fabric, and a Connected Environment of real local tools. External tools stay external — AURA detects what is installed and routes every action through its policy, approval and audit path.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -45,5 +56,16 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg0NjlDNDlFNkMzRDYyOTcKUldTWFlqMXNuc1JwaEVzTWxiVFQ5SEN2dENqdnh4ckZPcFF5Mks4aU5zem15dmdBZE52ZklsaFEK",
+      "endpoints": [
+        "https://github.com/Aura-hub-ai-native-workspace/aura-hub/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
