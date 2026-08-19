@@ -86,9 +86,39 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # GitHub's Ubuntu images point apt at `azure.archive.ubuntu.com`, and
+      # that mirror's throughput collapses intermittently. Across eighteen
+      # recent runs on nine different branches — including `main` and the
+      # release tags — this one step took anywhere from 21 seconds to 85
+      # minutes, and every completed instance still SUCCEEDED. The logs show
+      # index files arriving at roughly 40 kB/s rather than stalling: apt is
+      # progressing, just pathologically slowly.
+      #
+      # That makes it a runner-infrastructure problem, not a build one.
+      # Nothing in this repository has been read at this point — only
+      # checkout, setup-node and rust-toolchain precede it — and the Windows
+      # and macOS jobs on the same commit are unaffected.
+      #
+      # So use Ubuntu's own HTTPS archive, which responds normally. Only the
+      # Azure host is rewritten: if a future runner image stops using it,
+      # this becomes a no-op instead of a silent misconfiguration. The
+      # rewrite lands before the first `apt-get update`, so every later apt
+      # call in this job inherits it.
+      #
+      # Deliberately NOT a retry loop and NOT a step timeout. A retry would
+      # hide the slowness rather than remove it, and a timeout tight enough
+      # to catch a hang would have failed the 85-minute run that succeeded.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+            [ -f "$f" ] || continue
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$f"
+          done
+          # Printed so the next person investigating a slow apt can see which
+          # mirror actually served this run without re-deriving it.
+          echo "apt mirrors in use:"
+          grep -rhoE 'https?://[^ ]*\.ubuntu\.com[^ ]*' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | sort -u
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
