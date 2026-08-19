@@ -20,6 +20,7 @@ import {
 } from '@aura/connected-environment';
 import { fabricClient, type InstallResultView } from '../ai/fabricClient';
 import { STATUS_LABEL, STATUS_TONE, TONE_DOT, TONE_TEXT } from './presentation';
+import { useEnvironmentStore } from './environmentStore';
 
 const TRANSPORT_EXPLAINER: Record<EnvironmentNode['entry']['transport'], string> = {
   internal: 'Runs inside AURA Hub. No network, no credentials, no quota.',
@@ -165,13 +166,29 @@ export function NodeInspector({
 }
 
 /**
- * Governed installation, and the one rule that matters here.
+ * Installation, and the two rules that matter here.
  *
- * A `guided` result means AURA ran NOTHING — it is a handoff to the user,
- * not a failure, and rendering it as an error would misreport what
- * happened. So every branch below keys off `installOutcome`, never off the
- * invocation's `ok`/`outcome`, which is `failed` for a guided result by
- * the compatibility contract in §25.1.
+ * 1. Clicking this button IS the authorization.
+ *
+ *    The install used to travel `fabricClient.invoke`, which made it a
+ *    *request* — and `system.modify` floors a request to
+ *    `require-approval`, so the person who had just clicked "Install pnpm"
+ *    was told to go to Mission Control and approve their own click. The
+ *    floor was not wrong; the channel was. `invokeAsUser` presents the
+ *    window's own token, policy sees an attested user action, and the
+ *    consent the floor exists to obtain is the click that already
+ *    happened. Nothing is skipped for a model: an agent asking for the
+ *    same capability is gated exactly as before.
+ *
+ *    The precedent is `acceptMissionTask` — accepting a proposal is
+ *    already treated as the operator's authorization for the write,
+ *    derived server-side. This applies the same idea to a second button.
+ *
+ * 2. A `guided` result means AURA ran NOTHING — it is a handoff to the
+ *    user, not a failure, and rendering it as an error would misreport
+ *    what happened. So every branch below keys off `installOutcome`,
+ *    never off the invocation's `ok`/`outcome`, which is `failed` for a
+ *    guided result by the compatibility contract in §25.1.
  */
 function InstallPanel({ node }: { node: EnvironmentNode }) {
   const [busy, setBusy] = useState(false);
@@ -179,6 +196,8 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
   const [gate, setGate] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [attempted, setAttempted] = useState(false);
+  const rescan = useEnvironmentStore((s) => s.scan);
 
   const spec = node.entry.install;
   const missing = node.health.status === 'not-installed';
@@ -192,15 +211,28 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
     setError(null);
     setGate(null);
     setResult(null);
+    setAttempted(true);
     try {
-      const res = await fabricClient.invoke('system.install', { nodeId: node.id });
+      const res = await fabricClient.invokeAsUser('system.install', { nodeId: node.id });
       if (res.outcome === 'awaiting-approval') {
-        setGate('This needs your approval before anything runs. Open the approval gate to allow it.');
+        // Reachable, but no longer the ordinary path: browser preview has
+        // no shell to mint a token, and an operator may have raised
+        // `system.install` in workspace policy. Both are legitimate
+        // reasons to still need an answer, so say so plainly rather than
+        // pretending the click was enough.
+        setGate('Your workspace policy asks for this to be approved separately. Open the approval gate to allow it.');
       } else if (res.outcome === 'denied' || res.outcome === 'unsupported') {
         setError(res.detail);
       } else {
-        setResult((res.output as InstallResultView) ?? null);
+        const output = (res.output as InstallResultView) ?? null;
+        setResult(output);
         if (!res.output) setError(res.detail);
+        // Verified present — bring the rest of the app's view of this
+        // machine up to date without making the user go and press Scan.
+        // Only on `installed`: a guided handoff installed nothing, and an
+        // unverified run is precisely the case where re-probing already
+        // failed.
+        if (output?.installOutcome === 'installed') void rescan(true);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -208,6 +240,10 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
       setBusy(false);
     }
   };
+
+  // Every ending except success can be tried again, and the button says so.
+  const retryable =
+    attempted && !busy && (!!error || result?.installOutcome === 'failed' || result?.installOutcome === 'unverified');
 
   const copy = async (text: string) => {
     try {
@@ -227,14 +263,17 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
             onClick={install}
             disabled={busy}
             data-testid="node-install-start"
+            data-install-state={busy ? 'installing' : 'idle'}
             className="rounded-lg bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            {busy ? 'Working…' : `Install ${node.entry.name}`}
+            {busy ? `Installing ${node.entry.name}…` : `Install ${node.entry.name}`}
           </button>
           <span className="text-[10.5px] text-text-subtle">
             {spec.privilege === 'root'
-              ? 'Needs administrator rights — AURA will show you the command.'
-              : 'AURA will ask before it runs anything.'}
+              ? 'Needs administrator rights — AURA will show you the command to run.'
+              : busy
+                ? 'Running the installer now.'
+                : 'Starts as soon as you click.'}
           </span>
         </div>
       )}
@@ -294,8 +333,18 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
       {result?.installOutcome === 'installed' && (
         <p data-testid="node-install-installed" data-install-outcome="installed" className="text-[11.5px] leading-relaxed text-positive">
           {node.entry.name} is installed and verified
-          {result.probe?.version ? ` (${result.probe.version})` : ''}. Scan again to bring it onto the canvas.
+          {result.probe?.version ? ` (${result.probe.version})` : ''}. The environment has been refreshed.
         </p>
+      )}
+
+      {retryable && (
+        <button
+          onClick={install}
+          data-testid="node-install-retry"
+          className="mt-1.5 rounded-lg border border-line px-2 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-line-strong hover:text-text"
+        >
+          Try again
+        </button>
       )}
     </section>
   );

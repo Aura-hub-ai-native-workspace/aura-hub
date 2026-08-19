@@ -185,8 +185,31 @@ export type NodeResolution =
   | { ok: true; node?: NodeRef }
   | { ok: false; code: NodeResolutionFailure; reason: string };
 
+/**
+ * How this invocation reached the Fabric.
+ *
+ * `user-direct` means the request arrived on the channel that only
+ * AURA's own window can use, carrying the token the service minted this
+ * boot. It is an attested statement about the *channel*, never a claim
+ * the caller makes about itself — which is precisely how it differs from
+ * `actor.kind`, and why policy may rely on it.
+ *
+ * Absent means `request`: everything else, including every model- and
+ * mission-initiated action, which is governed exactly as before.
+ */
+export type Initiator = 'user-direct' | 'request';
+
 export interface InvocationContext {
   actor: InvocationActor;
+  /**
+   * Set by the transport, never by the caller. See `Initiator`.
+   *
+   * A direct user action carries its own consent: the person clicked a
+   * labelled control in the trusted UI. That satisfies gates whose whole
+   * purpose is to obtain consent — it does NOT satisfy gates that exist
+   * because an action cannot be undone.
+   */
+  initiator?: Initiator;
   projectId: string | null;
   /** Absolute path the action operates in, when it operates on a project. */
   cwd?: string;

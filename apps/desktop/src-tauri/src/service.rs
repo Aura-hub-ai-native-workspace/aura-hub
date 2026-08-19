@@ -430,7 +430,7 @@ fn home_dir() -> PathBuf {
 /// Where AURA keeps user state. Mirrors `persist.ts`, which resolves
 /// `AURA_HOME || ~/.aura` — user state lives with the user, never inside
 /// the installed application.
-fn aura_home() -> PathBuf {
+pub(crate) fn aura_home() -> PathBuf {
     std::env::var_os("AURA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home_dir().join(".aura"))

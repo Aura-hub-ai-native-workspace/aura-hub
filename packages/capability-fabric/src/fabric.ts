@@ -801,6 +801,9 @@ export class CapabilityFabric {
     return {
       node: node ? { id: node.id, name: node.name } : undefined,
       requestedNodeId: invocation.context.nodeId,
+      // Attested by the transport, not asserted by the caller — the one
+      // subject field besides `node` that a policy rule may rely on.
+      initiator: invocation.context.initiator ?? 'request',
       actorKind: invocation.context.actor.kind,
       actorId: invocation.context.actor.id,
       projectId: invocation.context.projectId,

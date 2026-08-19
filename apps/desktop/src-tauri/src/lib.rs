@@ -30,6 +30,26 @@ fn environment_ping() -> String {
     "aura://ready".to_string()
 }
 
+/// This boot's UI token, so the renderer can prove which window it is.
+///
+/// The service mints the token and writes it to `$AURA_HOME/ui-token`
+/// with 0600; this reads it back. Nothing is generated here, so there is
+/// exactly one authority for the value and no way for the shell and the
+/// service to disagree about it.
+///
+/// Read-only, argument-free, and confined to a single fixed filename —
+/// it cannot be pointed at another path. Returning `None` is normal, not
+/// an error: it means the service has not finished booting yet, or this
+/// renderer is a browser in dev mode with no shell behind it. The caller
+/// then simply sends no token and every action stays on the governed
+/// path, which is the safe direction to fail in.
+#[tauri::command]
+fn ui_token() -> Option<String> {
+    let value = fs::read_to_string(service::aura_home().join("ui-token")).ok()?;
+    let value = value.trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
+}
+
 /// How this copy of AURA Hub was installed, which decides whether the
 /// updater can replace it in place.
 ///
@@ -323,6 +343,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             environment_ping,
+            ui_token,
             service_status,
             code_read_dir,
             code_read_file,
