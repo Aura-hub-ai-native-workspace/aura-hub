@@ -502,7 +502,16 @@ export class CapabilityFabric {
       // times on a gated task asks one question three times, and must not
       // produce three notifications and three buttons.
       const key = CapabilityFabric.approvalKey(capabilityId, context, invocation.id);
-      const open = this.approvals.get(key);
+
+      // A caller resuming a specific answered question addresses it by id,
+      // because the key above is derived from THIS invocation and a resume
+      // is always a new one. Matching the capability is what keeps the
+      // handle honest: a grant for one action can never be spent on
+      // another, whatever id is presented.
+      const named = context.resumeApprovalId ? this.approvalById(context.resumeApprovalId) : null;
+      const resumable = named?.items.some((i) => i.capabilityId === capabilityId) ? named : null;
+
+      const open = resumable ?? this.approvals.get(key);
 
       // Already answered "yes" out of band (the approval UI). Spend it —
       // once — and fall through to execution.
@@ -801,6 +810,9 @@ export class CapabilityFabric {
     return {
       node: node ? { id: node.id, name: node.name } : undefined,
       requestedNodeId: invocation.context.nodeId,
+      // Attested by the transport, not asserted by the caller — the one
+      // subject field besides `node` that a policy rule may rely on.
+      initiator: invocation.context.initiator ?? 'request',
       actorKind: invocation.context.actor.kind,
       actorId: invocation.context.actor.id,
       projectId: invocation.context.projectId,
@@ -895,6 +907,13 @@ export class CapabilityFabric {
     };
     if (effectStarted !== undefined) result.effectStarted = effectStarted;
     if (capability?.irreversible === true) result.irreversible = true;
+    // `InvocationResult.approvalId` was declared and never populated — it
+    // only ever reached the audit record below. That is why a parked
+    // standalone invocation could not be resumed: the caller was told to
+    // wait for an approval whose id it was never given. Surfacing it is
+    // what makes `context.resumeApprovalId` usable by anything other than
+    // a mission, which already had a stable key of its own.
+    if (approvalId !== undefined) result.approvalId = approvalId;
 
     this.auditLog.push({
       invocationId: invocation.id,
