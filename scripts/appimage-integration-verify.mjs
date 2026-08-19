@@ -220,5 +220,41 @@ fs.rmSync(HOME, { recursive: true, force: true });
 fs.rmSync(APPDIR, { recursive: true, force: true });
 fs.rmSync(harness, { recursive: true, force: true });
 
+/* ── [J] every command the shell exposes is actually reachable ───────────
+   Everything above proves the Rust behaves. None of it proves a user can
+   ask for that behaviour: `appimage_uninstall` was registered and called by
+   nothing for four releases, while the install prompt and the Linux
+   archive's README both told users they could remove AURA Hub from
+   Settings. A registered command with no caller is a promise the UI cannot
+   keep, and it fails silently — which is why it needs a check of its own. */
+console.log('\n[J] every registered command has a caller in the UI');
+{
+  const rustDir = path.join(ROOT, 'apps/desktop/src-tauri/src');
+  const uiDir = path.join(ROOT, 'apps/desktop/src');
+
+  const rust = fs.readFileSync(path.join(rustDir, 'appimage.rs'), 'utf8');
+  const commands = [...rust.matchAll(/#\[tauri::command\]\s*pub fn (\w+)/g)].map((m) => m[1]);
+  check('the module declares commands', commands.length > 0, commands.join(', '));
+
+  const registered = fs.readFileSync(path.join(rustDir, 'lib.rs'), 'utf8');
+
+  const ui = [];
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== 'src-tauri') walk(full); continue; }
+      if (/\.(ts|tsx)$/.test(e.name)) ui.push(fs.readFileSync(full, 'utf8'));
+    }
+  };
+  walk(uiDir);
+  const uiSource = ui.join('\n');
+
+  for (const cmd of commands) {
+    check(`${cmd} is registered in lib.rs`, registered.includes(`appimage::${cmd}`));
+    check(`${cmd} is called from the UI`, uiSource.includes(`'${cmd}'`) || uiSource.includes(`"${cmd}"`),
+      'a command nothing calls cannot be reached by a user, however correct it is');
+  }
+}
+
 console.log(failed ? '\nFAILED' : '\nAll integration checks passed');
 process.exitCode = failed ? 1 : 0;
