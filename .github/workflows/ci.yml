@@ -108,17 +108,35 @@ jobs:
       # Deliberately NOT a retry loop and NOT a step timeout. A retry would
       # hide the slowness rather than remove it, and a timeout tight enough
       # to catch a hang would have failed the 85-minute run that succeeded.
+      #
+      # This is an EXPERIMENT, not a settled fix. One fast run proves nothing
+      # against a baseline that spans 21s to 85m; the mirror change is only
+      # worth keeping if it is measurably better across several runs.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
-          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
-            [ -f "$f" ] || continue
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$f"
-          done
-          # Printed so the next person investigating a slow apt can see which
-          # mirror actually served this run without re-deriving it.
-          echo "apt mirrors in use:"
-          grep -rhoE 'https?://[^ ]*\.ubuntu\.com[^ ]*' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | sort -u
+          # The image selects mirrors through a MIRRORLIST, not a literal URI
+          # in sources.list: `/etc/apt/sources.list.d/*.sources` point at
+          # `file:/etc/apt/apt-mirrors.txt`, and apt resolves the real host
+          # from there. Rewriting the sources files — the obvious thing, and
+          # what the first version of this step did — matches nothing and
+          # silently leaves apt on the Azure mirror. This is the file that
+          # actually decides.
+          echo "--- mirrorlist before ---"
+          cat /etc/apt/apt-mirrors.txt
+          sudo sed -i 's|https\?://azure\.archive\.ubuntu\.com|https://archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt
+          echo "--- mirrorlist after ---"
+          cat /etc/apt/apt-mirrors.txt
+
+          # Refuse to run the experiment against the wrong mirror. Without
+          # this the step passes, the numbers look fine, and they measure
+          # Azure — which is exactly how the first attempt produced a
+          # confident, meaningless result.
+          if grep -q 'azure\.archive\.ubuntu\.com' /etc/apt/apt-mirrors.txt; then
+            echo "::error::mirrorlist still points at the Azure mirror — refusing to measure the wrong thing"
+            exit 1
+          fi
+
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
