@@ -1,7 +1,7 @@
 {
   "name": "aura-hub",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "AURA Hub — an AI Operating Environment. Application shell and architecture.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/Aura-hub-ai-native-workspace/aura-hub#readme",

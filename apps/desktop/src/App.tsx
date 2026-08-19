@@ -10,9 +10,11 @@ import { useEditorStore } from './editor/editorStore';
 import { useLayoutStore } from './ops/layoutStore';
 import { WindowSwitcher } from './ops/WindowSwitcher';
 import { useNotificationsFeed } from './ops/useNotificationsFeed';
+import { AppImageInstallPrompt } from './components/AppImageInstallPrompt';
 import { restoreSession, saveSession } from './ops/session';
 import { startMemoryRecorder } from './ops/memoryRecorder';
 import { startAgentEngine } from './ops/agentEngine';
+import { useUpdateNotifications } from './updater/useUpdateNotifications';
 
 /**
  * App root. Owns global keyboard shortcuts, the command palette,
@@ -39,6 +41,11 @@ export function App() {
   // The notification feed: polls real engine state, derives persisted,
   // deduplicated notifications (Part 2).
   useNotificationsFeed();
+
+  // Application updates: one background check per session, raised as a
+  // notification only when a real, applicable update exists. Startup does
+  // not wait for it — see useUpdater.startBackgroundUpdateCheck.
+  useUpdateNotifications();
 
   // Engineering Memory recorder: ingests real events (editor saves, AI
   // actions, missions, diagnoses, conversations, memory items, providers)
@@ -112,6 +119,8 @@ export function App() {
         onRun={(cmd) => pushRecentCommand(cmd.id)}
       />
       <WindowSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
+      {/* Renders only for a portable AppImage that is not already installed. */}
+      <AppImageInstallPrompt />
       {!onboarded ? (
         <OnboardingFlow onComplete={completeOnboarding} />
       ) : (

@@ -1,6 +1,6 @@
 {
   "name": "@aura/desktop",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "private": true,
   "type": "module",
   "description": "AURA Hub desktop app — the operating environment shell (React + Vite + Tauri).",
@@ -20,6 +20,9 @@
     "@aura/ui": "*",
     "@monaco-editor/react": "^4.6.0",
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-os": "^2.3.2",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "framer-motion": "^11.2.10",
     "monaco-editor": "^0.50.0",
     "react": "^18.3.1",
