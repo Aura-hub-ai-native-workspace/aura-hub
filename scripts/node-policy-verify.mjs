@@ -202,7 +202,16 @@ try {
 
   /* ── K + M. audit and attribution ────────────────────────────── */
   const audit = (await api('/fabric/audit')).audit ?? [];
-  const ok = audit.find((r) => r.taskId === 't-a' && r.capabilityId === 'agent.delegate');
+  // The EXECUTION record, not the first record for this task.
+  //
+  // A real approval leaves two entries behind: the invocation that parked
+  // asking the question, and the one that ran after it was answered. That
+  // is a fuller trail than the single entry a body-supplied grant used to
+  // leave, and `find` would take the parked one — which by design carries
+  // no `executedNodeId`, because nothing executed.
+  const ok = audit
+    .filter((r) => r.taskId === 't-a' && r.capabilityId === 'agent.delegate')
+    .find((r) => r.outcome !== 'awaiting-approval');
   const denied = audit.find((r) => r.decisionRule === 'node-override:agent.delegate@opencode');
   check('K1. audit records capability, nodes, decision, rule, actor, mission/task',
     !!ok && ok.requestedNodeId === 'opencode' && ok.executedNodeId === 'opencode'
