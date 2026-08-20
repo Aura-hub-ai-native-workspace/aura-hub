@@ -267,12 +267,29 @@ const AI: CatalogEntry[] = [
    Browser — real binaries where a stable name exists on PATH.
    ══════════════════════════════════════════════════════════════════ */
 
+/*
+ * The three Chromium-based browsers below declare `browser-automation`,
+ * which they did not before.
+ *
+ * That is not a new claim about the tools; it is AURA catching up with
+ * what it can now actually do. `browser-automation` used to belong only
+ * to Playwright and Puppeteer, because driving a browser meant using one
+ * of them. AURA now speaks the DevTools Protocol directly
+ * (`ai-service/src/browser/cdp.ts`), so the browser itself is the node
+ * that provides automation — there is no library in between to be
+ * present or absent.
+ *
+ * Firefox and Brave are deliberately NOT included. Firefox's CDP support
+ * is partial, and Brave's binary is not one AURA looks for; declaring a
+ * capability AURA has no verified way to drive is exactly the dishonesty
+ * the catalogue exists to prevent.
+ */
 const BROWSER: CatalogEntry[] = [
-  make('browser', { id: 'chrome', name: 'Google Chrome', caps: ['browser'], probe: ['google-chrome', '--version'], license: 'free-tier', summary: 'Opens URLs and developer tooling.', homepage: 'https://google.com/chrome' }),
-  make('browser', { id: 'chromium', name: 'Chromium', caps: ['browser'], probe: ['chromium', '--version'], summary: 'Open-source browser core.', homepage: 'https://chromium.org' }),
+  make('browser', { id: 'chrome', name: 'Google Chrome', caps: ['browser', 'browser-automation'], probe: ['google-chrome', '--version'], license: 'free-tier', summary: 'Opens URLs and developer tooling. Drivable by AURA over the DevTools Protocol.', homepage: 'https://google.com/chrome' }),
+  make('browser', { id: 'chromium', name: 'Chromium', caps: ['browser', 'browser-automation'], probe: ['chromium', '--version'], summary: 'Open-source browser core. Drivable by AURA over the DevTools Protocol.', homepage: 'https://chromium.org' }),
   make('browser', { id: 'firefox', name: 'Firefox', caps: ['browser'], probe: ['firefox', '--version'], summary: 'Open-source browser.', homepage: 'https://mozilla.org/firefox' }),
   make('browser', { id: 'brave', name: 'Brave', caps: ['browser'], probe: ['brave-browser', '--version'], license: 'free-tier', summary: 'Privacy-focused browser.', homepage: 'https://brave.com' }),
-  make('browser', { id: 'edge', name: 'Microsoft Edge', caps: ['browser'], probe: ['microsoft-edge', '--version'], license: 'free-tier', summary: 'Chromium-based browser.', homepage: 'https://microsoft.com/edge' }),
+  make('browser', { id: 'edge', name: 'Microsoft Edge', caps: ['browser', 'browser-automation'], probe: ['microsoft-edge', '--version'], license: 'free-tier', summary: 'Chromium-based browser. Drivable by AURA over the DevTools Protocol.', homepage: 'https://microsoft.com/edge' }),
   make('browser', { id: 'playwright', name: 'Playwright', caps: ['browser-automation', 'testing-framework'], probe: ['playwright', '--version'], summary: 'Cross-browser automation and end-to-end testing.', homepage: 'https://playwright.dev' }),
   make('browser', { id: 'puppeteer', name: 'Puppeteer', caps: ['browser-automation'], summary: 'Chromium automation library — consumed as a dependency, not a CLI.', homepage: 'https://pptr.dev' }),
   make('browser', { id: 'curl', name: 'curl', caps: ['http-client'], probe: ['curl', '--version'], summary: 'Calls HTTP APIs and inspects responses.', homepage: 'https://curl.se' }),

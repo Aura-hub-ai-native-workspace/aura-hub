@@ -120,6 +120,18 @@ export function pageAsContextItem(url: string, content: string): ContextItem<str
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 
 /**
+ * Nodes AURA can genuinely drive over CDP.
+ *
+ * Several catalogue entries declare `browser-automation`; AURA has a
+ * verified way to drive exactly these. Playwright and Puppeteer also
+ * declare it and are refused here rather than attempted — a node AURA
+ * cannot drive is reported as such, never silently swapped for one it
+ * can.
+ */
+const DRIVABLE_NODES = new Set(['chromium', 'chrome', 'edge']);
+const supportsNode = (node: { id: string }): boolean => DRIVABLE_NODES.has(node.id);
+
+/**
  * Read the page as text.
  *
  * Runs in the page, so it is page-controlled code returning
@@ -170,6 +182,7 @@ export function browserExecutors(tier: BrowserTier): Executor[] {
     {
       capabilityId: 'browser.navigate',
       tier: 4,
+      supportsNode,
       async run(inv) {
         const url = str(inv.input.url);
         const blocked = unavailable(tier, 'Navigation');
@@ -199,6 +212,7 @@ export function browserExecutors(tier: BrowserTier): Executor[] {
     {
       capabilityId: 'browser.read',
       tier: 4,
+      supportsNode,
       async run() {
         const blocked = unavailable(tier, 'Reading the page');
         if (blocked) return blocked;
@@ -221,6 +235,7 @@ export function browserExecutors(tier: BrowserTier): Executor[] {
     {
       capabilityId: 'browser.click',
       tier: 4,
+      supportsNode,
       async run(inv) {
         const selector = str(inv.input.selector);
         const blocked = unavailable(tier, 'Clicking');
@@ -250,6 +265,7 @@ export function browserExecutors(tier: BrowserTier): Executor[] {
     {
       capabilityId: 'browser.type',
       tier: 4,
+      supportsNode,
       async run(inv) {
         const selector = str(inv.input.selector);
         const text = str(inv.input.text);
@@ -275,6 +291,7 @@ export function browserExecutors(tier: BrowserTier): Executor[] {
     {
       capabilityId: 'browser.screenshot',
       tier: 4,
+      supportsNode,
       async run() {
         const blocked = unavailable(tier, 'Capturing the page');
         if (blocked) return blocked;
