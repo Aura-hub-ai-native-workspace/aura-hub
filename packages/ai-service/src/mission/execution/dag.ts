@@ -15,7 +15,6 @@
 import type { ExecutionTaskStatus, ExecutionDag, DagNode, DagEdge } from './types';
 import { PLANNING_TO_RUNTIME } from './types';
 import type { MissionTask } from '../types';
-
 export interface DagInput {
   tasks: MissionTask[];
   getRuntimeStatus?: (taskId: string) => ExecutionTaskStatus | null;
@@ -137,6 +136,7 @@ export function buildDag(input: DagInput): ExecutionDag {
     risk: t.risk,
     owner: t.owner,
     estimatedDurationMinutes: t.estimatedDurationMinutes,
+    node: t.resolvedNode ?? t.requestedNode,
     depth: depth.get(t.id) ?? 0,
     batch: batch.get(t.id) ?? 0,
     dependencies: [...(blockedBy.get(t.id) ?? [])],

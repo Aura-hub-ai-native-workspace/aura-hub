@@ -801,6 +801,9 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             return json(res, result.ok ? 200 : 400, result);
           }
         }
+        if (seg[2] === 'nodes' && method === 'GET') {
+          return json(res, 200, await manager.executionNodes());
+        }
         if (seg[2] === 'missions') {
           if (seg.length === 3 && method === 'GET') return json(res, 200, { missions: manager.listMissions(id) });
           if (seg.length === 3 && method === 'POST') {

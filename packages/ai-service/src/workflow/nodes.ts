@@ -77,7 +77,6 @@ function insideProject(root: string, rel: string): string {
 function git(ctx: RunCtx, args: string[]): Promise<ProcessOutput> {
   return sharedGit(args, { cwd: ctx.projectPath, signal: ctx.signal });
 }
-
 function safeShell(ctx: RunCtx, command: string): Promise<string> {
   return sharedSafeShell(command, { cwd: ctx.projectPath, signal: ctx.signal });
 }
