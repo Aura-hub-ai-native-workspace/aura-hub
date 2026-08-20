@@ -18,7 +18,7 @@ import {
   type ProjectProfile,
   type ProjectRecord,
 } from '../ai/aiClient';
-import { useMemoryStore } from '../ops/memoryStore';
+import { onSpineStatus, subscribeToSpine, type AuraEvent } from '../events/spineClient';
 
 interface WorkspaceState {
   reachable: boolean | null;
@@ -62,7 +62,25 @@ interface WorkspaceState {
   removeMemory: (id: string, memId: string) => Promise<void>;
 }
 
+/**
+ * Index-status transport.
+ * ------------------------------------------------------------------
+ * The push channel is primary: `workspace.index` events arrive from the
+ * Event Spine the moment the pipeline's phase moves. The 600 ms poll that
+ * used to live here is now a **reconnect fallback only** — it starts if
+ * (and only if) the spine is not open, and stops the moment it is. The
+ * two never run together: a poll beside a live channel is not a fallback,
+ * it is the thing the channel replaced.
+ */
 let poll: ReturnType<typeof setInterval> | null = null;
+let spineUnsub: (() => void) | null = null;
+let spineStatusUnsub: (() => void) | null = null;
+
+function stopIndexWatch(): void {
+  if (poll) { clearInterval(poll); poll = null; }
+  spineUnsub?.(); spineUnsub = null;
+  spineStatusUnsub?.(); spineStatusUnsub = null;
+}
 
 export const useWorkspace = create<WorkspaceState>((set, get) => ({
   reachable: null,
@@ -125,7 +143,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
 
   async open(id) {
     set({ openId: id, profile: null, status: null, graph: null, kg: null, memory: [] });
-    if (poll) { clearInterval(poll); poll = null; }
+    stopIndexWatch();
     const loadGraphs = async () => {
       try {
         const [graph, kg] = await Promise.all([aiClient.graph(), aiClient.knowledgeGraph(id).catch(() => null)]);
@@ -150,21 +168,44 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
       set({ profile: res.profile, status: res.status, reachable: true });
       await get().loadMemory(id);
       if (superseded()) return;
-      // Poll indexing until ready, then pull the freshly built graphs.
+      /* Apply one index status from whichever transport delivered it.
+         Identical handling either way, so the fallback cannot drift from
+         the push path. */
+      const applyStatus = async (status: IndexStatus): Promise<void> => {
+        if (get().openId !== id) return;
+        set({ status });
+        if (status.phase === 'ready' || status.phase === 'error') {
+          stopIndexWatch();
+          if (status.phase === 'ready') await loadGraphs();
+        }
+      };
+
       const tick = async () => {
         try {
-          const status = await aiClient.indexStatus();
-          if (get().openId === id) set({ status });
-          if (status.phase === 'ready' || status.phase === 'error') {
-            if (poll) { clearInterval(poll); poll = null; }
-            if (status.phase === 'ready') await loadGraphs();
-          }
+          await applyStatus(await aiClient.indexStatus());
         } catch {
           if (poll) { clearInterval(poll); poll = null; }
         }
       };
-      if (res.status.phase === 'ready') await loadGraphs();
-      else poll = setInterval(tick, 600);
+
+      if (res.status.phase === 'ready') { await loadGraphs(); return; }
+
+      /* Push first. `workspace.index` carries the whole IndexStatus, so
+         the renderer applies exactly what it used to fetch — the only
+         thing that changed is who started the conversation. */
+      spineUnsub = subscribeToSpine(['workspace'], (e: AuraEvent) => {
+        if (e.type !== 'workspace.index') return;
+        void applyStatus(e.payload as IndexStatus);
+      });
+
+      /* The fallback, armed only while the channel is not open. */
+      spineStatusUnsub = onSpineStatus((spine) => {
+        if (spine === 'open') {
+          if (poll) { clearInterval(poll); poll = null; }
+          return;
+        }
+        if (!poll && get().openId === id) { poll = setInterval(tick, 600); void tick(); }
+      });
     } catch {
       // A superseded request's failure says nothing about the service the
       // current one is talking to; reporting it would mark AURA offline
@@ -185,7 +226,6 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   async remove(id) {
     await aiClient.removeProject(id);
     if (get().openId === id) set({ openId: null, profile: null, status: null, graph: null, kg: null, memory: [] });
-    useMemoryStore.getState().purgeProject(id);
     await get().refresh();
   },
   async reindex() {

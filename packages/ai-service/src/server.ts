@@ -17,6 +17,7 @@ import { CATALOG } from '@aura/connected-environment';
 import { probeNode, scanEnvironment } from './environment';
 import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext, type NodeRef } from '@aura/capability-fabric';
 import { createFabric } from './fabric';
+import { EventSpine, bridgeFabricEvent, isEventTopic, type EventTopic } from './events';
 import { drivableAgentBinaries } from './fabric/executors';
 import { composeContextView, type ContextSources } from './context/compose';
 import { renderContextContract } from './context/promptContract';
@@ -24,6 +25,7 @@ import { AURA_SYSTEM_PROMPT, buildAgentPrompt, measureAgentPrompt } from './cont
 import { scanAndDiff } from './intelligence';
 import { CAPABILITIES } from '@aura/connected-environment';
 import { savePolicy, policyFilePath } from './fabric/policyStore';
+import { homePath } from './persist';
 import { initUiToken, isUserDirect } from './uiToken';
 import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate } from '@aura/automation';
 import type { AutomationEvent, AutomationRule } from '@aura/automation';
@@ -243,11 +245,42 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     }
   }
 
+  /**
+   * THE Event Spine. One durable, ordered stream for the whole service.
+   *
+   * Created before the Fabric so no `FabricEvent` can be emitted into an
+   * unsubscribed set between the two. Everything that used to be an
+   * isolated in-process listener set publishes here as well, and the SSE
+   * route below is the single channel that carries it to the renderer.
+   */
+  const spine = new EventSpine({ dir: homePath('events') });
+
   const fabric = createFabric({
     agentPrompt: agentPromptFor,
     manager,
     providedNodeCapabilities: () => providedNodeCapabilities,
     presentNodes: () => presentNodes,
+  });
+  // The Fabric has emitted `FabricEvent` since it was written and had zero
+  // subscribers. This is that emitter's first consumer — no new emit site
+  // is introduced, and the Fabric's own audit log is untouched.
+  bridgeFabricEvent(fabric, spine);
+
+  /**
+   * Index lifecycle onto the spine.
+   *
+   * This is what retires the renderer's 600 ms poll: the phase change is
+   * pushed at the moment it happens instead of being discovered on the
+   * next tick. The pipeline remains the only authority on index status —
+   * it reports transitions, it does not gain a second status model.
+   */
+  manager.pipeline.onStatusChange((status) => {
+    spine.publish({
+      topic: 'workspace',
+      type: 'workspace.index',
+      projectId: status.projectId,
+      payload: status,
+    });
   });
   // Closes the loop: mission tasks now execute THROUGH this same Fabric
   // instance, so a task inherits the identical policy, approval,
@@ -327,6 +360,18 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   }
   bridge.startScheduler();
 
+  /* Automation's own listener set (automation.ts) keeps working exactly as
+     before; the spine simply becomes one more subscriber, so an automation
+     run is visible on the single channel alongside everything else. */
+  manager.automation.subscribe((e) => {
+    spine.publish({
+      topic: 'automation',
+      type: `automation.${e.type}`,
+      projectId: e.type === 'run' ? e.run.event.projectId : null,
+      payload: e,
+    });
+  });
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const seg = url.pathname.split('/').filter(Boolean);
@@ -339,6 +384,96 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     try {
       /* ── health / settings / key ──────────────────────────────── */
       if (method === 'GET' && seg[0] === 'health') return json(res, 200, { health: await p.health(), key: p.keyStatus(), index: manager.indexStatus(), project: manager.currentProject() });
+
+      /* ── Event Spine (§ nervous system) ─────────────────────────
+         One push channel for the whole service. `after` is exclusive and
+         is the last seq the client already has, so a reconnecting client
+         resumes exactly where it stopped with no gap and no duplicate. */
+      if (seg[0] === 'events') {
+        const parseTopics = (): EventTopic[] | '*' => {
+          const raw = url.searchParams.get('topics');
+          if (!raw) return '*';
+          const topics = raw.split(',').map((t) => t.trim()).filter(Boolean).filter(isEventTopic);
+          return topics.length ? topics : '*';
+        };
+        const parseAfter = (fallback: number): number => {
+          const raw = url.searchParams.get('after');
+          if (raw === null) return fallback;
+          const n = Number(raw);
+          return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
+        };
+
+        if (method === 'GET' && seg[1] === 'head') {
+          return json(res, 200, { head: spine.head(), earliest: spine.earliest() });
+        }
+
+        if (method === 'GET' && seg[1] === 'replay') {
+          const limitRaw = Number(url.searchParams.get('limit'));
+          const limit = Number.isSafeInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 5000) : undefined;
+          return json(res, 200, spine.replay(parseAfter(0), parseTopics(), limit));
+        }
+
+        if (method === 'GET' && seg[1] === 'stream') {
+          /* `Last-Event-ID` is what the browser's own EventSource sends on
+             an automatic reconnect. Honouring it is what makes reconnect
+             a resume rather than a restart — and it is why the renderer
+             needs no reconnect bookkeeping of its own. */
+          const lastEventId = Number(req.headers['last-event-id']);
+          const after = parseAfter(Number.isSafeInteger(lastEventId) && lastEventId >= 0 ? lastEventId : 0);
+          const topics = parseTopics();
+
+          res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache',
+            connection: 'keep-alive',
+            'x-accel-buffering': 'no',
+            ...CORS,
+          });
+
+          const write = (event: { seq: number; type: string }, body: unknown) => {
+            if (res.writableEnded) return;
+            res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(body)}\n\n`);
+          };
+
+          /* Subscribe BEFORE replaying, buffering anything that arrives
+             while the backlog is being written. Replaying first and then
+             subscribing would drop every event published in between —
+             which, for an approval, means the question is asked into a
+             gap and the person is never interrupted. */
+          const buffered: ReturnType<typeof spine.replay>['events'] = [];
+          let live = false;
+          const unsub = spine.subscribe(topics, (e) => {
+            if (!live) { buffered.push(e); return; }
+            write(e, e);
+          });
+
+          const backlog = spine.replay(after, topics);
+          res.write(`event: subscribed\ndata: ${JSON.stringify({
+            head: backlog.head, earliest: backlog.earliest, truncated: backlog.truncated, after,
+          })}\n\n`);
+          for (const e of backlog.events) write(e, e);
+          let highest = backlog.events.length ? backlog.events[backlog.events.length - 1].seq : after;
+          for (const e of buffered) {
+            if (e.seq <= highest) continue;
+            write(e, e);
+            highest = e.seq;
+          }
+          live = true;
+
+          /* A comment line every 15 s. Without it an idle stream is
+             indistinguishable from a dead one to every proxy and to the
+             OS, and the first thing the user would learn about a hung
+             channel is a missed approval. */
+          const heartbeat = setInterval(() => {
+            if (res.writableEnded) return;
+            res.write(`: heartbeat ${new Date().toISOString()}\n\n`);
+          }, 15000);
+          heartbeat.unref?.();
+
+          res.on('close', () => { clearInterval(heartbeat); unsub(); });
+          return;
+        }
+      }
 
       /**
        * Graceful shutdown over the loopback port — the desktop shell's
@@ -846,7 +981,21 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
             const ac = new AbortController();
             res.on('close', () => ac.abort());
-            const emit = (e: ExecutionEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
+            /* Tee'd onto the spine as well as down this response. The
+               per-request stream dies with the request; the spine does
+               not — which is how a mission that keeps running after the
+               window closes is still legible when it comes back. */
+            const emit = (e: ExecutionEvent) => {
+              if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`);
+              spine.publish({
+                topic: 'mission',
+                type: e.type === 'execution' ? 'mission.execution' : 'mission.error',
+                projectId: id,
+                payload: e.type === 'execution'
+                  ? { missionId: e.record.id, execution: e.record.execution }
+                  : { missionId: mid, message: e.message },
+              });
+            };
             try {
               const result = await manager.runMissionBatch(id, mid, { maxParallel: typeof b.maxParallel === 'number' ? b.maxParallel : 2 }, emit);
               if (result.mission?.execution) emit({ type: 'execution', record: { id, projectId: id, execution: result.mission.execution } });

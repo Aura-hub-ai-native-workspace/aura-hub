@@ -131,6 +131,12 @@ async function withRetry<T>(
   return { ok: false, error: lastError };
 }
 
+/**
+ * Minimum gap between two PROGRESS announcements on the status channel.
+ * Phase transitions ignore it — see `announceStatus`.
+ */
+const PROGRESS_ANNOUNCE_MS = 400;
+
 const NO_PROVIDER: NormalizedError = {
   type: 'no_provider',
   message: 'No AI provider connected. Add your API key in Settings to use AURA\'s AI.',
@@ -194,6 +200,18 @@ export class PipelineManager {
   private readonly enhancer = new TemplatePromptEnhancer();
   private status: IndexStatus = emptyStatus();
   private indexing: Promise<void> | null = null;
+  /**
+   * Who wants to be told when index status moves.
+   *
+   * The pipeline stays the ONE authority on index status — this adds no
+   * second status model, it only stops the answer being reachable solely
+   * by asking again on a timer. The host (server.ts) forwards these onto
+   * the Event Spine, which is what retires the renderer's 600 ms poll.
+   */
+  private statusListeners = new Set<(s: IndexStatus) => void>();
+  /** Last phase actually announced, so progress noise is not announced as a transition. */
+  private announcedPhase: IndexStatus['phase'] | null = null;
+  private lastProgressAnnounceAt = 0;
 
   constructor(_opts: PipelineOptions = {}) {
     this.runtimeManager = new RuntimeManager();
@@ -230,6 +248,41 @@ export class PipelineManager {
     return { ...this.status };
   }
 
+  /**
+   * Subscribe to index-status movement. Returns an unsubscribe function.
+   *
+   * Fires on every PHASE transition immediately, and on indexing progress
+   * at most once every `PROGRESS_ANNOUNCE_MS` — a push channel that
+   * repeated every file would be a busier poll, not a replacement for one.
+   */
+  onStatusChange(listener: (status: IndexStatus) => void): () => void {
+    this.statusListeners.add(listener);
+    return () => { this.statusListeners.delete(listener); };
+  }
+
+  /**
+   * Announce the current status.
+   *
+   * `force` is used by phase transitions, which are never throttled: the
+   * whole reason a caller waits is to learn that `indexing` became `ready`.
+   */
+  private announceStatus(force: boolean): void {
+    if (!this.statusListeners.size) return;
+    const phaseChanged = this.status.phase !== this.announcedPhase;
+    if (!force && !phaseChanged) {
+      const now = Date.now();
+      if (now - this.lastProgressAnnounceAt < PROGRESS_ANNOUNCE_MS) return;
+      this.lastProgressAnnounceAt = now;
+    } else {
+      this.lastProgressAnnounceAt = Date.now();
+    }
+    this.announcedPhase = this.status.phase;
+    const snapshot = this.indexStatus();
+    for (const listener of this.statusListeners) {
+      try { listener(snapshot); } catch { /* a listener's failure is not the pipeline's */ }
+    }
+  }
+
   mount(target: MountTarget): void {
     if (this.mounted?.id === target.id) return;
     const coding = new CodingKnowledgeEngine(target.path, {
@@ -243,6 +296,7 @@ export class PipelineManager {
     const projectProfile = loadProfile(target.id);
     this.mounted = { id: target.id, path: target.path, coding, fullstack, memory: new ProjectMemory(target.id), profile: projectProfile };
     this.status = { ...emptyStatus(), projectId: target.id, phase: 'indexing', message: 'Preparing index…', startedAt: new Date().toISOString() };
+    this.announceStatus(true);
     this.indexing = this.runIndex(false);
     // The provider is a pure, stateless inference engine — it is never
     // pointed at the repository. AURA does all repository understanding and
@@ -252,6 +306,7 @@ export class PipelineManager {
   unmount(): void {
     this.mounted = null;
     this.status = emptyStatus();
+    this.announceStatus(true);
   }
 
   async whenIndexed(): Promise<IndexStatus> {
@@ -283,27 +338,31 @@ export class PipelineManager {
     // longer active.
     const isCurrent = () => this.mounted?.id === m.id;
     this.status = { ...this.status, phase: 'indexing', message: 'Indexing code…', error: undefined, startedAt: new Date().toISOString(), finishedAt: null };
+    this.announceStatus(true);
     try {
       if (force || !(await m.coding.load())) {
-        await m.coding.index({ onProgress: (p) => { if (!isCurrent()) return; this.status.coding.processed = p.processed; this.status.coding.total = p.total ?? this.status.coding.total; } });
+        await m.coding.index({ onProgress: (p) => { if (!isCurrent()) return; this.status.coding.processed = p.processed; this.status.coding.total = p.total ?? this.status.coding.total; this.announceStatus(false); } });
       }
       if (!isCurrent()) return;
       this.status.coding.chunks = m.coding.stats().chunks;
       this.status.message = 'Analyzing system graph…';
+      this.announceStatus(false);
       if (force || !(await m.fullstack.load())) {
-        await m.fullstack.analyze({ onProgress: (p) => { if (!isCurrent()) return; this.status.fullstack.processed = p.processed; this.status.fullstack.total = p.total ?? this.status.fullstack.total; } });
+        await m.fullstack.analyze({ onProgress: (p) => { if (!isCurrent()) return; this.status.fullstack.processed = p.processed; this.status.fullstack.total = p.total ?? this.status.fullstack.total; this.announceStatus(false); } });
       }
       if (!isCurrent()) return;
       const g = m.fullstack.stats();
       this.status.fullstack.entities = g.entities;
       this.status.fullstack.relations = g.relations;
       this.status = { ...this.status, phase: 'ready', message: 'Knowledge ready', finishedAt: new Date().toISOString() };
+      this.announceStatus(true);
       // Fire-and-forget: run graphify to build the knowledge graph visualization.
       // This is non-blocking — the graph.html will appear once it finishes.
       try { runGraphify(m.id, m.path); } catch { /* graphify failure is non-fatal */ }
     } catch (e) {
       if (!isCurrent()) return;
       this.status = { ...this.status, phase: 'error', error: (e as Error).message, message: 'Indexing failed', finishedAt: new Date().toISOString() };
+      this.announceStatus(true);
     }
   }
 
