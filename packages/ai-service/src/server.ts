@@ -24,6 +24,7 @@ import { AURA_SYSTEM_PROMPT, buildAgentPrompt, measureAgentPrompt } from './cont
 import { scanAndDiff } from './intelligence';
 import { CAPABILITIES } from '@aura/connected-environment';
 import { savePolicy, policyFilePath } from './fabric/policyStore';
+import { initUiToken, isUserDirect } from './uiToken';
 import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate } from '@aura/automation';
 import type { AutomationEvent, AutomationRule } from '@aura/automation';
 import { automationEvent } from './automation';
@@ -560,9 +561,31 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             missionId: typeof raw.missionId === 'string' ? raw.missionId : undefined,
             taskId: typeof raw.taskId === 'string' ? raw.taskId : undefined,
             timeoutMs: typeof raw.timeoutMs === 'number' ? raw.timeoutMs : undefined,
-            approvedCapabilities: Array.isArray(b.approvedCapabilities)
-              ? b.approvedCapabilities.filter((x): x is string => typeof x === 'string')
-              : undefined,
+            // Attested from the transport, never from the body. A caller
+            // cannot ask to be trusted; it can only present the token this
+            // boot minted into the user's config directory, which is what
+            // AURA's own window does and nothing else has reason to.
+            initiator: isUserDirect(req) ? 'user-direct' : 'request',
+            // Names an approval a human already answered through
+            // `/fabric/approvals/:id/decide`. Unlike the grant this route
+            // used to accept, it authorizes nothing by itself — the
+            // Fabric spends it only if it is genuinely granted, unspent,
+            // and for this same capability.
+            resumeApprovalId: typeof raw.resumeApprovalId === 'string' ? raw.resumeApprovalId : undefined,
+            // `approvedCapabilities` is deliberately NOT read here.
+            //
+            // It used to be, straight from the request body, and that made
+            // every hard floor self-satisfiable: a caller could name the
+            // capability it wanted and hand itself the grant in the same
+            // request. `irreversible-floor` on `agent.delegate` was one
+            // POST away from being no floor at all.
+            //
+            // A grant now has exactly one source — an ApprovalRequest the
+            // Fabric itself raised, answered through
+            // `/fabric/approvals/:id/decide`, where the capability is read
+            // back from the stored request rather than supplied by the
+            // answerer. The property `fabricClient.ts` documents is now
+            // true of this route too.
             // Routing intent. Only an id — never a path or a binary — so a
             // caller can narrow which connected node runs the action but
             // can never point execution at something off the catalogue.
@@ -1272,6 +1295,10 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   });
 
   const port = opts.port ?? 4319;
+  // Minted before the port opens, so no request can ever be evaluated
+  // against an absent token and be mistaken for a direct user action.
+  initUiToken();
+
   await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
   const addr = server.address() as { port: number };
   return {

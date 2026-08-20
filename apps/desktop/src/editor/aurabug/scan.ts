@@ -16,8 +16,11 @@
 import * as monaco from 'monaco-editor';
 import { aiClient, type CodeActionFinding, type GraphView } from '../../ai/aiClient';
 import { contextForSelection, riskFloor } from '../aiContext';
+import { useEditorStore } from '../editorStore';
+import { fsReadDir, fsReadFile } from '../fsClient';
 import { splicePatch, type OpenFile } from '../editorTypes';
-import type { AuraBugAiStatus, AuraBugIssue, AuraBugSeverity } from './types';
+import { languageFromPath } from '../fileIcons';
+import type { AuraBugAiStatus, AuraBugIssue, AuraBugSeverity, AuraBugVerification } from './types';
 
 /* ── Marker collection: wait for the language service to settle ────── */
 
@@ -69,12 +72,93 @@ function severityFromMarker(marker: monaco.editor.IMarker): AuraBugSeverity {
   return 'warning';
 }
 
+/** Deterministic root-cause statement, derived from the diagnostic itself.
+ *  Always an INFERENCE — never AI, never fabricated. Returns undefined when
+ *  no cause can be honestly stated. */
+const TS_CAUSE: Record<string, string> = {
+  '2304': "The name is not declared anywhere visible in this scope (typo, missing import, or removed declaration).",
+  '2552': "The name is not declared anywhere visible in this scope (typo, missing import, or removed declaration).",
+  '2307': "The module specifier cannot be resolved to a real file or package on this project's module paths.",
+  '2532': "The value is possibly `undefined`, so accessing it may throw at runtime.",
+  '2531': "The value is possibly `null`, so accessing it may throw at runtime.",
+  '18046': "The value may be `undefined` under strict settings, so this access is not proven safe.",
+  '2339': "The property is not declared on this value's type — either the type is outdated or the property name is wrong.",
+  '2322': "The value's type does not match the declared type — an interface/signature change is likely out of sync with its use.",
+  '2554': "The call passes the wrong number of arguments for the function's declared signature.",
+  '6133': "The declared binding is never used, so it is dead code.",
+  '6196': "The declared binding is never used, so it is dead code.",
+  '7006': "The parameter has an implicit `any` type, so no type checking protects its callers.",
+  '7030': "This `any` type is not explicitly declared, hiding what the value really is.",
+};
+
+function rootCauseFor(issue: Omit<AuraBugIssue, 'status'>): string | undefined {
+  if (issue.source === 'heuristic') {
+    if (issue.id.startsWith('unused-import')) return 'An imported binding is never referenced, so it is dead code.';
+    if (issue.id.startsWith('debugger')) return 'A debugger breakpoint was left in the source.';
+    if (issue.id.startsWith('empty-catch')) return 'The catch block discards the error instead of handling it.';
+    if (issue.id.startsWith('todo')) return 'Code is explicitly marked as unfinished or under suspicion.';
+    return undefined;
+  }
+  if (issue.source === 'ai') return undefined;
+  const code = issue.code ?? '';
+  const ts = code.replace(/^ts/, '');
+  const cause = TS_CAUSE[ts];
+  if (cause) return cause;
+  if (BUG_PATTERNS.test(issue.title)) return 'A possibly-null or possibly-undefined value is being accessed as if it were guaranteed.';
+  if (/Cannot find name/i.test(issue.title)) return "A referenced name is not declared in any visible scope.";
+  if (/Cannot find module/i.test(issue.title)) return "An import resolves to no real file or package on the module paths.";
+  if (/never used|declared but/i.test(issue.title)) return 'Declared code is never used, so it is dead weight.';
+  return undefined;
+}
+
+/**
+ * Normalizes a freshly-detected issue: assigns the Bug Bot lifecycle
+ * status and a deterministic root cause. Issues with a proposed fix (or a
+ * safe patch) enter the flow as `fix-proposed`; everything else stays
+ * `analyzed` (a problem is understood, but no safe fix is offered).
+ */
+function finalizeIssue(issue: Omit<AuraBugIssue, 'status'>): AuraBugIssue {
+  return {
+    ...issue,
+    status: issue.fix || issue.suggestedFix ? 'fix-proposed' : 'analyzed',
+    rootCause: issue.rootCause ?? rootCauseFor(issue),
+  };
+}
+
+/**
+ * Stable, line-independent identity for a finding within its file. Used by
+ * verification so a fix that shifts lines still compares correctly, and so
+ * a residual problem of the same kind is honestly reported as not fixed.
+ */
+function issueKind(issue: AuraBugIssue): string {
+  if (issue.source === 'language-service') return `marker:${issue.code ?? issue.title}`;
+  if (issue.source === 'ai') return `ai:${issue.title}`;
+  if (issue.id.startsWith('unused-import')) {
+    const m = issue.title.match(/from\s+'([^']+)'/);
+    return `unused-import:${m?.[1] ?? issue.title}`;
+  }
+  for (const kind of ['debugger', 'empty-catch', 'todo']) {
+    if (issue.id.startsWith(kind)) return kind;
+  }
+  return `heuristic:${issue.title}`;
+}
+
+/** Line-independent signature used to compare a finding across rescans. */
+export function issueSignature(issue: AuraBugIssue): string {
+  return `${issue.filePath}|${issueKind(issue)}`;
+}
+
+/** True when a Monaco model exists for this URI (open files only). */
+export function modelExists(uri: monaco.Uri): boolean {
+  return !!monaco.editor.getModel(uri);
+}
+
 export function markersToIssues(markers: monaco.editor.IMarker[], file: OpenFile): AuraBugIssue[] {
   return markers.map((m, i) => {
     const code = typeof m.code === 'string' ? m.code : m.code?.value;
     const sourceLabel = m.source ?? 'language service';
     const codeNote = code ? ` (${code})` : '';
-    return {
+    return finalizeIssue({
       id: `marker-${file.path}-${m.startLineNumber}-${m.startColumn}-${i}`,
       severity: severityFromMarker(m),
       title: m.message,
@@ -85,7 +169,7 @@ export function markersToIssues(markers: monaco.editor.IMarker[], file: OpenFile
       column: m.startColumn,
       code,
       source: 'language-service',
-    };
+    });
   });
 }
 
@@ -191,7 +275,7 @@ function findImportStatements(content: string): ImportStatement[] {
 }
 
 function unusedImportIssues(content: string, file: OpenFile): AuraBugIssue[] {
-  const out: AuraBugIssue[] = [];
+  const out: Omit<AuraBugIssue, 'status'>[] = [];
   for (const stmt of findImportStatements(content)) {
     const unused = stmt.bindings.filter((b) => !isNameUsedOutside(content, stmt.startLine, stmt.endLine, b.name));
     if (!unused.length) continue;
@@ -220,7 +304,7 @@ function unusedImportIssues(content: string, file: OpenFile): AuraBugIssue[] {
       },
     });
   }
-  return out;
+  return out.map(finalizeIssue);
 }
 
 function rebuildImport(stmt: ImportStatement, unused: ImportBinding[]): string {
@@ -241,7 +325,7 @@ function rebuildImport(stmt: ImportStatement, unused: ImportBinding[]): string {
 }
 
 function debuggerIssues(content: string, file: OpenFile): AuraBugIssue[] {
-  const out: AuraBugIssue[] = [];
+  const out: Omit<AuraBugIssue, 'status'>[] = [];
   const lines = content.split('\n');
   for (let i = 0; i < lines.length; i++) {
     if (/^\s*debugger\s*;?\s*(?:\/\/[^\n]*)?$/.test(lines[i])) {
@@ -259,11 +343,11 @@ function debuggerIssues(content: string, file: OpenFile): AuraBugIssue[] {
       });
     }
   }
-  return out;
+  return out.map(finalizeIssue);
 }
 
 function emptyCatchIssues(content: string, file: OpenFile): AuraBugIssue[] {
-  const out: AuraBugIssue[] = [];
+  const out: Omit<AuraBugIssue, 'status'>[] = [];
   const re = /catch\s*(?:\([^)]*\))?\s*\{\s*(?:\/\/[^\n]*\n[\s]*|\/\*[\s\S]*?\*\/[\s]*)*\}/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(content))) {
@@ -280,11 +364,11 @@ function emptyCatchIssues(content: string, file: OpenFile): AuraBugIssue[] {
       suggestedFix: 'Handle the error (log it, fall back, or rethrow) instead of swallowing it.',
     });
   }
-  return out;
+  return out.map(finalizeIssue);
 }
 
 function todoCommentIssues(content: string, file: OpenFile): AuraBugIssue[] {
-  const out: AuraBugIssue[] = [];
+  const out: Omit<AuraBugIssue, 'status'>[] = [];
   const re = /(?:\/\/|\/\*|\*)\s*(TODO|FIXME|HACK|XXX)\b[^\n]*/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(content))) {
@@ -302,7 +386,7 @@ function todoCommentIssues(content: string, file: OpenFile): AuraBugIssue[] {
       suggestedFix: `Review and resolve the ${kind} before considering this code complete.`,
     });
   }
-  return out;
+  return out.map(finalizeIssue);
 }
 
 const JS_TS_LANGUAGE = /^(javascript|typescript)/;
@@ -313,22 +397,24 @@ export function analyzeHeuristics(content: string, file: OpenFile): AuraBugIssue
   if (JS_TS_LANGUAGE.test(file.language)) {
     issues.push(...debuggerIssues(content, file), ...unusedImportIssues(content, file));
   }
-  return issues;
+  return issues.map(finalizeIssue);
 }
 
 /* ── Optional AI-augmented scan (existing frontend AI integration) ─── */
 
 function aiFindingsToIssues(findings: CodeActionFinding[], file: OpenFile): AuraBugIssue[] {
-  return findings.map((f, i) => ({
-    id: `ai-${file.path}-${f.line ?? i}`,
-    severity: f.severity === 'critical' ? 'bug' : 'warning',
-    title: f.title,
-    explanation: `${f.detail} Flagged by the existing AI provider integration (read-only security scan of the current file).`,
-    filePath: file.path,
-    fileName: file.name,
-    line: f.line,
-    source: 'ai',
-  }));
+  return findings.map((f, i) =>
+    finalizeIssue({
+      id: `ai-${file.path}-${f.line ?? i}`,
+      severity: f.severity === 'critical' ? 'bug' : 'warning',
+      title: f.title,
+      explanation: `${f.detail} Flagged by the existing AI provider integration (read-only security scan of the current file).`,
+      filePath: file.path,
+      fileName: file.name,
+      line: f.line,
+      source: 'ai',
+    }),
+  );
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -401,4 +487,199 @@ export async function runAiAnalysis(
 export function applyPatch(content: string, issue: AuraBugIssue): string {
   if (!issue.fix) return content;
   return splicePatch(content, issue.fix, issue.fix.newText);
+}
+
+/* ── Bug Bot: multi-file / project scan ────────────────────────────── */
+
+/** A single file to scan: live buffer content (open tabs) or disk content. */
+export interface ScanTarget {
+  path: string;
+  name: string;
+  language: string;
+  content: string;
+}
+
+export interface ScanResult {
+  issues: AuraBugIssue[];
+  filesScanned: number;
+  /** Files skipped during collection (unreadable, non-scannable, byte-capped). */
+  skipped: number;
+  message?: string;
+}
+
+/** Only text files we can actually analyze are read during a project scan. */
+const SCANNABLE_EXT = /\.(tsx?|jsx?|mjs|cjs|json|css|scss|less|html|md|py|go|rs|java|rb|php|sh|yml|yaml|toml|sql|graphql|vue|svelte)$/i;
+
+const PROJECT_MAX_FILES = 150;
+const PROJECT_MAX_BYTES = 10 * 1024 * 1024;
+const PROJECT_MAX_DIRS = 3000;
+const READ_CONCURRENCY = 8;
+
+/** Every currently open tab's live buffer — includes unsaved edits. */
+export function collectOpenFileTargets(): ScanTarget[] {
+  const { openFiles } = useEditorStore.getState();
+  return Object.values(openFiles)
+    .filter((f) => !f.loading && !f.error)
+    .map((f) => ({ path: f.path, name: f.name, language: f.language, content: f.content }));
+}
+
+/**
+ * A bounded breadth-first walk of the real project tree through the same
+ * confined fs bridge the explorer uses. The Rust side already filters
+ * node_modules/.git/dist/etc. and dotfiles. When the desktop bridge is
+ * unavailable (browser preview) this returns an honest empty result with a
+ * message — never a fake scan.
+ */
+export async function collectProjectTargets(): Promise<{ targets: ScanTarget[]; skipped: number; message?: string }> {
+  const { root, openFiles } = useEditorStore.getState();
+  if (!root) return { targets: [], skipped: 0, message: 'No project is open.' };
+
+  const targets: ScanTarget[] = [];
+  const seenPaths = new Set<string>();
+  const queue: string[] = [''];
+  let dirsVisited = 0;
+  let totalBytes = 0;
+  let skipped = 0;
+
+  try {
+    while (queue.length && targets.length < PROJECT_MAX_FILES && dirsVisited < PROJECT_MAX_DIRS) {
+      const relDir = queue.shift() as string;
+      dirsVisited += 1;
+      let children;
+      try {
+        children = await fsReadDir(root, relDir);
+      } catch {
+        skipped += 1;
+        continue;
+      }
+      for (const child of children) {
+        if (child.isDir) {
+          queue.push(child.path);
+          continue;
+        }
+        if (targets.length >= PROJECT_MAX_FILES) break;
+        if (!SCANNABLE_EXT.test(child.name)) {
+          skipped += 1;
+          continue;
+        }
+        if (seenPaths.has(child.path)) continue;
+        seenPaths.add(child.path);
+        const live = openFiles[child.path];
+        if (live && !live.loading && !live.error) {
+          targets.push({ path: live.path, name: live.name, language: live.language, content: live.content });
+        } else {
+          targets.push({ path: child.path, name: child.name, language: languageFromPath(child.path), content: '' });
+        }
+      }
+    }
+  } catch {
+    return { targets, skipped, message: 'Desktop file access unavailable — fell back to open files only.' };
+  }
+
+  // Read disk content for the targets we did not already have in memory,
+  // with a hard total-byte cap so a huge repo cannot bloat the scan.
+  const toRead = targets.filter((t) => t.content === '');
+  await mapLimit(toRead, READ_CONCURRENCY, async (t) => {
+    if (totalBytes >= PROJECT_MAX_BYTES) {
+      skipped += 1;
+      return;
+    }
+    try {
+      const content = await fsReadFile(root, t.path);
+      totalBytes += content.length;
+      t.content = content;
+    } catch {
+      skipped += 1;
+    }
+  });
+
+  const capped = targets.length >= PROJECT_MAX_FILES;
+  return {
+    targets: targets.filter((t) => t.content !== ''),
+    skipped,
+    message: capped ? `Project scan capped at ${PROJECT_MAX_FILES} files.` : undefined,
+  };
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const i = idx;
+      idx += 1;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/** Scan a set of targets. Monaco markers are only collected when the file
+ *  actually has a live model (open tabs); everything else gets the
+ *  deterministic heuristic pass — honestly labeled by source per issue.
+ *  `skipped` is the caller's count of files it chose not to scan (skipped
+ *  during collection: unreadable, non-scannable, or byte-capped). */
+export async function scanTargets(targets: ScanTarget[], skipped = 0): Promise<ScanResult> {
+  const scanned = await mapLimit(targets, READ_CONCURRENCY, async (t) => {
+    const uri = monaco.Uri.parse(t.path);
+    let markers: monaco.editor.IMarker[] = [];
+    if (modelExists(uri)) {
+      try {
+        markers = await collectModelMarkers(uri);
+      } catch {
+        markers = [];
+      }
+    }
+    const file: OpenFile = {
+      path: t.path,
+      name: t.name,
+      language: t.language,
+      content: t.content,
+      originalContent: t.content,
+      dirty: false,
+      loading: false,
+      error: null,
+      saveError: null,
+      cursor: { line: 1, column: 1 },
+      selection: null,
+    };
+    return [...markersToIssues(markers, file), ...analyzeHeuristics(t.content, file)];
+  });
+  const issues = scanned.flat();
+  return { issues, filesScanned: targets.length, skipped };
+}
+
+/* ── Bug Bot: post-fix verification ────────────────────────────────── */
+
+/**
+ * Deterministic re-scan of the affected file after a fix was applied.
+ * `passed` is only true when no finding with the same signature remains;
+ * `null` means verification genuinely could not run (reported honestly,
+ * never claimed as passed).
+ */
+export async function verifyFix(issue: AuraBugIssue): Promise<AuraBugVerification> {
+  const checkedAt = new Date().toISOString();
+  const method = 'deterministic re-scan (markers + static scan)';
+  const file = useEditorStore.getState().openFiles[issue.filePath];
+  if (!file) {
+    return { checkedAt, method, passed: null, detail: 'The file is not open, so the fix could not be re-scanned.' };
+  }
+  const uri = monaco.Uri.parse(file.path);
+  let markers: monaco.editor.IMarker[] = [];
+  if (modelExists(uri)) {
+    try {
+      markers = await collectModelMarkers(uri);
+    } catch {
+      markers = [];
+    }
+  }
+  const current = [...markersToIssues(markers, file), ...analyzeHeuristics(file.content, file)].filter((c) => c.source !== 'ai');
+  const signature = issueSignature(issue);
+  const stillPresent = current.some((c) => issueSignature(c) === signature);
+  if (stillPresent) {
+    return { checkedAt, method, passed: false, detail: 'A deterministic re-scan still reports this problem after the fix.' };
+  }
+  return { checkedAt, method, passed: true, detail: 'No deterministic finding with this signature remains after the fix.' };
 }

@@ -35,9 +35,9 @@
 import type { RiskLevel } from './types';
 import { CAPABILITY_MANIFEST } from './manifest';
 
-/* ══════════════════════════════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════════�[...]
    Structural views of Mission Control's output
-   ══════════════════════════════════════════════════════════════════ */
+   ════════════════════════════════════════════════════════════════�[...]
 
 /** The fields of `ExtractedIntent` (`mission/types.ts:83`) this reads. */
 export interface IntentView {
@@ -61,15 +61,15 @@ export interface SignalsView {
 export interface TaskView {
   id: string;
   title: string;
-  kind: 'file-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
+  kind: 'file-operation' | 'git-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
   targetFile: string | null;
   mode: 'diff' | 'new-file' | null;
   risk: RiskLevel;
 }
 
-/* ══════════════════════════════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════════�[...]
    Outputs
-   ══════════════════════════════════════════════════════════════════ */
+   ════════════════════════════════════════════════════════════════�[...]
 
 /**
  * What a single planned task will need from the Fabric. The sidecar of
@@ -116,9 +116,9 @@ export interface MissionCapabilityAnnotation {
   gaps: CapabilityGap[];
 }
 
-/* ══════════════════════════════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════════[...]
    Task → capability mapping
-   ══════════════════════════════════════════════════════════════════ */
+   ════════════════════════════════════════════════════════════════[...]
 
 /**
  * The mapping is intentionally coarse and total: every `TaskKind` has an
@@ -139,6 +139,12 @@ function requirementsFor(task: TaskView): { requires: string[]; rationale: strin
       return task.mode === 'new-file'
         ? { requires: ['filesystem.write'], rationale: `Creates ${task.targetFile}.` }
         : { requires: ['filesystem.read', 'filesystem.write'], rationale: `Rewrites ${task.targetFile}, so it reads the current contents first.` };
+
+    case 'git-operation':
+      return {
+        requires: ['git.diff', 'git.commit'],
+        rationale: 'Performs git operations (commit, branch, checkout, etc.).',
+      };
 
     case 'documentation':
       return {
@@ -196,9 +202,9 @@ export function bindTaskCapabilities(tasks: TaskView[]): CapabilityBinding[] {
   });
 }
 
-/* ══════════════════════════════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════════[...]
    Execution planning — task → a single concrete Fabric invocation
-   ══════════════════════════════════════════════════════════════════ */
+   ════════════════════════════════════════════════════════════════[...]
 
 /**
  * `CapabilityBinding.requires` lists everything a task may touch. Running
@@ -245,6 +251,12 @@ export function planTaskInvocation(task: TaskView, projectId: string | null): Ta
         reason: 'This task is carried out by running a command, but the plan does not say which one. Run it yourself and mark it complete — AURA will not invent a command to execute on your machine.',
       };
 
+    case 'git-operation':
+      return {
+        kind: 'unbound',
+        reason: 'Git operations are resolved and executed through Mission Control v3\'s dedicated git executor, not through direct capability invocation.',
+      };
+
     case 'file-operation':
       return {
         kind: 'unbound',
@@ -267,9 +279,9 @@ export function planTaskInvocation(task: TaskView, projectId: string | null): Ta
   }
 }
 
-/* ══════════════════════════════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════════[...]
    Assumptions and open questions
-   ══════════════════════════════════════════════════════════════════ */
+   ════════════════════════════════════════════════════════════════[...]
 
 /**
  * Both lists are derived only from *absences* in the extracted intent and
@@ -287,13 +299,13 @@ function deriveAssumptions(intent: IntentView, signals: SignalsView): string[] {
     out.push('No deadline was given, so the plan is ordered by dependency rather than by time.');
   }
   if (intent.constraints.length === 0) {
-    out.push('No constraints were stated, so the project’s existing conventions and stack were taken as the constraints.');
+    out.push('No constraints were stated, so the project\'s existing conventions and stack were taken as the constraints.');
   }
   if (intent.secondaryGoals.length === 0) {
     out.push(`Treated as a single objective: ${intent.primaryGoal}`);
   }
   if (intent.requiredQuality === 'standard') {
-    out.push('Quality bar was not specified, so it was planned to the project’s normal standard rather than as a prototype.');
+    out.push('Quality bar was not specified, so it was planned to the project\'s normal standard rather than as a prototype.');
   }
   if (signals.buildStatus.available === false) {
     out.push(`Build status could not be read (${signals.buildStatus.reason}), so no task assumes a currently-passing build.`);
@@ -313,7 +325,7 @@ function deriveOpenQuestions(intent: IntentView, signals: SignalsView): string[]
   }
   if (signals.gitStatus.available && signals.gitStatus.dirty) {
     out.push(
-      `There ${signals.gitStatus.changedFiles === 1 ? 'is 1 uncommitted change' : `are ${signals.gitStatus.changedFiles} uncommitted changes`} on ${signals.gitStatus.branch}. Should they be committed before this mission edits the same tree?`,
+      `There ${signals.gitStatus.changedFiles === 1 ? 'is 1 uncommitted change' : `are ${signals.gitStatus.changedFiles} uncommitted changes`} on ${signals.gitStatus.branch}. Should they be committed or stashed first?`,
     );
   }
   if (signals.securityFindings.length > 0) {
@@ -325,9 +337,9 @@ function deriveOpenQuestions(intent: IntentView, signals: SignalsView): string[]
   return out;
 }
 
-/* ══════════════════════════════════════════════════════════════════
+/* ════════════════════════════════════════════════════════════════[...]
    Entry point
-   ══════════════════════════════════════════════════════════════════ */
+   ════════════════════════════════════════════════════════════════[...]
 
 /**
  * Annotate a finished mission plan.
