@@ -1118,7 +1118,23 @@ export class WorkspaceManager {
     if (!adapter) return { ok: false, error: 'Unknown provider' };
     const validation = await adapter.validate(apiKey);
     if (!validation.ok) return { ok: false, error: validation.error ?? 'Key validation failed' };
-    const { fingerprint } = storeKey(providerId, apiKey);
+    /**
+     * Storing can now legitimately FAIL.
+     *
+     * A machine with no OS secret service and no `AURA_PROVIDER_SECRET`
+     * has nowhere safe to put an API key, and the credential store
+     * refuses rather than obfuscating it and reporting success. The key
+     * validated a moment ago, so this is not a bad key — it is a machine
+     * that cannot hold one — and the message says which, and how to fix
+     * it. Reporting `ok: true` here would leave the user believing a key
+     * was saved that was not.
+     */
+    let fingerprint: string;
+    try {
+      ({ fingerprint } = storeKey(providerId, apiKey));
+    } catch (error) {
+      return { ok: false, error: (error as Error).message };
+    }
     let models: DiscoveredModel[] = [];
     try {
       models = await adapter.discoverModels(apiKey);

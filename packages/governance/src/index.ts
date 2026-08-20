@@ -41,6 +41,7 @@ export {
 // Security Engine
 export {
   getSecurityReport,
+  setExecutableResolver,
   summarizeSecurity,
   type SecurityReport,
   type SecurityFinding,

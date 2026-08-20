@@ -309,12 +309,80 @@ function findDeprecatedDependencies(root: string): DeprecatedDep[] & { scanned: 
   return out;
 }
 
+/* ── finding npm, without owning a second way to find executables ──
+
+   `npm.cmd` was hardcoded here. On Linux and macOS that is an immediate
+   ENOENT — the file is called `npm` — so `npm audit` has never run on
+   either platform and every security report has quietly carried
+   `available: false`. On Windows it is wrong for a subtler reason: since
+   the fix for CVE-2024-27980 Node refuses to spawn a `.cmd` at all
+   without going through the command interpreter, so `execFile('npm.cmd')`
+   fails there too. The literal was wrong on all three.
+
+   The correct resolution already exists, once, in
+   `ai-service/src/exec/which.ts` — it walks PATH with the platform's own
+   delimiter, honours PATHEXT, and routes a `.cmd` shim through cmd.exe
+   with the quoting Windows needs. This package cannot import it:
+   `ai-service` depends on `@aura/governance`, not the other way round,
+   and inverting that to fix a spawn would be a much larger change than
+   the bug deserves.
+
+   So it is injected. `ai-service` registers the resolver it already owns
+   at boot, and there is still exactly ONE implementation of "find an
+   executable the way this OS finds one".
+
+   Uninjected, the fallback is deliberately modest rather than clever: a
+   bare `npm`, which is right on Unix, and an honest refusal on Windows,
+   where a bare name cannot be spawned safely without the resolver. It
+   never guesses at `npm.cmd` again. */
+
+export interface ResolvedLaunch {
+  file: string;
+  args: string[];
+  /** Spawn options the resolution requires (Windows verbatim arguments). */
+  options?: Record<string, unknown>;
+}
+
+/**
+ * Resolve a bare binary name into something `execFile` can run.
+ * Returns null when the binary genuinely is not installed.
+ */
+export type ExecutableResolver = (name: string, args: string[]) => ResolvedLaunch | null;
+
+let executableResolver: ExecutableResolver | null = null;
+
+/**
+ * Register the host's executable resolver. Called once, at boot, by the
+ * package that owns the resolver. Registering twice is not an error —
+ * the last registration wins — but there is only ever one caller.
+ */
+export function setExecutableResolver(resolver: ExecutableResolver | null): void {
+  executableResolver = resolver;
+}
+
+function npmLaunch(): ResolvedLaunch | null {
+  if (executableResolver) return executableResolver('npm', ['audit', '--json']);
+  if (process.platform === 'win32') return null;
+  return { file: 'npm', args: ['audit', '--json'] };
+}
+
 function runNpmAudit(root: string): Promise<SecurityReport['npmAudit']> {
+  const launch = npmLaunch();
+  if (!launch) {
+    return Promise.resolve({
+      available: false,
+      vulnerabilities: 0,
+      summary:
+        process.platform === 'win32'
+          ? 'npm audit was not run: on Windows npm is a .cmd shim that cannot be spawned directly, and no executable resolver was registered.'
+          : 'npm audit was not run: npm was not found.',
+    });
+  }
   return new Promise((resolve) => {
     execFile(
-      'npm.cmd',
-      ['audit', '--json'],
-      { cwd: root, timeout: 120000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+      launch.file,
+      launch.args,
+      { cwd: root, timeout: 120000, maxBuffer: 16 * 1024 * 1024, windowsHide: true, ...(launch.options ?? {}) },
       (err, stdout) => {
         if (err && !stdout) {
           resolve({ available: false, vulnerabilities: 0, summary: 'npm audit failed' });

@@ -15,6 +15,8 @@ import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
 import { handleCodeAction, type CodeActionRequest } from './codeAction';
 import { CATALOG } from '@aura/connected-environment';
 import { probeNode, scanEnvironment } from './environment';
+import { setExecutableResolver } from '@aura/governance';
+import { currentPlatform, launchSpec, spawnFlags } from './exec/which';
 import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext, type NodeRef } from '@aura/capability-fabric';
 import { createFabric } from './fabric';
 import { drivableAgentBinaries } from './fabric/executors';
@@ -102,6 +104,27 @@ export interface ServiceHandle {
   bridge: WorkflowBridge;
   close: () => Promise<void>;
 }
+
+/**
+ * Hand the governance package the executable resolver this service owns.
+ *
+ * `@aura/governance` runs `npm audit` but cannot import `exec/which` —
+ * `ai-service` depends on governance, not the reverse. Registering it
+ * here, at the single wiring point, is what keeps one implementation of
+ * "find an executable the way this OS finds one" while still letting a
+ * lower package spawn correctly on Windows. Before this, the audit
+ * spawned a hardcoded `npm.cmd`: an instant ENOENT on Linux and macOS,
+ * and unspawnable on Windows since the CVE-2024-27980 fix.
+ */
+setExecutableResolver((name, args) => {
+  const { target, resolved } = launchSpec(name, args);
+  // Null means genuinely not installed, so the caller reports that rather
+  // than surfacing an ENOENT from a name that was never resolvable. On
+  // Unix `launchSpec` still falls back to the bare name and lets the OS
+  // resolver have the final word, so this only refuses where it should.
+  if (!resolved && currentPlatform() === 'win32') return null;
+  return { file: target.file, args: target.args, options: spawnFlags(target) };
+});
 
 export async function startService(opts: PipelineOptions & { port?: number; openPath?: string; onShutdownRequest?: () => void } = {}): Promise<ServiceHandle> {
   setupProviders();

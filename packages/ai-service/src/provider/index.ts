@@ -76,7 +76,14 @@ export function getProvider(providerId: string): { info: ProviderInfo & { apiEnd
 
 /* ── credential management ──────────────────────────────────────────── */
 
-export function storeCredential(providerId: string, apiKey: string): { fingerprint: string } {
+/**
+ * Throws `NoCredentialProtectionError` when this machine has neither an
+ * OS keychain nor `AURA_PROVIDER_SECRET`. Deliberately not caught here:
+ * the caller that has a user in front of it (`connectProvider`) turns it
+ * into a message, and a caller that swallowed it would be reintroducing
+ * exactly the silent-success this replaced.
+ */
+export function storeCredential(providerId: string, apiKey: string): { fingerprint: string; protection: credentialStore.CredentialProtection } {
   return credentialStore.storeKey(providerId, apiKey);
 }
 
