@@ -8,6 +8,7 @@
  * consumes mission/diagnosis/health APIs.
  */
 import { create } from 'zustand';
+import { subscribeToSpine } from '../events/spineClient';
 
 export type NotificationKind =
   | 'approval-required'
@@ -153,3 +154,66 @@ export const NOTIFICATION_KIND_META: Record<NotificationKind, { label: string; i
   'architecture-warning': { label: 'Architecture warning', icon: 'architecture', tone: 'critical' },
   'update-available': { label: 'Update available', icon: 'deploy', tone: 'info' },
 };
+
+/* ── the push channel ──────────────────────────────────────────────
+   Backend-initiated events become notifications here.
+
+   This is the point of the Event Spine made visible: an approval an
+   autonomous agent needs answered used to have no way to reach the
+   person who must answer it — the renderer only ever learned about
+   backend state by asking again on a timer, and there was no timer
+   watching for this. Now the Fabric raises the question and it appears.
+
+   Deduplicated by the approval/campaign id, so a reconnect that replays
+   the backlog re-renders the same notification rather than stacking
+   copies of it. */
+
+interface ApprovalRequestBrief {
+  id: string;
+  summary?: string;
+  target?: string;
+  projectId?: string;
+  missionId?: string;
+  items?: { title: string }[];
+}
+
+export function startSpineNotifications(): () => void {
+  const notify = () => useNotificationsStore.getState().notify;
+
+  return subscribeToSpine(['approval', 'agent'], (event) => {
+    if (event.type === 'approval.required') {
+      const request = (event.payload as { request: ApprovalRequestBrief }).request;
+      if (!request?.id) return;
+      notify()({
+        key: `approval:${request.id}`,
+        kind: 'approval-required',
+        title: request.items?.[0]?.title
+          ? `${request.items[0].title} needs your go-ahead`
+          : 'An action needs your go-ahead',
+        detail: request.summary ?? 'Nothing has run. Review it in Governance.',
+        at: event.at,
+        projectId: request.projectId ?? event.projectId ?? undefined,
+        missionId: request.missionId,
+      });
+      return;
+    }
+
+    if (event.type === 'agent.notification') {
+      const payload = event.payload as {
+        kind: NotificationKind; title: string; detail: string; projectId: string | null; missionId?: string;
+      };
+      notify()({
+        // The agent's notifications are already keyed by campaign id in
+        // their detail; the title+detail pair is the stable identity of
+        // the moment, and a replayed backlog must not duplicate it.
+        key: `agent:${payload.kind}:${payload.title}:${payload.detail}`,
+        kind: payload.kind,
+        title: payload.title,
+        detail: payload.detail,
+        at: event.at,
+        projectId: payload.projectId ?? undefined,
+        missionId: payload.missionId,
+      });
+    }
+  });
+}

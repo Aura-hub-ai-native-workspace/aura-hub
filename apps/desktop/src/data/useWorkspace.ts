@@ -19,6 +19,7 @@ import {
   type ProjectRecord,
 } from '../ai/aiClient';
 import { onSpineStatus, subscribeToSpine, type AuraEvent } from '../events/spineClient';
+import { useMemoryStore } from '../ops/engineeringMemory';
 
 interface WorkspaceState {
   reachable: boolean | null;
@@ -226,6 +227,9 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
   async remove(id) {
     await aiClient.removeProject(id);
     if (get().openId === id) set({ openId: null, profile: null, status: null, graph: null, kg: null, memory: [] });
+    // The engineering log lives in the service now, so removing a project
+    // removes its events there rather than in this window's cache.
+    await useMemoryStore.getState().purgeProject(id);
     await get().refresh();
   },
   async reindex() {

@@ -14,6 +14,7 @@ import { AppImageInstallPrompt } from './components/AppImageInstallPrompt';
 import { restoreSession, saveSession } from './ops/session';
 import { startMemoryRecorder } from './ops/memoryRecorder';
 import { startAgentSync } from './ops/agentStore';
+import { startSpineNotifications } from './ops/notificationsStore';
 import { startEngineeringMemorySync } from './ops/engineeringMemory';
 import { useUpdateNotifications } from './updater/useUpdateNotifications';
 
@@ -57,6 +58,11 @@ export function App() {
   // cache of it current from the Event Spine, so an event recorded by the
   // agent, the mission engine, or another surface appears here too.
   useEffect(() => startEngineeringMemorySync(), []);
+
+  // Backend-initiated events become notifications. This is the channel an
+  // approval an autonomous agent needs answered travels on — before it,
+  // there was none, and the question had no way to reach a person.
+  useEffect(() => startSpineNotifications(), []);
 
   // Autonomous Engineering Agent: it observes, proposes, waits for
   // approval, executes as missions and verifies — IN THE SERVICE, so it
