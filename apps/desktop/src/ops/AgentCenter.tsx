@@ -39,7 +39,7 @@ import {
   type AgentCampaignStatus,
   type AgentSeverity,
 } from './agentStore';
-import { runAgentObservation } from './agentEngine';
+
 
 type AgentView = 'queues' | 'campaigns' | 'timeline';
 
@@ -72,6 +72,7 @@ export function AgentCenter({ variant = 'screen' }: { variant?: 'screen' | 'pane
   const openId = useWorkspace((s) => s.openId);
   const analysis = useLearningEngine(openId);
   const enabled = useAgentStore((s) => s.enabled);
+  const observe = useAgentStore((s) => s.observe);
   const setEnabled = useAgentStore((s) => s.setEnabled);
   const clear = useAgentStore((s) => s.clear);
   const campaigns = useAgentStore((s) => s.campaigns);
@@ -101,7 +102,7 @@ export function AgentCenter({ variant = 'screen' }: { variant?: 'screen' | 'pane
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="secondary" icon="refresh" onClick={runAgentObservation}>
+          <Button size="sm" variant="secondary" icon="refresh" onClick={observe}>
             Observe now
           </Button>
           <Button size="sm" variant="secondary" icon={enabled ? 'eye-off' : 'activity'} onClick={() => setEnabled(!enabled)}>

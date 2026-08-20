@@ -25,18 +25,28 @@ import { useEditorStore } from '../editor/editorStore';
 import {
   importanceOf,
   useMemoryStore,
-  type EngineeringMemory,
   type MemoryCategory,
   type MemoryImportance,
   type MemoryInput,
-} from './memoryStore';
+} from './engineeringMemory';
 
 const RECONCILE_MS = 30000;
 
 let lastProvider: { id: string | null; model: string | null } | null = null;
 
-function record(input: MemoryInput): EngineeringMemory | null {
-  return useMemoryStore.getState().record(input);
+/**
+ * Record one real engineering event.
+ *
+ * Now asynchronous, because the store is a client: the SERVICE owns the
+ * dedupe decision and the id. Every call site here is fire-and-forget by
+ * design — the recorder observes engine state and must never make an
+ * observation wait on a write, and a write that fails is a lost
+ * observation the next reconcile pass re-derives from the same real
+ * event, because the dedupe key is derived from the event and not from
+ * when it was noticed.
+ */
+function record(input: MemoryInput): void {
+  void useMemoryStore.getState().record(input);
 }
 
 /* ── editor saves (real-time) ───────────────────────────────────────── */

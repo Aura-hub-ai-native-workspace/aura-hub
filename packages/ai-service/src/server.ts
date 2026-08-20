@@ -21,6 +21,10 @@ import { probeNode, scanEnvironment } from './environment';
 import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext, type NodeRef } from '@aura/capability-fabric';
 import { createFabric } from './fabric';
 import { EventSpine, bridgeFabricEvent, isEventTopic, type EventTopic } from './events';
+import { engineeringLog } from './engineering/log';
+import { analyzeMemories } from './engineering/learning';
+import { AgentEngine, TICK_MS as AGENT_TICK_MS } from './engineering/agent';
+import type { EngineeringEventInput, EventCategory, EventImportance, EventSource, EventUser } from './engineering/events';
 import { drivableAgentBinaries } from './fabric/executors';
 import { composeContextView, type ContextSources } from './context/compose';
 import { renderContextContract } from './context/promptContract';
@@ -386,6 +390,49 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   }
   bridge.startScheduler();
 
+  /**
+   * The Autonomous Engineering Agent — in the service, not the window.
+   *
+   * It reasons over the one on-disk engineering log, its campaigns and
+   * timeline are on disk, and its only action is creating a real mission
+   * through the same public methods the HTTP routes use. The renderer
+   * neither schedules it nor executes anything for it: invariant 10 is
+   * strengthened rather than bent.
+   */
+  const agent = new AgentEngine({
+    log: engineeringLog,
+    projectIds: () => manager.registry.list().map((proj) => proj.id),
+    activeProjectId: () => manager.pipeline.currentProjectId,
+    createMission: async (projectId, text, emit) => {
+      const record = await manager.runMissionCreation(projectId, text, emit);
+      return record ? { id: record.id } : null;
+    },
+    approveMission: (projectId, missionId) => {
+      const m = manager.approveMission(projectId, missionId);
+      return m ? { ok: true } : { ok: false, error: 'no such mission' };
+    },
+    startMission: (projectId, missionId) => {
+      const r = manager.startMissionExecution(projectId, missionId);
+      return { ok: r.ok, error: r.error };
+    },
+    listMissions: (projectId) => manager.listMissions(projectId),
+    publish: (change) => {
+      spine.publish({
+        topic: 'agent',
+        type: change.type === 'campaign' ? 'agent.campaign'
+          : change.type === 'timeline' ? 'agent.timeline'
+          : change.type === 'enabled' ? 'agent.enabled'
+          : 'agent.notification',
+        projectId:
+          change.type === 'campaign' ? change.campaign.projectId
+          : change.type === 'notification' ? change.projectId
+          : null,
+        payload: change,
+      });
+    },
+  });
+  agent.start();
+
   /* Automation's own listener set (automation.ts) keeps working exactly as
      before; the spine simply becomes one more subscriber, so an automation
      run is visible on the single channel alongside everything else. */
@@ -519,6 +566,106 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         opts.onShutdownRequest?.();
         return;
       }
+      /* ── Engineering log · Learning · Agent ─────────────────────
+         The engineering-event model that used to live only in the
+         browser's localStorage. One store, on disk, readable by the
+         mission engine and the agent — which is the whole reason the
+         agent can now outlive the window. */
+      if (seg[0] === 'engineering-log') {
+        const projectId = url.searchParams.get('projectId');
+        if (method === 'GET') {
+          const items = engineeringLog.list(projectId, manager.registry.list().map((proj) => proj.id));
+          return json(res, 200, { items });
+        }
+        if (method === 'POST') {
+          const b = await readJson(req);
+          const dedupe = String(b.dedupe ?? '').trim();
+          if (!dedupe) return json(res, 400, { error: 'dedupe is required — an event with no stable key would be recorded twice' });
+          const input: EngineeringEventInput = {
+            projectId: typeof b.projectId === 'string' && b.projectId ? b.projectId : null,
+            at: typeof b.at === 'string' ? b.at : undefined,
+            category: String(b.category ?? 'learning') as EventCategory,
+            importance: String(b.importance ?? 'medium') as EventImportance,
+            title: String(b.title ?? ''),
+            summary: String(b.summary ?? ''),
+            reason: typeof b.reason === 'string' ? b.reason : '',
+            user: String(b.user ?? 'system') as EventUser,
+            files: Array.isArray(b.files) ? b.files.map(String) : [],
+            symbols: Array.isArray(b.symbols) ? b.symbols.map(String) : [],
+            layer: typeof b.layer === 'string' ? b.layer : null,
+            dependencies: Array.isArray(b.dependencies) ? b.dependencies.map(String) : [],
+            missionId: typeof b.missionId === 'string' ? b.missionId : null,
+            diagnosisId: typeof b.diagnosisId === 'string' ? b.diagnosisId : null,
+            source: String(b.source ?? 'system') as EventSource,
+            dedupe,
+          };
+          const event = engineeringLog.record(input);
+          // `null` means the dedupe key already fired. Reported as a
+          // 200 with `recorded: false`, not an error: the caller's
+          // reconcile pass did the right thing and there is nothing wrong.
+          if (event) {
+            spine.publish({ topic: 'workspace', type: 'workspace.engineering-event', projectId: event.projectId, payload: event });
+          }
+          return json(res, 200, { recorded: event !== null, event });
+        }
+        if (method === 'DELETE') {
+          /* Scope-explicit. Without `?projectId=` this clears only the
+             workspace-global scope; `?all=1` clears every project too.
+             Deleting everything must be something the caller asked for
+             in as many words. */
+          const all = url.searchParams.get('all') === '1';
+          const scopes: (string | null)[] = all
+            ? [null, ...manager.registry.list().map((proj) => proj.id)]
+            : [projectId];
+          let removed = 0;
+          for (const scope of scopes) removed += engineeringLog.purge(scope);
+          spine.publish({ topic: 'workspace', type: 'workspace.engineering-purged', projectId: all ? null : projectId, payload: { removed, all } });
+          return json(res, 200, { removed });
+        }
+      }
+
+      /* The Learning Engine's analysis of those events. Pure, deterministic
+         and computed where the events live, so the UI and the agent read
+         the same numbers rather than each deriving their own. */
+      if (method === 'GET' && seg[0] === 'learning') {
+        const projectId = url.searchParams.get('projectId');
+        const events = engineeringLog.list(projectId, manager.registry.list().map((proj) => proj.id));
+        return json(res, 200, analyzeMemories(events));
+      }
+
+      if (seg[0] === 'agent') {
+        if (method === 'GET' && seg.length === 1) {
+          return json(res, 200, { ...agent.store.snapshot(), tickMs: AGENT_TICK_MS });
+        }
+        if (method === 'POST' && seg[1] === 'enabled') {
+          const b = await readJson(req);
+          agent.store.setEnabled(b.enabled !== false);
+          return json(res, 200, { enabled: agent.store.enabled });
+        }
+        /* Run one pass now. The loop runs on its own timer regardless;
+           this exists so a person who just recorded something does not
+           wait up to 30 s to see the agent react to it. */
+        if (method === 'POST' && seg[1] === 'observe') {
+          await agent.advance();
+          return json(res, 200, agent.store.snapshot());
+        }
+        if (method === 'POST' && seg[1] === 'campaigns' && seg[2]) {
+          const id = seg[2];
+          if (seg[3] === 'approve') {
+            const c = agent.store.approve(id, 'user');
+            if (!c) return json(res, 404, { error: 'no such campaign awaiting approval' });
+            // Act on the approval immediately rather than at the next
+            // tick: the human just said yes and is watching.
+            void agent.advance();
+            return json(res, 200, c);
+          }
+          if (seg[3] === 'dismiss') {
+            const c = agent.store.dismiss(id);
+            return c ? json(res, 200, c) : json(res, 404, { error: 'no such campaign' });
+          }
+        }
+      }
+
       if (method === 'GET' && (seg.length === 0 || seg[0] === 'settings')) return json(res, 200, { settings: p.getSettings(), defaults: DEFAULT_SETTINGS, key: p.keyStatus() });
       if (method === 'POST' && seg[0] === 'settings' && seg[1] === 'key') { const b = await readJson(req); return json(res, 200, p.setKey(String(b.apiKey ?? ''), Boolean(b.persist))); }
       if (method === 'DELETE' && seg[0] === 'settings' && seg[1] === 'key') { p.clearKey(); return json(res, 200, { ok: true }); }

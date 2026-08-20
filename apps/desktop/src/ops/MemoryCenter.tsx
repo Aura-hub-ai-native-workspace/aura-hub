@@ -39,7 +39,7 @@ import {
   type MemoryCategory,
   type MemoryImportance,
   type MemoryView,
-} from './memoryStore';
+} from './engineeringMemory';
 
 const ICON_TONE: Record<string, string> = {
   architecture: 'text-accent',

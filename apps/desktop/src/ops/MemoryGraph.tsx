@@ -2,12 +2,12 @@
  * MemoryGraph — the Memory Graph view.
  * ------------------------------------------------------------------
  * Renders the laid-out memory graph (see layoutMemoryGraph in
- * memoryStore.ts) as a lightweight SVG: edges connect memories that
+ * engineeringMemory.ts) as a lightweight SVG: edges connect memories that
  * share a mission, diagnosis, file, symbol or architecture layer.
  * Clicking a node selects the memory in the center.
  */
-import type { MemoryGraph } from './memoryStore';
-import { MEMORY_CATEGORY_META } from './memoryStore';
+import type { MemoryGraph } from './engineeringMemory';
+import { MEMORY_CATEGORY_META } from './engineeringMemory';
 
 const CATEGORY_FILL: Record<string, string> = {
   architecture: 'var(--accent-600)',

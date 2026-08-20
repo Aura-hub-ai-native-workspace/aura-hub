@@ -13,7 +13,8 @@ import { useNotificationsFeed } from './ops/useNotificationsFeed';
 import { AppImageInstallPrompt } from './components/AppImageInstallPrompt';
 import { restoreSession, saveSession } from './ops/session';
 import { startMemoryRecorder } from './ops/memoryRecorder';
-import { startAgentEngine } from './ops/agentEngine';
+import { startAgentSync } from './ops/agentStore';
+import { startEngineeringMemorySync } from './ops/engineeringMemory';
 import { useUpdateNotifications } from './updater/useUpdateNotifications';
 
 /**
@@ -52,10 +53,15 @@ export function App() {
   // into the persistent platform. Lives for the app's lifetime.
   useEffect(() => startMemoryRecorder(), []);
 
-  // Autonomous Engineering Agent: observes memory + learning, proposes
-  // improvements, waits for approval, executes as missions, verifies.
-  // Always human-gated — it never edits code without approval.
-  useEffect(() => startAgentEngine(), []);
+  // The engineering log lives in the service now. This keeps the window's
+  // cache of it current from the Event Spine, so an event recorded by the
+  // agent, the mission engine, or another surface appears here too.
+  useEffect(() => startEngineeringMemorySync(), []);
+
+  // Autonomous Engineering Agent: it observes, proposes, waits for
+  // approval, executes as missions and verifies — IN THE SERVICE, so it
+  // survives this window closing. This only watches it.
+  useEffect(() => startAgentSync(), []);
 
   // Keep <html data-theme> in sync (also set on first paint).
   useEffect(() => {

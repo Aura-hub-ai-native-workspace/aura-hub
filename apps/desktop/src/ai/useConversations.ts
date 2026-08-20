@@ -130,7 +130,7 @@ export const useConversations = create<ConvState>((set, get) => ({
     // engineering memory, delivered locally without a backend stream.
     const project = useWorkspace.getState().projects.find((p) => p.id === projectId);
     const scopeLabel = project?.name ?? projectId;
-    const learningAnswer = answerLearningQuestion(trimmed, projectId, scopeLabel);
+    const learningAnswer = await answerLearningQuestion(trimmed, projectId, scopeLabel);
     if (learningAnswer) {
       let cid = get().activeId;
       if (!cid) cid = await get().newConversation();

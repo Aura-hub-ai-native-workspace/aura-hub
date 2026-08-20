@@ -1,30 +1,41 @@
 /**
- * memoryStore — the Engineering Memory Platform.
+ * engineeringMemory — the renderer's VIEW of the engineering log.
  * ==================================================================
- * AURA remembers *engineering* history, not chat history. Every memory
- * is a structured record of a real event in the development process:
- * an accepted or rejected code change, a diagnosis, a mission, a task,
- * a review, a decision, a documentation update or a learning. Nothing
- * here is fabricated — memories are produced by ops/memoryRecorder.ts,
- * which only consumes public engine state and real user actions.
+ * Replaces `ops/memoryStore.ts`, which was a second, incompatible
+ * engineering-memory model that never left the browser: its own schema,
+ * its own `localStorage` persistence, invisible to the mission engine,
+ * the Learning Engine and the agent — all of which run in the service —
+ * and gone the moment the profile was cleared.
  *
- * Persistence: the whole list is written to localStorage under
- * `aura.ops.memory` and survives restart. Memories are deduplicated by
- * a stable `dedupe` key (the same real event always maps to the same
- * key, so a poll can never record it twice). The store is a pure,
- * renderable state container — the recorder and the UI both read it.
+ * The model now lives in `packages/ai-service/src/engineering/events.ts`
+ * and is stored once, on disk, through `@aura/engineering-memory`. What
+ * is left here is a **cache and a client**:
+ *
+ *   • `record()` posts to the service and applies what the service
+ *     returns. The service owns dedupe, so a duplicate is refused there
+ *     and this store never invents an id.
+ *   • The cache is refreshed from `GET /engineering-log` and kept live by
+ *     the Event Spine — a `workspace.engineering-event` arrives whether
+ *     this window recorded it or another surface did.
+ *   • Nothing is persisted here. There is nothing to persist: the events
+ *     are already durable somewhere better.
+ *
+ * The type names (`EngineeringMemory`, `MemoryInput`, `useMemoryStore`)
+ * are kept so the surfaces that read them are unchanged. The wire types
+ * are restated rather than imported, exactly as `aiClient.ts` does: the
+ * renderer talks HTTP and deliberately does not depend on the service
+ * package.
  */
+
 import { create } from 'zustand';
+import { subscribeToSpine, type AuraEvent } from '../events/spineClient';
+
+const ENV = import.meta.env as unknown as Record<string, string | undefined>;
+const BASE = ENV.VITE_AI_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:4319';
 
 export type MemoryCategory =
-  | 'architecture'
-  | 'code'
-  | 'mission'
-  | 'diagnosis'
-  | 'documentation'
-  | 'review'
-  | 'decision'
-  | 'learning';
+  | 'architecture' | 'code' | 'mission' | 'diagnosis'
+  | 'documentation' | 'review' | 'decision' | 'learning';
 
 export type MemoryImportance = 'critical' | 'high' | 'medium' | 'low';
 
@@ -35,22 +46,13 @@ export type MemoryView = 'timeline' | 'history' | 'graph';
 
 /** Where a memory came from — provenance for trust + filtering. */
 export type MemorySource =
-  | 'editor'
-  | 'ai-action'
-  | 'mission'
-  | 'diagnosis'
-  | 'bug-bot'
-  | 'conversation'
-  | 'memory-item'
-  | 'provider'
-  | 'system';
+  | 'editor' | 'ai-action' | 'mission' | 'diagnosis' | 'bug-bot'
+  | 'conversation' | 'memory-item' | 'provider' | 'system';
 
 export interface EngineeringMemory {
-  /** Unique ID. */
   id: string;
   /** Null = workspace-global (e.g. provider decisions). */
   projectId: string | null;
-  /** ISO timestamp. */
   at: string;
   category: MemoryCategory;
   importance: MemoryImportance;
@@ -61,16 +63,11 @@ export interface EngineeringMemory {
   user: MemoryUser;
   files: string[];
   symbols: string[];
-  /** Architecture layer the memory touches, when known. */
   layer: string | null;
   dependencies: string[];
   missionId: string | null;
   diagnosisId: string | null;
   source: MemorySource;
-  /** Computed related-memory ids (filled by relatedMemories()). */
-  refs: string[];
-  /** Embedding vector — reserved for future semantic recall. */
-  embedding: number[] | null;
   /** Stable dedupe key — the same real event always maps to one key. */
   dedupe: string;
 }
@@ -101,33 +98,6 @@ export interface MemoryFilter {
   query: string;
 }
 
-const STORAGE_KEY = 'aura.ops.memory';
-const CAP = 4000;
-
-let seq = 0;
-const mid = () => `m${Date.now().toString(36)}${(seq += 1).toString(36)}`;
-
-function loadMemories(): EngineeringMemory[] {
-  if (typeof localStorage === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as EngineeringMemory[];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-export function persistMemories(memories: EngineeringMemory[]): void {
-  if (typeof localStorage === 'undefined') return;
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(memories));
-  } catch {
-    /* storage full / blocked — the in-memory platform still works this session */
-  }
-}
-
 /* ── deterministic importance assignment (real signals, never random) ── */
 export function importanceOf(
   category: MemoryCategory,
@@ -135,25 +105,20 @@ export function importanceOf(
 ): MemoryImportance {
   if (opts.critical) return 'critical';
   switch (category) {
-    case 'review':
-      return opts.event === 'passed' ? 'high' : 'high';
-    case 'decision':
-      return 'high';
-    case 'diagnosis':
-      return opts.event === 'accepted' || opts.event === 'rejected' ? 'high' : 'medium';
-    case 'mission':
-      return opts.event === 'failed' ? 'critical' : opts.event === 'completed' ? 'high' : 'medium';
-    case 'code':
-      return opts.user === 'ai' ? 'high' : 'low';
-    case 'documentation':
-      return 'medium';
-    case 'architecture':
-      return 'high';
-    case 'learning':
-      return 'medium';
-    default:
-      return 'medium';
+    case 'review': return 'high';
+    case 'decision': return 'high';
+    case 'diagnosis': return opts.event === 'accepted' || opts.event === 'rejected' ? 'high' : 'medium';
+    case 'mission': return opts.event === 'failed' ? 'critical' : opts.event === 'completed' ? 'high' : 'medium';
+    case 'code': return opts.user === 'ai' ? 'high' : 'low';
+    case 'documentation': return 'medium';
+    case 'architecture': return 'high';
+    case 'learning': return 'medium';
+    default: return 'medium';
   }
+}
+
+function sortNewest(memories: EngineeringMemory[]): EngineeringMemory[] {
+  return [...memories].sort((a, b) => b.at.localeCompare(a.at));
 }
 
 interface MemoryState {
@@ -161,86 +126,107 @@ interface MemoryState {
   selectedId: string | null;
   view: MemoryView;
   filter: MemoryFilter;
+  /** True once the cache has been loaded from the service at least once. */
+  hydrated: boolean;
+  /** Set when the service could not be reached; the UI can say so. */
+  error: string | null;
 
-  /** Record a memory unless its dedupe key already fired. */
-  record: (input: MemoryInput) => EngineeringMemory | null;
-  remove: (id: string) => void;
-  clear: () => void;
+  /** Pull the log from the service. Safe to call repeatedly. */
+  hydrate: (projectId?: string | null) => Promise<void>;
+  /** Record an event. The SERVICE decides whether the dedupe key is new. */
+  record: (input: MemoryInput) => Promise<EngineeringMemory | null>;
+  clear: () => Promise<void>;
+  purgeProject: (projectId: string) => Promise<void>;
   select: (id: string | null) => void;
   setView: (view: MemoryView) => void;
   setFilter: (partial: Partial<MemoryFilter>) => void;
-  /** Drop a project's memories (when the project is removed). */
-  purgeProject: (projectId: string) => void;
-}
-
-function sortNewest(memories: EngineeringMemory[]): EngineeringMemory[] {
-  return [...memories].sort((a, b) => b.at.localeCompare(a.at));
-}
-
-function commit(memories: EngineeringMemory[]): EngineeringMemory[] {
-  const next = sortNewest(memories).slice(0, CAP);
-  persistMemories(next);
-  return next;
+  /** Apply an event that arrived on the spine (recorded by any surface). */
+  apply: (memory: EngineeringMemory) => void;
 }
 
 export const useMemoryStore = create<MemoryState>((set, get) => ({
-  memories: loadMemories(),
+  memories: [],
   selectedId: null,
   view: 'timeline',
   filter: { categories: null, importances: null, projectId: null, query: '' },
+  hydrated: false,
+  error: null,
 
-  record: (input) => {
-    const { memories } = get();
-    if (memories.some((m) => m.dedupe === input.dedupe)) return null;
-    const memory: EngineeringMemory = {
-      id: mid(),
-      projectId: input.projectId ?? null,
-      at: input.at ?? new Date().toISOString(),
-      category: input.category,
-      importance: input.importance,
-      title: input.title,
-      summary: input.summary,
-      reason: input.reason ?? '',
-      user: input.user ?? 'system',
-      files: input.files ?? [],
-      symbols: input.symbols ?? [],
-      layer: input.layer ?? null,
-      dependencies: input.dependencies ?? [],
-      missionId: input.missionId ?? null,
-      diagnosisId: input.diagnosisId ?? null,
-      source: input.source,
-      refs: [],
-      embedding: null,
-      dedupe: input.dedupe,
-    };
-    set({ memories: commit([memory, ...memories]) });
-    return memory;
+  async hydrate(projectId) {
+    try {
+      const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+      const res = await fetch(`${BASE}/engineering-log${query}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json() as { items: EngineeringMemory[] };
+      set({ memories: sortNewest(body.items ?? []), hydrated: true, error: null });
+    } catch (e) {
+      // The cache keeps whatever it had. An unreachable service is a
+      // reachability problem, not an empty history, and reporting it as
+      // an empty history is how a UI ends up claiming the user never
+      // did anything.
+      set({ error: (e as Error).message });
+    }
   },
 
-  remove: (id) => {
-    const { memories, selectedId } = get();
-    set({
-      memories: commit(memories.filter((m) => m.id !== id)),
-      selectedId: selectedId === id ? null : selectedId,
-    });
+  async record(input) {
+    try {
+      const res = await fetch(`${BASE}/engineering-log`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+      if (!res.ok) return null;
+      const body = await res.json() as { recorded: boolean; event: EngineeringMemory | null };
+      if (!body.recorded || !body.event) return null;
+      get().apply(body.event);
+      return body.event;
+    } catch {
+      return null;
+    }
   },
 
-  clear: () => set({ memories: commit([]), selectedId: null }),
+  async clear() {
+    try {
+      await fetch(`${BASE}/engineering-log?all=1`, { method: 'DELETE' });
+      set({ memories: [], selectedId: null });
+    } catch { /* the service is the authority; a failed clear clears nothing */ }
+  },
+
+  async purgeProject(projectId) {
+    try {
+      await fetch(`${BASE}/engineering-log?projectId=${encodeURIComponent(projectId)}`, { method: 'DELETE' });
+      set((s) => ({ memories: s.memories.filter((m) => m.projectId !== projectId) }));
+    } catch { /* as above */ }
+  },
 
   select: (id) => set({ selectedId: id }),
-
   setView: (view) => set({ view }),
-
   setFilter: (partial) => set((s) => ({ filter: { ...s.filter, ...partial } })),
 
-  purgeProject: (projectId) => {
-    const { memories, selectedId } = get();
-    set({
-      memories: commit(memories.filter((m) => m.projectId !== projectId)),
-      selectedId: selectedId ?? null,
-    });
-  },
+  apply: (memory) => set((s) => (
+    s.memories.some((m) => m.id === memory.id)
+      ? s
+      : { memories: sortNewest([memory, ...s.memories]) }
+  )),
 }));
+
+/**
+ * Keep the cache live from the Event Spine.
+ *
+ * Started once by `App.tsx`. Without it a window would only see events it
+ * recorded itself — and the events that matter most (the agent's, the
+ * mission engine's) are recorded by neither window.
+ */
+export function startEngineeringMemorySync(): () => void {
+  void useMemoryStore.getState().hydrate();
+  return subscribeToSpine(['workspace'], (e: AuraEvent) => {
+    if (e.type === 'workspace.engineering-event') {
+      useMemoryStore.getState().apply(e.payload as EngineeringMemory);
+      return;
+    }
+    if (e.type === 'workspace.engineering-purged') void useMemoryStore.getState().hydrate();
+  });
+}
 
 /* ── pure query helpers (used by the UI, not tied to the store shape) ── */
 

@@ -17,7 +17,7 @@ import { cn } from '@aura/core';
 import { useWorkspace } from '../data/useWorkspace';
 import { relTime } from '../screens/missions/missionMeta';
 import { useLayoutStore } from './layoutStore';
-import { useMemoryStore } from './memoryStore';
+import { useMemoryStore } from './engineeringMemory';
 import {
   useLearningEngine,
   type LearningPattern,
