@@ -16,6 +16,7 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { KeywordIntentClassifier, TemplatePromptEnhancer, createRequest } from '@aura/intelligence';
 import { engineeringMemory } from '@aura/engineering-memory';
+import { guardedFetch } from '../net/ssrfGuard';
 import type { PipelineManager } from '../pipeline';
 import { ProjectConversations } from '../conversations';
 import { loadProfile } from '../profile';
@@ -87,7 +88,23 @@ export async function runGit(projectPath: string, args: string[], opts?: { signa
 
 const MAX_HTTP_RESPONSE = 512 * 1024; // enough for a real API response, not enough to hang a run on a large download
 
-/** Real outbound fetch, bounded by timeout and response size. AURA is a single-user local desktop app (no multi-tenant boundary), so the proportionate safety measure here is the same bounded-timeout/maxBuffer pattern already used for git/shell above — not an IP allow/deny list, which would be solving a threat model that doesn't apply. */
+/**
+ * Real outbound fetch, bounded by timeout and response size, and guarded
+ * at the resolver.
+ *
+ * The bounded-timeout/maxBuffer pattern was here already and is kept. The
+ * IP deny list is new, and the comment it replaces argued against one on
+ * the grounds that AURA is single-user and has no multi-tenant boundary.
+ *
+ * That is right about tenancy and wrong about the threat. The attacker is
+ * not another tenant, it is the CONTENT: AURA reads web pages, tool
+ * output and repository files, and a model that has just read an
+ * attacker-authored page can be induced to request a URL. Pointed at
+ * `169.254.169.254` that returns cloud credentials; pointed at
+ * `127.0.0.1:4319` it returns AURA's own unauthenticated local API.
+ * Neither needs a second tenant — it needs one persuasive paragraph in a
+ * README. See `net/ssrfGuard.ts`, which also re-checks every redirect hop.
+ */
 async function sandboxedFetch(url: string, opts: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<{ status: number; text: string }> {
   if (!/^https?:\/\//i.test(url)) throw new Error('only http(s) URLs are allowed');
   const timeout = Math.max(1000, Math.min(30_000, opts.timeoutMs ?? 10_000));
@@ -96,7 +113,7 @@ async function sandboxedFetch(url: string, opts: { method?: string; headers?: Re
   const onOuterAbort = () => ac.abort();
   opts.signal?.addEventListener('abort', onOuterAbort, { once: true });
   try {
-    const res = await fetch(url, { method: opts.method ?? 'GET', headers: opts.headers, body: opts.body, signal: ac.signal });
+    const res = await guardedFetch(url, { method: opts.method ?? 'GET', headers: opts.headers, body: opts.body, signal: ac.signal });
     const buf = await res.arrayBuffer();
     const text = Buffer.from(buf.slice(0, MAX_HTTP_RESPONSE)).toString('utf8');
     return { status: res.status, text };

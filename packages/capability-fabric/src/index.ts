@@ -26,6 +26,8 @@
  */
 
 export * from './types';
+export * from './tier';
+export * from './driverRegistry';
 export * from './manifest';
 export * from './policy';
 export * from './fabric';

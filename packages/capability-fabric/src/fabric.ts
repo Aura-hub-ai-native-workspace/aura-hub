@@ -36,6 +36,7 @@ import type {
 } from './types';
 import { describeFabricCapability } from './manifest';
 import { DEFAULT_POLICY, evaluatePolicy, grantsFor } from './policy';
+import { TIER_RISK_FLOOR } from './tier';
 
 /* ── recovery bounds (§16) ──────────────────────────────────────── */
 
@@ -478,9 +479,15 @@ export class CapabilityFabric {
     // The executor is handed its node; it discovers nothing itself.
     invocation.node = resolution.node;
 
-    /* 3. policy */
+    /* 3. policy
+       The executor's actuation tier enters here as a RISK FLOOR, not as
+       a second decision: `evaluatePolicy` folds it in with `stricterRisk`
+       before it reads a single rule. One policy engine, reasoning about
+       the risk the action actually carries rather than the risk the
+       manifest claims for an idealised implementation. */
     const evaluation = evaluatePolicy({
       capability,
+      riskFloor: routingExecutor?.tier ? TIER_RISK_FLOOR[routingExecutor.tier] : null,
       config: this.policy,
       granted: grantsFor(this.host.permissionsFor(capability, context)),
       // Derived from the same resolution when the host does routing, so
@@ -931,6 +938,13 @@ export class CapabilityFabric {
       verified: verification.passed,
       durationMs,
       inputSummary: capability ? summarizeInput(capability, invocation.input) : '(unknown capability)',
+      /* HOW it reached the world. Read from the registered executor's own
+         declaration, so it describes the path that actually existed for
+         this capability rather than the path the manifest imagines.
+         Absent when the executor declares none: unknown, never tier 1. */
+      ...(this.executors.get(invocation.capabilityId)?.tier
+        ? { tier: this.executors.get(invocation.capabilityId)!.tier }
+        : {}),
       // Routing is recorded in full: what was asked for, what the Fabric
       // chose, and what actually ran. Collapsing these would hide a
       // substitution — the one thing routing must never do quietly.

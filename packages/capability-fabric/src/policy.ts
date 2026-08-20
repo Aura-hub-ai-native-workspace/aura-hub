@@ -16,6 +16,7 @@
  * intended. It cannot make it less cautious than the hard floors.
  */
 
+import { stricterRisk } from './tier';
 import type {
   CapabilityDescriptor,
   PermissionScope,
@@ -165,11 +166,26 @@ export interface PolicyInput {
   nodeAvailable: boolean | null;
   /** Node identity and correlation keys. Absent for node-free calls. */
   subject?: PolicySubject;
+  /**
+   * A minimum risk imposed by HOW the action will be performed, from
+   * `tier.ts`. Folded in with `stricterRisk` before any rule is read, so
+   * this raises the risk a rule sees rather than making a second
+   * decision beside it. There is still exactly one policy engine; this
+   * only corrects the input it reasons about.
+   *
+   * Absent means the actuation path imposes no floor - which is the
+   * truth for a native API, a CLI and a local protocol.
+   */
+  riskFloor?: RiskLevel | null;
 }
 
 export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
   const { capability, config, granted, nodeAvailable } = input;
-  const risk: RiskLevel = capability.risk;
+  /* Effective risk, not declared risk. A capability that is low-risk
+     over an API is not low-risk when it is being driven by synthesised
+     clicks: the failure modes differ, and an API call fails loudly where
+     a misplaced click succeeds at something else. */
+  const risk: RiskLevel = stricterRisk(capability.risk, input.riskFloor);
 
   /* 1. Hard floors — not configurable, in precedence order. */
 

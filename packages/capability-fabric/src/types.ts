@@ -17,6 +17,7 @@
  */
 
 import type { AgentRole, CapabilityId as NodeCapabilityId } from '@aura/connected-environment';
+import type { ActuationTier } from './tier';
 
 /**
  * Risk vocabulary. Structurally identical to Mission Control's
@@ -481,6 +482,17 @@ export interface ExecutorResult {
 export interface Executor {
   capabilityId: string;
   /**
+   * How directly this executor reaches the world. See `tier.ts`.
+   *
+   * Optional because the tier of every executor that existed before
+   * tiers did is genuinely knowable from its implementation, and
+   * back-filling it by guessing would put a claim in the journal that
+   * nobody checked. An executor that does not declare one is recorded as
+   * `tier: undefined` - unknown, which is honest - rather than as tier 1,
+   * which would be a flattering guess.
+   */
+  tier?: ActuationTier;
+  /**
    * Can this executor actually drive that node?
    *
    * Routing decides *which* node by capability; only the executor knows
@@ -545,6 +557,16 @@ export interface AuditRecord {
   durationMs: number;
   /** Redacted, bounded summary of the input. Never raw secrets. */
   inputSummary: string;
+  /**
+   * How the action actually reached the world - see `tier.ts`.
+   *
+   * Recorded on every entry because "AURA renamed the file" and "AURA
+   * clicked at (412, 380) hoping to rename the file" are different
+   * events, and after the fact this is the only field that tells them
+   * apart. Absent means the executor did not declare one; absent is
+   * unknown, never tier 1.
+   */
+  tier?: ActuationTier;
   /**
    * The environment node that performed the work, when the executor named
    * one. Several nodes can provide the same capability, so `capabilityId`

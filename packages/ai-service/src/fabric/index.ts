@@ -21,7 +21,11 @@ import {
   type NodeRef,
   type NodeResolution,
 } from '@aura/capability-fabric';
+import { DriverRegistry } from '@aura/capability-fabric';
 import { allExecutors } from './executors';
+import { McpConnectionPool } from '../mcp/registry';
+import { mcpDriver, mcpExecutors } from '../mcp/driver';
+import { BrowserTier, browserDriver, browserExecutors } from '../browser/driver';
 import { loadPolicy } from './policyStore';
 import { createApprovalStore } from './approvalStore';
 import type { WorkspaceManager } from '../workspace';
@@ -66,6 +70,17 @@ export interface FabricDeps {
    * never collect context themselves (§ agent.delegate in executors.ts).
    */
   agentPrompt?: (projectId: string, task: string) => Promise<string | null>;
+  /**
+   * Which driver actuates which capability, at which tier. Supplied by
+   * the host when it wants to inspect or extend the mapping; created
+   * here otherwise. It never adds a node to the catalogue — the
+   * catalogue remains the single answer to what this machine is.
+   */
+  drivers?: DriverRegistry;
+  /** MCP connections, owned by the host so their lifetime is the host's. */
+  mcpPool?: McpConnectionPool;
+  /** The browser tier, owned by the host for the same reason. */
+  browserTier?: BrowserTier;
 }
 
 /**
@@ -218,6 +233,21 @@ export function createFabric(deps: FabricDeps): CapabilityFabric {
 
   const fabric = new CapabilityFabric(host);
   for (const executor of allExecutors(deps.manager)) fabric.register(withCanonicalContext(executor));
+
+  /* MCP and the browser tier.
+     Registered here rather than inside `allExecutors` because both own a
+     long-lived resource — an MCP connection pool and a browser process —
+     and the host, not the executor list, decides when those start and
+     stop. Both declare an actuation tier, which is what makes the tier
+     reach the journal and raise effective risk through the one policy
+     engine. */
+  const drivers = deps.drivers ?? new DriverRegistry();
+  const mcpPool = deps.mcpPool ?? new McpConnectionPool();
+  const browserTier = deps.browserTier ?? new BrowserTier();
+  for (const executor of mcpExecutors(mcpPool)) fabric.register(executor);
+  for (const executor of browserExecutors(browserTier)) fabric.register(executor);
+  drivers.register(mcpDriver(mcpPool));
+  drivers.register(browserDriver(browserTier));
   // The operator's saved caution settings outlive the process. Loaded
   // through `sanitizePolicy`, so a corrupt file degrades to the shipped
   // default instead of loosening anything.
