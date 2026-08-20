@@ -621,6 +621,15 @@ export class WorkspaceManager {
         // A failed run is still attributable — the operator needs to know
         // WHICH node failed, not merely that something did.
         return { ok: false, status: 'error', detail: `${result.detail}${attempted}`, nodeId };
+
+      case 'not-executed':
+        // Nothing ran, and nothing was substituted for it. Distinct from a
+        // failure in the only way that matters to the operator: there is
+        // nothing to re-check on the machine, because the machine was never
+        // touched. `result.detail` already names every tier considered and
+        // what each one was missing, so it is passed through whole rather
+        // than summarised into "could not run".
+        return { ok: false, status: 'error', detail: result.detail };
     }
   }
 

@@ -24,6 +24,7 @@ import type {
   PolicyEvaluation,
   RiskLevel,
 } from './types';
+import { TIER_NAME, tierFloor, tierRisk, type ActuationTier } from './tiers';
 
 /**
  * The shipped default. Matches §5 of the brief: low risk runs, medium
@@ -165,11 +166,33 @@ export interface PolicyInput {
   nodeAvailable: boolean | null;
   /** Node identity and correlation keys. Absent for node-free calls. */
   subject?: PolicySubject;
+  /**
+   * The tier this invocation will ACTUALLY run at, already selected by
+   * `selectTier` against this machine's probes.
+   *
+   * The selected tier, not the declared list, because a capability that
+   * may run at tier 2 or tier 6 costs what the tier it is about to use
+   * costs — evaluating the optimistic end of a declared range would
+   * price every GUI action as though it were an API call.
+   *
+   * Absent for every capability that does not act through a tier, which
+   * is most of them. Absent is never read as tier 1.
+   */
+  tier?: ActuationTier;
 }
 
 export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
-  const { capability, config, granted, nodeAvailable } = input;
-  const risk: RiskLevel = capability.risk;
+  const { capability, config, granted, nodeAvailable, tier } = input;
+  /**
+   * Tier escalates risk before anything else reads it (`tierRisk`).
+   *
+   * Done here, once, so that every layer below — the risk default, the
+   * reported `risk` on the evaluation, and the audit record built from
+   * it — all see the same number. A capability declared `low` because
+   * its API form is trivial is not low when the way it is about to run
+   * is synthetic input at a window that may have moved.
+   */
+  const risk: RiskLevel = tierRisk(capability.risk, tier);
 
   /* 1. Hard floors — not configurable, in precedence order. */
 
@@ -272,6 +295,38 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
     // from an attested channel, not read from the request body.
     floor('system-floor',
       `${capability.name} changes software on this machine, so it always needs your go-ahead.`);
+  }
+
+  /**
+   * The tier floor. Independent of the chain above — it composes with
+   * whatever those decided rather than replacing it — and deliberately
+   * NOT suppressed by `user-direct`.
+   *
+   * Every other floor here exists to obtain the user's consent, which is
+   * why a direct click can satisfy them: the person saw a labelled
+   * control and pressed it. This one is not about consent. Tier 6 drives
+   * the screen, and AURA cannot see whether the window it is about to
+   * type into is still the window that was there when the decision was
+   * made. Focus moves; a notification steals it; the user alt-tabs. The
+   * click authorised an *intent*, and the thing that makes tier 6
+   * dangerous is precisely that the mapping from intent to effect is not
+   * one AURA can check.
+   *
+   * `ask-user` rather than `require-approval` on purpose: this must be
+   * answerable in the moment, immediately before the keystrokes, because
+   * an authorization record signed ten minutes ago says even less about
+   * which window has focus now than a confirmation does.
+   */
+  const tf = tierFloor(tier);
+  if (tf) {
+    const escalated = stricter(decision, tf);
+    if (RANK[escalated] > RANK[decision]) {
+      decision = escalated;
+      rule = `tier-floor:${tier}`;
+      reason = `${capability.name} would be performed by driving the screen directly (tier ${tier}, ${
+        tier ? TIER_NAME[tier] : 'gui'
+      }). AURA cannot confirm which window it is aiming at, so it never does that without asking.`;
+    }
   }
 
   /* 2–6. Configurable layers, each only able to escalate. */

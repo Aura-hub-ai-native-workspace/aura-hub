@@ -226,6 +226,13 @@ function outcomeOf(ctx: NodeExecutionContext, result: InvocationResult): NodeExe
       return { kind: 'fail', error: result.detail };
     case 'unsupported':
       return { kind: 'fail', error: result.detail };
+    case 'not-executed':
+      // Every declared way in was probed and none was available here. The
+      // node fails — but it fails having touched nothing, so it carries no
+      // `effectStarted` concern and the detail names the missing tiers
+      // rather than an error the operator would have to interpret.
+      ctx.log('warn', `not executed — no available actuation tier: ${result.detail}`);
+      return { kind: 'fail', error: result.detail };
     case 'failed':
       return {
         kind: 'fail',

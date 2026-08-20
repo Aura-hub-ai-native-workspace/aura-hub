@@ -26,6 +26,7 @@
  */
 
 export * from './types';
+export * from './tiers';
 export * from './manifest';
 export * from './policy';
 export * from './fabric';

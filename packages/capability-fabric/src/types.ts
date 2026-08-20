@@ -17,6 +17,7 @@
  */
 
 import type { AgentRole, CapabilityId as NodeCapabilityId } from '@aura/connected-environment';
+import type { ActuationTier, PlatformDeclaration, TierSelection } from './tiers';
 
 /**
  * Risk vocabulary. Structurally identical to Mission Control's
@@ -130,6 +131,27 @@ export interface CapabilityDescriptor {
    * auto-executed regardless of configured risk.
    */
   irreversible?: boolean;
+  /**
+   * The actuation tiers this capability may run at, **declared** — see
+   * `tiers.ts`. They need not be listed in ladder order; `selectTier`
+   * imposes the order itself.
+   *
+   * Absent means the capability does not act on a foreign application at
+   * all (every `aura-internal` capability, and every `local-process` one
+   * that runs a tool rather than driving somebody else's UI). Absent is
+   * NOT tier 1: an unstated tier is never read as a good one.
+   */
+  tiers?: ActuationTier[];
+  /**
+   * Per-platform support for a capability that acts through a tier.
+   *
+   * **Required for tiers 5 and 6** — `desktop-tier-verify` asserts it —
+   * because those are exactly the tiers whose availability is a property
+   * of the machine rather than of the code. A capability that declares
+   * tier 6 and says nothing about platforms is one that will guess, and
+   * guessing is what the ladder exists to prevent.
+   */
+  platforms?: PlatformDeclaration[];
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -281,7 +303,19 @@ export type InvocationOutcome =
   /** The executor errored. Recoverable in principle. */
   | 'failed'
   /** No executor is registered for this capability. */
-  | 'unsupported';
+  | 'unsupported'
+  /**
+   * Every declared way of reaching the target was probed, none is
+   * available here, and so nothing ran — and nothing was substituted.
+   *
+   * Distinct from `failed` (it ran and errored) and from `unsupported`
+   * (AURA has no implementation at all). This means: AURA has an
+   * implementation, this machine cannot host it, and rather than drop a
+   * tier and pretend, the invocation stopped. The result carries
+   * `tierSelection`, naming every tier considered and why each was
+   * rejected.
+   */
+  | 'not-executed';
 
 export interface VerificationReport {
   /** Null when `kind` is null — no check exists, and we say so. */
@@ -331,6 +365,27 @@ export interface InvocationResult {
    * manifest — the Fabric remains the single authority on both facts.
    */
   irreversible?: boolean;
+  /**
+   * The actuation tier that ACTUALLY ran, reported by the executor.
+   *
+   * Written only from `ExecutorResult.tier`, never inferred from the
+   * descriptor — exactly like `executedNodeId`. A capability may declare
+   * tiers [2, 5]; only the thing that ran knows which one it used, and
+   * "which one ran" is the question the ladder exists to answer.
+   *
+   * Absent means nothing executed. That is distinct from a capability
+   * that has no tiers at all, which never sets this either — the
+   * difference is readable from `outcome`.
+   */
+  tier?: ActuationTier;
+  /**
+   * How the tier was chosen, including every tier rejected and why.
+   *
+   * Always present when the capability declares tiers, including on the
+   * `not-executed` path — especially there, because that is the outcome
+   * a user has to act on and "AURA did nothing" is not an explanation.
+   */
+  tierSelection?: TierSelection;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -470,6 +525,17 @@ export interface ExecutorResult {
    * simply never received a success response must not claim `false`.
    */
   effectStarted?: boolean;
+  /**
+   * The tier this executor actually acted through.
+   *
+   * Reported, not declared: the descriptor lists what is permitted, this
+   * says what happened. An executor for a tiered capability MUST set it
+   * on success — `desktop-tier-verify` asserts that every tiered
+   * invocation carries a recorded tier, because an unrecorded tier makes
+   * the journal unable to answer "did AURA use the API or type at the
+   * screen?", which is the whole point of recording it.
+   */
+  tier?: ActuationTier;
 }
 
 /**
@@ -569,6 +635,19 @@ export interface AuditRecord {
    * multi-kilobyte prompt in every record would make it neither.
    */
   contextInjected?: boolean;
+  /**
+   * The actuation tier this action ran at, when it ran through one.
+   *
+   * A first-class journal field, on the same footing as `risk` and
+   * `decision`. The reconstruction question the audit trail must answer
+   * is not only "what did AURA do" but "how did it reach in" — an action
+   * performed through a documented API and the same action performed by
+   * typing at a window are different events with the same capability id,
+   * and only this distinguishes them after the fact.
+   *
+   * Absent means no tier was involved, never "probably a good one".
+   */
+  tier?: ActuationTier;
   /** The node the caller asked for, when they named one. */
   requestedNodeId?: string;
   /** The node the Fabric resolved and handed to the executor. */
