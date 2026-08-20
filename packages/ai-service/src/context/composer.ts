@@ -146,33 +146,50 @@ export function composeContext(input: ComposeInput): ComposeResult {
     })
     : [];
 
-  /* BUDGET + COMPRESS. Throws if the floor alone does not fit. */
-  const budgeted = enforceBudget({
-    items: ranked,
-    spec: input.budget,
-    floorTokens,
-    policy: input.policy,
-    floorItemIds: input.floorItemIds,
+  /* BUDGET + COMPRESS, then ASSEMBLE, then CHECK THE REAL STRING.
+     
+     Rendering costs tokens the item accounting cannot see: a provenance
+     line, a reason line and two fence tags per item, plus the standing
+     untrusted-data rule. Budgeting against the item text alone and then
+     rendering is how a budget system fits perfectly and still overruns.
+
+     So the overhead is measured and fed back as an addition to the
+     incompressible floor, and the allocation is redone. This converges
+     because each round's overhead is bounded by the previous round's
+     item count, which never grows. Three rounds is generous; two is the
+     normal case (one to learn the overhead, one to spend it correctly). */
+  const MAX_ROUNDS = 3;
+  let overheadReserve = 0;
+  let budgeted = enforceBudget({
+    items: ranked, spec: input.budget, floorTokens,
+    policy: input.policy, floorItemIds: input.floorItemIds,
   });
-
-  /* ASSEMBLE. Items render between the facts and the task: after the
-     facts because they are evidence for them, before the task because
-     the task is the last thing the model should read. */
-  const itemsBlock = renderContextItems(budgeted.included);
-  const text = [rules, contract, itemsBlock, taskBlock].filter(Boolean).join(SEP);
-
-  const total = estimateTokens(text);
+  let itemsBlock = renderContextItems(budgeted.included);
+  let text = [rules, contract, itemsBlock, taskBlock].filter(Boolean).join(SEP);
   const allowed = availableTokens(input.budget);
 
-  /* Final post-condition on the REAL string. Rendering adds provenance
-     lines and fences, which cost tokens the item accounting does not
-     see. Without this check the composer could satisfy its own
-     arithmetic and still overrun the window - which is precisely the
-     failure this whole module exists to prevent. */
-  if (total > allowed) {
-    const overhead = total - (floorTokens + budgeted.usedTokens);
+  for (let round = 1; round < MAX_ROUNDS && estimateTokens(text) > allowed; round++) {
+    const observed = estimateTokens(text) - (floorTokens + budgeted.usedTokens);
+    /* Ask for a little more than was observed: the next round includes
+       fewer items, so the overhead shrinks, and asking for exactly the
+       last round's figure can oscillate. */
+    overheadReserve = Math.max(overheadReserve, Math.ceil(observed * 1.1) + 16);
+    budgeted = enforceBudget({
+      items: ranked, spec: input.budget, floorTokens: floorTokens + overheadReserve,
+      policy: input.policy, floorItemIds: input.floorItemIds,
+    });
+    itemsBlock = renderContextItems(budgeted.included);
+    text = [rules, contract, itemsBlock, taskBlock].filter(Boolean).join(SEP);
+  }
+
+  /* Last resort. If measuring the real string still says over budget,
+     drop the lowest-ranked item and re-render until it fits. Slower than
+     estimating how many to drop, and correct; estimating is how a budget
+     system ends up off by one fence. */
+  if (estimateTokens(text) > allowed) {
     const trimmed = trimToFit(budgeted.included, budgeted.decisions, {
-      rules, contract, taskBlock, allowed, overheadHint: overhead,
+      rules, contract, taskBlock, allowed,
+      overheadHint: estimateTokens(text) - (floorTokens + budgeted.usedTokens),
     });
     return finish(trimmed.text, trimmed.included, trimmed.decisions, floorTokens, allowed, input.budget.model);
   }

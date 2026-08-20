@@ -212,8 +212,8 @@ function buildGroundingRules(): string {
 
 /* ── Candidates, not a switch ─────────────────────────────────────────
  *
- * What used to be here: nine `assemble*` functions and a `switch (intent.type)`
- * choosing between them. That design could not answer either question a
+ * What used to be here: nine `assemble*` functions and a switch on the
+ * intent label choosing between them. That design could not answer either question a
  * prompt has to answer — why is this here, and does it fit — because a
  * `switch` returns strings and a string carries no provenance and no cost.
  *
