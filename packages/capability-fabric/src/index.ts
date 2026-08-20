@@ -27,6 +27,7 @@
 
 export * from './types';
 export * from './manifest';
+export * from './toolSchema';
 export * from './policy';
 export * from './fabric';
 export * from './missionCapabilities';

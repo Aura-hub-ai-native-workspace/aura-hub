@@ -86,7 +86,56 @@ export interface CapabilityField {
   type: 'string' | 'number' | 'boolean' | 'string[]';
   required: boolean;
   description: string;
+  /**
+   * The complete set of values this field accepts, when it is closed.
+   *
+   * Added because the allowed values already existed but lived only in
+   * prose: `http.request`'s `method` is `type: 'string'` with "defaults to
+   * GET" in its description and the real set — GET, POST, … — written
+   * nowhere a machine could read. Anything deriving a contract from this
+   * file could therefore offer only "a string", which is exactly the gap
+   * that lets a caller send `FETCH` and a validator wave it through.
+   *
+   * Absent means open: any value of `type` is acceptable, which is the
+   * behaviour every existing field keeps. Present means closed, and
+   * `validate()` refuses anything outside it — so this is a *constraint*
+   * the Fabric enforces, not documentation a derived schema happens to
+   * repeat.
+   */
+  enum?: readonly string[];
 }
+
+/**
+ * The shape of a successful result, for callers that must consume it
+ * rather than read it.
+ *
+ * `CapabilityDescriptor.output` is a prose sentence — "Status and bounded
+ * response text", "ProjectRecord" — which is the right thing to show a
+ * person and useless to anything that has to destructure the payload. A
+ * caller handed a result needs to know whether `output` is text, a record
+ * with named fields, or a list, and it must not have to infer that from a
+ * noun.
+ *
+ * Deliberately the same four scalars as `CapabilityField['type']` and the
+ * same hand-rolled shape as the input contract: this is the mirror of
+ * `input`, not a second schema language. `output` stays, because a
+ * sentence and a shape answer different questions and neither replaces
+ * the other.
+ */
+export type CapabilityOutputShape =
+  /** The payload is a string — stdout, a diff, file contents. */
+  | { kind: 'text'; description: string }
+  /** The payload is an object with these named fields. */
+  | { kind: 'record'; description: string; fields: CapabilityField[] }
+  /** The payload is an array of strings. */
+  | { kind: 'list'; description: string; itemDescription: string }
+  /**
+   * The payload is a domain record this package deliberately does not
+   * model — a `MissionRecord`, a `KnowledgeGraph`. Named rather than
+   * flattened into a field list that would go stale the moment the domain
+   * type changed. Consumers must treat it as opaque.
+   */
+  | { kind: 'opaque'; description: string; typeName: string };
 
 /**
  * How the Fabric confirms an action actually did what it claimed. A
@@ -117,6 +166,16 @@ export interface CapabilityDescriptor {
   input: CapabilityField[];
   /** Plain description of what a successful result contains. */
   output: string;
+  /**
+   * The machine-readable counterpart of `output`. See
+   * `CapabilityOutputShape`.
+   *
+   * Optional in the type so a capability added later is not silently
+   * wrong while its shape is being determined; every entry in the shipped
+   * manifest declares one, and `scripts/tool-schema-verify.mjs` fails the
+   * build if any stops doing so.
+   */
+  result?: CapabilityOutputShape;
   verify: VerificationKind;
   /**
    * For capabilities that run outside AURA: the node capability that must
@@ -438,6 +497,27 @@ export interface ApprovalRequest {
 export interface ApprovalPersistence {
   load(): ApprovalRequest[];
   save(requests: ApprovalRequest[]): void;
+}
+
+/**
+ * Durable storage for the audit trail, supplied by the host.
+ *
+ * The Fabric has always kept `AuditRecord[]` in memory, which is enough
+ * to answer "what did this process do" and nothing at all once the
+ * process ends. This is the socket a durable journal plugs into. It is
+ * deliberately the same narrow port shape as `ApprovalPersistence` — the
+ * host owns the file, the Fabric owns the record — and it is NOT a second
+ * audit sink: the records are the same records, written by the same
+ * `settle()`, and `audit()` continues to be the one way to read them.
+ *
+ * `append` is called once per settled invocation, in order. `load` is
+ * called once when the store is attached, and its contents become the
+ * head of the in-memory trail so a restart does not appear to erase
+ * history.
+ */
+export interface AuditPersistence {
+  load(): AuditRecord[];
+  append(record: AuditRecord): void;
 }
 
 /* ══════════════════════════════════════════════════════════════════

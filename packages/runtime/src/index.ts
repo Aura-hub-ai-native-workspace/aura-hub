@@ -11,6 +11,8 @@ export type {
   RuntimeConfig,
   RuntimeMessage,
   RuntimeToolSpec,
+  RuntimeToolCall,
+  RuntimeToolChoice,
   GenerateRequest,
   GenerateResponse,
   StreamChunk,

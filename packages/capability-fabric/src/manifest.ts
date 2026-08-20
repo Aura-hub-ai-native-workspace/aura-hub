@@ -17,14 +17,37 @@
  * exist (`ai-service/src/workspace.ts`); nothing here reimplements them.
  */
 
-import type { CapabilityDescriptor, CapabilityField } from './types';
+import type { CapabilityDescriptor, CapabilityField, CapabilityOutputShape } from './types';
 
 const f = (
   name: string,
   type: CapabilityField['type'],
   required: boolean,
   description: string,
-): CapabilityField => ({ name, type, required, description });
+  /**
+   * The closed set of accepted values, when there is one. Omitted means
+   * open. See `CapabilityField.enum` — the Fabric's own `validate()`
+   * enforces it, so writing it here narrows what may actually be run,
+   * not merely what is advertised.
+   */
+  allowed?: readonly string[],
+): CapabilityField => (allowed ? { name, type, required, description, enum: allowed } : { name, type, required, description });
+
+/* ── result shapes ────────────────────────────────────────────────
+   Small constructors for `CapabilityDescriptor.result`, mirroring `f`
+   above. Every entry in this file declares one: `output` says what a
+   result MEANS, `result` says what it IS, and a caller that has to
+   destructure the payload needs the second. */
+
+const text = (description: string): CapabilityOutputShape => ({ kind: 'text', description });
+const record = (description: string, fields: CapabilityField[]): CapabilityOutputShape =>
+  ({ kind: 'record', description, fields });
+const list = (description: string, itemDescription: string): CapabilityOutputShape =>
+  ({ kind: 'list', description, itemDescription });
+/** A domain record this package deliberately does not model. Opaque, and
+ *  named so a consumer knows what it is looking at rather than guessing. */
+const domain = (typeName: string, description: string): CapabilityOutputShape =>
+  ({ kind: 'opaque', description, typeName });
 
 type Draft = Omit<CapabilityDescriptor, 'input' | 'permissions'> & {
   input?: CapabilityField[];
@@ -41,28 +64,32 @@ const INTERNAL: CapabilityDescriptor[] = [
   cap({
     id: 'project.list', name: 'List projects', category: 'project', surface: 'aura-internal',
     description: 'Every project registered in this AURA installation.',
-    risk: 'low', permissions: ['aura.read'], output: 'ProjectRecord[]', verify: null,
+    risk: 'low', permissions: ['aura.read'], output: 'ProjectRecord[]',
+    result: domain('ProjectRecord[]', 'Every project the registry holds, in registration order.'), verify: null,
   }),
   cap({
     id: 'project.create', name: 'Create project', category: 'project', surface: 'aura-internal',
     description: 'Creates a project directory and registers it. Reuses the existing project service — there is no second implementation.',
     risk: 'medium', permissions: ['aura.write', 'project.write'],
     input: [f('name', 'string', true, 'Project name'), f('parentPath', 'string', false, 'Directory to create it in')],
-    output: 'ProjectRecord', verify: 'read-back',
+    output: 'ProjectRecord',
+    result: domain('ProjectRecord', 'The project as the registry now holds it, including its id and path.'), verify: 'read-back',
   }),
   cap({
     id: 'project.open', name: 'Open project', category: 'project', surface: 'aura-internal',
     description: 'Makes a project the active workspace context.',
     risk: 'low', permissions: ['aura.write'],
     input: [f('projectId', 'string', true, 'Project id')],
-    output: 'ProjectRecord', verify: 'read-back',
+    output: 'ProjectRecord',
+    result: domain('ProjectRecord', 'The project that is now the active workspace context.'), verify: 'read-back',
   }),
   cap({
     id: 'project.inspect', name: 'Inspect project', category: 'project', surface: 'aura-internal',
     description: 'The generated profile: languages, frameworks, structure, entry points.',
     risk: 'low', permissions: ['aura.read', 'project.read'],
     input: [f('projectId', 'string', true, 'Project id')],
-    output: 'ProjectProfile', verify: null,
+    output: 'ProjectProfile',
+    result: domain('ProjectProfile', 'Languages, frameworks, structure and entry points, as generated.'), verify: null,
   }),
 
   cap({
@@ -70,28 +97,32 @@ const INTERNAL: CapabilityDescriptor[] = [
     description: 'Runs Mission Control v3 planning on a free-text objective. The ONLY way the Fabric creates missions — it owns no mission model of its own.',
     risk: 'low', permissions: ['aura.write'],
     input: [f('projectId', 'string', true, 'Project id'), f('text', 'string', true, 'What the mission should achieve')],
-    output: 'MissionRecord', verify: 'read-back',
+    output: 'MissionRecord',
+    result: domain('MissionRecord', 'The mission Mission Control v3 planned, including its task graph.'), verify: 'read-back',
   }),
   cap({
     id: 'mission.approve', name: 'Approve mission plan', category: 'mission', surface: 'aura-internal',
     description: 'Passes the planning checkpoint. A human gate by design — never auto-executed.',
     risk: 'medium', permissions: ['aura.write'],
     input: [f('projectId', 'string', true, 'Project id'), f('missionId', 'string', true, 'Mission id')],
-    output: 'MissionRecord', verify: 'read-back',
+    output: 'MissionRecord',
+    result: domain('MissionRecord', 'The same mission, with its planning checkpoint passed.'), verify: 'read-back',
   }),
   cap({
     id: 'mission.start', name: 'Start mission execution', category: 'mission', surface: 'aura-internal',
     description: 'Begins the approved plan. Per-task human accept still applies inside the engine.',
     risk: 'medium', permissions: ['aura.write'],
     input: [f('projectId', 'string', true, 'Project id'), f('missionId', 'string', true, 'Mission id')],
-    output: 'MissionExecution', verify: 'read-back',
+    output: 'MissionExecution',
+    result: domain('MissionRecord', 'The same mission, with execution begun.'), verify: 'read-back',
   }),
   cap({
     id: 'mission.inspect', name: 'Inspect mission', category: 'mission', surface: 'aura-internal',
     description: 'The authoritative MissionRecord: plan, DAG, checkpoints, timeline, metrics.',
     risk: 'low', permissions: ['aura.read'],
     input: [f('projectId', 'string', true, 'Project id'), f('missionId', 'string', true, 'Mission id')],
-    output: 'MissionRecord', verify: null,
+    output: 'MissionRecord',
+    result: domain('MissionRecord', 'Plan, DAG, checkpoints, timeline and metrics.'), verify: null,
   }),
 
   cap({
@@ -99,44 +130,63 @@ const INTERNAL: CapabilityDescriptor[] = [
     description: 'Structural graph of the open project.',
     risk: 'low', permissions: ['aura.read', 'project.read'],
     input: [f('projectId', 'string', true, 'Project id')],
-    output: 'KnowledgeGraph', verify: null,
+    output: 'KnowledgeGraph',
+    result: domain('KnowledgeGraph', 'Nodes and edges for the open project.'), verify: null,
   }),
   cap({
     id: 'memory.search', name: 'Search engineering memory', category: 'memory', surface: 'aura-internal',
     description: 'Why past decisions were made, and what came of them.',
     risk: 'low', permissions: ['aura.read'],
     input: [f('projectId', 'string', true, 'Project id'), f('query', 'string', false, 'Free-text query')],
-    output: 'MemoryRecord[]', verify: null,
+    output: 'MemoryRecord[]',
+    result: domain('MemoryRecord[]', 'Records whose title or summary matched, or all of them when no query was given.'), verify: null,
   }),
   cap({
     id: 'diagnosis.run', name: 'Run diagnosis', category: 'quality', surface: 'aura-internal',
     description: 'Finds and explains defects. Patches remain human-gated inside the engine.',
     risk: 'low', permissions: ['aura.write', 'project.read'],
     input: [f('projectId', 'string', true, 'Project id')],
-    output: 'DiagnosisRecord', verify: null,
+    output: 'DiagnosisRecord',
+    result: domain('DiagnosisRecord', 'The defects found and the reasoning behind each.'), verify: null,
   }),
   cap({
     id: 'governance.audit', name: 'Run governance audit', category: 'quality', surface: 'aura-internal',
     description: 'Health scorecard, risk, release readiness.',
     risk: 'low', permissions: ['aura.read', 'project.read'],
     input: [f('projectId', 'string', true, 'Project id')],
-    output: 'Scorecard', verify: null,
+    output: 'Scorecard',
+    result: domain('Scorecard', 'Health, risk and release readiness for the project.'), verify: null,
   }),
   cap({
     id: 'workflow.run', name: 'Run workflow', category: 'automation', surface: 'aura-internal',
     description: 'Executes an existing workflow through the Workflow Engine. The Fabric delegates — it does not re-implement workflow execution.',
     risk: 'medium', permissions: ['aura.write', 'process.execute'],
     input: [f('projectId', 'string', true, 'Project id'), f('workflowId', 'string', true, 'Workflow id')],
-    output: 'Run result', verify: 'read-back',
+    output: 'Run result',
+    result: record('What the Workflow Engine started, and where it got to.', [
+      f('runId', 'string', true, 'Id of the workflow run'),
+      f('childStatus', 'string', true, 'Run state when the call returned', ['running', 'completed', 'failed', 'paused']),
+    ]), verify: 'read-back',
   }),
   cap({
     id: 'provider.connect', name: 'Connect AI provider', category: 'settings', surface: 'aura-internal',
     description: 'Registers a model provider key. Touches credentials, so it is always an explicit human authorization.',
     risk: 'high', permissions: ['account.authorize'],
     input: [f('providerId', 'string', true, 'Provider id'), f('apiKey', 'string', true, 'API key')],
-    output: 'Connection status', verify: 'read-back', irreversible: false,
+    output: 'Connection status',
+    result: record('Whether the provider is connected now.', [
+      f('providerId', 'string', true, 'The provider the key was registered against'),
+      f('connected', 'boolean', true, 'True only when the key actually validated'),
+    ]), verify: 'read-back', irreversible: false,
   }),
 ];
+
+/**
+ * The methods `http.request`'s executor will actually send. Kept next to
+ * the capability that constrains it rather than in a shared constants
+ * file, because it is part of THIS contract and nothing else consults it.
+ */
+const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'] as const;
 
 /* ══════════════════════════════════════════════════════════════════
    Local machine — through the existing allow-listed spawn primitives
@@ -148,28 +198,37 @@ const LOCAL: CapabilityDescriptor[] = [
     description: 'Directory listing inside the project root.',
     risk: 'low', permissions: ['project.read'],
     input: [f('path', 'string', false, 'Relative path, defaults to project root')],
-    output: 'Entry names', verify: null,
+    output: 'Entry names',
+    result: list('The directory\u2019s entries, sorted. Directories carry a trailing slash.', 'One entry name'), verify: null,
   }),
   cap({
     id: 'filesystem.read', name: 'Read file', category: 'filesystem', surface: 'local-process',
     description: 'Reads a UTF-8 file inside the project root.',
     risk: 'low', permissions: ['project.read'],
     input: [f('path', 'string', true, 'Relative path inside the project')],
-    output: 'File contents', verify: null,
+    output: 'File contents',
+    result: text('The file\u2019s contents, decoded as UTF-8.'), verify: null,
   }),
   cap({
     id: 'filesystem.write', name: 'Write file', category: 'filesystem', surface: 'local-process',
     description: 'Creates or replaces a file inside the project root.',
     risk: 'medium', permissions: ['project.write'],
     input: [f('path', 'string', true, 'Relative path inside the project'), f('content', 'string', true, 'Full file contents')],
-    output: 'Bytes written', verify: 'read-back',
+    output: 'Bytes written',
+    result: record('Where the bytes landed.', [
+      f('path', 'string', true, 'Absolute path of the file that was written'),
+    ]), verify: 'read-back',
   }),
   cap({
     id: 'terminal.execute', name: 'Run command', category: 'terminal', surface: 'local-process',
     description: 'Runs an allow-listed binary with plain arguments in the project root. No shell, no operators.',
     risk: 'medium', permissions: ['process.execute', 'project.read'],
     input: [f('command', 'string', true, 'Command line, e.g. "npm test"')],
-    output: 'stdout + stderr, exit code', verify: 'exit-code',
+    output: 'stdout + stderr, exit code',
+    result: record('The command\u2019s own output and how it ended.', [
+      f('stdout', 'string', true, 'Combined stdout and stderr, bounded'),
+      f('exitCode', 'number', true, 'Process exit code'),
+    ]), verify: 'exit-code',
     requiresNodeCapability: 'terminal',
   }),
 
@@ -193,6 +252,16 @@ const LOCAL: CapabilityDescriptor[] = [
       // node is refused rather than quietly served by a different one.
     ],
     output: 'stdout + stderr, exit code',
+    result: record('What the coding agent did, and which agent did it.', [
+      f('stdout', 'string', true, 'Combined stdout and stderr from the agent, bounded'),
+      f('exitCode', 'number', true, 'Agent process exit code'),
+      f('nodeId', 'string', true, 'Catalogue id of the agent that ran \u2014 this is what makes the work attributable'),
+      f('agent', 'string', true, 'Human-readable agent name'),
+      f('args', 'string[]', true, 'The argument vector, with any injected prompt summarised rather than repeated'),
+      f('contextInjected', 'boolean', true, 'Whether the canonical AURA project prompt reached the agent'),
+      f('timedOut', 'boolean', true, 'True when the run was cut short \u2014 the work may be half-done'),
+      f('signal', 'string', false, 'Signal that killed the process, when one did'),
+    ]),
     verify: 'exit-code',
     // The only real link to a node. Provided by cursor, claude-code,
     // codex-cli, gemini-cli, qwen-cli and opencode — and by nothing else,
@@ -231,6 +300,16 @@ const LOCAL: CapabilityDescriptor[] = [
       f('nodeId', 'string', true, 'Catalogue id of the node to install, e.g. "pnpm"'),
     ],
     output: 'InstallResult — installOutcome, privilege, command, probe',
+    result: record('What AURA did about the missing tool, and what the machine looks like afterwards.', [
+      f('installOutcome', 'string', true, 'The honest outcome. `guided` means AURA ran nothing and handed you the command; `unverified` means the installer exited clean but the tool still cannot be found', ['installed', 'guided', 'failed', 'unverified']),
+      f('nodeId', 'string', true, 'Catalogue id of the node this was about'),
+      f('privilege', 'string', true, 'Rights the install needed', ['user', 'root']),
+      f('requiresUserAction', 'boolean', true, 'True when you still have to do something'),
+      f('command', 'string', false, 'The exact verified command, present on the guided path'),
+      f('why', 'string', false, 'Why AURA stopped where it did'),
+      f('exitCode', 'number', false, 'Installer exit code, when an installer ran'),
+      f('stdout', 'string', false, 'Installer output, when an installer ran'),
+    ]),
     /**
      * `read-back`, not `exit-code`, and the distinction is the point.
      *
@@ -264,35 +343,47 @@ const LOCAL: CapabilityDescriptor[] = [
     id: 'git.status', name: 'Git status', category: 'git', surface: 'local-process',
     description: 'Working tree status of the project.',
     risk: 'low', permissions: ['project.read'],
-    output: 'Porcelain status', verify: null, requiresNodeCapability: 'source-control',
+    output: 'Porcelain status',
+    result: text('Porcelain status with branch header, or the word `clean`.'), verify: null, requiresNodeCapability: 'source-control',
   }),
   cap({
     id: 'git.diff', name: 'Git diff', category: 'git', surface: 'local-process',
     description: 'Uncommitted changes.',
     risk: 'low', permissions: ['project.read'],
     input: [f('staged', 'boolean', false, 'Staged changes only')],
-    output: 'Unified diff', verify: null, requiresNodeCapability: 'source-control',
+    output: 'Unified diff',
+    result: text('A unified diff with a stat header, truncated past 60KB.'), verify: null, requiresNodeCapability: 'source-control',
   }),
   cap({
     id: 'git.branch', name: 'Create or switch branch', category: 'git', surface: 'local-process',
     description: 'Shows the current branch, or creates/switches when a name is given.',
     risk: 'medium', permissions: ['project.write'],
     input: [f('name', 'string', false, 'Branch to create or switch to')],
-    output: 'Branch name', verify: 'read-back', requiresNodeCapability: 'source-control',
+    output: 'Branch name',
+    result: text('The branch HEAD is on now.'), verify: 'read-back', requiresNodeCapability: 'source-control',
   }),
   cap({
     id: 'git.commit', name: 'Commit changes', category: 'git', surface: 'local-process',
     description: 'Stages everything and commits with the given message.',
     risk: 'medium', permissions: ['project.write'],
     input: [f('message', 'string', true, 'Commit message')],
-    output: 'Commit summary', verify: 'read-back', requiresNodeCapability: 'source-control',
+    output: 'Commit summary',
+    result: record('Whether a commit was actually made.', [
+      f('committed', 'boolean', true, 'False when the working tree was already clean \u2014 which is a success, not a failure'),
+      f('message', 'string', false, 'Subject line of the commit, when one was made'),
+    ]), verify: 'read-back', requiresNodeCapability: 'source-control',
   }),
   cap({
     id: 'git.push', name: 'Push to remote', category: 'git', surface: 'local-process',
     description: 'Publishes commits to the remote. Visible to other people and not undoable by the Fabric.',
     risk: 'high', permissions: ['project.write', 'network.outbound'],
     input: [f('remote', 'string', false, 'Remote name, defaults to origin'), f('branch', 'string', false, 'Branch, defaults to current')],
-    output: 'Push summary', verify: 'exit-code', irreversible: true,
+    output: 'Push summary',
+    result: record('What was pushed where.', [
+      f('remote', 'string', false, 'Remote that was pushed to'),
+      f('branch', 'string', false, 'Branch that was pushed'),
+      f('exitCode', 'number', true, 'git push exit code'),
+    ]), verify: 'exit-code', irreversible: true,
     requiresNodeCapability: 'source-control',
   }),
 
@@ -302,10 +393,17 @@ const LOCAL: CapabilityDescriptor[] = [
     risk: 'medium', permissions: ['network.outbound'],
     input: [
       f('url', 'string', true, 'Absolute http(s) URL'),
-      f('method', 'string', false, 'HTTP method, defaults to GET'),
+      // The allowed set used to live only in this sentence, which meant
+      // nothing could validate it and anything deriving a contract could
+      // only offer 'a string'.
+      f('method', 'string', false, 'HTTP method, defaults to GET', HTTP_METHODS),
       f('body', 'string', false, 'Request body'),
     ],
-    output: 'Status and bounded response text', verify: 'http-status',
+    output: 'Status and bounded response text',
+    result: record('The response, bounded.', [
+      f('status', 'number', true, 'HTTP status code'),
+      f('text', 'string', true, 'Response body as UTF-8, truncated at 512KB'),
+    ]), verify: 'http-status',
     requiresNodeCapability: 'http-client',
   }),
 ];
@@ -325,14 +423,16 @@ const EXTENSION_POINTS: CapabilityDescriptor[] = [
     description: 'Creates a remote repository. Implementation path: `gh repo create` through the existing allow-listed spawn primitive.',
     risk: 'medium', permissions: ['network.outbound', 'account.authorize'],
     input: [f('name', 'string', true, 'Repository name'), f('private', 'boolean', false, 'Create it private')],
-    output: 'Repository URL', verify: 'read-back', requiresNodeCapability: 'code-hosting',
+    output: 'Repository URL',
+    result: text('URL of the created repository.'), verify: 'read-back', requiresNodeCapability: 'code-hosting',
   }),
   cap({
     id: 'github.create_pr', name: 'Open a pull request', category: 'code-hosting', surface: 'local-process',
     description: 'Opens a PR for the current branch. Implementation path: `gh pr create`.',
     risk: 'medium', permissions: ['network.outbound', 'account.authorize'],
     input: [f('title', 'string', true, 'PR title'), f('body', 'string', false, 'PR description')],
-    output: 'Pull request URL', verify: 'read-back', requiresNodeCapability: 'code-hosting',
+    output: 'Pull request URL',
+    result: text('URL of the opened pull request.'), verify: 'read-back', requiresNodeCapability: 'code-hosting',
   }),
 
   cap({
@@ -340,33 +440,44 @@ const EXTENSION_POINTS: CapabilityDescriptor[] = [
     description: 'Loads a URL in a driven browser session. Implementation path: Playwright, per §9.',
     risk: 'low', permissions: ['network.outbound'],
     input: [f('url', 'string', true, 'Absolute URL')],
-    output: 'Page title and final URL', verify: 'read-back', requiresNodeCapability: 'browser-automation',
+    output: 'Page title and final URL',
+    result: record('Where the browser ended up.', [
+      f('title', 'string', true, 'Page title after load'),
+      f('url', 'string', true, 'Final URL after any redirects'),
+    ]), verify: 'read-back', requiresNodeCapability: 'browser-automation',
   }),
   cap({
     id: 'browser.read', name: 'Read the page', category: 'browser', surface: 'browser',
     description: 'Extracts visible text and console errors from the current page.',
     risk: 'low', permissions: ['network.outbound'],
-    output: 'Text content and console errors', verify: null, requiresNodeCapability: 'browser-automation',
+    output: 'Text content and console errors',
+    result: record('What the page says, and what it complained about.', [
+      f('text', 'string', true, 'Visible text content'),
+      f('consoleErrors', 'string[]', true, 'Console errors observed on the page'),
+    ]), verify: null, requiresNodeCapability: 'browser-automation',
   }),
   cap({
     id: 'browser.click', name: 'Click an element', category: 'browser', surface: 'browser',
     description: 'Clicks the element matching a selector.',
     risk: 'medium', permissions: ['network.outbound'],
     input: [f('selector', 'string', true, 'CSS or text selector')],
-    output: 'Resulting URL', verify: null, requiresNodeCapability: 'browser-automation',
+    output: 'Resulting URL',
+    result: text('The URL after the click settled.'), verify: null, requiresNodeCapability: 'browser-automation',
   }),
   cap({
     id: 'browser.type', name: 'Fill a field', category: 'browser', surface: 'browser',
     description: 'Types into the element matching a selector.',
     risk: 'medium', permissions: ['network.outbound'],
     input: [f('selector', 'string', true, 'CSS selector'), f('text', 'string', true, 'Text to enter')],
-    output: 'Field value', verify: null, requiresNodeCapability: 'browser-automation',
+    output: 'Field value',
+    result: text('The field value after typing.'), verify: null, requiresNodeCapability: 'browser-automation',
   }),
   cap({
     id: 'browser.screenshot', name: 'Capture the page', category: 'browser', surface: 'browser',
     description: 'Screenshots the current page for visual verification.',
     risk: 'low', permissions: ['network.outbound'],
-    output: 'Image path', verify: null, requiresNodeCapability: 'browser-automation',
+    output: 'Image path',
+    result: text('Absolute path of the captured image on disk.'), verify: null, requiresNodeCapability: 'browser-automation',
   }),
 ];
 

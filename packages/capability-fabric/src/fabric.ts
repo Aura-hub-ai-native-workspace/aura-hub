@@ -19,6 +19,7 @@
 import type {
   ApprovalPersistence,
   ApprovalRequest,
+  AuditPersistence,
   AuditRecord,
   CapabilityDescriptor,
   Executor,
@@ -174,6 +175,15 @@ function validate(capability: CapabilityDescriptor, input: Record<string, unknow
     if (field.type === 'string[]' ? actual !== 'string[]' : actual !== field.type) {
       return `${field.name} should be a ${field.type}, got ${actual}.`;
     }
+    // A closed set is a contract, not a hint. Enforced here — inside the
+    // one validator every invocation already passes through — so a derived
+    // schema advertising the enumeration and the Fabric accepting the
+    // argument can never disagree. Without this, a caller that ignores the
+    // schema is simply unvalidated, which is the normal case for anything
+    // that generates its arguments rather than typing them.
+    if (field.enum && !field.enum.includes(String(value))) {
+      return `${field.name} must be one of ${field.enum.join(', ')}, got "${String(value)}".`;
+    }
   }
   return null;
 }
@@ -208,7 +218,45 @@ export class CapabilityFabric {
    */
   private approvalStore: ApprovalPersistence | null = null;
 
+  /**
+   * Optional durable backing for `auditLog`, injected by the host exactly
+   * like `approvalStore`. Null means the trail lives only as long as this
+   * process — which is the honest default and, deliberately, the thing
+   * `agentLoopEnabled()` refuses to run an autonomous loop without.
+   */
+  private auditStore: AuditPersistence | null = null;
+
   constructor(private host: FabricHost) {}
+
+  /**
+   * Give the audit trail a life beyond this process.
+   *
+   * Unlike approvals, audit records are restored in full: an audit trail
+   * that forgets is not an audit trail, and nothing about replaying a
+   * historical record can cause an action. Attaching is idempotent in the
+   * sense that matters — records already in memory are kept, and the
+   * store's contents are placed ahead of them in time order.
+   *
+   * This adds no second sink. `settle()` writes one record, to one place;
+   * this only decides whether that place survives a restart.
+   */
+  attachAuditStore(store: AuditPersistence): void {
+    this.auditStore = store;
+    const restored = store.load();
+    if (restored.length) this.auditLog = [...restored, ...this.auditLog];
+  }
+
+  /**
+   * Whether this Fabric's audit trail survives the process.
+   *
+   * Exposed because it is a *precondition*, not a diagnostic: a bounded
+   * autonomous loop that cannot be reconstructed afterwards is not
+   * governed, it is merely bounded. The agent loop's feature flag reads
+   * this and refuses to arm without it.
+   */
+  hasDurableAudit(): boolean {
+    return this.auditStore !== null;
+  }
 
   /**
    * Give pending authorization requests a life beyond this process.
@@ -915,7 +963,7 @@ export class CapabilityFabric {
     // a mission, which already had a stable key of its own.
     if (approvalId !== undefined) result.approvalId = approvalId;
 
-    this.auditLog.push({
+    const record: AuditRecord = {
       invocationId: invocation.id,
       at: endedAt,
       capabilityId: invocation.capabilityId,
@@ -945,7 +993,12 @@ export class CapabilityFabric {
       executedNodeId: this.executedNodeId(invocation, capability, attempts, output),
       contextInjected: this.contextInjectedOf(output, attempts),
       ...(retry ? { retry } : {}),
-    });
+    };
+    this.auditLog.push(record);
+    // One record, two homes at most — memory always, disk when the host
+    // has supplied one. A store that throws must not swallow the result of
+    // work that has already happened; the in-memory trail still has it.
+    try { this.auditStore?.append(record); } catch { /* durability is best-effort, truth is not */ }
 
     this.emit({ type: 'invocation.completed', at: endedAt, result });
     return result;
