@@ -26,6 +26,7 @@ import { generateRepositorySummary, loadRepositorySummary } from './moduleSummar
 import { prioritizeDocuments } from './documentPriority';
 import { assembleContext, type AssembledContext, type ContextAssemblerInput } from './contextAssembler';
 import type { BudgetSpec } from '../context/budget';
+import type { ContextItem } from '../context/item';
 import { buildGlossary, loadGlossary } from './glossary';
 import { generateRepositoryHealth, loadRepositoryHealth } from './healthEngine';
 import { buildRepositoryProfile, loadRepositoryProfile } from './repositoryMemory';
@@ -147,6 +148,14 @@ export function runIntelligencePipeline(
    * only make the assembled context smaller than the model could take.
    */
   budget?: BudgetSpec,
+  /**
+   * Context items the caller already gathered — recalled memory across
+   * all four tiers, and anything else that entered AURA at a boundary
+   * with its trust already assigned. Passed through to the composer
+   * rather than flattened into a string, so the composer can rank and
+   * budget them individually.
+   */
+  items?: readonly ContextItem[],
 ): IntelligenceEngineResult {
   // 1. Classify intent
   const intent = classifyRepositoryIntent(query);
@@ -242,6 +251,7 @@ export function runIntelligencePipeline(
     retrievedFiles,
     query,
     budget,
+    items,
   };
   const context = assembleContext(contextInput);
 

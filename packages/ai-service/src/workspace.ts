@@ -5,7 +5,9 @@ import { extractArchitectureLayers, layersFromFullstack, type LayerStack } from 
 import { graphifyJsonPath } from './graphify';
 import { ProjectMemory, type MemoryItem, type MemoryKind } from './memory';
 import { engineeringMemory, decisionMemory, missionMemory, type BaseMemoryRecord, type DecisionAlternative } from '@aura/engineering-memory';
-import { ProjectConversations, type Conversation, type ConversationSummary } from './conversations';
+import { ProjectConversations, type Conversation, type ConversationSummary, type ConversationDigest } from './conversations';
+import type { ContextItem } from './context/item';
+import { fromConversationTurn, fromMemory } from './context/item';
 import { buildKnowledgeGraph, type KnowledgeGraph } from './knowledgeGraph';
 import { runProjectIntelligence, runWorkspaceIntelligence, type ProjectIntelligenceReport, type WorkspaceIntelligenceReport } from './intelligence';
 import { loadChangeLog, analyzeChangePatterns, getChangeVelocity, detectHotspots, type ChangeEntry, type ChangePattern } from './intelligence/changeIntelligence';
@@ -315,7 +317,93 @@ export class WorkspaceManager {
     return this.conversationsOf(id).remove(cid);
   }
   appendMessage(id: string, cid: string, msg: { role: 'user' | 'assistant'; content: string; meta?: unknown; error?: boolean }) {
-    return this.conversationsOf(id).append(cid, msg);
+    const appended = this.conversationsOf(id).append(cid, msg);
+    /* Compaction is maintenance: it must not delay the reply, and it is
+       idempotent, so a failed run is retried by the next append. It is
+       triggered on the assistant turn because that is when an exchange is
+       complete - compacting mid-exchange would digest a question whose
+       answer has not been written yet. */
+    if (msg.role === 'assistant') {
+      void this.compactConversation(id, cid).catch(() => { /* retried on the next append */ });
+    }
+    return appended;
+  }
+
+  /**
+   * Fold this conversation's older turns into a rolling digest, and write
+   * the digest back as an EPISODIC memory item so it reaches a prompt.
+   *
+   * Before this existed, `history()`'s `slice(-8)` meant turn 9 removed
+   * turn 1 from the model's world with nothing recording that it had. The
+   * digest is what turn 1 becomes.
+   *
+   * The episodic item is labelled with the digest's producer, so a model
+   * reading it back can tell a summary from a quotation. That label is
+   * the difference between "the user said X" and "something summarised
+   * the user as having said X".
+   */
+  async compactConversation(
+    id: string,
+    cid: string,
+    summarize?: (transcript: string) => Promise<string>,
+  ): Promise<ConversationDigest | null> {
+    const convs = this.conversationsOf(id);
+    if (!convs.needsCompaction(cid)) return null;
+    return convs.compact(cid, {
+      summarize,
+      onDigest: (digest, conversation) => {
+        const memory = this.pipeline.currentProjectId === id && this.pipeline.memory
+          ? this.pipeline.memory
+          : new ProjectMemory(id);
+        memory.add({
+          kind: 'conversation',
+          title: `Conversation digest — ${conversation.title}`,
+          body: [
+            `Rolling digest of the first ${digest.messageCount} message(s) of conversation ${conversation.id}.`,
+            `Written by: ${digest.producer} (${digest.producer === 'model' ? 'abstractive summary — a paraphrase, not a quotation' : 'deterministic extract — every line below appeared in the transcript'}).`,
+            '',
+            digest.text,
+          ].join('\n'),
+        });
+      },
+    });
+  }
+
+  /**
+   * A conversation as context items: the digest, then the verbatim tail.
+   *
+   * The digest is a `memory` item carrying the producer that wrote it;
+   * the tail are `turn` items whose trust follows who spoke. Handing the
+   * composer these rather than a flat string is what lets a budget drop
+   * the digest and keep the last two turns, rather than the other way
+   * round.
+   */
+  conversationContextItems(id: string, cid: string, n = 8): ContextItem[] {
+    const { digest, turns } = this.conversationsOf(id).historyWithDigest(cid, n);
+    const items: ContextItem[] = [];
+    if (digest) {
+      items.push(fromMemory({
+        id: `digest://${cid}@${digest.throughIndex}`,
+        body: `[conversation digest, written by ${digest.producer}, covering ${digest.messageCount} earlier message(s)]\n${digest.text}`,
+        store: 'conversation-digest',
+        observedAt: digest.at,
+      }));
+    }
+    turns.forEach((t, i) => {
+      /* A ConversationTurn's role is the kernel's wider union, which
+         includes 'system'. Only a real speaker becomes a turn item: a
+         system message is AURA's own framing, and giving it a speaker's
+         trust would be assigning trust twice. */
+      if (t.role !== 'user' && t.role !== 'assistant') return;
+      items.push(fromConversationTurn({
+        role: t.role,
+        content: t.content,
+        at: new Date(t.at ?? Date.now()).toISOString(),
+        conversationId: cid,
+        index: i,
+      }));
+    });
+    return items;
   }
   removeLastAssistantMessage(id: string, cid: string): boolean {
     return this.conversationsOf(id).removeLastAssistant(cid);
@@ -547,6 +635,11 @@ export class WorkspaceManager {
 
   attachFabric(fabric: CapabilityFabric): void {
     this.fabric = fabric;
+    /* The procedural memory tier is derived from what the Fabric's
+       journal actually records. Handed a reader, not a copy: the journal
+       is the Fabric's, and a snapshot taken at attach time would be empty
+       forever. */
+    this.pipeline.setAuditSource(() => fabric.audit());
   }
 
   /**

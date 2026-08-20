@@ -16,6 +16,9 @@ import { isModelValidForProvider } from './provider/modelValidation';
 import { ProviderHttpError, translateProviderError } from './provider/errorTranslator';
 import { runGraphify } from './graphify';
 import { redact } from './context/redact';
+import type { ContextItem } from './context/item';
+import { UnifiedMemory } from './unifiedMemory';
+import type { AuditRecord } from '@aura/capability-fabric';
 import {
   runIntelligencePipeline,
   type IntelligenceEngineResult,
@@ -221,6 +224,17 @@ export class PipelineManager {
   get fullstack(): FullStackKnowledgeEngine | null {
     return this.mounted?.fullstack ?? null;
   }
+  /**
+   * A reader for the Fabric's audit journal, supplied by the host when
+   * the Fabric attaches. Null until then, and the procedural memory tier
+   * simply reports nothing rather than guessing at what has run.
+   */
+  private auditSource: (() => readonly AuditRecord[]) | null = null;
+
+  setAuditSource(source: () => readonly AuditRecord[]): void {
+    this.auditSource = source;
+  }
+
   get memory(): ProjectMemory | null {
     return this.mounted?.memory ?? null;
   }
@@ -413,18 +427,24 @@ export class PipelineManager {
       }
     }
 
-    // Single retrieval pass — memory
+    /* Single retrieval pass — memory, across ALL FOUR TIERS.
+       This used to ask `ProjectMemory` alone. The semantic store
+       (`@aura/engineering-memory`) had been written to since it was built
+       and never once read back into a prompt, and procedural knowledge —
+       what actually works on this machine — was not modelled at all.
+       Both arrive here, as context items carrying their own provenance,
+       so the composer can rank and budget them alongside everything else
+       rather than receiving one pre-flattened string. */
     let memory = { items: [] as { id: string; kind: string; title: string }[], tokens: 0 };
-    let memoryContextText = '';
+    let memoryItems: ContextItem[] = [];
     if (m) {
-      const hits = m.memory.recall(prompt.enhanced || text, 4);
+      const unified = new UnifiedMemory(m.id, { audit: this.auditSource ?? undefined }, m.memory);
+      const recalled = unified.recall(prompt.enhanced || text, { limitPerTier: 4 });
       memory = {
-        items: hits.map((h) => ({ id: h.id, kind: h.kind, title: h.title })),
-        tokens: hits.reduce((s, h) => s + h.body.length / 4, 0),
+        items: recalled.map((h) => ({ id: h.id, kind: h.tier, title: h.title })),
+        tokens: recalled.reduce((s, h) => s + h.body.length / 4, 0),
       };
-      if (hits.length > 0) {
-        memoryContextText = hits.map((h) => `[${h.kind}] ${h.title}\n${h.body.slice(0, 500)}`).join('\n\n');
-      }
+      memoryItems = unified.contextItems(prompt.enhanced || text, { limitPerTier: 4 });
     }
 
     // Run intelligence engine (identity, summary, profile, glossary, health, context assembly)
@@ -437,10 +457,14 @@ export class PipelineManager {
         m.profile,
         codingContextText,
         graphContextText,
-        memoryContextText,
+        /* Memory no longer arrives as a flattened string. It arrives as
+           items, below, so each recalled record keeps the tier, store and
+           confidence it was recalled with. */
+        '',
         coding.files,
         scan,
         this.runtimeManager.contextBudget(),
+        memoryItems,
       );
     }
 
