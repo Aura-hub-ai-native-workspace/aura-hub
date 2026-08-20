@@ -12,7 +12,8 @@ import type { RunEvent, Workflow } from './workflow/types';
 import { WorkflowBridge } from './workflowBridge';
 import { setupProviders } from './provider';
 import { setTokenCounter } from '@aura/retrieval/types';
-import { countTokensSync } from './tokenizer';
+import { countTokens, countTokensSync } from './tokenizer';
+import type { Sensitivity, TaskKind } from './provider/router';
 import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
 import { handleCodeAction, type CodeActionRequest } from './codeAction';
 import { CATALOG } from '@aura/connected-environment';
@@ -533,6 +534,45 @@ export async function startService(opts: PipelineOptions & { port?: number; open
          Ollama after AURA, or loaded a model into LM Studio. Same code
          path as boot discovery, so there is one definition of "a local
          provider is available". */
+      /* Ask the router what it WOULD do, without doing it.
+         The routing decision is a governance-visible fact — which model
+         would answer, and which were refused on which rule — so it is
+         readable rather than only inferable from an answer's metadata.
+         Pure: it activates nothing and sends nothing anywhere. */
+      if (method === 'POST' && seg[0] === 'providers' && seg[1] === 'route') {
+        const b = await readJson(req);
+        const text = typeof b.text === 'string' ? b.text : '';
+        const promptTokens = typeof b.promptTokens === 'number'
+          ? b.promptTokens
+          : countTokensSync(text).tokens;
+        const sensitivity = ['public', 'internal', 'confidential', 'secret'].includes(String(b.sensitivity))
+          ? b.sensitivity as Sensitivity
+          : p.getSettings().sensitivity;
+        const decision = manager.pipeline.runtimeManager.plan({
+          taskKind: (typeof b.taskKind === 'string' ? b.taskKind : 'chat') as TaskKind,
+          sensitivity,
+          promptTokens,
+          expectedOutputTokens: typeof b.expectedOutputTokens === 'number' ? b.expectedOutputTokens : undefined,
+          requiresTools: b.requiresTools === true,
+          requiresVision: b.requiresVision === true,
+          requiresJsonMode: b.requiresJsonMode === true,
+          maxCostUsd: typeof b.maxCostUsd === 'number' ? b.maxCostUsd : undefined,
+          ...(typeof b.networkUp === 'boolean' ? { networkUp: b.networkUp } : {}),
+        });
+        return json(res, 200, { promptTokens, sensitivity, decision });
+      }
+      /* What a piece of text actually costs in tokens, and by which
+         method. Exposed so the tokenizer is verifiable from outside the
+         process rather than only trusted. */
+      if (method === 'POST' && seg[0] === 'providers' && seg[1] === 'tokens') {
+        const b = await readJson(req);
+        const text = String(b.text ?? '');
+        const count = await countTokens(text, {
+          providerId: typeof b.providerId === 'string' ? b.providerId : undefined,
+          modelId: typeof b.modelId === 'string' ? b.modelId : undefined,
+        });
+        return json(res, 200, count);
+      }
       if (method === 'POST' && seg[0] === 'providers' && seg[1] === 'local' && seg[2] === 'discover') {
         const found = await manager.connectLocalProviders();
         return json(res, 200, { local: found, active: manager.byoakStatus().active });

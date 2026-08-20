@@ -1,5 +1,7 @@
 import type { Runtime } from '@aura/runtime';
-import { getAdapter, registerAdapter, getAllAdapters } from './registry';
+import { getAdapter, registerAdapter, getAllAdapters, isLocalAdapter } from './registry';
+import type { RouteCandidate, RouteDecision, RouteRequest } from './router';
+import { route } from './router';
 import type { ProviderAdapter, ActiveRuntime, ProviderHealth, ModelCapabilities } from './types';
 import * as credentialStore from './credentialStore';
 import { cachedModelsFor, resolveModel } from './modelValidation';
@@ -212,6 +214,89 @@ export class RuntimeManager {
   deactivate(): void {
     this.active = null;
     credentialStore.setActive(null);
+  }
+
+  /* ── routing (§ provider fallback chain) ────────────────────────── */
+
+  /**
+   * Every model AURA could actually run right now, as routing candidates.
+   *
+   * Built from the credential store's connected providers and their
+   * cached model lists — the same data `byoakStatus()` reports, so the
+   * router can never see a machine the Settings screen does not. It is a
+   * projection, not a second registry.
+   */
+  candidates(): RouteCandidate[] {
+    const out: RouteCandidate[] = [];
+    for (const store of credentialStore.getAllProviderStores()) {
+      const adapter = getAdapter(store.id);
+      if (!adapter) continue;
+      const local = isLocalAdapter(adapter);
+      const healthy = store.health ? store.health.ok : null;
+      const latencyMs = store.health?.latencyMs;
+      const models = store.models?.length
+        ? store.models
+        // A connected provider with no cached model list can still be
+        // routed to on its default model — refusing to consider it would
+        // make a provider that has never been model-refreshed invisible.
+        : [{ id: adapter.metadata.defaultModel, name: adapter.metadata.defaultModel, capabilities: {} }];
+      for (const model of models) {
+        out.push({
+          providerId: store.id,
+          providerName: adapter.metadata.name,
+          modelId: model.id,
+          local,
+          capabilities: model.capabilities ?? {},
+          healthy,
+          latencyMs,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Is outbound network usable, as far as AURA can tell without asking?
+   *
+   * Derived from the last health check of every non-local connected
+   * provider: if every one of them failed, the machine is very likely
+   * offline. Unknown (nothing has been checked) returns true — assuming
+   * the network is up and being wrong costs one failed request, whereas
+   * assuming it is down and being wrong silently downgrades every answer.
+   */
+  networkLikelyUp(): boolean {
+    const remote = credentialStore.getAllProviderStores().filter((s) => !isLocalAdapter(getAdapter(s.id)));
+    const checked = remote.filter((s) => s.health !== null);
+    if (!checked.length) return true;
+    return checked.some((s) => s.health?.ok === true);
+  }
+
+  /** The ordered chain for a request. Pure — activates nothing. */
+  plan(request: Omit<RouteRequest, 'networkUp' | 'preferProviderId'> & Partial<Pick<RouteRequest, 'networkUp' | 'preferProviderId'>>): RouteDecision {
+    return route(this.candidates(), {
+      ...request,
+      networkUp: request.networkUp ?? this.networkLikelyUp(),
+      preferProviderId: request.preferProviderId ?? this.getProviderId() ?? undefined,
+    });
+  }
+
+  /**
+   * A runtime for one candidate, WITHOUT changing what is active.
+   *
+   * This is what makes a fallback a fallback rather than a takeover: the
+   * request that failed over runs on the sibling provider, and the user's
+   * chosen provider is still their chosen provider afterwards.
+   */
+  runtimeFor(candidate: RouteCandidate): Runtime | null {
+    const adapter = getAdapter(candidate.providerId);
+    if (!adapter) return null;
+    const credential = credentialStore.getKey(candidate.providerId);
+    if (!credential) return null;
+    try {
+      return adapter.createRuntime(credential, candidate.modelId);
+    } catch {
+      return null;
+    }
   }
 
   byoakStatus(): { connected: ConnectedProvider[]; active: string | null; activeModel: string } {

@@ -6,12 +6,14 @@ import {
 } from '@aura/intelligence';
 import { CodingKnowledgeEngine } from '@aura/knowledge-coding';
 import { FullStackKnowledgeEngine } from '@aura/knowledge-fullstack';
-import type { GenerateRequest, RuntimeMessage } from '@aura/runtime';
+import type { GenerateRequest, Runtime, RuntimeMessage } from '@aura/runtime';
 import { DEFAULT_SETTINGS, type AiSettings } from './settings';
 import { ProjectMemory, type MemoryItem } from './memory';
 import { loadProfile, type ProjectProfile } from './profile';
 import { homePath } from './persist';
 import { RuntimeManager } from './provider';
+import type { RouteCandidate, RouteDecision, RouteRequest } from './provider/router';
+import { countTokensSync } from './tokenizer';
 import { isModelValidForProvider } from './provider/modelValidation';
 import { ProviderHttpError, translateProviderError } from './provider/errorTranslator';
 import { runGraphify } from './graphify';
@@ -137,6 +139,21 @@ async function withRetry<T>(
  */
 const PROGRESS_ANNOUNCE_MS = 400;
 
+/**
+ * Failure kinds that justify trying a DIFFERENT provider.
+ *
+ * Deliberately narrow. These are the failures that say "this provider
+ * cannot serve you right now" — the machine is offline, the account is
+ * rate-limited or out of credit, the key is bad, the gateway is down.
+ *
+ * Everything else stays on the provider the user chose. A malformed
+ * request or a refusal is not a reason to shop the same request around:
+ * it will fail identically everywhere, and quietly re-sending a user's
+ * prompt to a second company because the first said no is a privacy
+ * decision disguised as resilience.
+ */
+const FAILOVER_ERRORS = new Set(['network', 'timeout', 'rate_limit', 'billing', 'server_error', 'auth', 'authorization', 'no_provider']);
+
 const NO_PROVIDER: NormalizedError = {
   type: 'no_provider',
   message: 'No AI provider connected. Add your API key in Settings to use AURA\'s AI.',
@@ -177,7 +194,12 @@ export interface InspectResult {
 export type StreamEmit =
   | { type: 'meta'; meta: InspectResult }
   | { type: 'token'; text: string }
-  | { type: 'done'; usage: unknown; finishReason: string; citations: unknown; latencyMs: number; trace: unknown; provider: string; engineId: string }
+  | {
+      type: 'done'; usage: unknown; finishReason: string; citations: unknown; latencyMs: number;
+      trace: unknown; provider: string; engineId: string;
+      /** Which model answered, what else was considered, and why not. */
+      routing?: RoutingReport;
+    }
   | { type: 'error'; error: NormalizedError };
 
 export interface PipelineOptions {
@@ -190,6 +212,33 @@ export interface ProviderStatus {
   providerId: string | null;
   label: string;
   model: string;
+}
+
+/**
+ * What the router decided, in a shape that can travel to the UI.
+ *
+ * Carried on every answer AND every refusal: "which model answered, and
+ * what else was considered and why not" is not diagnostics, it is the
+ * thing that makes an automatic failover legible instead of spooky.
+ */
+export interface RoutingReport {
+  rule: string;
+  detail: string;
+  chosen: { providerId: string; modelId: string; local: boolean } | null;
+  /** Candidates actually contacted, in order. Length > 1 means a failover happened. */
+  attempted: { providerId: string; modelId: string; local: boolean }[];
+  rejected: { providerId: string; modelId: string; rule: string; reason: string }[];
+}
+
+function routingReport(decision: RouteDecision, attempted: RouteCandidate[], chosen?: RouteCandidate): RoutingReport {
+  const brief = (c: RouteCandidate) => ({ providerId: c.providerId, modelId: c.modelId, local: c.local });
+  return {
+    rule: decision.rule,
+    detail: decision.detail,
+    chosen: chosen ? brief(chosen) : null,
+    attempted: attempted.map(brief),
+    rejected: decision.rejected,
+  };
 }
 
 export class PipelineManager {
@@ -579,6 +628,92 @@ export class PipelineManager {
 
   /* ── generation ─────────────────────────────────────────────────── */
 
+  /* ── routed generation (§ provider fallback chain) ──────────────── */
+
+  /**
+   * Run one model call along the router's chain.
+   *
+   * Two loops, and they are different loops on purpose:
+   *
+   *   • the INNER one is `withRetry` — same provider, transient error,
+   *     backoff. Unchanged, and still the right response to a blip.
+   *   • the OUTER one is this: the provider itself cannot serve the
+   *     request, so move to the next candidate the router chose.
+   *
+   * The active provider is never reassigned. A request that failed over
+   * ran somewhere else; the user's chosen provider is still their chosen
+   * provider when it is over.
+   */
+  private async runRouted<T>(
+    spec: {
+      taskKind: RouteRequest['taskKind'];
+      sensitivity: RouteRequest['sensitivity'];
+      promptTokens: number;
+      expectedOutputTokens?: number;
+      requiresTools?: boolean;
+      requiresJsonMode?: boolean;
+      signal?: AbortSignal;
+    },
+    call: (runtime: Runtime, label: string) => Promise<T>,
+  ): Promise<
+    | { ok: true; value: T; candidate: RouteCandidate; label: string; decision: RouteDecision; attempted: RouteCandidate[] }
+    | { ok: false; error: NormalizedError; decision: RouteDecision; attempted: RouteCandidate[] }
+  > {
+    const decision = this.runtimeManager.plan({
+      taskKind: spec.taskKind,
+      sensitivity: spec.sensitivity,
+      promptTokens: spec.promptTokens,
+      expectedOutputTokens: spec.expectedOutputTokens ?? this.settings.maxTokens,
+      requiresTools: spec.requiresTools,
+      requiresJsonMode: spec.requiresJsonMode,
+    });
+
+    if (!decision.ok) {
+      return {
+        ok: false,
+        decision,
+        attempted: [],
+        // A refusal is a decision, not a crash: `retryable: false` because
+        // repeating it changes nothing until the machine does.
+        error: { type: decision.rule === 'privacy-gate' ? 'configuration' : 'no_provider', message: decision.detail, retryable: false },
+      };
+    }
+
+    const attempted: RouteCandidate[] = [];
+    let lastError: NormalizedError = { type: 'unknown', message: 'No provider was attempted.', retryable: false };
+
+    for (const candidate of decision.chain) {
+      if (spec.signal?.aborted) {
+        return { ok: false, error: { type: 'aborted', message: 'Cancelled', retryable: false }, decision, attempted };
+      }
+      const runtime = this.runtimeManager.runtimeFor(candidate);
+      if (!runtime) {
+        lastError = { type: 'configuration', message: `${candidate.providerName} is connected but produced no runtime.`, retryable: false };
+        continue;
+      }
+      attempted.push(candidate);
+      const label = candidate.providerName;
+      /* Cancellation has to follow the failover: the caller's abort must
+         reach whichever runtime is in flight NOW, not the one that was
+         active when the request started. */
+      const onAbort = () => runtime.cancel();
+      spec.signal?.addEventListener('abort', onAbort);
+      let result: Awaited<ReturnType<typeof withRetry<T>>>;
+      try {
+        result = await withRetry(
+          () => withTimeout(() => call(runtime, label), this.settings.timeoutMs, () => runtime.cancel()),
+          { maxRetries: this.settings.maxRetries, signal: spec.signal, providerLabel: label },
+        );
+      } finally {
+        spec.signal?.removeEventListener('abort', onAbort);
+      }
+      if (result.ok) return { ok: true, value: result.value, candidate, label, decision, attempted };
+      lastError = result.error;
+      if (!FAILOVER_ERRORS.has(result.error.type)) break;
+    }
+    return { ok: false, error: lastError, decision, attempted };
+  }
+
   async ask(text: string, signal?: AbortSignal, history?: ConversationTurn[], auraContext?: string | null, scan?: TreeScan) {
     const meta = await this.inspect(text, scan);
     const runtime = this.runtimeManager.runtime;
@@ -596,24 +731,33 @@ export class PipelineManager {
         temperature: this.settings.temperature,
         maxTokens: this.settings.maxTokens,
       };
-      const providerLabel = this.runtimeManager.providerLabel;
-      const result = await withRetry(
-        () => withTimeout(() => runtime.generate(request), this.settings.timeoutMs, () => runtime.cancel()),
-        { maxRetries: this.settings.maxRetries, signal, providerLabel },
+      /* Measured, not guessed — the router's context gate refuses a model
+         the prompt does not fit, and it can only do that against a real
+         count. See tokenizer/. */
+      const promptTokens = countTokensSync(
+        messages.map((m) => m.content).join('\n'),
+        { providerId: this.runtimeManager.getProviderId() ?? undefined, modelId: this.runtimeManager.getModel() },
+      ).tokens;
+
+      const routed = await this.runRouted(
+        { taskKind: 'chat', sensitivity: this.settings.sensitivity, promptTokens, signal },
+        (rt) => rt.generate(request),
       );
-      if (!result.ok) return { ok: false as const, error: result.error, meta };
+      if (!routed.ok) return { ok: false as const, error: routed.error, meta, routing: routingReport(routed.decision, routed.attempted) };
+      const providerLabel = routed.label;
       const latencyMs = Math.round(performance.now() - t0);
       return {
         ok: true as const,
-        answer: result.value.content,
+        answer: routed.value.content,
         meta,
         intent: meta.intent,
         engineId: providerLabel.toLowerCase().replace(/\s+/g, '-'),
         provider: providerLabel,
         citations: [],
-        usage: result.value.usage,
-        finishReason: result.value.finishReason,
+        usage: routed.value.usage,
+        finishReason: routed.value.finishReason,
         latencyMs,
+        routing: routingReport(routed.decision, routed.attempted, routed.candidate),
         trace: [{ stage: 'generation', startedAt: t0, durationMs: latencyMs, ok: true }],
       };
     } catch (e) {
@@ -678,8 +822,6 @@ export class PipelineManager {
       emit({ type: 'error', error: INVALID_MODEL });
       return;
     }
-    const onAbort = () => runtime.cancel();
-    signal?.addEventListener('abort', onAbort);
     const t0 = performance.now();
     const { messages } = this.buildContextMessages(text, meta, history, auraContext);
     const request: GenerateRequest = {
@@ -687,38 +829,87 @@ export class PipelineManager {
       temperature: this.settings.temperature,
       maxTokens: this.settings.maxTokens,
     };
+    const promptTokens = countTokensSync(
+      messages.map((m) => m.content).join('\n'),
+      { providerId: this.runtimeManager.getProviderId() ?? undefined, modelId: this.runtimeManager.getModel() },
+    ).tokens;
 
-    // Retries only cover the case where a failure (timeout/429/5xx/network) happens
-    // before any token reached the client — once tokens have streamed, retrying
-    // would duplicate output, so a mid-stream failure is reported as-is.
+    const decision = this.runtimeManager.plan({
+      taskKind: 'chat',
+      sensitivity: this.settings.sensitivity,
+      promptTokens,
+      expectedOutputTokens: this.settings.maxTokens,
+    });
+    if (!decision.ok) {
+      emit({
+        type: 'error',
+        error: { type: decision.rule === 'privacy-gate' ? 'configuration' : 'no_provider', message: decision.detail, retryable: false },
+      });
+      return;
+    }
+
+    /* Two loops, as in `runRouted`, but the streaming case has one extra
+       rule that matters more than either: once a token has reached the
+       client, NOTHING may be retried and nothing may fail over — the
+       user would see the answer restart, or two answers spliced. A
+       mid-stream failure is reported as it happened. */
     let lastError: NormalizedError | null = null;
-    for (let attempt = 0; attempt <= this.settings.maxRetries; attempt++) {
-      if (signal?.aborted) { signal.removeEventListener('abort', onAbort); return; }
-      let emittedAnyToken = false;
+    const attempted: RouteCandidate[] = [];
+
+    for (const candidate of decision.chain) {
+      if (signal?.aborted) return;
+      const runtime = this.runtimeManager.runtimeFor(candidate);
+      if (!runtime) continue;
+      attempted.push(candidate);
+      const providerLabel = candidate.providerName;
+      const onAbort = () => runtime.cancel();
+      signal?.addEventListener('abort', onAbort);
+      let sawToken = false;
+
       try {
-        const iterator = runtime.stream(request)[Symbol.asyncIterator]();
-        while (true) {
-          const next = await withTimeout(() => iterator.next(), this.settings.timeoutMs, () => runtime.cancel());
-          if (next.done) break;
-          const chunk = next.value;
-          if (chunk.delta) { emit({ type: 'token', text: chunk.delta }); emittedAnyToken = true; }
-          if (chunk.done) {
-            const providerLabel = this.runtimeManager.providerLabel;
-            const latencyMs = Math.round(performance.now() - t0);
-            emit({ type: 'done', usage: chunk.usage, finishReason: chunk.finishReason ?? 'stop', citations: [], latencyMs, trace: [{ stage: 'generation', startedAt: t0, durationMs: latencyMs, ok: true }], provider: providerLabel, engineId: providerLabel.toLowerCase().replace(/\s+/g, '-') });
-            signal?.removeEventListener('abort', onAbort);
+        for (let attempt = 0; attempt <= this.settings.maxRetries; attempt++) {
+          if (signal?.aborted) return;
+          let emittedAnyToken = false;
+          try {
+            const iterator = runtime.stream(request)[Symbol.asyncIterator]();
+            while (true) {
+              const next = await withTimeout(() => iterator.next(), this.settings.timeoutMs, () => runtime.cancel());
+              if (next.done) break;
+              const chunk = next.value;
+              if (chunk.delta) { emit({ type: 'token', text: chunk.delta }); emittedAnyToken = true; sawToken = true; }
+              if (chunk.done) {
+                const latencyMs = Math.round(performance.now() - t0);
+                emit({
+                  type: 'done',
+                  usage: chunk.usage,
+                  finishReason: chunk.finishReason ?? 'stop',
+                  citations: [],
+                  latencyMs,
+                  trace: [{ stage: 'generation', startedAt: t0, durationMs: latencyMs, ok: true }],
+                  provider: providerLabel,
+                  engineId: providerLabel.toLowerCase().replace(/\s+/g, '-'),
+                  routing: routingReport(decision, attempted, candidate),
+                });
+                return;
+              }
+            }
             return;
+          } catch (e) {
+            lastError = normalize(e, providerLabel);
+            if (emittedAnyToken || !lastError.retryable || attempt === this.settings.maxRetries) break;
+            await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** attempt, 4000)));
           }
         }
+      } finally {
         signal?.removeEventListener('abort', onAbort);
-        return;
-      } catch (e) {
-        lastError = normalize(e, this.runtimeManager.providerLabel);
-        if (emittedAnyToken || !lastError.retryable || attempt === this.settings.maxRetries) break;
-        await new Promise((r) => setTimeout(r, Math.min(500 * 2 ** attempt, 4000)));
       }
+
+      // Tokens already went to the user: this answer is theirs, broken or
+      // not. Failing over now would emit a second one after the first.
+      if (sawToken) break;
+      if (!lastError || !FAILOVER_ERRORS.has(lastError.type)) break;
     }
-    signal?.removeEventListener('abort', onAbort);
+
     emit({ type: 'error', error: lastError ?? { type: 'unknown', message: 'Unknown error', retryable: false } });
   }
 }
