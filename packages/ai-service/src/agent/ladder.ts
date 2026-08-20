@@ -13,19 +13,14 @@
  *   0 observe    reads run; every mutating capability is DENIED by an
  *                explicit per-capability override, derived from the
  *                manifest rather than listed here.
- *   1 suggest    identical policy to 0. The difference is behavioural,
- *                not permissive: the loop is allowed to PROPOSE actions
- *                to a human. A proposal is not an action, so it needs no
- *                policy of its own — and levels 0 and 1 producing the
- *                same config is the honest encoding of that, not an
- *                oversight.
+ *   1 suggest    the same policy AND the same scope as 0.
  *   2 execute    the shipped default: low auto, medium asks, high needs
- *     low-risk   explicit authorization. This is `DEFAULT_POLICY`.
- *   3 approved   level 2, plus running what a human has already approved:
- *     workflows  `workflow.run` and `mission.start` become auto-execute
- *                through the existing `overrides` map. Both are medium
- *                risk and reversible; the approval they act on has
- *                already happened at the mission checkpoint.
+ *     low-risk   explicit authorization — plus a narrower SCOPE that does
+ *                not offer irreversible capabilities at all.
+ *   3 approved   the same policy as 2, with irreversible capabilities
+ *     workflows  back in scope so the loop may propose them. They still
+ *                park on a human; what changes is that they can be asked
+ *                for.
  *   4 bounded    medium-risk actions run unattended. High risk still
  *     autonomy   requires authorization, and all four floors still hold —
  *                which is exactly why this level is safe to offer at all.
@@ -33,6 +28,27 @@
  *     running    budget, not the authority: "long-running" is a claim
  *                about duration, and encoding it as extra permission
  *                would be dishonest about what the user agreed to.
+ *
+ * Three pairs of levels therefore share a `PolicyConfig` — 0/1, 2/3, 4/5
+ * — and differ in scope or in budget. That is not an oversight, and it is
+ * worth being explicit about why, because the obvious reading of level 3
+ * does not survive contact with the engine:
+ *
+ *   "Approved workflows run unattended" would mean `workflow.run` becoming
+ *   `auto-execute` while medium risk generally stays `ask-user`. The
+ *   `overrides` map cannot express that. Every configurable layer in
+ *   `evaluatePolicy` is folded with `stricter()`, so an override can raise
+ *   a decision and can never lower one — writing `auto-execute` there
+ *   changes nothing at all. That property is deliberate and it is the
+ *   reason a hostile configuration file cannot buy its way past a gate;
+ *   weakening it to make a ladder rung work would trade a real security
+ *   guarantee for a label.
+ *
+ *   Expressing level 3 properly needs a notion the engine does not have:
+ *   "this specific plan was already approved". That is a second kind of
+ *   authorization, and adding one here would put a second approval
+ *   authority next to the Fabric's. It is written up in QUESTIONS.md
+ *   rather than invented.
  *
  * Levels 4 and 5 RELAX relative to the default, which is why a level is
  * an operator setting persisted through the existing `policyStore`, and
@@ -70,17 +86,6 @@ export function isReadOnly(capability: CapabilityDescriptor): boolean {
 }
 
 /**
- * Capabilities a human has already authorized by another route.
- *
- * Both are medium risk, both are reversible, and both act on a plan that
- * passed a Mission Control checkpoint before it could exist. Level 3 says
- * "run what was approved"; this is the list of ways to do that, and it is
- * short on purpose — a long list here would be autonomy smuggled in under
- * a narrower name.
- */
-const PRE_APPROVED_CAPABILITIES = ['workflow.run', 'mission.start'] as const;
-
-/**
  * The `PolicyConfig` a level installs.
  *
  * `base` is the operator's saved policy, so their own restrictions are
@@ -90,7 +95,11 @@ const PRE_APPROVED_CAPABILITIES = ['workflow.run', 'mission.start'] as const;
  * no business answering the second.
  */
 export function autonomyPolicy(level: AutonomyLevel, base: PolicyConfig = DEFAULT_POLICY): PolicyConfig {
-  const overrides: Record<string, PolicyDecision> = { ...DEFAULT_POLICY.overrides };
+  // The operator's own overrides are carried through. Every one of them
+  // can only ever make the engine stricter (see `apply` in policy.ts), so
+  // keeping them is safe by construction — and dropping them would let
+  // choosing a ladder level quietly undo a restriction somebody set.
+  const overrides: Record<string, PolicyDecision> = { ...base.overrides };
 
   if (level <= 1) {
     // Derived from the manifest, so a capability added tomorrow is denied
@@ -99,10 +108,6 @@ export function autonomyPolicy(level: AutonomyLevel, base: PolicyConfig = DEFAUL
     for (const capability of CAPABILITY_MANIFEST) {
       if (!isReadOnly(capability)) overrides[capability.id] = 'deny';
     }
-  }
-
-  if (level >= 3) {
-    for (const id of PRE_APPROVED_CAPABILITIES) overrides[id] = 'auto-execute';
   }
 
   const byRisk: PolicyConfig['byRisk'] = level >= 4
@@ -141,14 +146,12 @@ export function autonomyScope(level: AutonomyLevel, supported?: readonly string[
   return CAPABILITY_MANIFEST
     .filter((c) => (available ? available.has(c.id) : true))
     .filter((c) => (level <= 1 ? isReadOnly(c) : true))
-    .filter((c) => {
-      // Level 2 is "execute low-risk". High-risk capabilities are still
-      // reachable — they park on an approval rather than running — but a
-      // level-2 run is not meant to be reaching for them unprompted, and
-      // an irreversible one is never worth offering unattended.
-      if (level === 2 && c.irreversible) return false;
-      return true;
-    })
+    // Level 2 is "execute low-risk". An irreversible capability would park
+    // on a human rather than run, so offering it is not a safety question
+    // — it is a question of what the loop should be reaching for. At level
+    // 2 it should not be reaching for anything it cannot undo; from level
+    // 3 it may propose one, and a person still decides.
+    .filter((c) => !(level === 2 && c.irreversible))
     .map((c) => c.id);
 }
 
@@ -195,5 +198,22 @@ export function policyFingerprint(policy: PolicyConfig): string {
  * decide — `byRisk`, `overrides`, and whether autonomy is on at all.
  */
 export function policyMatchesLevel(level: AutonomyLevel, installed: PolicyConfig): boolean {
-  return policyFingerprint(installed) === policyFingerprint(autonomyPolicy(level, installed));
+  const expected = autonomyPolicy(level, installed);
+  if (JSON.stringify(installed.byRisk) !== JSON.stringify(expected.byRisk)) return false;
+  if (installed.allowAutonomous !== expected.allowAutonomous) return false;
+  // Only the keys the LEVEL sets are compared. An operator's own overrides
+  // are not the ladder's business: they can only tighten, so their presence
+  // is never a reason to refuse a run, and demanding a byte-identical
+  // configuration would make every restriction somebody added look like
+  // policy drift.
+  for (const id of levelManagedOverrides(level)) {
+    if (installed.overrides[id] !== expected.overrides[id]) return false;
+  }
+  return true;
+}
+
+/** The override keys a level sets for itself. Empty above level 1. */
+function levelManagedOverrides(level: AutonomyLevel): string[] {
+  if (level > 1) return [];
+  return CAPABILITY_MANIFEST.filter((c) => !isReadOnly(c)).map((c) => c.id);
 }

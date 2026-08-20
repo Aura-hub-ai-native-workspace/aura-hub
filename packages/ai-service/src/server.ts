@@ -17,6 +17,11 @@ import { CATALOG } from '@aura/connected-environment';
 import { probeNode, scanEnvironment } from './environment';
 import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext, type NodeRef } from '@aura/capability-fabric';
 import { createFabric } from './fabric';
+import {
+  AGENT_LOOP_ENV, AUTONOMY_LABELS, AUTONOMY_LEVELS, DEFAULT_AUTONOMY_LEVEL, DEFAULT_LIMITS,
+  FileAgentJournal, HARD_CEILING, KILL_SWITCH, agentLoopGate, agentLoopRequested,
+  journalDirectory, policyMatchesLevel,
+} from './agent';
 import { drivableAgentBinaries } from './fabric/executors';
 import { composeContextView, type ContextSources } from './context/compose';
 import { renderContextContract } from './context/promptContract';
@@ -427,6 +432,42 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (!id) return json(res, 400, { error: 'a node id is required' });
           return json(res, 200, { id, result: await probeNode(id, Boolean(b.refresh)) });
         }
+      }
+
+      /* ── governed agency ───────────────────────────────────────
+         Read-only, and deliberately the ONLY thing the agent loop
+         exposes over HTTP today.
+
+         The loop is built and ships disarmed: it needs a durable audit
+         trail and a durable run journal before it may act on its own,
+         and neither is finished. Rather than leave that invisible, this
+         route reports the one gate every entry point consults and names
+         each unmet precondition — so "why is AURA not acting on its
+         own?" has an answer that does not require reading the source.
+
+         There is no run route. Adding one before the gate can open
+         would be shipping a door to a room that is not built. */
+      if (seg[0] === 'agent' && method === 'GET' && seg[1] === 'status') {
+        const gate = agentLoopGate({
+          requested: agentLoopRequested(),
+          fabric,
+          journal: new FileAgentJournal(),
+        });
+        return json(res, 200, {
+          gate,
+          envVar: AGENT_LOOP_ENV,
+          autonomy: {
+            level: DEFAULT_AUTONOMY_LEVEL,
+            label: AUTONOMY_LABELS[DEFAULT_AUTONOMY_LEVEL],
+            levels: AUTONOMY_LEVELS.map((l) => ({ level: l, label: AUTONOMY_LABELS[l] })),
+            // The ladder is a preset over THIS policy; showing whether the
+            // installed one still matches is how an operator sees drift.
+            policyMatchesLevel: policyMatchesLevel(DEFAULT_AUTONOMY_LEVEL, fabric.getPolicy()),
+          },
+          limits: { defaults: DEFAULT_LIMITS, ceiling: HARD_CEILING },
+          killSwitch: KILL_SWITCH.report(),
+          journalDirectory: journalDirectory(),
+        });
       }
 
       /* ── capability fabric ─────────────────────────────────────

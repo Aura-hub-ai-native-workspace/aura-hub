@@ -219,6 +219,22 @@ export type AgentJournalEntry =
       via?: string;
       /** The invocation that read it, for the audit trail. */
       invocationId?: string;
+      /**
+       * The invocation that would put things back, INCLUDING the prior
+       * state itself.
+       *
+       * This is what makes the checkpoint a checkpoint rather than a note
+       * that one was taken. The capture is a Fabric read whose result is
+       * the prior contents, and an audit record stores only a redacted
+       * argument summary — so if the prior state were not written here it
+       * would exist nowhere once the process ended, and "revert never
+       * depends on git" would be false the moment it mattered.
+       *
+       * Absent when nothing could restore it: prior state that was too
+       * large to record, or a capability with no inverse in the manifest.
+       * Absence is the honest signal that a revert is not available.
+       */
+      restore?: { capabilityId: string; input: Record<string, unknown> };
       /** Why not, when `captured` is false. Always stated. */
       why?: string;
     }

@@ -522,6 +522,9 @@ export async function runAgentLoop(
           captured: checkpoint.captured,
           via: checkpoint.captured ? checkpoint.via : undefined,
           invocationId: checkpoint.invocationId,
+          // The prior state travels with the entry, not just a note that it
+          // was read — see `AgentJournalEntry`'s `restore`.
+          restore: checkpoint.captured ? (checkpoint.restore ?? undefined) : undefined,
           why: checkpoint.captured ? undefined : checkpoint.why,
         });
 

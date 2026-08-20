@@ -33,7 +33,20 @@
 
 import type { CapabilityFabric, CapabilityDescriptor, InvocationContext } from '@aura/capability-fabric';
 import { describeFabricCapability } from '@aura/capability-fabric';
-import { MUTATING_SCOPES } from './types';
+import { MUTATING_SCOPES, type AgentJournalEntry } from './types';
+
+/**
+ * The largest prior state a checkpoint will record.
+ *
+ * A bound is necessary because the prior state is written into the run
+ * journal — that is what makes a revert possible without git — and an
+ * unbounded one would let a single write of a large file turn a run's
+ * record into something nobody can open. Past the bound the checkpoint
+ * reports `captured: false` with the reason, which is the honest answer:
+ * AURA could not record what it was about to change, so it will not
+ * change it unattended.
+ */
+const MAX_CHECKPOINT_BYTES = 256 * 1024;
 
 /** Does this capability change something the loop should be able to undo? */
 export function isMutating(capability: CapabilityDescriptor): boolean {
@@ -184,14 +197,46 @@ export async function captureCheckpoint(
     };
   }
 
+  const restore = strategy.restore(input, result.output);
+  if (restore) {
+    const size = Buffer.byteLength(JSON.stringify(restore.input));
+    if (size > MAX_CHECKPOINT_BYTES) {
+      return {
+        captured: false,
+        capabilityId,
+        invocationId: result.invocationId,
+        why: `Prior state is ${Math.round(size / 1024)}KB, over the ${MAX_CHECKPOINT_BYTES / 1024}KB a checkpoint will record, so a revert could not be guaranteed.`,
+      };
+    }
+  }
+
   return {
     captured: true,
     capabilityId,
     via: strategy.via,
     invocationId: result.invocationId,
     prior: result.output,
-    restore: strategy.restore(input, result.output),
+    restore,
   };
+}
+
+/**
+ * The invocations that would undo a run, newest change first.
+ *
+ * Read from the journal, so it works on a run this process never saw —
+ * which is the whole point. Reverting is itself an action: these are
+ * returned rather than executed, and putting them through `fabric.invoke`
+ * subjects each one to the same policy, approval and audit as any other
+ * write. A revert that bypassed governance would be a second execution
+ * path, and there is only ever one.
+ *
+ * Later checkpoints come first because restoring in the order the changes
+ * were made would replay them.
+ */
+export function restorePlan(entries: readonly AgentJournalEntry[]): { capabilityId: string; input: Record<string, unknown> }[] {
+  return [...entries]
+    .sort((a, b) => b.seq - a.seq)
+    .flatMap((entry) => (entry.type === 'checkpoint' && entry.captured && entry.restore ? [entry.restore] : []));
 }
 
 /**

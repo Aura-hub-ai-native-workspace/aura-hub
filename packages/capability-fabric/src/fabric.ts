@@ -592,6 +592,20 @@ export class CapabilityFabric {
     }
 
     /* 4. approval */
+    /**
+     * The authorization this execution was actually spent, when there was
+     * one.
+     *
+     * `AuditRecord.approvalId` reached only the parked path before this,
+     * which meant an action a person authorized recorded no trace of the
+     * authorization: the trail could say "this ran" and could say "this is
+     * waiting", but not "this ran because somebody said yes, and here is
+     * which yes it was". Governance needs the third one — it is the whole
+     * question an approval gate exists to answer — so the grant is carried
+     * from here through to `settle()` on every path below.
+     */
+    let spentApprovalId: string | undefined;
+
     if (evaluation.decision !== 'auto-execute') {
       // Identity of the QUESTION, not of the attempt. Pressing Run three
       // times on a gated task asks one question three times, and must not
@@ -611,6 +625,7 @@ export class CapabilityFabric {
       // Already answered "yes" out of band (the approval UI). Spend it —
       // once — and fall through to execution.
       const preGranted = open?.state === 'granted' && !open.consumedAt && this.consumeApproval(open.id);
+      if (preGranted && open) spentApprovalId = open.id;
 
       if (!preGranted) {
         // Reuse the open question rather than minting a duplicate.
@@ -652,6 +667,7 @@ export class CapabilityFabric {
         // per-invocation authorization). Otherwise the request stays open and
         // the invocation is parked, not failed.
         const granted = await this.host.requestApproval(request, context).catch(() => false);
+        if (granted) spentApprovalId = request.id;
         if (!granted) {
           return this.settle(invocation, capability, 'awaiting-approval',
             `${capability.name} is ready and waiting on your go-ahead. Nothing has run.`,
@@ -673,7 +689,7 @@ export class CapabilityFabric {
     if (!executor) {
       return this.settle(invocation, capability, 'unsupported',
         `${capability.name} is planned for but has no executor yet, so nothing was run. ${capability.description}`,
-        NO_VERIFICATION, evaluation, started, startedAt, 0);
+        NO_VERIFICATION, evaluation, started, startedAt, 0, spentApprovalId);
     }
 
     this.emit({ type: 'invocation.started', at: new Date().toISOString(), invocationId: invocation.id, capabilityId });
@@ -771,7 +787,7 @@ export class CapabilityFabric {
       // precisely when something went wrong.
       return this.settle(invocation, capability, 'failed',
         `${capability.name} did not succeed${tried}. ${last.detail}`,
-        NO_VERIFICATION, evaluation, started, startedAt, attempts, undefined, last.output,
+        NO_VERIFICATION, evaluation, started, startedAt, attempts, spentApprovalId, last.output,
         last.effectStarted);
     }
 
@@ -806,7 +822,7 @@ export class CapabilityFabric {
       ? `${capability.name} ran, but the check did not confirm it. ${verification.detail}`
       : `${capability.name} completed. ${last.detail}`;
 
-    return this.settle(invocation, capability, outcome, detail, verification, evaluation, started, startedAt, attempts, undefined, last.output, last.effectStarted);
+    return this.settle(invocation, capability, outcome, detail, verification, evaluation, started, startedAt, attempts, spentApprovalId, last.output, last.effectStarted);
   }
 
   /**
