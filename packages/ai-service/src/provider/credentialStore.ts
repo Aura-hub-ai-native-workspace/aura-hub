@@ -142,15 +142,29 @@ function passphraseKey(salt: Buffer): Buffer {
 }
 
 /**
- * The legacy key: unsalted SHA-256 over a seed kept in the same file.
+ * Every key the legacy scheme could have used, in the order it used them.
  *
- * Kept for exactly one purpose — reading credentials written before this
- * change so they can be migrated — and never used to write anything.
+ * BOTH candidates, not one. The old `deriveKey()` preferred
+ * `AURA_PROVIDER_SECRET` and fell back to the in-file seed, so a
+ * credential could have been written under either, and which one is
+ * decided by whether the environment variable happened to be set on the
+ * day it was stored. Reading with only the current preference is how a
+ * user who sets a passphrase *after* connecting a provider would find
+ * their existing credentials silently unreadable — which the migration
+ * test caught, and which would have been data loss in the field.
+ *
+ * Trying both is safe: GCM authenticates, so a wrong key fails to
+ * decrypt rather than returning plausible garbage.
+ *
+ * For reading only. Nothing is ever written under these again.
  */
-function legacyKey(store: PersistedStore): Buffer | null {
-  const seed = process.env.AURA_PROVIDER_SECRET || store.secret;
-  if (!seed) return null;
-  return crypto.createHash('sha256').update(seed + ':aura-provider-v2').digest();
+function legacyKeys(store: PersistedStore): Buffer[] {
+  const seeds = [process.env.AURA_PROVIDER_SECRET, store.secret].filter(
+    (v): v is string => typeof v === 'string' && v.length > 0,
+  );
+  return [...new Set(seeds)].map((seed) =>
+    crypto.createHash('sha256').update(seed + ':aura-provider-v2').digest(),
+  );
 }
 
 function decryptWith(key: Buffer, entry: StoredCredential): string | null {
@@ -285,9 +299,11 @@ export function getKey(providerId: string): string | null {
   }
 
   /* Legacy. Read it, then move it somewhere better if we can. */
-  const key = legacyKey(store);
-  if (!key) return null;
-  const plaintext = decryptWith(key, entry);
+  let plaintext: string | null = null;
+  for (const key of legacyKeys(store)) {
+    plaintext = decryptWith(key, entry);
+    if (plaintext !== null) break;
+  }
   if (plaintext === null) return null;
 
   if (availableProtection()) {
