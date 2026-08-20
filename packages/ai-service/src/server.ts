@@ -17,6 +17,7 @@ import { CATALOG } from '@aura/connected-environment';
 import { probeNode, scanEnvironment } from './environment';
 import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext, type NodeRef } from '@aura/capability-fabric';
 import { createFabric } from './fabric';
+import { terminateAllChildren } from './exec/process';
 import { verifyAuditChain, auditFilePath } from './fabric/auditStore';
 import { drivableAgentBinaries } from './fabric/executors';
 import { composeContextView, type ContextSources } from './context/compose';
@@ -1316,6 +1317,13 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     // stay persisted and resumable by the next boot.
     close: async () => {
       bridge.shutdown();
+      /* Then every child process still running, and everything those
+         children started. They are spawned `detached` so a timeout can
+         kill the whole group; the price of leaving the service's own
+         process group is that they no longer die with it, and this is
+         where that price is paid. Before the HTTP server closes, so a
+         shutdown that hangs on a socket still contains the work. */
+      terminateAllChildren();
       await new Promise<void>((r) => server.close(() => r()));
     },
   };
