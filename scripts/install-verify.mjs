@@ -70,19 +70,43 @@ const post = async (p, body, ms = 400000) => {
 /**
  * Invoke `system.install`.
  *
- * `granted` uses the same per-call `approvedCapabilities` grant every
- * other suite uses — the service turns it into a one-invocation
- * authorization. It does NOT bypass policy: the engine still evaluates,
- * still records the decision and rule, and still audits. The ungranted
- * path below is what proves the gate is real.
+ * `granted` now walks the real approval flow (`approveAndRun` above)
+ * rather than sending a grant in the request body, which the service no
+ * longer accepts. It does NOT bypass policy: the engine still evaluates,
+ * still records the decision and rule, and still audits — there is simply
+ * a human answer in the middle now, as there is in the product. The
+ * ungranted path below is what proves the gate is real.
  */
-const invoke = (input, { granted = false, context = {} } = {}) =>
-  post('/fabric/invoke', {
+
+/**
+ * Authorize the way a human does: ask, answer, resume.
+ *
+ * `/fabric/invoke` no longer accepts a grant in the request body — that
+ * made every floor self-satisfiable by any local caller. The real path is
+ * the one the UI takes: the invocation parks with an `approvalId`, a
+ * person answers it through `/fabric/approvals/:id/decide`, and the
+ * caller resumes by naming that approval. The grant is still single-use
+ * and still matched against this capability, so this simulates the human
+ * rather than routing around them.
+ */
+const approveAndRun = async (body) => {
+  const parked = await post('/fabric/invoke', body);
+  if (parked.outcome !== 'awaiting-approval' || !parked.approvalId) return parked;
+  await post(`/fabric/approvals/${parked.approvalId}/decide`, { granted: true });
+  return post('/fabric/invoke', {
+    ...body,
+    context: { ...(body.context ?? {}), resumeApprovalId: parked.approvalId },
+  });
+};
+
+const invoke = (input, { granted = false, context = {} } = {}) => {
+  const body = {
     capabilityId: 'system.install',
     input,
-    ...(granted ? { approvedCapabilities: ['system.install'] } : {}),
     context: { actor: { kind: 'human', id: 'install-verify' }, projectId: null, ...context },
-  });
+  };
+  return granted ? approveAndRun(body) : post('/fabric/invoke', body);
+};
 
 const onPath = (bin) => {
   const r = spawnSync('sh', ['-c', `command -v ${bin} || true`], { encoding: 'utf8' });

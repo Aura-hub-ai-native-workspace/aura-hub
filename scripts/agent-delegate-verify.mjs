@@ -35,8 +35,32 @@ const post = async (p, body) =>
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   })).json();
 
-const invoke = (capabilityId, input, extra = {}) =>
-  post('/fabric/invoke', { capabilityId, input, context: { projectId: PROJECT, ...(extra.context ?? {}) }, ...extra.top });
+/**
+ * Authorize the way a human does: ask, answer, resume.
+ *
+ * `/fabric/invoke` no longer accepts a grant in the request body — that
+ * made every floor self-satisfiable by any local caller. The real path is
+ * the one the UI takes: the invocation parks with an `approvalId`, a
+ * person answers it through `/fabric/approvals/:id/decide`, and the
+ * caller resumes by naming that approval. The grant is still single-use
+ * and still matched against this capability, so this simulates the human
+ * rather than routing around them.
+ */
+const approveAndRun = async (body) => {
+  const parked = await post('/fabric/invoke', body);
+  if (parked.outcome !== 'awaiting-approval' || !parked.approvalId) return parked;
+  await post(`/fabric/approvals/${parked.approvalId}/decide`, { granted: true });
+  return post('/fabric/invoke', {
+    ...body,
+    context: { ...(body.context ?? {}), resumeApprovalId: parked.approvalId },
+  });
+};
+
+/** `extra.approve` walks the real approval flow; omit it to test the gate. */
+const invoke = (capabilityId, input, extra = {}) => {
+  const body = { capabilityId, input, context: { projectId: PROJECT, ...(extra.context ?? {}) } };
+  return extra.approve ? approveAndRun(body) : post('/fabric/invoke', body);
+};
 
 const gitPorcelain = (dir) => execFileSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf8' }).trim();
 
@@ -118,7 +142,7 @@ try {
     ['unknown node', 'definitely-not-a-node'],
   ]) {
     const bad = await invoke('agent.delegate', { task: 'x', nodeId },
-      { top: { approvedCapabilities: ['agent.delegate'] } });
+      { approve: true });
     check(`14. ${label} is rejected (${nodeId})`,
       bad.outcome !== 'succeeded', `outcome=${bad.outcome} · ${String(bad.detail).slice(0, 90)}`);
   }
@@ -132,7 +156,7 @@ try {
       task: 'Add a JSDoc comment block above the add function in src/calc.js describing its parameters and return value. Change nothing else.',
       nodeId: 'opencode',
     },
-    { top: { approvedCapabilities: ['agent.delegate'] }, context: { timeoutMs: 600000 } },
+    { approve: true, context: { timeoutMs: 600000 } },
   );
   info(`outcome=${run.outcome} in ${Math.round((Date.now() - started) / 1000)}s`);
   check('7. approving it executes the real OpenCode CLI',
