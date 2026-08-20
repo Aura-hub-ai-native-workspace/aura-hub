@@ -13,6 +13,18 @@ on:
   # artifacts cannot be produced on the Linux machine this is developed on,
   # so their only honest source is a native runner started deliberately.
   workflow_dispatch:
+    inputs:
+      sign:
+        description: >-
+          Require OS-level code signing (Authenticode on Windows,
+          codesign + notarization on macOS). When true, the signing step
+          FAILS the build if the certificates are absent — it never ships
+          an unsigned artifact under a signed release, and never fakes a
+          signature. Leave false to build the honest-unsigned artifacts
+          v0.1.0 ships. The required secrets are listed in QUESTIONS.md.
+        type: boolean
+        default: false
+        required: false
 
 jobs:
   build:
@@ -171,6 +183,61 @@ jobs:
       - name: Stage release artifacts
         run: node scripts/stage-release-artifacts.mjs
 
+      # OS-level code signing — Authenticode / notarization. This is the
+      # ONLY step that signs the OS artifact; the updater signature above
+      # is a separate, unrelated mechanism (integrity of the auto-update
+      # payload, not identity to Gatekeeper/SmartScreen).
+      #
+      # Gated on the `sign` input. When it is true and the certificates
+      # are absent, sign-desktop.mjs EXITS NON-ZERO and names every
+      # missing secret — a release asked to be signed that cannot be is
+      # not allowed to proceed as though it were. When it is false, the
+      # step runs, signs nothing, records `signed: false`, and the build
+      # is exactly the honest-unsigned one v0.1.0 ships. It never fakes.
+      #
+      # Every secret is passed by REFERENCE. None appears in this file or
+      # in a log. Absent secrets are simply empty, which is precisely what
+      # makes the loud failure fire on a signed build and stay quiet on an
+      # unsigned one.
+      - name: Sign the OS artifact (Windows/macOS)
+        if: runner.os != 'Linux'
+        shell: bash
+        env:
+          AURA_SIGN_REQUIRE: ${{ inputs.sign && '1' || '' }}
+          # Windows Authenticode (one of: PFX+password, or a thumbprint).
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ secrets.WINDOWS_CERTIFICATE_THUMBPRINT }}
+          # macOS signing identity + notarization (API key OR Apple ID).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -e
+          # Sign every OS artifact staged for this platform. On Windows the
+          # NSIS .exe; on macOS the .app inside the DMG staging and the DMG.
+          shopt -s nullglob
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            artifacts=(dist-release/*.exe)
+          else
+            artifacts=(dist-release/*.app dist-release/*.dmg)
+          fi
+          if [ ${#artifacts[@]} -eq 0 ]; then
+            echo "::warning::no OS artifact found to sign for $RUNNER_OS"
+          fi
+          for a in "${artifacts[@]}"; do
+            echo "signing: $a"
+            node scripts/sign-desktop.mjs --artifact "$a" \
+              --report "dist-release/signing-report-$(basename "$a").json" \
+              ${AURA_SIGN_REQUIRE:+--require}
+          done
+
       # The Linux download that can carry a permission bit. A browser writes
       # every download 0644 — HTTP has no field for mode, so the client picks
       # it — which means a clicked AppImage cannot execute, and a desktop with
@@ -278,6 +345,25 @@ jobs:
             else { Write-Host 'OK: uninstalled cleanly' }
           } else { Write-Host 'NOTE: no uninstall.exe written by the installer' }
 
+      # Prove the Authenticode signature is one Windows itself accepts —
+      # never our own exit code. When signing was NOT requested this
+      # records the artifact as unsigned rather than passing quietly, so a
+      # reviewer can see at a glance whether a given run produced a signed
+      # build or an honest-unsigned one.
+      - name: Verify the Authenticode signature (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem dist-release/*.exe)[0].FullName
+          $sig = Get-AuthenticodeSignature $exe
+          Write-Host "signature status: $($sig.Status)"
+          if ('${{ inputs.sign }}' -eq 'true') {
+            if ($sig.Status -ne 'Valid') { throw "signing was required but Windows reports the signature as $($sig.Status)" }
+            Write-Host "OK: Windows accepts the Authenticode signature ($($sig.SignerCertificate.Subject))"
+          } else {
+            Write-Host "NOTE: this run did not request signing; the artifact is UNSIGNED ($($sig.Status)), as declared for v0.1.0"
+          }
+
       - name: Verify the DMG mounts, copies and launches (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -293,6 +379,28 @@ jobs:
           curl -sf -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan \
             | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const s=JSON.parse(d);if(!s.results.node?.present)process.exit(1);console.log('OK: detection through the installed app — node',s.results.node.version,'| git',s.results.git?.version)})"
           pkill -f 'aura-hub' || true
+
+      # Ask Gatekeeper what it will decide, which is the only test that
+      # matters for a notarized app. As on Windows, a run that did not
+      # request signing records the app as unsigned rather than passing
+      # quietly — spctl rejecting an unsigned app is the EXPECTED result
+      # there, not a failure.
+      - name: Verify the notarized signature with Gatekeeper (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          APP="$RUNNER_TEMP/AURA Hub.app"
+          if [ "${{ inputs.sign }}" = "true" ]; then
+            codesign --verify --deep --strict --verbose=2 "$APP"
+            spctl --assess --type exec --verbose=4 "$APP"
+            echo "OK: Gatekeeper accepts the signed, notarized app"
+          else
+            echo "NOTE: this run did not request signing; checking the app is honestly unsigned"
+            if codesign --verify "$APP" 2>/dev/null; then
+              echo "NOTE: the app carries a signature even though signing was not requested"
+            else
+              echo "OK: the app is UNSIGNED, as declared for v0.1.0"
+            fi
+          fi
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
