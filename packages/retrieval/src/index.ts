@@ -1,109 +1,51 @@
 /**
- * @aura/retrieval — public surface
+ * @aura/retrieval — the retrieval vocabulary.
  * ==================================================================
- * The retrieval & memory foundation for AURA Hub. Four independent
- * domain engines, a layered memory hierarchy, a token-budget system,
- * and a context assembler that emits one ContextPackage.
+ * This package used to describe itself as "the retrieval & memory
+ * foundation": four domain engines, a five-layer memory hierarchy, a
+ * token-budget system and a context assembler. All of it was real,
+ * careful code. None of it had a single importer outside this package.
  *
- * Provider-independent: no embeddings, no indexing, no vector DB, no
- * coupling to any AI provider, UI, or runtime. Real backends attach at
- * the documented seams (IndexProvider, RetrievalProvider,
- * EmbeddingProvider, DocumentStore, MemoryProvider) with no upstream
- * change.
+ * It was never dead code. It was UNWIRED code — designs that were
+ * correct and simply never connected to anything that runs. Phase 4
+ * harvested the two that mattered and then removed what remained, so
+ * that the tree stops carrying a second, plausible-looking answer to
+ * questions that now have a real one.
  *
- * Quick start:
- *   import { createRetrievalKernel } from '@aura/retrieval';
- *   const kernel = createRetrievalKernel();
- *   await kernel.ingest(docs);
- *   const pkg = await kernel.retrieve({ text: 'how does routing work?' });
+ * WHERE THE HARVESTED DESIGNS WENT
+ * ------------------------------------------------------------------
+ *   budget/tokenBudget.ts   → `ai-service/src/context/budget.ts`
+ *       `BudgetAllocator.allocate()` arithmetic preserved exactly; the
+ *       unit changed from "engine" to "group", because the thing being
+ *       budgeted is now a class of context item rather than a retrieval
+ *       engine. The `Compressor` interface and `TruncateCompressor`
+ *       came with it. `PlaceholderSummarizeCompressor` did NOT: it
+ *       claimed the `summarize` id while silently truncating, and the
+ *       new budgeter records which compression was applied, so a
+ *       compressor that lies about what it did makes that record
+ *       worthless.
+ *
+ *   memory/layers.ts        → `ai-service/src/unifiedMemory.ts`
+ *       The layered idea survives as four tiers — working, episodic,
+ *       semantic, procedural — each backed by a store that already
+ *       exists on disk rather than by an in-memory default. The five
+ *       in-memory layer classes are gone: they held nothing, and every
+ *       tier now has a real owner.
+ *
+ * WHAT REMAINS, AND WHY
+ * ------------------------------------------------------------------
+ * `types.ts` only. `@aura/knowledge-coding` and
+ * `@aura/knowledge-fullstack` import `estimateTokens`, `ContextItem`,
+ * `ContextPackage` and `IndexCategory` from it, so it is a live shared
+ * vocabulary rather than an unwired design.
+ *
+ * ⚠ NAME COLLISION, DELIBERATELY LEFT ALONE
+ * `ContextItem` here is the RETRIEVAL-result shape — title, snippet,
+ * score, tokens. It is not the addressable context unit introduced in
+ * `ai-service/src/context/item.ts`, which carries provenance,
+ * sensitivity and trust. Renaming this one would touch two knowledge
+ * packages for cosmetic reasons; the two are never imported into the
+ * same file, and the composer only ever sees the addressable one.
  */
 
-// Vocabulary
 export * from './types';
-
-// Kernel + config (entry points)
-export { RetrievalKernel, type RetrievalKernelDeps } from './kernel';
-export {
-  createRetrievalKernel,
-  resolveRetrievalConfig,
-  createDefaultMemory,
-  type RetrievalConfig,
-} from './config';
-
-// Token budget system
-export {
-  type EngineBudgetConfig,
-  type CompressionPolicyId,
-  type RankingPolicyId,
-  type Compressor,
-  type GlobalBudget,
-  type EngineAllotment,
-  BudgetAllocator,
-  NoopCompressor,
-  TruncateCompressor,
-  PlaceholderSummarizeCompressor,
-  getCompressor,
-} from './budget/tokenBudget';
-
-// Provider seams (+ in-memory dummies)
-export { type DocumentStore, type DocumentFilter, InMemoryDocumentStore } from './providers/documentStore';
-export { type ChunkProvider, type NaiveChunkOptions, NaiveChunkProvider } from './providers/chunkProvider';
-export { type EmbeddingProvider, NullEmbeddingProvider } from './providers/embeddingProvider';
-export { type IndexProvider, type IndexCandidate, InMemoryIndexProvider } from './providers/indexProvider';
-export { type RetrievalProvider, KeywordRetrievalProvider } from './providers/retrievalProvider';
-export { type RankingProvider, type RankingContext, HeuristicRankingProvider } from './providers/rankingProvider';
-
-// Retrieval engines (four independent domains)
-export {
-  type RetrievalEngine,
-  type EngineDeps,
-  BaseRetrievalEngine,
-  RetrievalEngineRegistry,
-} from './engines/retrievalEngine';
-export { CodingRetrievalEngine, CODING_DEFAULT_CONFIG } from './engines/codingEngine';
-export { ChatRetrievalEngine, CHAT_DEFAULT_CONFIG } from './engines/chatEngine';
-export { ResearchRetrievalEngine, RESEARCH_DEFAULT_CONFIG } from './engines/researchEngine';
-export { FullStackRetrievalEngine, FULLSTACK_DEFAULT_CONFIG } from './engines/fullstackEngine';
-
-// Context assembler
-export {
-  type ContextAssembler,
-  type AssembleInput,
-  type DefaultAssemblerOptions,
-  DefaultContextAssembler,
-} from './assembler/contextAssembler';
-
-// Layered memory
-export {
-  type MemoryLayer,
-  type MemoryKind,
-  type MemoryRecord,
-  type MemoryWrite,
-  type MemoryQuery,
-  type MemoryProvider,
-  InMemoryMemoryProvider,
-} from './memory/memoryProvider';
-export {
-  type SessionMemory,
-  type ProjectMemory,
-  type WorkspaceMemory,
-  type KnowledgeMemory,
-  type PersistentMemory,
-  MEMORY_LAYER_ORDER,
-  LAYER_WEIGHT,
-  InMemorySessionMemory,
-  InMemoryProjectMemory,
-  InMemoryWorkspaceMemory,
-  InMemoryKnowledgeMemory,
-  InMemoryPersistentMemory,
-} from './memory/layers';
-export {
-  MemoryHierarchy,
-  type MemoryLayers,
-  type RecallHit,
-  type RecallOptions,
-  DEFAULT_KIND_LAYER,
-} from './memory/hierarchy';
-
-// Demo
-export { runDemo } from './demo';
