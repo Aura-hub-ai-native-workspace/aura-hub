@@ -23,7 +23,13 @@ interface OllamaTag {
   name: string;
   model?: string;
   size?: number;
-  details?: { family?: string; parameter_size?: string; quantization_level?: string };
+  /**
+   * `context_length` and `capabilities` appear on `/api/tags` in recent
+   * Ollama builds. When they are there they are the real thing, straight
+   * from the model file, and no second request is needed.
+   */
+  details?: { family?: string; parameter_size?: string; quantization_level?: string; context_length?: number };
+  capabilities?: string[];
 }
 
 export class OllamaAdapter implements LocalAdapter {
@@ -89,14 +95,32 @@ export class OllamaAdapter implements LocalAdapter {
        the model file's own `<arch>.context_length`. Asked per model, in
        parallel, and a model that will not answer simply has no window
        recorded rather than an invented one. */
-    return Promise.all(tags.map(async (m): Promise<DiscoveredModel> => {
-      const capabilities: ModelCapabilities = capabilitiesForLocalModel(m.name, m.details?.parameter_size);
-      const shown = await this.showModel(base, m.name);
-      if (shown.contextWindow) capabilities.contextWindow = shown.contextWindow;
-      if (shown.toolCalling !== undefined) capabilities.toolCalling = shown.toolCalling;
-      if (shown.vision !== undefined) capabilities.vision = shown.vision;
-      return { id: m.name, name: m.name, capabilities };
-    }));
+    return Promise.all(
+      tags
+        /* An embedding model is not a chat model. Ollama serves both from
+           one list, and offering `nomic-embed-text` as somewhere to route
+           a question would produce a baffling failure at generate time.
+           Filtered only when Ollama actually declares capabilities — an
+           older build that declares none has every model kept, which is
+           the previous behaviour rather than an empty list. */
+        .filter((m) => !m.capabilities || m.capabilities.includes('completion'))
+        .map(async (m): Promise<DiscoveredModel> => {
+          const capabilities: ModelCapabilities = capabilitiesForLocalModel(m.name, m.details?.parameter_size);
+          if (m.details?.context_length) capabilities.contextWindow = m.details.context_length;
+          if (m.capabilities) {
+            capabilities.toolCalling = m.capabilities.includes('tools');
+            capabilities.vision = m.capabilities.includes('vision');
+          }
+          // Only ask `/api/show` for what `/api/tags` did not already say.
+          if (capabilities.contextWindow === undefined || !m.capabilities) {
+            const shown = await this.showModel(base, m.name);
+            if (shown.contextWindow) capabilities.contextWindow = shown.contextWindow;
+            if (shown.toolCalling !== undefined) capabilities.toolCalling = shown.toolCalling;
+            if (shown.vision !== undefined) capabilities.vision = shown.vision;
+          }
+          return { id: m.name, name: m.name, capabilities };
+        }),
+    );
   }
 
   /**

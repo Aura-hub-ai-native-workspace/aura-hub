@@ -136,6 +136,8 @@ export const KNOWN_EVENT_TYPES = [
   'approval.granted',
   'approval.denied',
   'workspace.index',
+  'workspace.engineering-event',
+  'workspace.engineering-purged',
   'mission.execution',
   'mission.error',
   'automation.run',
