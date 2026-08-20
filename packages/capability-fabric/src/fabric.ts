@@ -36,6 +36,7 @@ import type {
 } from './types';
 import { describeFabricCapability } from './manifest';
 import { DEFAULT_POLICY, evaluatePolicy, grantsFor } from './policy';
+import { TIER_NAME, selectTier, type ActuationTier, type TierSelection } from './tiers';
 
 /* ── recovery bounds (§16) ──────────────────────────────────────── */
 
@@ -122,6 +123,28 @@ export interface FabricHost {
    * its own, which would let one approval leak into a later call.
    */
   requestApproval(request: ApprovalRequest, context: InvocationContext): Promise<boolean>;
+  /**
+   * Which actuation tiers are actually available on this machine, right
+   * now, for this capability.
+   *
+   * Deliberately shaped exactly like `resolveNode`: the Fabric owns the
+   * *rule* (highest available wins, never substitute downward) while the
+   * host owns the *measurement*, because probing an accessibility bus or
+   * an X11 display is host knowledge this package must not acquire.
+   *
+   * Synchronous for the same reason `resolveNode` is — it reads the last
+   * desktop probe rather than re-probing, so a policy decision never
+   * becomes an I/O wait.
+   *
+   * Optional. A host that omits it leaves every capability tier-free, and
+   * every capability that declares tiers then settles `not-executed`
+   * rather than running untier'd — which is the correct answer, because
+   * a host that cannot measure tiers cannot honestly claim one ran.
+   */
+  probeTiers?(
+    capability: CapabilityDescriptor,
+    context: InvocationContext,
+  ): import('./tiers').TierProbe[];
 }
 
 let seq = 0;
@@ -478,6 +501,34 @@ export class CapabilityFabric {
     // The executor is handed its node; it discovers nothing itself.
     invocation.node = resolution.node;
 
+    /* 2b. tier — WHICH WAY IN, decided once, before anything is decided
+       about it. Placed here for the same reason routing is: the tier a
+       call will use changes what the call costs, so policy has to see the
+       tier that is actually going to run, not the best one declared.
+
+       A capability with no declared tiers skips this entirely and behaves
+       exactly as it did before — that is every internal capability and
+       every one that runs a tool rather than driving somebody else's UI. */
+    const tierSelection = this.selectTierFor(capability, context);
+    if (tierSelection && !tierSelection.ok) {
+      // Nothing ran and nothing was substituted. This is the whole reason
+      // `not-executed` exists: the honest answer to "your machine cannot
+      // do this the way this capability is defined" is not a failure to
+      // debug and certainly not a quiet drop to typing at the screen.
+      const considered = tierSelection.considered
+        .map((p) => `tier ${p.tier} (${TIER_NAME[p.tier]}): ${p.detail}`)
+        .join(' ');
+      return this.settle(invocation, capability, 'not-executed',
+        `${capability.name} was not run. ${tierSelection.reason} ${considered}`,
+        NO_VERIFICATION,
+        { decision: 'deny', rule: `tier-${tierSelection.code}`, risk: capability.risk, reason: tierSelection.reason },
+        started, startedAt, 0, undefined, undefined,
+        // Proven not started: tier selection happens before any executor is
+        // reached, so nothing about the outside world was touched.
+        false, undefined, { selection: tierSelection });
+    }
+    const selectedTier: ActuationTier | undefined = tierSelection?.ok ? tierSelection.tier : undefined;
+
     /* 3. policy */
     const evaluation = evaluatePolicy({
       capability,
@@ -489,6 +540,9 @@ export class CapabilityFabric {
         ? (capability.requiresNodeCapability ? !!resolution.node : null)
         : this.host.nodeAvailable(capability),
       subject: this.subjectFor(invocation, resolution.node),
+      // The tier that will run, so the tier floor and the tier risk
+      // escalation apply to the way in that was actually chosen.
+      tier: selectedTier,
     });
 
     if (evaluation.decision === 'deny') {
@@ -560,7 +614,8 @@ export class CapabilityFabric {
         if (!granted) {
           return this.settle(invocation, capability, 'awaiting-approval',
             `${capability.name} is ready and waiting on your go-ahead. Nothing has run.`,
-            NO_VERIFICATION, evaluation, started, startedAt, 0, request.id, undefined, false);
+            NO_VERIFICATION, evaluation, started, startedAt, 0, request.id, undefined, false, undefined,
+            { selection: tierSelection ?? undefined });
         }
         if (request.state === 'pending') {
           request.state = 'granted';
@@ -578,7 +633,8 @@ export class CapabilityFabric {
     if (!executor) {
       return this.settle(invocation, capability, 'unsupported',
         `${capability.name} is planned for but has no executor yet, so nothing was run. ${capability.description}`,
-        NO_VERIFICATION, evaluation, started, startedAt, 0);
+        NO_VERIFICATION, evaluation, started, startedAt, 0, undefined, undefined, false, undefined,
+        { selection: tierSelection ?? undefined });
     }
 
     this.emit({ type: 'invocation.started', at: new Date().toISOString(), invocationId: invocation.id, capabilityId });
@@ -662,6 +718,7 @@ export class CapabilityFabric {
         started, startedAt, attempts, withheld.requestId, withheld.output,
         withheld.effectStarted,
         { withheld: true, rule: withheld.rule, effectStarted: withheld.effectStarted },
+        { selection: tierSelection ?? undefined, reported: last.tier },
       );
     }
 
@@ -677,7 +734,7 @@ export class CapabilityFabric {
       return this.settle(invocation, capability, 'failed',
         `${capability.name} did not succeed${tried}. ${last.detail}`,
         NO_VERIFICATION, evaluation, started, startedAt, attempts, undefined, last.output,
-        last.effectStarted);
+        last.effectStarted, undefined, { selection: tierSelection ?? undefined, reported: last.tier });
     }
 
     /* 6. verify */
@@ -711,7 +768,20 @@ export class CapabilityFabric {
       ? `${capability.name} ran, but the check did not confirm it. ${verification.detail}`
       : `${capability.name} completed. ${last.detail}`;
 
-    return this.settle(invocation, capability, outcome, detail, verification, evaluation, started, startedAt, attempts, undefined, last.output, last.effectStarted);
+    /**
+     * A tier that ran but is not the tier that was chosen is a
+     * substitution, and the one thing the ladder must never do is let a
+     * substitution pass unremarked. It is not turned into a failure —
+     * the work did happen, and hiding that would be its own dishonesty —
+     * but the caller and the journal are told plainly which rung the
+     * action actually came in on.
+     */
+    const substituted =
+      last.tier !== undefined && selectedTier !== undefined && last.tier !== selectedTier
+        ? ` Note: this ran at tier ${last.tier} (${TIER_NAME[last.tier]}), not the tier ${selectedTier} (${TIER_NAME[selectedTier]}) that was selected for it.`
+        : '';
+
+    return this.settle(invocation, capability, outcome, `${detail}${substituted}`, verification, evaluation, started, startedAt, attempts, undefined, last.output, last.effectStarted, undefined, { selection: tierSelection ?? undefined, reported: last.tier });
   }
 
   /**
@@ -874,6 +944,50 @@ export class CapabilityFabric {
     return this.nodeIdOfOutput(output) ?? (attempts > 0 ? invocation.node?.id : undefined);
   }
 
+  /**
+   * Choose the tier this invocation will run at, or explain why none.
+   *
+   * Returns `null` — not a failure — for a capability that declares no
+   * tiers, because "this action does not reach into somebody else's
+   * application" is a different statement from "it does and we cannot".
+   * Only the second one is `not-executed`.
+   *
+   * A host with no `probeTiers` gives `selectTier` an empty probe set,
+   * and every declared tier then reads as `unknown`. That resolves to a
+   * failure, which is deliberate: an unprobed tier is never assumed to
+   * work, so a host that cannot measure the machine gets an honest "not
+   * executed" instead of an unmeasured execution.
+   */
+  private selectTierFor(
+    capability: CapabilityDescriptor,
+    context: InvocationContext,
+  ): TierSelection | null {
+    const declared = capability.tiers;
+    if (!declared || declared.length === 0) return null;
+    const probes = this.host.probeTiers?.(capability, context) ?? [];
+    return selectTier(declared, probes);
+  }
+
+  /**
+   * The tier work actually ran at, or `undefined` when nothing ran.
+   *
+   * Exactly the `executedNodeId` contract, for exactly the same reason:
+   * the descriptor says what is permitted, only the thing that ran knows
+   * what it used. The executor's report is preferred; the selected tier
+   * is used only once an executor was genuinely invoked, and never as a
+   * substitute for a report that an executor simply omitted while
+   * claiming success — that case is caught by `desktop-tier-verify`,
+   * which requires the report.
+   */
+  private executedTier(
+    selected: ActuationTier | undefined,
+    reported: ActuationTier | undefined,
+    attempts: number,
+  ): ActuationTier | undefined {
+    if (attempts === 0) return undefined;
+    return reported ?? selected;
+  }
+
   private settle(
     invocation: Invocation,
     capability: CapabilityDescriptor | undefined,
@@ -888,6 +1002,15 @@ export class CapabilityFabric {
     output?: unknown,
     effectStarted?: boolean,
     retry?: NonNullable<AuditRecord['retry']>,
+    /**
+     * How this invocation's way in was chosen, and which one ran.
+     *
+     * A single trailing parameter rather than two more positional ones:
+     * the selection and the executed tier are one fact about one call and
+     * are always known together, and settling them separately is how a
+     * result ends up claiming a tier ran that the selection never chose.
+     */
+    tier?: { selection?: TierSelection; reported?: ActuationTier },
   ): InvocationResult {
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - started;
@@ -907,6 +1030,10 @@ export class CapabilityFabric {
     };
     if (effectStarted !== undefined) result.effectStarted = effectStarted;
     if (capability?.irreversible === true) result.irreversible = true;
+    const selectedTier = tier?.selection?.ok ? tier.selection.tier : undefined;
+    const ranAt = this.executedTier(selectedTier, tier?.reported, attempts);
+    if (ranAt !== undefined) result.tier = ranAt;
+    if (tier?.selection) result.tierSelection = tier.selection;
     // `InvocationResult.approvalId` was declared and never populated — it
     // only ever reached the audit record below. That is why a parked
     // standalone invocation could not be resumed: the caller was told to
@@ -931,6 +1058,11 @@ export class CapabilityFabric {
       verified: verification.passed,
       durationMs,
       inputSummary: capability ? summarizeInput(capability, invocation.input) : '(unknown capability)',
+      // The tier is a journal field on the same footing as risk and
+      // decision, because "AURA called the API" and "AURA typed at the
+      // window" are different events wearing the same capability id and
+      // nothing else in this record tells them apart.
+      ...(ranAt !== undefined ? { tier: ranAt } : {}),
       // Routing is recorded in full: what was asked for, what the Fabric
       // chose, and what actually ran. Collapsing these would hide a
       // substitution — the one thing routing must never do quietly.
