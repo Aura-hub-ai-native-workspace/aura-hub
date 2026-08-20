@@ -20,6 +20,7 @@ import type {
   ApprovalPersistence,
   ApprovalRequest,
   AuditRecord,
+  AuditSink,
   CapabilityDescriptor,
   Executor,
   ExecutorResult,
@@ -131,7 +132,30 @@ function invocationId(): string {
 }
 
 /** Bounded, redacted input summary for the audit record. */
-function summarizeInput(capability: CapabilityDescriptor, input: Record<string, unknown>): string {
+/**
+ * The bounded, redacted summary of an invocation's input.
+ *
+ * The field-name rule below catches an argument that IS a credential. It
+ * cannot catch a credential inside one that is not — `terminal.execute`
+ * carries a whole command line, and `curl -H 'Authorization: Bearer …'`
+ * is an ordinary thing to find there. That was survivable while the audit
+ * log lived in an array that died with the process. It is not survivable
+ * now that the record is written to disk and kept: a leak that used to
+ * evaporate would become a file.
+ *
+ * So the value is also passed through the host's redactor. The Fabric
+ * does not own one — text filtering is not a policy decision, and the
+ * patterns belong beside the prompt composers that share them — so the
+ * host supplies it exactly as it supplies the audit sink. The default is
+ * the identity function, which is precisely the behaviour that shipped
+ * before, so an unwired Fabric is no worse than it was; the verification
+ * suite is what proves the real one is wired.
+ */
+function summarizeInput(
+  capability: CapabilityDescriptor,
+  input: Record<string, unknown>,
+  redactValue: (text: string) => string,
+): string {
   const SECRET = /^(apiKey|token|secret|password)$/i;
   const parts: string[] = [];
   for (const field of capability.input) {
@@ -141,7 +165,9 @@ function summarizeInput(capability: CapabilityDescriptor, input: Record<string, 
       parts.push(`${field.name}=<redacted>`);
       continue;
     }
-    const text = String(raw);
+    // Redact BEFORE truncating: truncating first can cut a credential in
+    // half, and half a credential still identifies which one it was.
+    const text = redactValue(String(raw));
     parts.push(`${field.name}=${text.length > 60 ? `${text.slice(0, 57)}…` : text}`);
   }
   return parts.join(' ') || '(no arguments)';
@@ -188,6 +214,8 @@ export class CapabilityFabric {
   private executors = new Map<string, Executor>();
   private listeners = new Set<FabricEventListener>();
   private auditLog: AuditRecord[] = [];
+  private auditSink: AuditSink | null = null;
+  private redactValue: (text: string) => string = (text) => text;
   private policy: PolicyConfig = DEFAULT_POLICY;
 
   /**
@@ -283,6 +311,61 @@ export class CapabilityFabric {
     return this.auditLog;
   }
 
+  /**
+   * Where audit records go to outlive the process.
+   *
+   * The Fabric keeps producing exactly the record it always produced and
+   * still holds the in-memory log every existing reader uses; the sink is
+   * how a host makes that record durable. Supplying it is the host's
+   * decision because the Fabric has no filesystem and should not acquire
+   * one — `@aura/capability-fabric` is the policy authority, not a store.
+   *
+   * A sink that throws is swallowed for the same reason a listener that
+   * throws is: an unwritable disk must not turn a completed action into an
+   * exception unwinding through the code that was recording it. The loss
+   * is detectable — the journal's sequence is gapless, so a record that
+   * never arrived leaves no hole to mistake for a legitimate gap.
+   */
+  setAuditSink(sink: AuditSink | null): void {
+    this.auditSink = sink;
+  }
+
+  /**
+   * How the Fabric strips credential-shaped text out of what it records.
+   *
+   * Supplied by the host so there is one set of patterns in the product
+   * rather than one here and another beside the prompt composers. See
+   * {@link summarizeInput} for why a name-based rule alone is not enough
+   * once the audit record is durable.
+   */
+  setInputRedactor(redactValue: ((text: string) => string) | null): void {
+    this.redactValue = redactValue ?? ((text) => text);
+  }
+
+  /**
+   * Restore prior records into the in-memory view at boot.
+   *
+   * The journal on disk is the authority; this is the cache catching up
+   * with it, which is why seeded records are NOT sent back to the sink.
+   * Without it, `audit()` would report that AURA had done nothing every
+   * time the service restarted — the exact failure the journal exists to
+   * fix, moved one layer up.
+   */
+  seedAudit(records: readonly AuditRecord[]): void {
+    this.auditLog.unshift(...records);
+  }
+
+  /**
+   * The one place an audit record is retained. Both callers — a human
+   * authorization decision and a settled invocation — go through here, so
+   * a third kind of record added later cannot forget the durable half.
+   */
+  private record(entry: AuditRecord): void {
+    this.auditLog.push(entry);
+    if (!this.auditSink) return;
+    try { this.auditSink(entry); } catch { /* see setAuditSink */ }
+  }
+
   /* ── approvals ────────────────────────────────────────────────── */
 
   /**
@@ -327,7 +410,7 @@ export class CapabilityFabric {
     request.decidedBy = decidedBy;
 
     const item = request.items[0];
-    this.auditLog.push({
+    this.record({
       invocationId: item?.invocationId ?? request.id,
       at: request.decidedAt,
       capabilityId: item?.capabilityId ?? 'unknown',
@@ -539,7 +622,7 @@ export class CapabilityFabric {
             invocationId: invocation.id,
             capabilityId,
             title: capability.name,
-            detail: summarizeInput(capability, input),
+            detail: summarizeInput(capability, input, this.redactValue),
             risk: capability.risk,
             irreversible: Boolean(capability.irreversible),
           }],
@@ -767,7 +850,7 @@ export class CapabilityFabric {
         invocationId: invocation.id,
         capabilityId: capability.id,
         title: capability.name,
-        detail: summarizeInput(capability, input),
+        detail: summarizeInput(capability, input, this.redactValue),
         risk: capability.risk,
         irreversible: true,
       }],
@@ -915,7 +998,7 @@ export class CapabilityFabric {
     // a mission, which already had a stable key of its own.
     if (approvalId !== undefined) result.approvalId = approvalId;
 
-    this.auditLog.push({
+    this.record({
       invocationId: invocation.id,
       at: endedAt,
       capabilityId: invocation.capabilityId,
@@ -926,11 +1009,19 @@ export class CapabilityFabric {
       risk: policy.risk,
       decision: policy.decision,
       decisionRule: policy.rule,
+      /* Which channel asked. This is the one provenance field the Fabric
+         can state rather than accept: `actor` is whatever the caller said
+         it was, while `initiator` is set by the transport from a token the
+         shell minted, so 'user-direct' cannot be claimed by a request. A
+         record that cannot distinguish "the user clicked" from "something
+         on this machine asked" cannot answer the only question that
+         matters after the fact. */
+      initiator: invocation.context.initiator ?? 'request',
       approvalId,
       outcome,
       verified: verification.passed,
       durationMs,
-      inputSummary: capability ? summarizeInput(capability, invocation.input) : '(unknown capability)',
+      inputSummary: capability ? summarizeInput(capability, invocation.input, this.redactValue) : '(unknown capability)',
       // Routing is recorded in full: what was asked for, what the Fabric
       // chose, and what actually ran. Collapsing these would hide a
       // substitution — the one thing routing must never do quietly.

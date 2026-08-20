@@ -17,6 +17,7 @@ import { CATALOG } from '@aura/connected-environment';
 import { probeNode, scanEnvironment } from './environment';
 import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext, type NodeRef } from '@aura/capability-fabric';
 import { createFabric } from './fabric';
+import { verifyAuditChain, auditFilePath } from './fabric/auditStore';
 import { drivableAgentBinaries } from './fabric/executors';
 import { composeContextView, type ContextSources } from './context/compose';
 import { renderContextContract } from './context/promptContract';
@@ -443,6 +444,13 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             providedNodeCapabilities: [...providedNodeCapabilities].sort(),
             policy: fabric.getPolicy(),
           });
+        }
+        /* Tamper-evidence is only useful if something can ask. The chain
+           is checked here, over the journal on disk, rather than over the
+           in-memory log — the in-memory log is a cache, and a cache cannot
+           be tampered with independently of the file it came from. */
+        if (method === 'GET' && seg[1] === 'audit' && seg[2] === 'verify') {
+          return json(res, 200, { chain: verifyAuditChain(), file: auditFilePath() });
         }
         if (method === 'GET' && seg[1] === 'audit') {
           return json(res, 200, { audit: fabric.audit() });
