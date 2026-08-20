@@ -11,6 +11,8 @@ import { generateWorkflow } from './workflow/generate';
 import type { RunEvent, Workflow } from './workflow/types';
 import { WorkflowBridge } from './workflowBridge';
 import { setupProviders } from './provider';
+import { setTokenCounter } from '@aura/retrieval/types';
+import { countTokensSync } from './tokenizer';
 import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
 import { handleCodeAction, type CodeActionRequest } from './codeAction';
 import { CATALOG } from '@aura/connected-environment';
@@ -107,6 +109,16 @@ export interface ServiceHandle {
 
 export async function startService(opts: PipelineOptions & { port?: number; openPath?: string; onShutdownRequest?: () => void } = {}): Promise<ServiceHandle> {
   setupProviders();
+  /**
+   * Install the real token counter into `@aura/retrieval`.
+   *
+   * `retrieval` sits inside the service in the dependency direction and
+   * therefore cannot import `tokenizer/` itself; it exposes a seam and
+   * ships a clearly-labelled `length / 4` floor for anything that imports
+   * it standalone. This is the one call that replaces that floor for the
+   * running service, so there is exactly one tokenizer in the process.
+   */
+  setTokenCounter((text) => countTokensSync(text).tokens);
   const manager = new WorkspaceManager(opts);
 
   /**
@@ -326,6 +338,19 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     console.warn('[providers] env auto-connect failed:', (e as Error).message);
   });
 
+  /* Local model servers, probed on loopback only. This is what gives the
+     hub an answer when there is no internet and no third-party key —
+     and it never displaces a provider the user already activated. */
+  await manager.connectLocalProviders().then(
+    (found) => {
+      for (const r of found) {
+        if (r.ok) console.log(`[providers] local "${r.providerId}" connected at ${r.endpoint} — ${r.models} model(s)`);
+        else console.log(`[providers] local "${r.providerId}" not available: ${r.error ?? 'no answer'}`);
+      }
+    },
+    (e) => console.warn('[providers] local discovery failed:', (e as Error).message),
+  );
+
   // Discover the environment before serving. Without this a restart left
   // every node-backed capability denied as `no-provider` until someone
   // happened to trigger a scan — git would be installed and working, and
@@ -503,6 +528,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         const providers = manager.listKnownProviders();
         const byoak = manager.byoakStatus();
         return json(res, 200, { providers, defaultProvider: null, connected: byoak.connected, active: byoak.active, activeModel: byoak.model, status: p.providerStatus });
+      }
+      /* Re-probe the local model servers on demand — the user started
+         Ollama after AURA, or loaded a model into LM Studio. Same code
+         path as boot discovery, so there is one definition of "a local
+         provider is available". */
+      if (method === 'POST' && seg[0] === 'providers' && seg[1] === 'local' && seg[2] === 'discover') {
+        const found = await manager.connectLocalProviders();
+        return json(res, 200, { local: found, active: manager.byoakStatus().active });
       }
       if (method === 'POST' && seg[0] === 'providers' && seg[1] === 'connect') {
         const b = await readJson(req);

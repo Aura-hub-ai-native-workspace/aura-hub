@@ -11,6 +11,13 @@ export interface ProviderInfo {
   name: string;
   description: string;
   docsUrl?: string;
+  /**
+   * The model runs on this machine: no API key, no outbound request.
+   *
+   * Optional so every existing caller is unchanged, and asserted by the
+   * adapter itself rather than derived from an id.
+   */
+  local?: boolean;
 }
 
 export interface ConnectedProvider {

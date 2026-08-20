@@ -15,8 +15,18 @@ import type {
 } from './types';
 import type { RuntimeMessage } from '@aura/runtime';
 import { evaluateConfidence } from './confidence';
+import { countTokensSync } from '../tokenizer';
 
-const estTokens = (s: string) => Math.ceil(s.length / 4);
+/**
+ * Was `Math.ceil(s.length / 4)`.
+ *
+ * Four characters per token is roughly right for English prose and badly
+ * wrong for what this function actually measures — assembled repository
+ * context: file paths, code excerpts, JSON, identifiers. The real
+ * counter is one call away and reports which method produced the number,
+ * so a budget can say whether it is measured or estimated.
+ */
+const estTokens = (s: string): number => countTokensSync(s).tokens;
 
 /**
  * The governing directive. Establishes AURA as the authoritative source of

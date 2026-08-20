@@ -146,5 +146,42 @@ export interface ContextPackage {
   assembledAt: number;
 }
 
-/** Shared, neutral token estimator (~4 chars/token). No tokenizer dependency. */
-export const estimateTokens = (text: string): number => Math.ceil(text.length / 4);
+/**
+ * Shared token counter — a SEAM, not an implementation.
+ * ------------------------------------------------------------------
+ * This package sits *inside* the service in the dependency direction
+ * (`ai-service` imports `retrieval`, never the reverse), so it cannot
+ * import the real tokenizer that lives in
+ * `packages/ai-service/src/tokenizer`. Duplicating it here would create
+ * exactly the second authority this codebase forbids.
+ *
+ * So the real counter is INSTALLED by the host at startup, and this
+ * module holds only the seam plus a floor. The floor is the historical
+ * `length / 4` and it is named accordingly: reaching it means nothing
+ * installed a tokenizer, which is a real condition (a unit test
+ * importing this package directly) and not a silent default the running
+ * service ever uses.
+ */
+export type TokenCounter = (text: string) => number;
+
+/** LAST RESORT: characters ÷ 4. Not a tokenizer — see `setTokenCounter`. */
+export const charsOverFour: TokenCounter = (text: string): number => Math.ceil(text.length / 4);
+
+let installed: TokenCounter = charsOverFour;
+
+/**
+ * Install the process-wide token counter. Called once, by the service.
+ * Returns the previous counter so a test can restore it.
+ */
+export function setTokenCounter(counter: TokenCounter): TokenCounter {
+  const previous = installed;
+  installed = counter;
+  return previous;
+}
+
+/** True once a real tokenizer has been installed over the floor. */
+export function hasRealTokenCounter(): boolean {
+  return installed !== charsOverFour;
+}
+
+export const estimateTokens = (text: string): number => installed(text);

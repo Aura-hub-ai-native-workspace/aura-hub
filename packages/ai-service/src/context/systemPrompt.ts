@@ -26,6 +26,7 @@
  */
 
 import type { ContextView } from './types';
+import { countTokensSync, type TokenCount } from '../tokenizer';
 import { renderContextContract, type RenderOptions } from './promptContract';
 
 /**
@@ -127,10 +128,14 @@ export interface PromptMeasurement {
   totalChars: number;
   /**
    * Rough token estimate at ~4 characters per token — the same heuristic
-   * the context assembler uses. An estimate, not a tokenizer: reported so
-   * budget can be reasoned about, never used to silently truncate.
+   * the context assembler uses. Reported so budget can be reasoned about,
+   * never used to silently truncate.
    */
   approxTokens: number;
+  /** How `approxTokens` was produced. See `tokenizer/`. */
+  tokenMethod: TokenCount['method'];
+  /** True only when a real tokenizer (provider counter or BPE) produced it. */
+  tokensExact: boolean;
 }
 
 /** Measure a composed prompt, for budget reporting and diagnostics. */
@@ -140,12 +145,21 @@ export function measureAgentPrompt({ view, task, include }: AgentPromptInput): P
   const contextChars = contract.length;
   const taskChars = task.length;
   // +2 separators of '\n\n' plus the <TASK> wrapper, mirroring buildAgentPrompt.
-  const totalChars = buildAgentPrompt({ view, task, include }).length;
+  const full = buildAgentPrompt({ view, task, include });
+  const totalChars = full.length;
+  const measured = countTokensSync(full);
   return {
     systemChars,
     contextChars,
     taskChars,
     totalChars,
-    approxTokens: Math.ceil(totalChars / 4),
+    // Was `Math.ceil(totalChars / 4)`. `countTokensSync` uses a real BPE
+    // vocabulary when one is present on the machine and a structural
+    // estimate otherwise — never a flat divisor — and `tokenMethod` says
+    // which, so a reported budget can never pass as measured when it was
+    // guessed.
+    approxTokens: measured.tokens,
+    tokenMethod: measured.method,
+    tokensExact: measured.exact,
   };
 }

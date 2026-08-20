@@ -29,7 +29,7 @@ import type { ExecutionEvent } from './mission/execution/types';
 import { resolveNodeForTask, executionNodeStatus, type TaskNode } from './mission/execution/nodes';
 import { planGitOperation, executeGitOperation } from './mission/execution/gitExecutor';
 import type { MissionEvent, MissionRecord, MissionSummary, MissionTask, TaskProposal } from './mission/types';
-import { getAdapter, getAllAdapters, ENV_VAR_BY_PROVIDER } from './provider/registry';
+import { getAdapter, getAllAdapters, ENV_VAR_BY_PROVIDER, isLocalAdapter, localAdapters } from './provider/registry';
 import { storeKey, removeKey, getKey, getActive, getAllProviderStores, storeModels, storeHealth } from './provider/credentialStore';
 import { detectProvider } from './provider/detector';
 import type { DiscoveredModel } from './provider/types';
@@ -1055,6 +1055,10 @@ export class WorkspaceManager {
       name: a.metadata.name,
       description: a.metadata.description,
       docsUrl: a.metadata.docsUrl,
+      // Whether the model runs on this machine. Surfaced so the UI can say
+      // "no key needed, nothing leaves this machine" instead of asking for
+      // an API key a local server does not have.
+      local: isLocalAdapter(a),
     }));
   }
 
@@ -1100,6 +1104,47 @@ export class WorkspaceManager {
       const result = await this.connectProvider(providerId, apiKey);
       results.push({ providerId, ok: result.ok, error: result.error });
       console.log(`[providers] ${envVar} → "${providerId}": ${result.ok ? 'connected' : `rejected — ${result.error ?? 'unknown error'}`}`);
+    }
+    return results;
+  }
+
+  /**
+   * Connect every LOCAL model server that is actually answering.
+   *
+   * This is what makes "AURA works with no internet and no API key" true
+   * without the user configuring anything: a machine already running
+   * Ollama or LM Studio has a usable model, and the only thing standing
+   * between it and AURA was that nobody asked.
+   *
+   * Three deliberate limits:
+   *   • It only ever probes loopback, and only the server's own documented
+   *     default port (or the one its own env var names).
+   *   • It never overrides an already-active provider. A user who
+   *     connected a cloud key keeps it; discovery fills a vacuum, it does
+   *     not stage a coup.
+   *   • A server that is running but has no model loaded is reported as a
+   *     failure with the command that fixes it, not connected as an empty
+   *     provider that fails on first use.
+   */
+  async connectLocalProviders(): Promise<{ providerId: string; ok: boolean; endpoint: string; models: number; error?: string }[]> {
+    const results: { providerId: string; ok: boolean; endpoint: string; models: number; error?: string }[] = [];
+    const hadActive = getActive().providerId !== null;
+    for (const adapter of localAdapters()) {
+      const id = adapter.metadata.id;
+      const probe = await adapter.probeDefault();
+      if (!probe.ok) {
+        results.push({ providerId: id, ok: false, endpoint: probe.endpoint, models: 0, error: probe.error });
+        continue;
+      }
+      // The endpoint IS the credential for a local provider — see
+      // adapters/local.ts. Stored through the same store as every key.
+      storeKey(id, probe.endpoint);
+      storeModels(id, probe.models);
+      storeHealth(id, await adapter.checkHealth(probe.endpoint));
+      results.push({ providerId: id, ok: true, endpoint: probe.endpoint, models: probe.models.length });
+      if (!hadActive && getActive().providerId === null) {
+        await this.pipeline.runtimeManager.switchToProvider(id, probe.models[0]?.id);
+      }
     }
     return results;
   }
