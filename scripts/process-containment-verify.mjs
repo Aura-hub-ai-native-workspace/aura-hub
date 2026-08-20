@@ -237,6 +237,76 @@ try {
     src.indexOf('terminateAllChildren()') > 0 &&
     src.indexOf('terminateAllChildren()') < src.indexOf('server.close(() => r())'),
     'a shutdown that hangs on a socket still contains the work');
+
+  /* ══ [E] ONE PRIMITIVE ═══════════════════════════════════════════
+     Containment is only worth anything if the code goes through it.
+     Two files carried byte-identical private `git()` wrappers, each
+     with a header explaining that the duplication was deliberate
+     because the hardened one was not exported — and each reporting a
+     timed-out git as exit 0, so "no commits touch this file" and "git
+     ran out of time" were indistinguishable.
+
+     The remaining direct spawns are listed rather than banned: some are
+     genuinely not the same thing (probing a binary that is deliberately
+     NOT on an allow-list is what the environment scanner is for). The
+     census is the guard — a NEW bypasser fails this check and has to be
+     justified in the list, which is the only way a rule like this stays
+     true. */
+  section('[E] The spawn sites are one primitive and a named census');
+
+  const spawnSites = execFileSync('git', ['grep', '-l', "from 'node:child_process'", '--', 'packages', 'apps/desktop/src'],
+    { cwd: ROOT, encoding: 'utf8' })
+    .split('\n').filter(Boolean)
+    .filter((f) => !/security\/patterns\.ts$/.test(f));   // a regex that MATCHES spawns, not one
+
+  /** Every direct spawn outside the primitive, and why it is not a duplicate. */
+  const CENSUS = {
+    'packages/ai-service/src/exec/process.ts': 'the primitive itself',
+    'packages/ai-service/src/exec/install.ts': 'npm prefix probe, inside exec/, already resolved through launchSpec',
+    'packages/ai-service/src/environment.ts': 'the one environment scanner — probes binaries deliberately NOT on any allow-list',
+    'packages/ai-service/src/mission/execution/nodes.ts': 'which/where presence probe, same reason as the scanner',
+    'packages/ai-service/src/graphify.ts': 'streams a long-running CLI; the primitive buffers to completion',
+    'packages/governance/src/core/git.ts': 'different package — @aura/governance cannot import @aura/ai-service',
+    'packages/governance/src/security/security_review.ts': 'same layering; also still hardcodes npm.cmd',
+    'packages/governance/src/release/release_readiness.ts': 'same layering',
+    'packages/automation/src/triggers.ts': 'same layering',
+  };
+
+  const unknown = spawnSites.filter((f) => !(f in CENSUS));
+  check('E1  no spawn site outside the census', unknown.length === 0,
+    unknown.length ? unknown.join(', ') : `${spawnSites.length} accounted for`);
+
+  const stale = Object.keys(CENSUS).filter((f) => !spawnSites.includes(f));
+  check('E2  the census has no entries that no longer spawn', stale.length === 0,
+    stale.length ? `${stale.join(', ')} — consolidated, remove from the list` : 'the list matches the tree');
+
+  for (const f of ['packages/ai-service/src/mission/gitSignals.ts', 'packages/ai-service/src/diagnosis/gitSignals.ts']) {
+    const text = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    check(`E3  ${path.basename(path.dirname(f))}/gitSignals routes git through the primitive`,
+      /from '\.\.\/exec\/process'/.test(text) && !/node:child_process/.test(text));
+  }
+
+  /* NEGATIVE CONTROL — the expression that made the copies lie.
+     `typeof code === 'number' ? code : 0` turns a child killed by a
+     signal (no numeric code) into a clean exit 0, which is how "git
+     found nothing" and "git ran out of time" became the same answer.
+     Asserting the shape rather than racing a real timeout: a 1ms
+     deadline against a fast command is a coin toss, and a check that
+     sometimes passes for the wrong reason is worse than none.
+
+     That a timeout genuinely reports 124 is proved above at A2, and by
+     process-timeout-test case 5b against a real git. */
+  const BUG = "typeof code === 'number' ? code : 0";
+  // Block comments stripped first: the primitive's own doc comment quotes
+  // the expression to explain what it fixed, and matching prose would make
+  // this check fire on its own explanation.
+  const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const stillLying = spawnSites.filter((f) =>
+    stripComments(fs.readFileSync(path.join(ROOT, f), 'utf8')).includes(BUG));
+  check('E4  no file still flattens a signalled exit to 0',
+    stillLying.length === 0, stillLying.join(', ') || 'the expression is gone from the tree');
+  check('E5  NEGATIVE CONTROL — that detector finds the expression when it is present',
+    `const code = (err as { code?: number } | null)?.code; ${BUG}`.includes(BUG));
 } catch (err) {
   console.error(`\nFATAL  ${err?.stack ?? err}`);
   failed = true;

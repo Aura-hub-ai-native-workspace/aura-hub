@@ -1,26 +1,31 @@
 /**
  * gitSignals — real `git log`/`git blame` for Stage 1 evidence.
  * ==================================================================
- * `workflow/nodes.ts` already has a `git()` execFile wrapper but does
- * not export it, so this is a small, deliberate, same-shape duplicate
- * (allow-listed `git` binary only, `execFile` with an argument array —
- * never a shell string — pinned `cwd`, bounded timeout). Never throws:
+ * Spawns through the one process primitive (`exec/process`), which is
+ * where the hardening lives: an argument array only — never a shell
+ * string — a pinned `cwd`, a bounded timeout, and a kill that reaches
+ * the whole process group. Never throws:
  * any failure (not a repo, git missing, path never committed) reports
  * back as an honest `{unavailable, reason}` rather than blowing up the
  * whole diagnosis.
  */
-import { execFile } from 'node:child_process';
+import { git as runGit } from '../exec/process';
 import type { GitBlameLine, GitLogEntry, Unavailable } from './types';
 
-function git(cwd: string, args: string[]): Promise<{ out: string; code: number }> {
-  return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, timeout: 20_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new Error('git is not installed'));
-      const code = (err as { code?: number } | null)?.code;
-      resolve({ out: (stdout + (stderr ? `\n${stderr}` : '')).trim(), code: typeof code === 'number' ? code : 0 });
-    });
-  });
-}
+/**
+ * Both files used to carry a private copy of this wrapper, and both said
+ * in their header that the duplication was deliberate because the
+ * hardened one was not exported. It is exported now, so the copies are
+ * gone: one call shape, one timeout policy, one exit-status decision.
+ *
+ * The copies also reported a timed-out git as exit 0 — the precise bug
+ * `settle` was written to fix — so "no commits touch this file" and "git
+ * ran out of time" were the same answer. They are not any more.
+ *
+ * Containment comes with it: a git that hangs is now killed as a process
+ * group rather than as a single pid.
+ */
+const git = (cwd: string, args: string[]) => runGit(args, { cwd, timeoutMs: 20_000 });
 
 export async function gitHistory(projectPath: string, relPath: string, limit = 5): Promise<GitLogEntry[] | Unavailable> {
   try {
