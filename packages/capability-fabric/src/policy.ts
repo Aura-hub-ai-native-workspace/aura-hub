@@ -415,7 +415,13 @@ export function grantsFor(permissions: {
   autonomous: boolean;
 }): PermissionScope[] {
   const out: PermissionScope[] = [];
-  if (permissions.read) out.push('project.read', 'aura.read');
+  // `system.observe` rides on the read flag rather than being ungrantable:
+  // a node that may read is one the user has already decided may look. It
+  // is NOT in HUMAN_ONLY_SCOPES, because making it ungrantable would deny
+  // machine observation outright rather than gate it — the same mistake
+  // the comment on `account.authorize` warns about. What keeps it honest
+  // is the capability's declared risk, which asks the user by default.
+  if (permissions.read) out.push('project.read', 'aura.read', 'system.observe');
   if (permissions.write) out.push('project.write', 'aura.write');
   if (permissions.execute) out.push('process.execute', 'network.outbound');
   // `resource.destroy` and `account.authorize` are never granted by a node

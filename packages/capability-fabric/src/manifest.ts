@@ -18,6 +18,7 @@
  */
 
 import type { CapabilityDescriptor, CapabilityField } from './types';
+import type { PlatformDeclaration } from './tiers';
 
 const f = (
   name: string,
@@ -370,11 +371,83 @@ const EXTENSION_POINTS: CapabilityDescriptor[] = [
   }),
 ];
 
+
+/* ══════════════════════════════════════════════════════════════════
+   Desktop — observing the machine, at a declared tier
+   ══════════════════════════════════════════════════════════════════
+   Read-only, all three of them. Nothing here presses a key, moves a
+   pointer or changes an application's state.
+
+   They are governed anyway, and that is the point. Observing somebody's
+   machine is not a neutral act: the list of applications on it is a
+   portrait of the person, and a window title is whatever they happen to
+   have open. So each carries `system.observe`, each declares the tiers
+   it may run at, and the tier-6 one can never be `auto-execute` no
+   matter how the policy is configured. */
+
+const ATSPI_PLATFORMS: PlatformDeclaration[] = [
+  { platform: 'linux', supported: true, requires: ['gdbus', 'org.a11y.Bus'], note: 'AT-SPI over the accessibility D-Bus.' },
+  { platform: 'darwin', supported: true, requires: ['osascript', 'Accessibility permission'], note: 'The AX API through System Events. macOS answers a missing permission with an empty tree rather than an error.' },
+  { platform: 'win32', supported: true, requires: ['powershell'], note: 'The in-box UIAutomationClient assembly.' },
+];
+
+const WINDOW_PLATFORMS: PlatformDeclaration[] = [
+  { platform: 'linux', supported: true, requires: ['DISPLAY', 'wmctrl'], note: 'X11 only. Wayland has no in-protocol way for one client to read another\'s windows, so it is declared unsupported rather than worked around with a privileged input daemon.' },
+  { platform: 'win32', supported: true, requires: ['powershell'], note: 'user32 EnumWindows, in-box.' },
+  { platform: 'darwin', supported: false, requires: [], note: 'macOS exposes no window list below the accessibility layer without Screen Recording permission and a native binding. Answering tier 6 with the AX API would be a silent substitution, so this is refused instead.' },
+];
+
+const DESKTOP: CapabilityDescriptor[] = [
+  cap({
+    id: 'desktop.applications.discover', name: 'Discover installed applications', category: 'desktop', surface: 'local-process',
+    description: 'Which of the applications AURA has adapters for are installed on this machine, detected from .desktop entries, Launch Services bundle ids or registry uninstall keys — never guessed from a plausible binary name. Read-only.',
+    /**
+     * `medium`, so the shipped policy asks. It is a pure read and it is
+     * still a sweep of somebody's computer; a `low` classification would
+     * make an inventory of a person's installed software something AURA
+     * does silently, which is not a default anyone should have to
+     * discover after the fact.
+     */
+    risk: 'medium', permissions: ['system.observe'],
+    input: [f('ids', 'string[]', false, 'Limit the sweep to these application ids. Narrowing lowers the sensitivity of the answer.')],
+    output: 'An ApplicationScan: each application, whether it was found, the evidence, its observation sensitivity, and the measured availability of every tier it declares',
+    verify: null,
+  }),
+  cap({
+    id: 'desktop.accessibility.observe', name: 'Read the accessibility tree', category: 'desktop', surface: 'local-process',
+    description: 'Lists the applications currently publishing an accessibility tree, and what each calls itself. Read-only — nothing in the tree is activated.',
+    risk: 'medium', permissions: ['system.observe'],
+    output: 'The applications visible to the platform accessibility API',
+    verify: null,
+    tiers: [5],
+    platforms: ATSPI_PLATFORMS,
+  }),
+  cap({
+    id: 'desktop.windows.observe', name: 'List open windows', category: 'desktop', surface: 'local-process',
+    description: 'The open top-level windows: title, owning process and screen rectangle. Read-only — no window is focused, moved or typed into.',
+    /**
+     * Declared `low` on purpose, to let the tier machinery be seen doing
+     * its job. Listing windows genuinely is the mildest thing tier 6 can
+     * do — and it STILL comes out as `ask-user`, because `tierRisk`
+     * raises a tier-6 action to medium and `tierFloor` forbids
+     * auto-execute at that rung regardless. If this descriptor ever
+     * yields `auto-execute`, the ladder is broken, and
+     * `desktop-tier-verify` fails on exactly that.
+     */
+    risk: 'low', permissions: ['system.observe'],
+    output: 'Open windows with titles, process ids and bounds',
+    verify: null,
+    tiers: [6],
+    platforms: WINDOW_PLATFORMS,
+  }),
+];
+
 /* ══════════════════════════════════════════════════════════════════ */
 
 export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
   ...INTERNAL,
   ...LOCAL,
+  ...DESKTOP,
   ...EXTENSION_POINTS,
 ];
 

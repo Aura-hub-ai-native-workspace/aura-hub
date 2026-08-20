@@ -57,6 +57,21 @@ export type PermissionScope =
    * install software silently, which is never an acceptable default.
    */
   | 'system.modify'
+  /**
+   * Reads facts about the MACHINE, outside any project boundary.
+   *
+   * Distinct from `project.read`, which is bounded by a directory the
+   * user pointed AURA at, and from `aura.read`, which is AURA's own
+   * state. This one is the user's computer: which applications they have
+   * installed, which windows are open, what the accessibility tree says.
+   *
+   * It exists as its own scope because read-only is not the same as
+   * harmless. An inventory of somebody's machine is a portrait of them,
+   * and a permission model in which `project.read` silently also meant
+   * "and enumerate everything installed" would be one that never gave
+   * the user the chance to decline the second thing.
+   */
+  | 'system.observe'
   | 'aura.read'
   | 'aura.write';
 

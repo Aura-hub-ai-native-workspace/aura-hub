@@ -26,6 +26,8 @@ import { catalogEntry } from '@aura/connected-environment';
 import { probeNode } from '../environment';
 import type { WorkspaceManager } from '../workspace';
 
+import { desktopExecutors } from './desktopExecutors';
+
 const MAX_READ_BYTES = 512 * 1024;
 
 const s = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d);
@@ -852,6 +854,7 @@ export function allExecutors(manager: WorkspaceManager): Executor[] {
     gitStatus, gitDiff, gitBranch, gitCommit, gitPush,
     httpRequest,
     workflowRunExecutor,
+    ...desktopExecutors,
     ...internalExecutors(manager),
   ];
 }

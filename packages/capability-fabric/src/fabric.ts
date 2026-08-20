@@ -132,9 +132,18 @@ export interface FabricHost {
    * host owns the *measurement*, because probing an accessibility bus or
    * an X11 display is host knowledge this package must not acquire.
    *
-   * Synchronous for the same reason `resolveNode` is — it reads the last
-   * desktop probe rather than re-probing, so a policy decision never
-   * becomes an I/O wait.
+   * Unlike `resolveNode` this MAY be asynchronous, and that difference is
+   * deliberate. Node presence is already known — the last environment
+   * scan measured it — but tier availability genuinely has to be asked:
+   * whether an application is publishing an accessibility tree right now
+   * is not a fact anything cached an hour ago can answer. `invoke` is
+   * already async, so awaiting it costs nothing architecturally, and the
+   * alternative — deciding a tier from a stale reading — is the failure
+   * this ladder exists to prevent.
+   *
+   * `decide()`, the non-executing preview, does NOT call this: a preview
+   * must not spawn processes to observe the user's desktop, so it reports
+   * the policy a capability would get before its tier is known.
    *
    * Optional. A host that omits it leaves every capability tier-free, and
    * every capability that declares tiers then settles `not-executed`
@@ -144,7 +153,7 @@ export interface FabricHost {
   probeTiers?(
     capability: CapabilityDescriptor,
     context: InvocationContext,
-  ): import('./tiers').TierProbe[];
+  ): import('./tiers').TierProbe[] | Promise<import('./tiers').TierProbe[]>;
 }
 
 let seq = 0;
@@ -509,7 +518,7 @@ export class CapabilityFabric {
        A capability with no declared tiers skips this entirely and behaves
        exactly as it did before — that is every internal capability and
        every one that runs a tool rather than driving somebody else's UI. */
-    const tierSelection = this.selectTierFor(capability, context);
+    const tierSelection = await this.selectTierFor(capability, context);
     if (tierSelection && !tierSelection.ok) {
       // Nothing ran and nothing was substituted. This is the whole reason
       // `not-executed` exists: the honest answer to "your machine cannot
@@ -547,7 +556,14 @@ export class CapabilityFabric {
 
     if (evaluation.decision === 'deny') {
       this.emit({ type: 'invocation.denied', at: new Date().toISOString(), invocationId: invocation.id, reason: evaluation.reason });
-      return this.settle(invocation, capability, 'denied', evaluation.reason, NO_VERIFICATION, evaluation, started, startedAt, 0);
+      // The selection is carried onto the denial too. By this point a tier
+      // HAS been chosen — it is what policy priced the call at — and a
+      // denial that dropped it would leave the record unable to say which
+      // way in was refused. "Reading the accessibility tree was denied"
+      // and "typing at the screen was denied" are different refusals.
+      return this.settle(invocation, capability, 'denied', evaluation.reason, NO_VERIFICATION, evaluation,
+        started, startedAt, 0, undefined, undefined, false, undefined,
+        { selection: tierSelection ?? undefined });
     }
 
     /* 4. approval */
@@ -958,13 +974,13 @@ export class CapabilityFabric {
    * work, so a host that cannot measure the machine gets an honest "not
    * executed" instead of an unmeasured execution.
    */
-  private selectTierFor(
+  private async selectTierFor(
     capability: CapabilityDescriptor,
     context: InvocationContext,
-  ): TierSelection | null {
+  ): Promise<TierSelection | null> {
     const declared = capability.tiers;
     if (!declared || declared.length === 0) return null;
-    const probes = this.host.probeTiers?.(capability, context) ?? [];
+    const probes = (await this.host.probeTiers?.(capability, context)) ?? [];
     return selectTier(declared, probes);
   }
 

@@ -25,6 +25,7 @@ import { allExecutors } from './executors';
 import { loadPolicy } from './policyStore';
 import { createApprovalStore } from './approvalStore';
 import type { WorkspaceManager } from '../workspace';
+import { desktopTierRegistry } from '../desktop/drivers';
 
 /**
  * Grants for the local machine. AURA is a single-user desktop app and
@@ -165,6 +166,26 @@ export function createFabric(deps: FabricDeps): CapabilityFabric {
       canUse?: (node: NodeRef) => boolean,
     ): NodeResolution {
       return resolveNodeFor(capability, context, deps.presentNodes?.() ?? [], canUse);
+    },
+
+    /**
+     * Measure which rungs of the ladder this machine can actually offer.
+     *
+     * Delegated straight to the desktop driver registry — the Fabric owns
+     * the rule (highest available wins, never substitute downward) and
+     * this owns nothing but the measurement. A capability that declares
+     * no tiers never reaches here.
+     *
+     * Not cached at this layer. The drivers cache the session facts
+     * behind it, which is the right place: whether an application is
+     * publishing an accessibility tree changes when the user opens or
+     * closes it, and a decision made from a reading taken minutes ago
+     * would be exactly the confident wrong answer this codebase refuses
+     * to produce.
+     */
+    probeTiers(capability: CapabilityDescriptor) {
+      if (!capability.tiers?.length) return [];
+      return desktopTierRegistry.probeAll();
     },
 
     async requestApproval(request, context) {
