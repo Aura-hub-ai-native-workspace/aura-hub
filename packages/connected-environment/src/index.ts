@@ -21,6 +21,8 @@
  */
 
 export * from './types';
+export * from './tiers';
+export * from './applications';
 export * from './capabilities';
 export * from './catalog';
 export * from './registry';
