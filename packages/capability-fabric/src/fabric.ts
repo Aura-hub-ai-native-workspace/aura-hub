@@ -131,9 +131,18 @@ function invocationId(): string {
   return `inv${Date.now().toString(36)}${seq}`;
 }
 
+/**
+ * Field names whose values never appear in a record, anywhere.
+ *
+ * One definition, used by both summarisers below. Two copies of this
+ * regex is one copy too many: the failure mode of the pair drifting apart
+ * is a credential written to disk, and it would be silent.
+ */
+const SECRET_FIELD = /^(apiKey|token|secret|password)$/i;
+
 /** Bounded, redacted input summary for the audit record. */
 function summarizeInput(capability: CapabilityDescriptor, input: Record<string, unknown>): string {
-  const SECRET = /^(apiKey|token|secret|password)$/i;
+  const SECRET = SECRET_FIELD;
   const parts: string[] = [];
   for (const field of capability.input) {
     const raw = input[field.name];
@@ -146,6 +155,44 @@ function summarizeInput(capability: CapabilityDescriptor, input: Record<string, 
     parts.push(`${field.name}=${text.length > 60 ? `${text.slice(0, 57)}…` : text}`);
   }
   return parts.join(' ') || '(no arguments)';
+}
+
+/**
+ * The audit summariser, for callers outside the Fabric that must record
+ * an invocation's arguments.
+ *
+ * Exported rather than reimplemented. A second summariser would be a
+ * second redaction policy, and the two would drift — which is a
+ * credential in a log file, discovered later, by someone else.
+ */
+export function summarizeCapabilityInput(
+  capability: CapabilityDescriptor,
+  input: Record<string, unknown>,
+): string {
+  return summarizeInput(capability, input);
+}
+
+/**
+ * The same treatment for arguments that belong to NO capability — the
+ * hallucinated tool call, the malformed JSON blob.
+ *
+ * There is no contract to iterate, so this works on the raw text: any
+ * `"apiKey": "…"`-shaped pair is elided by name, and the result is
+ * bounded. It is deliberately cruder than `summarizeCapabilityInput` and
+ * deliberately in the same file, next to the same pattern, so the two can
+ * never disagree about what a secret is called.
+ *
+ * Refusals have to be recorded — an unrecorded refusal is
+ * indistinguishable from a request that was never made — and recording
+ * them must not become the way a secret reaches the journal.
+ */
+export function summarizeUnknownInput(raw: string, maxLength = 300): string {
+  if (!raw) return '(no arguments)';
+  const redacted = raw.replace(
+    /("?)([A-Za-z_][A-Za-z0-9_]*)\1\s*:\s*("(?:[^"\\]|\\.)*"|[^,}\s]+)/g,
+    (match, quote: string, key: string) => (SECRET_FIELD.test(key) ? `${quote}${key}${quote}: "<redacted>"` : match),
+  );
+  return redacted.length > maxLength ? `${redacted.slice(0, maxLength - 1)}…` : redacted;
 }
 
 /**
