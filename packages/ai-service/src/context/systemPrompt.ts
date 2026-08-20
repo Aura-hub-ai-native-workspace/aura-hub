@@ -27,6 +27,9 @@
 
 import type { ContextView } from './types';
 import { renderContextContract, type RenderOptions } from './promptContract';
+import { composeContext } from './composer';
+import type { ContextItem } from './item';
+import { FALLBACK_WINDOW, type BudgetSpec } from './budget';
 
 /**
  * The operating rules. Stable text — callers must not edit it per-call,
@@ -97,7 +100,25 @@ export interface AgentPromptInput {
   task: string;
   /** Trim context sections a given surface does not need. */
   include?: RenderOptions['include'];
+  /**
+   * Additional addressable context for THIS request - retrieved chunks,
+   * recalled memories, prior turns, tool output. Ranked and budgeted by
+   * the one composer, and fenced according to each item's trust.
+   */
+  items?: readonly ContextItem[];
+  /**
+   * The model this prompt is for, so the composer can enforce its
+   * window. Omitted only by callers that genuinely do not know yet; the
+   * conservative `FALLBACK_WINDOW` then applies, which can only make the
+   * prompt smaller than the model could have taken.
+   */
+  budget?: BudgetSpec;
+  /** Intent label for kind-fit scoring. */
+  intent?: string;
 }
+
+/** The budget a caller that named no model gets. Deliberately small. */
+const CONSERVATIVE_BUDGET: BudgetSpec = { model: 'unspecified', windowTokens: FALLBACK_WINDOW };
 
 /**
  * Compose the full prompt an agent receives.
@@ -111,13 +132,28 @@ export interface AgentPromptInput {
  * context is indistinguishable from an AURA-supplied fact, which is both a
  * correctness problem and an injection surface.
  */
-export function buildAgentPrompt({ view, task, include }: AgentPromptInput): string {
-  const contract = renderContextContract(view, include ? { include } : undefined);
-  return [
-    AURA_SYSTEM_PROMPT,
-    contract,
-    `<TASK>\n${task}\n</TASK>`,
-  ].filter(Boolean).join('\n\n');
+export function buildAgentPrompt(input: AgentPromptInput): string {
+  return composeAgentPrompt(input).text;
+}
+
+/**
+ * The same composition, with the budget record kept.
+ *
+ * `buildAgentPrompt` returns only the string because most callers want
+ * only the string. This returns what was included, what was dropped and
+ * why - which is what makes a prompt auditable after the fact.
+ */
+export function composeAgentPrompt(input: AgentPromptInput) {
+  return composeContext({
+    systemPrompt: AURA_SYSTEM_PROMPT,
+    view: input.view,
+    include: input.include,
+    items: input.items,
+    task: input.task,
+    query: input.task,
+    intent: input.intent ?? 'generic',
+    budget: input.budget ?? CONSERVATIVE_BUDGET,
+  });
 }
 
 export interface PromptMeasurement {
@@ -134,13 +170,14 @@ export interface PromptMeasurement {
 }
 
 /** Measure a composed prompt, for budget reporting and diagnostics. */
-export function measureAgentPrompt({ view, task, include }: AgentPromptInput): PromptMeasurement {
+export function measureAgentPrompt(input: AgentPromptInput): PromptMeasurement {
+  const { view, task, include } = input;
   const contract = renderContextContract(view, include ? { include } : undefined);
   const systemChars = AURA_SYSTEM_PROMPT.length;
   const contextChars = contract.length;
   const taskChars = task.length;
-  // +2 separators of '\n\n' plus the <TASK> wrapper, mirroring buildAgentPrompt.
-  const totalChars = buildAgentPrompt({ view, task, include }).length;
+  // Measured on the composed string, so items and fences are counted too.
+  const totalChars = buildAgentPrompt(input).length;
   return {
     systemChars,
     contextChars,

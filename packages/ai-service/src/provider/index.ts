@@ -2,7 +2,8 @@ import type { Runtime } from '@aura/runtime';
 import { getAdapter, registerAdapter, getAllAdapters } from './registry';
 import type { ProviderAdapter, ActiveRuntime, ProviderHealth, ModelCapabilities } from './types';
 import * as credentialStore from './credentialStore';
-import { cachedModelsFor, resolveModel } from './modelValidation';
+import { cachedModelsFor, resolveModel, modelWindow } from './modelValidation';
+import { FALLBACK_WINDOW, type BudgetSpec } from '../context/budget';
 
 /* ── types ──────────────────────────────────────────────────────────── */
 
@@ -164,6 +165,21 @@ export class RuntimeManager {
 
   getModel(): string {
     return this.active?.model ?? '';
+  }
+
+  /**
+   * The budget the context composer must respect for the ACTIVE model.
+   *
+   * Read from the provider registry, which is the authority for what a
+   * model's window is. When the registry does not know, the conservative
+   * `FALLBACK_WINDOW` applies: an under-estimate costs context, an
+   * over-estimate costs the whole request.
+   */
+  contextBudget(): BudgetSpec {
+    const model = this.getModel();
+    const w = modelWindow(this.getProviderId(), model);
+    if (!w) return { model: model || 'unspecified', windowTokens: FALLBACK_WINDOW };
+    return { model, windowTokens: w.windowTokens, reserveTokens: w.reserveTokens };
   }
 
   /**

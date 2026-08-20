@@ -45,3 +45,29 @@ export function resolveModel(providerId: string, requested: string | undefined, 
 }
 
 export { cachedModelsFor };
+
+/**
+ * The chosen model's context window, from the provider registry.
+ *
+ * The registry is the authority: adapters report `contextWindow` and
+ * `maxOutput` on discovery (`ModelCapabilities`), so this reads what is
+ * already known rather than introducing a second table of model sizes
+ * that would immediately start disagreeing with the first.
+ *
+ * Returns null when the registry does not know. Null means "unknown", and
+ * the caller applies a conservative default — inventing a large window
+ * for an unknown model turns a missing fact into a runtime 400.
+ */
+export function modelWindow(providerId: string | null, model: string): { windowTokens: number; reserveTokens: number } | null {
+  if (!providerId || !model) return null;
+  const known = cachedModelsFor(providerId).find((m) => m.id === model);
+  const caps = known?.capabilities;
+  if (!caps?.contextWindow || caps.contextWindow <= 0) return null;
+  return {
+    windowTokens: caps.contextWindow,
+    /* Reserve the model's own declared maximum output. If it does not
+       declare one, reserve an eighth of the window: enough for a real
+       answer, and small enough not to starve the context on a small model. */
+    reserveTokens: caps.maxOutput && caps.maxOutput > 0 ? caps.maxOutput : Math.floor(caps.contextWindow / 8),
+  };
+}

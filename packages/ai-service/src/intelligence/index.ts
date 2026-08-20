@@ -25,6 +25,7 @@ import { classifyRepositoryIntent } from './repositoryIntent';
 import { generateRepositorySummary, loadRepositorySummary } from './moduleSummarizer';
 import { prioritizeDocuments } from './documentPriority';
 import { assembleContext, type AssembledContext, type ContextAssemblerInput } from './contextAssembler';
+import type { BudgetSpec } from '../context/budget';
 import { buildGlossary, loadGlossary } from './glossary';
 import { generateRepositoryHealth, loadRepositoryHealth } from './healthEngine';
 import { buildRepositoryProfile, loadRepositoryProfile } from './repositoryMemory';
@@ -137,6 +138,15 @@ export function runIntelligencePipeline(
    * added/removed files would report forever.
    */
   precomputed?: { result: IndexResult; snapshot: FileIndexState },
+  /**
+   * The window of the model this context is being assembled FOR.
+   *
+   * Threaded in rather than looked up here: the provider registry is the
+   * authority for a model's window, and the pipeline already holds the
+   * active runtime. Omitted, a conservative default applies — which can
+   * only make the assembled context smaller than the model could take.
+   */
+  budget?: BudgetSpec,
 ): IntelligenceEngineResult {
   // 1. Classify intent
   const intent = classifyRepositoryIntent(query);
@@ -230,6 +240,8 @@ export function runIntelligencePipeline(
     graphContext,
     memoryContext,
     retrievedFiles,
+    query,
+    budget,
   };
   const context = assembleContext(contextInput);
 

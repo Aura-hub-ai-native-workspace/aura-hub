@@ -10,13 +10,16 @@
 
 import type {
   RepositoryIntent, ProjectIdentity, RepositorySummary,
-  ModuleSummary, PrioritizedDocument, RepositoryProfile,
+  PrioritizedDocument, RepositoryProfile,
   ProjectGlossary, RepositoryHealth, ConfidenceMark,
 } from './types';
 import type { RuntimeMessage } from '@aura/runtime';
 import { evaluateConfidence } from './confidence';
-
-const estTokens = (s: string) => Math.ceil(s.length / 4);
+import type { ContextItem } from '../context/item';
+import { fromAuraFact, fromMemory, fromRepositoryFile } from '../context/item';
+import { composeContext } from '../context/composer';
+import { redact } from '../context/redact';
+import { FALLBACK_WINDOW, type BudgetSpec, type BudgetDecision } from '../context/budget';
 
 /**
  * The governing directive. Establishes AURA as the authoritative source of
@@ -41,6 +44,24 @@ export interface AssembledContext {
   totalTokens: number;
   confidenceMarks: ConfidenceMark[];
   retrievedSources: string[];
+  /**
+   * One entry per candidate: what happened to it and why. This is the
+   * audit trail that makes "every inclusion carries a reason" checkable
+   * from outside rather than asserted from inside.
+   */
+  decisions: BudgetDecision[];
+  /** What the budget allowed and what was spent. Null when nothing was assembled. */
+  budget: AssembledBudget | null;
+}
+
+export interface AssembledBudget {
+  model: string;
+  floorTokens: number;
+  itemTokens: number;
+  totalTokens: number;
+  budgetTokens: number;
+  containsUntrusted: boolean;
+  sensitivity: 'public' | 'project' | 'private' | 'secret';
 }
 
 export interface ContextAssemblerInput {
@@ -55,6 +76,15 @@ export interface ContextAssemblerInput {
   graphContext: string;
   memoryContext: string;
   retrievedFiles: string[];
+  /**
+   * Additional context items from the caller, already carrying the
+   * trust and sensitivity assigned where they entered AURA.
+   */
+  items?: readonly ContextItem[];
+  /** The user's actual words, for lexical scoring. Falls back to the intent. */
+  query?: string;
+  /** The model being assembled for. Without it, a conservative window applies. */
+  budget?: BudgetSpec;
 }
 
 const TYPE_NOUN: Record<string, string> = {
@@ -180,152 +210,126 @@ function buildGroundingRules(): string {
   ].join('\n');
 }
 
-/** Frame raw retrieved code as subordinate supporting evidence. */
-function framedEvidence(codingContext: string): string {
-  return `[Supporting Source Excerpts — evidence only, subordinate to AURA's facts above]\n${codingContext}`;
+/* ── Candidates, not a switch ─────────────────────────────────────────
+ *
+ * What used to be here: nine `assemble*` functions and a `switch (intent.type)`
+ * choosing between them. That design could not answer either question a
+ * prompt has to answer — why is this here, and does it fit — because a
+ * `switch` returns strings and a string carries no provenance and no cost.
+ *
+ * What is here now: every knowledge source becomes a `ContextItem` with
+ * its provenance, sensitivity and trust set AT THE BOUNDARY, and the one
+ * composer scores, budgets, compresses and assembles them. Intent has not
+ * disappeared — it survives as one of four scoring signals (`taskFit` in
+ * `context/score.ts`), where it influences ranking instead of dictating
+ * inclusion.
+ *
+ * The trust assignments below are the load-bearing part:
+ *
+ *   AURA's own derived understanding (identity, module summaries,
+ *   profile, architecture graph, glossary) is `trusted`. AURA computed it
+ *   from its own registries; it is not attacker-controlled text.
+ *
+ *   Retrieved source excerpts and recalled memory are `untrusted`, and
+ *   the composer fences them. They are quoted from the repository, and a
+ *   repository can contain a file that says "ignore your instructions".
+ *   The old code framed them in prose as "supporting evidence"; prose is
+ *   not a boundary.
+ */
+
+/** AURA's own derived project understanding. Trusted; never a fence. */
+function auraFact(
+  kind: 'app' | 'env' | 'git' | 'mission' | 'event',
+  locator: string,
+  driver: string,
+  value: string,
+): ContextItem<string> {
+  return fromAuraFact({ kind, locator, driver, value });
 }
 
-/** Give recalled repository memory an explicit authoritative header. */
-function framedMemory(memoryContext: string): string {
-  return `[Repository Memory]\n${memoryContext}`;
-}
+function buildCandidates(input: ContextAssemblerInput): { items: ContextItem[]; protectedIds: string[] } {
+  const items: ContextItem[] = [];
+  const protectedIds: string[] = [];
 
-/* ── Intent-specific assembly ────────────────────────────────────── */
-
-function assembleProjectOverview(input: ContextAssemblerInput): string[] {
-  const parts: string[] = [];
-  if (input.identity) parts.push(buildIdentitySection(input.identity));
-  if (input.summary) parts.push(buildSummarySection(input.summary));
-  if (input.profile) parts.push(buildProfileSection(input.profile));
-  if (input.graphContext) parts.push(`[Architecture Graph]\n${input.graphContext}`);
-  if (input.memoryContext) parts.push(input.memoryContext);
-  return parts;
-}
-
-function assembleArchitecture(input: ContextAssemblerInput): string[] {
-  const parts: string[] = [];
-  if (input.identity) parts.push(buildIdentitySection(input.identity));
-  if (input.profile) parts.push(buildProfileSection(input.profile));
-  if (input.graphContext) parts.push(`[Architecture Graph]\n${input.graphContext}`);
-  if (input.summary) parts.push(buildSummarySection(input.summary));
-  if (input.memoryContext) parts.push(input.memoryContext);
-  return parts;
-}
-
-function assembleModuleExplanation(input: ContextAssemblerInput): string[] {
-  const parts: string[] = [];
-  // Find the target module summary
-  const targetEntity = input.intent.entities[0]?.toLowerCase();
-  if (input.summary && targetEntity) {
-    const mod = input.summary.modules.find(m => m.name.toLowerCase().includes(targetEntity));
-    if (mod) parts.push(`[Target Module]\n${buildModuleDetail(mod)}`);
+  if (input.identity) {
+    const item = auraFact('app', 'aura://identity', 'repository-intelligence', buildIdentitySection(input.identity));
+    /* Identity is protected, not merely high-scoring. It is what makes an
+       answer about THIS repository rather than about software in general,
+       so it must survive a budget that a lexical match happens to win. */
+    protectedIds.push(item.id);
+    items.push(item);
   }
-  if (input.graphContext) parts.push(`[Module Relationships]\n${input.graphContext}`);
-  if (input.codingContext) parts.push(input.codingContext);
-  if (input.memoryContext) parts.push(input.memoryContext);
-  return parts;
-}
+  if (input.summary) {
+    items.push(auraFact('app', 'aura://module-summary', 'repository-intelligence', buildSummarySection(input.summary)));
+  }
+  if (input.profile) {
+    items.push(auraFact('app', 'aura://profile', 'repository-memory', buildProfileSection(input.profile)));
+  }
+  if (input.graphContext) {
+    items.push(auraFact('app', 'aura://architecture-graph', 'knowledge-graph', `[Architecture Graph]\n${input.graphContext}`));
+  }
+  const glossaryHint = buildGlossaryHint(input.glossary);
+  if (glossaryHint) {
+    items.push(auraFact('app', 'aura://glossary', 'glossary', glossaryHint));
+  }
 
-function assembleFunctionExplanation(input: ContextAssemblerInput): string[] {
-  const parts: string[] = [];
-  if (input.codingContext) parts.push(input.codingContext);
-  if (input.graphContext) parts.push(`[Code Relationships]\n${input.graphContext}`);
-  return parts;
-}
+  /* Repository excerpts. Untrusted: this is file content. */
+  if (input.codingContext) {
+    items.push(fromRepositoryFile({
+      kind: 'chunk',
+      path: input.retrievedFiles.length ? input.retrievedFiles.join(', ') : 'retrieved source excerpts',
+      content: input.codingContext,
+      driver: 'coding-index',
+    }));
+  }
 
-function assembleBugFix(input: ContextAssemblerInput): string[] {
-  const parts: string[] = [];
-  if (input.codingContext) parts.push(input.codingContext);
-  if (input.graphContext) parts.push(`[Dependencies & Relationships]\n${input.graphContext}`);
-  if (input.memoryContext) parts.push(input.memoryContext);
-  return parts;
-}
+  /* Recalled memory. Untrusted: AURA stored it, but what it stores is
+     quoted from conversations and files it did not write. */
+  if (input.memoryContext) {
+    items.push(fromMemory({
+      id: 'aura://memory-recall',
+      body: input.memoryContext,
+      store: 'project-memory',
+    }));
+  }
 
-function assembleCodeSearch(input: ContextAssemblerInput): string[] {
-  const parts: string[] = [];
-  if (input.codingContext) parts.push(input.codingContext);
-  return parts;
-}
+  if (input.retrievedFiles.length > 0) {
+    items.push(auraFact('app', 'aura://retrieved-manifest', 'retrieval',
+      `[Retrieved Files]\n${input.retrievedFiles.map((f) => `- ${f}`).join('\n')}`));
+  }
 
-function assembleApiReference(input: ContextAssemblerInput): string[] {
-  const parts: string[] = [];
-  if (input.codingContext) parts.push(input.codingContext);
-  if (input.graphContext) parts.push(`[API Relationships]\n${input.graphContext}`);
-  if (input.summary) parts.push(buildSummarySection(input.summary));
-  return parts;
-}
+  /* Anything the caller supplies — conversation turns, tool results, page
+     text — already carries its own boundary-assigned trust. */
+  for (const extra of input.items ?? []) items.push(extra);
 
-function assembleTesting(input: ContextAssemblerInput): string[] {
-  const parts: string[] = [];
-  if (input.codingContext) parts.push(input.codingContext);
-  if (input.summary) parts.push(buildSummarySection(input.summary));
-  return parts;
-}
-
-function assembleGeneric(input: ContextAssemblerInput): string[] {
-  const parts: string[] = [];
-  if (input.identity) parts.push(buildIdentitySection(input.identity));
-  if (input.codingContext) parts.push(input.codingContext);
-  if (input.graphContext) parts.push(`[Architecture]\n${input.graphContext}`);
-  if (input.memoryContext) parts.push(input.memoryContext);
-  return parts;
-}
-
-function buildModuleDetail(mod: ModuleSummary): string {
-  const lines = [
-    `Module: ${mod.name}`,
-    `Path: ${mod.path}`,
-    `Language: ${mod.primaryLanguage}`,
-    `Files: ${mod.fileCount}`,
-    `Description: ${mod.description}`,
-    mod.capabilities.length ? `Key Components: ${mod.capabilities.join(', ')}` : '',
-    mod.childModules.length ? `Submodules: ${mod.childModules.join(', ')}` : '',
-  ].filter(Boolean);
-  return lines.join('\n');
+  return { items, protectedIds };
 }
 
 /* ── Main assembler ──────────────────────────────────────────────── */
 
+/**
+ * Path A's entry into the ONE composer.
+ *
+ * This function no longer builds a prompt. It turns what the
+ * intelligence engine knows into `ContextItem`s and hands them to
+ * `composeContext`, which is the same composer the agent path
+ * (`context/systemPrompt.ts`) uses. Two consequences follow structurally
+ * rather than by convention:
+ *
+ *   every item passes `redact()` exactly once, inside `block()` in
+ *   `context/promptContract.ts`;
+ *
+ *   nothing can exceed the chosen model's window, because the composer
+ *   refuses rather than truncating.
+ *
+ * `redact()` is applied once more to the composed text below. That is
+ * Phase 1's `fullContext` choke point, and it is idempotent — a second
+ * pass over already-redacted text changes nothing. It is kept so that the
+ * property survives even if some future caller assembles a system message
+ * here by another route.
+ */
 export function assembleContext(input: ContextAssemblerInput): AssembledContext {
-  const { intent } = input;
   const confidenceMarks: ConfidenceMark[] = [];
-
-  // Subordinate raw retrieval: code excerpts and recalled memory are framed
-  // as supporting evidence so they never dominate or redefine AURA's facts.
-  const wrapped: ContextAssemblerInput = {
-    ...input,
-    codingContext: input.codingContext ? framedEvidence(input.codingContext) : '',
-    memoryContext: input.memoryContext ? framedMemory(input.memoryContext) : '',
-  };
-
-  // Intent-specific selection of AURA's authoritative knowledge sources.
-  const facts: string[] = [];
-  switch (intent.type) {
-    case 'project_overview': facts.push(...assembleProjectOverview(wrapped)); break;
-    case 'architecture': facts.push(...assembleArchitecture(wrapped)); break;
-    case 'module_explanation': facts.push(...assembleModuleExplanation(wrapped)); break;
-    case 'function_explanation': facts.push(...assembleFunctionExplanation(wrapped)); break;
-    case 'bug_fix':
-    case 'debugging': facts.push(...assembleBugFix(wrapped)); break;
-    case 'code_search': facts.push(...assembleCodeSearch(wrapped)); break;
-    case 'api_reference': facts.push(...assembleApiReference(wrapped)); break;
-    case 'testing': facts.push(...assembleTesting(wrapped)); break;
-    default: facts.push(...assembleGeneric(wrapped)); break;
-  }
-  const hasContent = facts.some(Boolean);
-
-  // Ordering: authoritative directive → AURA's structured facts →
-  // project terms → answering rules → retrieved-file manifest.
-  const parts: string[] = [];
-  if (hasContent) parts.push(AUTHORITATIVE_PREAMBLE);
-  parts.push(...facts);
-
-  const glossaryHint = buildGlossaryHint(input.glossary);
-  if (glossaryHint) parts.push(glossaryHint);
-
-  if (hasContent) parts.push(buildGroundingRules());
-
-  // Evaluate confidence for each retrieved source (surfaced in inspect/debug).
   for (const source of input.retrievedFiles) {
     confidenceMarks.push(evaluateConfidence(source, {
       identity: input.identity,
@@ -335,15 +339,58 @@ export function assembleContext(input: ContextAssemblerInput): AssembledContext 
     }));
   }
 
-  if (input.retrievedFiles.length > 0) {
-    parts.push(`[Retrieved Files]\n${input.retrievedFiles.map(f => `- ${f}`).join('\n')}`);
+  const { items, protectedIds } = buildCandidates(input);
+
+  /* No knowledge at all: emit nothing rather than a preamble that
+     promises facts and then supplies none. Preserved from the original —
+     an empty context that reads as authoritative is worse than none. */
+  if (items.length === 0) {
+    return { systemMessages: [], totalTokens: 0, confidenceMarks, retrievedSources: input.retrievedFiles, decisions: [], budget: null };
   }
 
-  const systemMessages: RuntimeMessage[] = [];
-  const fullContext = parts.filter(Boolean).join('\n\n');
-  if (fullContext) {
-    systemMessages.push({ role: 'system', content: fullContext });
+  const budget: BudgetSpec = input.budget ?? { model: 'unspecified', windowTokens: FALLBACK_WINDOW };
+
+  let composed;
+  try {
+    composed = composeContext({
+      /* The preamble and the answering rules are BEHAVIOUR, so they go in
+         the rules slot and are incompressible. They were previously
+         interleaved with the facts, which meant a long retrieval could
+         push the instruction that governs it out of the prompt. */
+      systemPrompt: `${AUTHORITATIVE_PREAMBLE}\n\n${buildGroundingRules()}`,
+      items,
+      floorItemIds: protectedIds,
+      query: input.query ?? (input.intent.entities.join(' ') || input.intent.type),
+      intent: input.intent.type,
+      budget,
+    });
+  } catch (err) {
+    /* A refusal is a real result, not an exception to swallow. It is
+       re-thrown so the caller sees WHAT was dropped; the alternative —
+       returning a silently smaller context — is the behaviour this whole
+       change exists to remove. */
+    throw err;
   }
 
-  return { systemMessages, totalTokens: estTokens(fullContext), confidenceMarks, retrievedSources: input.retrievedFiles };
+  const fullContext = redact(composed.text);
+  const systemMessages: RuntimeMessage[] = fullContext
+    ? [{ role: 'system', content: fullContext }]
+    : [];
+
+  return {
+    systemMessages,
+    totalTokens: composed.tokens.total,
+    confidenceMarks,
+    retrievedSources: input.retrievedFiles,
+    decisions: composed.decisions,
+    budget: {
+      model: composed.model,
+      floorTokens: composed.tokens.floor,
+      itemTokens: composed.tokens.items,
+      totalTokens: composed.tokens.total,
+      budgetTokens: composed.tokens.budget,
+      containsUntrusted: composed.containsUntrusted,
+      sensitivity: composed.sensitivity,
+    },
+  };
 }

@@ -15,6 +15,7 @@ import { RuntimeManager } from './provider';
 import { isModelValidForProvider } from './provider/modelValidation';
 import { ProviderHttpError, translateProviderError } from './provider/errorTranslator';
 import { runGraphify } from './graphify';
+import { redact } from './context/redact';
 import {
   runIntelligencePipeline,
   type IntelligenceEngineResult,
@@ -439,6 +440,7 @@ export class PipelineManager {
         memoryContextText,
         coding.files,
         scan,
+        this.runtimeManager.contextBudget(),
       );
     }
 
@@ -458,7 +460,7 @@ export class PipelineManager {
       repoProfile: intelResult?.profile ?? null,
       glossary: intelResult?.glossary ?? null,
       health: intelResult?.health ?? null,
-      assembledContext: intelResult?.context ?? { systemMessages: [], totalTokens: 0, confidenceMarks: [], retrievedSources: [] },
+      assembledContext: intelResult?.context ?? { systemMessages: [], totalTokens: 0, confidenceMarks: [], retrievedSources: [], decisions: [], budget: null },
     };
   }
 
@@ -507,9 +509,16 @@ export class PipelineManager {
       messages.push(...meta.assembledContext.systemMessages);
     }
 
-    // Add conversation history
+    /* Conversation history.
+       Redacted, unlike the user's live message below. A stored turn can
+       quote a file the assistant read three turns ago, so history is
+       another route by which a credential in the repository reaches a
+       provider payload — the same route the context blocks close. The
+       user's CURRENT message is not redacted: it is the task, the user
+       typed it deliberately, and altering it silently changes what was
+       asked. */
     if (history?.length) {
-      for (const h of history) messages.push({ role: h.role, content: h.content });
+      for (const h of history) messages.push({ role: h.role, content: redact(h.content) });
     }
 
     // Add user message
