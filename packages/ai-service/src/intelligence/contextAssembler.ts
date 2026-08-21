@@ -15,6 +15,7 @@ import type {
 } from './types';
 import type { RuntimeMessage } from '@aura/runtime';
 import { evaluateConfidence } from './confidence';
+import { redact } from '../context/redact';
 
 const estTokens = (s: string) => Math.ceil(s.length / 4);
 
@@ -339,8 +340,20 @@ export function assembleContext(input: ContextAssemblerInput): AssembledContext 
     parts.push(`[Retrieved Files]\n${input.retrievedFiles.map(f => `- ${f}`).join('\n')}`);
   }
 
+  /* The chat prompt's redaction choke point.
+     Everything above this line is DERIVED — file excerpts, recalled memory
+     bodies, glossary terms, documentation, commit text — so a credential
+     that exists anywhere in the repository can reach here without anyone
+     having typed it. Filtering the joined string rather than each source
+     is what makes that guarantee hold for a section added later.
+
+     The user's own message and the conversation history are NOT filtered
+     here, and that is deliberate: they are assembled downstream in
+     pipeline.ts and they are the user's own words. Someone pasting a key
+     to ask what is wrong with it must still get an answer. AURA redacts
+     what it went and fetched, not what it was told. */
   const systemMessages: RuntimeMessage[] = [];
-  const fullContext = parts.filter(Boolean).join('\n\n');
+  const fullContext = redact(parts.filter(Boolean).join('\n\n'));
   if (fullContext) {
     systemMessages.push({ role: 'system', content: fullContext });
   }

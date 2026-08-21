@@ -31,41 +31,23 @@
  */
 
 import type { ContextView } from './types';
+import { redact } from './redact';
 
 /**
- * Credential-shaped substrings, redacted at the render boundary.
+ * Redaction is applied HERE rather than per-field, and that is deliberate:
+ * this is the single choke point every block passes through, so a section
+ * added later is covered without anyone remembering to opt in.
  *
  * Composition already drops a credential-shaped provider id or model, but
  * that covered one field out of dozens. Most of what reaches this contract
  * is free text derived from the repository — a commit subject, a module
  * description, an identity purpose, an activity summary — and a commit
- * reading `fix: rotate AKIA… key` would otherwise travel verbatim into
+ * reading `fix: rotate AKIA... key` would otherwise travel verbatim into
  * every agent prompt.
  *
- * Redacting HERE rather than per-field is deliberate: this is the single
- * choke point every block passes through, so a section added later is
- * covered without anyone remembering to opt in.
- *
- * Deliberately conservative. It matches shapes, not names, and it never
- * tries to be a secret scanner — it is defence in depth behind "AURA does
- * not put secrets in context in the first place", not a replacement for it.
+ * The patterns themselves live in ./redact, which the chat composer also
+ * calls. One authority, two choke points; see that file for why.
  */
-const SECRET_PATTERNS: RegExp[] = [
-  /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g,              // OpenAI-style keys
-  /\bAKIA[0-9A-Z]{16}\b/g,                            // AWS access key id
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,                  // GitHub tokens
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,                // Slack tokens
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, // JWT
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/g,              // PEM private keys
-  /\b(?:api[_-]?key|apikey|secret|password|passwd|token|bearer)\s*[:=]\s*\S+/gi,
-];
-
-/** Replace anything credential-shaped with a marker that says what happened. */
-function redact(text: string): string {
-  let out = text;
-  for (const p of SECRET_PATTERNS) out = out.replace(p, '[redacted]');
-  return out;
-}
 
 /** Emit a block only when it has content. */
 function block(tag: string, lines: (string | null | undefined | false)[]): string {

@@ -546,6 +546,15 @@ export type FabricEventListener = (event: FabricEvent) => void;
  * did the system do, on whose authority, and did it work" — the question
  * an execution layer with real permissions must always be able to answer.
  */
+/**
+ * Where the Fabric hands an audit record for durable storage.
+ *
+ * Declared here rather than in the host so the contract is part of the
+ * Fabric's own surface: anything that persists governance records must
+ * accept exactly the record the Fabric produced, unmodified.
+ */
+export type AuditSink = (record: AuditRecord) => void;
+
 export interface AuditRecord {
   invocationId: string;
   at: string;
@@ -563,6 +572,15 @@ export interface AuditRecord {
   durationMs: number;
   /** Redacted, bounded summary of the input. Never raw secrets. */
   inputSummary: string;
+  /**
+   * Which channel initiated this, as attested by the transport.
+   *
+   * Not `actor`, which any caller can assert. This is set from the token
+   * the desktop shell minted for its own window, so a local process
+   * cannot present itself as a deliberate user action. Absent on records
+   * written before the field existed.
+   */
+  initiator?: Initiator;
   /**
    * The environment node that performed the work, when the executor named
    * one. Several nodes can provide the same capability, so `capabilityId`

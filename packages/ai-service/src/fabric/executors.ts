@@ -25,6 +25,10 @@ import { guardedFetch, BlockedAddressError } from '../net/ssrfGuard';
 import { isPlan, planInstall } from '../exec/install';
 import { catalogEntry } from '@aura/connected-environment';
 import { probeNode } from '../environment';
+import { getEngineeringAudit, getEngineeringScorecard, type AuditScope } from '@aura/governance';
+
+/** Declared in the manifest's prose; the manifest has no enum type yet. */
+const AUDIT_SCOPES: readonly string[] = ['daily', 'weekly', 'release', 'architecture'];
 import type { WorkspaceManager } from '../workspace';
 
 const MAX_READ_BYTES = 512 * 1024;
@@ -753,10 +757,23 @@ function internalExecutors(manager: WorkspaceManager): Executor[] {
           return no((e as Error).message || 'Mission creation failed.');
         }
       },
-      async verify(inv) {
-        const mission = manager.getMission(s(inv.input.projectId), s(inv.input.text).slice(0, 60));
+      /* The read-back looks the mission up by the id CREATION returned.
+         It used to pass `text.slice(0, 60)` where `getMission` expects a
+         mission id, so the lookup could never succeed and every successful
+         creation was reported `unverified` — which the mission layer
+         deliberately treats as failure. The id is in the executor's own
+         result; `verify` receives that result and simply was not reading
+         it. Nothing else can identify the mission: two missions may share
+         a description, and a prefix of the text was never an identity. */
+      async verify(inv, result) {
+        const created = result.output as { id?: unknown } | null | undefined;
+        const missionId = typeof created?.id === 'string' ? created.id : '';
+        if (!missionId) {
+          return fail('read-back', 'Creation reported success without a mission id, so there is nothing to read back.');
+        }
+        const mission = manager.getMission(s(inv.input.projectId), missionId);
         return mission
-          ? pass('read-back', 'The mission is in the store.')
+          ? pass('read-back', `The mission is in the store (${missionId}).`)
           : fail('read-back', 'The mission could not be found after creation.');
       },
     },
@@ -794,12 +811,47 @@ function internalExecutors(manager: WorkspaceManager): Executor[] {
       },
     },
     {
+      /* The capability declared "Health scorecard, risk, release
+         readiness" and returned the project's stored profile with the
+         detail "Audit inputs collected." — it gathered the inputs to an
+         audit and never ran one. A capability that reports success for
+         work it did not do is worse than one that is missing: the manifest
+         is what the model and the operator both read, and this one was
+         describing a different capability.
+
+         The audit engine it was describing already exists and is already
+         reachable over HTTP (`@aura/governance`). Wiring it is the fix;
+         downgrading the declaration would have kept the gap and only
+         stopped admitting to it.
+
+         `runNpmAudit` stays off. It spawns a package manager, which is a
+         different permission profile from reading a repository, and
+         `security_review.ts` hardcodes `npm.cmd` — so on Linux and macOS
+         it would fail rather than audit. That is a separate fix; asking
+         for it here would make this capability fail for a reason that has
+         nothing to do with governance. */
       capabilityId: 'governance.audit',
       async run(inv) {
         const projectId = s(inv.input.projectId);
-        const profile = manager.profile(projectId);
-        if (!profile) return no('That project has no profile to audit yet.');
-        return ok('Audit inputs collected.', { projectId, profile });
+        const root = cwdOf(inv);
+        const scope = AUDIT_SCOPES.includes(s(inv.input.scope) as AuditScope)
+          ? (s(inv.input.scope) as AuditScope)
+          : 'daily';
+        try {
+          // Both, because the declaration promises both: the report carries
+          // risk and recommendations, the scorecard carries the dimensions
+          // the health number is made of.
+          const [report, scorecard] = await Promise.all([
+            getEngineeringAudit({ projectPath: root, scope, runNpmAudit: false }),
+            getEngineeringScorecard({ projectPath: root, runNpmAudit: false }),
+          ]);
+          return ok(
+            `Audit complete: health ${report.overallHealth} (${report.grade}), ${report.topRisks.length} risk(s).`,
+            { projectId, scope, report, scorecard },
+          );
+        } catch (e) {
+          return no((e as Error).message || 'The governance audit could not be completed.');
+        }
       },
     },
   ];

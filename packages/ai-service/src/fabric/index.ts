@@ -24,6 +24,8 @@ import {
 import { allExecutors } from './executors';
 import { loadPolicy } from './policyStore';
 import { createApprovalStore } from './approvalStore';
+import { appendAudit, readAuditRecords } from './auditStore';
+import { redact } from '../context/redact';
 import type { WorkspaceManager } from '../workspace';
 
 /**
@@ -225,5 +227,18 @@ export function createFabric(deps: FabricDeps): CapabilityFabric {
   // Pending gates outlive the process too: a question asked before a
   // restart is still waiting for its answer afterwards, with the same id.
   fabric.attachApprovalStore(createApprovalStore());
+  /* And so does the record of what was decided. The Fabric produced a
+     complete audit record all along and kept it in an array that died with
+     the process, so "what did AURA do, and who authorized it?" had no
+     answer that survived a restart. The sink makes each new record
+     durable; the seed lets the in-memory view start from the history
+     rather than from empty, so every existing reader of `audit()` becomes
+     continuous without knowing the journal exists. */
+  fabric.setAuditSink(appendAudit);
+  /* The same patterns the prompt composers use. `terminal.execute` carries
+     a whole command line into `inputSummary`, so without this a credential
+     passed on a command line would be written to the journal and kept. */
+  fabric.setInputRedactor(redact);
+  fabric.seedAudit(readAuditRecords());
   return fabric;
 }
