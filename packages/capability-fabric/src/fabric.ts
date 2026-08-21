@@ -20,7 +20,7 @@ import type {
   ApprovalPersistence,
   ApprovalRequest,
   AuditRecord,
-  AuditSink,
+  AuditPersistence,
   CapabilityDescriptor,
   Executor,
   ExecutorResult,
@@ -215,7 +215,7 @@ export class CapabilityFabric {
   private executors = new Map<string, Executor>();
   private listeners = new Set<FabricEventListener>();
   private auditLog: AuditRecord[] = [];
-  private auditSink: AuditSink | null = null;
+  private auditStore: AuditPersistence | null = null;
   private redactValue: (text: string) => string = (text) => text;
   private policy: PolicyConfig = DEFAULT_POLICY;
 
@@ -313,22 +313,40 @@ export class CapabilityFabric {
   }
 
   /**
-   * Where audit records go to outlive the process.
+   * Give the audit trail a life beyond this process.
    *
    * The Fabric keeps producing exactly the record it always produced and
-   * still holds the in-memory log every existing reader uses; the sink is
-   * how a host makes that record durable. Supplying it is the host's
+   * still holds the in-memory log every existing reader uses; the store
+   * is how a host makes that record durable. Supplying it is the host's
    * decision because the Fabric has no filesystem and should not acquire
    * one — `@aura/capability-fabric` is the policy authority, not a store.
    *
-   * A sink that throws is swallowed for the same reason a listener that
-   * throws is: an unwritable disk must not turn a completed action into an
-   * exception unwinding through the code that was recording it. The loss
-   * is detectable — the journal's sequence is gapless, so a record that
-   * never arrived leaves no hole to mistake for a legitimate gap.
+   * Unlike approvals, records are restored in full: an audit trail that
+   * forgets is not an audit trail, and replaying a historical record
+   * cannot cause an action. Restored records are placed ahead of what is
+   * already in memory, in time order, so `audit()` does not report that
+   * AURA had done nothing every time the service restarted — the exact
+   * failure the journal exists to fix, moved one layer up.
+   *
+   * This adds no second sink. `record()` writes one entry, to one place;
+   * this only decides whether that place survives a restart.
    */
-  setAuditSink(sink: AuditSink | null): void {
-    this.auditSink = sink;
+  attachAuditStore(store: AuditPersistence): void {
+    this.auditStore = store;
+    const restored = store.load();
+    if (restored.length) this.auditLog = [...restored, ...this.auditLog];
+  }
+
+  /**
+   * Whether this Fabric's audit trail survives the process.
+   *
+   * Exposed because it is a *precondition*, not a diagnostic: a bounded
+   * autonomous loop that cannot be reconstructed afterwards is not
+   * governed, it is merely bounded. The agent loop's flag reads this and
+   * refuses to arm without it.
+   */
+  hasDurableAudit(): boolean {
+    return this.auditStore !== null;
   }
 
   /**
@@ -344,27 +362,20 @@ export class CapabilityFabric {
   }
 
   /**
-   * Restore prior records into the in-memory view at boot.
-   *
-   * The journal on disk is the authority; this is the cache catching up
-   * with it, which is why seeded records are NOT sent back to the sink.
-   * Without it, `audit()` would report that AURA had done nothing every
-   * time the service restarted — the exact failure the journal exists to
-   * fix, moved one layer up.
-   */
-  seedAudit(records: readonly AuditRecord[]): void {
-    this.auditLog.unshift(...records);
-  }
-
-  /**
    * The one place an audit record is retained. Both callers — a human
    * authorization decision and a settled invocation — go through here, so
    * a third kind of record added later cannot forget the durable half.
    */
   private record(entry: AuditRecord): void {
     this.auditLog.push(entry);
-    if (!this.auditSink) return;
-    try { this.auditSink(entry); } catch { /* see setAuditSink */ }
+    if (!this.auditStore) return;
+    /* A store that throws is swallowed for the same reason a listener
+       that throws is: an unwritable disk must not turn a completed action
+       into an exception unwinding through the code that was recording it.
+       The loss is detectable — the journal's sequence is gapless, so a
+       record that never arrived leaves no hole to mistake for a
+       legitimate gap. */
+    try { this.auditStore.append(entry); } catch { /* see attachAuditStore */ }
   }
 
   /* ── approvals ────────────────────────────────────────────────── */

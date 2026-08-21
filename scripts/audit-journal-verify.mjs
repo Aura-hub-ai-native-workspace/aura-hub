@@ -17,10 +17,24 @@
  *   [D] the chain detects an edit, a deletion and a reordering
  *   [E] the chain survives rotation — one history, several files
  *   [F] a credential passed as an ordinary argument is not written down
+ *   [G] records removed from the END of the journal are detected
  *
  * Every section carries a NEGATIVE CONTROL. For [D] the control is the
  * untampered file: if that also reported a break, the detector would be
  * proving nothing.
+ *
+ * ── What this suite does NOT prove ───────────────────────────────────
+ * That the `fsync` in `appendAudit` matters. [B] kills the service with
+ * SIGKILL, and SIGKILL does not drop the page cache — the writes survive
+ * whether or not they were ever flushed to the device. An audit of this
+ * suite proved the point by deleting the `fsync` call and watching every
+ * check still pass.
+ *
+ * So [B] proves the record survives a CRASH, which is the common case and
+ * worth proving. It says nothing about POWER LOSS. Proving that needs a
+ * fault-injecting filesystem or real hardware, and until one is used the
+ * claim is NOT VERIFIED rather than assumed. It is stated here rather
+ * than quietly implied by a passing suite.
  *
  * Usage: node scripts/audit-journal-verify.mjs
  * Needs no AI provider and no network.
@@ -299,6 +313,57 @@ try {
   const inMemory = JSON.stringify((await (await fetch(`${API}/fabric/audit`)).json()).audit ?? []);
   check('F4  and it is absent from what the audit endpoint serves',
     !inMemory.includes(SECRET), inMemory.includes(SECRET) ? 'LEAKED OVER HTTP' : 'redacted');
+
+  /* ════════════════════════════════════════════════════════════════
+     [G] Truncation — the attack the file cannot testify about
+     ════════════════════════════════════════════════════════════════
+     Every check in [D] finds damage the file still holds evidence of: a
+     gap, a broken link, a record that no longer matches its hash. Cut
+     lines off the END and none of them fires, because what remains is a
+     valid chain that is simply shorter. A file cannot testify about what
+     used to be in it.
+
+     That is what the head anchor is for — the tail hash, written outside
+     the journal, so verification has something to compare the end
+     against. */
+  section('[G] records removed from the end');
+
+  const HEAD_FILE = path.join(HOME, 'fabric-audit.head.json');
+  check('G0  NEGATIVE CONTROL — the intact journal agrees with its head anchor',
+    (await chain())?.chain?.head?.state === 'matches',
+    JSON.stringify((await chain())?.chain?.head));
+
+  check('G1  the anchor is kept outside the journal, where a truncation cannot reach it',
+    fs.existsSync(HEAD_FILE), HEAD_FILE);
+
+  const activeBefore = readJournal();
+  const linesBefore = journalLines();
+  const keep = linesBefore.slice(0, -2);
+  fs.writeFileSync(JOURNAL, keep.length ? `${keep.join('\n')}\n` : '');
+  const truncated = (await chain())?.chain;
+  check('G2  removing the last records is detected',
+    truncated?.ok === false && truncated?.head?.state === 'truncated',
+    `ok=${truncated?.ok} head=${truncated?.head?.state}`);
+  check('G3  and the report names how many went missing',
+    /record\(s\) removed from the end/.test(truncated?.brokenAt?.reason ?? ''),
+    truncated?.brokenAt?.reason);
+
+  /* Without the anchor this is exactly the state that used to verify
+     clean — the whole reason [G] exists. */
+  const withoutAnchor = (() => {
+    const saved = fs.readFileSync(HEAD_FILE, 'utf8');
+    fs.rmSync(HEAD_FILE, { force: true });
+    const walkOnly = journalLines().every((l) => { try { JSON.parse(l); return true; } catch { return false; } });
+    fs.writeFileSync(HEAD_FILE, saved);
+    return walkOnly;
+  })();
+  check('G4  the truncated file is otherwise a perfectly valid chain',
+    withoutAnchor,
+    'which is why walking the file alone can never catch this');
+
+  fs.writeFileSync(JOURNAL, activeBefore);
+  check('G5  restoring the file restores agreement with the anchor',
+    (await chain())?.chain?.ok === true && (await chain())?.chain?.head?.state === 'matches');
 } catch (err) {
   console.error(`\nFATAL  ${err?.stack ?? err}`);
   failed = true;

@@ -553,7 +553,33 @@ export type FabricEventListener = (event: FabricEvent) => void;
  * Fabric's own surface: anything that persists governance records must
  * accept exactly the record the Fabric produced, unmodified.
  */
-export type AuditSink = (record: AuditRecord) => void;
+/**
+ * Durable storage for the audit trail, supplied by the host.
+ *
+ * The Fabric has always kept `AuditRecord[]` in memory, which is enough
+ * to answer "what did this process do" and nothing at all once the
+ * process ends. This is the socket a durable journal plugs into. It is
+ * deliberately the same narrow port shape as `ApprovalPersistence` — the
+ * host owns the file, the Fabric owns the record — and it is NOT a second
+ * audit sink: the records are the same records, written by the same
+ * `settle()`, and `audit()` continues to be the one way to read them.
+ *
+ * `append` is called once per settled invocation, in order. `load` is
+ * called once when the store is attached, and its contents become the
+ * head of the in-memory trail so a restart does not appear to erase
+ * history.
+ *
+ * Phase 1 first shaped this as a pair of calls — a sink plus a separate
+ * seed. Phase 3 shaped it as this port, and this is the one that stays:
+ * it mirrors the convention `ApprovalPersistence` already set, and
+ * `agent/flag.ts` asks a Fabric whether it has one before it will let an
+ * autonomous loop start. Two shapes for one concept is the duplicate
+ * authority this repo's invariants forbid.
+ */
+export interface AuditPersistence {
+  load(): AuditRecord[];
+  append(record: AuditRecord): void;
+}
 
 export interface AuditRecord {
   invocationId: string;

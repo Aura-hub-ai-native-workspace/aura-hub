@@ -230,15 +230,14 @@ export function createFabric(deps: FabricDeps): CapabilityFabric {
   /* And so does the record of what was decided. The Fabric produced a
      complete audit record all along and kept it in an array that died with
      the process, so "what did AURA do, and who authorized it?" had no
-     answer that survived a restart. The sink makes each new record
-     durable; the seed lets the in-memory view start from the history
-     rather than from empty, so every existing reader of `audit()` becomes
+     answer that survived a restart. Attaching the store makes each new
+     record durable AND starts the in-memory view from the history rather
+     than from empty, so every existing reader of `audit()` becomes
      continuous without knowing the journal exists. */
-  fabric.setAuditSink(appendAudit);
+  fabric.attachAuditStore({ load: readAuditRecords, append: appendAudit });
   /* The same patterns the prompt composers use. `terminal.execute` carries
      a whole command line into `inputSummary`, so without this a credential
      passed on a command line would be written to the journal and kept. */
   fabric.setInputRedactor(redact);
-  fabric.seedAudit(readAuditRecords());
   return fabric;
 }

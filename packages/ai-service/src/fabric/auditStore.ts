@@ -21,7 +21,7 @@
  * record being written — and {@link verifyAuditChain} reports exactly
  * that rather than hiding it.
  *
- * ── Why fsync ────────────────────────────────────────────────────────
+ * ── Why fsync, and what is NOT proven about it ───────────────────────
  * The record is only useful if it outlives the event it describes. An
  * append that is still in the page cache when the machine loses power
  * describes an action that may well have happened. Each append is
@@ -29,6 +29,19 @@
  * round-trip per record, which is affordable precisely because these are
  * governance decisions, not telemetry — AURA writes one per invocation,
  * not one per frame.
+ *
+ * That is the reasoning. It is not a verified claim, and the difference
+ * matters. `audit-journal-verify` kills the service with SIGKILL, and
+ * SIGKILL does not drop the page cache: the writes survive whether or not
+ * they ever reached the device. An audit of that suite deleted this
+ * `fsync` call and every check still passed.
+ *
+ * So what is verified is that the record survives a CRASH. Survival of
+ * POWER LOSS is NOT VERIFIED — proving it needs a fault-injecting
+ * filesystem or real hardware, and neither has been used. The call stays
+ * because the reasoning is sound and the cost is one syscall; the claim
+ * is written down here honestly rather than left to be inferred from a
+ * suite that cannot tell the difference.
  *
  * ── Why a hash chain ─────────────────────────────────────────────────
  * Append-only is a convention, not a property: anything that can write
@@ -71,6 +84,70 @@ export const AUDIT_SEED_LIMIT = 500;
 
 const BASENAME = 'fabric-audit';
 const ACTIVE = () => homePath(`${BASENAME}.jsonl`);
+
+/**
+ * The head anchor — the tail hash, kept OUTSIDE the journal.
+ *
+ * Everything else in this chain detects tampering in the MIDDLE: a gap in
+ * the sequence, a `prevHash` that names the wrong parent, a record that
+ * no longer matches its hash. None of them notices the simplest attack
+ * there is, which is deleting lines off the END. Truncate the last ten
+ * entries and what remains is a perfectly valid chain that is simply
+ * shorter, and nothing inside the file can say otherwise — the file
+ * cannot testify about what used to be in it.
+ *
+ * So the tail is written somewhere the journal is not. Verification
+ * compares the two, and a journal that ends earlier than the anchor says
+ * it should is reported as truncated.
+ *
+ * This is still tamper-EVIDENT, not tamper-proof: someone who can edit
+ * the journal can usually edit this file too. What it buys is that they
+ * must now do both, consistently, and that an accident — a torn write, a
+ * full disk, a half-finished rotation — is caught rather than silently
+ * shortening the governance record.
+ *
+ * `.json`, not `.jsonl`, so `segmentFiles()` cannot mistake it for a
+ * rotated segment.
+ */
+const HEAD = () => homePath(`${BASENAME}.head.json`);
+
+/** The last entry the anchor knows about, or null when there is none. */
+function readHead(): { seq: number; hash: string } | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(HEAD(), 'utf8')) as { seq?: unknown; hash?: unknown };
+    if (typeof parsed?.seq === 'number' && typeof parsed?.hash === 'string') {
+      return { seq: parsed.seq, hash: parsed.hash };
+    }
+  } catch { /* no anchor yet, or an unreadable one — verification says so */ }
+  return null;
+}
+
+/**
+ * Advance the anchor. Write-then-rename so a crash mid-write leaves the
+ * previous anchor intact rather than a half-written one: an anchor that
+ * is one entry behind reports a mismatch a human can resolve, while a
+ * corrupt anchor reports nothing at all.
+ */
+function writeHead(head: { seq: number; hash: string }): void {
+  const target = HEAD();
+  const temp = `${target}.tmp`;
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(temp, 'w');
+    fs.writeSync(fd, JSON.stringify(head));
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+    fs.renameSync(temp, target);
+  } catch {
+    /* The record is already durable in the journal; a missing anchor
+       weakens truncation detection and must not fail the action that was
+       being recorded. */
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch { /* already gone */ } }
+    try { fs.rmSync(temp, { force: true }); } catch { /* best effort */ }
+  }
+}
 
 /** Segment names sort as numbers because the sequence is zero-padded. */
 const segmentName = (lastSeq: number) => `${BASENAME}.${String(lastSeq).padStart(12, '0')}.jsonl`;
@@ -239,6 +316,7 @@ export function appendAudit(record: AuditRecord): AuditEntry | null {
   }
 
   tail = { seq, hash: entry.hash };
+  writeHead(tail);
   rotateIfNeeded(seq);
   return entry;
 }
@@ -258,6 +336,12 @@ export interface AuditChainReport {
   brokenAt: { seq: number; reason: string } | null;
   /** Lines that would not parse — a torn write, or an edit. */
   unparsable: number;
+  /**
+   * What the head anchor says about the tail, and whether the journal
+   * agrees. `'absent'` is not a pass: it means truncation of the tail
+   * cannot be ruled out, only that nothing else was wrong.
+   */
+  head: { state: 'matches' | 'truncated' | 'diverged' | 'absent'; expected: number | null; found: number };
 }
 
 /**
@@ -270,7 +354,10 @@ export interface AuditChainReport {
  */
 export function verifyAuditChain(): AuditChainReport {
   const segments = segmentFiles();
-  const report: AuditChainReport = { ok: true, entries: 0, segments, brokenAt: null, unparsable: 0 };
+  const report: AuditChainReport = {
+    ok: true, entries: 0, segments, brokenAt: null, unparsable: 0,
+    head: { state: 'absent', expected: null, found: 0 },
+  };
 
   let expectedSeq = 1;
   let expectedPrev = GENESIS;
@@ -294,6 +381,38 @@ export function verifyAuditChain(): AuditChainReport {
   if (report.unparsable > 0 && report.ok) {
     report.ok = false;
     report.brokenAt = { seq: expectedSeq - 1, reason: `${report.unparsable} unreadable line(s)` };
+  }
+
+  /* The end of the chain, checked against something the chain does not
+     contain. Everything above walks the file and can only find breaks the
+     file still holds evidence of; this is the one check that can see
+     records that are simply GONE. */
+  const anchor = readHead();
+  const lastSeq = expectedSeq - 1;
+  report.head.found = lastSeq;
+  if (!anchor) {
+    report.head.state = lastSeq === 0 ? 'matches' : 'absent';
+    report.head.expected = null;
+  } else {
+    report.head.expected = anchor.seq;
+    if (anchor.seq > lastSeq) {
+      report.head.state = 'truncated';
+      if (report.ok) {
+        report.ok = false;
+        report.brokenAt = { seq: lastSeq, reason: `journal ends at ${lastSeq}, head anchor names ${anchor.seq} — ${anchor.seq - lastSeq} record(s) removed from the end` };
+      }
+    } else if (anchor.seq === lastSeq && anchor.hash !== expectedPrev) {
+      report.head.state = 'diverged';
+      if (report.ok) {
+        report.ok = false;
+        report.brokenAt = { seq: lastSeq, reason: 'the last record does not match the head anchor — the tail was rewritten' };
+      }
+    } else {
+      /* anchor.seq < lastSeq happens when the anchor write failed after a
+         successful append. The journal is ahead, not short, so no record
+         is missing — it is reported rather than treated as tampering. */
+      report.head.state = anchor.seq === lastSeq ? 'matches' : 'absent';
+    }
   }
   return report;
 }

@@ -58,9 +58,18 @@ answer. AURA redacts what it went and fetched, not what it was told.
 
 **2 — the governance record died with the process.** `auditLog` was an
 array with no writer. It is now `~/.aura/fabric-audit.jsonl`: one line per
-record, fsynced before the call returns, each line naming the hash of the
-one before it. `GET /fabric/audit/verify` exposes the check. It is
-tamper-**evident**, not tamper-proof, and the code says so.
+record, each line naming the hash of the one before it, with the tail hash
+kept in `fabric-audit.head.json` — outside the journal, so records removed
+from the *end* are detectable at all. `GET /fabric/audit/verify` exposes
+the check. It is tamper-**evident**, not tamper-proof, and the code says
+so.
+
+The append is fsynced, but this handoff previously claimed that as a
+verified property and it was not one. `audit-journal-verify` kills the
+service with SIGKILL, which does not drop the page cache, so the suite
+passes with or without the call — an audit proved exactly that by deleting
+it. Survival of a **crash** is verified. Survival of **power loss** is
+NOT VERIFIED, and needs a fault-injecting filesystem or real hardware.
 
 Two things had to change because the record became durable: `inputSummary`
 redacted by field *name* only, which misses a credential inside
