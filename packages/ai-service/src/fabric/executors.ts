@@ -21,6 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
 import { git, parseCommand, resolveAgentBinary, runAgent, runInstaller, safeShellWithCode } from '../exec/process';
+import { guardedFetch, BlockedAddressError } from '../net/ssrfGuard';
 import { isPlan, planInstall } from '../exec/install';
 import { catalogEntry } from '@aura/connected-environment';
 import { probeNode } from '../environment';
@@ -631,7 +632,11 @@ const httpRequest: Executor = {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(inv.context.timeoutMs ?? 10_000, 30_000));
     try {
-      const res = await fetch(url, {
+      /* Guarded at the resolver, and at every redirect hop. A URL that
+         resolves to loopback, link-local or RFC1918 is refused before a
+         connection is made - see `net/ssrfGuard.ts` for why that matters
+         in a single-user app. */
+      const res = await guardedFetch(url, {
         method: s(inv.input.method, 'GET').toUpperCase(),
         body: inv.input.body === undefined ? undefined : s(inv.input.body),
         signal: controller.signal,
@@ -644,6 +649,11 @@ const httpRequest: Executor = {
       // real cause nested underneath. Propagating that code matters: the
       // Fabric's retry classifier keys off it, so swallowing it here
       // silently turns every transient network blip into a hard failure.
+      /* A blocked address is a refusal, not a network failure. It is
+         reported with the reason and NOT with a transient error code, so
+         the Fabric's retry classifier does not retry a request that will
+         be refused identically every time. */
+      if (error instanceof BlockedAddressError) return no(error.message);
       const err = error as Error & { cause?: { code?: string } };
       const code = err.cause?.code;
       const reason = err.name === 'AbortError' ? 'timeout' : (code ?? err.message);
