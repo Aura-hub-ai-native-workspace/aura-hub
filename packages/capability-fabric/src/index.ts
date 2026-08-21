@@ -29,4 +29,5 @@ export * from './types';
 export * from './manifest';
 export * from './policy';
 export * from './fabric';
+export * from './inputBinding';
 export * from './missionCapabilities';

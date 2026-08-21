@@ -36,6 +36,7 @@ import type {
 } from './types';
 import { describeFabricCapability } from './manifest';
 import { DEFAULT_POLICY, evaluatePolicy, grantsFor } from './policy';
+import { actionFingerprint } from './inputBinding';
 
 /* ── recovery bounds (§16) ──────────────────────────────────────── */
 
@@ -504,14 +505,29 @@ export class CapabilityFabric {
       const key = CapabilityFabric.approvalKey(capabilityId, context, invocation.id);
 
       // A caller resuming a specific answered question addresses it by id,
-      // because the key above is derived from THIS invocation and a resume
-      // is always a new one. Matching the capability is what keeps the
-      // handle honest: a grant for one action can never be spent on
-      // another, whatever id is presented.
-      const named = context.resumeApprovalId ? this.approvalById(context.resumeApprovalId) : null;
-      const resumable = named?.items.some((i) => i.capabilityId === capabilityId) ? named : null;
+      // because the key above is derived from THIS invocation and a
+      // resume is always a new one.
+      //
+      // Matching the CAPABILITY was once what kept that handle honest.
+      // It did not: `terminal.execute` approved for `node --version` was
+      // in substance `terminal.execute` approved for anything, because
+      // the input the human read was never part of what the grant
+      // covered. So the match is on the ACTION — this capability WITH
+      // this input — and a grant is spendable only on an item carrying
+      // the same fingerprint. See `inputBinding.ts`.
+      const fingerprint = actionFingerprint(capabilityId, input);
+      const covers = (r: ApprovalRequest | undefined | null): boolean =>
+        Boolean(r?.items.some((i) => i.capabilityId === capabilityId && i.inputHash === fingerprint));
 
-      const open = resumable ?? this.approvals.get(key);
+      const named = context.resumeApprovalId ? this.approvalById(context.resumeApprovalId) : null;
+      const resumable = covers(named) ? named : null;
+
+      // The mission-keyed question is checked the same way. Fixing only
+      // the resume path would fix nothing: a mission task's key is
+      // `mission:task:capability` and holds across input changes, so the
+      // substitution works there too.
+      const keyed = this.approvals.get(key);
+      const open = resumable ?? (covers(keyed) ? keyed : undefined);
 
       // Already answered "yes" out of band (the approval UI). Spend it —
       // once — and fall through to execution.
@@ -542,9 +558,15 @@ export class CapabilityFabric {
             detail: summarizeInput(capability, input),
             risk: capability.risk,
             irreversible: Boolean(capability.irreversible),
+            inputHash: fingerprint,
           }],
         };
 
+        // A pending question already under this key that describes a
+        // DIFFERENT action is superseded, not reused. The mission key
+        // holds across input changes, so leaving the stale one in place
+        // would leave the new question with nowhere to live and the
+        // human answering something no longer being asked.
         if (open?.state !== 'pending') {
           this.approvals.set(key, request);
           this.emit({ type: 'approval.required', at: request.requestedAt, request });
@@ -739,7 +761,17 @@ export class CapabilityFabric {
     input: Record<string, unknown>,
   ): Promise<{ granted: boolean; requestId?: string }> {
     const key = CapabilityFabric.approvalKey(invocation.capabilityId, invocation.context, invocation.id);
-    const open = this.approvals.get(key);
+    const fingerprint = actionFingerprint(invocation.capabilityId, input);
+    const keyed = this.approvals.get(key);
+
+    // Bound to the action here too. This gate is reached only for an
+    // irreversible capability, which is where a substituted input costs
+    // the most: the grant exists because the previous attempt may
+    // ALREADY have taken effect, and re-running something the human did
+    // not read is exactly the compounding this gate was written to stop.
+    const open = keyed?.items.some(
+      (i) => i.capabilityId === invocation.capabilityId && i.inputHash === fingerprint,
+    ) ? keyed : undefined;
 
     // A grant already given out of band and not yet spent covers exactly
     // this retry — once.
@@ -770,6 +802,7 @@ export class CapabilityFabric {
         detail: summarizeInput(capability, input),
         risk: capability.risk,
         irreversible: true,
+        inputHash: fingerprint,
       }],
     };
 

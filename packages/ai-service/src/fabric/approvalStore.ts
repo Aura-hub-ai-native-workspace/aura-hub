@@ -20,14 +20,25 @@ import { homePath, readJsonFile, writeJsonFile } from '../persist';
 
 const FILE = () => homePath('fabric-approvals.json');
 
-/** Drop anything that is not a usable pending request. */
+/**
+ * Drop anything that is not a usable pending request.
+ *
+ * `inputHash` is required, not optional. A request written before
+ * approvals were bound to their input carries no fingerprint, and a
+ * fingerprint-less item can never match — but reading one back would
+ * mean carrying a record that LOOKS like a live question and can only
+ * ever be superseded. Dropping it is the same fail-closed choice the
+ * file already makes for granted-but-unspent requests: the task asks
+ * again, which costs a click and cannot authorise the wrong action.
+ */
 function usable(value: unknown): value is ApprovalRequest {
   const r = value as ApprovalRequest | null;
   return Boolean(
     r && typeof r.id === 'string' && r.id
     && r.state === 'pending'
     && Array.isArray(r.items) && r.items.length > 0
-    && typeof r.items[0]?.capabilityId === 'string',
+    && typeof r.items[0]?.capabilityId === 'string'
+    && r.items.every((i) => typeof i?.inputHash === 'string' && i.inputHash.length > 0),
   );
 }
 

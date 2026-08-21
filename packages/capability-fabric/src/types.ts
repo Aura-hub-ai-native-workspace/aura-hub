@@ -400,6 +400,24 @@ export interface ApprovalRequest {
     detail: string;
     risk: RiskLevel;
     irreversible: boolean;
+    /**
+     * Fingerprint of the ACTION this item authorises — the capability id
+     * together with the exact input, canonicalised and hashed
+     * (`actionFingerprint` in `inputBinding.ts`).
+     *
+     * This is what makes a grant an approval of something rather than an
+     * approval of a verb. Without it the resume path could only ask "is
+     * this the same capability?", so a human who approved
+     * `terminal.execute` for `node --version` had, in substance,
+     * approved `terminal.execute` for anything.
+     *
+     * It is deliberately NOT derived from `detail`. `detail` is the
+     * redacted summary a person reads and the journal keeps; two
+     * different secrets redact to the same marker, so comparing
+     * summaries would accept a substituted credential. The fingerprint
+     * is over the raw input and is never displayed.
+     */
+    inputHash: string;
   }[];
 
   /* ── correlation into the authoritative MissionRecord ──────────── */
