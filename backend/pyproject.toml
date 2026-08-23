@@ -29,6 +29,7 @@ packages = ["src/aura_backend"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
