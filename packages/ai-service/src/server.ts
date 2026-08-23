@@ -9,7 +9,7 @@ import { nodeSpecInfos } from './workflow/nodes';
 import { TEMPLATES, instantiateTemplate } from './workflow/templates';
 import { generateWorkflow } from './workflow/generate';
 import { validateWorkflow } from './workflow/validate';
-
+import { summarizeRun } from './workflow/run/types';
 import { classifyAllTools, describeTools, resolveTools } from './workflow/agent/bounds';
 import { AGENT_CEILINGS, AGENT_DEFAULTS } from './workflow/agent/types';
 import type { RunEvent, Workflow } from './workflow/types';
@@ -983,13 +983,19 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
           }
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> b23fe9f (feat(backend): stream and persist agent execution traces)
           if (seg[4] === 'chain' && method === 'GET') {
             // One logical execution across however many resume legs it took.
             const chain = manager.workflowRunChain(id, seg[3]);
             return chain.length ? json(res, 200, { chain: chain.map(summarizeRun) }) : json(res, 404, { error: 'no such run' });
           }
+<<<<<<< HEAD
 =======
 >>>>>>> 916ba80 (feat(backend): govern workflow execution and integrate the bounded agent)
+=======
+>>>>>>> b23fe9f (feat(backend): stream and persist agent execution traces)
           if (seg[4] === 'cancel' && method === 'POST') {
             return json(res, 200, { cancelled: manager.cancelWorkflowRun(seg[3]) });
           }

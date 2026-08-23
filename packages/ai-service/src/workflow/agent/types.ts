@@ -204,7 +204,6 @@ export interface AgentTrace {
    */
   tokenSource: 'provider' | 'estimated' | 'mixed';
   /**
-<<<<<<< HEAD
    * True while the agent is still running and this is a snapshot.
    *
    * A partial ledger has `beats` and nothing else — no stop reason, no
@@ -214,8 +213,6 @@ export interface AgentTrace {
    */
   partial?: boolean;
   /**
-=======
->>>>>>> 916ba80 (feat(backend): govern workflow execution and integrate the bounded agent)
    * Enough state to pick the agent up where it stopped.
    *
    * Present only when `stopReason === 'awaiting-approval'`, which is the
