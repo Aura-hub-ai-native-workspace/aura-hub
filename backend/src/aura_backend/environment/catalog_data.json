@@ -1,0 +1,2162 @@
+{
+  "CATALOG": [
+    {
+      "id": "aura-mission-control",
+      "name": "Mission Control",
+      "category": "hub",
+      "capabilities": [
+        "mission-control"
+      ],
+      "transport": "internal",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Plans, approves and executes engineering missions.",
+      "homepage": "https://github.com/Aura-hub-ai-native-workspace/aura-hub"
+    },
+    {
+      "id": "aura-knowledge",
+      "name": "Knowledge Fabric",
+      "category": "hub",
+      "capabilities": [
+        "knowledge-graph"
+      ],
+      "transport": "internal",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Structural knowledge graph of the open project.",
+      "homepage": "https://github.com/Aura-hub-ai-native-workspace/aura-hub"
+    },
+    {
+      "id": "aura-memory",
+      "name": "Engineering Memory",
+      "category": "hub",
+      "capabilities": [
+        "engineering-memory"
+      ],
+      "transport": "internal",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Why past decisions were made, and what came of them.",
+      "homepage": "https://github.com/Aura-hub-ai-native-workspace/aura-hub"
+    },
+    {
+      "id": "aura-diagnosis",
+      "name": "Diagnosis Engine",
+      "category": "hub",
+      "capabilities": [
+        "diagnosis"
+      ],
+      "transport": "internal",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Finds, explains and patches defects.",
+      "homepage": "https://github.com/Aura-hub-ai-native-workspace/aura-hub"
+    },
+    {
+      "id": "aura-governance",
+      "name": "Engineering Governance",
+      "category": "hub",
+      "capabilities": [
+        "governance"
+      ],
+      "transport": "internal",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Health scoring, risk, audits and release readiness.",
+      "homepage": "https://github.com/Aura-hub-ai-native-workspace/aura-hub"
+    },
+    {
+      "id": "git",
+      "name": "Git",
+      "category": "development",
+      "capabilities": [
+        "source-control"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Distributed version control.",
+      "homepage": "https://git-scm.com",
+      "probe": {
+        "command": "git",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "github-cli",
+      "name": "GitHub CLI",
+      "category": "development",
+      "capabilities": [
+        "code-hosting",
+        "ci-cd",
+        "issue-tracker"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Repositories, pull requests, issues and Actions from the terminal.",
+      "homepage": "https://cli.github.com",
+      "probe": {
+        "command": "gh",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "glab",
+      "name": "GitLab CLI",
+      "category": "development",
+      "capabilities": [
+        "code-hosting",
+        "ci-cd",
+        "issue-tracker"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "GitLab projects, merge requests and pipelines from the terminal.",
+      "homepage": "https://gitlab.com/gitlab-org/cli",
+      "probe": {
+        "command": "glab",
+        "args": [
+          "--version"
+        ]
+      },
+      "install": {
+        "method": "system-package",
+        "package": "glab",
+        "privilege": "root"
+      }
+    },
+    {
+      "id": "vscode",
+      "name": "Visual Studio Code",
+      "category": "development",
+      "capabilities": [
+        "code-editor"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Opens files, folders and diffs in the editor.",
+      "homepage": "https://code.visualstudio.com",
+      "probe": {
+        "command": "code",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "category": "development",
+      "capabilities": [
+        "code-editor",
+        "coding-agent"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "AI-native editor with in-repo code generation.",
+      "homepage": "https://cursor.com",
+      "probe": {
+        "command": "cursor",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "category": "development",
+      "capabilities": [
+        "coding-agent",
+        "terminal"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Agentic coding in the terminal.",
+      "homepage": "https://claude.com/claude-code",
+      "probe": {
+        "command": "claude",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "codex-cli",
+      "name": "Codex CLI",
+      "category": "development",
+      "capabilities": [
+        "coding-agent"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Terminal coding agent.",
+      "homepage": "https://github.com/openai/codex",
+      "probe": {
+        "command": "codex",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "gemini-cli",
+      "name": "Gemini CLI",
+      "category": "development",
+      "capabilities": [
+        "coding-agent"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Terminal coding agent.",
+      "homepage": "https://github.com/google-gemini/gemini-cli",
+      "probe": {
+        "command": "gemini",
+        "args": [
+          "--version"
+        ]
+      },
+      "install": {
+        "method": "npm-global",
+        "package": "@google/gemini-cli",
+        "privilege": "user"
+      }
+    },
+    {
+      "id": "qwen-cli",
+      "name": "Qwen Code",
+      "category": "development",
+      "capabilities": [
+        "coding-agent"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Terminal coding agent.",
+      "homepage": "https://github.com/QwenLM/qwen-code",
+      "probe": {
+        "command": "qwen",
+        "args": [
+          "--version"
+        ]
+      },
+      "install": {
+        "method": "npm-global",
+        "package": "@qwen-code/qwen-code",
+        "privilege": "user"
+      }
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "category": "development",
+      "capabilities": [
+        "coding-agent",
+        "terminal"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Open-source terminal coding agent.",
+      "homepage": "https://opencode.ai",
+      "probe": {
+        "command": "opencode",
+        "args": [
+          "--version"
+        ]
+      },
+      "install": {
+        "method": "npm-global",
+        "package": "opencode-ai",
+        "privilege": "user"
+      }
+    },
+    {
+      "id": "bash",
+      "name": "Bash",
+      "category": "development",
+      "capabilities": [
+        "terminal"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "POSIX shell.",
+      "homepage": "https://www.gnu.org/software/bash",
+      "probe": {
+        "command": "bash",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "zsh",
+      "name": "Zsh",
+      "category": "development",
+      "capabilities": [
+        "terminal"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Z shell.",
+      "homepage": "https://zsh.sourceforge.io",
+      "probe": {
+        "command": "zsh",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "powershell",
+      "name": "PowerShell",
+      "category": "development",
+      "capabilities": [
+        "terminal"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Cross-platform object shell.",
+      "homepage": "https://microsoft.com/powershell",
+      "probe": {
+        "command": "pwsh",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "warp",
+      "name": "Warp",
+      "category": "development",
+      "capabilities": [
+        "terminal"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Modern GPU-accelerated terminal.",
+      "homepage": "https://warp.dev"
+    },
+    {
+      "id": "node",
+      "name": "Node.js",
+      "category": "development",
+      "capabilities": [
+        "language-runtime"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "JavaScript and TypeScript runtime.",
+      "homepage": "https://nodejs.org",
+      "probe": {
+        "command": "node",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "python",
+      "name": "Python",
+      "category": "development",
+      "capabilities": [
+        "language-runtime"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Python interpreter.",
+      "homepage": "https://python.org",
+      "probe": {
+        "command": "python3",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "go",
+      "name": "Go",
+      "category": "development",
+      "capabilities": [
+        "language-runtime",
+        "package-manager"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Go toolchain.",
+      "homepage": "https://go.dev",
+      "probe": {
+        "command": "go",
+        "args": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "java",
+      "name": "Java",
+      "category": "development",
+      "capabilities": [
+        "language-runtime"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "JVM runtime.",
+      "homepage": "https://openjdk.org",
+      "probe": {
+        "command": "java",
+        "args": [
+          "-version"
+        ]
+      }
+    },
+    {
+      "id": "rust",
+      "name": "Rust",
+      "category": "development",
+      "capabilities": [
+        "language-runtime",
+        "package-manager"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Cargo toolchain for Rust.",
+      "homepage": "https://rust-lang.org",
+      "probe": {
+        "command": "cargo",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "npm",
+      "name": "npm",
+      "category": "development",
+      "capabilities": [
+        "package-manager"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Default Node package manager.",
+      "homepage": "https://npmjs.com",
+      "probe": {
+        "command": "npm",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "pnpm",
+      "name": "pnpm",
+      "category": "development",
+      "capabilities": [
+        "package-manager"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Content-addressed Node package manager.",
+      "homepage": "https://pnpm.io",
+      "probe": {
+        "command": "pnpm",
+        "args": [
+          "--version"
+        ]
+      },
+      "install": {
+        "method": "npm-global",
+        "package": "pnpm",
+        "privilege": "user"
+      }
+    },
+    {
+      "id": "bun",
+      "name": "Bun",
+      "category": "development",
+      "capabilities": [
+        "package-manager",
+        "language-runtime",
+        "testing-framework"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "JavaScript runtime, bundler and package manager.",
+      "homepage": "https://bun.sh",
+      "probe": {
+        "command": "bun",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "docker",
+      "name": "Docker",
+      "category": "development",
+      "capabilities": [
+        "container-runtime",
+        "container-registry"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Builds and runs containers locally.",
+      "homepage": "https://docker.com",
+      "probe": {
+        "command": "docker",
+        "args": [
+          "--version"
+        ]
+      },
+      "install": {
+        "method": "system-package",
+        "package": "docker",
+        "privilege": "root",
+        "distro": {
+          "debian": "docker.io"
+        }
+      }
+    },
+    {
+      "id": "podman",
+      "name": "Podman",
+      "category": "development",
+      "capabilities": [
+        "container-runtime"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Daemonless container engine.",
+      "homepage": "https://podman.io",
+      "probe": {
+        "command": "podman",
+        "args": [
+          "--version"
+        ]
+      },
+      "install": {
+        "method": "system-package",
+        "package": "podman",
+        "privilege": "root"
+      }
+    },
+    {
+      "id": "kubectl",
+      "name": "Kubernetes CLI",
+      "category": "development",
+      "capabilities": [
+        "app-hosting",
+        "observability"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Deploys and inspects Kubernetes workloads.",
+      "homepage": "https://kubernetes.io",
+      "probe": {
+        "command": "kubectl",
+        "args": [
+          "version",
+          "--client"
+        ]
+      }
+    },
+    {
+      "id": "terraform",
+      "name": "Terraform",
+      "category": "development",
+      "capabilities": [
+        "virtual-machine",
+        "secrets-management"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Declarative infrastructure provisioning.",
+      "homepage": "https://terraform.io",
+      "probe": {
+        "command": "terraform",
+        "args": [
+          "--version"
+        ]
+      },
+      "install": {
+        "method": "system-package",
+        "package": "terraform",
+        "privilege": "root"
+      }
+    },
+    {
+      "id": "flutter",
+      "name": "Flutter",
+      "category": "development",
+      "capabilities": [
+        "mobile-build",
+        "language-runtime"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Cross-platform application toolkit.",
+      "homepage": "https://flutter.dev",
+      "probe": {
+        "command": "flutter",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "android-platform-tools",
+      "name": "Android Platform Tools",
+      "category": "development",
+      "capabilities": [
+        "mobile-build"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Device bridge for Android builds.",
+      "homepage": "https://developer.android.com/studio",
+      "probe": {
+        "command": "adb",
+        "args": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "xcode",
+      "name": "Xcode",
+      "category": "development",
+      "capabilities": [
+        "mobile-build"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": false,
+      "maintained": true,
+      "summary": "Apple platform build toolchain.",
+      "homepage": "https://developer.apple.com/xcode",
+      "probe": {
+        "command": "xcodebuild",
+        "args": [
+          "-version"
+        ]
+      }
+    },
+    {
+      "id": "android-studio",
+      "name": "Android Studio",
+      "category": "development",
+      "capabilities": [
+        "code-editor",
+        "mobile-build"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Android IDE.",
+      "homepage": "https://developer.android.com/studio"
+    },
+    {
+      "id": "unity",
+      "name": "Unity",
+      "category": "development",
+      "capabilities": [
+        "game-engine"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Real-time 3D engine.",
+      "homepage": "https://unity.com"
+    },
+    {
+      "id": "unreal",
+      "name": "Unreal Engine",
+      "category": "development",
+      "capabilities": [
+        "game-engine"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Real-time 3D engine.",
+      "homepage": "https://unrealengine.com"
+    },
+    {
+      "id": "vercel",
+      "name": "Vercel",
+      "category": "cloud",
+      "capabilities": [
+        "static-hosting",
+        "serverless-compute",
+        "edge-network"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Frontend and serverless hosting with preview deployments.",
+      "homepage": "https://vercel.com",
+      "probe": {
+        "command": "vercel",
+        "args": [
+          "--version"
+        ]
+      },
+      "install": {
+        "method": "npm-global",
+        "package": "vercel",
+        "privilege": "user"
+      }
+    },
+    {
+      "id": "netlify",
+      "name": "Netlify",
+      "category": "cloud",
+      "capabilities": [
+        "static-hosting",
+        "serverless-compute"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Static and edge-function hosting.",
+      "homepage": "https://netlify.com",
+      "probe": {
+        "command": "netlify",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "cloudflare",
+      "name": "Cloudflare",
+      "category": "cloud",
+      "capabilities": [
+        "edge-network",
+        "serverless-compute",
+        "object-storage",
+        "static-hosting"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Workers, Pages, R2 and the edge network.",
+      "homepage": "https://cloudflare.com",
+      "probe": {
+        "command": "wrangler",
+        "args": [
+          "--version"
+        ]
+      },
+      "install": {
+        "method": "npm-global",
+        "package": "wrangler",
+        "privilege": "user"
+      }
+    },
+    {
+      "id": "fly",
+      "name": "Fly.io",
+      "category": "cloud",
+      "capabilities": [
+        "app-hosting",
+        "virtual-machine"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Runs containers close to users.",
+      "homepage": "https://fly.io",
+      "probe": {
+        "command": "flyctl",
+        "args": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "railway",
+      "name": "Railway",
+      "category": "cloud",
+      "capabilities": [
+        "app-hosting",
+        "sql-database"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Deploys apps and managed databases from a repository.",
+      "homepage": "https://railway.app",
+      "probe": {
+        "command": "railway",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "supabase",
+      "name": "Supabase",
+      "category": "cloud",
+      "capabilities": [
+        "sql-database",
+        "auth-service",
+        "object-storage"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Postgres, auth and storage as a managed service.",
+      "homepage": "https://supabase.com",
+      "probe": {
+        "command": "supabase",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "firebase",
+      "name": "Firebase",
+      "category": "cloud",
+      "capabilities": [
+        "nosql-database",
+        "auth-service",
+        "static-hosting",
+        "serverless-compute"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "App backend services from Google.",
+      "homepage": "https://firebase.google.com",
+      "probe": {
+        "command": "firebase",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "aws",
+      "name": "Amazon Web Services",
+      "category": "cloud",
+      "capabilities": [
+        "virtual-machine",
+        "object-storage",
+        "serverless-compute",
+        "sql-database",
+        "container-registry"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "General-purpose cloud platform.",
+      "homepage": "https://aws.amazon.com",
+      "probe": {
+        "command": "aws",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "azure",
+      "name": "Microsoft Azure",
+      "category": "cloud",
+      "capabilities": [
+        "virtual-machine",
+        "object-storage",
+        "serverless-compute",
+        "sql-database"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "General-purpose cloud platform.",
+      "homepage": "https://azure.microsoft.com",
+      "probe": {
+        "command": "az",
+        "args": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "gcp",
+      "name": "Google Cloud",
+      "category": "cloud",
+      "capabilities": [
+        "virtual-machine",
+        "object-storage",
+        "serverless-compute",
+        "sql-database"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "General-purpose cloud platform.",
+      "homepage": "https://cloud.google.com",
+      "probe": {
+        "command": "gcloud",
+        "args": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "digitalocean",
+      "name": "DigitalOcean",
+      "category": "cloud",
+      "capabilities": [
+        "virtual-machine",
+        "app-hosting",
+        "object-storage"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Droplets, App Platform and Spaces.",
+      "homepage": "https://digitalocean.com",
+      "probe": {
+        "command": "doctl",
+        "args": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "heroku",
+      "name": "Heroku",
+      "category": "cloud",
+      "capabilities": [
+        "app-hosting",
+        "sql-database"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Git-push application hosting.",
+      "homepage": "https://heroku.com",
+      "probe": {
+        "command": "heroku",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "render",
+      "name": "Render",
+      "category": "cloud",
+      "capabilities": [
+        "app-hosting",
+        "static-hosting",
+        "sql-database"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Managed web services and databases.",
+      "homepage": "https://render.com"
+    },
+    {
+      "id": "linode",
+      "name": "Akamai Linode",
+      "category": "cloud",
+      "capabilities": [
+        "virtual-machine",
+        "object-storage"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Compute instances and storage.",
+      "homepage": "https://linode.com"
+    },
+    {
+      "id": "hetzner",
+      "name": "Hetzner",
+      "category": "cloud",
+      "capabilities": [
+        "virtual-machine",
+        "object-storage"
+      ],
+      "transport": "oauth",
+      "auth": "api-key",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Low-cost European compute.",
+      "homepage": "https://hetzner.com"
+    },
+    {
+      "id": "planetscale",
+      "name": "PlanetScale",
+      "category": "cloud",
+      "capabilities": [
+        "sql-database"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Managed MySQL with branching.",
+      "homepage": "https://planetscale.com",
+      "probe": {
+        "command": "pscale",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "neon",
+      "name": "Neon",
+      "category": "cloud",
+      "capabilities": [
+        "sql-database"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Serverless Postgres with branching.",
+      "homepage": "https://neon.tech",
+      "probe": {
+        "command": "neonctl",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "mongodb-atlas",
+      "name": "MongoDB Atlas",
+      "category": "cloud",
+      "capabilities": [
+        "nosql-database"
+      ],
+      "transport": "local-process",
+      "auth": "cli-session",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Managed MongoDB clusters.",
+      "homepage": "https://mongodb.com/atlas",
+      "probe": {
+        "command": "atlas",
+        "args": [
+          "version"
+        ]
+      }
+    },
+    {
+      "id": "redis",
+      "name": "Redis",
+      "category": "cloud",
+      "capabilities": [
+        "cache",
+        "vector-store"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "In-memory data store.",
+      "homepage": "https://redis.io",
+      "probe": {
+        "command": "redis-cli",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "postgres",
+      "name": "PostgreSQL",
+      "category": "cloud",
+      "capabilities": [
+        "sql-database",
+        "vector-store"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Relational database.",
+      "homepage": "https://postgresql.org",
+      "probe": {
+        "command": "psql",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite",
+      "category": "cloud",
+      "capabilities": [
+        "sql-database"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Embedded relational database.",
+      "homepage": "https://sqlite.org",
+      "probe": {
+        "command": "sqlite3",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "bitbucket",
+      "name": "Bitbucket",
+      "category": "cloud",
+      "capabilities": [
+        "code-hosting",
+        "ci-cd"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Repository hosting and pipelines.",
+      "homepage": "https://bitbucket.org"
+    },
+    {
+      "id": "figma",
+      "name": "Figma",
+      "category": "design",
+      "capabilities": [
+        "design-tool",
+        "prototyping"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Collaborative interface design and prototyping.",
+      "homepage": "https://figma.com"
+    },
+    {
+      "id": "penpot",
+      "name": "Penpot",
+      "category": "design",
+      "capabilities": [
+        "design-tool",
+        "prototyping"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Open-source design and prototyping platform.",
+      "homepage": "https://penpot.app"
+    },
+    {
+      "id": "excalidraw",
+      "name": "Excalidraw",
+      "category": "design",
+      "capabilities": [
+        "diagramming"
+      ],
+      "transport": "oauth",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Hand-drawn style diagramming.",
+      "homepage": "https://excalidraw.com"
+    },
+    {
+      "id": "canva",
+      "name": "Canva",
+      "category": "design",
+      "capabilities": [
+        "image-editing",
+        "design-tool"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Template-driven graphic design.",
+      "homepage": "https://canva.com"
+    },
+    {
+      "id": "framer",
+      "name": "Framer",
+      "category": "design",
+      "capabilities": [
+        "prototyping",
+        "static-hosting"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Design-to-site prototyping and publishing.",
+      "homepage": "https://framer.com"
+    },
+    {
+      "id": "spline",
+      "name": "Spline",
+      "category": "design",
+      "capabilities": [
+        "design-tool"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "3D scene design for the web.",
+      "homepage": "https://spline.design"
+    },
+    {
+      "id": "photoshop",
+      "name": "Adobe Photoshop",
+      "category": "design",
+      "capabilities": [
+        "image-editing"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Raster image editing.",
+      "homepage": "https://adobe.com/photoshop"
+    },
+    {
+      "id": "illustrator",
+      "name": "Adobe Illustrator",
+      "category": "design",
+      "capabilities": [
+        "image-editing"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Vector illustration.",
+      "homepage": "https://adobe.com/illustrator"
+    },
+    {
+      "id": "notion",
+      "name": "Notion",
+      "category": "productivity",
+      "capabilities": [
+        "docs-workspace",
+        "issue-tracker"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Documents, wikis and lightweight databases.",
+      "homepage": "https://notion.so"
+    },
+    {
+      "id": "confluence",
+      "name": "Confluence",
+      "category": "productivity",
+      "capabilities": [
+        "docs-workspace"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Team documentation space.",
+      "homepage": "https://atlassian.com/software/confluence"
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "category": "productivity",
+      "capabilities": [
+        "chat"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Team messaging and alerts.",
+      "homepage": "https://slack.com"
+    },
+    {
+      "id": "discord",
+      "name": "Discord",
+      "category": "productivity",
+      "capabilities": [
+        "chat"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Community and team messaging.",
+      "homepage": "https://discord.com"
+    },
+    {
+      "id": "teams",
+      "name": "Microsoft Teams",
+      "category": "productivity",
+      "capabilities": [
+        "chat",
+        "calendar"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Team messaging and meetings.",
+      "homepage": "https://microsoft.com/microsoft-teams"
+    },
+    {
+      "id": "jira",
+      "name": "Jira",
+      "category": "productivity",
+      "capabilities": [
+        "issue-tracker"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Issue and sprint tracking.",
+      "homepage": "https://atlassian.com/software/jira"
+    },
+    {
+      "id": "linear",
+      "name": "Linear",
+      "category": "productivity",
+      "capabilities": [
+        "issue-tracker"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Fast issue tracking for product teams.",
+      "homepage": "https://linear.app"
+    },
+    {
+      "id": "clickup",
+      "name": "ClickUp",
+      "category": "productivity",
+      "capabilities": [
+        "issue-tracker",
+        "docs-workspace"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Work management platform.",
+      "homepage": "https://clickup.com"
+    },
+    {
+      "id": "trello",
+      "name": "Trello",
+      "category": "productivity",
+      "capabilities": [
+        "issue-tracker"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Board-based task tracking.",
+      "homepage": "https://trello.com"
+    },
+    {
+      "id": "google-drive",
+      "name": "Google Drive",
+      "category": "productivity",
+      "capabilities": [
+        "file-storage"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "File storage and sharing.",
+      "homepage": "https://drive.google.com"
+    },
+    {
+      "id": "dropbox",
+      "name": "Dropbox",
+      "category": "productivity",
+      "capabilities": [
+        "file-storage"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "File storage and sharing.",
+      "homepage": "https://dropbox.com"
+    },
+    {
+      "id": "onedrive",
+      "name": "OneDrive",
+      "category": "productivity",
+      "capabilities": [
+        "file-storage"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "File storage and sharing.",
+      "homepage": "https://onedrive.com"
+    },
+    {
+      "id": "gmail",
+      "name": "Gmail",
+      "category": "productivity",
+      "capabilities": [
+        "email"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Mail.",
+      "homepage": "https://gmail.com"
+    },
+    {
+      "id": "outlook",
+      "name": "Outlook",
+      "category": "productivity",
+      "capabilities": [
+        "email",
+        "calendar"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Mail and calendar.",
+      "homepage": "https://outlook.com"
+    },
+    {
+      "id": "google-calendar",
+      "name": "Google Calendar",
+      "category": "productivity",
+      "capabilities": [
+        "calendar"
+      ],
+      "transport": "oauth",
+      "auth": "oauth",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Scheduling.",
+      "homepage": "https://calendar.google.com"
+    },
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Claude models.",
+      "homepage": "https://anthropic.com"
+    },
+    {
+      "id": "openai",
+      "name": "OpenAI",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference",
+        "embeddings"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "commercial",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "GPT models and embeddings.",
+      "homepage": "https://openai.com"
+    },
+    {
+      "id": "google-gemini",
+      "name": "Google Gemini",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference",
+        "embeddings"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Gemini models.",
+      "homepage": "https://ai.google.dev"
+    },
+    {
+      "id": "mistral",
+      "name": "Mistral",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference",
+        "embeddings"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Open-weight and hosted models.",
+      "homepage": "https://mistral.ai"
+    },
+    {
+      "id": "groq",
+      "name": "Groq",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Low-latency inference.",
+      "homepage": "https://groq.com"
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Open-weight reasoning models.",
+      "homepage": "https://deepseek.com"
+    },
+    {
+      "id": "qwen",
+      "name": "Qwen",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Alibaba open-weight models.",
+      "homepage": "https://qwen.ai"
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Single gateway to many model providers.",
+      "homepage": "https://openrouter.ai"
+    },
+    {
+      "id": "cerebras",
+      "name": "Cerebras",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "High-throughput inference.",
+      "homepage": "https://cerebras.ai"
+    },
+    {
+      "id": "nvidia-nim",
+      "name": "NVIDIA NIM",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference",
+        "embeddings"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Hosted inference microservices.",
+      "homepage": "https://build.nvidia.com"
+    },
+    {
+      "id": "novita",
+      "name": "Novita AI",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Hosted open-model inference.",
+      "homepage": "https://novita.ai"
+    },
+    {
+      "id": "siliconflow",
+      "name": "SiliconFlow",
+      "category": "ai",
+      "capabilities": [
+        "llm-inference"
+      ],
+      "transport": "api-key",
+      "auth": "api-key",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Hosted open-model inference.",
+      "homepage": "https://siliconflow.cn"
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "category": "ai",
+      "capabilities": [
+        "local-llm",
+        "embeddings"
+      ],
+      "transport": "http",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Runs open models on this machine.",
+      "homepage": "https://ollama.com",
+      "endpoint": "http://127.0.0.1:11434/api/version"
+    },
+    {
+      "id": "lm-studio",
+      "name": "LM Studio",
+      "category": "ai",
+      "capabilities": [
+        "local-llm"
+      ],
+      "transport": "http",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Local model server with an OpenAI-compatible API.",
+      "homepage": "https://lmstudio.ai",
+      "endpoint": "http://127.0.0.1:1234/v1/models"
+    },
+    {
+      "id": "anythingllm",
+      "name": "AnythingLLM",
+      "category": "ai",
+      "capabilities": [
+        "local-llm",
+        "vector-store"
+      ],
+      "transport": "http",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Local retrieval-augmented workspace.",
+      "homepage": "https://anythingllm.com",
+      "endpoint": "http://127.0.0.1:3001/api/ping"
+    },
+    {
+      "id": "chrome",
+      "name": "Google Chrome",
+      "category": "browser",
+      "capabilities": [
+        "browser"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Opens URLs and developer tooling.",
+      "homepage": "https://google.com/chrome",
+      "probe": {
+        "command": "google-chrome",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "chromium",
+      "name": "Chromium",
+      "category": "browser",
+      "capabilities": [
+        "browser"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Open-source browser core.",
+      "homepage": "https://chromium.org",
+      "probe": {
+        "command": "chromium",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "firefox",
+      "name": "Firefox",
+      "category": "browser",
+      "capabilities": [
+        "browser"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Open-source browser.",
+      "homepage": "https://mozilla.org/firefox",
+      "probe": {
+        "command": "firefox",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "brave",
+      "name": "Brave",
+      "category": "browser",
+      "capabilities": [
+        "browser"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Privacy-focused browser.",
+      "homepage": "https://brave.com",
+      "probe": {
+        "command": "brave-browser",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "edge",
+      "name": "Microsoft Edge",
+      "category": "browser",
+      "capabilities": [
+        "browser"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "free-tier",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Chromium-based browser.",
+      "homepage": "https://microsoft.com/edge",
+      "probe": {
+        "command": "microsoft-edge",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "playwright",
+      "name": "Playwright",
+      "category": "browser",
+      "capabilities": [
+        "browser-automation",
+        "testing-framework"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Cross-browser automation and end-to-end testing.",
+      "homepage": "https://playwright.dev",
+      "probe": {
+        "command": "playwright",
+        "args": [
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "puppeteer",
+      "name": "Puppeteer",
+      "category": "browser",
+      "capabilities": [
+        "browser-automation"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Chromium automation library — consumed as a dependency, not a CLI.",
+      "homepage": "https://pptr.dev"
+    },
+    {
+      "id": "curl",
+      "name": "curl",
+      "category": "browser",
+      "capabilities": [
+        "http-client"
+      ],
+      "transport": "local-process",
+      "auth": "none",
+      "license": "open-source",
+      "crossPlatform": true,
+      "maintained": true,
+      "summary": "Calls HTTP APIs and inspects responses.",
+      "homepage": "https://curl.se",
+      "probe": {
+        "command": "curl",
+        "args": [
+          "--version"
+        ]
+      }
+    }
+  ],
+  "CATEGORY_LABELS": {
+    "hub": "Hub Subsystems",
+    "development": "Development",
+    "cloud": "Cloud",
+    "design": "Design",
+    "productivity": "Productivity",
+    "ai": "AI",
+    "browser": "Browser"
+  },
+  "CAPABILITIES": {
+    "source-control": "Track and version source history",
+    "code-hosting": "Host repositories remotely and review changes",
+    "ci-cd": "Run pipelines on push, tag or schedule",
+    "code-editor": "Open and edit project files",
+    "coding-agent": "Generate and modify code from natural language",
+    "terminal": "Run shell commands in a project directory",
+    "language-runtime": "Execute a program in a given language",
+    "package-manager": "Resolve, install and publish dependencies",
+    "testing-framework": "Run automated tests and report results",
+    "mobile-build": "Compile and sign a mobile application",
+    "game-engine": "Build interactive real-time applications",
+    "container-runtime": "Build and run containers locally",
+    "container-registry": "Store and distribute container images",
+    "app-hosting": "Host a long-running server application",
+    "static-hosting": "Serve a built static site or SPA",
+    "serverless-compute": "Run functions without managing servers",
+    "virtual-machine": "Provision raw compute instances",
+    "object-storage": "Store and serve unstructured files",
+    "edge-network": "Cache and route traffic at the edge",
+    "secrets-management": "Store credentials outside the repository",
+    "observability": "Collect logs, metrics and traces from a running system",
+    "sql-database": "Persist relational data",
+    "nosql-database": "Persist document or key-value data",
+    "cache": "Serve hot data with low latency",
+    "vector-store": "Store and search embeddings",
+    "auth-service": "Authenticate and authorize end users",
+    "design-tool": "Produce interface designs and design systems",
+    "prototyping": "Build an interactive prototype of a flow",
+    "diagramming": "Draw architecture and flow diagrams",
+    "image-editing": "Create and edit raster or vector assets",
+    "docs-workspace": "Write and share long-form documents",
+    "issue-tracker": "Track work items, sprints and status",
+    "chat": "Notify and converse with a team",
+    "file-storage": "Store and share arbitrary files with a team",
+    "email": "Send and receive mail",
+    "calendar": "Schedule events and reminders",
+    "llm-inference": "Run a hosted large language model",
+    "local-llm": "Run a language model on this machine",
+    "embeddings": "Turn text into vectors for retrieval",
+    "browser": "Open and render a web page for a human",
+    "browser-automation": "Drive a browser programmatically",
+    "http-client": "Call an HTTP API and inspect the response",
+    "knowledge-graph": "Answer questions about the codebase structure",
+    "engineering-memory": "Recall why past decisions were made",
+    "mission-control": "Plan, approve and execute engineering missions",
+    "diagnosis": "Find and explain defects in the codebase",
+    "governance": "Audit health, risk and release readiness"
+  },
+  "AGENTS": {
+    "planner": {
+      "role": "planner",
+      "label": "Planner",
+      "focus": "Turns the request into a goal, assumptions and a plan.",
+      "icon": "clipboard"
+    },
+    "architect": {
+      "role": "architect",
+      "label": "Architect",
+      "focus": "Decides structure, boundaries and technology.",
+      "icon": "architecture"
+    },
+    "designer": {
+      "role": "designer",
+      "label": "Designer",
+      "focus": "Owns the design language and the screens.",
+      "icon": "layout"
+    },
+    "frontend": {
+      "role": "frontend",
+      "label": "Frontend Engineer",
+      "focus": "Builds the interface and its state.",
+      "icon": "code"
+    },
+    "backend": {
+      "role": "backend",
+      "label": "Backend Engineer",
+      "focus": "Builds the services and business rules.",
+      "icon": "server"
+    },
+    "database": {
+      "role": "database",
+      "label": "Database Engineer",
+      "focus": "Models, provisions and migrates the data.",
+      "icon": "database"
+    },
+    "security": {
+      "role": "security",
+      "label": "Security Engineer",
+      "focus": "Guards inputs, secrets and authorization.",
+      "icon": "shield"
+    },
+    "testing": {
+      "role": "testing",
+      "label": "Testing Engineer",
+      "focus": "Proves the behaviour actually holds.",
+      "icon": "flask"
+    },
+    "devops": {
+      "role": "devops",
+      "label": "DevOps Engineer",
+      "focus": "Scaffolding, builds, containers and pipelines.",
+      "icon": "terminal"
+    },
+    "deployment": {
+      "role": "deployment",
+      "label": "Deployment Engineer",
+      "focus": "Gets it running somewhere reachable.",
+      "icon": "deploy"
+    },
+    "documentation": {
+      "role": "documentation",
+      "label": "Documentation Engineer",
+      "focus": "Makes the result usable by someone else.",
+      "icon": "doc"
+    },
+    "reviewer": {
+      "role": "reviewer",
+      "label": "Reviewer",
+      "focus": "Reads the change for what will age badly.",
+      "icon": "eye"
+    },
+    "debugger": {
+      "role": "debugger",
+      "label": "Debugger",
+      "focus": "Reproduces, isolates and explains failures.",
+      "icon": "bug"
+    },
+    "optimizer": {
+      "role": "optimizer",
+      "label": "Optimizer",
+      "focus": "Measures first, then removes the real cost.",
+      "icon": "activity"
+    }
+  }
+}

@@ -683,7 +683,8 @@ oversight).
 **Python destination:** `backend/src/aura_backend/environment/`.
 **Difficulty: MEDIUM.**
 
-105 catalogue entries, 48 capability ids, 11 entries with an install spec.
+**105 catalogue entries, 47 capability ids, 10 entries with an install spec.**
+(This document first recorded 48 and 11; the differential diff settled it.)
 
 **The security boundary, stated in-source and worth quoting in the port:** the
 probe command and arguments **always** come from the catalogue entry looked up
@@ -703,9 +704,24 @@ Constants: probe timeout 4 s, HTTP probe 2.5 s, cache TTL 30 s, concurrency 8.
 in `server.ts` *replaces* rather than merges the global projection, so a
 targeted scan makes every unscanned node appear to vanish, and a genuinely
 installed node can become unroutable with `node-not-connected`. The Python port
-merges. This is a **behavior change** and is recorded in §13.
+merges. This is a **behavior change** and is recorded in §13 as difference #8.
 
-**Status: NOT STARTED.**
+**Status: TESTED + RUNTIME VERIFIED + PARITY VERIFIED.**
+Full detail in [`PHASE_08_TOOLS.md`](./PHASE_08_TOOLS.md).
+
+- **The reference's own HTTP suites, run against BOTH backends: 109/109 checks
+  agree.** `install-verify.mjs` passes **59/59 on both**. The 18 checks that
+  fail do so on both backends with byte-identical text, because those suites
+  assume a pre-registered project they never create — Phase 3's dependency,
+  not a Python gap. Repeatable via `verify/reference_suites.py`.
+- Catalogue: **IDENTICAL** to the reference, including entry order (which is
+  the routing tie-break). Generated rather than transcribed, and diffed.
+- Live scan on this machine: 61 nodes, **MATCH** on presence, version and
+  detail for every one.
+- Negative controls **39/39**; runtime **21/21**.
+- **12 of 22 executors migrated.** The ten AURA-internal ones delegate to the
+  workspace manager (Phase 3, not yet migrated) and were deliberately NOT
+  stubbed — they report `unsupported`, which is true.
 
 ---
 
@@ -1146,6 +1162,7 @@ by path. The Python side adds an aggregate runner.
 | 3 | No reference results for 11 unverified subsystems | Context, intelligence, diagnosis, secrets | Parity must be established by source reading. Cannot be automated. |
 | 4 | 16-byte GCM IV and import-time path capture | Provider credential store | Reproduce the IV length exactly; convert paths to lazy accessors. |
 | 5 | `verify-workflow-automation.mjs` re-authoring | Workflow + automation parity | 129 assertions to port. Largest single verification task. |
+| 8 | No project registry, so no `cwd` | every project-facing executor | filesystem/terminal/git/agent all refuse with "No project directory is set". The execution half of the reference suites cannot run on **either** backend until Phase 3 lands. |
 | 7 | Fabric concurrency is unproven | `fabric/fabric.py` | The reference is single-threaded JS; the Python fabric is async with unlocked approval/audit structures. Safe under one event loop, but an assumption rather than a proof. Re-examine in Phase 15. |
 | 6 | `selectors` does not select on pipe handles on Windows | `execution/process.py` `_drain` | Needs a thread-based fallback before a Windows cutover. Linux and macOS are unaffected. Blocks Phase 16 on Windows only. |
 
@@ -1210,6 +1227,8 @@ list is currently short by design.
 | 2 | Path segments are validated inside the persistence layer, not only by upstream id generators. | Defense in depth against traversal via `homePath()`. | Low — rejects only inputs the current id generators cannot produce. |
 | 3 | A child that ignores SIGTERM is escalated to SIGKILL after 5 s. | Node sends its kill signal once and waits forever; a wedged backend is worse than a divergence. | Low — only affects children that ignore SIGTERM, which the reference cannot stop either. |
 | 4 | Once the child has exited, pipes are drained for a bounded 2 s and then abandoned. | A detached grandchild inheriting stdout otherwise blocks the caller for its whole lifetime — measured at 30.1 s in a failing test. The reference has the same wedge. | Low — the status reported is still the one the process exited with. |
+| 8 | A targeted `POST /environment/scan` MERGES into the node projection instead of replacing it. | The reference assigns, so a targeted scan makes every unscanned node vanish and a genuinely installed node becomes unroutable. The master handoff records this as a correctness bug in a live path (§20 item 1). | Low — strictly more correct; covered by a negative control and a runtime check. |
+| 9 | `system.install` takes an injected scanner rather than calling a module-level `probeNode`. | The cache it bypasses on verification is then the same one the service scans with. | None — behaviourally identical. |
 | 5 | `maxBuffer` truncation caps bytes and decodes once at the end. | Node decodes incrementally with a `StringDecoder`. For a stream overflowing mid-multi-byte character the final character may differ. | Very low — both report exit 1 and truncate at 4 MiB; the overflow case is differentially tested. |
 
 ---
@@ -1226,7 +1245,7 @@ list is currently short by design.
 | 5 | AI service / provider layer | pending audit | — | NOT STARTED |
 | 6 | Execution / process layer | EXISTS | CRITICAL | **PARITY VERIFIED** (225/225; Windows BUILT only) |
 | 7 | Capability Fabric + policy + approval | EXISTS | CRITICAL | **PARITY VERIFIED** (44/44; executors deferred to Phase 8) |
-| 8 | Tools + integrations | pending audit | — | NOT STARTED |
+| 8 | Tools + integrations | EXISTS | HIGH | **PARITY VERIFIED** (109/109 reference checks agree; 12/22 executors — the other 10 need Phase 3) |
 | 9 | Workflow engine | pending audit | HIGH | NOT STARTED |
 | 10 | Automation engine + scheduler | EXISTS | HIGH | NOT STARTED |
 | 11 | Agent runtime | pending audit | CRITICAL | NOT STARTED |

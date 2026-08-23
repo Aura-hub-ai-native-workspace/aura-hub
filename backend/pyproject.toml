@@ -30,6 +30,7 @@ packages = ["src/aura_backend"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 pythonpath = ["."]
+markers = ["slow: exercises real tools and races real timeouts"]
 
 [tool.ruff]
 line-length = 100

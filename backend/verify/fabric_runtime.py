@@ -86,9 +86,25 @@ def main() -> int:
             r = c.get("/fabric/capabilities").json()
             check("1. the whole manifest is served", len(r["capabilities"]) == 33,
                   f"{len(r['capabilities'])} capabilities")
-            check("1b. no capability claims an executor it does not have",
-                  r["supportedCount"] == 0, f"supportedCount={r['supportedCount']}")
-            check("1c. the shipped policy is reported",
+            # Phase 8 registered the machine-facing executors. The property
+            # under test is not "none are supported" — it is that the
+            # `supported` flag matches reality, and that the ten
+            # AURA-internal capabilities (which need Phase 3's workspace
+            # manager) still report unsupported rather than being stubbed.
+            supported = {c["id"] for c in r["capabilities"] if c["supported"]}
+            check("1b. the supported set is exactly the executors that exist",
+                  supported == {
+                      "filesystem.list", "filesystem.read", "filesystem.write",
+                      "terminal.execute", "agent.delegate", "system.install",
+                      "git.status", "git.diff", "git.branch", "git.commit",
+                      "git.push", "http.request",
+                  },
+                  f"{len(supported)} supported")
+            check("1c. capabilities with no executor still say so rather than pretending",
+                  not any(c["supported"] for c in r["capabilities"]
+                          if c["id"].startswith(("project.", "mission.", "browser.", "github."))),
+                  "internal and extension-point capabilities report unsupported")
+            check("1d. the shipped policy is reported",
                   r["policy"]["byRisk"]["high"] == "require-approval",
                   json.dumps(r["policy"]["byRisk"]))
 

@@ -16,7 +16,10 @@ from fastapi.responses import JSONResponse
 from .. import __version__
 from ..config import Settings
 from ..core.errors import AuraError
+from ..environment import EnvironmentScanner, NodeProjection
 from ..fabric import ApprovalStore, AuditStore, CapabilityFabric, ServiceFabricHost, load_policy
+from ..tools.executors import machine_executors
+from .routes import environment as environment_routes
 from .routes import fabric as fabric_routes
 
 
@@ -33,8 +36,12 @@ def create_app(settings: Settings) -> FastAPI:
     # immediately. They stay empty until Phase 8 supplies the environment
     # scanner — which means node-backed capabilities are denied with
     # `no-provider` rather than silently allowed.
-    app.state.present_nodes = list
-    app.state.provided_node_capabilities = lambda: set()
+    scanner = EnvironmentScanner()
+    projection = NodeProjection()
+    app.state.scanner = scanner
+    app.state.node_projection = projection
+    app.state.present_nodes = projection.present_nodes
+    app.state.provided_node_capabilities = projection.provided_capabilities
 
     host = ServiceFabricHost(
         present_nodes=lambda: app.state.present_nodes(),
@@ -51,11 +58,15 @@ def create_app(settings: Settings) -> FastAPI:
     # So does the trail. Without this, everything the Fabric governed is
     # forgotten on exit.
     fabric.attach_audit_store(AuditStore(settings.home))
-    # Executors are registered in Phase 8. Until then every capability
-    # reports `unsupported` at call time rather than pretending.
+    # The machine-facing executors. The ten AURA-internal ones need the
+    # workspace manager (Phase 3) and are deliberately absent, so they
+    # report `unsupported` — which is true — rather than being stubbed.
+    for executor in machine_executors(scanner):
+        fabric.register(executor)
     app.state.fabric = fabric
     app.state.run_scopes = host.run_scopes
 
+    app.include_router(environment_routes.router)
     app.include_router(fabric_routes.router)
 
     @app.exception_handler(AuraError)
