@@ -30,7 +30,7 @@
 
 import type { PipelineManager } from '../pipeline';
 import type { AgentNodeRunner } from './agent/runner';
-import type { AgentTrace } from './agent/types';
+import type { AgentBeat, AgentTrace } from './agent/types';
 import { NODE_CLASS } from './governed';
 import { provenanceOf, weakest, type Provenance } from './provenance';
 import type { NodeGovernor } from './governor';
@@ -43,6 +43,14 @@ const MAX_LOOP_ITERATIONS = 20;
 const MAX_NODE_EXECUTIONS = 400; // hard safety valve
 /** Default wall clock for a whole run. Bounded so nothing runs forever. */
 const DEFAULT_RUN_TIMEOUT_MS = 30 * 60_000;
+/**
+ * How often a mid-flight agent ledger is written to disk.
+ *
+ * A compromise, stated rather than tuned silently: often enough that a
+ * reconnecting client sees recent thinking, rarely enough that watching an
+ * agent does not dominate the cost of running one.
+ */
+const BEAT_CHECKPOINT_MS = 1000;
 
 export interface RunOptions {
   projectId: string;
@@ -375,6 +383,8 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions, emit: (e: RunE
       }
 
       if (node.type === 'agent') {
+        const liveBeats: AgentBeat[] = [];
+        let lastBeatCheckpoint = 0;
         if (!opts.agents) {
           // Same rule as a governed node: no runtime, no run. An agent
           // node that silently did nothing would be worse than one that
@@ -384,6 +394,31 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions, emit: (e: RunE
         const outcome = await opts.agents.run(node, ctx, input, {
           resumeFrom: opts.agentResume?.[node.id],
           interpolate: (t2) => interpolate(t2, ctx, input),
+          // Live, through the ONE event stream the engine already owns.
+          // No second channel, no second format.
+          onBeat: (beat) => {
+            emit({ type: 'agent', nodeId: node.id, runId: record?.id, beat });
+            /* Reconnect story, and the reason there is no replay buffer.
+             *
+             * A client that drops mid-agent catches up by re-reading the
+             * run record, so the partial ledger has to BE there while the
+             * agent is still thinking — otherwise a reconnect sees nothing
+             * until the node ends, which is the gap this milestone exists
+             * to close, merely moved somewhere less obvious.
+             *
+             * Throttled, because a file write per beat would make watching
+             * an agent more expensive than running it. A beat lost to the
+             * throttle is never lost outright: the authoritative write
+             * happens when the node resolves. */
+            if (!record) return;
+            liveBeats.push(beat);
+            const rec = record.nodes[node.id];
+            if (rec) rec.agentTrace = { ...(rec.agentTrace as object ?? {}), beats: [...liveBeats], partial: true };
+            const now = Date.now();
+            if (now - lastBeatCheckpoint < BEAT_CHECKPOINT_MS) return;
+            lastBeatCheckpoint = now;
+            checkpoint();
+          },
         });
         const ms = Date.now() - t;
         // Every tool call the agent made is attached to THIS node, so the
@@ -393,10 +428,13 @@ export async function runWorkflow(wf: Workflow, opts: RunOptions, emit: (e: RunE
           // Provenance travels onto the ledger so a trace can say the
           // agent was handed quarantined material, not merely that it
           // produced an odd answer.
+          // The authoritative write. `partial` is cleared, so a reader can
+          // tell a finished ledger from a snapshot of one in progress.
           record.nodes[node.id].agentTrace = {
             ...outcome.trace,
             inputProvenance: outcome.inputProvenance,
             taskWasQuarantined: outcome.taskWasQuarantined,
+            partial: false,
           };
         }
 

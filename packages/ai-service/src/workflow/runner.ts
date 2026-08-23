@@ -139,6 +139,7 @@ export class WorkflowRunner {
     const previous = this.deps.runs.get(workflow.id, runId);
     if (!previous) return { error: 'no such run' };
     if (previous.state === 'succeeded') return { error: 'that run already succeeded — there is nothing to resume' };
+    if (previous.supersededBy) return { error: `that run was already continued as run ${previous.supersededBy}` };
     if (!previous.resumable) return { error: previous.notResumableReason ?? 'that run cannot be resumed' };
 
     const version = this.deps.versions.get(workflow.id, previous.versionId);
@@ -180,6 +181,10 @@ export class WorkflowRunner {
       inputs: previous.inputs,
     });
     run.vars = { ...previous.vars };
+    /* The original stops being pending the moment another run picks it up.
+       Stamped BEFORE execution, so a crash mid-resume still leaves a
+       coherent chain rather than two runs both claiming to be waiting. */
+    this.deps.runs.markSuperseded(workflow.id, previous.id, run.id);
     opts.onRunCreated?.(run);
 
     const result = await this.execute({

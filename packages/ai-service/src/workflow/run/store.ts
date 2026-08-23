@@ -244,8 +244,57 @@ export class WorkflowRunStore {
   }
 
   /** Runs parked on a human decision, across every workflow. */
+  /**
+   * Runs genuinely waiting on a person.
+   *
+   * A superseded run is excluded: its question was answered and another run
+   * picked the work up, so leaving it here would keep a resolved item in
+   * the approvals inbox forever — which is exactly what it used to do.
+   */
   listAwaitingApproval(): WorkflowRunSummary[] {
-    return this.list().filter((r) => r.state === 'awaiting-approval');
+    return this.list().filter((r) => r.state === 'awaiting-approval' && !r.supersededBy);
+  }
+
+  /**
+   * Mark a run as continued by another, and stop offering it as resumable.
+   *
+   * The `state` is deliberately left alone. `awaiting-approval` remains the
+   * honest description of how THAT leg ended, and rewriting it would lose
+   * the reason the chain exists. What changes is that it stops claiming to
+   * be actionable.
+   */
+  markSuperseded(workflowId: string, runId: string, bySupersedingRunId: string): WorkflowRun | null {
+    const run = this.get(workflowId, runId);
+    if (!run || run.supersededBy) return run;
+    run.supersededBy = bySupersedingRunId;
+    run.supersededAt = new Date().toISOString();
+    run.resumable = false;
+    run.notResumableReason = `continued as run ${bySupersedingRunId}`;
+    this.save(run);
+    return run;
+  }
+
+  /** Every leg of one logical execution, oldest first. */
+  resumeChain(workflowId: string, runId: string): WorkflowRun[] {
+    // Walk back to the head, then forward — a caller may hand us any leg.
+    let head = this.get(workflowId, runId);
+    if (!head) return [];
+    const guard = new Set<string>();
+    while (head.trigger.kind === 'resume' && !guard.has(head.id)) {
+      guard.add(head.id);
+      const prior = this.get(workflowId, head.trigger.of);
+      if (!prior) break;
+      head = prior;
+    }
+    const chain: WorkflowRun[] = [head];
+    const seen = new Set<string>([head.id]);
+    let cursor: WorkflowRun | null = head;
+    while (cursor?.supersededBy && !seen.has(cursor.supersededBy)) {
+      seen.add(cursor.supersededBy);
+      cursor = this.get(workflowId, cursor.supersededBy);
+      if (cursor) chain.push(cursor);
+    }
+    return chain;
   }
 
   /** Counts by state, for a dashboard that must not fetch every run. */

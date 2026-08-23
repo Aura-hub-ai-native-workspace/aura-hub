@@ -161,6 +161,27 @@ export type RunEvent =
   | { type: 'log'; nodeId: string | null; level: 'info' | 'warn' | 'error'; text: string; at: string }
   | { type: 'output'; nodeId: string; title: string; text: string }
   /**
+   * One agent beat, live, as it happens.
+   *
+   * The payload IS the `AgentBeat` that lands in the persisted `AgentTrace`
+   * — the same object, the same `seq`, the same redaction, the same
+   * `untrusted` flag. There is deliberately no second trace format: a
+   * client reconciles the live stream against the final trace by
+   * `(runId, nodeId, beat.seq)`, and that only works because the two are
+   * the same thing.
+   *
+   * **The persisted trace remains authoritative.** These events are a
+   * courtesy for an operator watching a long agent; they can be missed
+   * entirely (nobody connected), duplicated (a reconnect replays), or
+   * arrive after the run record is written. A client must treat the trace
+   * on the run record as truth and the stream as an early view of it.
+   *
+   * An `execution` beat carries `evidence.invocationId`, which resolves in
+   * the durable audit trail. That — not the arrival of an event — is what
+   * proves something actually ran.
+   */
+  | { type: 'agent'; nodeId: string; runId?: string; beat: import('./agent/types').AgentBeat }
+  /**
    * `status` stays two-valued because every existing consumer switches on
    * exactly those two. `runState` carries the honest, unflattened answer
    * alongside it — a cancelled run and a timed-out run both report

@@ -41,7 +41,7 @@ import type { NodeIO, WfNode } from '../types';
 import { isInstruction, type Provenance } from '../provenance';
 import { resolveBounds } from './bounds';
 import { runAgentLoop } from './loop';
-import type { AgentPort, AgentStopReason, AgentTrace } from './types';
+import type { AgentBeat, AgentPort, AgentStopReason, AgentTrace } from './types';
 
 export interface AgentOutcome {
   /** The port that fires, or null when the run parks instead. */
@@ -72,7 +72,12 @@ export interface AgentNodeRunner {
     node: WfNode,
     ctx: RunCtx,
     input: NodeIO,
-    opts: { resumeFrom?: AgentTrace; interpolate: (t: string) => string },
+    opts: {
+      resumeFrom?: AgentTrace;
+      interpolate: (t: string) => string;
+      /** Live beat sink. The engine turns each one into a RunEvent. */
+      onBeat?: (beat: AgentBeat) => void;
+    },
   ): Promise<AgentOutcome>;
 }
 
@@ -172,6 +177,7 @@ export function createAgentRunner(deps: AgentRunnerDeps): AgentNodeRunner {
         signal: deps.signal,
         redact: deps.redact,
         resumeFrom: opts.resumeFrom,
+        onBeat: opts.onBeat,
         // Only meaningful when there IS a parked call to re-issue. Taken
         // from the ledger's own record of which question was asked, not
         // from anything a caller supplies.

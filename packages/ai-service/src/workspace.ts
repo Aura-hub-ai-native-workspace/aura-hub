@@ -670,6 +670,11 @@ export class WorkspaceManager {
     return this.workflowRuns.get(workflowId, runId);
   }
 
+  /** Every leg of one logical execution, oldest first. */
+  workflowRunChain(workflowId: string, runId: string): WorkflowRun[] {
+    return this.workflowRuns.resumeChain(workflowId, runId);
+  }
+
   /**
    * Mark runs orphaned by a crash. Called once at startup.
    *

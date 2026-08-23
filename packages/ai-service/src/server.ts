@@ -9,6 +9,7 @@ import { nodeSpecInfos } from './workflow/nodes';
 import { TEMPLATES, instantiateTemplate } from './workflow/templates';
 import { generateWorkflow } from './workflow/generate';
 import { validateWorkflow } from './workflow/validate';
+import { summarizeRun } from './workflow/run/types';
 import { classifyAllTools, describeTools, resolveTools } from './workflow/agent/bounds';
 import { AGENT_CEILINGS, AGENT_DEFAULTS } from './workflow/agent/types';
 import type { RunEvent, Workflow } from './workflow/types';
@@ -980,6 +981,11 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (seg.length === 4 && method === 'GET') {
             const run = manager.getWorkflowRun(id, seg[3]);
             return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
+          }
+          if (seg[4] === 'chain' && method === 'GET') {
+            // One logical execution across however many resume legs it took.
+            const chain = manager.workflowRunChain(id, seg[3]);
+            return chain.length ? json(res, 200, { chain: chain.map(summarizeRun) }) : json(res, 404, { error: 'no such run' });
           }
           if (seg[4] === 'cancel' && method === 'POST') {
             return json(res, 200, { cancelled: manager.cancelWorkflowRun(seg[3]) });

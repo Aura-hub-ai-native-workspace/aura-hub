@@ -241,6 +241,19 @@ export interface WorkflowRun {
   resumable: boolean;
   /** Why not, when `resumable` is false and the run did not succeed. */
   notResumableReason?: string;
+  /**
+   * The run that picked this one up — the BACK link of a resume chain.
+   *
+   * `trigger.of` on the new run points backwards; this points forwards, and
+   * without it a UI could only discover that a parked run had been
+   * continued by scanning every other run for one that named it.
+   *
+   * Its presence also means this run is no longer pending: a superseded run
+   * is not awaiting anything, and it drops out of the approvals inbox and
+   * out of `resumable`. See docs/AGENT_RESUME_SEMANTICS.md.
+   */
+  supersededBy?: string;
+  supersededAt?: string;
   /** Bounded run log. Node-scoped lines carry their node id. */
   log: { at: string; nodeId: string | null; level: 'info' | 'warn' | 'error'; text: string }[];
 }
@@ -266,6 +279,8 @@ export interface WorkflowRunSummary {
   approvalCount: number;
   resumable: boolean;
   error?: string;
+  /** Set once another run continued this one. */
+  supersededBy?: string;
 }
 
 export function summarizeRun(run: WorkflowRun): WorkflowRunSummary {
@@ -288,5 +303,6 @@ export function summarizeRun(run: WorkflowRun): WorkflowRunSummary {
     approvalCount: states.filter((n) => n.state === 'awaiting-approval').length,
     resumable: run.resumable,
     error: run.error,
+    supersededBy: run.supersededBy,
   };
 }

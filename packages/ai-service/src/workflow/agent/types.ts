@@ -204,6 +204,15 @@ export interface AgentTrace {
    */
   tokenSource: 'provider' | 'estimated' | 'mixed';
   /**
+   * True while the agent is still running and this is a snapshot.
+   *
+   * A partial ledger has `beats` and nothing else — no stop reason, no
+   * bounds, no evidence — because none of those are known yet. A reader
+   * must not mistake a snapshot for a verdict, so the distinction is a
+   * field rather than something inferred from a missing key.
+   */
+  partial?: boolean;
+  /**
    * Enough state to pick the agent up where it stopped.
    *
    * Present only when `stopReason === 'awaiting-approval'`, which is the

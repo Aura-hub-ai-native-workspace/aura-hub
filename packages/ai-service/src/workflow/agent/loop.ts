@@ -90,6 +90,18 @@ export interface AgentRunInput {
   actor: { kind: 'agent'; id: string };
   signal?: AbortSignal;
   redact?: (text: string) => string;
+  /**
+   * Called as each beat is recorded, for the live stream.
+   *
+   * The SAME `AgentBeat` that goes into the trace — not a second shape, not
+   * a summary. A live event and its persisted counterpart are the identical
+   * object, which is what lets a client reconcile the two by `seq` instead
+   * of guessing whether they describe the same thing.
+   *
+   * Called AFTER the beat is appended and redacted, so a listener can never
+   * see text the ledger would not.
+   */
+  onBeat?: (beat: AgentBeat) => void;
 }
 
 /** What the model is required to emit. Anything else is a parse failure. */
@@ -163,6 +175,7 @@ export async function runAgentLoop(input: AgentRunInput): Promise<AgentTrace> {
   const beats: AgentBeat[] = [];
   const evidence: EvidenceRef[] = [];
   let seq = 0;
+  let truncationAnnounced = false;
   let iteration = prior?.iteration ?? 0;
   let tokensUsed = prior?.tokensUsed ?? 0;
   let consecutiveFailures = 0;
@@ -175,11 +188,40 @@ export async function runAgentLoop(input: AgentRunInput): Promise<AgentTrace> {
   const carriedMs = prior?.elapsedMs ?? 0;
   // Beats from the earlier leg are carried so the ledger reads as one
   // continuous story rather than restarting at the approval.
-  if (input.resumeFrom) beats.push(...input.resumeFrom.beats.slice(-MAX_BEATS / 2));
+  if (input.resumeFrom) {
+    const carried = input.resumeFrom.beats.slice(-MAX_BEATS / 2);
+    beats.push(...carried);
+    /* `seq` continues past whatever was carried.
+     *
+     * It used to restart at 0 on every resume, so a resumed leg minted
+     * beats whose seq collided with the ones it had just inherited. Any
+     * consumer deduplicating by seq — which is exactly what the live
+     * stream asks a client to do — would have silently dropped real beats
+     * as duplicates. `seq` is the ordering key for a whole logical agent
+     * execution, not for one leg of it. */
+    seq = carried.reduce((max, b) => Math.max(max, b.seq + 1), 0);
+  }
 
   const beat = (kind: BeatKind, actor: AgentBeat['actor'], text: string, extra: Partial<AgentBeat> = {}) => {
-    if (beats.length >= MAX_BEATS) return;
-    beats.push({ seq: seq++, iteration, at: new Date().toISOString(), kind, actor, text: clip(redact(text)), ...extra });
+    if (beats.length >= MAX_BEATS) {
+      // Bounded, and honest about it: the cap is announced once so a reader
+      // knows the ledger is truncated rather than complete.
+      if (!truncationAnnounced) {
+        truncationAnnounced = true;
+        const notice: AgentBeat = {
+          seq: seq++, iteration, at: new Date().toISOString(), kind: 'result', actor: 'system',
+          text: `This ledger reached its ${MAX_BEATS}-beat limit. Later steps ran but are not recorded here.`,
+        };
+        beats.push(notice);
+        input.onBeat?.(notice);
+      }
+      return;
+    }
+    const entry: AgentBeat = { seq: seq++, iteration, at: new Date().toISOString(), kind, actor, text: clip(redact(text)), ...extra };
+    beats.push(entry);
+    // Live and persisted are the same object. A listener that throws must
+    // not take down an agent that is mid-execution.
+    try { input.onBeat?.(entry); } catch { /* a stream is never worth an execution */ }
   };
 
   beat('intent', 'system', input.context ? `${input.task}\n\ncontext manifest: ${clip(input.context, 600)}` : input.task);
