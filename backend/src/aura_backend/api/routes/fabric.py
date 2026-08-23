@@ -157,10 +157,11 @@ async def invoke(request: Request) -> Any:
     context = InvocationContext(
         actor=InvocationActor(kind=actor, id=raw_context.get("actorId") or "api"),
         project_id=project_id,
-        # `cwd` is resolved from the project registry by the host, never
-        # taken from the request body. Phase 3 owns that registry; until
-        # then a caller cannot supply one at all.
-        cwd=None,
+        # Resolved from the PROJECT REGISTRY by id. A caller names a
+        # project; it never names a directory, and there is no field here
+        # that would let it. This is what stops `/fabric/invoke` from
+        # pointing execution anywhere on the machine.
+        cwd=request.app.state.workspace.cwd_for(project_id),
         mission_id=raw_context.get("missionId"),
         task_id=raw_context.get("taskId"),
         workflow_id=raw_context.get("workflowId"),

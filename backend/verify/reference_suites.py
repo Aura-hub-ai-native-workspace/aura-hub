@@ -9,10 +9,13 @@ Both services get an isolated `AURA_HOME` and a port of their own, so
 nothing here touches a running development service or the user's real
 AURA state.
 
-A check that fails on BOTH backends is not a parity failure — it is the
-suite telling us something about the environment (most of these suites
-assume a project is already registered, and never register one). A check
-that differs is a real divergence and is reported as one.
+The suites assume a project called `hub-exec-test` is already registered
+and never register one themselves, so this runner registers it on both
+backends first — identical setup, identical path. That is the environment
+the suites were written for, not a concession to either implementation.
+
+A check that fails on BOTH backends is not a parity failure. A check that
+differs is a real divergence and is reported as one.
 
 Usage:  uv run python -m verify.reference_suites [--repo PATH]
 """
@@ -20,6 +23,7 @@ Usage:  uv run python -m verify.reference_suites [--repo PATH]
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -88,6 +92,37 @@ class Backend:
             self._proc.wait(timeout=15)
 
 
+# The project the suites expect to find already registered. They create
+# the directory themselves at the start of every run; we only have to make
+# it exist once so registration can succeed.
+PROJECT_NAME = "hub-exec-test"
+PROJECT_PATH = (
+    "/tmp/claude-1000/-home-Groot-aura-hub/"
+    "615b7fbc-bd62-488e-a4fb-ca66447d02b9/scratchpad/hub-exec-test"
+)
+
+
+def register_project(port: int) -> str:
+    """Give a backend the project the suites assume exists."""
+    Path(PROJECT_PATH).mkdir(parents=True, exist_ok=True)
+    import urllib.error
+    import urllib.request
+
+    payload = json.dumps({"path": PROJECT_PATH, "name": PROJECT_NAME}).encode()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/projects",
+        data=payload,
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = json.loads(response.read())
+        return (body.get("project") or {}).get("id", "?")
+    except urllib.error.HTTPError as exc:
+        return f"already-registered-or-refused ({exc.code})"
+
+
 def run_suite(repo: Path, suite: str, port: int) -> dict[str, str]:
     proc = subprocess.run(
         ["node", str(repo / "scripts" / f"{suite}.mjs")],
@@ -150,6 +185,10 @@ def main() -> int:
                     PY_PORT, Path(__file__).resolve().parents[1],
                 ),
             ):
+                for port, label in ((TS_PORT, "TypeScript"), (PY_PORT, "Python")):
+                    print(f"setup: registered {PROJECT_NAME} on {label} "
+                          f"as id {register_project(port)!r}")
+
                 for suite in SUITES:
                     ts = run_suite(repo, suite, TS_PORT)
                     py = run_suite(repo, suite, PY_PORT)
@@ -176,11 +215,18 @@ def main() -> int:
                         failed = True
                         print(f"    PY-only ({py[name]}): {name}")
                     if both_fail:
+                        # An identical failure on both implementations is
+                        # an environment fact, not a divergence. The known
+                        # one is `terminal.execute`: it is medium-risk, the
+                        # SHIPPED DEFAULT policy maps medium to `ask-user`,
+                        # and the suites invoke it without a grant — so it
+                        # parks. They were written against a home
+                        # configured to auto-execute it.
                         print(
-                            "    (fail on both = an environment fact, not a divergence: "
-                            "these suites assume a registered project)"
+                            "    (identical on both backends = an environment fact, "
+                            "not a divergence)"
                         )
-                        for name in both_fail[:3]:
+                        for name in both_fail:
                             print(f"      · {name}")
         finally:
             bundle.unlink(missing_ok=True)

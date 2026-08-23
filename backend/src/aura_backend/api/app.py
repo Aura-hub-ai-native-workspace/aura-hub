@@ -19,8 +19,11 @@ from ..core.errors import AuraError
 from ..environment import EnvironmentScanner, NodeProjection
 from ..fabric import ApprovalStore, AuditStore, CapabilityFabric, ServiceFabricHost, load_policy
 from ..tools.executors import machine_executors
+from ..tools.internal_executors import workspace_executors
+from ..workspace import WorkspaceManager
 from .routes import environment as environment_routes
 from .routes import fabric as fabric_routes
+from .routes import projects as project_routes
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -36,6 +39,11 @@ def create_app(settings: Settings) -> FastAPI:
     # immediately. They stay empty until Phase 8 supplies the environment
     # scanner — which means node-backed capabilities are denied with
     # `no-provider` rather than silently allowed.
+    # The project registry. Everything that executes waits on this: it is
+    # the only place a `cwd` comes from.
+    workspace = WorkspaceManager(settings.home)
+    app.state.workspace = workspace
+
     scanner = EnvironmentScanner()
     projection = NodeProjection()
     app.state.scanner = scanner
@@ -63,9 +71,15 @@ def create_app(settings: Settings) -> FastAPI:
     # report `unsupported` — which is true — rather than being stubbed.
     for executor in machine_executors(scanner):
         fabric.register(executor)
+    # Six of the ten AURA-internal executors. The other four need the
+    # mission store, the knowledge graph and the workflow engine, and
+    # report `unsupported` until those phases land.
+    for executor in workspace_executors(workspace):
+        fabric.register(executor)
     app.state.fabric = fabric
     app.state.run_scopes = host.run_scopes
 
+    app.include_router(project_routes.router)
     app.include_router(environment_routes.router)
     app.include_router(fabric_routes.router)
 

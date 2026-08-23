@@ -1162,7 +1162,6 @@ by path. The Python side adds an aggregate runner.
 | 3 | No reference results for 11 unverified subsystems | Context, intelligence, diagnosis, secrets | Parity must be established by source reading. Cannot be automated. |
 | 4 | 16-byte GCM IV and import-time path capture | Provider credential store | Reproduce the IV length exactly; convert paths to lazy accessors. |
 | 5 | `verify-workflow-automation.mjs` re-authoring | Workflow + automation parity | 129 assertions to port. Largest single verification task. |
-| 8 | No project registry, so no `cwd` | every project-facing executor | filesystem/terminal/git/agent all refuse with "No project directory is set". The execution half of the reference suites cannot run on **either** backend until Phase 3 lands. |
 | 7 | Fabric concurrency is unproven | `fabric/fabric.py` | The reference is single-threaded JS; the Python fabric is async with unlocked approval/audit structures. Safe under one event loop, but an assumption rather than a proof. Re-examine in Phase 15. |
 | 6 | `selectors` does not select on pipe handles on Windows | `execution/process.py` `_drain` | Needs a thread-based fallback before a Windows cutover. Linux and macOS are unaffected. Blocks Phase 16 on Windows only. |
 
@@ -1228,6 +1227,7 @@ list is currently short by design.
 | 3 | A child that ignores SIGTERM is escalated to SIGKILL after 5 s. | Node sends its kill signal once and waits forever; a wedged backend is worse than a divergence. | Low — only affects children that ignore SIGTERM, which the reference cannot stop either. |
 | 4 | Once the child has exited, pipes are drained for a bounded 2 s and then abandoned. | A detached grandchild inheriting stdout otherwise blocks the caller for its whole lifetime — measured at 30.1 s in a failing test. The reference has the same wedge. | Low — the status reported is still the one the process exited with. |
 | 8 | A targeted `POST /environment/scan` MERGES into the node projection instead of replacing it. | The reference assigns, so a targeted scan makes every unscanned node vanish and a genuinely installed node becomes unroutable. The master handoff records this as a correctness bug in a live path (§20 item 1). | Low — strictly more correct; covered by a negative control and a runtime check. |
+| 10 | Directory entries are read in sorted order, matching Node. | Python's `iterdir` returns raw directory order while Node's `readdirSync` sorts. Walk order decides the tie-break for `primaryLanguage` and, on a repo large enough to exhaust the walk budget, which files are counted at all. | None — this makes Python match rather than diverge. |
 | 9 | `system.install` takes an injected scanner rather than calling a module-level `probeNode`. | The cache it bypasses on verification is then the same one the service scans with. | None — behaviourally identical. |
 | 5 | `maxBuffer` truncation caps bytes and decodes once at the end. | Node decodes incrementally with a `StringDecoder`. For a stream overflowing mid-multi-byte character the final character may differ. | Very low — both report exit 1 and truncate at 4 MiB; the overflow case is differentially tested. |
 
@@ -1240,7 +1240,7 @@ list is currently short by design.
 | 0 | Backend inventory | — | — | **IN PROGRESS** (API + persistence done; fabric, workflow, AI audits pending) |
 | 1 | Python infrastructure + API foundation | — | MEDIUM | **TESTED + RUNTIME VERIFIED** |
 | 2 | Configuration + persistence primitives | DUPLICATED (TS) | LOW | **TESTED** |
-| 3 | Workspace + project registry | EXISTS | HIGH | NOT STARTED |
+| 3 | Workspace + project registry | EXISTS | HIGH | **PARITY VERIFIED** (profiler matches on 5 real trees; 18/22 executors) |
 | 4 | Context + RAG + intelligence | pending audit | — | NOT STARTED |
 | 5 | AI service / provider layer | pending audit | — | NOT STARTED |
 | 6 | Execution / process layer | EXISTS | CRITICAL | **PARITY VERIFIED** (225/225; Windows BUILT only) |

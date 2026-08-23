@@ -86,24 +86,31 @@ def main() -> int:
             r = c.get("/fabric/capabilities").json()
             check("1. the whole manifest is served", len(r["capabilities"]) == 33,
                   f"{len(r['capabilities'])} capabilities")
-            # Phase 8 registered the machine-facing executors. The property
-            # under test is not "none are supported" — it is that the
-            # `supported` flag matches reality, and that the ten
-            # AURA-internal capabilities (which need Phase 3's workspace
-            # manager) still report unsupported rather than being stubbed.
+            # The property under test is not a count — it is that the
+            # `supported` flag matches reality, and that a capability
+            # whose subsystem has not been migrated still says so rather
+            # than being stubbed into an answer.
             supported = {c["id"] for c in r["capabilities"] if c["supported"]}
             check("1b. the supported set is exactly the executors that exist",
                   supported == {
+                      # machine-facing (Phase 8)
                       "filesystem.list", "filesystem.read", "filesystem.write",
                       "terminal.execute", "agent.delegate", "system.install",
                       "git.status", "git.diff", "git.branch", "git.commit",
                       "git.push", "http.request",
+                      # workspace-backed (Phase 3)
+                      "project.list", "project.create", "project.open",
+                      "project.inspect", "memory.search", "governance.audit",
                   },
                   f"{len(supported)} supported")
-            check("1c. capabilities with no executor still say so rather than pretending",
+            check("1c. capabilities whose subsystem is unmigrated still report unsupported",
                   not any(c["supported"] for c in r["capabilities"]
-                          if c["id"].startswith(("project.", "mission.", "browser.", "github."))),
-                  "internal and extension-point capabilities report unsupported")
+                          if c["id"] in {"mission.inspect", "mission.approve",
+                                         "mission.create", "mission.start",
+                                         "knowledge.graph", "workflow.run",
+                                         "diagnosis.run", "provider.connect"}
+                          or c["id"].startswith(("browser.", "github."))),
+                  "missions, knowledge, workflow, browser and github report unsupported")
             check("1d. the shipped policy is reported",
                   r["policy"]["byRisk"]["high"] == "require-approval",
                   json.dumps(r["policy"]["byRisk"]))
