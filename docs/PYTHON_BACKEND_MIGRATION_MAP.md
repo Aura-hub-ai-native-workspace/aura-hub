@@ -1111,7 +1111,24 @@ the service writes into the user's repository** (`<projectPath>/graphify-out/`),
 which contradicts `persist.ts`'s stated "nothing is written into the user's own
 repositories." Recorded as a disagreement, not silently resolved.
 
-**Status: NOT STARTED.**
+**Status: retrieval engine TESTED + RUNTIME VERIFIED + PARITY VERIFIED.
+The rest of §15 is outstanding.** See [`PHASE_04_RETRIEVAL.md`](./PHASE_04_RETRIEVAL.md).
+
+- Differential: 22 tokenizations, 22 language detections, 13 chunks, 9
+  indexed documents, 33 ranked hits (score, matched terms AND reasons), 4
+  assembled contexts, index statistics and an incremental delta — **all
+  match**, including the filesystem walk order.
+- Negative controls **45/45**, including structural guards that fail if an
+  embedding store is ever introduced.
+- Runtime **21/21** against a real copy of `packages/capability-fabric`.
+- Two Python-vs-JavaScript traps caught: negative-index **wraparound** in
+  neighbour lookup (`undefined` in JS, wraps in Python), and `mtimeMs`
+  precision (Node derives it from nanoseconds; `st_mtime * 1000` differs
+  in the low bits and feeds both recency scoring and the incremental
+  fast path).
+- **Still outstanding in Phase 4:** `context/` (1,144 lines, blocked on
+  `intelligence/`), `intelligence/` (5,668), `knowledge-fullstack`
+  (1,766), and `diagnosis/` (blocked on the TypeScript compiler API).
 
 ---
 
@@ -1241,7 +1258,7 @@ list is currently short by design.
 | 1 | Python infrastructure + API foundation | — | MEDIUM | **TESTED + RUNTIME VERIFIED** |
 | 2 | Configuration + persistence primitives | DUPLICATED (TS) | LOW | **TESTED** |
 | 3 | Workspace + project registry | EXISTS | HIGH | **PARITY VERIFIED** (profiler matches on 5 real trees; 18/22 executors) |
-| 4 | Context + RAG + intelligence | pending audit | — | NOT STARTED |
+| 4 | Context + RAG + intelligence | EXISTS | HIGH | **PARTIAL** — retrieval engine PARITY VERIFIED; context/, intelligence/, knowledge-fullstack outstanding |
 | 5 | AI service / provider layer | pending audit | — | NOT STARTED |
 | 6 | Execution / process layer | EXISTS | CRITICAL | **PARITY VERIFIED** (225/225; Windows BUILT only) |
 | 7 | Capability Fabric + policy + approval | EXISTS | CRITICAL | **PARITY VERIFIED** (44/44; executors deferred to Phase 8) |
