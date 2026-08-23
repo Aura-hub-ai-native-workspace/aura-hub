@@ -9,10 +9,10 @@
  * Reads:  [{ name, capability, config, granted, nodeAvailable, subject }]
  * Writes: [{ name, decision, rule }]  on stdout
  *
- * `reason` is deliberately not compared: it is user-facing prose built from
- * the capability's display name, and holding two implementations to
- * identical English would make the check about wording rather than about
- * governance.
+ * `reason` IS compared. It was excluded once, on the argument that it is
+ * only wording — and that is exactly how a divergence shipped: this string
+ * is the approval prompt's summary, so it is what a person reads when
+ * deciding whether to authorize an irreversible action.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -35,14 +35,14 @@ const { evaluatePolicy, sanitizePolicy } = await import(
 const cases = JSON.parse(readFileSync(casesPath, 'utf8'));
 const out = cases.map((c) => {
   const config = c.sanitize ? sanitizePolicy(c.config) : c.config;
-  const { decision, rule } = evaluatePolicy({
+  const { decision, rule, reason } = evaluatePolicy({
     capability: c.capability,
     config,
     granted: c.granted,
     nodeAvailable: c.nodeAvailable ?? null,
     subject: c.subject,
   });
-  return { name: c.name, decision, rule };
+  return { name: c.name, decision, rule, reason };
 });
 
 process.stdout.write(JSON.stringify(out, null, 2));

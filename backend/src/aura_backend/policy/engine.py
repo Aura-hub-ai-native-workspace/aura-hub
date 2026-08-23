@@ -69,16 +69,37 @@ def grants_for(grants: Grants) -> tuple[PermissionScope, ...]:
     return tuple(scopes)
 
 
+def reason_for(decision: PolicyDecision, capability_name: str) -> str:
+    """The fallback prose, when no rule supplied its own.
+
+    Named after the reference's `reasonFor`, and worded identically: this
+    text is shown to a person deciding whether to authorize an action.
+    """
+    if decision is PolicyDecision.AUTO_EXECUTE:
+        return f"{capability_name} is low risk and reversible, so it runs without interrupting you."
+    if decision is PolicyDecision.ASK_USER:
+        return f"{capability_name} changes something. One confirmation and it proceeds."
+    if decision is PolicyDecision.REQUIRE_APPROVAL:
+        return (
+            f"{capability_name} needs your explicit authorization, recorded against this mission."
+        )
+    return f"{capability_name} is not permitted under the current policy."
+
+
 def evaluate_policy(inp: PolicyInput, config: PolicyConfig) -> PolicyEvaluation:
     subject = inp.subject
     risk = subject.risk
+    name = subject.capability_name
 
     # ---- 1. Hard floors. Checked before configuration is read, so no
     # configuration can be written that skips them. ----
     if inp.node_available is False:
         return PolicyEvaluation(
             decision=PolicyDecision.DENY,
-            reason="Nothing on this machine provides this capability.",
+            reason=(
+                f"Nothing connected can perform {name.lower()} yet. "
+                "Connect a node that provides it and this becomes available."
+            ),
             rule="no-provider",
             risk=risk,
         )
@@ -91,14 +112,19 @@ def evaluate_policy(inp: PolicyInput, config: PolicyConfig) -> PolicyEvaluation:
         names = ", ".join(p.value for p in missing)
         return PolicyEvaluation(
             decision=PolicyDecision.DENY,
-            reason=f"This run was not granted: {names}.",
+            reason=(
+                f"This needs {names}, which has not been granted. "
+                "Grant it on the node and try again."
+            ),
             rule="permission-denied",
             risk=risk,
         )
 
-    # ---- 2. Seed from the risk default. ----
+    # ---- 2. Seed from the risk default. The seed carries NO reason: it
+    # falls through to `reason_for` at the end unless a later rule speaks
+    # for itself. ----
     decision = config.by_risk.get(risk, DEFAULT_POLICY.by_risk[risk])
-    reason = f"Default policy for {risk.value}-risk capabilities."
+    reason = ""
     rule = f"risk-default:{risk.value}"
 
     # ---- 3. The four approval floors. These are a lower bound: they seed
@@ -107,13 +133,22 @@ def evaluate_policy(inp: PolicyInput, config: PolicyConfig) -> PolicyEvaluation:
     # an irreversible capability. ----
     floor: tuple[str, str] | None = None
     if subject.irreversible:
-        floor = ("irreversible-floor", "This cannot be undone from here.")
+        floor = (
+            "irreversible-floor",
+            f"{name} cannot be undone from here, so it always needs your explicit go-ahead.",
+        )
     elif PermissionScope.RESOURCE_DESTROY in subject.permissions:
-        floor = ("destructive-floor", "This destroys something.")
+        floor = ("destructive-floor", f"{name} destroys something. That is always your call.")
     elif PermissionScope.ACCOUNT_AUTHORIZE in subject.permissions:
-        floor = ("authorization-floor", "This acts with your authority.")
+        floor = (
+            "authorization-floor",
+            f"{name} acts against your account, so you authorize it yourself.",
+        )
     elif PermissionScope.SYSTEM_MODIFY in subject.permissions:
-        floor = ("system-floor", "This changes the system.")
+        floor = (
+            "system-floor",
+            f"{name} changes software on this machine, so it always needs your go-ahead.",
+        )
 
     if floor is not None:
         # The floor claims the rule label unconditionally. Even when the
@@ -144,38 +179,44 @@ def evaluate_policy(inp: PolicyInput, config: PolicyConfig) -> PolicyEvaluation:
             rule, reason = next_rule, next_reason
         decision = stricter(decision, candidate)
 
-    apply(
-        config.overrides.get(subject.capability_id),
-        f"override:{subject.capability_id}",
-        "A policy override applies to this capability.",
-    )
+    # A capability override speaks for itself only through the decision it
+    # produces, so it supplies no prose — `reason_for` fills it in.
+    apply(config.overrides.get(subject.capability_id), f"override:{subject.capability_id}", "")
 
     node_id = subject.node_id
+    node_name = subject.node_name or node_id or ""
     if node_id:
         apply(
             config.node_overrides.get(f"@{node_id}"),
             f"node-override:@{node_id}",
-            f"A policy override applies to every capability on {node_id}.",
+            f"{node_name} is restricted by the workspace policy.",
         )
         apply(
             config.node_overrides.get(f"{subject.capability_id}@{node_id}"),
             f"node-override:{subject.capability_id}@{node_id}",
-            f"A policy override applies to this capability on {node_id}.",
+            (
+                f"{node_name} is not permitted to perform {name.lower()} "
+                "under the workspace policy."
+            ),
         )
 
         allowlist = config.node_allowlists.get(subject.capability_id)
         if allowlist is not None and node_id not in allowlist:
-            decision = PolicyDecision.DENY
-            rule = f"node-not-allowlisted:{subject.capability_id}"
-            reason = f"{node_id} is not on the allow-list for this capability."
+            apply(
+                PolicyDecision.DENY,
+                f"node-not-allowlisted:{subject.capability_id}",
+                f"{node_name} is not on the list of nodes permitted to perform {name.lower()}.",
+            )
 
     # ---- 5. The autonomy switch. ----
     if not config.allow_autonomous and decision is PolicyDecision.AUTO_EXECUTE:
         decision = PolicyDecision.ASK_USER
         rule = "autonomy-disabled"
-        reason = "Unattended execution is switched off."
+        reason = ""
 
-    return PolicyEvaluation(decision=decision, reason=reason, rule=rule, risk=risk)
+    return PolicyEvaluation(
+        decision=decision, reason=reason or reason_for(decision, name), rule=rule, risk=risk
+    )
 
 
 def sanitize_policy(raw: object) -> PolicyConfig:

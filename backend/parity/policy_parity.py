@@ -229,6 +229,8 @@ def run_python(cases: list[dict]) -> list[dict]:
             permissions=tuple(PermissionScope(p) for p in cap["permissions"]),
             irreversible=cap.get("irreversible", False),
             node_id=(c["subject"] or {}).get("node", {}).get("id") if c["subject"] else None,
+            node_name=(c["subject"] or {}).get("node", {}).get("name", "") if c["subject"] else "",
+            capability_name=cap["name"],
         )
         result = evaluate_policy(
             PolicyInput(
@@ -238,7 +240,12 @@ def run_python(cases: list[dict]) -> list[dict]:
             ),
             config,
         )
-        out.append({"name": c["name"], "decision": result.decision.value, "rule": result.rule})
+        out.append({
+            "name": c["name"],
+            "decision": result.decision.value,
+            "rule": result.rule,
+            "reason": result.reason,
+        })
     return out
 
 
@@ -272,11 +279,11 @@ def main() -> int:
     failures = []
     for t, p in zip(ts, py):
         assert t["name"] == p["name"]
-        if t["decision"] != p["decision"] or t["rule"] != p["rule"]:
+        if t != p:
             failures.append(
                 f"{t['name']}\n"
-                f"    TypeScript: {t['decision']:<16} rule={t['rule']}\n"
-                f"    Python:     {p['decision']:<16} rule={p['rule']}"
+                f"    TypeScript: {t['decision']:<16} rule={t['rule']}  reason={t['reason']!r}\n"
+                f"    Python:     {p['decision']:<16} rule={p['rule']}  reason={p['reason']!r}"
             )
 
     for f in failures:

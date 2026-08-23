@@ -63,13 +63,21 @@ def rank(decision: PolicyDecision) -> int:
 
 @dataclass(frozen=True)
 class PolicySubject:
-    """The capability being evaluated, plus the node it resolved to."""
+    """The capability being evaluated, plus the node it resolved to.
+
+    `capability_name` and `node_name` are display names. They are here
+    because the engine's `reason` is user-facing prose that names the
+    action and the node — it is what a person reads in an approval
+    prompt, not a debug string.
+    """
 
     capability_id: str
     risk: RiskLevel
     permissions: tuple[PermissionScope, ...] = ()
     irreversible: bool = False
     node_id: str | None = None
+    capability_name: str = ""
+    node_name: str = ""
 
 
 @dataclass(frozen=True)

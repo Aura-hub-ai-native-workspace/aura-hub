@@ -518,7 +518,23 @@ and truncates to 60 characters before anything reaches the audit record.
 **and** `attempts > 0` — a denied call resolves a node and never runs on it, so
 the audit must not assert execution.
 
-**Status: policy engine IMPLEMENTED + TESTED (§6.6). Rest NOT STARTED.**
+**Status: TESTED + RUNTIME VERIFIED + PARITY VERIFIED.**
+Full detail in [`PHASE_07_FABRIC.md`](./PHASE_07_FABRIC.md).
+
+- Differential: **44/44** scenarios, 192 compared values, 0 differences —
+  every step's outcome/rule/decision/risk/reason/attempts/verification, the
+  event type sequence, and the entire audit trail record by record.
+- Runtime: **21/21** against a real service over real HTTP, including a
+  restart mid-suite.
+- Negative controls: **36/36**, covering the host-side stores the
+  differential harness structurally cannot reach.
+- **The manifest has 33 capabilities, not the 30 this document first
+  recorded.** The audit summary was wrong; the diff settled it.
+- Mutation-tested. The first attempt found a **gap in the harness**: the
+  single-use approval guard is duplicated in its caller, so removing one
+  copy was invisible. A scenario that spends a grant twice directly was
+  added, and the mutation is now caught.
+- Executors are Phase 8, matching the reference's own package boundary.
 
 ### §6.6 Python policy engine — first CRITICAL subsystem migrated
 
@@ -536,6 +552,14 @@ security boundary rather than a configuration reader:
 - Human-only scopes are never emitted by `grants_for` at any grant combination.
 - A malformed allowlist denies everything rather than allowing everything.
 - Floors are evaluated before configuration is read.
+
+**Corrected in Phase 7.** The Phase 5 harness compared `decision` and
+`rule` but **excluded `reason`**, on the argument that it is only wording.
+That let a real divergence ship: `reason` becomes the approval prompt's
+summary, so it is the sentence a person reads before authorizing an
+irreversible action. The engine now carries the capability and node
+display names and reproduces the reference's prose verbatim, and the
+harness compares `reason` — still 329/329.
 
 ---
 
@@ -1122,6 +1146,7 @@ by path. The Python side adds an aggregate runner.
 | 3 | No reference results for 11 unverified subsystems | Context, intelligence, diagnosis, secrets | Parity must be established by source reading. Cannot be automated. |
 | 4 | 16-byte GCM IV and import-time path capture | Provider credential store | Reproduce the IV length exactly; convert paths to lazy accessors. |
 | 5 | `verify-workflow-automation.mjs` re-authoring | Workflow + automation parity | 129 assertions to port. Largest single verification task. |
+| 7 | Fabric concurrency is unproven | `fabric/fabric.py` | The reference is single-threaded JS; the Python fabric is async with unlocked approval/audit structures. Safe under one event loop, but an assumption rather than a proof. Re-examine in Phase 15. |
 | 6 | `selectors` does not select on pipe handles on Windows | `execution/process.py` `_drain` | Needs a thread-based fallback before a Windows cutover. Linux and macOS are unaffected. Blocks Phase 16 on Windows only. |
 
 ---
@@ -1200,7 +1225,7 @@ list is currently short by design.
 | 4 | Context + RAG + intelligence | pending audit | — | NOT STARTED |
 | 5 | AI service / provider layer | pending audit | — | NOT STARTED |
 | 6 | Execution / process layer | EXISTS | CRITICAL | **PARITY VERIFIED** (225/225; Windows BUILT only) |
-| 7 | Capability Fabric + policy + approval | EXISTS | CRITICAL | NOT STARTED |
+| 7 | Capability Fabric + policy + approval | EXISTS | CRITICAL | **PARITY VERIFIED** (44/44; executors deferred to Phase 8) |
 | 8 | Tools + integrations | pending audit | — | NOT STARTED |
 | 9 | Workflow engine | pending audit | HIGH | NOT STARTED |
 | 10 | Automation engine + scheduler | EXISTS | HIGH | NOT STARTED |
