@@ -67,7 +67,33 @@ export interface CapabilityDescriptorView {
   risk: RiskLevel;
   supported: boolean;
   requiresNodeCapability?: string;
+  /**
+   * The rest of the descriptor as the service sends it. `/fabric/capabilities`
+   * spreads the whole `CapabilityDescriptor` (`{ ...c, supported }`), so these
+   * are on the wire already — they are typed here because the Permission
+   * Envelope reads them, and reading them from the service is what keeps the
+   * service authoritative about risk rather than the renderer.
+   */
+  description?: string;
+  category?: string;
+  surface?: 'aura-internal' | 'local-process' | 'http' | 'browser';
+  permissions?: PermissionScope[];
+  irreversible?: boolean;
+  output?: string;
+  verify?: 'read-back' | 'exit-code' | 'http-status' | null;
 }
+
+/** Coarse permission scopes, as declared by the service's manifest. */
+export type PermissionScope =
+  | 'project.read'
+  | 'project.write'
+  | 'process.execute'
+  | 'network.outbound'
+  | 'account.authorize'
+  | 'resource.destroy'
+  | 'system.modify'
+  | 'aura.read'
+  | 'aura.write';
 
 export interface CapabilityCatalogue {
   capabilities: CapabilityDescriptorView[];
