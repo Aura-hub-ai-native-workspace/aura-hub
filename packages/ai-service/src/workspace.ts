@@ -10,7 +10,15 @@ import { buildKnowledgeGraph, type KnowledgeGraph } from './knowledgeGraph';
 import { runProjectIntelligence, runWorkspaceIntelligence, type ProjectIntelligenceReport, type WorkspaceIntelligenceReport } from './intelligence';
 import { loadChangeLog, analyzeChangePatterns, getChangeVelocity, detectHotspots, type ChangeEntry, type ChangePattern } from './intelligence/changeIntelligence';
 import { WorkflowStore } from './workflow/store';
-import { runWorkflow, type RunResult } from './workflow/engine';
+import { WorkflowVersionStore } from './workflow/versions';
+import { WorkflowRunStore } from './workflow/run/store';
+import { dryRunWorkflow, type DryRunReport } from './workflow/dryrun';
+import { dryRunRule, type RuleDryRunReport } from './automationDryRun';
+import { describeCron, type AutomationRuleSummary, type AutomationStore } from '@aura/automation';
+import type { RunTrigger, WorkflowRun, WorkflowRunSummary } from './workflow/run/types';
+import { WorkflowRunner, type StartedRun } from './workflow/runner';
+import { computeEnvelope, diffEnvelopes, type AuthorityEnvelope, type EnvelopeDiff } from './workflow/envelope';
+import { RunScopeRegistry } from './fabric/scopes';
 import type { RunEvent, Workflow } from './workflow/types';
 import { createAutomationRuntime, automationEvent, type AutomationRuntime, type AutomationEvent } from './automation';
 import fs from 'node:fs';
@@ -22,6 +30,10 @@ import { splicePatch } from './diagnosis/patchLimiter';
 import { resolveInsideProject } from './diagnosis/repoScan';
 import type { DiagnosisEvent, DiagnosisRecord, DiagnosisRequest, DiagnosisSummary, PatchCandidate } from './diagnosis/types';
 import { MissionStore } from './mission/store';
+import {
+  composeContextView, renderContextContract,
+  type ComposeOptions, type ContextResult, type EnvironmentSnapshot,
+} from './context';
 import { runMissionCreation } from './mission/orchestrator';
 import { generateTaskProposal } from './mission/taskGen';
 import { planTaskInvocation, type CapabilityFabric } from '@aura/capability-fabric';
@@ -381,22 +393,291 @@ export class WorkspaceManager {
     return runWorkspaceIntelligence(this.registry.list().map((p) => ({ id: p.id, root: p.path })));
   }
 
+  /* ── context fabric ─────────────────────────────────────────────── */
+
+  /**
+   * Compose one project's `ContextView` — AURA's shared understanding,
+   * in the shape every downstream surface consumes.
+   *
+   * This is a read. It resolves the project through the registry (the
+   * single project authority) and never mounts, indexes or scans: the
+   * environment must be supplied by the caller from the scan it already
+   * performed, and every other section is loaded from an artifact an
+   * authority already wrote. Composing context cannot change what the
+   * context describes.
+   *
+   * An unknown project id yields an explicit `unavailable` result rather
+   * than an empty view, so no caller can read "no such project" as "a
+   * project with nothing in it".
+   */
+  async contextView(
+    projectId: string,
+    options: ComposeOptions & { environment?: EnvironmentSnapshot | null } = {},
+  ): Promise<ContextResult> {
+    return composeContextView(
+      projectId,
+      {
+        registry: this.registry,
+        missions: this.missions,
+        mountedProjectId: this.pipeline.currentProjectId,
+        fabric: this.fabric,
+        environment: options.environment ?? null,
+      },
+      options,
+    );
+  }
+
+  /**
+   * The same view, rendered as the stable text contract an agent reads.
+   * Returns null when the project cannot be resolved — callers must not
+   * hand an agent a contract for a project that does not exist.
+   */
+  async contextContract(
+    projectId: string,
+    options: ComposeOptions & { environment?: EnvironmentSnapshot | null } = {},
+  ): Promise<string | null> {
+    const view = await this.contextView(projectId, options);
+    return 'status' in view ? null : renderContextContract(view);
+  }
+
   /* ── workflows ──────────────────────────────────────────────────── */
 
   readonly workflows = new WorkflowStore();
+  readonly workflowVersions = new WorkflowVersionStore();
+  readonly workflowRuns = new WorkflowRunStore();
+  /** Per-run least privilege, read by the Fabric host. Never persisted. */
+  readonly runScopes = new RunScopeRegistry();
 
-  async runWorkflow(wf: Workflow, inputs: Record<string, string>, emit: (e: RunEvent) => void, signal?: AbortSignal): Promise<RunResult> {
-    const project = this.currentProject();
-    if (!project) throw new Error('open a project before running a workflow');
-    await this.pipeline.whenIndexed();
-    return runWorkflow(wf, {
+  /**
+   * In-flight runs, so a run can be cancelled from another request.
+   * Deliberately in memory: a controller for a run this process is not
+   * executing would be a lie, and `reconcileWorkflowRuns()` is what makes
+   * runs from a previous process honest instead.
+   */
+  private readonly liveRuns = new Map<string, AbortController>();
+
+  private get runner(): WorkflowRunner {
+    return new WorkflowRunner({
+      pipeline: this.pipeline,
+      fabric: this.fabric,
+      runScopes: this.runScopes,
+      versions: this.workflowVersions,
+      runs: this.workflowRuns,
+    });
+  }
+
+  /**
+   * What WOULD happen, computed without anything happening.
+   *
+   * Delegates to `dryRunWorkflow`, which never invokes a capability. The
+   * project is resolved the same way a real run resolves it, so the plan
+   * is about the project the run would actually target.
+   */
+  dryRunWorkflow(wf: Workflow, opts: { projectId?: string; inputs?: Record<string, string>; versionId?: string } = {}): DryRunReport {
+    const project = opts.projectId ? this.registry.get(opts.projectId) : this.currentProject();
+    if (!project) throw new Error('open a project before simulating a workflow');
+    // A dry run of a specific VERSION is what the Runs view needs when
+    // explaining a past run; the draft is what the editor needs.
+    const version = opts.versionId ? this.workflowVersions.get(wf.id, opts.versionId) : null;
+    if (opts.versionId && !version) throw new Error('no such version');
+    return dryRunWorkflow({
+      workflowId: wf.id,
+      workflowName: version?.name ?? wf.name,
+      nodes: version?.nodes ?? wf.nodes,
+      edges: version?.edges ?? wf.edges,
       projectId: project.id,
       projectPath: project.path,
       projectName: project.name,
-      pipeline: this.pipeline,
-      inputs,
-      signal,
-    }, emit);
+      fabric: this.fabric,
+      inputs: opts.inputs,
+    });
+  }
+
+  /**
+   * What an automation rule WOULD do. Executes nothing.
+   *
+   * Composed from the pieces that already exist: the engine's condition
+   * evaluator, the scheduler's arithmetic and the workflow dry run — which
+   * itself only calls the Fabric's read-only pre-flight.
+   */
+  dryRunAutomationRule(ruleId: string, opts: { sampleEvent?: AutomationEvent; projectId?: string } = {}): RuleDryRunReport | { error: string } {
+    const rule = this.automation.store.getRule(ruleId);
+    if (!rule) return { error: 'no such rule' };
+    return dryRunRule({
+      rule,
+      sampleEvent: opts.sampleEvent,
+      projectId: opts.projectId,
+      resolveWorkflow: (id) => this.workflows.get(id),
+      dryRunWorkflow: (wf, projectId) => this.dryRunWorkflow(wf, { projectId: projectId || undefined }),
+    });
+  }
+
+  /** The cross-rule automation run index, filtered and paged server-side. */
+  automationRunIndex(query: Parameters<AutomationStore['indexRuns']>[0] = {}) {
+    return this.automation.store.indexRuns(query);
+  }
+
+  /**
+   * Rule summaries with their schedule state folded in.
+   *
+   * The store stays the authority on rules and the scheduler stays the
+   * authority on clocks; this joins them at read time rather than copying
+   * clock state into the rule file, where it would go stale the moment the
+   * scheduler recomputed.
+   */
+  listAutomationRules(): (AutomationRuleSummary & {
+    cron?: string;
+    scheduleProjectId?: string;
+    schedule?: { nextFireAt?: string; missedCount: number; lastFiredAt?: string; error?: string; description?: string; timezone: 'local' };
+  })[] {
+    const state = this.automation.scheduler.status();
+    return this.automation.store.listRules().map((summary) => {
+      const rule = this.automation.store.getRule(summary.id);
+      if (rule?.trigger.type !== 'schedule') return summary;
+      const s = state[summary.id];
+      return {
+        ...summary,
+        cron: rule.trigger.cron,
+        scheduleProjectId: rule.trigger.projectId,
+        schedule: {
+          nextFireAt: s?.nextFireAt,
+          missedCount: s?.missedCount ?? 0,
+          lastFiredAt: s?.lastFiredAt,
+          error: s?.error,
+          description: rule.trigger.cron ? describeCron(rule.trigger.cron) : undefined,
+          // A fact about the scheduler, not an option. It has no timezone
+          // database, so anything other than 'local' would be a lie.
+          timezone: 'local' as const,
+        },
+      };
+    });
+  }
+
+  /** The cross-workflow run index, filtered and paged server-side. */
+  runIndex(query: Parameters<WorkflowRunStore['index']>[0] = {}) {
+    return this.workflowRuns.index(query);
+  }
+
+  /** What a workflow would be permitted to do, without running it. */
+  workflowEnvelope(wf: Workflow): AuthorityEnvelope {
+    return computeEnvelope(wf.nodes);
+  }
+
+  /**
+   * How this draft's authority differs from the last published version.
+   * Null when there is no earlier version to compare against.
+   */
+  workflowEnvelopeDiff(wf: Workflow): EnvelopeDiff | null {
+    const latest = this.workflowVersions.latest(wf.id);
+    if (!latest) return null;
+    return diffEnvelopes(computeEnvelope(latest.nodes), computeEnvelope(wf.nodes));
+  }
+
+  /**
+   * Execute a workflow. The ONE entry point — the Run button, a webhook,
+   * the Automation Engine and `workflow.run` all arrive here.
+   */
+  async startWorkflowRun(
+    wf: Workflow,
+    opts: {
+      inputs?: Record<string, string>;
+      trigger?: RunTrigger;
+      approvedCapabilities?: string[];
+      actor?: { kind: 'human' | 'agent' | 'system'; id: string };
+      signal?: AbortSignal;
+      projectId?: string;
+      timeoutMs?: number;
+    },
+    emit: (e: RunEvent) => void,
+  ): Promise<StartedRun> {
+    // A run is bound to ONE project, named at start. A workflow triggered
+    // from outside must not silently execute against whatever happens to
+    // be mounted when it lands.
+    const project = opts.projectId ? this.registry.get(opts.projectId) : this.currentProject();
+    if (!project) throw new Error('open a project before running a workflow');
+    await this.pipeline.whenIndexed();
+
+    const controller = new AbortController();
+    const external = opts.signal;
+    if (external) {
+      if (external.aborted) controller.abort();
+      else external.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+
+    let runId: string | null = null;
+    try {
+      return await this.runner.start({
+        workflow: wf,
+        projectId: project.id,
+        projectPath: project.path,
+        projectName: project.name,
+        trigger: opts.trigger ?? { kind: 'manual', by: opts.actor?.id ?? 'user' },
+        inputs: opts.inputs,
+        approvedCapabilities: opts.approvedCapabilities,
+        actor: opts.actor,
+        signal: controller.signal,
+        timeoutMs: opts.timeoutMs,
+        onRunCreated: (run) => { runId = run.id; this.liveRuns.set(run.id, controller); },
+      }, emit);
+    } finally {
+      if (runId) this.liveRuns.delete(runId);
+    }
+  }
+
+  /** Resume a parked or interrupted run from its checkpoint. */
+  async resumeWorkflowRun(
+    workflowId: string,
+    runId: string,
+    emit: (e: RunEvent) => void,
+    opts: { approvedCapabilities?: string[]; signal?: AbortSignal; actor?: { kind: 'human' | 'agent' | 'system'; id: string } } = {},
+  ): Promise<StartedRun | { error: string }> {
+    const wf = this.workflows.get(workflowId);
+    if (!wf) return { error: 'no such workflow' };
+    await this.pipeline.whenIndexed();
+    const controller = new AbortController();
+    if (opts.signal) opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    let created: string | null = null;
+    try {
+      return await this.runner.resume(wf, runId, emit, {
+        ...opts,
+        signal: controller.signal,
+        onRunCreated: (run) => { created = run.id; this.liveRuns.set(run.id, controller); },
+      });
+    } finally {
+      if (created) this.liveRuns.delete(created);
+    }
+  }
+
+  /**
+   * Stop an in-flight run.
+   *
+   * Only ever affects a run THIS process is executing. Reporting success
+   * for a run started by a process that has since died would be a lie the
+   * Runs view would then display.
+   */
+  cancelWorkflowRun(runId: string): boolean {
+    const controller = this.liveRuns.get(runId);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  }
+
+  listWorkflowRuns(workflowId?: string): WorkflowRunSummary[] {
+    return this.workflowRuns.list(workflowId);
+  }
+
+  getWorkflowRun(workflowId: string, runId: string): WorkflowRun | null {
+    return this.workflowRuns.get(workflowId, runId);
+  }
+
+  /**
+   * Mark runs orphaned by a crash. Called once at startup.
+   *
+   * A record still saying `running` after the process that was running it
+   * is gone asserts something false, and the Runs view would display it.
+   */
+  reconcileWorkflowRuns(): WorkflowRunSummary[] {
+    return this.workflowRuns.reconcileInterrupted();
   }
 
   /* ── Automation Engine ─────────────────────────────────────────────
@@ -422,6 +703,25 @@ export class WorkspaceManager {
       pipelineFor: () => this.pipeline,
       memoryFor: (projectId) => this.memoryOf(projectId),
       diagnoses: this.diagnoses,
+      // The bridge. An automation rule reaches the ONE workflow engine
+      // through the ONE runner — it does not gain an executor of its own.
+      runWorkflow: async ({ workflowId, projectId, ruleId, automationRunId, event, signal }) => {
+        const wf = this.workflows.get(workflowId);
+        if (!wf) return { ok: false as const, error: `no such workflow: ${workflowId}` };
+        try {
+          const started = await this.startWorkflowRun(wf, {
+            projectId,
+            trigger: { kind: 'automation', ruleId, runId: automationRunId, event },
+            // No grant. An automation fires with nobody watching, so
+            // anything above auto-execute parks and waits for a person.
+            actor: { kind: 'system', id: `automation:${ruleId}` },
+            signal,
+          }, () => {});
+          return { ok: true as const, runId: started.run.id, runState: started.result.runState };
+        } catch (e) {
+          return { ok: false as const, error: (e as Error).message };
+        }
+      },
     });
   }
 

@@ -16,9 +16,11 @@
  * used for the audit trail and nothing else.
  */
 
+import { createHash } from 'node:crypto';
 import type {
   ApprovalPersistence,
   ApprovalRequest,
+  AuditPersistence,
   AuditRecord,
   CapabilityDescriptor,
   Executor,
@@ -98,6 +100,41 @@ export interface FabricHost {
    * its own, which would let one approval leak into a later call.
    */
   requestApproval(request: ApprovalRequest, context: InvocationContext): Promise<boolean>;
+}
+
+/**
+ * Identity of an exact invocation, for binding an approval to it.
+ *
+ * Deliberately a plain, deterministic digest and NOT a keyed MAC. There is
+ * no secret this package could hold that an attacker able to edit AURA's
+ * own files could not also read, so a MAC would buy authenticity it cannot
+ * actually deliver. What this does buy is real: the authoritative
+ * fingerprint lives on the approval record, which only the Fabric writes,
+ * and it is compared against a fingerprint recomputed from whatever
+ * arguments are presented at spend time. Tampering with the persisted call
+ * changes the recomputed value and the grant stops matching.
+ *
+ * Included: the capability, every argument, and the two context fields
+ * that decide WHERE an effect lands. Excluded: ids that vary between the
+ * two legs of a resume by design — a resumed run has a new `runId`, and
+ * requiring it to match would make every approval unusable.
+ */
+export function fingerprintInvocation(
+  capabilityId: string,
+  input: Record<string, unknown>,
+  context: Pick<InvocationContext, 'projectId' | 'cwd' | 'workflowId' | 'workflowNodeId'>,
+): string {
+  const canonical = JSON.stringify({
+    capabilityId,
+    // Sorted so an argument object rebuilt in a different key order is the
+    // same call, while a changed VALUE is a different one.
+    input: Object.fromEntries(Object.entries(input).sort(([a], [b]) => a.localeCompare(b))),
+    projectId: context.projectId ?? null,
+    cwd: context.cwd ?? null,
+    workflowId: context.workflowId ?? null,
+    workflowNodeId: context.workflowNodeId ?? null,
+  });
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 32);
 }
 
 let seq = 0;
@@ -184,7 +221,42 @@ export class CapabilityFabric {
    */
   private approvalStore: ApprovalPersistence | null = null;
 
+  /**
+   * Optional durable backing for `auditLog`, injected like the approval
+   * store. Without it the trail is in-process only and a restart forgets
+   * everything the Fabric governed — which is exactly what
+   * `docs/WORKSPACE_2_PHASE1_AUDIT.md` records as finding S-2.
+   */
+  private auditStore: AuditPersistence | null = null;
+
   constructor(private host: FabricHost) {}
+
+  /**
+   * Give the audit trail a life beyond this process.
+   *
+   * Unlike approvals, **everything** is restored: an audit record is a
+   * statement about something that already happened, so dropping it on
+   * restart would not be cautious, it would be forgetful. The host bounds
+   * how much tail it keeps.
+   */
+  attachAuditStore(store: AuditPersistence): void {
+    this.auditStore = store;
+    this.auditLog = [...store.load(), ...this.auditLog];
+  }
+
+  /**
+   * The ONE place an audit record is written.
+   *
+   * Both writers (a settled invocation and a human approval decision) go
+   * through here so persistence can never be added to one path and
+   * forgotten on the other. A failing store must not take down an
+   * execution that already happened — the in-memory trail stays correct
+   * either way, and a lost write is better than a lost effect.
+   */
+  private record(entry: AuditRecord): void {
+    this.auditLog.push(entry);
+    try { this.auditStore?.append(entry); } catch { /* never fail an action on a logging failure */ }
+  }
 
   /**
    * Give pending authorization requests a life beyond this process.
@@ -204,7 +276,9 @@ export class CapabilityFabric {
       if (!item) continue;
       const key = request.missionId && request.taskId
         ? `${request.missionId}:${request.taskId}:${item.capabilityId}`
-        : `inv:${item.invocationId}`;
+        : request.runId && request.workflowNodeId
+          ? `${request.runId}:${request.workflowNodeId}:${item.capabilityId}`
+          : `inv:${item.invocationId}`;
       this.approvals.set(key, request);
     }
   }
@@ -271,9 +345,14 @@ export class CapabilityFabric {
    * is the best available identity and each call stands alone.
    */
   private static approvalKey(capabilityId: string, context: InvocationContext, invocationId: string): string {
-    return context.missionId && context.taskId
-      ? `${context.missionId}:${context.taskId}:${capabilityId}`
-      : `inv:${invocationId}`;
+    if (context.missionId && context.taskId) return `${context.missionId}:${context.taskId}:${capabilityId}`;
+    // A workflow run has the same shape of identity as a mission task: the
+    // same node of the same run asking for the same capability is ONE
+    // question, however many times the run is resumed. Without this a
+    // resumed run would mint a fresh request and the answer the user
+    // already gave would be stranded against the old one.
+    if (context.runId && context.workflowNodeId) return `${context.runId}:${context.workflowNodeId}:${capabilityId}`;
+    return `inv:${invocationId}`;
   }
 
   /** Requests still waiting on a human. */
@@ -303,7 +382,7 @@ export class CapabilityFabric {
     request.decidedBy = decidedBy;
 
     const item = request.items[0];
-    this.auditLog.push({
+    this.record({
       invocationId: item?.invocationId ?? request.id,
       at: request.decidedAt,
       capabilityId: item?.capabilityId ?? 'unknown',
@@ -471,16 +550,64 @@ export class CapabilityFabric {
     }
 
     /* 4. approval */
+    let spentNamedApproval = false;
     if (evaluation.decision !== 'auto-execute') {
       // Identity of the QUESTION, not of the attempt. Pressing Run three
       // times on a gated task asks one question three times, and must not
       // produce three notifications and three buttons.
       const key = CapabilityFabric.approvalKey(capabilityId, context, invocation.id);
+      const fingerprint = fingerprintInvocation(capabilityId, input, context);
       const open = this.approvals.get(key);
+
+      /* A caller spending a NAMED approval.
+         
+         This is the argument-bound path. The request is looked up in the
+         Fabric's own store — never taken from the caller — and three things
+         must all hold: it was granted, it has not been spent, and the
+         fingerprint recorded when the human saw it matches the call being
+         made now. Any mismatch falls through to asking again rather than
+         executing, because the safe reading of "this is not the action that
+         was approved" is that nothing has been approved. */
+      if (context.approvalId) {
+        const named = this.approvalById(context.approvalId);
+        const usable = named
+          && named.state === 'granted'
+          && !named.consumedAt
+          && named.items.some((i) => i.capabilityId === capabilityId && i.fingerprint === fingerprint);
+        if (usable && this.consumeApproval(named.id)) {
+          this.emit({
+            type: 'approval.granted',
+            at: new Date().toISOString(),
+            requestId: named.id,
+          });
+          // Authorized for exactly this call. Fall through to execution —
+          // every later step (executor, verification, recovery, audit) is
+          // the unchanged one.
+          spentNamedApproval = true;
+        } else {
+        // Not usable. Deliberately NOT an error: the request may simply be
+        // stale, and the correct behaviour is to refuse THIS call while
+        // leaving the standing question alone.
+        this.emit({
+          type: 'invocation.denied',
+          at: new Date().toISOString(),
+          invocationId: invocation.id,
+          reason: named
+            ? 'The approval named for this call does not authorize it — the action or its arguments changed since it was granted.'
+            : 'The approval named for this call no longer exists.',
+        });
+        return this.settle(invocation, capability, 'awaiting-approval',
+          named
+            ? `${capability.name} was not run: the authorization on record is for a different action than the one requested. Nothing has run, and the request stands.`
+            : `${capability.name} was not run: the authorization it named no longer exists. Nothing has run.`,
+          NO_VERIFICATION, evaluation, started, startedAt, 0, named?.id);
+        }
+      }
 
       // Already answered "yes" out of band (the approval UI). Spend it —
       // once — and fall through to execution.
-      const preGranted = open?.state === 'granted' && !open.consumedAt && this.consumeApproval(open.id);
+      const preGranted = spentNamedApproval
+        || (open?.state === 'granted' && !open.consumedAt && Boolean(this.consumeApproval(open.id)));
 
       if (!preGranted) {
         // Reuse the open question rather than minting a duplicate.
@@ -493,6 +620,9 @@ export class CapabilityFabric {
           projectId: context.projectId ?? undefined,
           missionId: context.missionId,
           taskId: context.taskId,
+          workflowId: context.workflowId,
+          runId: context.runId,
+          workflowNodeId: context.workflowNodeId,
           target: describeTarget(capability, input),
           // Both consequences are stated, because an approval prompt that
           // only says what happens if you say yes is not a real choice.
@@ -507,6 +637,7 @@ export class CapabilityFabric {
             detail: summarizeInput(capability, input),
             risk: capability.risk,
             irreversible: Boolean(capability.irreversible),
+            fingerprint,
           }],
         };
 
@@ -701,13 +832,14 @@ export class CapabilityFabric {
       output,
       verification,
       policy,
+      approvalId,
       startedAt,
       endedAt,
       durationMs,
       attempts,
     };
 
-    this.auditLog.push({
+    this.record({
       invocationId: invocation.id,
       at: endedAt,
       capabilityId: invocation.capabilityId,
@@ -715,6 +847,9 @@ export class CapabilityFabric {
       projectId: invocation.context.projectId,
       missionId: invocation.context.missionId,
       taskId: invocation.context.taskId,
+      workflowId: invocation.context.workflowId,
+      runId: invocation.context.runId,
+      workflowNodeId: invocation.context.workflowNodeId,
       risk: policy.risk,
       decision: policy.decision,
       decisionRule: policy.rule,
