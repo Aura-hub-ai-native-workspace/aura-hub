@@ -1,0 +1,1522 @@
+<title>AURA Workflow UX Architecture</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   AURA Workflow UX Architecture Report
+   Built on AURA Hub's own token layer (apps/desktop/src/styles/global.css)
+   so the document reads in the language it is arguing for.
+   ══════════════════════════════════════════════════════════════════ */
+
+:root {
+  --canvas: #ffffff;
+  --canvas-wash: radial-gradient(120% 120% at 100% 0%, #f5f8ff 0%, #f7f8fa 40%, #f4f5f8 100%);
+  --surface: #ffffff;
+  --surface-hover: #f4f6f9;
+  --surface-active: #eef0f4;
+  --line: #e6e9ef;
+  --line-strong: #d5dae3;
+  --text: #14171d;
+  --text-muted: #5b6376;
+  --text-subtle: #9aa2b2;
+
+  --accent: #3b6bff;
+  --accent-50: #eef4ff;
+  --accent-100: #dbe6ff;
+  --accent-700: #1c3ee0;
+
+  --positive: #1fb567;
+  --attention: #f5a524;
+  --danger: #f04438;
+
+  /* Node family hues — apps/desktop/src/screens/workflows/shared.ts */
+  --cat-source: #3b82f6;
+  --cat-intelligence: #8b5cf6;
+  --cat-generate: #10b981;
+  --cat-logic: #f59e0b;
+  --cat-action: #f43f5e;
+  --cat-io: #06b6d4;
+  /* Proposed additions */
+  --cat-agent: #6366f1;
+  --cat-surface-auto: #14b8a6;
+  --cat-human: #f5a524;
+
+  --shadow-sm: 0 1px 2px rgba(17, 20, 28, 0.05);
+  --shadow-md: 0 6px 24px -8px rgba(17, 20, 28, 0.14);
+  --radius: 16px;
+  --radius-sm: 10px;
+}
+
+:root:not([data-theme="light"]) {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --canvas: #0b0d11;
+    --canvas-wash: radial-gradient(120% 120% at 100% 0%, #10141d 0%, #0d1015 45%, #0b0d11 100%);
+    --surface: #14171d;
+    --surface-hover: #1b1f27;
+    --surface-active: #232833;
+    --line: #232833;
+    --line-strong: #2f3542;
+    --text: #f2f4f8;
+    --text-muted: #9aa2b2;
+    --text-subtle: #667085;
+
+    --accent: #5c86ff;
+    --accent-50: #182036;
+    --accent-100: #1c2a4d;
+    --accent-700: #93b0ff;
+
+    --positive: #34d187;
+    --attention: #ffbf4d;
+    --danger: #ff6a5e;
+
+    --cat-source: #5b95f8;
+    --cat-intelligence: #a486f8;
+    --cat-generate: #34d187;
+    --cat-logic: #ffbf4d;
+    --cat-action: #fb7185;
+    --cat-io: #22d3ee;
+    --cat-agent: #8b8dff;
+    --cat-surface-auto: #2dd4bf;
+    --cat-human: #ffbf4d;
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 8px 28px -10px rgba(0, 0, 0, 0.7);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #0b0d11;
+  --canvas-wash: radial-gradient(120% 120% at 100% 0%, #10141d 0%, #0d1015 45%, #0b0d11 100%);
+  --surface: #14171d;
+  --surface-hover: #1b1f27;
+  --surface-active: #232833;
+  --line: #232833;
+  --line-strong: #2f3542;
+  --text: #f2f4f8;
+  --text-muted: #9aa2b2;
+  --text-subtle: #667085;
+
+  --accent: #5c86ff;
+  --accent-50: #182036;
+  --accent-100: #1c2a4d;
+  --accent-700: #93b0ff;
+
+  --positive: #34d187;
+  --attention: #ffbf4d;
+  --danger: #ff6a5e;
+
+  --cat-source: #5b95f8;
+  --cat-intelligence: #a486f8;
+  --cat-generate: #34d187;
+  --cat-logic: #ffbf4d;
+  --cat-action: #fb7185;
+  --cat-io: #22d3ee;
+  --cat-agent: #8b8dff;
+  --cat-surface-auto: #2dd4bf;
+  --cat-human: #ffbf4d;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 8px 28px -10px rgba(0, 0, 0, 0.7);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  background-image: var(--canvas-wash);
+  background-attachment: fixed;
+  color: var(--text);
+  font-family: 'Inter', 'SF Pro Text', system-ui, -apple-system, sans-serif;
+  font-size: 14.5px;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+/* ── rail ─────────────────────────────────────────────────────────── */
+.rail {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: 268px;
+  overflow-y: auto;
+  padding: 0 0 28px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: blur(20px);
+  border-right: 1px solid var(--line);
+  z-index: 20;
+}
+.rail-brand {
+  display: flex; align-items: center; gap: 12px;
+  padding: 20px 20px 16px;
+}
+.rail-tile {
+  width: 34px; height: 34px; border-radius: 11px; flex: none;
+  background: linear-gradient(140deg, var(--accent), color-mix(in srgb, var(--cat-agent) 70%, var(--accent)));
+  display: grid; place-items: center;
+  color: #fff; font-weight: 800; font-size: 14px; letter-spacing: -0.02em;
+  box-shadow: var(--shadow-sm);
+}
+.rail-brand b { display: block; font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+.rail-brand span { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-subtle); }
+
+.rail-group {
+  padding: 12px 12px 2px 20px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9.5px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.16em;
+  color: var(--text-subtle);
+}
+.rail a {
+  display: flex; align-items: baseline; gap: 9px;
+  margin: 1px 10px; padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 12.5px; color: var(--text-muted); text-decoration: none;
+  transition: background-color .15s, color .15s;
+}
+.rail a:hover { background: var(--surface-hover); color: var(--text); }
+.rail a .k {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px; font-weight: 600; color: var(--text-subtle);
+  width: 12px; flex: none;
+}
+.rail a:hover .k { color: var(--accent); }
+
+/* ── main ─────────────────────────────────────────────────────────── */
+main {
+  margin-left: 268px;
+  max-width: 1080px;
+  padding: 52px 56px 120px;
+}
+
+.eyebrow {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.18em;
+  color: var(--accent);
+}
+h1 {
+  margin: 10px 0 8px;
+  font-size: clamp(30px, 4vw, 42px); font-weight: 700;
+  letter-spacing: -0.033em; line-height: 1.08;
+  text-wrap: balance;
+}
+.lede { font-size: 16.5px; color: var(--text-muted); max-width: 62ch; margin: 0 0 8px; }
+
+h2 {
+  margin: 76px 0 6px;
+  font-size: 25px; font-weight: 650; letter-spacing: -0.02em;
+  text-wrap: balance;
+  scroll-margin-top: 24px;
+}
+h2 .sec {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 14px; font-weight: 600; color: var(--accent);
+  margin-right: 12px;
+}
+h2 + .dek { color: var(--text-muted); margin: 0 0 22px; max-width: 66ch; font-size: 14.5px; }
+
+h3 {
+  margin: 34px 0 8px;
+  font-size: 16.5px; font-weight: 620; letter-spacing: -0.012em;
+}
+h4 {
+  margin: 22px 0 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.13em;
+  color: var(--text-subtle);
+}
+p { margin: 0 0 13px; max-width: 68ch; }
+ul, ol { margin: 0 0 14px; padding-left: 20px; max-width: 68ch; }
+li { margin: 5px 0; }
+li::marker { color: var(--text-subtle); }
+strong { font-weight: 600; }
+hr { border: 0; border-top: 1px solid var(--line); margin: 56px 0; }
+
+a.ref { color: var(--accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+a.ref:hover { border-bottom-color: var(--accent); }
+
+code, .mono {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.87em;
+}
+p code, li code, td code, .card code {
+  background: var(--surface-active);
+  padding: 1.5px 5px; border-radius: 5px;
+  color: var(--text);
+}
+
+/* ── surfaces ─────────────────────────────────────────────────────── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  box-shadow: var(--shadow-sm);
+  margin: 18px 0;
+}
+.card > :last-child { margin-bottom: 0; }
+.card-t {
+  font-size: 13.5px; font-weight: 620; letter-spacing: -0.005em;
+  margin: 0 0 8px; display: flex; align-items: center; gap: 8px;
+}
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 18px 0; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 18px 0; }
+.grid2 > .card, .grid3 > .card { margin: 0; }
+
+.note {
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 13px 18px; margin: 18px 0;
+  font-size: 14px;
+}
+.note.warn { border-left-color: var(--attention); background: color-mix(in srgb, var(--attention) 7%, var(--surface)); }
+.note.bad  { border-left-color: var(--danger);    background: color-mix(in srgb, var(--danger) 6%, var(--surface)); }
+.note.good { border-left-color: var(--positive);  background: color-mix(in srgb, var(--positive) 6%, var(--surface)); }
+.note b { display: block; margin-bottom: 3px; font-size: 12.5px; letter-spacing: -0.005em; }
+.note > :last-child { margin-bottom: 0; }
+
+/* ── chips ────────────────────────────────────────────────────────── */
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 1.5px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 500; letter-spacing: 0.01em;
+  white-space: nowrap;
+  background: var(--surface-active); color: var(--text-muted);
+}
+.chip.pos  { background: color-mix(in srgb, var(--positive) 13%, transparent);  color: var(--positive); }
+.chip.att  { background: color-mix(in srgb, var(--attention) 15%, transparent); color: color-mix(in srgb, var(--attention) 88%, var(--text)); }
+.chip.bad  { background: color-mix(in srgb, var(--danger) 12%, transparent);    color: var(--danger); }
+.chip.info { background: color-mix(in srgb, var(--accent) 12%, transparent);    color: var(--accent); }
+.chip .dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+.chip.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; }
+
+/* ── tables ───────────────────────────────────────────────────────── */
+.tw { overflow-x: auto; margin: 18px 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+th {
+  text-align: left; padding: 11px 16px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.11em;
+  color: var(--text-subtle);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-active) 55%, transparent);
+  white-space: nowrap;
+}
+td { padding: 10px 16px; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--text-muted); }
+td:first-child { color: var(--text); font-weight: 500; }
+tr:last-child td { border-bottom: 0; }
+tbody tr:hover td { background: color-mix(in srgb, var(--surface-hover) 60%, transparent); }
+
+/* ── wireframes ───────────────────────────────────────────────────── */
+.wf {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--canvas);
+  overflow: hidden;
+  margin: 20px 0;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  box-shadow: var(--shadow-md);
+}
+.wf-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+.wf-bar .t { color: var(--text); font-weight: 600; }
+.wf-bar .sp { margin-left: auto; }
+.wf-body { display: flex; min-height: 220px; }
+.wf-col { padding: 10px 12px; border-right: 1px solid var(--line); }
+.wf-col:last-child { border-right: 0; }
+.wf-col .lbl {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.13em;
+  color: var(--text-subtle); margin-bottom: 8px;
+}
+.wf-main { flex: 1; background:
+  radial-gradient(circle, color-mix(in srgb, var(--text-subtle) 26%, transparent) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+.wf-foot {
+  padding: 7px 12px; border-top: 1px solid var(--line);
+  background: var(--surface); color: var(--text-subtle);
+  display: flex; gap: 10px; align-items: center;
+}
+.stub {
+  border: 1px solid var(--line); border-radius: 9px;
+  background: var(--surface); padding: 6px 8px; margin-bottom: 6px;
+  color: var(--text-muted);
+}
+.stub b { display: block; color: var(--text); font-weight: 600; font-size: 10.5px; }
+.stub.sel { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent); }
+.stub.run { border-color: var(--accent); }
+.stub.wait { border-color: var(--attention); }
+.stub.ok { border-color: color-mix(in srgb, var(--positive) 60%, transparent); }
+.stub.err { border-color: var(--danger); }
+
+/* ── the nine-beat spine ──────────────────────────────────────────── */
+.spine { display: flex; flex-wrap: wrap; gap: 0; margin: 22px 0 26px; }
+.beat {
+  flex: 1 1 0; min-width: 104px;
+  padding: 12px 12px 13px;
+  border-top: 2px solid var(--line-strong);
+  position: relative;
+}
+.beat::before {
+  content: ''; position: absolute; top: -5px; left: 0;
+  width: 8px; height: 8px; border-radius: 999px;
+  background: var(--surface); border: 2px solid var(--line-strong);
+}
+.beat.ai::before   { border-color: var(--cat-agent); }
+.beat.gate::before { border-color: var(--attention); background: var(--attention); }
+.beat.you::before  { border-color: var(--accent); background: var(--accent); }
+.beat.ai   { border-top-color: var(--cat-agent); }
+.beat.gate { border-top-color: var(--attention); }
+.beat.you  { border-top-color: var(--accent); }
+.beat .n {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.1em;
+  color: var(--text-subtle); display: block; margin-bottom: 3px;
+}
+.beat .h { font-size: 12.5px; font-weight: 600; letter-spacing: -0.005em; display: block; }
+.beat .d { font-size: 11px; color: var(--text-muted); line-height: 1.45; display: block; margin-top: 2px; }
+
+/* ── trace ledger ─────────────────────────────────────────────────── */
+.trace {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface); overflow: hidden; margin: 20px 0;
+}
+.trace-h {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface-active) 45%, transparent);
+  font-size: 12px;
+}
+.meter { display: flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; color: var(--text-muted); }
+.meter .bar { width: 46px; height: 4px; border-radius: 999px; background: var(--surface-active); overflow: hidden; }
+.meter .bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.meter .bar i.hot { background: var(--attention); }
+.row {
+  display: grid; grid-template-columns: 116px 1fr;
+  gap: 14px; padding: 9px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
+  font-size: 12.5px;
+}
+.row:last-child { border-bottom: 0; }
+.row .kind {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--text-subtle); padding-top: 2px;
+}
+.row.ai   .kind { color: var(--cat-agent); }
+.row.perm .kind { color: var(--positive); }
+.row.exec .kind { color: var(--accent); }
+.row.obs  .kind { color: var(--text-subtle); }
+.row.gate .kind { color: var(--attention); }
+.row.res  .kind { color: var(--positive); }
+.row.err  .kind { color: var(--danger); }
+.row .body { color: var(--text); }
+.row .body em { color: var(--text-muted); font-style: normal; }
+.quarantine {
+  margin-top: 6px; padding: 8px 11px;
+  border-left: 3px solid var(--text-subtle);
+  background: color-mix(in srgb, var(--surface-active) 60%, transparent);
+  border-radius: 0 8px 8px 0;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11px; color: var(--text-muted);
+}
+.gatebox {
+  margin-top: 8px; padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--attention) 45%, transparent);
+  background: color-mix(in srgb, var(--attention) 7%, transparent);
+  border-radius: 10px;
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 9px;
+  font-size: 11.5px; font-weight: 500; border: 1px solid var(--line-strong);
+  background: var(--surface); color: var(--text);
+}
+.btn.pri { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ── principle list ───────────────────────────────────────────────── */
+.pr { display: grid; grid-template-columns: 34px 1fr; gap: 14px; padding: 15px 0; border-bottom: 1px solid var(--line); }
+.pr:last-child { border-bottom: 0; }
+.pr .num {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px; font-weight: 600; color: var(--accent); padding-top: 1px;
+}
+.pr b { font-size: 14.5px; font-weight: 620; letter-spacing: -0.01em; display: block; margin-bottom: 3px; }
+.pr p { margin: 0; font-size: 13.5px; color: var(--text-muted); }
+
+/* ── phase timeline ───────────────────────────────────────────────── */
+.phase { display: grid; grid-template-columns: 92px 1fr; gap: 18px; padding: 16px 0; border-bottom: 1px solid var(--line); }
+.phase:last-child { border-bottom: 0; }
+.phase .when {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--accent); padding-top: 3px;
+}
+.phase h4 { margin: 0 0 5px; font-family: 'Inter', sans-serif; font-size: 15px; font-weight: 620;
+            text-transform: none; letter-spacing: -0.01em; color: var(--text); }
+.phase p { margin: 0 0 7px; font-size: 13.5px; }
+.phase ul { margin: 0; font-size: 13.5px; }
+
+.footer {
+  margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--text-subtle);
+  display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+}
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
+
+@media (max-width: 1000px) {
+  .rail { display: none; }
+  main { margin-left: 0; padding: 32px 20px 80px; }
+  .grid2, .grid3 { grid-template-columns: 1fr; }
+  .spine { flex-direction: column; }
+  .beat { border-top: 0; border-left: 2px solid var(--line-strong); padding: 8px 0 8px 16px; }
+  .beat::before { top: 12px; left: -5px; }
+}
+</style>
+
+<nav class="rail">
+  <div class="rail-brand">
+    <div class="rail-tile">A</div>
+    <div>
+      <b>Workflow UX</b>
+      <span>Architecture Report</span>
+    </div>
+  </div>
+
+  <div class="rail-group">Where we are</div>
+  <a href="#a"><span class="k">A</span> Current frontend architecture</a>
+  <a href="#b"><span class="k">B</span> Existing workflow UI</a>
+  <a href="#c"><span class="k">C</span> Research → UX mapping</a>
+
+  <div class="rail-group">What to build</div>
+  <a href="#d"><span class="k">D</span> Information architecture</a>
+  <a href="#e"><span class="k">E</span> Core screens</a>
+  <a href="#f"><span class="k">F</span> Core interactions</a>
+
+  <div class="rail-group">The hard parts</div>
+  <a href="#g"><span class="k">G</span> Agentic AI Node</a>
+  <a href="#h"><span class="k">H</span> Workflow editor</a>
+  <a href="#i"><span class="k">I</span> Execution &amp; debugging</a>
+  <a href="#j"><span class="k">J</span> Human approval</a>
+  <a href="#k"><span class="k">K</span> Security &amp; permission</a>
+  <a href="#l"><span class="k">L</span> Workspace integration</a>
+
+  <div class="rail-group">Direction</div>
+  <a href="#m"><span class="k">M</span> Design principles</a>
+  <a href="#n"><span class="k">N</span> Implementation order</a>
+  <a href="#o"><span class="k">O</span> UX risks</a>
+  <a href="#p"><span class="k">P</span> Open questions</a>
+</nav>
+
+<main>
+
+<div class="eyebrow">Design research · no implementation</div>
+<h1>AURA Workflow UX Architecture</h1>
+<p class="lede">How the Workflow Automation vision in <code>docs/AURA_WORKFLOW_AUTOMATION_RESEARCH.html</code> becomes an interface — one that makes powerful automation understandable without hiding what the AI is doing.</p>
+
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 8px">
+  <span class="chip info mono">read-only analysis</span>
+  <span class="chip mono">no source changes</span>
+  <span class="chip mono">no components created</span>
+  <span class="chip mono">nothing committed</span>
+</div>
+
+<div class="note">
+  <b>The thesis in one paragraph</b>
+  <p>Every competitor in this space sells the graph. AURA's graph is table stakes — the real product is that a person can watch an intelligent system act on their machine and understand, at every moment, <em>what it intends, what it is permitted to do, what it observed, and why it decided what it did</em>. The interface's job is therefore not to simplify the automation. It is to make the automation <strong>legible</strong> at four zoom levels: the library, the graph, the run, and the reasoning step. Anything that hides a decision to look calmer is a bug.</p>
+</div>
+
+<hr>
+
+<!-- ══════════════════ A ══════════════════ -->
+<h2 id="a"><span class="sec">A</span>Current frontend architecture</h2>
+<p class="dek">What exists today, and which of its properties the workflow work must not break.</p>
+
+<h3>Stack and shell</h3>
+<p>A Tauri desktop app (<code>apps/desktop</code>) running React + TypeScript, with <strong>Zustand</strong> stores as the only state authority, <strong>framer-motion</strong> for all movement, and Tailwind layered over a hand-written CSS-variable token file (<code>src/styles/global.css</code>). The design system is a real package — <code>@aura/ui</code>, 21 components plus a hand-drawn icon set — consumed by every screen.</p>
+
+<div class="wf">
+  <div class="wf-bar"><span class="t">AppShell</span><span>the fixed frame — every region scrolls independently, the frame never moves</span></div>
+  <div class="wf-body">
+    <div class="wf-col" style="width:150px">
+      <div class="lbl">LeftNav · 244 / 76px</div>
+      <div class="stub sel"><b>Home</b></div>
+      <div class="stub"><b>Automation</b>workflows</div>
+      <div class="stub"><b>Workspace</b>hub + panels</div>
+      <div class="stub"><b>Connected Env.</b></div>
+      <div class="stub"><b>Settings</b></div>
+    </div>
+    <div class="wf-main wf-col" style="flex:1">
+      <div class="lbl">CommandBar — breadcrumb · ⌘K palette portal · notifications · theme</div>
+      <div class="stub" style="margin-top:10px"><b>ScreenRouter</b>keyed motion.div · store-driven, no URL router · React.lazy per heavy screen</div>
+      <div class="stub"><b>fixedViewport screens</b>workflows · workspace · environment · code — own their scroll</div>
+    </div>
+    <div class="wf-col" style="width:150px">
+      <div class="lbl">RightPanel · 320px</div>
+      <div class="stub"><b>Project</b>name, path, type</div>
+      <div class="stub"><b>Knowledge</b>index phase</div>
+      <div class="stub"><b>Profile</b>language, pkg mgr</div>
+    </div>
+  </div>
+  <div class="wf-foot"><span>StatusBar · 8 live vitals</span><span>· backend · project · branch · missions · index · provider · memory · diagnostics</span></div>
+</div>
+
+<h4>Properties that are load-bearing</h4>
+<ul>
+  <li><strong>Navigation is store state, not URL.</strong> <code>useAppStore.nav</code> ∈ <code>home | workflows | workspace | environment | settings</code>, plus <code>activeProjectId</code> and <code>projectTab</code>. Any new workflow surface is a state, not a route.</li>
+  <li><strong>Route switches never gate on an exit animation.</strong> <code>ScreenRouter</code> keys a single <code>motion.div</code>; nesting a second <code>AnimatePresence mode="wait"</code> above a screen that has its own has already caused a permanently blank workspace. This constrains any tabbed workflow shell.</li>
+  <li><strong>The RightPanel is suppressed by screens that supply their own inspector</strong> (Code workspace, Workspace screen). The workflow editor already follows the same logic implicitly by owning its own inspector column.</li>
+  <li><strong>Three canvas traditions already exist and mean different things.</strong> Author-time DAG (<code>screens/workflows/WorkflowEditor</code>), run-time DAG with deterministic Sugiyama-lite layout (<code>screens/missions/WorkflowCanvas</code>), and non-wireable hub-and-spoke (<code>workspace/HubCanvas</code> — explicitly "not a workflow builder"). Adding a fourth would be a mistake.</li>
+</ul>
+
+<h3>The token layer</h3>
+<p>Two complete palettes keyed off <code>:root[data-theme]</code>. Semantic, not literal: <code>--canvas</code>, <code>--surface</code>, <code>--surface-hover</code>, <code>--surface-active</code>, <code>--line</code>, <code>--line-strong</code>, <code>--text</code>, <code>--text-muted</code>, <code>--text-subtle</code>, <code>--accent</code> (<code>#3b6bff</code> light / <code>#5c86ff</code> dark), and exactly three status hues — <code>--positive</code>, <code>--attention</code>, <code>--danger</code>. Inter at 13px base with <code>cv02/03/04/11</code>; radii cluster at 10–16px; shadows are barely there.</p>
+<p>Node families carry their own categorical hues in <code>screens/workflows/shared.ts</code> — source blue, intelligence violet, generate green, logic amber, action rose, io cyan — deliberately separate from the three status hues so state and identity never compete for meaning. <strong>This separation is the single most valuable thing in the existing system and every proposal below preserves it.</strong></p>
+
+<h3>Motion vocabulary</h3>
+<p>Three springs (<code>snappy</code>, <code>smooth</code>, <code>fluid</code>) plus four ambient classes already written for exactly this domain: <code>.aura-breathe</code> (a status dot that breathes), <code>.aura-live</code> (a solid dot with a slow expanding halo), <code>.aura-drift</code>, and <code>.edge-flow</code> — <em>"dependency edges stream forward along the path while execution runs"</em>. All respect <code>prefers-reduced-motion</code>. The language for live execution is already authored; the workflow work should spend it, not reinvent it.</p>
+
+<!-- ══════════════════ B ══════════════════ -->
+<h2 id="b"><span class="sec">B</span>Existing workflow-related UI</h2>
+<p class="dek">An honest inventory. More exists than the roadmap implies — and the gaps are not where you would guess.</p>
+
+<h3>What ships today</h3>
+<div class="tw"><table>
+<thead><tr><th>Surface</th><th>File</th><th>What it does</th><th>State</th></tr></thead>
+<tbody>
+<tr><td>Library</td><td class="mono">workflows/WorkflowLibrary.tsx</td><td>Search, category chips, favourites, rename/duplicate/delete, JSON import/export, 5-up starter templates</td><td><span class="chip pos">solid</span></td></tr>
+<tr><td>Editor</td><td class="mono">workflows/WorkflowEditor.tsx</td><td>Pan/zoom canvas, node drag, port-to-port connect, marquee select, undo/redo, inspector, live status rings</td><td><span class="chip pos">solid</span></td></tr>
+<tr><td>AI Builder</td><td class="mono">workflows/AiBuilderPanel.tsx</td><td>Natural language → validated graph, saved and opened on the canvas</td><td><span class="chip att">thin</span></td></tr>
+<tr><td>Run panel</td><td class="mono">WorkflowEditor.tsx (inline)</td><td>260px bottom drawer, Output / Logs tabs, completed-count and elapsed</td><td><span class="chip att">thin</span></td></tr>
+<tr><td>Run state</td><td class="mono">data/useWorkflows.ts</td><td>SSE <code>RunEvent</code> → per-node status, logs, outputs; abort controller; undo stack of 60 JSON snapshots</td><td><span class="chip pos">solid</span></td></tr>
+<tr><td>Webhook trigger</td><td class="mono">WorkflowEditor.tsx (inline)</td><td>Lazy token generation, copy, rotate</td><td><span class="chip pos">solid</span></td></tr>
+<tr><td>Approval gate</td><td class="mono">missions/ApprovalGate.tsx</td><td>Capability, target, risk, reason, both outcomes, decline-with-reason, policy rule cited</td><td><span class="chip pos">excellent</span></td></tr>
+<tr><td>Checkpoints</td><td class="mono">missions/CheckpointPanel.tsx</td><td>Four-gate stepper: planning → execution → review → completion</td><td><span class="chip pos">solid</span></td></tr>
+<tr><td>Timeline</td><td class="mono">missions/MissionTimeline.tsx</td><td>Day-grouped, typed events, actor badges (AI / You / System)</td><td><span class="chip pos">excellent</span></td></tr>
+<tr><td>Execution DAG</td><td class="mono">missions/WorkflowCanvas.tsx</td><td>Deterministic layout, critical path, parallel batches, blocking edges</td><td><span class="chip pos">solid</span></td></tr>
+<tr><td>Agent queues</td><td class="mono">ops/AgentCenter.tsx</td><td>Approval / action / verification queues + replayable timeline</td><td><span class="chip pos">solid</span></td></tr>
+</tbody>
+</table></div>
+
+<div class="note good">
+  <b>The most important existing asset</b>
+  <p><code>ApprovalGate.tsx</code> already states the rule this whole report depends on, in its own header comment: <em>"The five things a person needs in order to answer honestly are all required to be on screen: which capability, against what target, at what risk, why it is being asked, and what happens either way."</em> That is the correct standard, it is already implemented, and it is currently reachable only from Mission Control. Section&nbsp;J is largely an argument for wiring it into more places rather than designing anything new.</p>
+</div>
+
+<h3>The gaps, ranked by how much they hurt</h3>
+<div class="tw"><table>
+<thead><tr><th>Missing</th><th>Consequence today</th><th>Severity</th></tr></thead>
+<tbody>
+<tr><td>Execution history</td><td>A run exists only while the editor is open. <code>useWorkflows.close()</code> discards it. There is no answer to "what happened last night?"</td><td><span class="chip bad">critical</span></td></tr>
+<tr><td>Approvals inside workflows</td><td>The Fabric can pause for authorization; the workflow editor has no surface to show it. A gated workflow simply appears to hang.</td><td><span class="chip bad">critical</span></td></tr>
+<tr><td>Agent node</td><td>No AI reasoning node exists. The flagship differentiator has no UI, no spec, no place on the canvas.</td><td><span class="chip bad">critical</span></td></tr>
+<tr><td>Automation rules UI</td><td><code>packages/automation</code> — 8 trigger types, conditions, retries, run history, a full state machine — has <strong>zero</strong> desktop UI. An entire engine is invisible.</td><td><span class="chip bad">critical</span></td></tr>
+<tr><td>Permission preview</td><td>Nothing tells a user what a workflow is <em>able</em> to do before they run it. Import a JSON workflow and you have imported unknown authority.</td><td><span class="chip bad">critical</span></td></tr>
+<tr><td>Dry run / simulation</td><td>The only way to learn what a workflow does is to let it do it.</td><td><span class="chip att">high</span></td></tr>
+<tr><td>Versioning</td><td>Saving overwrites. No history, no rollback, no "what changed since the run that worked".</td><td><span class="chip att">high</span></td></tr>
+<tr><td>Retry / resume / step</td><td>Failure is terminal. The only recovery is re-running everything from the top.</td><td><span class="chip att">high</span></td></tr>
+<tr><td>Data mapping</td><td>Edges carry an opaque <code>NodeIO</code>. Nothing shows what actually flowed. <code>{{VAR}}</code> interpolation is untyped and unassisted.</td><td><span class="chip att">high</span></td></tr>
+<tr><td>Validation surface</td><td>Errors appear at run time as a red ring. Cycles, orphans and unconfigured required fields are invisible until then.</td><td><span class="chip att">high</span></td></tr>
+<tr><td>Cost / token visibility</td><td>LLM nodes report milliseconds, never tokens or money.</td><td><span class="chip">medium</span></td></tr>
+<tr><td>Palette search, minimap, auto-layout</td><td>Fine at 8 nodes. Unusable at 40.</td><td><span class="chip">medium</span></td></tr>
+</tbody>
+</table></div>
+
+<div class="note warn">
+  <b>A structural problem worth naming early</b>
+  <p>The editor currently reserves <strong>796px of permanent chrome</strong> — a 216px palette, a 280px inspector, and a 300px AI Builder panel that is docked permanently and never collapses. On a 1440px window with the 76px nav rail, the canvas gets under 570px. Every feature this report proposes wants panel space, and there is none left. Section&nbsp;H treats panel budget as a first-class design constraint rather than an afterthought.</p>
+</div>
+
+<!-- ══════════════════ C ══════════════════ -->
+<h2 id="c"><span class="sec">C</span>Research → UX mapping</h2>
+<p class="dek">Every research finding that implies an interface obligation, and what that obligation actually is.</p>
+
+<h4>The 20 fundamental concepts → where they live on screen</h4>
+<div class="tw"><table>
+<thead><tr><th>Concept</th><th>Research status</th><th>UX obligation</th><th>Surface</th></tr></thead>
+<tbody>
+<tr><td>Workflow</td><td>exists</td><td>Named, versioned, permission-summarised object</td><td>Library card + header</td></tr>
+<tr><td>Node</td><td>30+ types</td><td>Uniform card; identity by family hue; state by ring</td><td>Canvas</td></tr>
+<tr><td>Trigger</td><td>8 types</td><td>First-class, visible on the canvas as an entry node — not buried in the inspector</td><td>Canvas + library card</td></tr>
+<tr><td>Condition / Loop</td><td>exists</td><td>Multi-port nodes with labelled ports (already correct)</td><td>Canvas</td></tr>
+<tr><td>Variable</td><td>exists</td><td>Typed, provenance-traceable token chips — not raw <code>{{TEXT}}</code></td><td>Inspector + edge peek</td></tr>
+<tr><td>Error handler</td><td>partial</td><td>Every node gets a visible failure route; failure is a designed path, not an exception</td><td>Canvas port + inspector</td></tr>
+<tr><td>Human approval</td><td>via Fabric</td><td>Inline in the run, plus a cross-workflow inbox</td><td>Run view + Approvals</td></tr>
+<tr><td>Retry / timeout / cancel</td><td>exists</td><td>Per-node policy visible on the node face; cancel always one click from anywhere</td><td>Node + run header</td></tr>
+<tr><td>State / checkpoint</td><td>in-memory</td><td>A run that survives the app; "resume from here" as an affordance</td><td>Runs view</td></tr>
+<tr><td>Execution history</td><td>rules only</td><td>The missing half of the product</td><td>Runs view</td></tr>
+<tr><td>Audit record</td><td>exists</td><td>Every governed action links to its immutable record</td><td>Trace row → audit id</td></tr>
+<tr><td>Tool</td><td>via Fabric</td><td>Selected from the real manifest, never typed by hand</td><td>Agent inspector</td></tr>
+<tr><td>Secret</td><td>partial</td><td>Referenced by name; value never rendered, ever</td><td>Inspector + redaction marks</td></tr>
+<tr><td><strong>Agent</strong></td><td><strong>critical gap</strong></td><td><strong>A contract at author time; a ledger at run time</strong></td><td><strong>Section G</strong></td></tr>
+</tbody>
+</table></div>
+
+<h4>Research decisions that are really UX decisions</h4>
+<div class="tw"><table>
+<thead><tr><th>Research finding</th><th>What it demands of the interface</th></tr></thead>
+<tbody>
+<tr><td><strong>Pattern D — bounded agent</strong>: max iterations, timeout, tool allowlist, token budget, structured output</td><td>These five bounds are not settings. They are <em>the</em> agent UI. Design them as a legible contract with a worst-case estimate, not a form.</td></tr>
+<tr><td><strong>Prompt injection</strong>: "tool outputs as untrusted data"</td><td>Untrusted data must <em>look</em> untrusted wherever it is shown. Never render tool output as markdown in a trace. Quarantine styling is a security control, not decoration.</td></tr>
+<tr><td><strong>Agent's tools ≤ workflow's permissions</strong></td><td>Make it structural: tools outside the workflow's envelope are visibly unselectable with a stated reason, not merely rejected at run time.</td></tr>
+<tr><td><strong>Capability Fabric is the single governed path</strong></td><td>One permission vocabulary across canvas, inspector, trace and approval. If two surfaces name the same risk differently, the model has leaked.</td></tr>
+<tr><td><strong>Approval fatigue → rubber-stamping</strong></td><td>The cost of an approval is attention. Batch, tier and scope them; make the <em>rare</em> approval feel rare. A UI that asks twenty times has already failed.</td></tr>
+<tr><td><strong>AI-generated workflows must never activate silently</strong></td><td>Generation ends in a <em>review</em> state, never a live state. Show the graph, explain each node, highlight high-risk actions, require explicit activation.</td></tr>
+<tr><td><strong>Lightweight JSON checkpointing</strong></td><td>"Resume" is a UI promise before it is a storage decision. The run header must say honestly where a run can be resumed from — and when it cannot.</td></tr>
+<tr><td><strong>Offline-first is a genuine differentiator</strong></td><td>Every node declares whether it needs network. Show it on the node face. An offline-capable workflow should be visibly, provably offline-capable.</td></tr>
+<tr><td><strong>AI provider latency dominates (100ms–2s per call)</strong></td><td>A duration bar chart tells the truth a spinner hides. Make time-in-node visible so users optimise the right node.</td></tr>
+<tr><td><strong>Trust score: tested · no policy violations · dry run passed · within budget</strong></td><td>A four-part readiness indicator on the library card and above the Run button. Earned, not asserted.</td></tr>
+<tr><td><strong>"Don't clone n8n"</strong></td><td>The differentiator is that AURA understands the project. Intelligence nodes should be the <em>first</em> thing in the palette and should show live grounding (index freshness, source counts) — not sit in a generic list alongside HTTP.</td></tr>
+</tbody>
+</table></div>
+
+<div class="note bad">
+  <b>Where the research is silent and the UX cannot be</b>
+  <p>The research treats non-determinism as a testing problem. It is also a <em>trust</em> problem, and trust is an interface concern. Two identical runs of the same agent workflow will differ, and users will read that as a bug unless the interface has already taught them otherwise. The proposal: run cards carry a <span class="chip mono">deterministic</span> or <span class="chip mono">reasoned</span> mark, and any run containing an agent node shows a divergence affordance — "this run differs from the last; see where" — turning surprise into an inspectable fact.</p>
+</div>
+
+<hr>
+
+<!-- ══════════════════ D ══════════════════ -->
+<h2 id="d"><span class="sec">D</span>Proposed information architecture</h2>
+<p class="dek">One domain, three standing surfaces, six workflow-scoped views — and a strict rule about what must not be duplicated.</p>
+
+<h3>The object model, named once</h3>
+<p>Naming is architecture. These are the only nouns the interface may use, and each has exactly one meaning:</p>
+<div class="tw"><table>
+<thead><tr><th>Noun</th><th>Means</th><th>Never means</th></tr></thead>
+<tbody>
+<tr><td>Automation</td><td>The umbrella domain — everything under the <span class="chip mono">Automation</span> nav key</td><td>A specific workflow</td></tr>
+<tr><td>Workflow</td><td>A named, versioned graph definition</td><td>An execution of one</td></tr>
+<tr><td>Version</td><td>An immutable snapshot of a definition</td><td>A draft</td></tr>
+<tr><td>Trigger</td><td>What starts a run — manual, schedule, webhook, event</td><td>The first node's config</td></tr>
+<tr><td>Rule</td><td>An event-driven trigger → condition → action chain (the Automation Engine)</td><td>A workflow</td></tr>
+<tr><td>Run</td><td>One execution of one version, with a persistent id</td><td>A session</td></tr>
+<tr><td>Step</td><td>One node's execution within a run</td><td>The node itself</td></tr>
+<tr><td>Action</td><td>One Fabric-governed side effect inside a step</td><td>A node category</td></tr>
+<tr><td>Approval</td><td>A human authorization record</td><td>A confirmation dialog</td></tr>
+<tr><td>Artifact</td><td>A durable output a run produced</td><td>Log output</td></tr>
+<tr><td>Trace</td><td>An agent node's internal reasoning ledger</td><td>The run timeline</td></tr>
+</tbody>
+</table></div>
+
+<div class="note bad">
+  <b>The non-duplication rule, from CLAUDE.md</b>
+  <p><em>"There is exactly one policy engine, one execution path, one process primitive, one environment scanner, one node catalogue, one DAG builder and one approval store."</em> The UX corollary: there is <strong>one timeline component</strong>, <strong>one approval component</strong>, <strong>one risk vocabulary</strong> and <strong>one node card</strong>. Mission Control's <code>MissionTimeline</code> and <code>ApprovalGate</code> are the incumbents. Workflow execution extends them; it does not fork them. If a workflow run and a mission render the same event differently, the model has already diverged.</p>
+</div>
+
+<h3>Three standing surfaces under Automation</h3>
+<p>Today <span class="chip mono">nav: workflows</span> resolves to a library-or-editor binary. It should resolve to a domain with three peers, because the product has three questions and today answers only one:</p>
+
+<div class="grid3">
+  <div class="card">
+    <div class="card-t"><span class="chip mono">1</span> Automations</div>
+    <p style="font-size:13px;color:var(--text-muted)">"What can run?" — the unified catalogue of <strong>workflows</strong>, <strong>rules</strong> and <strong>schedules</strong>. Today only workflows appear here; the Automation Engine's eight trigger types are invisible. One catalogue, three kinds, filterable — not three separate screens.</p>
+  </div>
+  <div class="card">
+    <div class="card-t"><span class="chip mono">2</span> Runs</div>
+    <p style="font-size:13px;color:var(--text-muted)">"What happened?" — every execution, live and historical, across every automation. The single largest missing surface. This is also where resume, retry, replay and run-diff live.</p>
+  </div>
+  <div class="card">
+    <div class="card-t"><span class="chip mono">3</span> Approvals</div>
+    <p style="font-size:13px;color:var(--text-muted)">"What needs me?" — the cross-cutting inbox of pending authorizations from workflows, missions and the agent, batched and risk-tiered. Reachable from the StatusBar and the CommandBar bell, not only from inside a run.</p>
+  </div>
+</div>
+
+<p>These are tabs within the Automation screen, not new nav keys. The left rail stays at five destinations — it is one of the calmest things about the product and adding to it costs more than it buys.</p>
+
+<h3>Six views scoped to one workflow</h3>
+<p>Opening a workflow replaces the library with a workflow shell carrying its own tab strip. The order matters: it is the lifecycle of trust, left to right.</p>
+
+<div class="wf">
+  <div class="wf-bar">
+    <span>← Automations</span><span>│</span><span class="t">Nightly issue triage</span>
+    <span class="chip mono">v7</span><span class="chip pos">verified</span>
+    <span class="sp"></span><span class="chip mono">runs against · aura-hub</span><span class="btn">Simulate</span><span class="btn pri">Run</span>
+  </div>
+  <div class="wf-bar" style="border-bottom:1px solid var(--line);gap:14px">
+    <span style="color:var(--accent);font-weight:600;border-bottom:2px solid var(--accent);padding-bottom:2px">Design</span>
+    <span>Simulate</span><span>Runs <span class="chip mono">128</span></span><span>Versions <span class="chip mono">7</span></span>
+    <span>Permissions <span class="chip att">2 high</span></span><span>Settings</span>
+  </div>
+  <div class="wf-body" style="min-height:120px">
+    <div class="wf-col wf-main" style="flex:1;display:grid;place-items:center;color:var(--text-subtle)">the active view renders here</div>
+  </div>
+</div>
+
+<div class="tw"><table>
+<thead><tr><th>View</th><th>Question it answers</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Design</td><td>What does it do?</td><td>Exists — the current editor, restructured (§H)</td></tr>
+<tr><td>Simulate</td><td>What <em>would</em> it do?</td><td>New — dry run, mocked side effects, validation report</td></tr>
+<tr><td>Runs</td><td>What did it do, and when?</td><td>New — per-workflow slice of the global Runs surface</td></tr>
+<tr><td>Versions</td><td>What changed, and can I go back?</td><td>New — version list, graph diff, restore</td></tr>
+<tr><td>Permissions</td><td>What is it <em>allowed</em> to do?</td><td>New — the permission envelope (§K)</td></tr>
+<tr><td>Settings</td><td>Triggers, retries, timeouts, notifications</td><td>Partial — triggers are scattered across canvas and inspector today</td></tr>
+</tbody>
+</table></div>
+
+<h3>Four zoom levels — the report's organising idea</h3>
+<div class="spine">
+  <div class="beat"><span class="n">L1</span><span class="h">Catalogue</span><span class="d">Automations + Runs + Approvals. Fleet health. What exists and what needs me.</span></div>
+  <div class="beat"><span class="n">L2</span><span class="h">Graph</span><span class="d">One workflow's structure and state. Nodes, edges, live rings.</span></div>
+  <div class="beat"><span class="n">L3</span><span class="h">Run</span><span class="d">One execution over time. Timeline, ledger, artifacts, approvals.</span></div>
+  <div class="beat"><span class="n">L4</span><span class="h">Reasoning</span><span class="d">One agent step's internal argument. The trace.</span></div>
+</div>
+<p>Every navigation in the system is a move between adjacent levels, and every level is reachable from its neighbour in one click. A user must never have to leave a run to understand a step, or leave a step to understand a decision. <strong>The failure mode this prevents is the one every agent product has: a spinner at L2 and a wall of JSON at L4, with nothing in between.</strong></p>
+
+<!-- ══════════════════ E ══════════════════ -->
+<h2 id="e"><span class="sec">E</span>Core screens</h2>
+<p class="dek">Nine surfaces. Five are new; four are restructurings of things that exist.</p>
+
+<h3>E1 · Automations catalogue <span class="chip att">restructure</span></h3>
+<p>The current library is close. Three changes: <strong>rules and schedules join workflows</strong> in one filterable catalogue; each card carries a <strong>readiness strip</strong> instead of just a node count; and a <strong>live band</strong> at the top shows anything currently running or waiting.</p>
+<div class="wf">
+  <div class="wf-bar"><span class="t">Automation</span><span style="color:var(--accent);border-bottom:2px solid var(--accent)">Automations</span><span>Runs</span><span>Approvals <span class="chip att">2</span></span><span class="sp"></span><span class="btn">Import</span><span class="btn pri">New</span></div>
+  <div class="wf-col" style="border-right:0;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--accent) 4%,transparent)">
+    <div class="lbl">Live now · 2</div>
+    <div style="display:flex;gap:8px">
+      <div class="stub run" style="flex:1;margin:0"><b>Nightly issue triage</b>step 4/9 · agent reasoning · 00:42</div>
+      <div class="stub wait" style="flex:1;margin:0"><b>Release notes</b>⏸ waiting on you · git.commit</div>
+    </div>
+  </div>
+  <div class="wf-col" style="border-right:0">
+    <div class="lbl">Search ⌘K · All / Workflows / Rules / Schedules · category chips</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+      <div class="stub" style="margin:0"><b>Architecture review</b>12 nodes · v3<br><span style="color:var(--positive)">✓ tested ✓ policy ✓ dry-run</span> · <span style="color:var(--text-subtle)">offline-capable</span></div>
+      <div class="stub" style="margin:0"><b>PR merged → audit</b>rule · 4 actions<br><span style="color:var(--attention)">⚠ 1 high-risk action</span></div>
+      <div class="stub" style="margin:0"><b>Daily standup digest</b>schedule · 09:00<br><span style="color:var(--text-subtle)">last run 14h ago · ok</span></div>
+    </div>
+  </div>
+  <div class="wf-foot"><span>Backend connected</span><span>·</span><span>aura-hub</span><span>·</span><span>128 runs · 3 failed this week</span></div>
+</div>
+
+<h3>E2 · Workflow Design <span class="chip att">restructure</span></h3>
+<p>The canvas, with the panel budget rebalanced (§H). Palette becomes searchable and collapsible; the AI Builder stops being permanently docked; a validation strip appears above the canvas; the inspector gains a tab for the node's permission consequences.</p>
+
+<h3>E3 · Simulate <span class="chip info">new</span></h3>
+<p>A dry run is not a run with a flag. It is a <em>different screen</em>, because its output is a prediction, not a result. The canvas renders in a distinct "blueprint" treatment — reduced saturation, dashed node borders — so a simulated run can never be mistaken for a real one at a glance.</p>
+<div class="wf">
+  <div class="wf-bar"><span class="t">Simulate</span><span class="chip mono">no side effects will occur</span><span class="sp"></span><span class="btn">Configure mocks</span><span class="btn pri">Simulate</span></div>
+  <div class="wf-body">
+    <div class="wf-col wf-main" style="flex:1.4">
+      <div class="lbl">Blueprint canvas — dashed, desaturated</div>
+      <div class="stub" style="width:60%;border-style:dashed"><b>Changed Files (Git)</b>would read · 12 files</div>
+      <div class="stub" style="width:60%;margin-left:28px;border-style:dashed"><b>Agent · triage</b>would use 4 tools · up to 10 iterations</div>
+      <div class="stub err" style="width:60%;margin-left:56px;border-style:dashed"><b>Git commit</b>would require approval · high risk</div>
+    </div>
+    <div class="wf-col" style="width:230px">
+      <div class="lbl">Prediction report</div>
+      <div class="stub"><b>Structure</b>✓ no cycles · ✓ all inputs connected · ⚠ 1 unreachable node</div>
+      <div class="stub"><b>Configuration</b>✕ &ldquo;Slack notify&rdquo; missing channel</div>
+      <div class="stub"><b>Policy</b>2 actions require approval<br>1 action denied — no <span class="mono">network.outbound</span></div>
+      <div class="stub"><b>Budget</b>est. 8–14s · ~6.2K tokens · ~$0.04</div>
+      <div class="stub"><b>Network</b>3 nodes need internet</div>
+    </div>
+  </div>
+</div>
+
+<h3>E4 · Runs (global) <span class="chip info">new</span></h3>
+<p>A table, not a card grid — this is scanned for anomalies, not browsed. Columns: automation, version, trigger, started, duration, steps, cost, outcome. Rows carry a severity stripe. Filters that matter: <em>failed</em>, <em>waiting on human</em>, <em>contains agent</em>, <em>this project</em>, <em>last 24h</em>.</p>
+
+<h3>E5 · Run detail <span class="chip info">new</span> — the centre of gravity</h3>
+<p>Three synchronized projections of one truth. Selecting a step in any pane scrubs the other two. Detailed in §I.</p>
+<div class="wf">
+  <div class="wf-bar"><span class="t">Run #4a91</span><span class="chip mono">v7</span><span class="chip att">waiting on you</span><span>started 00:42 ago</span><span class="sp"></span><span class="btn">Step ⤼</span><span class="btn">Cancel</span></div>
+  <div class="wf-body">
+    <div class="wf-col wf-main" style="flex:1">
+      <div class="lbl">Graph — state at playhead</div>
+      <div class="stub ok" style="width:70%"><b>Changed Files</b>✓ 210ms · 12 files</div>
+      <div class="stub ok" style="width:70%;margin-left:20px"><b>Coding KE</b>✓ 1.4s · 6 sources</div>
+      <div class="stub wait" style="width:70%;margin-left:40px"><b>Agent · triage</b>⏸ iteration 4/10 · awaiting approval</div>
+    </div>
+    <div class="wf-col" style="width:210px">
+      <div class="lbl">Timeline — wall clock</div>
+      <div class="stub" style="padding:8px">
+        <div style="height:7px;background:var(--positive);width:12%;border-radius:3px;margin-bottom:4px"></div>
+        <div style="height:7px;background:var(--positive);width:34%;border-radius:3px;margin:0 0 4px 12%"></div>
+        <div style="height:7px;background:var(--attention);width:44%;border-radius:3px;margin-left:46%"></div>
+        <div style="color:var(--text-subtle);margin-top:6px">0s ──── 15s ──── 42s</div>
+      </div>
+      <div class="lbl" style="margin-top:10px">Legend</div>
+      <div style="color:var(--text-muted)">■ ran ■ waiting on human ▨ waiting on network</div>
+    </div>
+    <div class="wf-col" style="width:230px">
+      <div class="lbl">Ledger — events</div>
+      <div class="stub"><b>⏸ Approval required</b>git.commit · high · irreversible</div>
+      <div class="stub"><b>Decision</b>&ldquo;3 issues are duplicates&rdquo; · 2 evidence</div>
+      <div class="stub"><b>Observation</b>untrusted · 2.1 KB</div>
+    </div>
+  </div>
+  <div class="wf-foot"><span>4/9 steps</span><span>·</span><span>~3.1K tokens · $0.02</span><span>·</span><span>resumable from step 4</span></div>
+</div>
+
+<h3>E6 · Agent trace <span class="chip info">new</span></h3>
+<p>Opens as a right drawer over the run, or full-height from a run's step row. Section §G is entirely about this surface.</p>
+
+<h3>E7 · Approvals inbox <span class="chip info">new</span></h3>
+<p>Grouped by risk then by source. Each item is the existing <code>ApprovalGate</code> component verbatim, with one addition: a <strong>context link</strong> back to the run and step that raised it, so a decision is never made blind.</p>
+
+<h3>E8 · Versions <span class="chip info">new</span></h3>
+<p>A left list of versions (author, time, note, run count, success rate) against a right graph-diff: added nodes in positive tint, removed in danger tint with a strike, changed config fields listed field-by-field. <strong>Version rows link to the runs that used them</strong> — "v5 succeeded 40 times; v6 has failed 3 of 4" is the most useful sentence this screen can produce.</p>
+
+<h3>E9 · Permissions <span class="chip info">new</span></h3>
+<p>The workflow's total authority, computed from its nodes and shown as an envelope. Detailed in §K.</p>
+
+<!-- ══════════════════ F ══════════════════ -->
+<h2 id="f"><span class="sec">F</span>Core interactions</h2>
+<p class="dek">The grammar. Existing gestures are preserved exactly; new ones extend rather than replace.</p>
+
+<h3>Canvas grammar — already correct, keep it</h3>
+<div class="tw"><table>
+<thead><tr><th>Gesture</th><th>Does</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Drag empty canvas</td><td>Pan, and clear selection</td><td>exists</td></tr>
+<tr><td>Wheel</td><td>Zoom about the cursor, clamped 0.3–2×</td><td>exists</td></tr>
+<tr><td>Shift + drag canvas</td><td>Marquee select</td><td>exists</td></tr>
+<tr><td>Drag out-port → in-port</td><td>Connect, with hover-scale target feedback</td><td>exists</td></tr>
+<tr><td>Shift + click node</td><td>Add/remove from selection</td><td>exists</td></tr>
+<tr><td>Click edge</td><td>Select the connection</td><td>exists</td></tr>
+<tr><td><strong>Hover edge</strong></td><td><strong>Peek the data that flowed — text preview, byte count, type</strong></td><td><span class="chip info">new</span></td></tr>
+<tr><td><strong>Drag palette item onto canvas</strong></td><td><strong>Place at drop point</strong> (today it lands at centre with jitter)</td><td><span class="chip info">new</span></td></tr>
+<tr><td><strong>Drop a node onto an edge</strong></td><td><strong>Splice it inline, rewiring both sides</strong></td><td><span class="chip info">new</span></td></tr>
+<tr><td><strong>Click node gutter</strong></td><td><strong>Toggle breakpoint</strong></td><td><span class="chip info">new</span></td></tr>
+</tbody>
+</table></div>
+
+<h3>Keyboard — extend the existing map, never rebind it</h3>
+<p>Live today: <code>⌘Z</code> undo, <code>⌘⇧Z</code>/<code>⌘Y</code> redo, <code>⌘S</code> save, <code>⌘D</code> duplicate, <code>Del</code> delete, <code>Esc</code> deselect, <code>⌘K</code> palette. Proposed additions, none of which collide:</p>
+<div class="grid2">
+  <div class="card">
+    <h4>Authoring</h4>
+    <ul style="font-size:13px">
+      <li><code>⌘F</code> — focus palette search</li>
+      <li><code>Tab</code> — add a node connected to the selection</li>
+      <li><code>⌘⇧F</code> — auto-layout the graph</li>
+      <li><code>⌘0</code> / <code>⌘1</code> — fit / reset zoom</li>
+      <li><code>⌘G</code> — group selection into a subworkflow</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4>Execution</h4>
+    <ul style="font-size:13px">
+      <li><code>⌘↵</code> — run · <code>⌘⇧↵</code> — simulate</li>
+      <li><code>F10</code> — step over · <code>F8</code> — continue</li>
+      <li><code>⌘.</code> — cancel the active run</li>
+      <li><code>⌘⇧A</code> — jump to the pending approval</li>
+      <li><code>[</code> / <code>]</code> — previous / next step in the ledger</li>
+    </ul>
+  </div>
+</div>
+
+<h3>Five interaction rules</h3>
+<div class="pr"><div class="num">1</div><div><b>The graph is never modal.</b> Approvals, traces and inspectors are drawers and inline blocks, never dialogs over the canvas. A person deciding on a <code>git.commit</code> must be able to see the graph that led there. The only justified modal is pre-run input collection, which already works this way.</div></div>
+<div class="pr"><div class="num">2</div><div><b>State changes animate; layout does not jump.</b> A node entering <span class="chip mono">running</span> gains its ring over ~150ms and its edge starts streaming with the existing <code>.edge-flow</code>. Nodes never move on their own — auto-layout is always an explicit command, because a graph that rearranges itself during a run destroys the user's spatial memory precisely when they need it.</div></div>
+<div class="pr"><div class="num">3</div><div><b>Every wait states its cause and its exit.</b> "Running…" is insufficient. <span class="chip mono">waiting on you · git.commit</span>, <span class="chip mono">waiting on network · retry 2/3 in 8s</span>, <span class="chip mono">waiting on model · 4.2s</span>. A wait with no stated cause is a bug report waiting to be filed.</div></div>
+<div class="pr"><div class="num">4</div><div><b>Destructive and irreversible are different words.</b> Delete-a-node is undoable and needs no confirmation. <code>resource.destroy</code> is not, and needs a typed confirmation and an audit record. The interface must never spend a user's caution on the reversible thing.</div></div>
+<div class="pr"><div class="num">5</div><div><b>Cancel is always one gesture away.</b> From the canvas, the run header, the trace, the Runs table, the StatusBar. Cancellation is the user's ultimate authority over an autonomous system and must never be more than one click deep.</div></div>
+
+<hr>
+
+<!-- ══════════════════ G ══════════════════ -->
+<h2 id="g"><span class="sec">G</span>Agentic AI Node UX</h2>
+<p class="dek">The one node whose behaviour is not knowable at author time. Everything else in this report is scaffolding for getting this right.</p>
+
+<div class="note">
+  <b>The design problem, stated precisely</b>
+  <p>Every other node is a <em>function</em>: configuration in, typed output out, behaviour fully determined by its config. The agent node is a <em>contract</em>: you specify a boundary, and something inside it reasons. This means the author-time UI cannot be a settings form — a form implies you are describing behaviour, and you are not. And the run-time UI cannot be a status ring — a ring implies there is one thing happening, and there are ten.</p>
+  <p><strong>So the agent node needs two interfaces that no other node needs: a contract, and a ledger.</strong></p>
+</div>
+
+<h3>The nine beats</h3>
+<p>The user's brief names the sequence the interface must communicate. It is a real sequence — each beat causes the next — so it earns structural treatment. Every beat below is a typed row in the trace, coloured by <em>kind</em>, and carries an actor: <span class="chip" style="color:var(--cat-agent)">AI</span> reasons, <span class="chip att">gates</span> pause, <span class="chip info">you</span> decide.</p>
+
+<div class="spine">
+  <div class="beat you"><span class="n">01</span><span class="h">Intent</span><span class="d">The task as given, plus the context manifest actually sent.</span></div>
+  <div class="beat ai"><span class="n">02</span><span class="h">Plan</span><span class="d">The stated approach for this iteration, before any tool runs.</span></div>
+  <div class="beat ai"><span class="n">03</span><span class="h">Proposal</span><span class="d">A named capability with concrete arguments.</span></div>
+  <div class="beat gate"><span class="n">04</span><span class="h">Permission</span><span class="d">The Fabric's decision and the rule behind it. Always shown.</span></div>
+  <div class="beat ai"><span class="n">05</span><span class="h">Execution</span><span class="d">Ran via the Fabric. Duration, surface, audit id.</span></div>
+  <div class="beat"><span class="n">06</span><span class="h">Observation</span><span class="d">What came back — quarantined as untrusted data.</span></div>
+  <div class="beat ai"><span class="n">07</span><span class="h">Decision</span><span class="d">A claim, with links to the observations supporting it.</span></div>
+  <div class="beat you"><span class="n">08</span><span class="h">Intervention</span><span class="d">Approve, decline, redirect, or stop — inline, in context.</span></div>
+  <div class="beat ai"><span class="n">09</span><span class="h">Result</span><span class="d">Typed output, schema-validated, or a stated reason for stopping.</span></div>
+</div>
+
+<h3>Zoom level 1 — the node face on the canvas</h3>
+<p>The agent must look like a <em>node</em>, or the graph stops being a graph. Same 208px card, same header layout, same port geometry. Four differences, each earning its pixels:</p>
+
+<div class="grid2">
+<div class="card" style="border-color:color-mix(in srgb,var(--cat-agent) 40%,var(--line))">
+  <div class="card-t"><span style="width:18px;height:18px;border-radius:6px;background:color-mix(in srgb,var(--cat-agent) 18%,transparent);display:inline-grid;place-items:center;color:var(--cat-agent);font-size:11px" class="mono">◈</span> Triage the issues</div>
+  <div style="font-size:11px;color:var(--text-subtle);font-family:'JetBrains Mono',monospace;margin-bottom:9px">agent · bounded</div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px">
+    <span class="chip mono">⟳ 10</span><span class="chip mono">⏱ 60s</span><span class="chip mono">◈ 10K</span><span class="chip info mono">4 tools</span>
+  </div>
+  <div style="font-size:11px;color:var(--text-muted)">ports: <span class="mono">done</span> · <span class="mono">needs-human</span> · <span class="mono">failed</span></div>
+</div>
+<div class="card">
+  <h4>What each element buys</h4>
+  <ul style="font-size:13px;margin:0">
+    <li><strong>Indigo family hue</strong> <code>#6366f1</code> — adjacent to intelligence violet (it reasons) but distinct from it (it <em>acts</em>). New family, same categorical system.</li>
+    <li><strong>The contract strip</strong> — iterations, wall clock, token budget. Legible at a glance, at any zoom above 0.6×. A user scanning a graph can see instantly which agents are cheap and which are expensive.</li>
+    <li><strong>The tool chip</strong> is a button, not a label. It opens the permission envelope. This is the single most important affordance on the card.</li>
+    <li><strong>Three output ports</strong>, not one. An agent legitimately terminates three ways, and <code>needs-human</code> is a first-class outcome — not a failure.</li>
+  </ul>
+</div>
+</div>
+
+<p>During a run the card grows exactly two things: a one-line <strong>beat ticker</strong> (<span class="mono" style="font-size:11px">observing · read src/server.ts</span>) that replaces the config preview, and a 2px <strong>iteration rail</strong> along the bottom edge showing <span class="mono">4/10</span>. Reasoning text never appears on the canvas — at 208px wide it can only be a teaser, and a teaser of an argument is worse than no argument.</p>
+
+<h3>Zoom level 2 — the agent inspector (author time)</h3>
+<p>Five blocks, in the order a person actually reasons about them. Not <code>spec.fields.map()</code> — this node's configuration has an argument shape and the UI should carry it.</p>
+
+<div class="tw"><table>
+<thead><tr><th>Block</th><th>Contains</th><th>The design decision that matters</th></tr></thead>
+<tbody>
+<tr><td><strong>Task</strong></td><td>The instruction; the expected output shape as named typed fields</td><td>The schema builder is not optional. The outer graph needs typed results, and a schema authored here is what makes the <code>done</code> port's payload connectable to anything downstream.</td></tr>
+<tr><td><strong>Context</strong></td><td>Toggles for workflow variables, project profile, Coding KE, FullStack KE, conversation, memory (read-only)</td><td>Each row shows a <strong>live token cost</strong> and a <strong>freshness stamp</strong> (<span class="mono">indexed 4m ago</span>). The research names staleness as a top context-pollution risk; a timestamp is the whole mitigation and costs one line.</td></tr>
+<tr><td><strong>Tools</strong></td><td>The allowlist, drawn from the real Fabric manifest</td><td>Grouped by capability category, each showing its risk and the policy decision that <em>will</em> apply. Tools outside the workflow's envelope render struck-through and unselectable, with the reason inline. "Agent's tools ≤ workflow's permissions" becomes something you can see, not something you're told.</td></tr>
+<tr><td><strong>Limits</strong></td><td>Max iterations, wall timeout, token budget, cost ceiling</td><td>Four controls, <strong>one combined worst-case estimate</strong> updating live: <em>"up to 10 iterations · up to 60s · up to ~$0.42."</em> This is the affordance that converts an unbounded loop into a bounded promise, and it is the reason a user will trust the node at all.</td></tr>
+<tr><td><strong>On failure</strong></td><td>What the graph sees when the agent gives up</td><td>Fail the run · emit partial output · route to <code>failed</code>. Failure is a designed path, and the author decides which one.</td></tr>
+</tbody>
+</table></div>
+
+<h3>Zoom level 3 — the trace (run time)</h3>
+<p>Not a chat log. A <strong>ledger</strong>: typed rows, one kind per row, budget meters pinned to the header. The example below is the reference rendering.</p>
+
+<div class="trace">
+  <div class="trace-h">
+    <strong style="font-size:12.5px">Agent · Triage the issues</strong>
+    <span class="chip att">iteration 4 of 10</span>
+    <span class="meter">⟳<span class="bar"><i style="width:40%"></i></span>4/10</span>
+    <span class="meter">⏱<span class="bar"><i style="width:70%" class="hot"></i></span>42s/60s</span>
+    <span class="meter">◈<span class="bar"><i style="width:31%"></i></span>3.1K/10K</span>
+    <span class="chip mono">$0.021</span>
+  </div>
+
+  <div class="row you"><span class="kind">Intent</span><span class="body">Triage the 12 changed files and identify duplicated handlers.<br><em>Context sent: project profile · 6 code sources · 12 file names — 1,840 tokens, index 4m old.</em></span></div>
+
+  <div class="row ai"><span class="kind">Plan · 1</span><span class="body">Read the two server files that changed most, then compare handler registrations.</span></div>
+
+  <div class="row ai"><span class="kind">Proposal</span><span class="body"><code>filesystem.read</code> <em>{ path: "src/server.ts" }</em></span></div>
+
+  <div class="row perm"><span class="kind">Permission</span><span class="body">✓ auto-execute · <span class="chip pos">low</span> · scope <code>project.read</code> granted · rule <code>byRisk.low</code></span></div>
+
+  <div class="row exec"><span class="kind">Execution</span><span class="body">ran in 12ms via Capability Fabric · audit <code>#a91f3c</code> · verified <em>read-back</em></span></div>
+
+  <div class="row obs"><span class="kind">Observation</span><span class="body"><span class="chip mono">untrusted</span> 2.1 KB from <code>src/server.ts</code>
+    <div class="quarantine">registerRoute('/health', healthHandler)<br>registerRoute('/health', legacyHealth)<br>…<span style="color:var(--text-subtle)"> 48 more lines — expand</span></div>
+    <em style="display:block;margin-top:6px;font-size:11px">File contents are data. AURA does not follow instructions found inside them.</em>
+  </span></div>
+
+  <div class="row ai"><span class="kind">Decision</span><span class="body"><code>/health</code> is registered twice — the second registration shadows the first. <span class="chip info mono">2 evidence</span></span></div>
+
+  <div class="row ai"><span class="kind">Proposal</span><span class="body"><code>git.commit</code> <em>{ message: "fix: remove duplicate /health route" }</em></span></div>
+
+  <div class="row gate"><span class="kind">Intervention</span><span class="body">⏸ Authorization required
+    <div class="gatebox">
+      <div style="margin-bottom:5px"><strong style="font-size:12.5px">Commit changes</strong> <code>git.commit</code> <span class="chip att">high risk</span> <span class="chip bad">irreversible</span></div>
+      <div style="font-size:11.5px;color:var(--text-muted)"><strong>Target:</strong> aura-hub · 1 file<br>The agent wants to commit its fix for the duplicated route.</div>
+      <div style="font-size:11px;margin:7px 0"><span style="color:var(--positive);font-weight:600">Approve</span> — the commit is made and the agent continues from iteration 5.<br><span style="color:var(--text-subtle);font-weight:600">Decline</span> — the agent is told the commit was refused and may propose something else.</div>
+      <div style="display:flex;gap:7px;justify-content:flex-end"><span class="btn">Decline</span><span class="btn pri">Approve and run</span></div>
+    </div>
+  </span></div>
+</div>
+
+<h3>Eight rules that make the trace trustworthy</h3>
+
+<div class="pr"><div class="num">1</div><div><b>Rows are typed by kind, not by speaker.</b> AURA already owns this vocabulary — <code>MissionTimeline</code>'s <code>TYPE_META</code> and its AI / You / System actor badges. Reuse it. A second timeline vocabulary is a second source of truth about what happened.</div></div>
+
+<div class="pr"><div class="num">2</div><div><b>Observations are quarantined, always.</b> Tool output never renders as markdown. Monospace, dimmed, left-ruled, byte count, <span class="chip mono">untrusted</span> chip, collapsed past six lines, with a stated provenance line on expand. This is not styling — it is the visual implementation of the research's prompt-injection defence. <strong>If the interface never treats tool output as instructions, neither does the reader.</strong> A page that renders a fetched web page's markdown into a trusted-looking card has taught the user the exact wrong lesson.</div></div>
+
+<div class="pr"><div class="num">3</div><div><b>Permission rows appear even when auto-executed.</b> Silent auto-execution is where trust dies quietly. One line — <code>✓ auto-execute · low · project.read</code> — buys complete legibility. Collapse them in aggregate ("18 auto-executed calls, expand") once a run is long, but never omit them, and never collapse a row above <span class="chip pos">low</span>.</div></div>
+
+<div class="pr"><div class="num">4</div><div><b>Decisions carry evidence.</b> Each decision links to the observation rows it rests on; clicking scrolls and highlights them. A decision with no linked observation gets a quiet <span class="chip mono">unsupported</span> mark. This is the difference between a transcript and an argument, and it is the single highest-leverage thing this interface can do for a user's judgement.</div></div>
+
+<div class="pr"><div class="num">5</div><div><b>The budget meters are the header, and they deplete.</b> Three rails plus accumulating cost. At 80% of any limit the header shifts to attention tone. <strong>When an agent stops, the terminal row must name which limit stopped it</strong> — "reached the 10-iteration cap with no final answer" is a usable fact; "agent failed" is not.</div></div>
+
+<div class="pr"><div class="num">6</div><div><b>Interventions are inline, never modal.</b> The <code>ApprovalGate</code> component renders as a row in the trace, exactly where the reasoning that produced it sits. A modal divorces the decision from its context, which is precisely the social-engineering surface the research's threat matrix names. The canvas node simultaneously enters <span class="chip att">waiting</span> — the existing attention ring — so the state is visible from L2 as well.</div></div>
+
+<div class="pr"><div class="num">7</div><div><b>No confidence scores.</b> Show what is measured — iterations, tokens, milliseconds, tool calls, evidence count. Never show a percentage the model asserted about itself. A fabricated 94% is worse than no number, because it converts an unknown into a false known.</div></div>
+
+<div class="pr"><div class="num">8</div><div><b>Replay is the same component, frozen.</b> A historical trace renders identically to a live one, minus the meters' motion and with intervention rows showing the decision that was taken and by whom. One viewer, two states — never a separate "history" renderer that drifts.</div></div>
+
+<h3>Two open design calls inside the agent node</h3>
+<div class="grid2">
+  <div class="card">
+    <div class="card-t"><span class="chip att mono">call 1</span> Streaming reasoning: show or withhold?</div>
+    <p style="font-size:13px;color:var(--text-muted)">Streaming the model's tokens live makes the node feel alive and is what every chat product does. It also encourages reading unfiltered model output as fact, and produces text that is frequently revised a second later. <strong>Recommendation:</strong> stream a one-line <em>beat</em> ("planning", "reading src/server.ts"), and commit the full plan/decision text only when the iteration settles. Liveness without inviting the user to trust a draft.</p>
+  </div>
+  <div class="card">
+    <div class="card-t"><span class="chip att mono">call 2</span> Can a user redirect mid-run?</div>
+    <p style="font-size:13px;color:var(--text-muted)">A "steer" affordance — injecting a human note into the agent's context at an intervention — is powerful and is the natural next request after approvals ship. It is also a prompt-injection surface with the user as the injector, and it makes runs unreproducible. <strong>Recommendation:</strong> ship declines with a reason first (already in <code>ApprovalGate</code> — the reason goes to the audit trail and can equally go to the agent), and treat free-form steering as a later, explicitly-marked capability that stamps the run as <span class="chip mono">steered</span>.</p>
+  </div>
+</div>
+
+<!-- ══════════════════ H ══════════════════ -->
+<h2 id="h"><span class="sec">H</span>Workflow editor UX</h2>
+<p class="dek">The canvas is good. The chrome around it is the problem.</p>
+
+<h3>The panel budget, treated as a design constraint</h3>
+<p>Today: 76px nav rail + 216px palette + 280px inspector + 300px permanently-docked AI Builder = <strong>872px of chrome</strong>, leaving under 570px of canvas on a 1440px window. Every feature in this report wants panel space. The rebalance:</p>
+
+<div class="tw"><table>
+<thead><tr><th>Panel</th><th>Today</th><th>Proposed</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>Palette</td><td>216px, always open, no search</td><td>240px, collapsible to a 48px icon rail, <strong>search-first</strong></td><td>At 40+ node types scanning six category lists is slower than typing. Collapsed by default once a graph exists.</td></tr>
+<tr><td>Inspector</td><td>280px, always open</td><td>320px, opens on selection, closes on <code>Esc</code></td><td>Matches the shell's own RightPanel width and its show-on-context behaviour. Empty-canvas state moves to an overlay card, not a permanent column.</td></tr>
+<tr><td>AI Builder</td><td>300px, permanent, never collapses</td><td><strong>A command surface</strong> — invoked from the toolbar or <code>⌘K</code>, appears as an overlay composer at the canvas's bottom edge</td><td>It is used for seconds and occupies 300px permanently. Making it summonable returns 21% of the window and matches how <code>⌘K</code> already works everywhere else in AURA.</td></tr>
+<tr><td>Validation strip</td><td>—</td><td>28px above the canvas, only when there is something to say</td><td>Errors currently surface as a red ring at run time. A strip that says "2 problems · 1 unreachable node" turns run-time surprise into author-time information.</td></tr>
+<tr><td>Run drawer</td><td>260px bottom, Output / Logs</td><td>Becomes the Runs view (§I); the drawer keeps a compact live summary only</td><td>A 260px drawer is the wrong container for a timeline, a ledger and artifacts.</td></tr>
+</tbody>
+</table></div>
+<p><strong>Net: ~570px of canvas becomes ~1000px</strong> in the common case, and the AI Builder gains rather than loses prominence by being a command instead of a column.</p>
+
+<h3>Data mapping — the highest-value missing feature</h3>
+<p>The research calls data mapping "critical UX", and the current model is an opaque <code>NodeIO</code> with untyped <code>{{VAR}}</code> interpolation. The proposal keeps interpolation (it is simple and it works) and makes it <em>visible</em>:</p>
+<ul>
+  <li><strong>Reference chips.</strong> Typing <code>{{</code> in any text field opens an autocomplete of everything actually in scope, grouped by producing node. Inserted references render as chips carrying their source node's family hue — a green chip is generated text, a blue chip came from a project source. Provenance becomes a colour you already know how to read.</li>
+  <li><strong>Edge peek.</strong> Hovering an edge after a run shows what flowed: first 200 characters, byte count, file count, type. The single fastest way to answer "why did this node get the wrong input".</li>
+  <li><strong>Unresolved references are validation errors</strong>, shown in the strip at author time, not silently interpolated to an empty string at run time.</li>
+</ul>
+
+<h3>Validation, in three tiers</h3>
+<div class="grid3">
+  <div class="card"><div class="card-t"><span class="chip bad">blocking</span></div><p style="font-size:13px;color:var(--text-muted)">Cycles outside a loop node · a required field left empty · an unresolved <code>{{ref}}</code> · a node whose capability is denied by policy. <strong>Run is disabled</strong>, with the count on the button.</p></div>
+  <div class="card"><div class="card-t"><span class="chip att">warning</span></div><p style="font-size:13px;color:var(--text-muted)">Unreachable nodes · an output port wired nowhere · a high-risk action with no error route · a network node in an otherwise offline workflow. <strong>Run proceeds</strong>; the strip stays.</p></div>
+  <div class="card"><div class="card-t"><span class="chip info">advisory</span></div><p style="font-size:13px;color:var(--text-muted)">A stale knowledge index · an agent with an unusually large token budget · a workflow that has never been simulated. Shown in the strip's expanded view only.</p></div>
+</div>
+
+<h3>Versioning, in the toolbar</h3>
+<p>The header gains a version chip beside the name: <span class="chip mono">v7 · draft</span>. Saving creates a draft; <strong>running promotes the draft to a version</strong>, because an executed graph must be immutable if runs are to mean anything. The chip opens the Versions view. Restoring an old version creates a new one rather than rewinding — history is append-only, matching how the Fabric's audit trail already behaves.</p>
+<div class="note warn">
+  <b>The versioning trap to avoid</b>
+  <p>Auto-versioning every save produces 200 meaningless versions and a useless history. Auto-versioning only on run produces a history where every version was actually executed — which is the history people want ("what changed between the run that worked and the one that didn't"). Manual "save a version" as an escape hatch, with a note field. This is a product decision (§P) but the recommendation is firm.</p>
+</div>
+
+<h3>Scale affordances, in priority order</h3>
+<ol>
+  <li><strong>Palette search</strong> — the cheapest win in the entire editor.</li>
+  <li><strong>Auto-layout</strong> — reuse <code>missions/WorkflowCanvas</code>'s existing Sugiyama-lite layout rather than writing a second one. Explicit command, never automatic.</li>
+  <li><strong>Minimap</strong> — bottom-right, above the existing zoom controls, showing node state colours so a run's progress is legible while zoomed in.</li>
+  <li><strong>Subworkflows</strong> — <code>⌘G</code> collapses a selection into one node with declared inputs and outputs. The correct answer to "large workflows become hard to manage"; more valuable than any layout algorithm.</li>
+  <li><strong>Node search &amp; focus</strong> — <code>⌘F</code> on the canvas, jump to a node by name.</li>
+</ol>
+
+<hr>
+
+<!-- ══════════════════ I ══════════════════ -->
+<h2 id="i"><span class="sec">I</span>Execution and debugging UX</h2>
+<p class="dek">One run, three synchronized projections — and the recovery affordances that make a failure survivable.</p>
+
+<h3>Three projections of one truth</h3>
+<div class="grid3">
+  <div class="card"><div class="card-t" style="color:var(--cat-source)">Graph · where</div><p style="font-size:13px;color:var(--text-muted)">The canvas at the playhead's moment. Status rings, streaming edges. Answers <em>"where in the structure did this happen?"</em></p></div>
+  <div class="card"><div class="card-t" style="color:var(--cat-logic)">Timeline · when</div><p style="font-size:13px;color:var(--text-muted)">Wall-clock swimlanes, one row per step. Answers <em>"what took the time?"</em> — which for AI workflows is almost always the question.</p></div>
+  <div class="card"><div class="card-t" style="color:var(--cat-generate)">Ledger · what</div><p style="font-size:13px;color:var(--text-muted)">Typed events, newest last. Approvals, decisions, observations, artifacts. Answers <em>"what actually occurred?"</em></p></div>
+</div>
+<p><strong>Selection is shared.</strong> Click a node in the graph → the timeline scrolls to its bar and the ledger filters to its events. Click a ledger row → the graph highlights its node. Drag the timeline playhead → the graph renders the state at that instant. This is what turns three panels into one instrument.</p>
+
+<h3>The timeline, specifically</h3>
+<p>Not a Gantt chart borrowed from a project tool. A wall-clock swimlane tuned to the two things that actually vary in an AI workflow — <em>where the time went</em> and <em>what the system was waiting for</em>:</p>
+<ul>
+  <li><strong>Rows</strong> = steps in topological order, so the visual shape mirrors the graph.</li>
+  <li><strong>Bar fill</strong> = the node's family hue; <strong>bar border</strong> = state. Identity and status stay separable, as they are everywhere else in AURA.</li>
+  <li><strong>Waiting is drawn, not hidden.</strong> Waiting-on-human renders as an amber hatched band; waiting-on-network as a grey hatched band; waiting-on-model as a solid dimmed band. The research's finding that "AI provider latency dominates" becomes a thing you can see and optimise, rather than a fact in a document.</li>
+  <li><strong>LLM steps carry a token sub-bar</strong> under the duration bar, so cost and time are legible in the same glance.</li>
+  <li><strong>The critical path is emphasised</strong>; everything else recedes. Reuse the existing convention from <code>missions/WorkflowCanvas</code>.</li>
+</ul>
+
+<h3>Debugging affordances</h3>
+<div class="tw"><table>
+<thead><tr><th>Affordance</th><th>Interaction</th><th>Depends on</th></tr></thead>
+<tbody>
+<tr><td>Step execution</td><td><code>Step ⤼</code> in the run header, <code>F10</code>. Runs one node, pauses, shows its resolved input and output before continuing.</td><td>Engine pause support</td></tr>
+<tr><td>Breakpoints</td><td>Click a node's left gutter. A run pauses <em>before</em> the node with its resolved inputs shown — the moment when intervention is still useful.</td><td>Engine pause support</td></tr>
+<tr><td>Input/output inspection</td><td>Every step row expands to the exact <code>NodeIO</code> in and out, with a copy affordance and a byte count.</td><td>Run persistence</td></tr>
+<tr><td>Run from here</td><td>On a completed or failed step: re-execute from that point using the checkpointed upstream state.</td><td>Checkpointing</td></tr>
+<tr><td>Run diff</td><td>Select two runs → side-by-side ledgers with the first divergent step marked. The primary tool for understanding non-determinism.</td><td>Run persistence</td></tr>
+<tr><td>Filter</td><td>Failed only · slow (&gt;1s) · network calls · governed actions · agent steps.</td><td>Run persistence</td></tr>
+<tr><td>Search</td><td>Full-text across the ledger and all step outputs of one run; later, across all runs.</td><td>Run persistence</td></tr>
+<tr><td>Artifacts</td><td>A dedicated tab: every file written, note created, commit made, report generated — each linking to its audit record.</td><td>Run persistence</td></tr>
+</tbody>
+</table></div>
+<div class="note">
+  <b>Note the dependency shape</b>
+  <p>Six of the eight rows depend on <strong>run persistence</strong>, and only two on engine pause support. This is why §N puts persistence first: it is a storage change that unlocks most of the debugging surface, whereas step/breakpoint support is an engine change that unlocks two features. The cheapest large improvement to this product's UX is writing runs to disk.</p>
+</div>
+
+<h3>Retry, resume, cancel</h3>
+<div class="grid3">
+  <div class="card">
+    <div class="card-t"><span class="chip att">Retry</span></div>
+    <p style="font-size:13px;color:var(--text-muted)">Automatic retries are <strong>shown while they happen</strong>: the node holds <span class="chip mono">retry 2/3 · next in 8s</span> with a countdown, not a frozen spinner. Manual retry of one step is a row action. Retrying a step with side effects warns about idempotency — the research's at-least-once model made visible.</p>
+  </div>
+  <div class="card">
+    <div class="card-t"><span class="chip info">Resume</span></div>
+    <p style="font-size:13px;color:var(--text-muted)">The run header states resumability honestly at all times: <span class="chip mono">resumable from step 4</span> or <span class="chip mono">not resumable — no checkpoint</span>. On app restart, interrupted runs surface in Runs with a <strong>Resume</strong> action. If the definition changed since the checkpoint, resume warns before proceeding, per the research.</p>
+  </div>
+  <div class="card">
+    <div class="card-t"><span class="chip bad">Cancel</span></div>
+    <p style="font-size:13px;color:var(--text-muted)">One click from five places. Cancelling mid-action states what will and will not be rolled back — <em>"the commit already happened and will not be undone."</em> A cancelled run is <span class="chip mono">cancelled</span>, never <span class="chip mono">failed</span>: today <code>stopRun()</code> conflates them, which teaches users that their own deliberate action is an error.</p>
+  </div>
+</div>
+
+<!-- ══════════════════ J ══════════════════ -->
+<h2 id="j"><span class="sec">J</span>Human approval UX</h2>
+<p class="dek">The component is already right. The work is placement, batching, and defending the user's attention.</p>
+
+<h3>Keep the five facts</h3>
+<p><code>ApprovalGate</code> already requires all five: which capability, against what target, at what risk, why it is being asked, and what happens either way — plus the policy rule that opened the gate, an irreversibility flag, and decline-with-reason recorded to the audit trail. <strong>No redesign is warranted.</strong> The work is making it appear in three places instead of one:</p>
+<ol>
+  <li><strong>Inline in the run</strong>, at the ledger position where it was raised (§G).</li>
+  <li><strong>In the Approvals inbox</strong>, with a link back to that position.</li>
+  <li><strong>As a notification</strong>, through the existing bell and StatusBar, when the user is elsewhere in the app.</li>
+</ol>
+
+<h3>Six HITL patterns, six treatments</h3>
+<div class="tw"><table>
+<thead><tr><th>Pattern</th><th>Treatment</th><th>Node state</th></tr></thead>
+<tbody>
+<tr><td>Approval gate</td><td><code>ApprovalGate</code> inline in the ledger</td><td><span class="chip att">waiting</span></td></tr>
+<tr><td>Clarification</td><td>The agent's options as radio choices, plus a free-text "something else". Each option states its consequence.</td><td><span class="chip att">waiting</span></td></tr>
+<tr><td>Credential request</td><td>A named secret form. The value is written to the OS keychain and never displayed again — the field shows <code>••••</code> and a "stored in Keychain" mark.</td><td><span class="chip att">waiting</span></td></tr>
+<tr><td>CAPTCHA</td><td>The live browser screenshot inline, with the interaction handed to the user. The most honest possible version of "I can't do this part."</td><td><span class="chip att">waiting</span></td></tr>
+<tr><td>Input collection</td><td>Existing pre-run dialog for entry inputs; inline in the ledger for mid-run ones.</td><td><span class="chip att">waiting</span></td></tr>
+<tr><td>Review gate</td><td>A preview of the generated content with Approve · Edit · Reject. Editing before approving is the point — reuse the diff treatment from <code>DiagnosisPatchCompare</code>.</td><td><span class="chip att">waiting</span></td></tr>
+</tbody>
+</table></div>
+
+<h3>Defending attention — the anti-fatigue design</h3>
+<div class="pr"><div class="num">1</div><div><b>Batch by moment.</b> The Fabric already collapses simultaneous approvals into one request. The UI must render that as one card with an itemised list and a single decision — not <em>n</em> stacked cards, which is functionally the same as <em>n</em> interruptions.</div></div>
+<div class="pr"><div class="num">2</div><div><b>Tier by risk, visibly.</b> The inbox groups <span class="chip bad">irreversible</span> above <span class="chip att">high</span> above <span class="chip">medium</span>. A user who has ten pending approvals must be able to find the one that matters in under a second.</div></div>
+<div class="pr"><div class="num">3</div><div><b>Standing grants are scoped and expiring, never permanent.</b> Offer "auto-approve <code>filesystem.read</code> for <em>this workflow</em> for <em>24 hours</em>" — three bounded dimensions. Never offer a bare "always allow". Standing grants are listed in the Permissions view and revocable in one click; the run ledger shows <span class="chip mono">auto-approved by standing grant · expires in 6h</span> so the authority is never invisible.</div></div>
+<div class="pr"><div class="num">4</div><div><b>Timeouts pause; they never auto-approve.</b> If nobody answers, the run parks in <span class="chip att">waiting</span> and stays resumable. Silence is not consent, and a timeout that grants authority is the worst possible default in a system with a shell node.</div></div>
+<div class="pr"><div class="num">5</div><div><b>Make the rare approval feel rare.</b> If a workflow raises the same gate on every run, the interface should say so and offer the scoped standing grant — turning a recurring interruption into one deliberate decision. A gate that fires every time has stopped being a decision and become a speed bump.</div></div>
+
+<!-- ══════════════════ K ══════════════════ -->
+<h2 id="k"><span class="sec">K</span>Security and permission UX</h2>
+<p class="dek">The Capability Fabric is AURA's genuine differentiator. Right now a user cannot see it. That is the whole gap.</p>
+
+<h3>The Permission Envelope</h3>
+<p>One concept, computed from a workflow's nodes, rendered identically wherever authority needs to be legible: the library card, the Permissions view, the pre-activation review, and the agent's tool block.</p>
+
+<div class="card">
+  <div class="card-t">Permission envelope · <span class="mono" style="font-weight:500">Nightly issue triage</span></div>
+  <div style="display:grid;grid-template-columns:150px 1fr;gap:9px 16px;font-size:13px;align-items:baseline">
+    <div class="mono" style="font-size:11px;color:var(--text-subtle)">PROJECT.READ</div>
+    <div><span class="chip pos">auto</span> <span style="color:var(--text-muted)">4 nodes · reads files and git status in <code>aura-hub</code></span></div>
+    <div class="mono" style="font-size:11px;color:var(--text-subtle)">PROJECT.WRITE</div>
+    <div><span class="chip att">asks you</span> <span style="color:var(--text-muted)">1 node · writes to <code>docs/</code></span></div>
+    <div class="mono" style="font-size:11px;color:var(--text-subtle)">PROCESS.EXECUTE</div>
+    <div><span class="chip bad">approval</span> <span style="color:var(--text-muted)">1 node · <code>git.commit</code> — irreversible</span></div>
+    <div class="mono" style="font-size:11px;color:var(--text-subtle)">NETWORK.OUTBOUND</div>
+    <div><span class="chip att">asks you</span> <span style="color:var(--text-muted)">1 node · <code>api.github.com</code> only</span></div>
+    <div class="mono" style="font-size:11px;color:var(--text-subtle)">RESOURCE.DESTROY</div>
+    <div><span class="chip">not requested</span></div>
+    <div class="mono" style="font-size:11px;color:var(--text-subtle)">SYSTEM.MODIFY</div>
+    <div><span class="chip">not requested</span></div>
+  </div>
+  <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-size:12.5px;color:var(--text-muted)">
+    This workflow cannot install software, delete resources, or reach any host other than <code>api.github.com</code>.
+  </div>
+</div>
+
+<p><strong>The closing sentence is the most important element in the whole card.</strong> A list of granted scopes tells a user what <em>can</em> happen; a plain statement of what <em>cannot</em> is what actually lets them relax. Absence of authority is information, and it is the information every permission UI in the industry omits.</p>
+
+<h3>Where the envelope must appear</h3>
+<div class="tw"><table>
+<thead><tr><th>Moment</th><th>Treatment</th><th>Why here</th></tr></thead>
+<tbody>
+<tr><td>Library card</td><td>A single-line summary: <span class="chip att mono">2 high-risk</span> or <span class="chip pos mono">read-only</span></td><td>Scannable authority across the catalogue</td></tr>
+<tr><td>Before the first run</td><td>Full envelope, requires acknowledgement</td><td>The moment authority is actually conferred</td></tr>
+<tr><td>After importing JSON</td><td>Full envelope, <strong>blocking</strong> — the workflow cannot run until reviewed</td><td>The research's supply-chain threat. An imported workflow is untrusted code with a friendly name.</td></tr>
+<tr><td>After AI generation</td><td>Full envelope inside the review state</td><td>"The AI must never silently create an unsafe workflow"</td></tr>
+<tr><td>When the envelope grows</td><td>A diff: "this version adds <code>process.execute</code>"</td><td>Privilege creep across versions is invisible otherwise</td></tr>
+<tr><td>Agent tool block</td><td>The envelope as the selectable set; anything outside it is struck through with a reason</td><td>Makes "agent ≤ workflow" structural rather than advisory</td></tr>
+</tbody>
+</table></div>
+
+<h3>Four security-UX rules</h3>
+<div class="pr"><div class="num">1</div><div><b>Secrets are names, never values.</b> Fields reference <code>{{secret:GITHUB_TOKEN}}</code>; the value lives in the OS keychain and is injected by the Fabric at execution. The UI shows the name, the store, and when it was last used. Where a value could appear in a log or output, the interface renders <span class="chip mono">•••• redacted</span> <em>with a visible mark</em> — a user must be able to see that redaction happened, or they cannot trust that it happens.</div></div>
+<div class="pr"><div class="num">2</div><div><b>Untrusted data is marked everywhere it travels.</b> Not just in the agent trace. Web page content, HTTP responses and file contents carry a provenance mark wherever they are rendered — ledger, edge peek, node output, artifact preview. One visual language for "this came from outside and is data, not instruction".</div></div>
+<div class="pr"><div class="num">3</div><div><b>Denials explain and offer the next step.</b> The policy engine's four decisions each need a distinct treatment, and <span class="chip bad">deny</span> is the one that must never be a dead end: <em>"Denied — this workflow has no <code>network.outbound</code> scope. Grant it in Permissions, or remove the HTTP node."</em> A denial with no route forward trains users to route around the system.</div></div>
+<div class="pr"><div class="num">4</div><div><b>The trust score is earned and decays.</b> Four marks — tested · no policy violations · dry run passed · within budget — shown on the library card and above Run. Each links to its evidence. <strong>Editing the graph clears the marks</strong>, because a score that survives a change is a lie. Never show a numeric score; four booleans are honest, and a composite percentage invites the false confidence the score was meant to prevent.</div></div>
+
+<!-- ══════════════════ L ══════════════════ -->
+<h2 id="l"><span class="sec">L</span>Workspace ↔ Workflow relationship</h2>
+<p class="dek">Four surfaces already model execution. Their boundaries must be stated, or they will collapse into each other.</p>
+
+<div class="tw"><table>
+<thead><tr><th>Surface</th><th>Owns</th><th>Graph semantics</th><th>Time</th></tr></thead>
+<tbody>
+<tr><td>Workspace (Hub)</td><td><em>Can</em> — reachable capabilities on this machine</td><td>Hub-and-spoke, deliberately not wireable</td><td>Now</td></tr>
+<tr><td>Workflows</td><td><em>Should</em> — a designed sequence the user authored</td><td>Author-time DAG, freely wireable</td><td>Design time</td></tr>
+<tr><td>Missions</td><td><em>Will</em> — an AI-planned task graph under human checkpoints</td><td>Run-time DAG, deterministic layout, never hand-edited</td><td>Plan → execute</td></tr>
+<tr><td>Runs</td><td><em>Did</em> — what actually happened</td><td>No graph of its own; projects the workflow's</td><td>Past</td></tr>
+</tbody>
+</table></div>
+
+<div class="note good">
+  <b>The distinction in one sentence</b>
+  <p><strong>Workspace shows what your machine can do. Workflows are what you decided should happen. Missions are what the AI planned to do. Runs are what happened.</strong> A user who holds those four sentences can navigate the whole product, and any feature that blurs two of them is a feature to reject.</p>
+</div>
+
+<h3>The seams that need building</h3>
+<ul>
+  <li><strong>Capability reachability, on the node.</strong> A node whose capability requires a connected node that is missing renders dimmed with <span class="chip mono">needs Playwright</span>, and clicking it deep-links to the Workspace's Add Node flow. This is the single highest-value connection between the two screens and it currently does not exist.</li>
+  <li><strong>Project scoping, stated in the header.</strong> The editor already shows <em>"runs against · aura-hub"</em> — good. Extend it: runs record their project, the Runs view filters by it, and cross-project execution is refused with an explanation, per the research's privacy-boundary requirement.</li>
+  <li><strong>Network awareness on the node face.</strong> Each node declares whether it needs the network. Offline, network nodes dim and the run header offers <em>queue until connected</em>. A workflow with no network nodes earns an <span class="chip pos mono">offline-capable</span> mark on its library card — the differentiator made visible rather than asserted in a comparison table.</li>
+  <li><strong>Workflows as a Workspace panel.</strong> The dockable panel registry (<code>ops/panels.tsx</code>) has 15 panel kinds and no workflow panel. A compact "active runs + pending approvals" panel belongs there, so a user working in the Workspace can watch automation without leaving.</li>
+  <li><strong>Do not merge Missions and Workflows.</strong> They look similar and are not: a mission's DAG is generated by an AI planner and gated by four checkpoints; a workflow's DAG is authored and gated by policy. Merging them would collapse two different trust models into one, and the checkpoint model would lose. The correct relationship is that a mission may <em>invoke</em> a workflow as a task, and a workflow may <em>create</em> a mission as an action — they compose, they do not unify.</li>
+</ul>
+
+<hr>
+
+<!-- ══════════════════ M ══════════════════ -->
+<h2 id="m"><span class="sec">M</span>Design principles</h2>
+<p class="dek">Ten rules that decide the arguments this project will actually have. Each is falsifiable — you can point at a screen and say it was broken.</p>
+
+<div class="pr"><div class="num">01</div><div><b>Legibility over magic.</b> When making something understandable and making it look effortless conflict, choose understandable. A user who cannot explain what just happened will not run it again unattended — and unattended is the entire product.</div></div>
+
+<div class="pr"><div class="num">02</div><div><b>The graph is the truth; every other view is a projection of it.</b> Timeline, ledger and trace are lenses on the same run, never independent stories. If two views can disagree, one of them is wrong and the user has no way to know which.</div></div>
+
+<div class="pr"><div class="num">03</div><div><b>Identity and state never share a channel.</b> Family hue says <em>what a node is</em>; ring and border say <em>how it is doing</em>. This separation already exists in <code>shared.ts</code> and is the reason a running graph stays readable. Never introduce a colour that means both.</div></div>
+
+<div class="pr"><div class="num">04</div><div><b>Permission is visible before it is needed.</b> A user learns what a workflow may do when they adopt it, not when it asks. The envelope precedes the gate; if the first time someone hears about <code>process.execute</code> is a modal at 2am, the design has failed regardless of how good the modal is.</div></div>
+
+<div class="pr"><div class="num">05</div><div><b>Untrusted data always looks untrusted.</b> Anything from a file, a page or an API is rendered as quarantined data wherever it appears. This is a security control that happens to be made of CSS.</div></div>
+
+<div class="pr"><div class="num">06</div><div><b>Never hide non-determinism.</b> Runs with an agent are marked as reasoned. Divergence between runs is inspectable, not surprising. Show what was measured; never show a confidence the model asserted about itself.</div></div>
+
+<div class="pr"><div class="num">07</div><div><b>Calm by default, loud on risk.</b> AURA's ambient motion — <code>aura-breathe</code>, <code>aura-live</code>, <code>edge-flow</code> — carries normal operation. Attention and danger tones are spent only on things that genuinely need a human. A UI that is always urgent has no way to signal urgency.</div></div>
+
+<div class="pr"><div class="num">08</div><div><b>One authority per concept, in the UI as in the code.</b> One timeline component, one approval component, one risk vocabulary, one node card, one DAG layout. CLAUDE.md's non-duplication rule is a UX rule before it is an architecture rule, because duplicated components drift and drifted components lie.</div></div>
+
+<div class="pr"><div class="num">09</div><div><b>Failure is a designed path.</b> Every node has a failure route, every wait states its cause and its exit, every denial offers a next step, every cancellation says what was and was not undone. Error states get the same design attention as success states — they are seen more often.</div></div>
+
+<div class="pr"><div class="num">10</div><div><b>Every run is replayable, and replay uses the same components.</b> History is not a downgraded view. A run from last week renders in the same instrument as the one happening now, so the skill of reading a run transfers completely between live and past.</div></div>
+
+<!-- ══════════════════ N ══════════════════ -->
+<h2 id="n"><span class="sec">N</span>Recommended implementation order</h2>
+<p class="dek">Ordered by unlocked surface area per unit of work, not by the research's engine roadmap. Several high-value UX wins need no engine change at all.</p>
+
+<div class="phase">
+  <div class="when">Phase 0</div>
+  <div>
+    <h4>Editor breathing room</h4>
+    <p>Pure frontend. No backend dependency. Roughly a week, and it makes every later phase possible by returning the panel budget.</p>
+    <ul>
+      <li>Palette search + collapse to icon rail</li>
+      <li>AI Builder becomes a summonable command surface instead of a permanent column</li>
+      <li>Inspector opens on selection; empty state becomes an overlay card</li>
+      <li>Validation strip with the three tiers (structure and config only — no policy yet)</li>
+      <li>Minimap; drag-from-palette-to-point; drop-on-edge splice</li>
+    </ul>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="when">Phase 1</div>
+  <div>
+    <h4>Runs exist</h4>
+    <p>The highest-leverage change in the entire plan. Persisting runs unlocks six of the eight debugging affordances, the whole Runs surface, versioning's usefulness, and any notion of history.</p>
+    <ul>
+      <li>Run persistence (id, version, trigger, steps, IO, logs, artifacts, outcome)</li>
+      <li>Global Runs table + run detail with graph / timeline / ledger</li>
+      <li>Shared selection across the three projections</li>
+      <li>Cancelled is distinguished from failed</li>
+      <li>Run summary lands on the library card ("last run 14h ago · ok")</li>
+    </ul>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="when">Phase 2</div>
+  <div>
+    <h4>Authority becomes visible</h4>
+    <p>Turns AURA's real differentiator from an architecture fact into a product feature. Mostly a computation over the existing manifest plus one new view.</p>
+    <ul>
+      <li>Permission envelope, computed from nodes, rendered in all six moments</li>
+      <li>Blocking review on import and on AI generation</li>
+      <li>Policy tier added to the validation strip; denials explain and offer a route</li>
+      <li>Secret references by name; visible redaction marks</li>
+      <li>Trust marks on the library card, cleared by edits</li>
+    </ul>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="when">Phase 3</div>
+  <div>
+    <h4>Humans in the loop</h4>
+    <p>Depends on the engine's ability to pause and resume. The component already exists — this is placement and plumbing.</p>
+    <ul>
+      <li><code>ApprovalGate</code> inline in the run ledger; node enters <span class="chip att">waiting</span></li>
+      <li>Approvals inbox, risk-tiered and batched; StatusBar and bell integration</li>
+      <li>Scoped, expiring standing grants — listed and revocable</li>
+      <li>Clarification, credential and review-gate patterns</li>
+      <li>Timeouts park the run; they never auto-approve</li>
+    </ul>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="when">Phase 4</div>
+  <div>
+    <h4>Simulate and version</h4>
+    <p>Together, because a version you cannot test is a version you cannot trust, and a simulation you cannot pin to a version tells you nothing.</p>
+    <ul>
+      <li>Simulate view with blueprint canvas treatment and the prediction report</li>
+      <li>Mock configuration per node; policy and cost prediction</li>
+      <li>Versions view, graph diff, restore-as-new-version</li>
+      <li>Run promotes draft → version; version rows link to their runs</li>
+      <li>Envelope diff when a version widens authority</li>
+    </ul>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="when">Phase 5</div>
+  <div>
+    <h4>The Agentic AI Node</h4>
+    <p>Deliberately last among the core phases. It needs the ledger (Phase 1), the envelope (Phase 2) and the inline gate (Phase 3) to be legible at all. Shipping it earlier produces exactly the spinner-and-JSON product this report exists to prevent.</p>
+    <ul>
+      <li>Agent node face: indigo family, contract strip, three ports, beat ticker, iteration rail</li>
+      <li>Agent inspector: task + schema, context with token cost and freshness, tools as envelope, limits with worst-case estimate, on-failure route</li>
+      <li>Agent trace: typed rows, quarantined observations, always-shown permission rows, evidence-linked decisions, depleting budget meters</li>
+      <li>Inline intervention; terminal row names the limit that stopped it</li>
+      <li>Replay renders in the same component</li>
+    </ul>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="when">Phase 6</div>
+  <div>
+    <h4>Scale, recovery and reach</h4>
+    <p>Everything that only matters once people have real workflows they depend on.</p>
+    <ul>
+      <li>Step execution, breakpoints, run-from-here, run diff</li>
+      <li>Subworkflows (<code>⌘G</code>), auto-layout, node search</li>
+      <li>Data mapping: reference chips with provenance, edge peek, unresolved-reference validation</li>
+      <li>Rules and schedules join the Automations catalogue — the Automation Engine finally gets a face</li>
+      <li>Browser and desktop node families (<code>--cat-surface-auto</code>), CAPTCHA hand-off, live screenshot in the ledger</li>
+    </ul>
+  </div>
+</div>
+
+<div class="note">
+  <b>What this ordering buys</b>
+  <p>Phases 0–2 require no engine work beyond persistence and deliver: a usable editor at scale, a complete history, and visible authority. Phases 3–5 track the engine's own roadmap (pause/resume → checkpointing → agent loop) but arrive into a UI that can already explain a run. <strong>The dependency that actually matters is that the agent node must not ship before the trace surface it needs.</strong></p>
+</div>
+
+<!-- ══════════════════ O ══════════════════ -->
+<h2 id="o"><span class="sec">O</span>UX risks</h2>
+<p class="dek">Ranked by likelihood × damage. Each has a named mitigation, because a risk register without mitigations is a list of excuses.</p>
+
+<div class="tw"><table>
+<thead><tr><th>Risk</th><th>How it shows up</th><th>Mitigation</th><th>Severity</th></tr></thead>
+<tbody>
+<tr><td>Approval fatigue</td><td>Users approve without reading within two weeks; the gate becomes a speed bump and the security model becomes theatre</td><td>Batch by moment · tier by risk · scoped expiring grants · detect and surface repeated identical gates</td><td><span class="chip bad">critical</span></td></tr>
+<tr><td>Trace overload</td><td>A 40-iteration agent produces 300 ledger rows and the user stops reading; legibility becomes noise</td><td>Collapse auto-executed permission rows in aggregate · collapse observations past 6 lines · a "decisions only" filter · always keep gates and errors expanded</td><td><span class="chip bad">critical</span></td></tr>
+<tr><td>Panel starvation</td><td>Every feature adds a column; the canvas shrinks below usability and the editor becomes a form with a picture</td><td>Phase 0 first · a hard rule that no panel is permanently docked except the inspector · panel budget reviewed per feature</td><td><span class="chip att">high</span></td></tr>
+<tr><td>Dry-run false confidence</td><td>"Simulate passed" reads as "this is safe", but mocked side effects cannot predict real-world failure</td><td>Blueprint treatment makes simulation visually unmistakable · the report says <em>predicted</em>, never <em>verified</em> · trust marks list dry-run separately from tested</td><td><span class="chip att">high</span></td></tr>
+<tr><td>Non-determinism read as bugs</td><td>Two identical runs differ; users file it as broken and lose trust in the whole engine</td><td>Reasoned/deterministic marks on run cards · divergence affordance · run diff · explain it in the agent node's own empty state</td><td><span class="chip att">high</span></td></tr>
+<tr><td>Timeline / canvas divergence</td><td>Three projections drift apart as they gain features; the user cannot tell which is right</td><td>One run model, three renderers · shared selection state · no view holds data another cannot see</td><td><span class="chip att">high</span></td></tr>
+<tr><td>Canvas complexity at scale</td><td>40-node graphs become unreadable; users abandon the visual editor for AI generation and stop understanding their own workflows</td><td>Subworkflows as the primary answer · auto-layout · minimap · node search · a soft warning above ~30 nodes suggesting extraction</td><td><span class="chip att">high</span></td></tr>
+<tr><td>Two timelines, two vocabularies</td><td>Workflow runs and missions describe the same events differently; users learn the product twice</td><td>Extend <code>MissionTimeline</code> rather than forking it · one event type registry · shared actor badges</td><td><span class="chip">medium</span></td></tr>
+<tr><td>Version sprawl</td><td>Auto-versioning every save produces 200 meaningless versions and an unusable history</td><td>Version on run, not on save · manual version with a note · list shows run count and success rate, not just timestamps</td><td><span class="chip">medium</span></td></tr>
+<tr><td>Offline ambiguity</td><td>A workflow half-runs offline and stalls with no explanation</td><td>Per-node network declaration on the face · offline-capable mark on the card · queue-until-connected offered in the run header</td><td><span class="chip">medium</span></td></tr>
+<tr><td>The AI Builder becomes the only path</td><td>Users describe workflows they never learn to read, and cannot debug what they did not build</td><td>Generation lands in review with per-node explanations · the graph is always the artifact, never a hidden implementation detail</td><td><span class="chip">medium</span></td></tr>
+</tbody>
+</table></div>
+
+<!-- ══════════════════ P ══════════════════ -->
+<h2 id="p"><span class="sec">P</span>Open questions requiring product decisions</h2>
+<p class="dek">Twelve calls the UX cannot make alone. Each carries a recommendation, because a question without a default stalls.</p>
+
+<div class="tw"><table>
+<thead><tr><th>#</th><th>Question</th><th>Why it blocks design</th><th>Recommendation</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Are workflow runs first-class persisted objects, or ephemeral editor state?</td><td>Determines whether Runs, versioning, resume, diff and history exist at all. Six of eight debugging features depend on it.</td><td><strong>Persist.</strong> Everything downstream needs it.</td></tr>
+<tr><td>2</td><td>Do the Automation Engine's rules join the Workflows catalogue, or get their own surface?</td><td>Decides whether the IA has one automation domain or two competing ones. An entire engine currently has no UI.</td><td><strong>One catalogue, three kinds.</strong> Users think in "things that run", not in engines.</td></tr>
+<tr><td>3</td><td>Version on every save, on run, or manually?</td><td>Shapes the Versions view and whether its history is usable or noise.</td><td><strong>On run, plus manual with a note.</strong> Every version was then actually executed.</td></tr>
+<tr><td>4</td><td>Can a user steer an agent mid-run with free text?</td><td>Powerful, and it is a prompt-injection surface with the user as injector; it also makes runs unreproducible.</td><td><strong>Not in v1.</strong> Ship decline-with-reason first; mark steered runs distinctly if it ever ships.</td></tr>
+<tr><td>5</td><td>Is the agent's reasoning streamed token-by-token, or committed per iteration?</td><td>Determines whether the trace feels alive or reads as fact-in-progress.</td><td><strong>Stream the beat, commit the text.</strong></td></tr>
+<tr><td>6</td><td>Do standing approval grants exist, and at what scope?</td><td>The primary anti-fatigue lever, and the primary way to accidentally hand over authority.</td><td><strong>Yes — scoped to capability + workflow + duration.</strong> Never a bare "always allow".</td></tr>
+<tr><td>7</td><td>Is cost shown in tokens, in currency, or both?</td><td>Currency is legible but wrong for local models; tokens are precise but meaningless to most users.</td><td><strong>Both, currency primary</strong>, and local-model steps show <span class="chip mono">local · no cost</span> — which is a differentiator worth displaying.</td></tr>
+<tr><td>8</td><td>What is the resume granularity — node, or checkpoint interval?</td><td>The run header must promise something honest, and the promise must be the same everywhere.</td><td><strong>Per-node.</strong> Matches the sequential engine and the research's checkpoint recommendation.</td></tr>
+<tr><td>9</td><td>Can a workflow invoke another workflow?</td><td>Subworkflows are the main answer to canvas complexity; nesting depth affects navigation, breadcrumbs and the run ledger's shape.</td><td><strong>Yes, one level of nesting in v1.</strong> Depth limits are a UX mercy, not a technical one.</td></tr>
+<tr><td>10</td><td>Are workflows shareable between users or machines?</td><td>Import already exists via JSON, which means supply-chain risk already exists. Changes how hard the review gate must be.</td><td><strong>Treat every import as untrusted now</strong>, before any marketplace conversation starts.</td></tr>
+<tr><td>11</td><td>Should the graph be editable while a run is in flight?</td><td>Affects locking, the dirty indicator, and whether a run's version can be trusted.</td><td><strong>Read-only during a run</strong>, with an explicit "edit as a new draft" action.</td></tr>
+<tr><td>12</td><td>Who is the primary user — the developer who wrote the project, or an operator running someone else's workflows?</td><td>Changes the default disclosure level of essentially every surface in this report.</td><td><strong>The developer.</strong> The research is explicit ("developers + power users"); design for depth by default, and add progressive disclosure later rather than building for a hypothetical operator now.</td></tr>
+</tbody>
+</table></div>
+
+<hr>
+
+<h2 style="margin-top:0">Summary</h2>
+<div class="grid2">
+  <div class="card">
+    <div class="card-t">What is already right</div>
+    <ul style="font-size:13.5px;margin:0">
+      <li>The token layer, the two-channel colour model (identity vs state), and the ambient motion vocabulary</li>
+      <li><code>ApprovalGate</code>'s five required facts — the correct standard, already built</li>
+      <li><code>MissionTimeline</code>'s typed events and actor badges — reuse, don't fork</li>
+      <li>The canvas gesture grammar and the undo model</li>
+      <li>The Capability Fabric as one governed path — the genuine differentiator</li>
+    </ul>
+  </div>
+  <div class="card">
+    <div class="card-t">What must change</div>
+    <ul style="font-size:13.5px;margin:0">
+      <li>Runs must persist — this unlocks most of the product</li>
+      <li>Authority must be visible before it is exercised</li>
+      <li>The editor must return its panel budget to the canvas</li>
+      <li>The Automation Engine needs a face</li>
+      <li>The agent node needs a contract and a ledger — and must not ship before the ledger exists</li>
+    </ul>
+  </div>
+</div>
+
+<div class="note">
+  <b>The one-line test for every screen in this plan</b>
+  <p>Show it to someone whose machine just ran an agent unattended overnight. If they cannot answer <em>what did it do, what was it allowed to do, and why did it decide that</em> — without opening a log file — the screen is not finished.</p>
+</div>
+
+<div class="footer">
+  <span class="chip mono">design research</span>
+  <span>AURA Hub · Workflow UX Architecture</span>
+  <span>·</span>
+  <span>Sources: <code>docs/AURA_WORKFLOW_AUTOMATION_RESEARCH.html</code>, <code>apps/desktop/src</code>, <code>packages/ui</code>, <code>packages/capability-fabric</code>, <code>packages/automation</code></span>
+  <span>·</span>
+  <span>No source modified · nothing committed</span>
+</div>
+
+</main>
