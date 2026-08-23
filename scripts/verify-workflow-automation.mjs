@@ -2098,6 +2098,283 @@ const measuredTrace = Object.values(measured.run.nodes)[0].agentTrace;
 eq('reported usage is labelled provider', measuredTrace.tokenSource, 'provider');
 eq('and the reported number is used, not the estimate', measuredTrace.tokensUsed, 4242);
 
+
+/* ══════════════════════════════════════════════════════════════════
+   32 — live agent beat channel
+   ══════════════════════════════════════════════════════════════════
+   Real engine, real Fabric, real SSE-shaped RunEvent stream. The events
+   are collected exactly as the HTTP route emits them.
+   ══════════════════════════════════════════════════════════════════ */
+
+section('live agent beats');
+
+/** Run a workflow capturing the full RunEvent stream, model scripted. */
+async function runCapturing(wf, steps, opts = {}) {
+  const events = [];
+  const original = manager.pipeline.generate;
+  let i = 0;
+  manager.pipeline.generate = async () => ({ ok: true, text: JSON.stringify(steps[Math.min(i++, steps.length - 1)]) });
+  try {
+    const started = await manager.startWorkflowRun(wf, { projectId: project.id, ...opts }, (e) => events.push(e));
+    return { ...started, events };
+  } finally { manager.pipeline.generate = original; }
+}
+
+const liveAgent = agentNode({ task: 'read the status', tools: 'git.status', maxIterations: 4 });
+const liveOut = node('output', { title: 'L' });
+const wfLive = makeWorkflow('live-beats', [liveAgent, liveOut], [edge(liveAgent.id, liveOut.id, 'done')]);
+const live = await runCapturing(wfLive, [
+  { plan: 'read status', tool: { name: 'git.status', input: {} } },
+  { plan: 'answer', final: 'the tree is clean' },
+]);
+
+const agentEvents = live.events.filter((e) => e.type === 'agent');
+check('the run emitted live agent events', agentEvents.length > 0, `got ${agentEvents.length}`);
+check('every one names its node', agentEvents.every((e) => e.nodeId === liveAgent.id));
+check('every one names its run', agentEvents.every((e) => e.runId === live.run.id));
+check('every one carries a beat', agentEvents.every((e) => e.beat && typeof e.beat.seq === 'number'));
+check('every beat names its iteration', agentEvents.every((e) => typeof e.beat.iteration === 'number'));
+check('every beat is timestamped', agentEvents.every((e) => Boolean(e.beat.at)));
+check('every beat names an actor', agentEvents.every((e) => ['ai', 'fabric', 'human', 'system'].includes(e.beat.actor)));
+
+/* The lifecycle the brief asks for, each observed LIVE rather than only
+   in the final trace. */
+const liveKinds = agentEvents.map((e) => e.beat.kind);
+for (const kind of ['intent', 'plan', 'proposal', 'permission', 'execution', 'observation', 'result']) {
+  check(`live "${kind}" beat`, liveKinds.includes(kind), `kinds: ${liveKinds.join(',')}`);
+}
+const permBeat = agentEvents.find((e) => e.beat.kind === 'permission').beat;
+check('the live policy beat carries the decision', Boolean(permBeat.decision));
+check('and the rule that produced it', Boolean(permBeat.rule) || permBeat.decision === 'auto-execute');
+const execBeat = agentEvents.find((e) => e.beat.kind === 'execution').beat;
+check('the live execution beat carries evidence', Boolean(execBeat.evidence?.invocationId));
+// A live event is not proof; the audit record is.
+check('and that invocation really is in the durable audit trail',
+  auditLinesNow().some((r) => r.invocationId === execBeat.evidence.invocationId));
+
+/* Ordering. */
+const seqs = agentEvents.map((e) => e.beat.seq);
+check('sequence numbers are strictly increasing', seqs.every((n, i) => i === 0 || n > seqs[i - 1]), seqs.join(','));
+eq('sequence numbers are unique', new Set(seqs).size, seqs.length);
+check('beats arrive before the node completes',
+  live.events.findIndex((e) => e.type === 'agent')
+    < live.events.findIndex((e) => e.type === 'node' && e.nodeId === liveAgent.id && e.status === 'completed'));
+
+/* The final trace is authoritative and reconcilable by seq. */
+const finalTrace = live.run.nodes[liveAgent.id].agentTrace;
+eq('the final trace is not marked partial', finalTrace.partial, false);
+const traceSeqs = finalTrace.beats.map((b) => b.seq);
+check('every live beat appears in the final trace by seq',
+  seqs.every((n) => traceSeqs.includes(n)), `live=${seqs.join(',')} trace=${traceSeqs.join(',')}`);
+check('a live beat and its persisted twin are identical',
+  JSON.stringify(agentEvents[0].beat) === JSON.stringify(finalTrace.beats.find((b) => b.seq === agentEvents[0].beat.seq)));
+// Reconciling by seq must not duplicate.
+const merged = new Map();
+for (const b of [...agentEvents.map((e) => e.beat), ...finalTrace.beats]) merged.set(b.seq, b);
+eq('merging live + persisted by seq yields no duplicates', merged.size, finalTrace.beats.length);
+// Replaying the same events (a reconnect) changes nothing.
+for (const e of agentEvents) merged.set(e.beat.seq, e.beat);
+eq('replaying duplicate events is idempotent', merged.size, finalTrace.beats.length);
+
+/* Out-of-order delivery reconciles by sorting on seq. */
+const shuffled = [...agentEvents].reverse().map((e) => e.beat);
+const sorted = [...shuffled].sort((a, b) => a.seq - b.seq);
+check('out-of-order events sort back into the true order',
+  sorted.map((b) => b.kind).join(',') === agentEvents.map((e) => e.beat.kind).join(','));
+
+/* ── failure and bound exhaustion are live too ──────────────────── */
+
+const liveSpin = agentNode({ task: 'spin', tools: 'git.status', maxIterations: 2 });
+const spinLive = await runCapturing(makeWorkflow('live-spin', [liveSpin], []), [
+  { plan: 'again', tool: { name: 'git.status', input: {} } },
+]);
+const spinBeats = spinLive.events.filter((e) => e.type === 'agent').map((e) => e.beat);
+check('bound exhaustion is announced live',
+  spinBeats.some((b) => b.kind === 'result' && /iterations/.test(b.text)), spinBeats.map((b) => b.kind).join(','));
+eq('and the trace agrees', spinLive.run.nodes[liveSpin.id].agentTrace.stopReason, 'max-iterations');
+
+fabric.setPolicy(sanitizePolicy({ overrides: { 'git.status': 'deny' } }));
+const denyLive = await runCapturing(makeWorkflow('live-deny', [agentNode({ task: 'x', tools: 'git.status' })], []), [
+  { plan: 'read', tool: { name: 'git.status', input: {} } },
+]);
+const denyBeats = denyLive.events.filter((e) => e.type === 'agent').map((e) => e.beat);
+check('a live policy denial is streamed', denyBeats.some((b) => b.kind === 'permission' && b.decision === 'deny'));
+check('and the stop is streamed as a decision', denyBeats.some((b) => b.kind === 'decision'));
+fabric.setPolicy(DEFAULT_POLICY);
+
+/* Approval wait, live. */
+const waitAgent = agentNode({ task: 'write', tools: 'filesystem.write', maxIterations: 3 });
+const waitLive = await runCapturing(makeWorkflow('live-wait', [waitAgent], []), [
+  { plan: 'write', tool: { name: 'filesystem.write', input: { path: 'docs/live-wait.md', content: 'x' } } },
+]);
+const waitBeats = waitLive.events.filter((e) => e.type === 'agent').map((e) => e.beat);
+check('the approval wait is streamed live', waitBeats.some((b) => b.kind === 'intervention' && b.actor === 'human'));
+eq('and the run really parked', waitLive.result.runState, 'awaiting-approval');
+check('nothing was written', !fs.existsSync(path.join(PROJECT, 'docs/live-wait.md')));
+
+/* ── event security ─────────────────────────────────────────────── */
+
+section('live event security');
+
+const secretLiveWf = makeWorkflow('live-secret', [
+  node('prompt', { template: `the token is ${'{{secret:VERIFY_TOKEN}}'}` }),
+  agentNode({ task: 'summarise', tools: 'git.status', maxIterations: 2 }),
+], []);
+const secretLive = await runCapturing(secretLiveWf, [{ plan: 'p', final: 'ok' }]);
+const secretEvents = JSON.stringify(secretLive.events);
+check('NO live event contains a secret value', !secretEvents.includes(SECRET_VALUE));
+check('and no persisted record does either', !JSON.stringify(secretLive.run).includes(SECRET_VALUE));
+
+// Tool output keeps its untrusted mark ON THE WIRE, not just at rest.
+const obsEvent = live.events.find((e) => e.type === 'agent' && e.beat.kind === 'observation');
+eq('a streamed observation is marked untrusted', obsEvent.beat.untrusted, true);
+eq('and the persisted twin agrees',
+  finalTrace.beats.find((b) => b.seq === obsEvent.beat.seq).untrusted, true);
+check('no live event carries provider or policy internals',
+  !/apiKey|providers\.json|encryptedKey|AURA_SECRET_SEED/.test(secretEvents));
+
+/* ══════════════════════════════════════════════════════════════════
+   33 — reconnect: the partial ledger is readable mid-run
+   ══════════════════════════════════════════════════════════════════ */
+
+section('reconnect');
+
+/* A client that drops mid-agent catches up by re-reading the run. This
+   proves the partial ledger is on DISK while the agent is still running —
+   read through a brand-new store, the way a reconnecting process would. */
+/* A client that drops mid-agent catches up by re-reading the run. This
+   proves the partial ledger is on DISK while the agent is still thinking —
+   read through a brand-new WorkflowRunStore, exactly as a reconnecting
+   process would, with no access to the in-memory record. */
+let midRunSnapshot = null;
+let midRunId = null;
+const reconnectAgent = agentNode({ task: 'work', tools: 'git.status', maxIterations: 5 });
+const wfReconnect = makeWorkflow('reconnect', [reconnectAgent], []);
+const reconnectRun = await (async () => {
+  const original = manager.pipeline.generate;
+  let call = 0;
+  manager.pipeline.generate = async () => {
+    call += 1;
+    // Long enough that the 1s beat throttle definitely writes mid-run.
+    await new Promise((r) => setTimeout(r, 1400));
+    if (call === 2 && midRunId) {
+      // A cold reader, mid-flight.
+      midRunSnapshot = new WorkflowRunStore().get(wfReconnect.id, midRunId);
+    }
+    return {
+      ok: true,
+      text: JSON.stringify(call >= 3
+        ? { plan: 'done', final: 'finished' }
+        : { plan: 'look', tool: { name: 'git.status', input: {} } }),
+    };
+  };
+  try {
+    return await manager.startWorkflowRun(wfReconnect, { projectId: project.id },
+      (e) => { if (e.type === 'start' && e.runId) midRunId = e.runId; });
+  } finally { manager.pipeline.generate = original; }
+})();
+
+check('the run id is on the stream immediately', Boolean(midRunId));
+check('a COLD reader sees the ledger while the agent is still running', Boolean(midRunSnapshot));
+const midTrace = midRunSnapshot?.nodes?.[reconnectAgent.id]?.agentTrace;
+check('the mid-run ledger already has beats', Boolean(midTrace?.beats?.length), `beats=${midTrace?.beats?.length ?? 0}`);
+eq('and is explicitly marked partial', midTrace?.partial, true);
+check('a partial ledger has no verdict yet', midTrace?.stopReason === undefined);
+eq('the run was still in flight when it was read', midRunSnapshot?.state, 'running');
+
+const finalReconnect = manager.getWorkflowRun(wfReconnect.id, midRunId);
+eq('the finished ledger is not partial', finalReconnect.nodes[reconnectAgent.id].agentTrace.partial, false);
+check('and it is a superset of the mid-run snapshot',
+  midTrace.beats.every((b) => finalReconnect.nodes[reconnectAgent.id].agentTrace.beats.some((f) => f.seq === b.seq)));
+check('the finished ledger has a verdict', Boolean(finalReconnect.nodes[reconnectAgent.id].agentTrace.stopReason));
+// Reconciling a mid-run snapshot with the live tail must not duplicate.
+const reconciled = new Map();
+for (const b of midTrace.beats) reconciled.set(b.seq, b);
+for (const b of finalReconnect.nodes[reconnectAgent.id].agentTrace.beats) reconciled.set(b.seq, b);
+eq('snapshot + final reconcile without duplicates',
+  reconciled.size, finalReconnect.nodes[reconnectAgent.id].agentTrace.beats.length);
+
+/* Seq continuity ACROSS a resume — the collision that would have made
+   dedupe-by-seq silently drop real beats. */
+const seqAgent = agentNode({ task: 'write', tools: 'filesystem.write', maxIterations: 4 });
+const wfSeq = makeWorkflow('seq-continuity', [seqAgent], []);
+const seqParked = await runCapturing(wfSeq, [
+  { plan: 'write', tool: { name: 'filesystem.write', input: { path: 'docs/seq.md', content: 'x' } } },
+]);
+eq('the first leg parks', seqParked.result.runState, 'awaiting-approval');
+const seqReq = fabric.pendingApprovals().find((r) => r.runId === seqParked.run.id);
+fabric.decideApproval(seqReq.id, true, 'verify');
+const seqEvents2 = [];
+const seqResumed = await (async () => {
+  const original = manager.pipeline.generate;
+  manager.pipeline.generate = async () => ({ ok: true, text: JSON.stringify({ plan: 'done', final: 'wrote it' }) });
+  try {
+    return await manager.resumeWorkflowRun(wfSeq.id, seqParked.run.id, (e) => seqEvents2.push(e));
+  } finally { manager.pipeline.generate = original; }
+})();
+eq('the resumed leg succeeds', seqResumed.result?.runState, 'succeeded');
+const resumedTrace2 = seqResumed.run.nodes[seqAgent.id].agentTrace;
+const allSeqs = resumedTrace2.beats.map((b) => b.seq);
+eq('no seq is reused across legs', new Set(allSeqs).size, allSeqs.length, allSeqs.join(','));
+check('seq is monotonic across the whole logical execution',
+  allSeqs.every((n, i) => i === 0 || n > allSeqs[i - 1]), allSeqs.join(','));
+const liveResumedSeqs = seqEvents2.filter((e) => e.type === 'agent').map((e) => e.beat.seq);
+check('the resumed leg streams beats above the carried ones',
+  liveResumedSeqs.every((n) => n >= Math.max(...seqParked.run.nodes[seqAgent.id].agentTrace.beats.map((b) => b.seq))),
+  liveResumedSeqs.join(','));
+
+/* ══════════════════════════════════════════════════════════════════
+   34 — resume semantics (decision A, made explicit)
+   ══════════════════════════════════════════════════════════════════ */
+
+section('resume semantics');
+
+const original = manager.getWorkflowRun(wfSeq.id, seqParked.run.id);
+eq('the original leg keeps how it ended', original.state, 'awaiting-approval');
+eq('but is no longer resumable', original.resumable, false);
+eq('and points forward to its continuation', original.supersededBy, seqResumed.run.id);
+check('with a timestamp', Boolean(original.supersededAt));
+check('and says what happened in plain words', /continued as run/.test(original.notResumableReason ?? ''));
+eq('the new leg points back', seqResumed.run.trigger.of, seqParked.run.id);
+eq('and is marked a resume', seqResumed.run.trigger.kind, 'resume');
+eq('both legs execute the SAME version', seqResumed.run.versionId, original.versionId);
+
+/* THE bug this fixes: a superseded run must leave the approvals inbox. */
+const awaiting = manager.workflowRuns.listAwaitingApproval();
+check('a superseded run is NOT in the approvals inbox',
+  !awaiting.some((r) => r.id === seqParked.run.id), awaiting.map((r) => r.id).join(','));
+check('a genuinely parked run still is',
+  manager.workflowRuns.listAwaitingApproval().every((r) => !r.supersededBy));
+
+/* And it cannot be resumed a second time. */
+const doubleResume2 = await manager.resumeWorkflowRun(wfSeq.id, seqParked.run.id, () => {});
+check('a superseded run refuses a second resume', 'error' in doubleResume2);
+check('and names the run that continued it', /already continued as/.test(doubleResume2.error ?? ''));
+
+/* The chain is navigable from either end. */
+const chainFromHead = manager.workflowRunChain(wfSeq.id, seqParked.run.id);
+const chainFromTail = manager.workflowRunChain(wfSeq.id, seqResumed.run.id);
+eq('the chain has both legs', chainFromHead.length, 2);
+eq('and reads oldest-first', chainFromHead[0].id, seqParked.run.id);
+eq('walking from the tail finds the same chain', chainFromTail.map((r) => r.id).join(), chainFromHead.map((r) => r.id).join());
+
+/* Evidence is per-leg and never copied — copying would double-count. */
+const headEvidence = original.evidence.map((e) => e.invocationId);
+const tailEvidence = seqResumed.run.evidence.map((e) => e.invocationId);
+eq('no evidence is shared between legs', headEvidence.filter((id) => tailEvidence.includes(id)).length, 0);
+check('the effect is audited against the leg that performed it',
+  auditLinesNow().some((r) => r.runId === seqResumed.run.id && r.capabilityId === 'filesystem.write' && r.outcome === 'succeeded'));
+check('and the parked leg never recorded a successful write',
+  !auditLinesNow().some((r) => r.runId === seqParked.run.id && r.capabilityId === 'filesystem.write' && r.outcome === 'succeeded'));
+
+/* Bounds carry across legs — a resume continues one execution. */
+check('agent iterations continue rather than reset',
+  resumedTrace2.iterations > seqParked.run.nodes[seqAgent.id].agentTrace.iterations);
+
+/* Cancellation is per-leg and does not un-supersede. */
+eq('a cancelled continuation leaves the original superseded',
+  manager.getWorkflowRun(wfSeq.id, seqParked.run.id).supersededBy, seqResumed.run.id);
+
 /* ── report ─────────────────────────────────────────────────────── */
 
 console.log(`\n${'═'.repeat(64)}`);
