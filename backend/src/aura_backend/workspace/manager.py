@@ -52,6 +52,15 @@ class WorkspaceManager:
     def list_projects(self) -> list[ProjectRecord]:
         return self.registry.list()
 
+    @property
+    def current_project_id(self) -> str | None:
+        """The project currently open, if any.
+
+        Read-only by construction: the Context Fabric needs to report
+        whether a project is mounted, and must not be able to change it.
+        """
+        return self._current_project_id
+
     def current_project(self) -> ProjectRecord | None:
         if self._current_project_id is None:
             return None

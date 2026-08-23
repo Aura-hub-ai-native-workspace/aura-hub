@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from ..context.types import EnvironmentSnapshot
 from ..fabric.types import NodeRef
 from .catalog import CATALOG, catalog_entry
 from .scanner import ProbeResult, ScanResult
@@ -44,6 +45,8 @@ class NodeProjection:
 
     # node id -> the probe that found it. Only present nodes are kept.
     _present: dict[str, ProbeResult] = field(default_factory=dict)
+    # When the machine was last looked at. None means never.
+    _scanned_at: str | None = None
 
     def apply(self, scan: ScanResult, *, targeted: bool) -> None:
         """Fold a scan into the projection.
@@ -51,6 +54,7 @@ class NodeProjection:
         A full scan replaces what is known. A targeted scan MERGES, so
         naming two nodes does not assert that every other node vanished.
         """
+        self._scanned_at = scan.scanned_at
         if not targeted:
             self._present = {
                 node_id: result for node_id, result in scan.results.items() if result.present
@@ -94,3 +98,40 @@ class NodeProjection:
 
     def probe_of(self, node_id: str) -> ProbeResult | None:
         return self._present.get(node_id)
+
+    def snapshot(self) -> EnvironmentSnapshot | None:
+        """The same scan, in the shape the Context Fabric consumes.
+
+        A THIRD projection of the one scan, built from the same
+        `_present` map in the same catalogue order as the other two, for
+        the same reason: three projections of one scan must never be able
+        to describe different machines.
+
+        None until something has been scanned, so composing a context
+        reports the environment `unknown` rather than empty.
+        """
+        if self._scanned_at is None:
+            return None
+        tools = []
+        for entry in CATALOG:
+            result = self._present.get(entry.id)
+            if result is None:
+                continue
+            tools.append({
+                "id": entry.id,
+                "name": entry.name,
+                "capabilities": list(entry.capabilities),
+                # The probe's own output — never a credential, an env var
+                # or a config file.
+                "version": result.version,
+                # The catalogue already knows which entries are AURA's own
+                # subsystems rather than programs on the machine. Carrying
+                # that keeps an agent from reading "Mission Control" as a
+                # binary it could run.
+                "internal": entry.transport == "internal",
+            })
+        return EnvironmentSnapshot(
+            scanned_at=self._scanned_at,
+            nodes=tools,
+            provided_capabilities=list(self.provided_capabilities()),
+        )

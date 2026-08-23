@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event
 
+from ..core.node_time import stat_mtime_ms
 from .ignore import IgnoreRules
 from .types import FileError, ScanEntry
 
@@ -40,7 +41,7 @@ def _mtime_ms(stat: os.stat_result) -> float:
     this value feeds both the recency score and the incremental
     fast-path equality check.
     """
-    return stat.st_mtime_ns / 1e6
+    return stat_mtime_ms(stat)
 
 
 def _errno_name(exc: OSError, fallback: str) -> str:

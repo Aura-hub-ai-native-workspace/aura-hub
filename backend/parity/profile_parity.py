@@ -5,9 +5,11 @@ frameworks, entry points, surfaces, coding style. This runs BOTH
 implementations against the SAME real directories and diffs everything
 they derive.
 
-`generatedAt` and `fingerprint` are excluded: one is wall-clock, the other
-embeds mtimes. Every other field is a claim about the folder and must
-match.
+`generatedAt` is excluded — it is wall-clock. **`fingerprint` is not**:
+it is compared for equality to decide whether a cached profile stands, so
+a profile written by the TypeScript backend must read as current under
+the Python one. It was excluded in Phase 3 and that concealed two real
+defects (a lossy `st_mtime * 1000`, and `%g` formatting).
 
 Usage (from backend/):
     uv run python -m parity.profile_parity --repo /mnt/storage/aura-hub
@@ -42,7 +44,6 @@ def compare_one(repo: Path, project_root: Path, project_id: str) -> list[str]:
     got = build_profile(project_id, str(project_root))
     mine = got.to_json()
     mine.pop("generatedAt", None)
-    mine.pop("fingerprint", None)
 
     differences = []
     for key in sorted(set(reference) | set(mine)):

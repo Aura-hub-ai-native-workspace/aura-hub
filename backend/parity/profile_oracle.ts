@@ -19,8 +19,10 @@ const { buildProfile } = await import(
   pathToFileURL(path.join(repoRoot, 'packages/ai-service/src/profile.ts')).href
 );
 const p = buildProfile(id, projectRoot);
-// `generatedAt` is wall-clock and `fingerprint` embeds mtimes; everything
-// else is derived from the folder and must match exactly.
+// `generatedAt` is wall-clock. `fingerprint` is NOT excluded: it embeds
+// manifest mtimes stringified as JavaScript stringifies numbers, it is
+// compared for EQUALITY to decide whether the cached profile stands, and
+// a profile written by one backend has to read as current under the
+// other. Excluding it once hid a real defect.
 delete p.generatedAt;
-delete p.fingerprint;
 process.stdout.write(JSON.stringify(p, null, 2));

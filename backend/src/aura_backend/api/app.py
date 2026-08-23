@@ -21,6 +21,7 @@ from ..fabric import ApprovalStore, AuditStore, CapabilityFabric, ServiceFabricH
 from ..tools.executors import machine_executors
 from ..tools.internal_executors import workspace_executors
 from ..workspace import WorkspaceManager
+from .routes import context as context_routes
 from .routes import environment as environment_routes
 from .routes import fabric as fabric_routes
 from .routes import projects as project_routes
@@ -79,6 +80,10 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.fabric = fabric
     app.state.run_scopes = host.run_scopes
 
+    # Declared before the project routes: `/projects/{id}/context`
+    # must not be shadowed by a broader `/projects/{id}` match,
+    # mirroring the reference's literal-first segment cascade.
+    app.include_router(context_routes.router)
     app.include_router(project_routes.router)
     app.include_router(environment_routes.router)
     app.include_router(fabric_routes.router)

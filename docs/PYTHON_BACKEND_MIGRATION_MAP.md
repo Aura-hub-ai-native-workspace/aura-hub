@@ -1126,9 +1126,41 @@ The rest of §15 is outstanding.** See [`PHASE_04_RETRIEVAL.md`](./PHASE_04_RETR
   precision (Node derives it from nanoseconds; `st_mtime * 1000` differs
   in the low bits and feeds both recency scoring and the incremental
   fast path).
-- **Still outstanding in Phase 4:** `context/` (1,144 lines, blocked on
-  `intelligence/`), `intelligence/` (5,668), `knowledge-fullstack`
-  (1,766), and `diagnosis/` (blocked on the TypeScript compiler API).
+### Phase 4, part 2 — the Context Fabric (COMPLETE)
+
+See `PHASE_04_CONTEXT.md`. `context/types.ts`, `compose.ts` and
+`contract.ts` are ported, together with the intelligence **loaders** they
+read, the change analysers, the git signal gatherers and a read-only
+mission reader.
+
+- Differential: **20 scenarios, 254 comparisons match** — the composed
+  `ContextView` field by field, and the rendered contract line by line at
+  all nine surfaces plus an unrecognised one.
+- Mutation-tested: 19 seeded regressions. The first run caught 15; **all
+  four survivors were holes in the fixtures and were closed**, including
+  one where the harness reproduced the port's own `mtimeMs` mistake.
+- Runtime differential over real HTTP against both backends covers the
+  two sections fixtures cannot reach — 33 capabilities carrying the
+  policy engine's own rule names, and the real audit trail.
+- Negative controls **33/33**.
+- **A defect in already-shipped Phase 3 code was found and fixed:** the
+  profile fingerprint used a lossy `st_mtime * 1000` formatted with `%g`.
+  It was invisible because Phase 3's harness **excluded `fingerprint`**
+  from comparison. The exclusion is gone and all five profiles now match
+  including that field.
+- `mtimeMs` now has one definition (`core/node_time.py`) matching Node's
+  own arithmetic; `st_mtime_ns / 1e6` disagrees with Node on **61 of 200
+  files**, and the value is stringified into fingerprints compared for
+  equality.
+- Two pinned divergences, both belonging to later phases: mission
+  `execution.status` is derived by the Phase 11 engine, and the reference
+  throws on a mission record it cannot hydrate.
+- One behavioural difference left open by decision: the Python service
+  does **not** scan the environment at boot, where `server.ts:225` does.
+
+- **Still outstanding in Phase 4:** `intelligence/` generators (5,668),
+  `knowledge-fullstack` (1,766), and `diagnosis/` (blocked on the
+  TypeScript compiler API).
 
 ---
 
@@ -1258,7 +1290,7 @@ list is currently short by design.
 | 1 | Python infrastructure + API foundation | — | MEDIUM | **TESTED + RUNTIME VERIFIED** |
 | 2 | Configuration + persistence primitives | DUPLICATED (TS) | LOW | **TESTED** |
 | 3 | Workspace + project registry | EXISTS | HIGH | **PARITY VERIFIED** (profiler matches on 5 real trees; 18/22 executors) |
-| 4 | Context + RAG + intelligence | EXISTS | HIGH | **PARTIAL** — retrieval engine PARITY VERIFIED; context/, intelligence/, knowledge-fullstack outstanding |
+| 4 | Context + RAG + intelligence | EXISTS | HIGH | **PARTIAL** — retrieval engine and Context Fabric PARITY VERIFIED (254 comparisons, mutation-tested); intelligence generators and knowledge-fullstack outstanding |
 | 5 | AI service / provider layer | pending audit | — | NOT STARTED |
 | 6 | Execution / process layer | EXISTS | CRITICAL | **PARITY VERIFIED** (225/225; Windows BUILT only) |
 | 7 | Capability Fabric + policy + approval | EXISTS | CRITICAL | **PARITY VERIFIED** (44/44; executors deferred to Phase 8) |

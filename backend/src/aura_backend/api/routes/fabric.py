@@ -21,11 +21,33 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ...context import (
+    ComposeOptions,
+    compose_context_view,
+    is_unavailable,
+    render_context_contract,
+)
 from ...fabric import CAPABILITY_MANIFEST, CapabilityFabric, InvocationActor, InvocationContext
 from ...fabric.stores import policy_file_path, save_policy
 from ...policy import PolicyConfig
+from .context import context_sources
 
 router = APIRouter(prefix="/fabric", tags=["fabric"])
+
+
+def _context_contract(request: Request, project_id: str) -> str | None:
+    """The project's agent contract, or None when it cannot be composed.
+
+    Never raises into an invocation: a context that cannot be built must
+    degrade to delegating without one, not fail the delegation.
+    """
+    try:
+        view = compose_context_view(
+            project_id, context_sources(request), ComposeOptions(surface="coding")
+        )
+    except Exception:  # noqa: BLE001 — context is an enrichment, not a gate
+        return None
+    return None if is_unavailable(view) else render_context_contract(view)
 
 # Only these keys can reach the policy engine. An unknown key in the
 # request body can never become configuration — the merge is an
@@ -174,6 +196,23 @@ async def invoke(request: Request) -> Any:
         # silently got a different one.
         node_id=raw_context.get("nodeId") or raw_input.get("nodeId"),
     )
+
+    # ── the agent context seam ───────────────────────────────────────
+    # Delegating to a coding agent without AURA's context is the thing the
+    # Context Fabric exists to fix: the agent would re-derive the project
+    # the service already understands.
+    #
+    # So when a caller delegates within a resolved project and says
+    # NOTHING about context, AURA supplies it. Composition stays here, on
+    # the caller side, with the one Context Fabric; the executor only
+    # consumes what it is given.
+    #
+    # Passing `context: ""` explicitly opts out — the executor treats
+    # empty as "no context" and sends the bare task.
+    if capability_id == "agent.delegate" and project_id and "context" not in raw_input:
+        contract = _context_contract(request, project_id)
+        if contract is not None:
+            raw_input["context"] = contract
 
     result = await _fabric(request).invoke(capability_id, raw_input, context)
     # Always 200: a denial is an outcome, not a transport failure.

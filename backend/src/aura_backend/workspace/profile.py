@@ -21,7 +21,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..core.js_number import js_number
 from ..core.json_store import atomic_write_json, read_json
+from ..core.node_time import mtime_ms
 from ..fabric.types import now_iso
 
 IGNORE_DIRS = frozenset({
@@ -165,7 +167,7 @@ def _profile_file(home: Path, project_id: str) -> Path:
 
 def _mtime(file: Path) -> float:
     try:
-        return file.stat().st_mtime * 1000
+        return mtime_ms(file)
     except OSError:
         return 0
 
@@ -178,7 +180,10 @@ def fingerprint(root: Path) -> str:
     stands. That is the reference's behaviour and it is deliberate — the
     profile describes shape, not content.
     """
-    parts = [f"{m}:{_mtime(root / m):g}" for m in FINGERPRINT_MARKERS]
+    # `js_number`, not Python's default float formatting: this string is
+    # compared for equality against a fingerprint the reference may have
+    # written, and `1787501494393.0` never equals `1787501494393`.
+    parts = [f"{m}:{js_number(_mtime(root / m))}" for m in FINGERPRINT_MARKERS]
     return f"v{PROFILE_VERSION}|" + "|".join(parts)
 
 
