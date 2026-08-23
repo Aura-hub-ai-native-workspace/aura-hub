@@ -34,3 +34,10 @@ pythonpath = ["."]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+# Verification scripts and tests shell out to real tools on purpose; the
+# return codes are inspected explicitly where they matter.
+"tests/*" = ["PLW1510", "S603", "S607"]
+"parity/*" = ["PLW1510", "S603", "S607", "SIM115"]
+"verify/*" = ["PLW1510", "S603", "S607"]

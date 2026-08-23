@@ -626,7 +626,26 @@ present ⇒ `unverified`, never `installed`. Verification passes only for
 than the safe form. The port uses `subprocess` with an argv list and
 `shell=False` exclusively; there is no code path that accepts a command string.
 
-**Status: NOT STARTED.**
+**Status: TESTED + RUNTIME VERIFIED + PARITY VERIFIED.**
+Full detail in [`PHASE_06_EXECUTION.md`](./PHASE_06_EXECUTION.md).
+
+- Differential: **225/225** scenarios match the bundled TypeScript modules.
+  The harness is mutation-tested — reintroducing the historical
+  false-success bug is caught on exactly the scenarios that should catch it.
+- Reference suite ported check-for-check: **16/16**, including spawning a
+  real OpenCode binary and timing it out.
+- Negative controls: **99/99**. Process cleanup: **4/4**.
+- Node's real `execFile` error shapes were **measured, not assumed**. Two
+  readings were wrong before the probe: timeout and self-SIGTERM are
+  distinguished only by `killed` (Python's return code is `-15` for both),
+  and a `maxBuffer` overflow settles as exit 1 rather than as a timeout.
+- Three deliberate differences recorded in §13: SIGKILL escalation, bounded
+  drain when a grandchild holds the pipe, and the maxBuffer truncation
+  boundary.
+- **Windows is BUILT, not RUNTIME VERIFIED.** Its logic is proved on Linux
+  by injected-platform differential tests, exactly as the reference proves
+  it, but no Python spawn has run on a real Windows machine — and
+  `selectors` needs a thread fallback there before cutover.
 
 ---
 
@@ -1103,6 +1122,7 @@ by path. The Python side adds an aggregate runner.
 | 3 | No reference results for 11 unverified subsystems | Context, intelligence, diagnosis, secrets | Parity must be established by source reading. Cannot be automated. |
 | 4 | 16-byte GCM IV and import-time path capture | Provider credential store | Reproduce the IV length exactly; convert paths to lazy accessors. |
 | 5 | `verify-workflow-automation.mjs` re-authoring | Workflow + automation parity | 129 assertions to port. Largest single verification task. |
+| 6 | `selectors` does not select on pipe handles on Windows | `execution/process.py` `_drain` | Needs a thread-based fallback before a Windows cutover. Linux and macOS are unaffected. Blocks Phase 16 on Windows only. |
 
 ---
 
@@ -1163,6 +1183,9 @@ list is currently short by design.
 | --- | --- | --- | --- |
 | 1 | Shutdown drains in-flight SSE streams and stops the scheduler before closing. | The TypeScript `close()` does neither; an interrupted stream and a still-armed timer during shutdown are real failure modes. | Low — strictly more orderly. |
 | 2 | Path segments are validated inside the persistence layer, not only by upstream id generators. | Defense in depth against traversal via `homePath()`. | Low — rejects only inputs the current id generators cannot produce. |
+| 3 | A child that ignores SIGTERM is escalated to SIGKILL after 5 s. | Node sends its kill signal once and waits forever; a wedged backend is worse than a divergence. | Low — only affects children that ignore SIGTERM, which the reference cannot stop either. |
+| 4 | Once the child has exited, pipes are drained for a bounded 2 s and then abandoned. | A detached grandchild inheriting stdout otherwise blocks the caller for its whole lifetime — measured at 30.1 s in a failing test. The reference has the same wedge. | Low — the status reported is still the one the process exited with. |
+| 5 | `maxBuffer` truncation caps bytes and decodes once at the end. | Node decodes incrementally with a `StringDecoder`. For a stream overflowing mid-multi-byte character the final character may differ. | Very low — both report exit 1 and truncate at 4 MiB; the overflow case is differentially tested. |
 
 ---
 
@@ -1176,7 +1199,7 @@ list is currently short by design.
 | 3 | Workspace + project registry | EXISTS | HIGH | NOT STARTED |
 | 4 | Context + RAG + intelligence | pending audit | — | NOT STARTED |
 | 5 | AI service / provider layer | pending audit | — | NOT STARTED |
-| 6 | Execution / process layer | pending audit | CRITICAL | NOT STARTED |
+| 6 | Execution / process layer | EXISTS | CRITICAL | **PARITY VERIFIED** (225/225; Windows BUILT only) |
 | 7 | Capability Fabric + policy + approval | EXISTS | CRITICAL | NOT STARTED |
 | 8 | Tools + integrations | pending audit | — | NOT STARTED |
 | 9 | Workflow engine | pending audit | HIGH | NOT STARTED |
