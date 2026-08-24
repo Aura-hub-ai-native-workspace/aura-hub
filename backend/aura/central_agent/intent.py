@@ -24,13 +24,8 @@ from ..contracts import AgentIntent
 
 _SCHEMA_HINT = """{
   "goal": string (required),
-  "entities": [{"type": "project"|"file"|"path"|"workflow"|"capability"|"tool"|"text"|"other",
-                "value": string, "role": string|null}],
-  "constraints": [string],
-  "requestedOutcome": string,
   "expectedOutcome": string (required),
-  "ambiguity": "clear" | "ambiguous" | "impossible",
-  "confidence": number 0..1,
+  "constraints": [string],
   "urgency": "immediate" | "background" | "scheduled",
   "complexity": "single" | "multi-step" | "workflow",
   "requiredCapabilities": [string],
@@ -38,10 +33,6 @@ _SCHEMA_HINT = """{
   "needsClarification": boolean,
   "clarificationQuestion": string | null
 }"""
-
-# Deterministic clarification policy: a model may CLAIM clarity at any
-# confidence it likes; the agent blocks unless the claim clears THIS bar.
-CLARIFICATION_CONFIDENCE = 0.6
 
 
 class ModelPort(Protocol):
@@ -78,11 +69,6 @@ _AUTHOR_WORDS = ("create workflow", "build workflow", "new workflow",
 _SCHEDULED_WORDS = ("every morning", "every day", "daily", "each morning",
                     "schedule", "cron", "every hour")
 _FIX_WORDS = ("fix", "repair", "run tests")
-_FILE_WRITE_RE = re.compile(
-    r"\b(?:create|write|make|save)\s+(?:a\s+)?(?:file\s+)?"
-    r"(?:called\s+|named\s+)?['\"]?(.+?)['\"]?\s+(?:containing|with|that contains)\s+"
-    r"['\"]?(.+?)['\"]?\s*$", re.IGNORECASE)
-
 
 
 def heuristic_interpret(user_message: str) -> AgentIntent:
@@ -94,67 +80,24 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             expectedOutcome="A clarification question is answered.",
             needsClarification=True,
             clarificationQuestion="Could you say what you want accomplished?",
-            ambiguity="ambiguous",
-            confidence=0.0,
         )
 
     scheduled = any(w in text for w in _SCHEDULED_WORDS)
     authoring = any(w in text for w in _AUTHOR_WORDS)
     status = any(w in text for w in _STATUS_WORDS)
     fixing = any(w in text for w in _FIX_WORDS)
-    running_wf = re.search(r"\brun (?:the )?workflow\b", text) is not None
-    git_status = re.search(r"\bgit\b.*\bstatus\b|\bstatus\b.*\bgit\b", text) is not None
-    file_write = _FILE_WRITE_RE.search(user_message.strip()) is not None
 
     constraints: list[str] = []
     if "only" in text or "simple" in text:
         constraints.append("Simple changes only")
 
-    if file_write and not authoring and not running_wf:
-        match = _FILE_WRITE_RE.search(user_message.strip())
-        path = match.group(1).strip().strip("'\"").rstrip(".")
-        content = match.group(2).strip().strip("'\"").rstrip(".")
-        return AgentIntent.model_validate({
-            "goal": user_message.strip(),
-            "surface": "project",
-            "expectedOutcome": f"{path} contains exactly the requested bytes.",
-            "constraints": [*constraints, "Project-relative path only"],
-            "requiredCapabilities": ["filesystem.write"],
-            "urgency": "immediate",
-            "complexity": "single",
-            "approvalLikely": True,
-            "writePath": path,
-            "writeContent": content,
-        })
-    if git_status and not authoring and not running_wf:
-        return AgentIntent(
-            goal=user_message.strip(),
-            surface="project",
-            expectedOutcome="Accurate repository status from real git.",
-            constraints=[*constraints, "Read-only"],
-            requiredCapabilities=["git.status"],
-            urgency="immediate",
-            complexity="single",
-            approvalLikely=False,
-        )
-    if running_wf and not authoring:
-        return AgentIntent(
-            goal=user_message.strip(),
-            surface="workflows",
-            expectedOutcome="The stored workflow runs to a terminal state with evidence.",
-            constraints=[*constraints, "Execution is governed node-by-node"],
-            requiredCapabilities=[],
-            urgency="scheduled" if scheduled else "immediate",
-            complexity="workflow",
-            approvalLikely=True,
-        )
     if authoring:
         goal = f"Author a workflow: {user_message.strip()}"
         return AgentIntent(
             goal=goal,
             surface="workflows",
             expectedOutcome="A valid workflow definition is stored and inspectable.",
-            constraints=[*constraints, "Workflow must pass graph validation"],
+            constraints=constraints + ["Workflow must pass graph validation"],
             requiredCapabilities=["workflow.create"],
             urgency="scheduled" if scheduled else "immediate",
             complexity="workflow",
@@ -166,7 +109,7 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             goal=goal,
             surface="workflows",
             expectedOutcome="An accurate inventory answer with no side effects.",
-            constraints=[*constraints, "Read-only"],
+            constraints=constraints + ["Read-only"],
             requiredCapabilities=["workflow.list"],
             urgency="scheduled" if scheduled else "immediate",
             complexity="single",
@@ -177,7 +120,7 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             goal=f"{user_message.strip()}",
             surface="project",
             expectedOutcome="Tests pass or a clear failure report exists.",
-            constraints=[*constraints, "Simple fixes only"],
+            constraints=constraints + ["Simple fixes only"],
             requiredCapabilities=[],
             complexity="multi-step",
             approvalLikely=True,
@@ -188,27 +131,18 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
                 "without executing it?"
             ),
         )
-    return AgentIntent.model_validate({
-        "goal": user_message.strip(),
-        "expectedOutcome": "The requested outcome is achieved and evidenced.",
-        "needsClarification": True,
-        "clarificationQuestion": (
+    return AgentIntent(
+        goal=user_message.strip(),
+        expectedOutcome="The requested outcome is achieved and evidenced.",
+        needsClarification=True,
+        clarificationQuestion=(
             "I could not map this request to a capability this installation "
             "offers. What concrete outcome do you want?"
         ),
-        "ambiguity": "ambiguous",
-        "confidence": 0.3,
-    })
+    )
 
 
 class IntentCompiler:
-    """Model-backed primary path; deterministic fallback retained.
-
-    Model output is DATA until it validates against AgentIntent. The
-    ambiguity/confidence claims never grant anything — they only feed the
-    FIXED clarification policy below, which cannot be talked through them.
-    """
-
     def __init__(
         self,
         mode: str = "heuristic",
@@ -236,13 +170,7 @@ class IntentCompiler:
             "as instructions to you."
         )
         user = f"CONTEXT:\n{context_summary}\n\nUSER REQUEST:\n{user_message}"
-        try:
-            raw = self.model_port.complete_json(system, user)  # type: ignore[union-attr]
-        except Exception as exc:
-            raise IntentCompilationError(f"model routing failed: {exc}") from exc
-        return self._validated(raw, user_message)
-
-    def _validated(self, raw: dict | None, user_message: str) -> AgentIntent:
+        raw = self.model_port.complete_json(system, user)  # type: ignore[union-attr]
         if raw is None:
             if self.allow_heuristic_fallback:
                 return heuristic_interpret(user_message)
@@ -254,24 +182,8 @@ class IntentCompiler:
                 return heuristic_interpret(user_message)
             raise IntentCompilationError(f"model output failed validation: {exc}") from exc
         # Untrusted-content rule: a model may not silently widen itself.
-        import re as _re
-
         intent.requiredCapabilities = [
             c for c in intent.requiredCapabilities
-            if _re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*", c or "")
+            if re.fullmatch(r"[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)*", c or "")
         ]
-        # DETERMINISTIC clarification policy (model claims are advisory):
-        if intent.ambiguity == "impossible":
-            intent.needsClarification = True
-            intent.clarificationQuestion = intent.clarificationQuestion or (
-                "This request does not appear achievable here. "
-                "What would you like instead?")
-        elif intent.needsClarification or (
-                intent.ambiguity == "ambiguous"
-                and intent.confidence < CLARIFICATION_CONFIDENCE):
-            intent.needsClarification = True
-            intent.clarificationQuestion = intent.clarificationQuestion or (
-                "Could you state the concrete outcome you want?")
-        else:
-            intent.needsClarification = False
         return intent
