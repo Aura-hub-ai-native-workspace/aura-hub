@@ -20,9 +20,11 @@ from ..contracts import (
     ExecutionPlan,
 )
 from ..fabric import FabricConfig
+from ..fabric.manifest import all_capabilities
 from ..persistence.runs import WorkflowRunStore
 from ..persistence.workflows import WorkflowStore
 from .authority import AuthorityChecker
+from .context import ContextAssembler
 from .discovery import CapabilityDiscovery
 from .evidence import EvidenceCollector
 from .events import EventBus
@@ -101,6 +103,17 @@ class CentralAgent:
         self.verifier = VerificationEngine()
         audit_store: AuditStore | None = fabric_cfg.audit_store
         self.evidence = EvidenceCollector(lambda: (audit_store.load() if audit_store else []))
+        ledger = fabric_cfg.ledger
+        store = getattr(self, "workflow_store", None)
+        self.context = ContextAssembler(
+            workflow_lister=(lambda: store.list()[:20]) if store else None,
+            capability_lister=lambda: [
+                type("V", (), {"id": c.id, "description": c.description,
+                               "risk": c.risk})()
+                for c in all_capabilities()],
+            approval_lister=(lambda: ledger.pending()) if ledger else None,
+            session_loader=self.sessions.load if hasattr(self.sessions, "load") else None,
+        )
 
     # ── helpers ──────────────────────────────────────────────────────────
     def _resolve_workflow_ref(self, ref: str) -> str | None:
@@ -126,16 +139,19 @@ class CentralAgent:
         user_message: str,
         project_id: str | None = None,
         session: AgentSession | None = None,
+        project_path: str | None = None,
     ) -> AgentResult:
         session = session or self.sessions.create(project_id)
         if project_id:
             session.projectId = project_id
+        if project_path:
+            session.projectPath = project_path  # extra field, persisted
         self.sessions.append_message(session, "user", user_message)
         self.sessions.save(session)
         self._emit("session.started", session.sessionId, projectId=project_id)
 
         try:
-            result = self._run(session, user_message)
+            result = self._run(session, user_message)  # noqa: E501 — path carried on the session
         except (PlanningError, CompilationError) as exc:
             result = self._fail(session, f"The request could not be planned: {exc}")
         except Exception as exc:  # noqa: BLE001 — a fault becomes an honest failure
@@ -148,8 +164,12 @@ class CentralAgent:
     def _run(self, session: AgentSession, user_message: str) -> AgentResult:
         sid = session.sessionId
 
-        # 1. intent
-        intent = self.intents.compile(user_message)
+        # 1. intent — compiled against a bounded, provenance-marked context
+        bundle = self.context.assemble(
+            session_id=session.sessionId,
+            project_path=getattr(session, "projectPath", None))
+        intent = self.intents.compile(user_message,
+                                      context_summary=bundle.render(4000))
         if intent.needsClarification:
             self._emit("intent.clarification-needed", sid, question=intent.clarificationQuestion)
             return AgentResult(
@@ -207,7 +227,8 @@ class CentralAgent:
         # 6. execute — through the Fabric; nothing here decides authority
         self._emit("execution.started", sid, planId=plan.planId)
         outcome: ExecutionOutcome = self.controller.execute(
-            plan, session.projectId, compiled_workflow=compiled)
+            plan, session.projectId, compiled_workflow=compiled,
+            project_cwd=getattr(session, "projectPath", None))
         for o in outcome.outcomes:
             self._emit("invocation.observed", sid, taskId=o.taskId,
                        state=o.state, verified=o.verified, detail=o.detail[:200])
@@ -305,6 +326,16 @@ class CentralAgent:
         grants: dict[str, str] = {}
         for apr in approval_ids:
             request = ledger.by_id(apr) if ledger else None
+            if request and request.get("state") == "denied":
+                result = AgentResult(
+                    status="failed", outcome="denied",
+                    summary=(f"The human declined this request "
+                             f"({apr}). Nothing has run."),
+                    failureReason="approval-denied",
+                )
+                self.sessions.finish(session, result)
+                self.sessions.save(session)
+                return result
             if not request or request.get("state") != "granted" \
                     or request.get("consumedAt"):
                 raise PermissionError(
@@ -318,17 +349,13 @@ class CentralAgent:
         intent = self.intents.compile(user_messages[0])
         plan = self.planner.plan(intent, session.sessionId, _now())
         task = plan.tasks[-1]  # parked task is the last planned one
-        parked_rid = last.runId
-        task_grants = (
-            {task.id: (next(iter(grants.values())), parked_rid)}
-            if grants and parked_rid and task.route == "workflow-run"
-            else ({task.id: (next(iter(grants.values())), "")}
-                  if grants else {})
-        )
+        apr_id = next(iter(grants.values()), None)
+        task_grants = {task.id: (apr_id, last.runId)} if apr_id else {}
         self._emit("execution.started", session.sessionId,
                    resumed=True, planId=plan.planId)
         outcome = self.controller.execute(
-            plan, session.projectId, resume_grants=task_grants)
+            plan, session.projectId, resume_grants=task_grants,
+            project_cwd=getattr(session, "projectPath", None))
         for o in outcome.outcomes:
             self._emit("invocation.observed", session.sessionId,
                        taskId=o.taskId, state=o.state,
