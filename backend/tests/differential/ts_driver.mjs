@@ -23,6 +23,12 @@ process.stdin.on('data', (c) => { payload += c; });
 process.stdin.on('end', async () => {
   const req = JSON.parse(payload);
 
+  if (req.func === 'fabricops') {
+    const out = await runFabricOps(req);
+    process.stdout.write(JSON.stringify(out));
+    return;
+  }
+
   if (req.func === 'storeops') {
     const out = await runStoreOps(req);
     process.stdout.write(JSON.stringify(out));
@@ -175,4 +181,111 @@ async function runStoreOps(req) {
   };
   walk(req.home, '');
   return { results, tree };
+}
+
+// ── fabricops: drive the REAL CapabilityFabric through a scripted scenario ──
+async function runFabricOps(req) {
+  const startMs = req.startMs;
+  let tick = startMs;
+  const nextTick = () => (tick += 1);   // +1 ms per draw: deterministic durations
+  class FakeDate extends Date {
+    constructor(...a) { super(...(a.length ? a : [nextTick()])); }
+    static now() { return nextTick(); }
+  }
+  globalThis.Date = FakeDate;
+
+  process.env.AURA_HOME = req.home || '/tmp/opencode/fabric-home';
+
+  const api = await import(process.env.TSREF_FABRIC_INDEX);
+
+  // instant backoff — timing is compared via Date draws, never wall sleep
+  const slept = [];
+  const realSetTimeout = setTimeout;
+  globalThis.setTimeout = (fn, ms) => { slept.push(ms); fn(); return 0; };
+
+  const cfg = req.config;
+  const results = [], events = [], auditFeed = [];
+
+  const host = {
+    permissionsFor: (cap) => (cfg.permissions[cap.id] ?? { read: true, write: true, execute: true, autonomous: true }),
+    nodeAvailable: (cap) => (cfg.nodeAvailable && cap.id in cfg.nodeAvailable ? cfg.nodeAvailable[cap.id] : true),
+    requestApproval: async (request, _ctx) => {
+      if (cfg.approvals === 'grant') return true;
+      if (cfg.approvals === 'throw') throw new Error('host exploded');
+      return false; // park
+    },
+  };
+
+  const fabric = new api.CapabilityFabric(host);
+  fabric.on((e) => events.push(e));
+  if (cfg.policyRaw !== undefined) fabric.setPolicy(api.sanitizePolicy(cfg.policyRaw));
+
+  for (const ex of cfg.executors ?? []) {
+    const queue = ex.steps.map((s) => ({ ...s }));
+    const impl = {
+      capabilityId: ex.capabilityId,
+      run: async () => {
+        const step = queue.length > 1 ? queue.shift() : queue[0];
+        if (step.throw) throw new Error(step.throw);
+        const out = { ok: !!step.ok, detail: step.detail };
+        if ('output' in step) out.output = step.output;
+        return out;
+      },
+    };
+    if (ex.verify) {
+      if (ex.verify.throw) impl.verify = async () => { throw new Error(ex.verify.throw); };
+      else impl.verify = async () => ({ passed: ex.verify.passed, kind: ex.verify.kind, detail: ex.verify.detail });
+    }
+    fabric.register(impl);
+  }
+
+  const resolve = (v) => {
+    if (typeof v === 'string') {
+      const m = /^\$r(\d+)(?:\.(.*))?$/.exec(v);
+      if (m) {
+        let cur = results[Number(m[1])];
+        if (m[2]) for (const part of m[2].split('.')) cur = cur?.[/^\d+$/.test(part) ? Number(part) : part];
+        return cur;
+      }
+      return v;
+    }
+    if (Array.isArray(v)) return v.map(resolve);
+    if (v && typeof v === 'object') { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = resolve(x); return o; }
+    return v;
+  };
+
+  for (const op of req.ops) {
+    try {
+      switch (op.op) {
+        case 'invoke': {
+          const r = await fabric.invoke(resolve(op.capabilityId), resolve(op.input ?? {}), resolve(op.context ?? {}));
+          results.push(r);
+          break;
+        }
+        case 'evaluate':
+          results.push(fabric.evaluate(resolve(op.capabilityId), resolve(op.context ?? {})));
+          break;
+        case 'decide': {
+          const id = resolve(op.id);
+          results.push(fabric.decideApproval(id, op.granted, op.by ?? 'user', op.reason));
+          break;
+        }
+        case 'consume':
+          results.push(fabric.consumeApproval(resolve(op.id)));
+          break;
+        case 'pending':
+          results.push(JSON.parse(JSON.stringify(fabric.pendingApprovals())));
+          break;
+        case 'audit':
+          results.push(JSON.parse(JSON.stringify(fabric.audit())));
+          break;
+        default:
+          throw new Error(`unknown fabric op ${op.op}`);
+      }
+    } catch (e) {
+      results.push({ __error__: String(e && e.message || e) });
+    }
+  }
+
+  return { results, events, slept };
 }

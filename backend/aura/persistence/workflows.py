@@ -8,33 +8,19 @@ do (create: createdAt → genId(now,rand) → edge-ids → updatedAt).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
+from collections.abc import Callable
+from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from ._alias import CamelAlias
 from ..config import aura_path
 from ..jsonutil import read_json_file, write_json_file
+from ._alias import CamelAlias
 
 
 def _now_default() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-
-def _default_id_gen(prefix: str) -> str:
-    """TS-parity uniqueness when no injection: now36 + 6 rand chars."""
-    import secrets
-
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
-    n = now_ms
-    b36 = ""
-    while n:
-        n, r = divmod(n, 36)
-        b36 = digits[r] + b36
-    return f"{prefix}-{b36}-{secrets.token_hex(3)}"
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def js_number(v: Any) -> float | int:
@@ -54,7 +40,7 @@ class WorkflowStore(CamelAlias):
     def __init__(self, clock: Callable[[], str] | None = None,
                  id_gen: Callable[[str], str] | None = None) -> None:
         self._clock = clock or _now_default
-        self._id_gen = id_gen or _default_id_gen
+        self._id_gen = id_gen or (lambda p: f"{p}-{os.getpid()}")
         self._dir: Path | None = None
 
     # paths -------------------------------------------------------------------

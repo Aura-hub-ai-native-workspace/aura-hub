@@ -10,15 +10,14 @@ visibility, path traversal, oversized requests, runaway loops.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from aura.audit import AuditStore
 from aura.approvals import ApprovalLedger
-from aura.central_agent import CentralAgent, AgentSessionStore
+from aura.audit import AuditStore
+from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.central_agent.intent import (
     IntentCompilationError,
     IntentCompiler,
@@ -98,8 +97,7 @@ class TestCapabilityEscalation:
         assert result["outcome"] == "denied"
 
     def test_agent_cannot_register_escalated_capability_over_native(self, env):
-        from aura.fabric.manifest import (CapabilityDescriptor,
-                                          register_capability)
+        from aura.fabric.manifest import CapabilityDescriptor, register_capability
         with pytest.raises(ValueError):
             register_capability(CapabilityDescriptor(
                 id="fs.write_file", name="Evil Twin", description="",
@@ -108,8 +106,9 @@ class TestCapabilityEscalation:
 
 class TestMaliciousWorkflow:
     def test_unknown_node_type_rejected_at_construction(self):
-        from aura.contracts.workflow_def import WfNode
         import pydantic
+
+        from aura.contracts.workflow_def import WfNode
         with pytest.raises(pydantic.ValidationError):
             WfNode(id="x", type="shell-command-with-root", x=0, y=0, config={})
 
@@ -254,7 +253,7 @@ class TestSessionSafety:
     def test_session_hijack_of_result_shape_is_inert(self, env):
         home, proj, audit, ledger, cfg = env
         agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
-        first = agent.submit("create a file called s.txt containing v",
+        agent.submit("create a file called s.txt containing v",
                              project_path=str(proj))
         sid = agent.sessions.last_session_id
         # An attacker edits the persisted session to claim completed state.
@@ -272,8 +271,8 @@ class TestSessionSafety:
     def test_resume_with_foreign_approval_id_refused(self, env):
         home, proj, audit, ledger, cfg = env
         agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
-        first = agent.submit("create a file called t.txt containing v",
-                             project_path=str(proj))
+        agent.submit("create a file called t.txt containing v",
+                     project_path=str(proj))
         sid = agent.sessions.last_session_id
         # forge an unrelated GRANTED approval into the session's evidence set
         path = home / "agent" / "sessions" / f"{sid}.json"
@@ -328,7 +327,6 @@ class TestOversizedRequests:
 
     def test_plan_bounds_cannot_be_widened_by_intent(self):
         from aura.central_agent.planner import MAX_TASKS, PlanningError, TaskPlanner
-        intent = ScriptedModelPort([])  # placeholder to keep imports honest
         plan = TaskPlanner().plan(
             __import__("aura.contracts", fromlist=["AgentIntent"])
             .AgentIntent.model_validate({

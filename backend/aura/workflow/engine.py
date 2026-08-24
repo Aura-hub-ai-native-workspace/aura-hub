@@ -17,17 +17,14 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from ..config import aura_home
-
-from ..audit import AuditStore
 from ..approvals import ApprovalLedger
 from ..fabric import FabricConfig, invoke_fabric
-from ..jsonutil import read_json_file
 from ..persistence.runs import (
     WorkflowRunStore,
     append_log,
@@ -272,7 +269,7 @@ class WorkflowEngine:
                 outcome = self._execute_node(node_def, record, run, vars_, project_cwd,
                                              resume_grants or {})
                 transition_node(record, outcome.state, clock=self.runs._clock)
-            except Exception as exc:  # noqa: BLE001 — faults become honest failures
+            except Exception as exc:
                 record["error"] = str(exc)[:500]
                 transition_node(record, "failed", clock=self.runs._clock)
                 append_log(run, nid, "error", f"node failed: {exc}",
@@ -452,12 +449,10 @@ class WorkflowEngine:
                        clock=self.runs._clock)
             return NodeOutcome("awaiting-approval", [])
 
-        untrusted_note = ""
         output = result.get("output")
         if isinstance(output, dict) and isinstance(output.get("text"), str):
             # Tool output is UNTRUSTED DATA. It may be stored and displayed;
             # it is never interpreted as instruction here.
-            untrusted_note = " (untrusted tool output)"
             record["output"] = {"text": output["text"][:4000]}
         if result["outcome"] in ("succeeded", "unverified"):
             return NodeOutcome("succeeded", ["out"])

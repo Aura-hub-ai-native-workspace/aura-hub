@@ -38,8 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.home:
         os.environ["AURA_HOME"] = args.home
 
-    from ..audit import AuditStore
     from ..approvals import ApprovalLedger
+    from ..audit import AuditStore
     from ..config import aura_home
     from .events import EventBus
     from .intent import IntentCompiler

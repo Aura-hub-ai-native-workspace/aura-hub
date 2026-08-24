@@ -45,13 +45,14 @@ class ExecutionController:
             config=EngineConfig(),
         )
 
-    def execute(  # noqa: C901 — one honest control loop for two routes
+    def execute(
         self,
         plan: TaskPlan,
         project_id: str | None,
         compiled_workflow: dict | None = None,
         cancel_check: Any | None = None,
         resume_grants: dict[str, str] | None = None,
+        project_cwd: str | None = None,
     ) -> ExecutionOutcome:
         result = ExecutionOutcome()
         resume_grants = resume_grants or {}
@@ -68,11 +69,13 @@ class ExecutionController:
                     _, parked_rid = grant_for_task
                     self._resume_workflow(task, parked_rid, result)
                 else:
-                    self._run_workflow(task, plan, project_id, result)
+                    self._run_workflow(task, plan, project_id, result,
+                                       project_cwd=project_cwd)
             else:
                 grant_for_task = resume_grants.get(task.id)
                 self._invoke_single(task, project_id, compiled_workflow, result,
-                                    approval_id=grant_for_task[0] if grant_for_task else None)
+                                    approval_id=grant_for_task[0] if grant_for_task else None,
+                                    project_cwd=project_cwd)
 
             last = result.outcomes[-1] if result.outcomes else None
             if last is None:
@@ -108,6 +111,7 @@ class ExecutionController:
         compiled_workflow: dict | None,
         result: ExecutionOutcome,
         approval_id: str | None = None,
+        project_cwd: str | None = None,
     ) -> None:
         if not task.capabilityId:
             result.outcomes.append(TaskOutcome(
@@ -134,6 +138,8 @@ class ExecutionController:
             "projectId": project_id,
             "taskId": task.id,
         }
+        if project_cwd:
+            context["cwd"] = project_cwd
         if approval_id:
             context["approvalId"] = approval_id
         invocation = invoke_fabric(
@@ -166,18 +172,22 @@ class ExecutionController:
         plan: TaskPlan,
         project_id: str | None,
         result: ExecutionOutcome,
+        project_cwd: str | None = None,
     ) -> None:
         wf_ref = str(task.input.get("workflowRef") or "")
         run = self.engine.start_run(
             wf_ref,
             inputs={},
             project_id=project_id,
+            project_path=project_cwd or ".",
         )
         result.run_id = run["id"]
         self._record_run_outcome(task, run, result)
 
     def _resume_workflow(self, task: Any, parked_rid: str,
                          result: ExecutionOutcome) -> None:
+        # The parked leg already carries its project path; the engine
+        # reuses it for the resumed leg.
         leg = self.engine.resume_run(parked_rid)
         result.resumed_run_id = leg["id"]
         result.run_id = leg["id"]

@@ -8,17 +8,16 @@ deterministic heuristic mode — that is the layer under test.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from aura.audit import AuditStore
 from aura.approvals import ApprovalLedger
-from aura.central_agent import CentralAgent, AgentSessionStore
+from aura.audit import AuditStore
+from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.fabric import FabricConfig, builtin_executors
-from aura.workflow import WorkflowEngine, EngineConfig
+from aura.workflow import EngineConfig, WorkflowEngine
 
 
 def make_agent(home: Path, cfg: FabricConfig | None = None) -> CentralAgent:
@@ -134,10 +133,8 @@ class TestScenarioCPathTraversal:
 
 class TestScenarioDUntrustedOutput:
     def test_tool_output_marked_untrusted_never_escalates(self, env):
-        from aura.central_agent.mcp_transport import (
-            McpSession, StdioMcpClient, make_mcp_tool_executor)
-        from aura.fabric.manifest import (
-            CapabilityDescriptor, register_capability)
+        from aura.central_agent.mcp_transport import McpSession, StdioMcpClient, make_mcp_tool_executor
+        from aura.fabric.manifest import CapabilityDescriptor, register_capability
 
         home, proj, audit, ledger, cfg = env
         client = StdioMcpClient(["python3", "tests/mcp/fixture_server.py"],
@@ -198,11 +195,9 @@ class TestScenarioDUntrustedOutput:
 
 class TestScenarioEMcpGoverned:
     def test_discover_normalize_execute_with_audit(self, env):
-        from aura.central_agent.mcp_transport import (
-            McpSession, StdioMcpClient, make_mcp_tool_executor)
+        from aura.central_agent.mcp_transport import McpSession, StdioMcpClient, make_mcp_tool_executor
         from aura.fabric import invoke_fabric
-        from aura.fabric.manifest import (
-            CapabilityDescriptor, register_capability)
+        from aura.fabric.manifest import CapabilityDescriptor, register_capability
 
         home, proj, audit, ledger, cfg = env
         client = StdioMcpClient(["python3", "tests/mcp/fixture_server.py"],
@@ -221,7 +216,7 @@ class TestScenarioEMcpGoverned:
             result = invoke_fabric(echo.id, {"k": "v"},
                                    {"actor": {"kind": "agent", "id": "t"}}, cfg)
             assert result["outcome"] == "succeeded"
-            assert json.loads((result["output"]["text"])) == {"k": "v"}
+            assert json.loads(result["output"]["text"]) == {"k": "v"}
             rec = [r for r in audit.load() if r["capabilityId"] == echo.id]
             assert rec and rec[-1]["actor"]["id"] == "t"
         finally:
@@ -247,8 +242,7 @@ class TestScenarioFFailure:
 
     def test_engine_node_failure_propagates(self, env):
         home, proj, audit, ledger, cfg = env
-        from aura.persistence.workflows import WorkflowStore
-        from aura.workflow import WorkflowEngine, EngineConfig, make_stores
+        from aura.workflow import EngineConfig, WorkflowEngine, make_stores
 
         ws, vs, rs = make_stores()
         engine = WorkflowEngine(cfg, ws, vs, rs, EngineConfig())
@@ -295,8 +289,8 @@ class TestScenarioGRestartResume:
     def test_resume_without_decision_refused(self, env):
         home, proj, audit, ledger, cfg = env
         agent = make_agent(home, cfg)
-        first = agent.submit("create a file called wait.txt containing w",
-                             project_path=str(proj))
+        agent.submit("create a file called wait.txt containing w",
+                     project_path=str(proj))
         sid = agent.sessions.last_session_id
         with pytest.raises(PermissionError):
             agent.resume(sid)

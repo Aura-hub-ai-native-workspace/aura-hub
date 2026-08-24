@@ -20,7 +20,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .intent import ModelPort
@@ -126,7 +126,7 @@ class RoutedModelPort(ModelPort):
                     health.consecutive_failures = 0
                     match = _first_json_object(content)
                     return json.loads(match) if match else None
-                except Exception as exc:  # noqa: BLE001 — any fault fails over
+                except Exception as exc:
                     health.consecutive_failures += 1
                     health.last_error = str(exc)[:200]
                     last_error = f"{spec.id}: {str(exc)[:120]}"
@@ -142,7 +142,7 @@ def _http_post_json(url: str, payload: dict, headers: dict,
         url, data=json.dumps(payload).encode("utf-8"),
         headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        return json.loads(resp.read(MAX_RESPONSE_BYTES := 8 * 1024 * 1024))
+        return json.loads(resp.read(8 * 1024 * 1024))
 
 
 def _first_json_object(text: str) -> str | None:

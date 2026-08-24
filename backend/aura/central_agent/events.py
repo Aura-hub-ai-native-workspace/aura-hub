@@ -46,7 +46,7 @@ class EventBus:
     def subscribe_stream(self, session_filter: str | None = None):
         """Generator over serialized events: replays the tail, then follows
         live. Terminates when the consumer closes the connection."""
-        q: "queue.Queue[str]" = queue.Queue(maxsize=1000)
+        q: queue.Queue[str] = queue.Queue(maxsize=1000)
 
         def push(event: AgentEvent) -> None:
             if session_filter and event.sessionId not in (session_filter, "-"):

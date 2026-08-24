@@ -11,6 +11,8 @@ from __future__ import annotations
 import random
 
 import pytest
+from _tsrun import run_ts_batch
+from conftest import tsref  # noqa: F401  (session fixture)
 
 from aura.policy import (
     CapabilityDescriptor,
@@ -20,9 +22,6 @@ from aura.policy import (
     grants_for,
     sanitize_policy,
 )
-
-from _tsrun import run_ts_batch
-from conftest import tsref  # noqa: F401  (session fixture)
 
 SEED = 202_608
 N_CASES = 250
