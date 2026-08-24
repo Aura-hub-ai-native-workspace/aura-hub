@@ -141,7 +141,7 @@ def tsref() -> dict[str, Path]:
     return {
         "fabric": fabric_out, "index": index_out, "versions": versions_out,
         "wfstore": TSREF / "wfstore.mjs", "runstore": TSREF / "runstore.mjs",
-        "autostore": TSREF / "autostore.mjs", "fabricwiring": TSREF / "fabricwiring.mjs", "runtypes": TSREF / "runtypes.mjs", "wfengine": TSREF / "wfengine.mjs",
+        "autostore": TSREF / "autostore.mjs", "fabricwiring": TSREF / "fabricwiring.mjs", "runtypes": TSREF / "runtypes.mjs", "wfengine": TSREF / "wfengine.mjs", "autoengine": TSREF / "autoengine.mjs",
     }
 
 

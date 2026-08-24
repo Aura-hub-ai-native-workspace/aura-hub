@@ -29,6 +29,12 @@ process.stdin.on('end', async () => {
     return;
   }
 
+  if (req.func === 'autops') {
+    const out = await runAutoOps(req);
+    process.stdout.write(JSON.stringify(out));
+    return;
+  }
+
   if (req.func === 'fabricops') {
     const out = req.config?.wiring ? await runFabricOpsWired(req) : await runFabricOps(req);
     process.stdout.write(JSON.stringify(out));
@@ -296,7 +302,6 @@ async function runFabricOps(req) {
   return { results, events, slept };
 }
 
-// ── wiring mode: createFabric(deps) with REAL routing + file stores ─────────
 async function runFabricOpsWired(req) {
   const startMs = req.startMs;
   let tick = startMs;
@@ -387,4 +392,60 @@ async function runWfOps(req) {
   };
   const result = await eng.runWorkflow(req.workflow, opts, (e) => events.push(e));
   return { result, events, run: JSON.parse(JSON.stringify(record)) };
+}
+
+// ── autops: REAL AutomationEngine with deterministic clock/rand ─────────────
+async function runAutoOps(req) {
+  let tick = req.startMs;
+  const nextTick = () => (tick += 1000);
+  class FakeDate extends Date {
+    constructor(...a) { super(...(a.length ? a : [nextTick()])); }
+    static now() { return nextTick(); }
+  }
+  globalThis.Date = FakeDate;
+  let randState = 1;
+  globalThis.Math = Object.create(Math);
+  globalThis.Math.random = () => { randState += 7; return (randState % 4194304) / 4194304; };
+  for (const k of Object.getOwnPropertyNames(Math)) if (!(k in globalThis.Math)) globalThis.Math[k] = Math[k];
+  process.env.AURA_HOME = req.home;
+
+  const mod = await import(process.env.TSREF_AUTOENGINE);
+  const storeMod = await import(process.env.TSREF_AUTOSTORE);
+  const store = new storeMod.AutomationStore();
+  const events = [];
+  const slept = [];
+  const eng = new mod.AutomationEngine({ store, actions: Object.fromEntries(Object.entries(req.config.actions ?? {}).map(([k, v]) => [k, typeof v === 'function' ? v : async () => JSON.parse(JSON.stringify(v))])),
+    emit: (e) => events.push(JSON.parse(JSON.stringify(e))), sleep: async (ms) => slept.push(ms) });
+
+  const results = [];
+  for (const op of req.ops) {
+    try {
+      switch (op.op) {
+        case 'createRule': results.push(store.createRule(op.args[0])); break;
+        case 'handleEvent': {
+          const r = eng.handleEvent(op.args[0]);
+          await new Promise((res) => setTimeout(res, 0));
+          await new Promise((res) => setImmediate(res));
+          results.push(r ? JSON.parse(JSON.stringify(r)) : null);
+          break;
+        }
+        case 'listRuns': results.push(JSON.parse(JSON.stringify(store.listRuns(op.args[0])))); break;
+        case 'indexRuns': results.push(JSON.parse(JSON.stringify(store.indexRuns(op.args[0] ?? {})))); break;
+        default: throw new Error(`op ${op.op}`);
+      }
+    } catch (e) { results.push({ __error__: String(e && e.message || e) }); }
+  }
+  const tree = {};
+  const { readdirSync, readFileSync, statSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const walk = (dir, rel) => {
+    let es = []; try { es = readdirSync(dir); } catch { return; }
+    for (const e of es.sort()) {
+      const p = join(dir, e); const rr = rel ? `${rel}/${e}` : e;
+      if (statSync(p).isDirectory()) walk(p, rr);
+      else tree[rr] = createHash('sha256').update(readFileSync(p)).digest('hex');
+    }
+  };
+  walk(req.home, '');
+  return { results, events, slept, tree };
 }
