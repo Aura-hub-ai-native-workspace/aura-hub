@@ -12,7 +12,7 @@ from typing import Any, Callable
 import json
 
 RANGES = {"minute": (0, 59), "hour": (0, 23), "dayOfMonth": (1, 31),
-          "month": (1, 12), "dayOfWeek": (0, 7)}
+          "month": (1, 12), "dayOfWeek": (0, 6)}
 FIELD_ORDER = ["minute", "hour", "dayOfMonth", "month", "dayOfWeek"]
 
 
@@ -34,9 +34,10 @@ def _named(token: str, kind: str):
 
 def parse_cron(expr: str):
     """→ {'ok':True,'cron':{field:set}} | {'ok':False,'error':str}."""
-    parts = (expr or "").split()
+    parts = (expr or "").split(" ") if expr != "" else [""]
+    parts = [p_ for p_ in parts] 
     if len(parts) != 5:
-        return {"ok": False, "error": "a cron expression needs exactly 5 fields"}
+        return {"ok": False, "error": "Expected 5 fields (minute hour day-of-month month day-of-week), got %d." % len(parts)}
     out: dict[str, set] = {}
     for raw, kind in zip(parts, FIELD_ORDER):
         mn, mx = RANGES[kind]
@@ -73,36 +74,39 @@ def parse_cron(expr: str):
                 values.add(0 if (kind == "dayOfWeek" and v2 == 7) else v2)
                 v2 += step
         out[kind] = values
+    # TS emits this engine-internal flag alongside the field sets
+    out["bothDaysRestricted"] = (
+        out["dayOfMonth"] != set(range(1, 32))
+        and out["dayOfWeek"] != set(range(0, 7)))
     return {"ok": True, "cron": out}
 
 
 def next_after(cron: dict, after: datetime):
-    """Smallest instant > `after` (local time) matching the fields."""
+    """Smallest LOCAL instant > `after` matching all fields (schedule.ts)."""
     m_set, h_set = cron["minute"], cron["hour"]
     dom_set, mon_set, dow_set = cron["dayOfMonth"], cron["month"], cron["dayOfWeek"]
-    # DOM/DOW restriction: TS/POSIX — if both restricted, OR applies.
-    dom_restricted = cron["dayOfMonth"] != set(range(1, 32))
-    dow_restricted = cron["dayOfWeek"] != set(range(8))
+    both = cron.get("bothDaysRestricted")
+    if both is None:
+        dom_full = dom_set == set(range(1, 32))
+        dow_full = dow_set == set(range(0, 8))
+        both = (not dom_full) and (not dow_full)
 
-    cur = after.replace(second=0, microsecond=0) + timedelta(minutes=1)
-    for _ in range(366 * 24 * 60):  # bounded: one year of minutes
+    cur = (after + timedelta(minutes=1)).replace(second=0, microsecond=0)
+    for _ in range(527040):  # one year of minutes, bounded
         if cur.month not in mon_set:
             cur = (cur.replace(day=1, hour=0, minute=0) + timedelta(days=32)).replace(day=1)
             continue
-        ok_dom = cur.day in dom_set
-        ok_dow = cur.weekday() % 7 in dow_set or (cur.weekday() + 1) % 7 in dow_set
-        if dom_restricted and dow_restricted:
-            day_ok = ok_dom or ((cur.weekday() + 1) % 7) in dow_set
-        elif dom_restricted:
-            day_ok = ok_dom
-        elif dow_restricted:
-            day_ok = (cur.weekday() + 1) % 7 in dow_set or cur.weekday() in dow_set
+        dom_hit = cur.day in dom_set
+        # POSIX: weekday numbering Sun=0; Python Mon=0 → shift by +1
+        dow_hit = ((cur.weekday() + 1) % 7) in dow_set
+        if both:
+            day_ok = dom_hit or dow_hit
         else:
-            day_ok = True
+            day_ok = dom_hit and dow_hit
         if not day_ok:
             cur = (cur + timedelta(days=1)).replace(hour=0, minute=0)
             continue
-        if cur.minute in m_set and cur.hour in h_set:
+        if cur.hour in h_set and cur.minute in m_set:
             return cur
         cur += timedelta(minutes=1)
     return None
