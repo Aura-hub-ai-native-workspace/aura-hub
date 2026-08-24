@@ -13,8 +13,8 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 | Contract models (10 schemas) | 1 | TS types | `aura.contracts` | schema-validate + byte round-trip on all goldens | **GATE-PASSED** | — |
 | Config home resolution | 1 | persist.ts:22 | `aura.config` | via jsonutil units | **GATE-PASSED** | mkdir deferred to writers by design |
 | Policy engine (stricter/floors/sanitize) | 2 | policy.ts | `aura.policy` | 250-case differential + 4 invariant units | **GATE-PASSED** | — |
-| Approvals (pending-only, single-use, binding) | 2 | approvalStore.ts + fabric.ts spend path | NOT-STARTED | planned | NOT-STARTED | — |
-| Audit store (append-only JSONL, caps) | 2 | auditStore.ts | NOT-STARTED | planned | NOT-STARTED | — |
+| Approvals (pending-only, single-use, binding) | 2 | approvalStore.ts + fabric.ts:336–670 | `aura.approvals` | 7 invariant units (decide/consume/named-usability/pending-only restore); end-to-end invoke() differential at P4 | **GATE-PASSED** (P4 e2e pending) | — |
+| Audit store (append-only JSONL, caps) | 2 | auditStore.ts | `aura.audit` | 5 units incl. trim-oldest@6000→5000 + truncated-tail tolerance | **GATE-PASSED** | — |
 | Exec settle() + allow-lists + TIMEOUT=124 | 2/5 | exec/process.ts | NOT-STARTED | process-timeout mirror planned | NOT-STARTED | — |
 | Secrets redaction + providers envelope | 2/9 | secrets.ts, credentialStore.ts | NOT-STARTED | crypto interop test planned | NOT-STARTED | AESGCM interop vs real stores |
 | Persistence (~/.aura readers/writers) | 3 | workflow/store, run/store… | NOT-STARTED | golden round-trips exist; live-file tests pending | NOT-STARTED | — |
@@ -34,14 +34,14 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 
 ## Current phase summary
 
-**Phase 1 COMPLETE · Phase 2 IN PROGRESS (policy engine gate passed).**
-Suite: `cd backend && python3 -m pytest tests -q` → 38 passed. Includes:
-6/6 frozen canonicalization vectors; 570 seeded differential cases vs
-bundled-real TypeScript with **0 divergences** (320 canonicalization +
-250 policy incl. exact reason strings); all 10 goldens schema-valid,
-model-valid, and BYTE-stable round-tripped; extras preservation asserted;
-Node-format JSON serialization pinned; policy invariants (fail-closed
-allowlists, cautious autonomy, floor rule-claiming, grants mapping) unit-locked.
+**Phase 1 COMPLETE · Phase 2 SUBSTANTIALLY COMPLETE (policy/approvals/audit gates passed).**
+Suite: `cd backend && python3 -m pytest tests -q` → 49 passed. Includes:
+6/6 frozen canonicalization vectors; 570 differential cases vs bundled-real
+TypeScript, 0 divergences; all 10 goldens schema-valid + BYTE-stable;
+16 security-invariant units (fail-closed allowlists, cautious autonomy,
+floor rule-claiming, single-use spend, replay-harmless decisions,
+pending-only persistence, append-only trim semantics). Remaining in P2:
+process settle() port (scheduled with executors at P5 start).
 
 ## How to run the gates
 

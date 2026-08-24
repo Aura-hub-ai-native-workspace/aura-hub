@@ -52,5 +52,6 @@ class AuditStore:
         kept = [r for r in all_records[-MAX_RECORDS:] if _usable(r)]
         tmp = f"{self._file}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-            fh.writelines(dumps_compact(r) + "\n" for r in kept)
+            for r in kept:
+                fh.write(dumps_compact(r) + "\n")
         os.replace(tmp, self._file)

@@ -9,9 +9,8 @@ differential battery lands there too.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import UTC, datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable
 
 from ..canonical import fingerprint_invocation
 
@@ -19,7 +18,7 @@ __all__ = ["ApprovalLedger", "approval_key", "now_iso", "usable_pending"]
 
 
 def now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def approval_key(capability_id: str, context: dict[str, Any], invocation_id: str) -> str:
