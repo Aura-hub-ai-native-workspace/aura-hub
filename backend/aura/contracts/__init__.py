@@ -9,6 +9,25 @@ Rules (mission §5):
     alias gymnastics, what you see on disk is the field name.
 """
 
+from .agent import (
+    AgentEvent,
+    AgentIntent,
+    AgentMessage,
+    AgentResult,
+    AgentSession,
+    AgentVerificationReport,
+    AuthorityRequirement,
+    CapabilityRequirement,
+    CompiledWorkflowRef,
+    EvidenceBundle,
+    ExecutionPlan,
+    SingleInvocation,
+    TaskOutcome,
+    TaskPlan,
+    TaskSpecification,
+    ToolDescriptor,
+    VerificationRequirement,
+)
 from .audit import AuditRecord, InvocationActor
 from .automation_run import ActionRunState, AutomationRun, RunTimelineEntry
 from .automation_rule import AutomationRule, RetryPolicy, RuleAction, RuleTrigger
@@ -31,6 +50,23 @@ from .workflow_run import (
 from .workflow_version import WorkflowVersion
 
 __all__ = [
+    "AgentEvent",
+    "AgentIntent",
+    "AgentMessage",
+    "AgentResult",
+    "AgentSession",
+    "AgentVerificationReport",
+    "AuthorityRequirement",
+    "CapabilityRequirement",
+    "CompiledWorkflowRef",
+    "EvidenceBundle",
+    "ExecutionPlan",
+    "SingleInvocation",
+    "TaskOutcome",
+    "TaskPlan",
+    "TaskSpecification",
+    "ToolDescriptor",
+    "VerificationRequirement",
     "AuditRecord",
     "InvocationActor",
     "ActionRunState",
