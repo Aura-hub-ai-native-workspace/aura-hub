@@ -25,6 +25,9 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 | Automation engine + scheduler | 7 | automation/* | NOT-STARTED | cron golden cases planned | NOT-STARTED | croniter validation vs hand parser |
 | Agent runtime (bounds/loop/trace/resume) | 8 | workflow/agent/* | NOT-STARTED | ui-agent suites are live gate | NOT-STARTED | depends P6 |
 | Context Fabric | 9 | context/* | NOT-STARTED | view/contract diffs planned | NOT-STARTED | unknown-degradation enables early port |
+| Central-agent contracts | — (central agent) | — (new schemas) | `aura.contracts.agent` | round-trip + vocabulary units | **GATE-PASSED** | additive milestone; no TS counterpart by design |
+| Fabric invoke pipeline (subset) | 4 | fabric.ts invoke() | `aura.fabric` (2 capabilities, internal store) | order/floor/approval/redaction units; runtime slice gate | **IN-PROGRESS** | process executors + differential battery outstanding |
+| Central agent core (intent→evidence) | — (central agent) | research docs | `aura.central_agent` | unit suites + `scripts/verify_central_agent.py` 8/8 | **IN-PROGRESS** | live-model intent accuracy untested; API/SSE + UI pending |
 | Providers/streaming adapters | 9 | provider/* | NOT-STARTED | usage/cancel parity planned | NOT-STARTED | — |
 | HTTP/SSE server (all routes, gates) | 10 | server.ts | NOT-STARTED | strangler route map planned | NOT-STARTED | depends all above |
 | Pipeline/intelligence suite | 11 | intelligence/*, pipeline.ts | NOT-STARTED | tolerance-based diffs | NOT-STARTED | largest heuristic surface |
