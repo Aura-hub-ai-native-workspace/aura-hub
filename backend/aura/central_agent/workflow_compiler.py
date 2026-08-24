@@ -12,6 +12,7 @@ a governed path decides otherwise.
 
 from __future__ import annotations
 
+import re
 import uuid
 
 from pydantic import ValidationError
@@ -151,7 +152,16 @@ class WorkflowCompiler:
 
 def _derive_name(plan: TaskPlan) -> str:
     goal = plan.intent.goal.strip()
-    for prefix in ("Author a workflow:", "Create workflow:", "Build workflow:"):
+    # An explicit "named X" wins; clause starters and qualifiers are not
+    # part of the name ("named repo-check that shows git status" → repo-check).
+    named = re.search(r"\bnamed\s+['\"]?([^.]+?)['\"]?\s*$", goal, re.IGNORECASE)
+    if named:
+        candidate = re.split(
+            r"\s+that\s+|\s+which\s+|\s+showing\s+|\s+with\s+|\s+for\s+|\s+to\s+",
+            named.group(1).strip(), maxsplit=1, flags=re.IGNORECASE)[0].strip()
+        return (candidate or goal)[:60]
+    for prefix in ("Author a workflow:", "Create workflow:", "Build workflow:",
+                   "create a workflow", "Author a workflow"):
         if goal.lower().startswith(prefix.lower()):
             goal = goal[len(prefix):].strip()
     name = goal[:60] or "Agent-authored workflow"
