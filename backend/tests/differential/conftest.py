@@ -40,11 +40,17 @@ def tsref() -> dict[str, Path]:
     if not ESBUILD.exists():
         pytest.skip("repo esbuild not installed (node_modules/.bin/esbuild missing)")
     fabric_out = TSREF / "fabric.mjs"
+    index_out = TSREF / "fabric-index.mjs"
     versions_out = TSREF / "versions.mjs"
     try:
         _build_bundle(
             REPO / "packages/capability-fabric/src/fabric.ts",
             fabric_out,
+            ["--alias:@aura/connected-environment=./packages/connected-environment/src/index.ts"],
+        )
+        _build_bundle(
+            REPO / "packages/capability-fabric/src/index.ts",
+            index_out,
             ["--alias:@aura/connected-environment=./packages/connected-environment/src/index.ts"],
         )
         _build_bundle(
@@ -54,7 +60,7 @@ def tsref() -> dict[str, Path]:
         )
     except subprocess.CalledProcessError as e:
         pytest.skip(f"failed to build TS reference bundles: {e.stderr[-400:]}")
-    return {"fabric": fabric_out, "versions": versions_out}
+    return {"fabric": fabric_out, "index": index_out, "versions": versions_out}
 
 
 def run_ts_batch(tsref_paths: dict[str, Path], func: str, cases: list[dict]) -> list[str]:

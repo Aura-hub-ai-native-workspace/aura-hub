@@ -12,7 +12,7 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 | Canonicalization: graphHash | 1 | versions.ts:95 | `aura.canonical` | G1 + layout-exclusion + 120 diff cases | **GATE-PASSED** | — |
 | Contract models (10 schemas) | 1 | TS types | `aura.contracts` | schema-validate + byte round-trip on all goldens | **GATE-PASSED** | — |
 | Config home resolution | 1 | persist.ts:22 | `aura.config` | via jsonutil units | **GATE-PASSED** | mkdir deferred to writers by design |
-| Policy engine (stricter/floors/sanitize) | 2 | policy.ts | NOT-STARTED | differential battery planned | NOT-STARTED | needs P1 harness extension |
+| Policy engine (stricter/floors/sanitize) | 2 | policy.ts | `aura.policy` | 250-case differential + 4 invariant units | **GATE-PASSED** | — |
 | Approvals (pending-only, single-use, binding) | 2 | approvalStore.ts + fabric.ts spend path | NOT-STARTED | planned | NOT-STARTED | — |
 | Audit store (append-only JSONL, caps) | 2 | auditStore.ts | NOT-STARTED | planned | NOT-STARTED | — |
 | Exec settle() + allow-lists + TIMEOUT=124 | 2/5 | exec/process.ts | NOT-STARTED | process-timeout mirror planned | NOT-STARTED | — |
@@ -34,11 +34,14 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 
 ## Current phase summary
 
-**Phase 1 COMPLETE (gate passed).** Suite: `cd backend && python3 -m pytest tests -q`
-→ 33 passed. Includes: 6/6 frozen canonicalization vectors; 320 seeded
-differential cases vs bundled-real TypeScript with **0 divergences**; all 10
-goldens schema-valid, model-valid, and BYTE-stable round-tripped; extras
-preservation asserted; Node-format JSON serialization pinned.
+**Phase 1 COMPLETE · Phase 2 IN PROGRESS (policy engine gate passed).**
+Suite: `cd backend && python3 -m pytest tests -q` → 38 passed. Includes:
+6/6 frozen canonicalization vectors; 570 seeded differential cases vs
+bundled-real TypeScript with **0 divergences** (320 canonicalization +
+250 policy incl. exact reason strings); all 10 goldens schema-valid,
+model-valid, and BYTE-stable round-tripped; extras preservation asserted;
+Node-format JSON serialization pinned; policy invariants (fail-closed
+allowlists, cautious autonomy, floor rule-claiming, grants mapping) unit-locked.
 
 ## How to run the gates
 
