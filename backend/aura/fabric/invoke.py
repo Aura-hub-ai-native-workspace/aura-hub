@@ -17,15 +17,18 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
-from ..audit import AuditStore
 from ..approvals import ApprovalLedger, approval_key, usable_pending
+from ..audit import AuditStore
 from ..canonical import fingerprint_invocation
 from ..jsonutil import dumps_compact
 from ..policy.engine import (
     CapabilityDescriptor as PolicyCapability,
+)
+from ..policy.engine import (
     PolicyInput,
     PolicySubject,
     evaluate_policy,
@@ -341,7 +344,7 @@ def invoke_fabric(
                   "invocationId": invocation_id, "capabilityId": capability_id})
     try:
         output, run_detail = executor.run(input, context)
-    except Exception as exc:  # noqa: BLE001 — executor faults become failed settlements
+    except Exception as exc:
         return _settle(cfg, invocation_id, capability_id, context, capability, "failed",
                        f"{capability.name} failed: {exc}", None, evaluation,
                        started, started_at)
@@ -351,7 +354,7 @@ def invoke_fabric(
     if capability.verify:
         try:
             verification = executor.verify(input, context, output) or NO_VERIFICATION
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             verification = {"passed": False, "kind": capability.verify,
                             "detail": f"Verification errored: {exc}"}
         if not verification.get("passed"):
@@ -400,9 +403,9 @@ def describe_authority(
 
 
 __all__ = [
+    "NO_VERIFICATION",
     "Executor",
     "FabricConfig",
-    "NO_VERIFICATION",
     "describe_authority",
     "describe_target",
     "invoke_fabric",

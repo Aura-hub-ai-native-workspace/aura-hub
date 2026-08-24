@@ -17,7 +17,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -33,7 +33,7 @@ def check(name: str, fn) -> None:
         detail = fn()
         _results.append((PASS, name, detail or ""))
         print(f"  {PASS}  {name}" + (f" — {detail}" if detail else ""))
-    except Exception as exc:  # noqa: BLE001 — verification must report, not crash
+    except Exception as exc:
         _results.append((FAIL, name, str(exc)))
         print(f"  {FAIL}  {name} — {exc}")
 
@@ -42,9 +42,9 @@ def main() -> int:
     home = Path(tempfile.mkdtemp(prefix="aura-agent-verify-"))
     os.environ["AURA_HOME"] = str(home)
 
-    from aura.audit import AuditStore
     from aura.approvals import ApprovalLedger
-    from aura.central_agent import CentralAgent, AgentSessionStore
+    from aura.audit import AuditStore
+    from aura.central_agent import AgentSessionStore, CentralAgent
     from aura.central_agent.__main__ import build_fabric_config
     from aura.fabric import FabricConfig, builtin_executors
     from aura.workflow import make_stores
@@ -65,9 +65,9 @@ def main() -> int:
         ledger=ApprovalLedger(),
     )
 
-    print(f"AURA central agent runtime verification")
+    print("AURA central agent runtime verification")
     print(f"  disposable home: {home}")
-    print(f"  time: {datetime.now(timezone.utc).isoformat()}")
+    print(f"  time: {datetime.now(UTC).isoformat()}")
 
     state: dict = {}
 
@@ -138,9 +138,6 @@ def main() -> int:
         before = len(deny_home_records.load())
         r = agent.submit("list my workflows")
         assert r.outcome == "failed" and "denies" in (r.failureReason or "").lower()
-        invocations = [x for x in deny_home_records.load()[before:]
-                       if x.get("capabilityId") is not None
-                       and x.get("decisionRule") != "preflight"]
         assert not [x for x in deny_home_records.load()[before:]], \
             "a denied plan must not reach the invocation path at all"
         return "policy denial blocked planning pre-execution; nothing invoked"
@@ -202,7 +199,8 @@ def main() -> int:
 
     def scenario_g_restart_resume():
         import subprocess
-        from aura.workflow import WorkflowEngine, EngineConfig
+
+        from aura.workflow import EngineConfig, WorkflowEngine
         proj = Path(tempfile.mkdtemp(prefix="verify-g-"))
         subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
         a1 = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
@@ -237,6 +235,7 @@ def main() -> int:
     def api_surface_live():
         import json as _json
         import urllib.request
+
         from aura.api import build_default_api
         server, _agent = build_default_api(home=str(home) + "-api",
                                            port=4399)

@@ -139,7 +139,30 @@ class TaskPlanner:
             raise PlanningError("intent needs clarification before planning")
         required = [c for c in intent.requiredCapabilities if c]
         run_ref = _run_workflow_ref(intent)
-        if run_ref is not None:
+        caps = set(required)
+        if caps == {"git.status"}:
+            plan = TaskPlan(
+                planId=_plan_id(), sessionId=session_id, intent=intent,
+                tasks=[_task(
+                    "t1", "Read repository status with real git",
+                    capability_id="git.status",
+                    verification=VerificationRequirement(
+                        kind="audit-only",
+                        description="git exit-code verification in the Fabric."))],
+                createdAt=now)
+        elif caps == {"fs.write_file"}:
+            plan = TaskPlan(
+                planId=_plan_id(), sessionId=session_id, intent=intent,
+                tasks=[_task(
+                    "t1", f"Write {intent.wire().get('writePath', 'file')}",
+                    capability_id="fs.write_file",
+                    input={"path": intent.wire().get("writePath"),
+                           "content": intent.wire().get("writeContent")},
+                    verification=VerificationRequirement(
+                        kind="read-back",
+                        description="File reads back byte-identical."))],
+                createdAt=now)
+        elif run_ref is not None:
             resolved = self._resolve_workflow(run_ref)
             if resolved is None:
                 raise PlanningError(f"no stored workflow matches '{run_ref}'")

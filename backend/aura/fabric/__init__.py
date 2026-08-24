@@ -12,9 +12,9 @@ from .executors import (
     builtin_executors,
 )
 from .invoke import (
+    NO_VERIFICATION,
     Executor,
     FabricConfig,
-    NO_VERIFICATION,
     describe_authority,
     describe_target,
     invoke_fabric,
@@ -25,16 +25,16 @@ from .manifest import BUILTIN_MANIFEST, CapabilityDescriptor, CapabilityField, d
 
 __all__ = [
     "BUILTIN_MANIFEST",
+    "NO_VERIFICATION",
     "CapabilityDescriptor",
     "CapabilityField",
-    "NO_VERIFICATION",
     "Executor",
     "FabricConfig",
     "WorkflowCreateExecutor",
     "WorkflowListExecutor",
     "builtin_executors",
-    "describe_capability",
     "describe_authority",
+    "describe_capability",
     "describe_target",
     "invoke_fabric",
     "summarize_input",

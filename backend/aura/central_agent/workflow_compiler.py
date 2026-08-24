@@ -53,7 +53,6 @@ def compile_graph_for_intent(intent: AgentIntent) -> tuple[list[WfNode], list[Wf
     edges: list[WfEdge] = []
 
     wants_git = any(w in text for w in ("git", "commit", "branch", "status"))
-    wants_report = intent.complexity == "single" or "report" in text or statusish(text)
     write = _extract_write_clause(intent.goal)
 
     entry = _node("src", "current-project", 0, 0, {})

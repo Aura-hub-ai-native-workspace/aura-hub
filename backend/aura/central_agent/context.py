@@ -14,7 +14,6 @@ plug in; it deliberately owns no persistence of its own.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
 
 PROVENANCE_SYSTEM = "system"
 PROVENANCE_SESSION = "session"

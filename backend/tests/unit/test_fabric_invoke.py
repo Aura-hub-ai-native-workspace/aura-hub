@@ -7,14 +7,13 @@ audit record.
 
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from aura.audit import AuditStore
 from aura.approvals import ApprovalLedger
+from aura.audit import AuditStore
 from aura.fabric import (
     FabricConfig,
     builtin_executors,
@@ -154,7 +153,6 @@ class TestApprovalGate:
         assert list((home / "workflows").glob("*")) == []
 
     def test_denied_decision_records_audit_with_reason(self, home):
-        ledger_decided = []
         cfg = make_cfg(home, policy=self.POLICY)
         apr = invoke_fabric("workflow.create", self.PAYLOAD, {"taskId": "t"},
                             cfg)["approvalId"]

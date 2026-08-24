@@ -12,18 +12,18 @@ existing consumer of that contract.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from ..canonical import graph_hash
 from ..config import aura_home
-from ..contracts import Workflow, WfEdge, WfNode
+from ..contracts import WfEdge, WfNode, Workflow
 from ..jsonutil import read_json_file, write_json_atomic
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class WorkflowCreateExecutor:
@@ -138,7 +138,7 @@ def _confine(root: Path, relative: str) -> Path:
 def _run_argv(argv: list[str], cwd: Path) -> tuple[int, str]:
     import subprocess
 
-    proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+    proc = subprocess.run(
         argv, cwd=str(cwd), capture_output=True, text=True,
         timeout=PROCESS_TIMEOUT_S, check=False,
     )
@@ -159,7 +159,7 @@ class GitStatusExecutor:
         code, text = _run_argv(list(self.ARGV), cwd)
         if code != 0:
             raise RuntimeError(f"git status failed ({code})")
-        detail = input.get("detail") is False and "branch only" or "branch + files"
+        detail = (input.get("detail") is False and "branch only") or "branch + files"
         return {"text": text, "exitCode": 0}, f"Repository status gathered ({detail})."
 
     def verify(self, input: dict, context: dict, output: Any | None) -> dict[str, Any] | None:
@@ -198,7 +198,7 @@ class FsWriteFileExecutor:
         try:
             target = _confine(root, output["path"])
             stored = target.read_bytes()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {"passed": False, "kind": "read-back",
                     "detail": f"read-back failed: {exc}"}
         match = stored == input["content"].encode("utf-8")

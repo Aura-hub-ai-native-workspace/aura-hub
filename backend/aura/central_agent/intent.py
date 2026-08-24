@@ -69,6 +69,11 @@ _AUTHOR_WORDS = ("create workflow", "build workflow", "new workflow",
 _SCHEDULED_WORDS = ("every morning", "every day", "daily", "each morning",
                     "schedule", "cron", "every hour")
 _FIX_WORDS = ("fix", "repair", "run tests")
+_FILE_WRITE_RE = re.compile(
+    r"\b(?:create|write|make|save)\s+(?:a\s+)?(?:file\s+)?"
+    r"(?:called\s+|named\s+)?['\"]?(.+?)['\"]?\s+(?:containing|with|that contains)\s+"
+    r"['\"]?(.+?)['\"]?\s*$", re.IGNORECASE)
+
 
 
 def heuristic_interpret(user_message: str) -> AgentIntent:
@@ -87,17 +92,46 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
     status = any(w in text for w in _STATUS_WORDS)
     fixing = any(w in text for w in _FIX_WORDS)
     running_wf = re.search(r"\brun (?:the )?workflow\b", text) is not None
+    git_status = re.search(r"\bgit\b.*\bstatus\b|\bstatus\b.*\bgit\b", text) is not None
+    file_write = _FILE_WRITE_RE.search(user_message.strip()) is not None
 
     constraints: list[str] = []
     if "only" in text or "simple" in text:
         constraints.append("Simple changes only")
 
+    if file_write and not authoring and not running_wf:
+        match = _FILE_WRITE_RE.search(user_message.strip())
+        path = match.group(1).strip().strip("'\"").rstrip(".")
+        content = match.group(2).strip().strip("'\"").rstrip(".")
+        return AgentIntent.model_validate({
+            "goal": user_message.strip(),
+            "surface": "project",
+            "expectedOutcome": f"{path} contains exactly the requested bytes.",
+            "constraints": [*constraints, "Project-relative path only"],
+            "requiredCapabilities": ["fs.write_file"],
+            "urgency": "immediate",
+            "complexity": "single",
+            "approvalLikely": True,
+            "writePath": path,
+            "writeContent": content,
+        })
+    if git_status and not authoring and not running_wf:
+        return AgentIntent(
+            goal=user_message.strip(),
+            surface="project",
+            expectedOutcome="Accurate repository status from real git.",
+            constraints=[*constraints, "Read-only"],
+            requiredCapabilities=["git.status"],
+            urgency="immediate",
+            complexity="single",
+            approvalLikely=False,
+        )
     if running_wf and not authoring:
         return AgentIntent(
             goal=user_message.strip(),
             surface="workflows",
             expectedOutcome="The stored workflow runs to a terminal state with evidence.",
-            constraints=constraints + ["Execution is governed node-by-node"],
+            constraints=[*constraints, "Execution is governed node-by-node"],
             requiredCapabilities=[],
             urgency="scheduled" if scheduled else "immediate",
             complexity="workflow",
@@ -109,7 +143,7 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             goal=goal,
             surface="workflows",
             expectedOutcome="A valid workflow definition is stored and inspectable.",
-            constraints=constraints + ["Workflow must pass graph validation"],
+            constraints=[*constraints, "Workflow must pass graph validation"],
             requiredCapabilities=["workflow.create"],
             urgency="scheduled" if scheduled else "immediate",
             complexity="workflow",
@@ -121,7 +155,7 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             goal=goal,
             surface="workflows",
             expectedOutcome="An accurate inventory answer with no side effects.",
-            constraints=constraints + ["Read-only"],
+            constraints=[*constraints, "Read-only"],
             requiredCapabilities=["workflow.list"],
             urgency="scheduled" if scheduled else "immediate",
             complexity="single",
@@ -132,7 +166,7 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             goal=f"{user_message.strip()}",
             surface="project",
             expectedOutcome="Tests pass or a clear failure report exists.",
-            constraints=constraints + ["Simple fixes only"],
+            constraints=[*constraints, "Simple fixes only"],
             requiredCapabilities=[],
             complexity="multi-step",
             approvalLikely=True,

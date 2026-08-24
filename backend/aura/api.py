@@ -20,9 +20,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .audit import AuditStore
 from .approvals import ApprovalLedger
-from .central_agent import CentralAgent, AgentSessionStore
+from .audit import AuditStore
+from .central_agent import AgentSessionStore, CentralAgent
 from .errors import AuraError, NotFound
 from .jsonutil import dumps_compact
 
@@ -62,7 +62,7 @@ class AgentApiServer:
         api = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *a):  # noqa: N802 — silence default noise
+            def log_message(self, *a):
                 pass
 
             def _send(self, status: int, payload: Any, content_type="application/json") -> None:
@@ -99,13 +99,13 @@ class AgentApiServer:
                     self._send(404, {"error": exc.message})
                 except AuraError as exc:
                     self._send(exc.status, {"error": exc.message})
-                except Exception as exc:  # noqa: BLE001 — honest wire error
+                except Exception as exc:
                     self._send(500, {"error": f"internal: {exc}"})
 
-            def do_GET(self):  # noqa: N802
+            def do_GET(self):
                 self._dispatch("GET")
 
-            def do_POST(self):  # noqa: N802
+            def do_POST(self):
                 self._dispatch("POST")
 
             def _sse(self, generator) -> None:
@@ -216,8 +216,8 @@ def build_default_api(home=None, host: str = "127.0.0.1",
     audit = AuditStore(H / "audit" / "trail.jsonl")
     ledger = ApprovalLedger(audit_append=audit.append)
     from .central_agent import EventBus, IntentCompiler
-    from .workflow import WorkflowEngine
     from .fabric_wiring import default_fabric_config
+    from .workflow import WorkflowEngine
     cfg = default_fabric_config(audit, ledger)
     sessions = AgentSessionStore(H)
     ws, vs, rs = make_stores()
@@ -241,7 +241,7 @@ def _engine_config_for(bus):
     from .workflow import EngineConfig
 
     def now() -> str:
-        return _dt.datetime.now(_dt.timezone.utc).isoformat(
+        return _dt.datetime.now(_dt.UTC).isoformat(
             timespec="milliseconds").replace("+00:00", "Z")
 
     def forward(event: dict) -> None:

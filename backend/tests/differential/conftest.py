@@ -12,19 +12,12 @@ they never silently pass.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-# Worktree checkouts have no node_modules; borrow the main checkout's
-# TypeScript toolchain so the differential gate never silently skips.
-if not (REPO / "node_modules" / ".bin" / "esbuild").exists():
-    _main = Path("/mnt/storage/aura-hub")
-    if (_main / "node_modules" / ".bin" / "esbuild").exists():
-        REPO = _main
 TSREF = Path("/tmp/opencode/tsref")
 ESBUILD = REPO / "node_modules" / ".bin" / "esbuild"
 DRIVER = Path(__file__).parent / "ts_driver.mjs"

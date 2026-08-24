@@ -24,6 +24,8 @@ from .verification import VerificationEngine
 from .workflow_compiler import CompilationError, WorkflowCompiler
 
 __all__ = [
+    "MAX_TASKS",
+    "AgentSessionStore",
     "AuthorityChecker",
     "CapabilityDiscovery",
     "CentralAgent",
@@ -34,7 +36,6 @@ __all__ = [
     "IntentCompilationError",
     "IntentCompiler",
     "McpGateway",
-    "MAX_TASKS",
     "McpRegistrationError",
     "ModelPort",
     "PlanningError",

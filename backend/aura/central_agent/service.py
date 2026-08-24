@@ -8,7 +8,7 @@ to aura.policy, and every effect to aura.fabric.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..audit import AuditStore
@@ -17,7 +17,6 @@ from ..contracts import (
     AgentIntent,
     AgentResult,
     AgentSession,
-    ExecutionPlan,
 )
 from ..fabric import FabricConfig
 from ..fabric.manifest import all_capabilities
@@ -26,8 +25,8 @@ from ..persistence.workflows import WorkflowStore
 from .authority import AuthorityChecker
 from .context import ContextAssembler
 from .discovery import CapabilityDiscovery
-from .evidence import EvidenceCollector
 from .events import EventBus
+from .evidence import EvidenceCollector
 from .execution import ExecutionController, ExecutionOutcome
 from .intent import IntentCompiler
 from .planner import PlanningError, TaskPlanner
@@ -37,7 +36,7 @@ from .workflow_compiler import CompilationError, WorkflowCompiler
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _engine_config(bus) -> Any:
@@ -151,10 +150,10 @@ class CentralAgent:
         self._emit("session.started", session.sessionId, projectId=project_id)
 
         try:
-            result = self._run(session, user_message)  # noqa: E501 — path carried on the session
+            result = self._run(session, user_message)
         except (PlanningError, CompilationError) as exc:
             result = self._fail(session, f"The request could not be planned: {exc}")
-        except Exception as exc:  # noqa: BLE001 — a fault becomes an honest failure
+        except Exception as exc:
             result = self._fail(session, f"Unexpected failure: {exc}")
 
         self.sessions.finish(session, result)
@@ -216,12 +215,6 @@ class CentralAgent:
                        nodes=len(compiled_ref.nodes),
                        graphHash=compiled_ref.graphHash)
 
-        execution_plan = ExecutionPlan(
-            planId=plan.planId, sessionId=sid,
-            route="workflow-run" if compiled else "single-invocation",
-            singleInvocation=None, workflow=compiled_ref if compiled else None,
-            authority=requirements, blocked=False,
-        )
         self._emit("workflow.validated", sid, planId=plan.planId)
 
         # 6. execute — through the Fabric; nothing here decides authority
@@ -414,4 +407,4 @@ class CentralAgent:
         return cancelled
 
 
-__all__ = ["CentralAgent", "AgentIntent"]
+__all__ = ["AgentIntent", "CentralAgent"]
