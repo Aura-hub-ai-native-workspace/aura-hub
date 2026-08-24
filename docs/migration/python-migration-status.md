@@ -22,7 +22,7 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 | Persistence: WorkflowVersionStore | 3 | versions.ts | `aura.persistence.versions` | publish/ensure-reuse/restore-forward; literal key-order parity (note<graphHash<edges) | **GATE-PASSED** | — |
 | Persistence: AutomationStore + schedule-state | 3 | automation/src/store.ts | `aura.persistence.automation` | rule sanitize torture, runs+index rebuild, runStats, schedule-state file round-trip | **GATE-PASSED** | — |
 | Connected environment (catalog/probes) | 5 | connected-environment | NOT-STARTED | platform-verify mirror planned | NOT-STARTED | — |
-| Capability Fabric core (invoke pipeline) | 4 | fabric.ts | NOT-STARTED | planned | NOT-STARTED | depends P2 |
+| Capability Fabric core (invoke pipeline) | 4 | fabric.ts (878) | `aura.fabric` | 15-scenario differential incl. events/backoff/audit snapshots; runtime restart story on real files; manifest freshness guard | **GATE-PASSED** | routing (resolveNode) lands with P5 |
 | Executors registry | 5 | fabric/executors.ts | NOT-STARTED | executor matrix doc planned | NOT-STARTED | — |
 | Workflow engine/runs/versions/dry-run | 6 | workflow/* | NOT-STARTED | verify-workflow-automation is the live gate | NOT-STARTED | depends P4/P5 |
 | Automation engine + scheduler | 7 | automation/* | NOT-STARTED | cron golden cases planned | NOT-STARTED | croniter validation vs hand parser |
@@ -37,7 +37,8 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 
 ## Current phase summary
 
-**Phases 1–2 COMPLETE · Phase 3 GATE PASSED (byte-level store parity).**
+**Phases 1–3 COMPLETE · Phase 4 GATE PASSED (governed invoke parity).**
+Suite: `cd backend && python3 -m pytest tests -q` → 63 passed.
 Suite: `cd backend && python3 -m pytest tests -q` → 57 passed (differential
 suites auto-borrow the main checkout's esbuild when running from a worktree).
 Highlights: 6/6 frozen vectors; ~630 TS-vs-Python differential cases with
