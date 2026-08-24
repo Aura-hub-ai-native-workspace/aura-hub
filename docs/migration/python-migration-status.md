@@ -21,7 +21,9 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 | Persistence: WorkflowRunStore (+index/recovery) | 3 | workflow/run/store.ts | `aura.persistence.runs` | checkpoint bytes, supersede/resume chain, reconcile strings, corrupt-index silent rebuild, prune@200 terminal-only | **GATE-PASSED** | — |
 | Persistence: WorkflowVersionStore | 3 | versions.ts | `aura.persistence.versions` | publish/ensure-reuse/restore-forward; literal key-order parity (note<graphHash<edges) | **GATE-PASSED** | — |
 | Persistence: AutomationStore + schedule-state | 3 | automation/src/store.ts | `aura.persistence.automation` | rule sanitize torture, runs+index rebuild, runStats, schedule-state file round-trip | **GATE-PASSED** | — |
-| Connected environment (catalog/probes) | 5 | connected-environment | NOT-STARTED | platform-verify mirror planned | NOT-STARTED | — |
+| Routing: resolveNodeFor | 5 | ai-service/fabric/index.ts:74-136 | `aura.fabric.routing` | 6 routing scenarios (unknown/lacks/unsupported×2/no-provider/auto-pick) byte-equal | **GATE-PASSED** | live probing deferred to platform phase |
+| Scopes: per-run grants | 5 | fabric/scopes.ts | `aura.fabric.scopes` | narrowing units via policy differential | **GATE-PASSED** | — |
+| Executors (fs/terminal/git/http/agent-refusals) | 5 | fabric/executors.ts subset | `aura.executors` | real-effect scenarios: fs triangle+traversal, terminal matrix+timeout124, git commit/branch/diff cycle, governed write spend | **GATE-PASSED** | system.install InstallSpec flow + mission/knowledge internals deferred (stay `unsupported`, truthfully) |
 | Capability Fabric core (invoke pipeline) | 4 | fabric.ts (878) | `aura.fabric` | 15-scenario differential incl. events/backoff/audit snapshots; runtime restart story on real files; manifest freshness guard | **GATE-PASSED** | routing (resolveNode) lands with P5 |
 | Executors registry | 5 | fabric/executors.ts | NOT-STARTED | executor matrix doc planned | NOT-STARTED | — |
 | Workflow engine/runs/versions/dry-run | 6 | workflow/* | NOT-STARTED | verify-workflow-automation is the live gate | NOT-STARTED | depends P4/P5 |
@@ -37,8 +39,8 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 
 ## Current phase summary
 
-**Phases 1–3 COMPLETE · Phase 4 GATE PASSED (governed invoke parity).**
-Suite: `cd backend && python3 -m pytest tests -q` → 63 passed.
+**Phases 1–4 COMPLETE · Phase 5 GATE PASSED (execution boundary parity).**
+Suite: `cd backend && python3 -m pytest tests -q` → 66 passed.
 Suite: `cd backend && python3 -m pytest tests -q` → 57 passed (differential
 suites auto-borrow the main checkout's esbuild when running from a worktree).
 Highlights: 6/6 frozen vectors; ~630 TS-vs-Python differential cases with

@@ -62,6 +62,21 @@ Notable TS-parity detail locked here: `output: undefined` DROPS the key from
 results/events (JSON.stringify semantics); Python omits it too instead of
 emitting `null`.
 
+| 2026-08-24 | phase 5 | createFabric(deps) wiring: resolveNodeFor over injected presentNodes + REAL executor effects in disposable git repos (results/events/audit + on-disk side effects) | 11 scenarios | **0 divergences** after two truth-corrections (below) |
+
+## Phase-5 findings
+
+1. **Router presence changes the availability source**: with `resolveNode`
+   configured, `nodeAvailable` derives from the RESOLUTION (`fabric.ts:541`),
+   never from the provided-capability set. The Python invoke path initially
+   consulted the host method unconditionally — the harness caught it.
+2. **Fingerprints are cwd-bound by design**: sibling project directories can
+   never produce equal approval fingerprints, so the store-harness trick of
+   parallel homes is invalid here; Phase 5 uses ONE shared project directory,
+   wiped to a virgin git state between the TS run and the Python run.
+3. Node fs error text is user-visible surface: Python now raises Node-format
+   ENOENT/ENOTDIR/EISDIR strings inside executor details.
+
 ## Phase-3 findings caught by the store harness
 
 1. **Evaluation-order of clock draws matters**: TS evaluates

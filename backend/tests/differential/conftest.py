@@ -30,6 +30,43 @@ ESBUILD = REPO / "node_modules" / ".bin" / "esbuild"
 DRIVER = Path(__file__).parent / "ts_driver.mjs"
 
 
+STUB_ENV = """export async function probeNode() { throw new Error('probe unavailable in differential harness'); }
+export default { probeNode };
+"""
+
+BUILD_WIRING_JS = """
+import { build } from '<ESBUILD_LIB>';
+import { writeFileSync } from 'node:fs';
+const envStub = { name:'env-stub', setup(b){ b.onResolve({filter:/src\/environment$/}, () => ({path:'<TSREF>/stub-env.mjs'})); } };
+await build({entryPoints:['<REPO>/packages/ai-service/src/fabric/index.ts'],bundle:true,platform:'node',format:'esm',
+  plugins:[envStub], alias:{'@aura/connected-environment':'<TSREF>/connidx.mjs'}, external:['typescript'],
+  outfile:'<TSREF>/fabricwiring.mjs', logLevel:'silent'});
+"""
+
+
+def _write_stub_env() -> None:
+    TSREF.mkdir(parents=True, exist_ok=True)
+    (TSREF / "stub-env.mjs").write_text(STUB_ENV, encoding="utf-8")
+    # connected-environment index bundle (once)
+    if not (TSREF / "connidx.mjs").exists():
+        subprocess.run([
+            str(ESBUILD),
+            str(REPO / "packages/connected-environment/src/index.ts"),
+            "--bundle", "--format=esm", "--platform=node", "--external:typescript",
+            f"--outfile={TSREF / 'connidx.mjs'}",
+        ], cwd=REPO, check=True, capture_output=True)
+
+
+def _build_fabric_wiring(repo: Path, esbuild: Path, tsref: Path) -> None:
+    js = (BUILD_WIRING_JS
+          .replace("<ESBUILD_LIB>", str(repo / "node_modules" / "esbuild" / "lib" / "main.js"))
+          .replace("<TSREF>", str(tsref))
+          .replace("<REPO>", str(repo)))
+    script = tsref / "build-wiring.mjs"
+    script.write_text(js, encoding="utf-8")
+    subprocess.run(["node", str(script)], cwd=repo, check=True, capture_output=True)
+
+
 def _build_bundle(entry: Path, out: Path, extra: list[str]) -> None:
     TSREF.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -80,12 +117,14 @@ def tsref() -> dict[str, Path]:
             REPO / "packages/ai-service/src/workflow/run/types.ts",
             TSREF / "runtypes.mjs", [],
         )
+        _write_stub_env()
+        _build_fabric_wiring(REPO, ESBUILD, TSREF)
     except subprocess.CalledProcessError as e:
         pytest.skip(f"failed to build TS reference bundles: {e.stderr[-400:]}")
     return {
         "fabric": fabric_out, "index": index_out, "versions": versions_out,
         "wfstore": TSREF / "wfstore.mjs", "runstore": TSREF / "runstore.mjs",
-        "autostore": TSREF / "autostore.mjs", "runtypes": TSREF / "runtypes.mjs",
+        "autostore": TSREF / "autostore.mjs", "fabricwiring": TSREF / "fabricwiring.mjs", "runtypes": TSREF / "runtypes.mjs",
     }
 
 

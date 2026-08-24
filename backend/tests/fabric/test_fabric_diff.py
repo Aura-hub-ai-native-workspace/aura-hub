@@ -208,8 +208,8 @@ def _build_all() -> list[tuple[str, dict, list[dict]]]:
     out.append(("verify-throws",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
                  "executors": base_executors()},
-                [{"op": "invoke", "capabilityId": "browser.read",
-                  "input": {"url": "https://example.test"}, "context": PLAIN_CTX}]))
+                [{"op": "invoke", "capabilityId": "knowledge.graph",
+                  "input": {"projectId": "p"}, "context": PLAIN_CTX}]))
     out.append(("declared-check-no-impl",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
                  "executors": base_executors()},
@@ -218,8 +218,8 @@ def _build_all() -> list[tuple[str, dict, list[dict]]]:
     out.append(("unsupported-capability",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
                  "executors": base_executors()},
-                [{"op": "invoke", "capabilityId": "project.list",
-                  "input": {}, "context": PLAIN_CTX}]))
+                [{"op": "invoke", "capabilityId": "knowledge.graph",
+                  "input": {"projectId": "p"}, "context": PLAIN_CTX}]))
     out.append(("override-deny",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
                  "policyRaw": {"overrides": {"filesystem.read": "deny"}},

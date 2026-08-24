@@ -24,7 +24,7 @@ process.stdin.on('end', async () => {
   const req = JSON.parse(payload);
 
   if (req.func === 'fabricops') {
-    const out = await runFabricOps(req);
+    const out = req.config?.wiring ? await runFabricOpsWired(req) : await runFabricOps(req);
     process.stdout.write(JSON.stringify(out));
     return;
   }
@@ -288,4 +288,70 @@ async function runFabricOps(req) {
   }
 
   return { results, events, slept };
+}
+
+// ── wiring mode: createFabric(deps) with REAL routing + file stores ─────────
+async function runFabricOpsWired(req) {
+  const startMs = req.startMs;
+  let tick = startMs;
+  const nextTick = () => (tick += 1);
+  class FakeDate extends Date {
+    constructor(...a) { super(...(a.length ? a : [nextTick()])); }
+    static now() { return nextTick(); }
+  }
+  globalThis.Date = FakeDate;
+  process.env.AURA_HOME = req.home;
+
+  const wiring = await import(process.env.TSREF_FABRICWIRING);
+  const apiIndex = await import(process.env.TSREF_FABRIC_INDEX);
+
+  const stubManager = {
+    listProjects: () => [], createProject: () => { throw new Error('not in differential'); },
+    open: () => { throw new Error('not in differential'); }, currentProject: () => null,
+    profile: () => null, getMission: () => null, approveMission: () => null,
+    knowledgeGraph: () => null, listEngineeringMemory: () => [],
+    workflows: { get: () => null },
+    startWorkflowRun: async () => { throw new Error('not in differential'); },
+    workflowRuns: { find: () => null },
+  };
+
+  const cfg = req.config;
+  const events = [];
+  const fabric = wiring.createFabric({
+    manager: stubManager,
+    providedNodeCapabilities: () => new Set(cfg.providedNodeCapabilities ?? []),
+    presentNodes: () => cfg.presentNodes ?? [],
+  });
+  fabric.on((e) => events.push(e));
+  if (cfg.policyRaw !== undefined) fabric.setPolicy(apiIndex.sanitizePolicy(cfg.policyRaw));
+
+  const results = [];
+  const resolve = (v) => {
+    if (typeof v === 'string') {
+      const m = /^\$r(\d+)(?:\.(.*))?$/.exec(v);
+      if (m) { let c2 = results[Number(m[1])]; if (m[2]) for (const p of m[2].split('.')) c2 = c2?.[/^\d+$/.test(p) ? Number(p) : p]; return c2; }
+      return v;
+    }
+    if (Array.isArray(v)) return v.map(resolve);
+    if (v && typeof v === 'object') { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = resolve(x); return o; }
+    return v;
+  };
+  for (const op of req.ops) {
+    try {
+      switch (op.op) {
+        case 'invoke': results.push(await fabric.invoke(resolve(op.capabilityId), resolve(op.input ?? {}), resolve(op.context ?? {}))); break;
+        case 'evaluate': results.push(fabric.evaluate(resolve(op.capabilityId), resolve(op.context ?? {}))); break;
+        case 'decide':
+          results.push(fabric.decideApproval(resolve(op.id), op.granted, op.by ?? 'user', op.reason));
+          break;
+        case 'consume':
+          results.push(fabric.consumeApproval(resolve(op.id)));
+          break;
+        case 'pending': results.push(JSON.parse(JSON.stringify(fabric.pendingApprovals()))); break;
+        case 'audit': results.push(JSON.parse(JSON.stringify(fabric.audit()))); break;
+        default: throw new Error(`op ${op.op}`);
+      }
+    } catch (e) { results.push({ __error__: String(e && e.message || e) }); }
+  }
+  return { results, events, slept: [] };
 }
