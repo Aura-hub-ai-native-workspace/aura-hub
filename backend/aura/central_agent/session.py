@@ -10,7 +10,7 @@ tool output beyond what the Fabric already redacted.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import aura_home
@@ -19,14 +19,13 @@ from ..jsonutil import read_json_file, write_json_atomic
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class AgentSessionStore:
     def __init__(self, home: Path | None = None, tail_limit: int = 50) -> None:
         self._home = home
         self._tail_limit = tail_limit
-        self._last_id: str | None = None
 
     def _dir(self) -> Path:
         return (self._home or aura_home()) / "agent" / "sessions"
@@ -40,13 +39,7 @@ class AgentSessionStore:
             updatedAt=ts,
         )
 
-    @property
-    def last_session_id(self) -> str | None:
-        """Most recently saved session — convenience for request/response APIs."""
-        return self._last_id
-
     def save(self, session: AgentSession) -> Path:
-        self._last_id = session.sessionId
         path = self._dir() / f"{session.sessionId}.json"
         # Full dump (not wire()'s exclude_unset): agent sessions are mutated
         # in place, so defaulted fields legitimately change after construction.
