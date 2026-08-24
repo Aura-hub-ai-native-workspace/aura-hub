@@ -13,10 +13,11 @@ import json
 import random
 
 import pytest
-from _tsrun import run_ts_batch
-from conftest import tsref  # noqa: F401  (session fixture)
 
 from aura.canonical import fingerprint_invocation, graph_hash
+
+from _tsrun import run_ts_batch
+from conftest import tsref  # noqa: F401  (session fixture)
 
 SEED = 141_101
 N_FINGERPRINT = 200

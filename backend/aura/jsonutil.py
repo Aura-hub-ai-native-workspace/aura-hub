@@ -18,20 +18,14 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
-    "append_jsonl",
     "dumps_compact",
     "dumps_pretty",
     "loads_tolerant",
+    "write_json_atomic",
     "read_json_file",
+    "append_jsonl",
     "read_jsonl",
-    "write_json_file",
 ]
-
-
-# TS-parity name for the atomic writer (persist.ts calls it writeJsonFile).
-def write_json_file(file: str | Path, value: Any) -> None:
-    """Alias of write_json_atomic — matches persist.ts naming."""
-    write_json_atomic(file, value)
 
 
 def dumps_compact(value: Any) -> str:

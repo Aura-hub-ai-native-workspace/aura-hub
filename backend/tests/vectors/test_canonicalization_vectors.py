@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 
 import pytest
-from _paths import VECTORS_FILE
 
 from aura.canonical import fingerprint_invocation, graph_hash
+
+from _paths import VECTORS_FILE
 
 
 @pytest.fixture(scope="module")

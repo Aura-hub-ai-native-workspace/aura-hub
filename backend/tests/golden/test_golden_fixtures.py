@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from _paths import GOLDEN_DIR, SCHEMA_DIR
 from jsonschema import Draft202012Validator
 
 from aura.contracts import (
@@ -29,6 +28,8 @@ from aura.contracts import (
     WorkflowVersion,
 )
 from aura.jsonutil import dumps_compact, dumps_pretty, read_jsonl
+
+from _paths import GOLDEN_DIR, SCHEMA_DIR
 
 
 def _pairs():
