@@ -20,20 +20,7 @@
  */
 
 const ENV = import.meta.env as unknown as Record<string, string | undefined>;
-/**
- * Base URL resolution:
- *   • explicit VITE_AGENT_URL always wins;
- *   • under the Vite dev server we use the same-origin proxy ('/agent-api'):
- *     the FINAL Python backend's CORS middleware declares wildcard PORTS as
- *     literal strings ("http://localhost:*"), which Starlette does not glob —
- *     verified 2026-08-26: OPTIONS from http://localhost:1420 → 400
- *     "Disallowed CORS origin". Backend fix required: allow_origin_regex.
- *   • packaged/Tauri builds talk to the loopback service directly and stay
- *     BLOCKED until that regex-based origin matching lands.
- */
-const BASE =
-  ENV.VITE_AGENT_URL?.replace(/\/$/, '') ??
-  (import.meta.env.DEV ? '/agent-api' : 'http://127.0.0.1:4320');
+const BASE = ENV.VITE_AGENT_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:4320';
 
 async function jget<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
@@ -127,6 +114,8 @@ export interface AgentSession {
   activePlanId?: string | null;
   lastResult?: AgentResult | null;
   eventCount: number;
+  /** Present while the agent is waiting on a clarifying answer. */
+  pendingQuestion?: string | null;
 }
 
 export interface PlanReviewStep {
@@ -185,26 +174,13 @@ export const centralAgentClient = {
     }),
 
   /** Continue a conversation — answer a clarification or add follow-up. */
-  message: (
-    sessionId: string,
-    message: string,
-    opts: { projectPath?: string; projectId?: string } = {},
-  ) =>
+  message: (sessionId: string, message: string, projectPath?: string) =>
     jpost<{ result: AgentResult }>(`/agent/sessions/${encodeURIComponent(sessionId)}/message`, {
       message,
-      projectPath: opts.projectPath,
-      projectId: opts.projectId,
+      projectPath,
     }),
 
   getSession: (sessionId: string) => jget<AgentSession>(`/agent/sessions/${encodeURIComponent(sessionId)}`),
-
-  /**
-   * Pending approvals from the AGENT's own ledger. NOTE: during the
-   * migration there are TWO ledgers — this one (:4320) parks agent
-   * requests; `aiClient`/useFabric read the workflow service's (:4319).
-   * An agent-parked id must be resolved HERE, never through useFabric.
-   */
-  pendingApprovals: () => jget<{ approvals: Array<{ id: string; state: string; summary: string; items: Array<{ capabilityId: string; title: string; detail: string; risk: string; irreversible: boolean }> }> }>('/fabric/approvals'),
 
   /**
    * Record THIS human decision through the same single-use ledger the
@@ -226,116 +202,55 @@ export const centralAgentClient = {
   /** Reasoning-free plan review: steps, capabilities, risks, approvals. */
   planReview: (sessionId: string) => jget<PlanReview>(`/agent/sessions/${encodeURIComponent(sessionId)}/plan`),
 
-  /**
-   * The EvidenceBundle of the session's last result. The route returns the
-   * bundle flat when one exists and `{"evidence": null}` when it does not;
-   * both are normalized to `AgentEvidenceBundle | null` here.
-   */
-  evidence: async (sessionId: string) => {
-    const body = await jget<AgentEvidenceBundle | { evidence: AgentEvidenceBundle | null }>(
-      `/agent/sessions/${encodeURIComponent(sessionId)}/evidence`,
-    );
-    if (body && typeof body === 'object' && 'evidence' in body) return body.evidence;
-    return body as AgentEvidenceBundle;
-  },
+  evidence: (sessionId: string) => jget<AgentEvidenceBundle>(`/agent/sessions/${encodeURIComponent(sessionId)}/evidence`),
 
   /**
    * Subscribe to the session's live events. Returns a closer. Frames are
    * observability only — durable evidence stays authoritative, so a lost
    * stream never falsifies a result.
    */
-  /**
-   * Subscribe to the session's live event stream with automatic reconnection.
-   *
-   * Reconnect policy (all client-side; the backend keeps no cursor):
-   *   • exponential backoff 250ms → 8s cap, reset on a successful frame;
-   *   • every received frame is deduplicated by its `at` timestamp + type
-   *     pair so a replayed tail after reconnect never double-renders;
-   *   • each reconnect emits an honest `stream.reconnecting` frame — the UI
-   *     must be able to say "live updates paused" rather than silently
-   *     stalling;
-   *   • the durable result always comes from submit/approve response bodies,
-   *     so a permanently lost stream can never fabricate or erase a result.
-   */
-  events: (
-    sessionId: string,
-    onEvent: (frame: AgentEventFrame) => void,
-  ): (() => void) => {
+  events: (sessionId: string, onEvent: (frame: AgentEventFrame) => void): (() => void) => {
     const controller = new AbortController();
-    const seen = new Set<string>();
-    let attempt = 0;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const emitDeduped = (frame: AgentEventFrame) => {
-      const key = `${frame.type}@${frame.at}`;
-      if (seen.has(key)) return; // dedupe replayed tails after reconnect
-      seen.add(key);
-      onEvent(frame);
-    };
-
-    const onFrame = (frame: AgentEventFrame) => {
-      attempt = 0; // a delivered frame proves connectivity — reset backoff
-      emitDeduped(frame);
-    };
-
-    const connectLoop = async () => {
-      while (!stopped && !controller.signal.aborted) {
-        try {
-          const res = await fetch(
-            `${BASE}/agent/sessions/${encodeURIComponent(sessionId)}/events`,
-            { signal: controller.signal },
-          );
-          if (!res.ok || !res.body) throw new Error(`stream status ${res.status}`);
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            let idx: number;
-            while ((idx = buffer.indexOf('\n\n')) !== -1) {
-              const frameText = buffer.slice(0, idx);
-              buffer = buffer.slice(idx + 2);
-              for (const line of frameText.split('\n')) {
-                if (!line.startsWith('data:')) continue;
-                try {
-                  onFrame(JSON.parse(line.slice(5).trim()) as AgentEventFrame);
-                } catch { /* malformed frame skipped, not fatal */ }
-              }
+    void (async () => {
+      try {
+        const res = await fetch(
+          `${BASE}/agent/sessions/${encodeURIComponent(sessionId)}/events`,
+          { signal: controller.signal },
+        );
+        if (!res.ok || !res.body) return;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx: number;
+          // SSE frames are `data: <json>\n\n`; keep any partial tail.
+          while ((idx = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            for (const line of frame.split('\n')) {
+              if (!line.startsWith('data:')) continue;
+              try {
+                onEvent(JSON.parse(line.slice(5).trim()) as AgentEventFrame);
+              } catch { /* a malformed frame is skipped, not fatal */ }
             }
           }
-          // Server closed the stream cleanly — treat as disconnect and retry.
-        } catch (err) {
-          if (stopped || controller.signal.aborted) return;
-          const aborted = err instanceof DOMException && err.name === 'AbortError';
-          if (aborted) return;
-          const msg = err instanceof Error ? err.message : String(err);
-          emitDeduped({
-            type: 'stream.reconnecting',
+        }
+      } catch (err) {
+        if (!(err instanceof DOMException && err.name === 'AbortError')) {
+          // Stream loss is reported as an event, not swallowed: the UI must
+          // be able to say "live updates stopped" honestly.
+          onEvent({
+            type: 'stream.lost',
             at: new Date().toISOString(),
             sessionId,
-            payload: { attempt: attempt + 1, message: msg },
+            payload: { message: String(err) },
           });
         }
-        if (stopped || controller.signal.aborted) return;
-        // Capped exponential backoff between attempts.
-        const delay = Math.min(250 * 2 ** attempt, 8000);
-        attempt += 1;
-        await new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, delay);
-        });
       }
-    };
-
-    void connectLoop();
-
-    return () => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-      controller.abort();
-    };
+    })();
+    return () => controller.abort();
   },
-
 };
