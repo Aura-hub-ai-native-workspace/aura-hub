@@ -28,7 +28,7 @@ AgentSessionState = Literal[
 ]
 TaskState = Literal[
     "pending", "blocked", "ready", "awaiting-approval", "running", "done",
-    "failed", "skipped", "denied", "timed-out", "cancelled",
+    "failed", "skipped",
 ]
 ExecutionRoute = Literal["single-invocation", "workflow-run", "external-tool"]
 VerificationKind = Literal["read-back", "exit-code", "schema-match", "audit-only"]
@@ -48,20 +48,8 @@ AgentEventType = Literal[
 # ── intent ───────────────────────────────────────────────────────────────────
 
 
-class IntentEntity(ContractModel):
-    """One named thing in the request. Model-provided, registry-gated later:
-    entities never carry authority and never name capabilities directly."""
-
-    type: Literal["project", "file", "path", "workflow", "capability",
-                  "tool", "text", "other"]
-    value: str
-    role: str | None = None
-
-
 class AgentIntent(ContractModel):
-    """Structured interpretation of one user request. Compilation NEVER
-    executes. confidence/ambiguity are MODEL CLAIMS — advisory only; the
-    deterministic clarification policy below decides what actually blocks."""
+    """Structured interpretation of one user request. Compilation NEVER executes."""
 
     goal: str = Field(min_length=1)
     surface: str = "general"
@@ -74,11 +62,6 @@ class AgentIntent(ContractModel):
     approvalLikely: bool = False
     needsClarification: bool = False
     clarificationQuestion: str | None = None
-    """Milestone-3 structured fields:"""
-    entities: list[IntentEntity] = Field(default_factory=list)
-    ambiguity: Literal["clear", "ambiguous", "impossible"] = "clear"
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    requestedOutcome: str | None = None
 
 
 # ── planning ─────────────────────────────────────────────────────────────────
@@ -161,10 +144,6 @@ class AuthorityRequirement(ContractModel):
     risk: RiskLevel
     available: bool = True
     approvalRequired: bool = False
-    """Scope narrowing is policy-owned; effectiveScope can only be NARROWER
-    than requestedScope — never equal-wider, never widened by the agent."""
-    requestedScope: str | None = None
-    effectiveScope: str | None = None
 
 
 # ── compilation + execution artifacts ────────────────────────────────────────
@@ -237,21 +216,13 @@ class EvidenceBundle(ContractModel):
 
 
 class AgentResult(ContractModel):
-    """outcome is an HONEST terminal vocabulary: denied and timeout are
-    never collapsed into failed (mission §15)."""
-
     status: AgentSessionState
-    outcome: Literal[
-        "completed", "failed", "blocked", "awaiting-approval",
-        "cancelled", "denied", "timeout", "needs-clarification", "unsupported",
-    ]
+    outcome: Literal["completed", "failed", "blocked", "awaiting-approval", "cancelled"]
     summary: str
     performed: list[str] = Field(default_factory=list)
     verified: list[str] = Field(default_factory=list)
     evidence: EvidenceBundle | None = None
     failureReason: str | None = None
-    """Parked/resumed engine run this result refers to."""
-    runId: str | None = None
 
 
 class AgentMessage(ContractModel):
