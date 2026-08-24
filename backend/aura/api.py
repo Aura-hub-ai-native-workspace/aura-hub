@@ -142,8 +142,10 @@ class AgentApiServer:
                 if not message:
                     raise AuraError("message is required")
                 project_id = body.get("projectId") or None
+                project_path = body.get("projectPath") or None
                 with d.lock:
-                    result = d.agent.submit(message, project_id=project_id)
+                    result = d.agent.submit(message, project_id=project_id,
+                                            project_path=project_path)
                 return {"result": result.model_dump(),
                         "sessionId": d.sessions.last_session_id}
 
