@@ -17,25 +17,22 @@ from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
-from ..approvals import ApprovalLedger, approval_key, usable_pending
 from ..audit import AuditStore
+from ..approvals import ApprovalLedger, approval_key, usable_pending
 from ..canonical import fingerprint_invocation
 from ..jsonutil import dumps_compact
 from ..policy.engine import (
     CapabilityDescriptor as PolicyCapability,
-)
-from ..policy.engine import (
     PolicyInput,
     PolicySubject,
     evaluate_policy,
     grants_for,
     sanitize_policy,
 )
-from .manifest import describe_capability
+from .manifest import BUILTIN_MANIFEST, CapabilityDescriptor
 
 NO_VERIFICATION: dict[str, Any] = {
     "passed": None,
@@ -62,51 +59,50 @@ def _invocation_id() -> str:
     return f"inv-{uuid.uuid4().hex[:12]}"
 
 
-def summarize_input(capability: dict, input: dict[str, Any]) -> str:
+def summarize_input(capability: CapabilityDescriptor, input: dict[str, Any]) -> str:
     """Bounded, redacted summary for the audit record (fabric.ts:147-161)."""
     parts: list[str] = []
-    for f in (capability.get("input") or []):
-        raw = input.get(f.get("name"))
+    for f in capability.input:
+        raw = input.get(f.name)
         if raw is None:
             continue
-        if f.get("name", "").lower().replace("_", "") in _SECRET:
-            parts.append(f"{f.get('name')}=<redacted>")
+        if f.name.lower().replace("_", "") in _SECRET:
+            parts.append(f"{f.name}=<redacted>")
             continue
         text = raw if isinstance(raw, str) else dumps_compact(raw)
-        parts.append(f"{f.get('name')}={text[:57]}…" if len(text) > 60 else f"{f.get('name')}={text}")
+        parts.append(f"{f.name}={text[:57]}…" if len(text) > 60 else f"{f.name}={text}")
     return " ".join(parts) or "(no arguments)"
 
 
-def describe_target(capability: dict, input: dict[str, Any]) -> str | None:
+def describe_target(capability: CapabilityDescriptor, input: dict[str, Any]) -> str | None:
     for key in ("path", "url", "command", "name", "branch", "message", "projectId"):
         value = input.get(key)
         if isinstance(value, str) and value.strip():
             return value[:77] + "…" if len(value) > 80 else value
-    return "AURA Hub" if capability.get("surface") == "aura-internal" else None
+    return "AURA Hub" if capability.surface == "aura-internal" else None
 
 
-def validate_input(capability: dict, input: dict[str, Any]) -> str | None:
+def validate_input(capability: CapabilityDescriptor, input: dict[str, Any]) -> str | None:
     """Reject arguments violating the declared contract (fabric.ts:179-192)."""
-    for f in (capability.get("input") or []):
-        name = f.get("name", "")
-        value = input.get(name)
+    for f in capability.input:
+        value = input.get(f.name)
         if value is None or value == "":
-            if f.get("required"):
-                return f"{name} is required."
+            if f.required:
+                return f"{f.name} is required."
             continue
         actual = "array" if isinstance(value, list) else type(value).__name__
-        if f.get("type") == "number":
+        if f.type == "number":
             ok = isinstance(value, (int, float)) and not isinstance(value, bool)
-        elif f.get("type") == "boolean":
+        elif f.type == "boolean":
             ok = isinstance(value, bool)
-        elif f.get("type") == "array":
+        elif f.type == "array":
             ok = isinstance(value, list)
-        elif f.get("type") == "object":
+        elif f.type == "object":
             ok = isinstance(value, dict)
         else:
             ok = isinstance(value, str)
         if not ok:
-            return f"{name} should be a {f.get('type')}, got {actual}."
+            return f"{f.name} should be a {f.type}, got {actual}."
     return None
 
 
@@ -134,7 +130,7 @@ def _settle(
     invocation_id: str,
     capability_id: str,
     context: dict[str, Any],
-    capability: PolicyCapability | None,
+    capability: CapabilityDescriptor | None,
     outcome: str,
     detail: str,
     verification: dict[str, Any] | None,
@@ -165,9 +161,6 @@ def _settle(
         "inputSummary": policy.pop("_input_summary", "(no arguments)"),
         **({"taskId": context["taskId"]} if context.get("taskId") else {}),
         **({"workflowId": context["workflowId"]} if context.get("workflowId") else {}),
-        **({"runId": context["runId"]} if context.get("runId") else {}),
-        **({"workflowNodeId": context["workflowNodeId"]}
-           if context.get("workflowNodeId") else {}),
         **({"approvalId": approval_id} if approval_id else {}),
     }
     try:
@@ -201,7 +194,7 @@ def invoke_fabric(
     started_at = cfg.now()
     invocation_id = _invocation_id()
 
-    capability = describe_capability(capability_id)
+    capability = next((c for c in BUILTIN_MANIFEST if c.id == capability_id), None)
     if capability is None:
         return _settle(
             cfg, invocation_id, capability_id, context, None, "failed",
@@ -345,7 +338,7 @@ def invoke_fabric(
                   "invocationId": invocation_id, "capabilityId": capability_id})
     try:
         output, run_detail = executor.run(input, context)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — executor faults become failed settlements
         return _settle(cfg, invocation_id, capability_id, context, capability, "failed",
                        f"{capability.name} failed: {exc}", None, evaluation,
                        started, started_at)
@@ -355,7 +348,7 @@ def invoke_fabric(
     if capability.verify:
         try:
             verification = executor.verify(input, context, output) or NO_VERIFICATION
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             verification = {"passed": False, "kind": capability.verify,
                             "detail": f"Verification errored: {exc}"}
         if not verification.get("passed"):
@@ -381,7 +374,7 @@ def describe_authority(
     Read-only preflight for planners: returns None for an unknown capability
     so 'no such capability' stays distinguishable from 'denied'.
     """
-    capability = describe_capability(capability_id)
+    capability = next((c for c in BUILTIN_MANIFEST if c.id == capability_id), None)
     if capability is None:
         return None
     node_available: bool | None = True if capability.requiresNodeCapability is None else None
@@ -404,9 +397,9 @@ def describe_authority(
 
 
 __all__ = [
-    "NO_VERIFICATION",
     "Executor",
     "FabricConfig",
+    "NO_VERIFICATION",
     "describe_authority",
     "describe_target",
     "invoke_fabric",
