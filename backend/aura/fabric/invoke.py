@@ -32,7 +32,7 @@ from ..policy.engine import (
     grants_for,
     sanitize_policy,
 )
-from .manifest import BUILTIN_MANIFEST, CapabilityDescriptor
+from .manifest import CapabilityDescriptor, describe_capability
 
 NO_VERIFICATION: dict[str, Any] = {
     "passed": None,
@@ -161,6 +161,9 @@ def _settle(
         "inputSummary": policy.pop("_input_summary", "(no arguments)"),
         **({"taskId": context["taskId"]} if context.get("taskId") else {}),
         **({"workflowId": context["workflowId"]} if context.get("workflowId") else {}),
+        **({"runId": context["runId"]} if context.get("runId") else {}),
+        **({"workflowNodeId": context["workflowNodeId"]}
+           if context.get("workflowNodeId") else {}),
         **({"approvalId": approval_id} if approval_id else {}),
     }
     try:
@@ -194,7 +197,7 @@ def invoke_fabric(
     started_at = cfg.now()
     invocation_id = _invocation_id()
 
-    capability = next((c for c in BUILTIN_MANIFEST if c.id == capability_id), None)
+    capability = describe_capability(capability_id)
     if capability is None:
         return _settle(
             cfg, invocation_id, capability_id, context, None, "failed",
@@ -374,7 +377,7 @@ def describe_authority(
     Read-only preflight for planners: returns None for an unknown capability
     so 'no such capability' stays distinguishable from 'denied'.
     """
-    capability = next((c for c in BUILTIN_MANIFEST if c.id == capability_id), None)
+    capability = describe_capability(capability_id)
     if capability is None:
         return None
     node_available: bool | None = True if capability.requiresNodeCapability is None else None
