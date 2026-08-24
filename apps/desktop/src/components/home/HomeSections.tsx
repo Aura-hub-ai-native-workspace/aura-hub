@@ -28,6 +28,7 @@ import { aiClient, type WorkflowRunSummary } from '../../ai/aiClient';
 import { useAutomation } from '../../data/useAutomation';
 import type { AutomationRunSummary } from '../../ai/automationClient';
 import { useFabric } from '../../data/useFabric';
+import { useAgentLink } from '../../ai/agentLinkStore';
 
 const POLL_MS = 15_000;
 
@@ -82,13 +83,20 @@ export function ActiveSection() {
     .filter((r) => r.status === 'queued' || r.status === 'retrying');
   const fabricReachable = useFabric((s) => s.reachable);
   const approvals = useFabric((s) => s.approvals).filter((a) => a.state === 'pending');
+  // The agent itself can be waiting on the user — surfaced from the real
+  // outcome of this machine's most recent agent session.
+  const agentWaiting = useAgentLink((s) => s.lastOutcome === 'awaiting-approval');
+  const agentSessionId = useAgentLink((s) => s.lastSessionId);
 
   const counts = {
     workflows: running?.length ?? 0,
     automations: activeAutomations.length,
     approvals: approvals.length,
+    agent: agentWaiting ? 1 : 0,
   };
-  const isEmpty = counts.workflows === 0 && counts.automations === 0 && counts.approvals === 0;
+  const isEmpty =
+    counts.workflows === 0 && counts.automations === 0 &&
+    counts.approvals === 0 && counts.agent === 0;
 
   return (
     <PageBlock className="mb-5">
@@ -121,6 +129,23 @@ export function ActiveSection() {
           </div>
         ) : (
           <ul className="mt-4 divide-y divide-line border-t border-line" aria-label="Currently active work">
+            {agentWaiting && (
+              <li>
+                <button
+                  onClick={() => setNav('home')}
+                  className="flex w-full items-center gap-3 px-6 py-3 text-left transition-colors hover:bg-surface-hover focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                >
+                  <StatusChip state="awaiting-approval" label="Agent waiting" />
+                  <span className="min-w-0 flex-1 truncate text-[13px] text-text">
+                    A Central Agent request needs your decision
+                  </span>
+                  <span className="hidden text-[11.5px] text-text-subtle sm:block">
+                    session {agentSessionId?.slice(0, 12)}
+                  </span>
+                  <Icon name="chevron-right" size={15} className="text-text-subtle" />
+                </button>
+              </li>
+            )}
             {approvals.slice(0, 3).map((a) => (
               <li key={a.id}>
                 <button

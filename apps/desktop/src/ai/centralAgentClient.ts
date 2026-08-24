@@ -20,7 +20,17 @@
  */
 
 const ENV = import.meta.env as unknown as Record<string, string | undefined>;
-const BASE = ENV.VITE_AGENT_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:4320';
+/**
+ * Base URL resolution:
+ *   • explicit VITE_AGENT_URL always wins;
+ *   • under the Vite dev server we use the same-origin proxy ('/agent-api')
+ *     because the agent API cannot answer CORS preflights yet (Agent 2);
+ *   • packaged/Tauri builds talk to the loopback service directly and
+ *     REQUIRE that preflight support to land.
+ */
+const BASE =
+  ENV.VITE_AGENT_URL?.replace(/\/$/, '') ??
+  (import.meta.env.DEV ? '/agent-api' : 'http://127.0.0.1:4320');
 
 async function jget<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
@@ -181,6 +191,14 @@ export const centralAgentClient = {
     }),
 
   getSession: (sessionId: string) => jget<AgentSession>(`/agent/sessions/${encodeURIComponent(sessionId)}`),
+
+  /**
+   * Pending approvals from the AGENT's own ledger. NOTE: during the
+   * migration there are TWO ledgers — this one (:4320) parks agent
+   * requests; `aiClient`/useFabric read the workflow service's (:4319).
+   * An agent-parked id must be resolved HERE, never through useFabric.
+   */
+  pendingApprovals: () => jget<{ approvals: Array<{ id: string; state: string; summary: string; items: Array<{ capabilityId: string; title: string; detail: string; risk: string; irreversible: boolean }> }> }>('/fabric/approvals'),
 
   /**
    * Record THIS human decision through the same single-use ledger the
