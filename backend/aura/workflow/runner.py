@@ -94,6 +94,8 @@ class WorkflowRunner:
                                  "approvedCapabilities": approved_capabilities,
                                  "actor": actor}, emit)
 
+    workflows = None  # optional store seam; automation resolves ids via it
+
     def cancel_workflow_run(self, run_id: str) -> bool:
         ev = self.live_runs.get(run_id)
         if not ev:

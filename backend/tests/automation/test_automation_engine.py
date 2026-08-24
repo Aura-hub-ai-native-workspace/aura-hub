@@ -3,17 +3,16 @@ scheduler convergence + park-no-auto-approve, dry-run zero-effects, index."""
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import datetime
 
 import pytest
 
-from aura.automation import (
-    AutomationEngine,
-    AutomationScheduler,
-    evaluate_condition,
-    make_workflow_action,
-)
-from aura.persistence.automation import AutomationStore, load_schedule_state, save_schedule_state
+from aura.automation import (AutomationEngine, AutomationScheduler,
+                             evaluate_condition, make_workflow_action,
+                             next_after, parse_cron)
+from aura.persistence.automation import (AutomationStore,
+                                         load_schedule_state,
+                                         save_schedule_state)
 
 
 def _rule(rid="rule-1", *, enabled=True, trig="mission-completed", match=None,
@@ -40,8 +39,8 @@ def _ev(**payload):
 class Clock:
     def __init__(self): self.t = 0
     def iso(self):
-        from datetime import datetime
-        return datetime.fromtimestamp(self.t / 1000, tz=UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(self.t / 1000, tz=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     def ms(self): return self.t
 
 
