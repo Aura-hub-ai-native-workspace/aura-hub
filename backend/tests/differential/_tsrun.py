@@ -17,9 +17,10 @@ def run_ts_batch(tsref_paths: dict[str, Path], func: str, cases: list[dict]) -> 
         text=True,
         env={
             "TSREF_FABRIC": str(tsref_paths["fabric"]),
+            "TSREF_FABRIC_INDEX": str(tsref_paths["index"]),
             "TSREF_VERSIONS": str(tsref_paths["versions"]),
             "PATH": "/usr/bin:/bin:/usr/local/bin",
         },
         check=True,
     )
-    return json.loads(proc.stdout)["digests"]
+    return json.loads(proc.stdout)["results"]

@@ -40,7 +40,8 @@ Key properties:
 
 | Date | Commit | Functions | Cases | Result |
 | --- | --- | --- | --- | --- |
-| 2026-08-24 | phase 1 (this branch) | fingerprintInvocation, hashGraph | 320 | **0 divergences** |
+| 2026-08-24 | phase 1 | fingerprintInvocation, hashGraph | 320 | **0 divergences** (after punctuation-bucket fix below) |
+| 2026-08-24 | phase 2 | sanitizePolicy + evaluatePolicy (full evaluation objects incl. reasons) | 250 | **0 divergences** on first full run |
 
 ## Collation findings recorded by the harness (2026-08-24)
 
