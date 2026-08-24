@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aura:migration/automation-rule.schema.json",
+  "title": "AutomationRule (~/.aura/automation/rules/<ruleId>.json)",
+  "description": "Source: packages/automation/src/types.ts:128-162. Trigger/action/condition unions are envelope-frozen here; field-level freeze completes at the Phase 7 gate (README D2).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["id", "name", "description", "category", "enabled", "trigger", "conditions", "chain", "retry", "createdAt", "updatedAt"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^rule-" },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "category": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "trigger": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": [
+            "mission-completed", "mission-accepted", "diagnosis-completed",
+            "diagnosis-accepted", "file-changed", "readme-changed",
+            "dependency-changed", "pr-merged", "schedule"
+          ]
+        },
+        "match": { "type": "object", "description": "Coarse filter; all key/values must match event payload." },
+        "cron": { "type": "string", "description": "Five-field cron; required iff type==='schedule'; validated on save." },
+        "projectId": { "type": "string", "description": "Required for schedule rules — no ambient-project guessing." }
+      }
+    },
+    "conditions": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "chain": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "action", "label", "config"],
+        "properties": {
+          "id": { "type": "string" },
+          "action": { "type": "string" },
+          "label": { "type": "string" },
+          "config": { "type": "object" },
+          "continueOnError": { "type": "boolean" }
+        }
+      }
+    },
+    "retry": {
+      "type": "object",
+      "required": ["maxAttempts", "delayMs", "backoffFactor"],
+      "properties": {
+        "maxAttempts": { "type": "integer", "minimum": 1 },
+        "delayMs": { "type": "number" },
+        "backoffFactor": { "type": "number" }
+      }
+    },
+    "createdAt": { "type": "string" },
+    "updatedAt": { "type": "string" }
+  }
+}

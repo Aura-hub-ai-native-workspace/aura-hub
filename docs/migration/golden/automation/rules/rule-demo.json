@@ -1,0 +1,31 @@
+{
+  "id": "rule-mt6p764n-demo1",
+  "name": "Demo schedule",
+  "description": "Synthetic golden fixture.",
+  "category": "maintenance",
+  "enabled": true,
+  "trigger": {
+    "type": "schedule",
+    "cron": "0 9 * * 1-5",
+    "projectId": "p-demo"
+  },
+  "conditions": [],
+  "chain": [
+    {
+      "id": "a1",
+      "action": "run-workflow",
+      "label": "Run demo workflow",
+      "config": {
+        "workflowId": "wf-mt6p764n-yeej95"
+      },
+      "continueOnError": false
+    }
+  ],
+  "retry": {
+    "maxAttempts": 3,
+    "delayMs": 60000.0,
+    "backoffFactor": 2.0
+  },
+  "createdAt": "2026-08-24T08:00:00.000Z",
+  "updatedAt": "2026-08-24T08:00:00.000Z"
+}

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aura:migration/automation-run.schema.json",
+  "title": "AutomationRun (~/.aura/automation/runs/<runId>.json)",
+  "description": "Source: packages/automation/src/types.ts:178-300. TimelineType vocabulary frozen; deprecated workflowRunId/workflowRunState mirror `produced` and MUST keep being written while deprecated (shipped-UI compat).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["id", "ruleId", "event", "status", "timeline", "actions", "conditions", "startedAt"],
+  "properties": {
+    "id": { "type": "string" },
+    "ruleId": { "type": "string" },
+    "ruleName": { "type": "string" },
+    "event": {
+      "type": "object",
+      "required": ["type", "projectId", "projectPath", "at", "payload"],
+      "properties": {
+        "type": { "$ref": "#/$defs/triggerType" },
+        "projectId": { "type": "string" },
+        "projectPath": { "type": "string" },
+        "at": { "type": "string" },
+        "payload": { "type": "object" }
+      }
+    },
+    "status": { "enum": ["queued", "running", "paused", "retrying", "completed", "failed", "cancelled"] },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "at", "type", "message"],
+        "properties": {
+          "id": { "type": "string" },
+          "at": { "type": "string" },
+          "type": {
+            "enum": [
+              "queued", "started", "condition-check", "action-started",
+              "action-completed", "action-failed", "action-retried", "action-skipped",
+              "paused", "resumed", "cancelled", "completed", "failed", "log"
+            ]
+          },
+          "message": { "type": "string" },
+          "level": { "enum": ["info", "warn", "error"] },
+          "actionId": { "type": "string" }
+        }
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "description": "ActionRunState — action status vocabulary: pending running retrying completed failed skipped.",
+        "properties": {
+          "status": { "enum": ["pending", "running", "retrying", "completed", "failed", "skipped"] },
+          "produced": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+        }
+      }
+    },
+    "conditions": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "startedAt": { "type": "string" },
+    "finishedAt": { "type": "string" },
+    "ms": { "type": "number" },
+    "error": { "type": "string" },
+    "nextRunId": { "type": "string" },
+    "produced": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "workflowRunId": { "type": "string", "description": "@deprecated mirror of produced — still written." },
+    "workflowRunState": { "type": "string", "description": "@deprecated mirror of produced — still written." }
+  },
+  "$defs": {
+    "triggerType": {
+      "enum": [
+        "mission-completed", "mission-accepted", "diagnosis-completed",
+        "diagnosis-accepted", "file-changed", "readme-changed",
+        "dependency-changed", "pr-merged", "schedule"
+      ]
+    }
+  }
+}

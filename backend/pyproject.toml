@@ -1,0 +1,31 @@
+[project]
+name = "aura-backend"
+version = "0.1.0"
+description = "AURA Hub canonical Python backend (migration target)"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.13",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "jsonschema>=4.26",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["aura*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aura:migration/policy-config.schema.json",
+  "title": "PolicyConfig (~/.aura/fabric-policy.json)",
+  "description": "Source: packages/capability-fabric/src/types.ts:325-354; defaults policy.ts:32-44; sanitizePolicy policy.ts:76-112. Unknown decision strings fall back to defaults at load.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["byRisk", "overrides", "allowAutonomous"],
+  "properties": {
+    "byRisk": {
+      "type": "object",
+      "required": ["low", "medium", "high"],
+      "properties": {
+        "low":    { "$ref": "#/$defs/decision" },
+        "medium": { "$ref": "#/$defs/decision" },
+        "high":   { "$ref": "#/$defs/decision" }
+      }
+    },
+    "overrides": { "type": "object", "additionalProperties": { "$ref": "#/$defs/decision" } },
+    "nodeOverrides": {
+      "description": "Deny-only in effect; keys are '@<nodeId>' or '<capabilityId>@<nodeId>'.",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/decision" }
+    },
+    "nodeAllowlists": {
+      "description": "capabilityId -> permitted node ids; a resolved node outside the list is denied.",
+      "type": "object",
+      "additionalProperties": { "type": "array", "items": { "type": "string" } }
+    },
+    "allowAutonomous": { "type": "boolean" }
+  },
+  "$defs": {
+    "decision": { "enum": ["auto-execute", "ask-user", "require-approval", "deny"] }
+  }
+}

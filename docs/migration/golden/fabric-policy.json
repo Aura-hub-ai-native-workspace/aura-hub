@@ -1,0 +1,14 @@
+{
+  "byRisk": {
+    "low": "auto-execute",
+    "medium": "ask-user",
+    "high": "require-approval"
+  },
+  "overrides": {
+    "mission.approve": "ask-user",
+    "provider.connect": "require-approval"
+  },
+  "nodeOverrides": {},
+  "nodeAllowlists": {},
+  "allowAutonomous": true
+}
