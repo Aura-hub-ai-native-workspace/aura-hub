@@ -93,13 +93,16 @@ class CentralAgent:
             self.workflow_store = workflow_store
             self.run_store = run_store
             self.planner = TaskPlanner(
-                workflow_resolver=self._resolve_workflow_ref)
+                workflow_resolver=self._resolve_workflow_ref,
+                known_capabilities=lambda: {
+                    c.id for c in all_capabilities()})
         self.discovery = discovery or CapabilityDiscovery()
         self.authority = AuthorityChecker(fabric_cfg)
         self.compiler = compiler or WorkflowCompiler()
         self.controller = ExecutionController(
             fabric_cfg, engine=getattr(self, "engine", None))
         self.verifier = VerificationEngine()
+        self._active_plans: dict[str, Any] = {}
         audit_store: AuditStore | None = fabric_cfg.audit_store
         self.evidence = EvidenceCollector(lambda: (audit_store.load() if audit_store else []))
         ledger = fabric_cfg.ledger
@@ -145,6 +148,15 @@ class CentralAgent:
             session.projectId = project_id
         if project_path:
             session.projectPath = project_path  # extra field, persisted
+        # Clarification CONTINUATION: a pending question turns this message
+        # into the ANSWER to it — one combined request, same session, zero
+        # side effects having occurred in between.
+        pending = getattr(session, "pendingQuestion", None)
+        if pending:
+            originals = [m.content for m in session.messages if m.role == "user"]
+            original = originals[0] if originals else ""
+            user_message = f"{original}\n(Clarification answer: {user_message})"
+            session.pendingQuestion = None
         self.sessions.append_message(session, "user", user_message)
         self.sessions.save(session)
         self._emit("session.started", session.sessionId, projectId=project_id)
@@ -170,16 +182,21 @@ class CentralAgent:
         intent = self.intents.compile(user_message,
                                       context_summary=bundle.render(4000))
         if intent.needsClarification:
-            self._emit("intent.clarification-needed", sid, question=intent.clarificationQuestion)
+            question = intent.clarificationQuestion or "Could you clarify the outcome?"
+            session.pendingQuestion = question  # persisted with the session
+            self.sessions.save(session)
+            self._emit("intent.clarification-needed", sid, question=question)
             return AgentResult(
-                status="planning", outcome="blocked",
-                summary=intent.clarificationQuestion or "Clarification required.",
+                status="planning", outcome="needs-clarification",
+                summary=question,
                 failureReason="ambiguous-intent",
             )
         self._emit("intent.compiled", sid, goal=intent.goal, complexity=intent.complexity)
 
         # 2. plan
         plan = self.planner.plan(intent, sid, _now())
+        session.pendingQuestion = None
+        self._active_plans[plan.planId] = plan
         session.activePlanId = plan.planId
         self._emit("plan.created", sid, planId=plan.planId, tasks=[t.id for t in plan.tasks])
 
@@ -281,10 +298,29 @@ class CentralAgent:
         bundle = self.evidence.collect(sid, plan.planId, outcome.outcomes,
                                        "; ".join(summary_bits), _now())
         self._emit("result.ready", sid, passed=report.passed)
+        # Result SYNTHESIS from actual records — never a bare "done".
+        by_task = {t.id: t for t in plan.tasks}
+        verified_lines = []
+        for row in report.outcomes:
+            if row.verified is True:
+                task = by_task.get(row.taskId)
+                how = task.verification.description or task.verification.kind \
+                    if task else "audit-only"
+                verified_lines.append(f"{row.taskId}: verified ({how})")
+        audit_ref = (f"audit invocation {bundle.auditRecordIds[0]}"
+                     if bundle.auditRecordIds else "no governed invocations")
+        if report.unverifiedActions and report.passed is False:
+            tail = f" Unverified: {', '.join(report.unverifiedActions)}."
+        else:
+            tail = ""
         return AgentResult(
             status="completed" if report.passed else "verifying",
             outcome="completed",
-            summary=f"{'; '.join(summary_bits)}. Evidence: {len(bundle.auditRecordIds)} audit record(s).",
+            summary=(
+                f"{'; '.join(summary_bits)}. "
+                + ("Verified — " + "; ".join(verified_lines) + ". " if verified_lines else "")
+                + f"{tail}Audit: {audit_ref}.".strip()
+            ),
             performed=[o.taskId for o in outcome.outcomes if o.performed],
             verified=[o.taskId for o in report.outcomes if o.verified is True],
             evidence=bundle,
@@ -299,6 +335,37 @@ class CentralAgent:
                                            outcomes, f"Failed: {reason}", _now())
         return AgentResult(status="failed", outcome="failed", summary=reason,
                            evidence=bundle, failureReason=reason)
+
+    def message(self, session_id: str, text: str,
+                project_path: str | None = None) -> AgentResult:
+        """Continue an existing conversation: answer a clarification or add
+        a follow-up. Never replays previously performed side effects."""
+        session = self.sessions.load(session_id)
+        if session is None:
+            raise ValueError(f"no such session: {session_id}")
+        return self.submit(text, session=session, project_path=project_path)
+
+    def review_plan(self, session_id: str) -> dict | None:
+        """Human-readable review of the active plan — intended actions,
+        risks, approvals, verification. NEVER model reasoning."""
+        session = self.sessions.load(session_id)
+        if session is None or not session.activePlanId:
+            return None
+        plan = getattr(self, "_active_plans", {}).get(session.activePlanId)
+        if plan is None:
+            return None
+        rows = []
+        for t in plan.tasks:
+            rows.append({
+                "id": t.id,
+                "action": t.description,
+                "capability": t.capabilityId,
+                "risk": t.risk,
+                "reversible": t.reversible,
+                "verification": t.verification.description or t.verification.kind,
+            })
+        return {"planId": plan.planId, "steps": rows,
+                "estimatedApprovals": plan.estimatedApprovals}
 
     # ── resume / cancel ──────────────────────────────────────────────────
     def resume(self, session_id: str) -> AgentResult:

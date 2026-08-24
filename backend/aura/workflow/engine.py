@@ -152,6 +152,45 @@ class WorkflowEngine:
         self._emit("run.started", runId=run["id"], workflowId=wf_id)
         return self._drive(run, version)
 
+    NODE_TO_CAPABILITY = {"git-status": "git.status", "export-file": "fs.write_file"}
+
+    def run_ad_hoc(
+        self,
+        capability_id: str,
+        payload: dict,
+        project_path: str | None,
+        project_id: str | None,
+        actor_by: str = "central-agent",
+        approval_id: str | None = None,
+        task_label: str = "",
+    ) -> tuple[dict, str]:
+        """ONE canonical runner for single-step governed effects: the same
+        interpreter, stores and evidence path as full workflows — an
+        ephemeral single-node graph instead of a persisted definition."""
+        node_type = {v: k for k, v in self.NODE_TO_CAPABILITY.items()}.get(
+            capability_id)
+        if node_type is None:
+            # Non-node capabilities keep the direct fabric path; they are
+            # still governed by policy/approval/audit inside invoke_fabric.
+            return {}, capability_id
+        nodes = [{"id": "ad", "type": node_type, "x": 0, "y": 0,
+                  "config": dict(payload)}]
+        run = self.runs.create({
+            "workflowId": "-ad-hoc-",
+            "versionId": "-",
+            "workflowName": task_label or f"agent:{capability_id}",
+            "projectId": project_id or "-",
+            "projectPath": project_path or ".",
+            "trigger": {"kind": "manual", "by": actor_by},
+        })
+        run["state"] = "running"
+        run["startedAt"] = self.runs._clock()
+        self.runs.save(run)
+        version = {"nodes": nodes, "edges": []}
+        final = self._drive(run, version, resume_grants=(
+            {"ad": approval_id} if approval_id else {}))
+        return final, node_type
+
     def resume_run(self, rid: str, actor_by: str = "user") -> dict:
         old = self.runs.find(rid)
         if old is None:

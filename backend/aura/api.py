@@ -159,10 +159,44 @@ class AgentApiServer:
             if sub == "events" and method == "GET":
                 return ("SSE", lambda: d.agent.bus.subscribe_stream(sid))
 
+            if sub == "message" and method == "POST":
+                body = read_body()
+                text = str(body.get("message") or "").strip()
+                if not text:
+                    raise AuraError("message is required")
+                with d.lock:
+                    result = d.agent.message(sid, text,
+                                             project_path=body.get("projectPath"))
+                return {"result": result.model_dump()}
+
+            # Convenience: record THIS human decision, then continue the
+            # session in one call. The decision itself still goes through
+            # the same single-use ledger — this adds no authority path.
+            if sub == "approve" and method == "POST":
+                body = read_body()
+                approval_id = str(body.get("approvalId") or "")
+                granted = bool(body.get("granted", True))
+                decided = d.ledger.decide(approval_id, granted, "user",
+                                          body.get("reason"))
+                if decided is None:
+                    raise AuraError("this request was already decided", status=409)
+                if not granted:
+                    result = d.agent.resume(sid)
+                    return {"approval": decided, "result": result.model_dump()}
+                with d.lock:
+                    result = d.agent.resume(sid)
+                return {"approval": decided, "result": result.model_dump()}
+
             if sub == "resume" and method == "POST":
                 with d.lock:
                     result = d.agent.resume(sid)
                 return {"result": result.model_dump()}
+
+            if sub == "plan" and method == "GET":
+                review = d.agent.review_plan(sid)
+                if review is None:
+                    raise NotFound("no active plan for this session")
+                return review
 
             if sub == "cancel" and method == "POST":
                 return {"cancelled": d.agent.cancel(sid)}

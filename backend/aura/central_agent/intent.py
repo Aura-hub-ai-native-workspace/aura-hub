@@ -24,8 +24,13 @@ from ..contracts import AgentIntent
 
 _SCHEMA_HINT = """{
   "goal": string (required),
-  "expectedOutcome": string (required),
+  "entities": [{"type": "project"|"file"|"path"|"workflow"|"capability"|"tool"|"text"|"other",
+                "value": string, "role": string|null}],
   "constraints": [string],
+  "requestedOutcome": string,
+  "expectedOutcome": string (required),
+  "ambiguity": "clear" | "ambiguous" | "impossible",
+  "confidence": number 0..1,
   "urgency": "immediate" | "background" | "scheduled",
   "complexity": "single" | "multi-step" | "workflow",
   "requiredCapabilities": [string],
@@ -33,6 +38,10 @@ _SCHEMA_HINT = """{
   "needsClarification": boolean,
   "clarificationQuestion": string | null
 }"""
+
+# Deterministic clarification policy: a model may CLAIM clarity at any
+# confidence it likes; the agent blocks unless the claim clears THIS bar.
+CLARIFICATION_CONFIDENCE = 0.6
 
 
 class ModelPort(Protocol):
@@ -85,6 +94,8 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             expectedOutcome="A clarification question is answered.",
             needsClarification=True,
             clarificationQuestion="Could you say what you want accomplished?",
+            ambiguity="ambiguous",
+            confidence=0.0,
         )
 
     scheduled = any(w in text for w in _SCHEDULED_WORDS)
@@ -177,18 +188,27 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
                 "without executing it?"
             ),
         )
-    return AgentIntent(
-        goal=user_message.strip(),
-        expectedOutcome="The requested outcome is achieved and evidenced.",
-        needsClarification=True,
-        clarificationQuestion=(
+    return AgentIntent.model_validate({
+        "goal": user_message.strip(),
+        "expectedOutcome": "The requested outcome is achieved and evidenced.",
+        "needsClarification": True,
+        "clarificationQuestion": (
             "I could not map this request to a capability this installation "
             "offers. What concrete outcome do you want?"
         ),
-    )
+        "ambiguity": "ambiguous",
+        "confidence": 0.3,
+    })
 
 
 class IntentCompiler:
+    """Model-backed primary path; deterministic fallback retained.
+
+    Model output is DATA until it validates against AgentIntent. The
+    ambiguity/confidence claims never grant anything — they only feed the
+    FIXED clarification policy below, which cannot be talked through them.
+    """
+
     def __init__(
         self,
         mode: str = "heuristic",
@@ -217,6 +237,9 @@ class IntentCompiler:
         )
         user = f"CONTEXT:\n{context_summary}\n\nUSER REQUEST:\n{user_message}"
         raw = self.model_port.complete_json(system, user)  # type: ignore[union-attr]
+        return self._validated(raw, user_message)
+
+    def _validated(self, raw: dict | None, user_message: str) -> AgentIntent:
         if raw is None:
             if self.allow_heuristic_fallback:
                 return heuristic_interpret(user_message)
@@ -228,8 +251,24 @@ class IntentCompiler:
                 return heuristic_interpret(user_message)
             raise IntentCompilationError(f"model output failed validation: {exc}") from exc
         # Untrusted-content rule: a model may not silently widen itself.
+        import re as _re
+
         intent.requiredCapabilities = [
             c for c in intent.requiredCapabilities
-            if re.fullmatch(r"[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)*", c or "")
+            if _re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*", c or "")
         ]
+        # DETERMINISTIC clarification policy (model claims are advisory):
+        if intent.ambiguity == "impossible":
+            intent.needsClarification = True
+            intent.clarificationQuestion = intent.clarificationQuestion or (
+                "This request does not appear achievable here. "
+                "What would you like instead?")
+        elif intent.needsClarification or (
+                intent.ambiguity == "ambiguous"
+                and intent.confidence < CLARIFICATION_CONFIDENCE):
+            intent.needsClarification = True
+            intent.clarificationQuestion = intent.clarificationQuestion or (
+                "Could you state the concrete outcome you want?")
+        else:
+            intent.needsClarification = False
         return intent
