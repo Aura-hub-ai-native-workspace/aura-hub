@@ -107,8 +107,13 @@ export interface IntelligenceEngineResult {
 /**
  * Check if cached data is stale by comparing generation time against
  * repository file modification times. Returns true if regeneration needed.
+ *
+ * Exported because the Context Fabric reports freshness to downstream
+ * agents and must apply the SAME rule this engine uses to decide whether
+ * to regenerate. Two staleness rules would let the Fabric report "fresh"
+ * for an artifact the engine considers expired.
  */
-function isCacheStale(generatedAt: string, projectRoot: string, maxAgeMs: number = 3600000): boolean {
+export function isCacheStale(generatedAt: string, projectRoot: string, maxAgeMs: number = 3600000): boolean {
   const genTime = new Date(generatedAt).getTime();
   if (Date.now() - genTime > maxAgeMs) return true;
 
