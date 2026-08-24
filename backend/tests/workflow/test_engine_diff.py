@@ -31,25 +31,25 @@ def _n(i, t, cfg=None):
 
 GRAPHS: dict[str, dict] = {
     "branch-true": {"nodes": [
-        _n("seed", "output", {"template": "yes"}),
+        _n("seed", "user-input", {"prompt": "t", "default": "yes"}),
         _n("c", "condition", {"check": "contains", "value": "yes"}),
-        _n("t", "output", {"template": "T"}),
+        _n("t", "output", {"title": "T"}),
         _n("f", "output", {"template": "F"})],
         "edges": [{"id": "e0", "from": "seed", "fromPort": "out", "to": "c"},
                   {"id": "e1", "from": "c", "fromPort": "true", "to": "t"},
                   {"id": "e2", "from": "c", "fromPort": "false", "to": "f"}]},
     "branch-false-plus-vars": {"nodes": [
-        _n("seed", "output", {"template": "nope"}),
+        _n("seed", "user-input", {"prompt": "t", "default": "nope"}),
         _n("v", "variables", {"set": [{"name": "WHO", "value": "aura"}]}),
         _n("c", "condition", {"check": "contains", "value": "yes"}),
-        _n("t", "output", {"template": "{{WHO}} said yes"}),
+        _n("t", "output", {"title": "T"}),
         _n("f", "output", {"template": "{{WHO}} said no"})],
         "edges": [{"id": "e0", "from": "seed", "fromPort": "out", "to": "c"},
                   {"id": "e1", "from": "seed", "fromPort": "out", "to": "v"},
                   {"id": "e2", "from": "v", "fromPort": "out", "to": "f"},
                   {"id": "e3", "from": "c", "fromPort": "false", "to": "f"}]},
     "loop-lines": {"nodes": [
-        _n("seed", "output", {"template": "a\nb\nc"}),
+        _n("seed", "user-input", {"prompt": "t", "default": "a\nb\nc"}),
         _n("l", "loop", {"mode": "for-each-line"}),
         _n("o", "output", {"template": "{{input}}"})],
         "edges": [{"id": "e0", "from": "seed", "fromPort": "out", "to": "l"},

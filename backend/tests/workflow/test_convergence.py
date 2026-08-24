@@ -26,9 +26,10 @@ def _runner(tmp_path, monkeypatch):
 
 def _wf():
     return {"id": "wf-c", "name": "Conv", "description": "",
-            "nodes": [{"id": "o", "type": "output", "x": 0, "y": 0,
-                       "config": {"template": "ok"}}],
-            "edges": []}
+            "nodes": [{"id": "i", "type": "user-input", "x": 0, "y": 0,
+                       "config": {"prompt": "v", "default": "ok"}},
+                      {"id": "o", "type": "output", "x": 1, "y": 0, "config": {}}],
+            "edges": [{"id": "e", "from": "i", "fromPort": "out", "to": "o"}]}
 
 
 ENTRY_CALLS = []
@@ -53,22 +54,25 @@ def test_manual_scheduler_automation_converge(tmp_path, monkeypatch):
     proj = {"id": "p", "path": str(tmp_path)}
 
     async def drive():
+        inputs = {"i": "ok"}          # user-input node id → value
         manual = await r.start_workflow_run(wf, project_id="p", project_path=proj["path"],
+                                            inputs=inputs,
                                             trigger={"kind": "manual", "by": "user"})
         sched = await fire_scheduled_workflow(r, workflow=wf, project_id="p",
-                                              project_path=proj["path"],
+                                              project_path=proj["path"], inputs={"i": "ok"},
                                               rule_id="rule-1",
                                               automation_run_id="ar-1", cron="0 9 * * 1")
         auto = await r.start_workflow_run(wf, project_id="p", project_path=proj["path"],
+                                          inputs={"i": "ok"},
                                           trigger={"kind": "automation", "ruleId": "rule-2",
                                                    "runId": "ar-2", "event": "file-changed"})
         return manual, sched, auto
 
     m, s, a = asyncio.run(drive())
     assert ENTRY_CALLS == ["manual", "automation", "automation"]
-    for started in (m, s, a):
-        assert started["result"]["runState"] == "succeeded"
-        assert started["result"]["outputs"][0]["text"] == "ok"
+    for label, started in (("m", m), ("s", s), ("a", a)):
+        assert started["result"]["runState"] == "succeeded", (label, started["result"])
+        assert [o["text"] for o in started["result"]["outputs"]] == ["ok"], (label, started["result"]["outputs"])
     # run records carry structured linkage (no summary parsing)
     assert s["run"]["trigger"]["kind"] == "automation"
     assert s["run"]["trigger"]["ruleId"] == "rule-1"
