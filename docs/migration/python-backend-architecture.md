@@ -21,6 +21,11 @@ backend/                     ← the canonical Python backend (new)
         exec/                P2/P5: settle() port, allow-lists, TIMEOUT=124
         persistence/         P3: ~/.aura readers/writers per frozen format
         fabric/              P4: registry, resolve, invoke pipeline, verification
+        central_agent/       Central Agent: intent→plan→discover→authorize→
+                             compile→execute→verify→evidence orchestration layer.
+                             Reasons about work; every side effect goes through
+                             aura.fabric. Added with the central-agent milestone;
+                             see docs/AURA_CENTRAL_AGENT_IMPLEMENTATION.md.
         workspace/           P5: projects, cwd resolution, environment probes
         workflow/            P6: engine, nodes, versions, dryrun, runs
         automation/          P7: rules, triggers, scheduler, stores
