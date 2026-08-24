@@ -13,7 +13,7 @@ from aura.audit import AuditStore
 from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.central_agent.planner import MAX_TASKS, PlanningError, TaskPlanner
 from aura.contracts import AgentIntent
-from aura.fabric import FabricConfig
+from aura.fabric import FabricConfig, builtin_executors
 from aura.workflow import EngineConfig, WorkflowEngine, make_stores
 
 
@@ -27,14 +27,6 @@ def make_agent(home: Path, cfg: FabricConfig) -> CentralAgent:
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
-    from aura.fabric import CapabilityFabric, FabricHost
-    class _H(FabricHost):
-        def permissions_for(self, _cap, _ctx):
-            return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
-        def node_available(self, _cap):
-            return True
-        async def request_approval(self, _req, _ctx):
-            return False
     home = tmp_path / "home"
     proj = tmp_path / "project"
     proj.mkdir()
@@ -42,23 +34,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_HOME", str(home))
     audit = AuditStore(home / "audit" / "trail.jsonl")
     ledger = ApprovalLedger(audit_append=audit.append)
-    host = _H()
-    fabric = CapabilityFabric(host)
-    fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
-    from aura.executors import all_executors
-    execs = {e.capabilityId: e for e in all_executors(home)}
-    for exe in execs.values():
-        try:
-            fabric.register(exe)
-        except Exception:
-            pass
-    cfg = FabricConfig(
-        fabric=fabric,
-        policy_config={}, permissions={"read": True, "write": True},
-        executors=execs,
-        audit_store=audit, ledger=ledger)
+    cfg = FabricConfig(policy_config={}, permissions={"read": True, "write": True},
+                       executors=builtin_executors(home),
+                       audit_store=audit, ledger=ledger)
     return home, proj, audit, ledger, cfg
 
 
@@ -151,19 +129,19 @@ class TestModelCannotWiden:
         """A proposed absolute/escaping path survives compilation as DATA but
         the executor's confinement refuses it after authorization."""
         home, proj, audit, ledger, cfg = env
-        planner = TaskPlanner(known_capabilities=lambda: {"filesystem.write"})
+        planner = TaskPlanner(known_capabilities=lambda: {"fs.write_file"})
         intent = AgentIntent(goal="x", expectedOutcome="y")
-        evil = {"tasks": [{"description": "escape", "capabilityId": "filesystem.write",
+        evil = {"tasks": [{"description": "escape", "capabilityId": "fs.write_file",
                            "input": {"path": "/etc/aura-pwned", "content": "no"}}]}
         plan = planner.plan_from_model(intent, "agt-x", "now", evil)
         from aura.fabric import invoke_fabric
         result = invoke_fabric(
-            "filesystem.write", plan.tasks[0].input,
+            "fs.write_file", plan.tasks[0].input,
             {"actor": {"kind": "agent", "id": "t"}, "cwd": str(proj)}, cfg)
         if result["outcome"] == "awaiting-approval":
             ledger.decide(result["approvalId"], True, "user")
             result = invoke_fabric(
-                "filesystem.write", plan.tasks[0].input,
+                "fs.write_file", plan.tasks[0].input,
                 {"actor": {"kind": "agent", "id": "t"}, "cwd": str(proj),
                  "taskId": "esc", "approvalId": result["approvalId"]}, cfg)
         assert result["outcome"] == "failed"
@@ -172,13 +150,13 @@ class TestModelCannotWiden:
     def test_model_plan_risk_cannot_be_lowered_below_manifest(self, env):
         """The proposal says low risk; policy still sees manifest truth."""
         home, proj, audit, ledger, cfg = env
-        planner = TaskPlanner(known_capabilities=lambda: {"filesystem.write"})
+        planner = TaskPlanner(known_capabilities=lambda: {"fs.write_file"})
         intent = AgentIntent(goal="x", expectedOutcome="y")
-        sneaky = {"tasks": [{"description": "w", "capabilityId": "filesystem.write",
+        sneaky = {"tasks": [{"description": "w", "capabilityId": "fs.write_file",
                              "risk": "low",
                              "input": {"path": "ok.txt", "content": "fine"}}]}
         plan = planner.plan_from_model(intent, "agt-x", "now", sneaky)
-        # filesystem.write is MEDIUM in the manifest; preflight must reflect that
+        # fs.write_file is MEDIUM in the manifest; preflight must reflect that
         from aura.central_agent.authority import AuthorityChecker
         reqs = AuthorityChecker(cfg).check_plan(plan, None, str(proj))
         assert reqs[0].risk == "medium"
