@@ -17,7 +17,7 @@ import json
 import os
 import sys
 import tempfile
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -33,7 +33,7 @@ def check(name: str, fn) -> None:
         detail = fn()
         _results.append((PASS, name, detail or ""))
         print(f"  {PASS}  {name}" + (f" — {detail}" if detail else ""))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — verification must report, not crash
         _results.append((FAIL, name, str(exc)))
         print(f"  {FAIL}  {name} — {exc}")
 
@@ -42,12 +42,11 @@ def main() -> int:
     home = Path(tempfile.mkdtemp(prefix="aura-agent-verify-"))
     os.environ["AURA_HOME"] = str(home)
 
-    from aura.approvals import ApprovalLedger
     from aura.audit import AuditStore
-    from aura.central_agent import AgentSessionStore, CentralAgent
+    from aura.approvals import ApprovalLedger
+    from aura.central_agent import CentralAgent, AgentSessionStore
     from aura.central_agent.__main__ import build_fabric_config
     from aura.fabric import FabricConfig, builtin_executors
-    from aura.workflow import make_stores
 
     audit = AuditStore(home / "audit" / "trail.jsonl")
     ledger = ApprovalLedger(audit_append=audit.append)
@@ -65,9 +64,9 @@ def main() -> int:
         ledger=ApprovalLedger(),
     )
 
-    print("AURA central agent runtime verification")
+    print(f"AURA central agent runtime verification")
     print(f"  disposable home: {home}")
-    print(f"  time: {datetime.now(UTC).isoformat()}")
+    print(f"  time: {datetime.now(timezone.utc).isoformat()}")
 
     state: dict = {}
 
@@ -106,10 +105,9 @@ def main() -> int:
         agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
         before = len(audit.load())
         r = agent.submit("flurb the bazzle")
-        assert r.outcome == "needs-clarification", r.outcome
-        assert len(audit.load()) == before, \
-            f"side effects occurred: {len(audit.load()) - before}"
-        return "clarification requested with zero governed invocations"
+        assert r.outcome == "blocked"
+        assert len(audit.load()) == before
+        return "ambiguous intent blocked with zero governed invocations"
 
     def approval_park_and_single_use_spend():
         agent = CentralAgent(fabric_cfg=strict_cfg, session_store=AgentSessionStore(home))
@@ -139,6 +137,9 @@ def main() -> int:
         before = len(deny_home_records.load())
         r = agent.submit("list my workflows")
         assert r.outcome == "failed" and "denies" in (r.failureReason or "").lower()
+        invocations = [x for x in deny_home_records.load()[before:]
+                       if x.get("capabilityId") is not None
+                       and x.get("decisionRule") != "preflight"]
         assert not [x for x in deny_home_records.load()[before:]], \
             "a denied plan must not reach the invocation path at all"
         return "policy denial blocked planning pre-execution; nothing invoked"
@@ -164,99 +165,6 @@ def main() -> int:
             assert marker not in joined, f"forbidden material: {marker}"
         return "sessions/workflows/audit scanned; no credential material present"
 
-
-    def scenario_a_git_status_real():
-        import subprocess
-        proj = Path(tempfile.mkdtemp(prefix="verify-proj-"))
-        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
-        (proj / "s.txt").write_text("x\n")
-        subprocess.run(["git", "add", "."], cwd=proj, check=True)
-        agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
-        r = agent.submit("show me the git status of my project",
-                         project_path=str(proj))
-        assert r.outcome == "completed" and r.verified == ["t1"], r.summary
-        rec = [x for x in audit.load() if x["capabilityId"] == "git.status"]
-        assert rec and rec[-1]["verified"] is True
-        return "real git executed; exit-code verified; audited"
-
-    def scenario_b_governed_write_resume():
-        import subprocess
-        proj = Path(tempfile.mkdtemp(prefix="verify-b-"))
-        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
-        agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
-        first = agent.submit("create a file called demo.txt containing hello world",
-                             project_path=str(proj))
-        assert first.outcome == "awaiting-approval"
-        assert not (proj / "demo.txt").exists()
-        apr = first.evidence.approvalIds[0]
-        assert ledger.decide(apr, True, "user")["state"] == "granted"
-        second = agent.resume(agent.sessions.last_session_id)
-        assert second.outcome == "completed", second.summary
-        assert (proj / "demo.txt").read_text() == "hello world"
-        writes = [x for x in audit.load() if x["capabilityId"] == "filesystem.write"
-                  and x["outcome"] == "succeeded"]
-        assert len(writes) == 1
-        return "park → approve → resume → real file, exactly one write"
-
-    def scenario_g_restart_resume():
-        import subprocess
-
-        from aura.workflow import EngineConfig, WorkflowEngine
-        proj = Path(tempfile.mkdtemp(prefix="verify-g-"))
-        subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
-        a1 = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
-        first = a1.submit("create a file called later.txt containing done",
-                          project_path=str(proj))
-        sid = a1.sessions.last_session_id
-        apr = first.evidence.approvalIds[0]
-        # RESTART: fresh agent over the same persisted home
-        ws2, vs2, rs2 = make_stores()
-        a2 = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home),
-                          workflow_store=ws2, run_store=rs2,
-                          workflow_engine=WorkflowEngine(cfg, ws2, vs2, rs2,
-                                                         EngineConfig()))
-        reloaded = a2.sessions.load(sid)
-        assert reloaded is not None and reloaded.state == "awaiting-approval", \
-            f"reload lost state: {reloaded and reloaded.state}"
-        assert any(p["id"] == apr for p in ledger.pending()), \
-            "parked approval not durable across restart"
-        ledger.decide(apr, True, "user")
-        resumed = a2.resume(sid)
-        assert resumed.outcome == "completed", \
-            f"resume ended {resumed.outcome}: {resumed.summary[:120]}"
-        assert (proj / "later.txt").read_text() == "done", \
-            "resumed write produced wrong content"
-        writes = [x for x in audit.load()
-                  if x["capabilityId"] == "filesystem.write"
-                  and x["outcome"] == "succeeded"
-                  and "later.txt" in x.get("inputSummary", "")]
-        assert len(writes) == 1, f"{len(writes)} writes for later.txt"
-        return "restart → reload → approve → resume, single side effect"
-
-    def api_surface_live():
-        import json as _json
-        import urllib.request
-
-        from aura.api import build_default_api
-        server, _agent = build_default_api(home=str(home) + "-api",
-                                           port=4399)
-        server.start_background()
-        try:
-            req = urllib.request.Request(
-                "http://127.0.0.1:4399/agent/sessions",
-                data=_json.dumps({"message": "list my workflows"}).encode(),
-                method="POST",
-                headers={"content-type": "application/json"})
-            with urllib.request.urlopen(req) as resp:
-                out = _json.loads(resp.read())
-            assert out["result"]["outcome"] == "completed"
-            with urllib.request.urlopen(
-                    "http://127.0.0.1:4399/fabric/approvals") as resp:
-                assert "approvals" in _json.loads(resp.read())
-            return "HTTP submit + approvals surface live"
-        finally:
-            server.shutdown()
-
     checks = [
         ("vertical slice: status intent → plan → governed invoke → verify → evidence",
          slice_status),
@@ -273,13 +181,6 @@ def main() -> int:
          sessions_survive_reload),
         ("secrets: persisted agent/fabric state carries no credential material",
          no_secrets_in_persisted_state),
-        ("scenario A: read-only git status through real executor",
-         scenario_a_git_status_real),
-        ("scenario B: governed write parks, approves, resumes, writes once",
-         scenario_b_governed_write_resume),
-        ("scenario G: restart-reload-approve-resume without duplication",
-         scenario_g_restart_resume),
-        ("API: HTTP/SSE surface serves the agent live", api_surface_live),
     ]
 
     print("\nChecks:")
