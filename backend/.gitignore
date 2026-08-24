@@ -6,4 +6,3 @@ dist/
 build/
 *.egg-info/
 .venv/
-backend/tests/differential/__pycache__/
