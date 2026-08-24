@@ -17,10 +17,7 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 | Audit store (append-only JSONL, caps) | 2 | auditStore.ts | `aura.audit` | 5 units incl. trim-oldest@6000→5000 + truncated-tail tolerance | **GATE-PASSED** | — |
 | Exec settle() + allow-lists + TIMEOUT=124 | 2/5 | exec/process.ts | NOT-STARTED | process-timeout mirror planned | NOT-STARTED | — |
 | Secrets redaction + providers envelope | 2/9 | secrets.ts, credentialStore.ts | NOT-STARTED | crypto interop test planned | NOT-STARTED | AESGCM interop vs real stores |
-| Persistence: WorkflowStore | 3 | workflow/store.ts | `aura.persistence.workflows` | cross-lang op-script: values + FULL tree bytes identical; sanitize torture, duplicate/import, webhook lifecycle | **GATE-PASSED** | — |
-| Persistence: WorkflowRunStore (+index/recovery) | 3 | workflow/run/store.ts | `aura.persistence.runs` | checkpoint bytes, supersede/resume chain, reconcile strings, corrupt-index silent rebuild, prune@200 terminal-only | **GATE-PASSED** | — |
-| Persistence: WorkflowVersionStore | 3 | versions.ts | `aura.persistence.versions` | publish/ensure-reuse/restore-forward; literal key-order parity (note<graphHash<edges) | **GATE-PASSED** | — |
-| Persistence: AutomationStore + schedule-state | 3 | automation/src/store.ts | `aura.persistence.automation` | rule sanitize torture, runs+index rebuild, runStats, schedule-state file round-trip | **GATE-PASSED** | — |
+| Persistence (~/.aura readers/writers) | 3 | workflow/store, run/store… | NOT-STARTED | golden round-trips exist; live-file tests pending | NOT-STARTED | — |
 | Connected environment (catalog/probes) | 5 | connected-environment | NOT-STARTED | platform-verify mirror planned | NOT-STARTED | — |
 | Capability Fabric core (invoke pipeline) | 4 | fabric.ts | NOT-STARTED | planned | NOT-STARTED | depends P2 |
 | Executors registry | 5 | fabric/executors.ts | NOT-STARTED | executor matrix doc planned | NOT-STARTED | — |
@@ -37,16 +34,14 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 
 ## Current phase summary
 
-**Phases 1–2 COMPLETE · Phase 3 GATE PASSED (byte-level store parity).**
-Suite: `cd backend && python3 -m pytest tests -q` → 57 passed (differential
-suites auto-borrow the main checkout's esbuild when running from a worktree).
-Highlights: 6/6 frozen vectors; ~630 TS-vs-Python differential cases with
-0 divergences — now INCLUDING a 57-op persistence script whose entire
-AURA_HOME tree is byte-identical to the TypeScript oracle's (values, ids,
-timestamps, index ordering, recovery rewrites); deterministic clock/PRNG
-injection makes generated ids match exactly; retention/prune, corrupt-index
-rebuild, interrupted-run recovery and atomic-write residue covered by units.
-Remaining P2 item unchanged: settle() process port lands with executors (P5).
+**Phase 1 COMPLETE · Phase 2 SUBSTANTIALLY COMPLETE (policy/approvals/audit gates passed).**
+Suite: `cd backend && python3 -m pytest tests -q` → 49 passed. Includes:
+6/6 frozen canonicalization vectors; 570 differential cases vs bundled-real
+TypeScript, 0 divergences; all 10 goldens schema-valid + BYTE-stable;
+16 security-invariant units (fail-closed allowlists, cautious autonomy,
+floor rule-claiming, single-use spend, replay-harmless decisions,
+pending-only persistence, append-only trim semantics). Remaining in P2:
+process settle() port (scheduled with executors at P5 start).
 
 ## How to run the gates
 
