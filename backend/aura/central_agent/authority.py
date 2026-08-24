@@ -17,26 +17,17 @@ class AuthorityChecker:
     def __init__(self, fabric_cfg: FabricConfig) -> None:
         self._cfg = fabric_cfg
 
-    def check_plan(self, plan: TaskPlan, project_id: str | None,
-                   project_path: str | None = None) -> list[AuthorityRequirement]:
+    def check_plan(self, plan: TaskPlan, project_id: str | None) -> list[AuthorityRequirement]:
         out: list[AuthorityRequirement] = []
         for task in plan.tasks:
             if not task.capabilityId:
                 continue
-            requested_scope = task.input.get("path") \
-                if isinstance(task.input, dict) else None
             raw = describe_authority(
                 task.capabilityId,
                 {"actor": {"kind": "agent", "id": "central-agent"},
                  "projectId": project_id, "taskId": task.id},
                 self._cfg,
             )
-            # EFFECTIVE scope is policy's confinement of the request: for
-            # project-confined capabilities that IS the project root. The
-            # agent cannot widen it; it can only report it.
-            effective_scope = requested_scope
-            if requested_scope and project_path:
-                effective_scope = f"{project_path.rstrip('/')}/{requested_scope.lstrip('/')}"
             if raw is None:
                 out.append(AuthorityRequirement(
                     capabilityId=task.capabilityId,
@@ -53,8 +44,6 @@ class AuthorityChecker:
                 risk=raw["risk"],
                 available=True,
                 approvalRequired=raw["decision"] in ("ask-user", "require-approval"),
-                requestedScope=requested_scope,
-                effectiveScope=effective_scope,
             ))
         return out
 
