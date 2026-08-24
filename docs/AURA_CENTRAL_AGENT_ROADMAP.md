@@ -14,12 +14,12 @@
 
 | Phase | State |
 | --- | --- |
-| Phase 0 — contracts | **DONE** — `aura/contracts/agent.py`, language-independent Pydantic, runtime-verified round-trips |
-| Phase 1 — intent compiler | **DONE (heuristic + fail-closed model port)** — live-model accuracy untested; transport is the open work |
-| Phase 2 — planner + capability checker | **DONE** against the internal capability subset; widens as executors land |
-| Phase 3 — workflow compiler | **DONE for candidate graphs** — frozen-vocabulary construction + structural validation; engine-side re-validation arrives with P6 |
-| Phase 4 — execution + verification | **DONE for single-invocation route** over `aura.fabric`; workflow-run route awaits the Python engine |
-| Phase 5 — integration + MCP | **PARTIAL** — MCP trust boundary done; transports, API/SSE routes and React surface not started |
+| Phase 0 — contracts | **DONE** — runtime-verified round-trips; honest outcome vocabulary (`denied`/`timeout`) |
+| Phase 1 — intent compiler | **DONE (heuristic + fail-closed model port)** — model ROUTING now implemented (provider chain, health, env-only keys); live-provider accuracy still unprovisioned |
+| Phase 2 — planner + capability checker | **DONE** — direct git.status / fs.write_file / run-workflow templates |
+| Phase 3 — workflow compiler | **DONE** — frozen-vocabulary graphs incl. governed export-file synthesis from write clauses |
+| Phase 4 — execution + verification | **DONE both routes** — Python engine executes stored graphs node-by-node through the Fabric; park/resume across restarts |
+| Phase 5 — integration + MCP | **SUBSTANTIALLY DONE** — stdio MCP transport + fixture server through gateway→Fabric; HTTP/SSE API live; React consumption pending |
 
 The original phase plan below is preserved unchanged for reference.
 
