@@ -7,15 +7,17 @@ audit record.
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
+from aura.approvals import ApprovalLedger
 from aura.fabric import (
     FabricConfig,
+    builtin_executors,
     describe_authority,
     invoke_fabric,
 )
@@ -25,42 +27,12 @@ NODES = [{"id": "a", "type": "current-project", "x": 0, "y": 0, "config": {}}]
 
 def make_cfg(tmp_home: Path, policy=None, executors=None,
              permissions=None) -> FabricConfig:
-    from aura.executors import register_canonical_internal_capabilities
-    from aura.fabric import CapabilityFabric, FabricHost
-    class _H(FabricHost):
-        def __init__(self, perms):
-            self._perms = perms
-        def permissions_for(self, _cap, _ctx):
-            return self._perms
-        def node_available(self, _cap):
-            return None
-        async def request_approval(self, _req, _ctx):
-            return False
     audit = AuditStore(tmp_home / "audit.jsonl")
     ledger = ApprovalLedger(audit_append=audit.append)
-    host = _H(permissions or {"read": True, "write": True})
-    fabric = CapabilityFabric(host)
-    fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
-    if executors is not None:
-        exec_map = executors
-    else:
-        from aura.executors import all_executors
-        exec_map = {e.capabilityId: e for e in all_executors(tmp_home)}
-    for cap_id, exe in exec_map.items():
-        try:
-            fabric.register(exe)
-        except Exception:
-            fabric.executors[cap_id] = exe
-    register_canonical_internal_capabilities(fabric)
-    if policy is not None:
-        fabric.policy = policy
     return FabricConfig(
-        fabric=fabric,
         policy_config=policy or {},
         permissions=permissions or {"read": True, "write": True},
-        executors=exec_map,
+        executors=executors if executors is not None else builtin_executors(tmp_home),
         audit_store=audit,
         ledger=ledger,
     )
@@ -128,10 +100,10 @@ class TestExecutionAndVerification:
 
     def test_executor_fault_becomes_failed_settlement(self, home):
         class Boom:
-            async def run(self, invocation):
+            def run(self, input, context):
                 raise RuntimeError("disk gone")
 
-            async def verify(self, invocation, result):
+            def verify(self, input, context, output):
                 return None
 
         cfg = make_cfg(home, executors={"workflow.create": Boom()})
@@ -182,6 +154,7 @@ class TestApprovalGate:
         assert list((home / "workflows").glob("*")) == []
 
     def test_denied_decision_records_audit_with_reason(self, home):
+        ledger_decided = []
         cfg = make_cfg(home, policy=self.POLICY)
         apr = invoke_fabric("workflow.create", self.PAYLOAD, {"taskId": "t"},
                             cfg)["approvalId"]
@@ -202,19 +175,31 @@ class TestPreflight:
 
     def test_permission_gap_denies(self, home):
         cfg = make_cfg(home, permissions={"read": True, "write": False})
-        pre = describe_authority("filesystem.write", {}, cfg)
+        pre = describe_authority("workflow.create", {}, cfg)
         assert pre["decision"] == "deny"
         assert pre["rule"] == "permission-denied"
 
     def test_input_summary_redacts_secretish_fields(self, home):
-        from aura.fabric import summarize_input
-        cap = {"id": "t.x", "name": "T", "description": "", "category": "t", "surface": "aura-internal", "risk": "low", "input": [{"name": "apiKey", "type": "string", "required": False, "description": ""}]}
+        from aura.fabric.invoke import summarize_input
+        from aura.fabric.manifest import CapabilityDescriptor, CapabilityField
+        cap = CapabilityDescriptor(
+            id="t.x", name="T", description="", category="t", surface="aura-internal",
+            risk="low",
+            input=(CapabilityField(name="apiKey", type="string", required=False,
+                                   description=""),),
+        )
         s = summarize_input(cap, {"apiKey": "super-secret-value"})
         assert "super-secret-value" not in s
         assert "<redacted>" in s
 
     def test_input_summary_bounds_long_values(self, home):
-        from aura.fabric import summarize_input
-        cap = {"id": "t.x", "name": "T", "description": "", "category": "t", "surface": "aura-internal", "risk": "low", "input": [{"name": "name", "type": "string", "required": False, "description": ""}]}
+        from aura.fabric.invoke import summarize_input
+        from aura.fabric.manifest import CapabilityDescriptor, CapabilityField
+        cap = CapabilityDescriptor(
+            id="t.x", name="T", description="", category="t", surface="aura-internal",
+            risk="low",
+            input=(CapabilityField(name="name", type="string", required=False,
+                                   description=""),),
+        )
         s = summarize_input(cap, {"name": "x" * 500})
         assert len(s) < 80 and "…" in s
