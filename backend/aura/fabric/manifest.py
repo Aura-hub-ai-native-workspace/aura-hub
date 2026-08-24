@@ -79,10 +79,86 @@ BUILTIN_MANIFEST: tuple[CapabilityDescriptor, ...] = (
         output="Workflow summaries",
         verify=None,
     ),
+    CapabilityDescriptor(
+        id="git.status",
+        name="Git status",
+        category="git",
+        surface="local-process",
+        description=(
+            "Read-only repository status (branch plus changed files) for the "
+            "current project, gathered with a fixed argument vector."
+        ),
+        risk="low",
+        permissions=["project.read"],
+        input=(
+            _f("detail", "boolean", False, "Include per-file status lines"),
+        ),
+        output="Repository status text",
+        verify="exit-code",
+    ),
+    CapabilityDescriptor(
+        id="fs.write_file",
+        name="Write project file",
+        category="filesystem",
+        surface="local-process",
+        description=(
+            "Creates or overwrites one file INSIDE the current project. "
+            "Relative paths only; escaping the project root is refused."
+        ),
+        risk="medium",
+        permissions=["project.write"],
+        input=(
+            _f("path", "string", True, "Project-relative destination path"),
+            _f("content", "string", True, "Full file contents"),
+        ),
+        output="The written byte count",
+        verify="read-back",
+    ),
+    CapabilityDescriptor(
+        id="fs.read_file",
+        name="Read project file",
+        category="filesystem",
+        surface="local-process",
+        description=(
+            "Reads one file INSIDE the current project, capped at 64 KiB. "
+            "Relative paths only; escaping the project root is refused."
+        ),
+        risk="low",
+        permissions=["project.read"],
+        input=(
+            _f("path", "string", True, "Project-relative source path"),
+        ),
+        output="File contents (bounded)",
+        verify=None,
+    ),
 )
 
 _BY_ID = {c.id: c for c in BUILTIN_MANIFEST}
 
+# Runtime registrations (e.g. normalized MCP tools) join the catalogue here.
+# They are descriptors ONLY — invoking one still requires an executor in the
+# FabricConfig registry, and policy still evaluates every call.
+_EXTRA: dict[str, CapabilityDescriptor] = {}
+
+
+def register_capability(descriptor: CapabilityDescriptor) -> None:
+    """Register a runtime capability (MCP normalization, plugin surfaces).
+
+    Registration never grants authority: an unexecuted descriptor changes
+    nothing until an executor exists AND policy allows the call.
+    """
+    if descriptor.id in _BY_ID or descriptor.id in _EXTRA:
+        raise ValueError(f"capability already registered: {descriptor.id}")
+    _EXTRA[descriptor.id] = descriptor
+
+
+def unregister_capability(capability_id: str) -> bool:
+    return _EXTRA.pop(capability_id, None) is not None
+
+
+def all_capabilities() -> tuple[CapabilityDescriptor, ...]:
+    return BUILTIN_MANIFEST + tuple(_EXTRA.values())
+
 
 def describe_capability(capability_id: str) -> CapabilityDescriptor | None:
-    return _BY_ID.get(capability_id)
+    return _BY_ID.get(capability_id) or _EXTRA.get(capability_id)

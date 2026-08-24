@@ -8,7 +8,7 @@ READ-ONLY: it grants nothing and never executes.
 from __future__ import annotations
 
 from ..contracts import ToolDescriptor
-from ..fabric.manifest import BUILTIN_MANIFEST
+from ..fabric.manifest import all_capabilities
 
 
 class CapabilityDiscovery:
@@ -35,10 +35,10 @@ class CapabilityDiscovery:
                 source="aura-manifest",
                 trust="verified",
             )
-            for c in BUILTIN_MANIFEST if c.id in wanted
+            for c in all_capabilities() if c.id in wanted
         ]
         external = [t for t in self._external if t.id in wanted]
         return native + external
 
     def all_tools(self) -> list[ToolDescriptor]:
-        return self.available_for([c.id for c in BUILTIN_MANIFEST]) + list(self._external)
+        return self.available_for([c.id for c in all_capabilities()]) + list(self._external)

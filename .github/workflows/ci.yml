@@ -109,6 +109,19 @@ jobs:
           echo "::error::desktop build failed after 3 attempts"
           exit 1
 
+      # The AppImage bundles libwayland-client.so.0 from the Ubuntu 24.04
+      # runner. That copy predates wl_fixes_interface and
+      # wl_display_create_queue_with_name, which the runner's own newer Mesa
+      # requires — the bundled library shadows the system one at runtime and
+      # aborts the WebKitWebProcess with EGL_BAD_PARAMETER, leaving a white
+      # window (v0.1.0 regression). The fix is packaging-only: repack the
+      # AppImage without that one library and verify. Everything after this
+      # step — staging, the AppImage launch check, the release — exercises
+      # the fixed artifact. The .deb needs no patch: it bundles no Wayland.
+      - name: Patch the AppImage (Linux only)
+        if: runner.os == 'Linux'
+        run: node scripts/patch-appimage-linux.mjs
+
       # Native runtime verification. Linux runners have no display, so the
       # shell phase runs under a virtual one; Windows and macOS runners have
       # a real session already. Without xvfb the Linux shell phase reports
@@ -132,6 +145,13 @@ jobs:
       # Installer verification. An artifact existing is not an artifact that
       # installs, so each platform installs its own and launches what the
       # installer put on disk — not what the build left in target/.
+      #
+      # The AppImage exercised here is the PATCHED one (see the patch step
+      # above): staging copied it after the repack, so this check verifies
+      # what a user downloads. It cannot prove rendering — xvfb has no GPU,
+      # and software EGL succeeds even for the broken bundle, which is why
+      # the v0.1.0 regression survived CI — so the real-hardware rendering
+      # acceptance stays a manual step on an actual GPU machine.
       - name: Verify the .deb installs and launches (Linux)
         if: runner.os == 'Linux'
         run: |
