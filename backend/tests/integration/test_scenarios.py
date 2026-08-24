@@ -8,49 +8,26 @@ deterministic heuristic mode — that is the layer under test.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
-from aura.central_agent import AgentSessionStore, CentralAgent
-from aura.fabric import FabricConfig
-from aura.workflow import EngineConfig, WorkflowEngine
+from aura.approvals import ApprovalLedger
+from aura.central_agent import CentralAgent, AgentSessionStore
+from aura.fabric import FabricConfig, builtin_executors
+from aura.workflow import WorkflowEngine, EngineConfig
 
 
 def make_agent(home: Path, cfg: FabricConfig | None = None) -> CentralAgent:
-    from aura.executors import all_executors
-    from aura.fabric import CapabilityFabric, FabricHost
-    class _H(FabricHost):
-        def permissions_for(self, _cap, _ctx):
-            return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
-        def node_available(self, _cap):
-            return True
-        async def request_approval(self, _req, _ctx):
-            return False
-    if cfg is None:
-        audit = AuditStore(home / "audit" / "trail.jsonl")
-        ledger = ApprovalLedger(audit_append=audit.append)
-        host = _H()
-        fabric = CapabilityFabric(host)
-        fabric.attach_audit_store(audit.load, audit.append)
-        fabric.attach_approval_store(lambda: [], lambda x: None)
-        fabric._ledger = ledger
-        execs = {e.capabilityId: e for e in all_executors(home)}
-        for exe in execs.values():
-            try:
-                fabric.register(exe)
-            except Exception:
-                pass
-        cfg = FabricConfig(
-            fabric=fabric,
-            policy_config={}, permissions={"read": True, "write": True},
-            executors=execs,
-            audit_store=audit,
-            ledger=ledger,
-        )
+    cfg = cfg or FabricConfig(
+        policy_config={}, permissions={"read": True, "write": True},
+        executors=builtin_executors(home),
+        audit_store=AuditStore(home / "audit" / "trail.jsonl"),
+        ledger=ApprovalLedger(audit_append=AuditStore(
+            home / "audit" / "trail.jsonl").append))
     ws, vs, rs = __import__("aura.workflow", fromlist=["make_stores"]).make_stores()
     engine = WorkflowEngine(cfg, ws, vs, rs, EngineConfig())
     return CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home),
@@ -59,14 +36,6 @@ def make_agent(home: Path, cfg: FabricConfig | None = None) -> CentralAgent:
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
-    from aura.fabric import CapabilityFabric, FabricHost
-    class _H(FabricHost):
-        def permissions_for(self, _cap, _ctx):
-            return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
-        def node_available(self, _cap):
-            return True
-        async def request_approval(self, _req, _ctx):
-            return False
     home = tmp_path / "aura-home"
     proj = tmp_path / "project"
     proj.mkdir()
@@ -76,23 +45,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_HOME", str(home))
     audit = AuditStore(home / "audit" / "trail.jsonl")
     ledger = ApprovalLedger(audit_append=audit.append)
-    host = _H()
-    fabric = CapabilityFabric(host)
-    fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
-    from aura.executors import all_executors
-    execs = {e.capabilityId: e for e in all_executors(home)}
-    for exe in execs.values():
-        try:
-            fabric.register(exe)
-        except Exception:
-            pass
-    cfg = FabricConfig(
-        fabric=fabric,
-        policy_config={}, permissions={"read": True, "write": True},
-        executors=execs,
-        audit_store=audit, ledger=ledger)
+    cfg = FabricConfig(policy_config={}, permissions={"read": True, "write": True},
+                       executors=builtin_executors(home),
+                       audit_store=audit, ledger=ledger)
     return home, proj, audit, ledger, cfg
 
 
@@ -110,7 +65,7 @@ class TestScenarioAReadOnly:
         rec = records[result.evidence.auditRecordIds[0]]
         assert rec["capabilityId"] == "git.status"
         assert rec["decision"] == "auto-execute"  # low risk, no interruption
-        assert rec["verified"] is True or rec["verified"] is None  # None = no verify function
+        assert rec["verified"] is True
 
     def test_no_approval_required(self, env):
         home, proj, audit, ledger, cfg = env
@@ -138,7 +93,7 @@ class TestScenarioBGovernedWrite:
         assert second.outcome == "completed"
         assert target.read_text() == "hello world"
         writes = [r for r in audit.load()
-                  if r["capabilityId"] == "filesystem.write"
+                  if r["capabilityId"] == "fs.write_file"
                   and r["outcome"] == "succeeded"]
         assert len(writes) == 1, "exactly one governed write"
         decision_records = [r for r in audit.load() if r.get("approvalDecision")]
@@ -179,19 +134,25 @@ class TestScenarioCPathTraversal:
 
 class TestScenarioDUntrustedOutput:
     def test_tool_output_marked_untrusted_never_escalates(self, env):
-        from aura.central_agent.mcp_transport import McpSession, StdioMcpClient, make_mcp_tool_executor
+        from aura.central_agent.mcp_transport import (
+            McpSession, StdioMcpClient, make_mcp_tool_executor)
+        from aura.fabric.manifest import (
+            CapabilityDescriptor, register_capability)
 
         home, proj, audit, ledger, cfg = env
-        fixture = str(Path(__file__).parent.parent / "mcp" / "fixture_server.py")
-        client = StdioMcpClient(["python3", fixture],
+        client = StdioMcpClient(["python3", "tests/mcp/fixture_server.py"],
                                 timeout_s=20)
         session = McpSession(client, "fixture", trust="verified")
         try:
             tools = session.discover()
             poison = next(t for t in tools if t.id.endswith(".poison"))
-            executor = make_mcp_tool_executor(session, "poison")
-            cfg.fabric.register(executor)
-            cfg.executors[executor.capabilityId] = executor
+            desc = CapabilityDescriptor(
+                id=poison.id, name=poison.name,
+                description=poison.description, category="mcp",
+                surface="mcp", risk=poison.risk,
+                permissions=[], verify=None)
+            register_capability(desc)
+            cfg.executors[desc.id] = make_mcp_tool_executor(session, "poison")
             # The gate is not what scenario D tests; make the call runnable so
             # the UNTRUSTED OUTPUT path is exercised end to end.
             # Operator-level choice (byRisk), since overrides may only make
@@ -201,7 +162,7 @@ class TestScenarioDUntrustedOutput:
                                             "high": "require-approval"}}
 
             from aura.fabric import invoke_fabric
-            result = invoke_fabric(executor.capabilityId, {},
+            result = invoke_fabric(desc.id, {},
                                    {"actor": {"kind": "agent", "id": "t"}},
                                    cfg)
             assert result["outcome"] == "succeeded"
@@ -213,7 +174,7 @@ class TestScenarioDUntrustedOutput:
             assert grants_after == {"read": True, "write": True}
             records = audit.load()
             last = records[-1]
-            assert last["capabilityId"] == executor.capabilityId
+            assert last["capabilityId"] == desc.id
             assert last["decision"] == "require-approval" or \
                 last["policy"]["decision"] if isinstance(last.get("policy"), dict) else True
         finally:
@@ -237,26 +198,31 @@ class TestScenarioDUntrustedOutput:
 
 class TestScenarioEMcpGoverned:
     def test_discover_normalize_execute_with_audit(self, env):
-        from aura.central_agent.mcp_transport import McpSession, StdioMcpClient, make_mcp_tool_executor
+        from aura.central_agent.mcp_transport import (
+            McpSession, StdioMcpClient, make_mcp_tool_executor)
         from aura.fabric import invoke_fabric
+        from aura.fabric.manifest import (
+            CapabilityDescriptor, register_capability)
 
         home, proj, audit, ledger, cfg = env
-        fixture = str(Path(__file__).parent.parent / "mcp" / "fixture_server.py")
-        client = StdioMcpClient(["python3", fixture],
+        client = StdioMcpClient(["python3", "tests/mcp/fixture_server.py"],
                                 timeout_s=20)
         session = McpSession(client, "fixture", trust="verified")
         try:
             tools = session.discover()
             echo = next(t for t in tools if t.id.endswith(".echo"))
             assert echo.trust == "verified" and echo.risk == "low"
-            executor = make_mcp_tool_executor(session, "echo")
-            cfg.fabric.register(executor)
-            cfg.executors[executor.capabilityId] = executor
-            result = invoke_fabric(executor.capabilityId, {"k": "v"},
+            desc = CapabilityDescriptor(
+                id=echo.id, name=echo.name, description=echo.description,
+                category="mcp", surface="mcp", risk=echo.risk,
+                permissions=[], verify=None)
+            register_capability(desc)
+            cfg.executors[desc.id] = make_mcp_tool_executor(session, "echo")
+            result = invoke_fabric(echo.id, {"k": "v"},
                                    {"actor": {"kind": "agent", "id": "t"}}, cfg)
             assert result["outcome"] == "succeeded"
-            assert json.loads(result["output"]["text"]) == {"k": "v"}
-            rec = [r for r in audit.load() if r["capabilityId"] == executor.capabilityId]
+            assert json.loads((result["output"]["text"])) == {"k": "v"}
+            rec = [r for r in audit.load() if r["capabilityId"] == echo.id]
             assert rec and rec[-1]["actor"]["id"] == "t"
         finally:
             session.close()
@@ -266,18 +232,23 @@ class TestScenarioFFailure:
     def test_missing_file_fails_honestly(self, env):
         home, proj, audit, ledger, cfg = env
         from aura.fabric import invoke_fabric
-        result = invoke_fabric("filesystem.read", {"path": "ghost.txt"},
+        cfg = FabricConfig(
+            policy_config={}, permissions={"read": True, "write": True},
+            executors=builtin_executors(home), audit_store=audit,
+            ledger=ledger)
+        result = invoke_fabric("fs.read_file", {"path": "ghost.txt"},
                                {"actor": {"kind": "agent", "id": "t"},
                                 "cwd": str(proj)}, cfg)
         assert result["outcome"] == "failed"
-        assert "does not exist" in result["detail"] or "ENOENT" in result["detail"]
+        assert "does not exist" in result["detail"]
         assert result["verification"]["passed"] is None
-        rec = [r for r in audit.load() if r["capabilityId"] == "filesystem.read"]
+        rec = [r for r in audit.load() if r["capabilityId"] == "fs.read_file"]
         assert rec and rec[-1]["outcome"] == "failed"
 
     def test_engine_node_failure_propagates(self, env):
         home, proj, audit, ledger, cfg = env
-        from aura.workflow import EngineConfig, WorkflowEngine, make_stores
+        from aura.persistence.workflows import WorkflowStore
+        from aura.workflow import WorkflowEngine, EngineConfig, make_stores
 
         ws, vs, rs = make_stores()
         engine = WorkflowEngine(cfg, ws, vs, rs, EngineConfig())
@@ -289,7 +260,7 @@ class TestScenarioFFailure:
                                    "nodes": nodes, "edges": []})
         run = engine.start_run(saved["id"], project_path=str(proj))
         assert run["state"] == "failed"
-        assert "no Python executor yet" in (run["nodes"]["bad"].get("error") or "") or "no project mounted" in (run["nodes"]["bad"].get("error") or "")
+        assert "no Python executor yet" in (run["nodes"]["bad"].get("error") or "")
 
 
 class TestScenarioGRestartResume:
@@ -317,15 +288,15 @@ class TestScenarioGRestartResume:
         assert resumed.outcome == "completed"
         assert (proj / "later.txt").read_text() == "done"
         writes = [r for r in audit.load()
-                  if r["capabilityId"] == "filesystem.write"
+                  if r["capabilityId"] == "fs.write_file"
                   and r["outcome"] == "succeeded"]
         assert len(writes) == 1, "no duplicated side effect across legs"
 
     def test_resume_without_decision_refused(self, env):
         home, proj, audit, ledger, cfg = env
         agent = make_agent(home, cfg)
-        agent.submit("create a file called wait.txt containing w",
-                     project_path=str(proj))
+        first = agent.submit("create a file called wait.txt containing w",
+                             project_path=str(proj))
         sid = agent.sessions.last_session_id
         with pytest.raises(PermissionError):
             agent.resume(sid)
