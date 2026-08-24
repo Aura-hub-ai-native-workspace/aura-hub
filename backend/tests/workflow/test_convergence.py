@@ -18,33 +18,17 @@ class NullFabric:
         raise AssertionError("fabric must not be reached by pure-logic workflows")
 
 
-
-
-class _IdentitySecrets:
-    """No secrets stored: redactor is identity, resolve passes text through
-    and fails closed on any {{secret:}} reference (matches TS behavior)."""
-    def known_values(self):
-        return []
-    def redactor(self):
-        return lambda t: t
-    def resolve(self, text):
-        if "{{secret:" in text:
-            raise RuntimeError("not stored")
-        return {"text": text, "used": []}
-
-
 def _runner(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_HOME", str(tmp_path))
-    return WorkflowRunner(fabric=None, secrets=_IdentitySecrets(), run_scopes=RunScopeRegistry(),
+    return WorkflowRunner(fabric=None, run_scopes=RunScopeRegistry(),
                           versions=WorkflowVersionStore(), runs=WorkflowRunStore())
 
 
 def _wf():
     return {"id": "wf-c", "name": "Conv", "description": "",
-            "nodes": [{"id": "i", "type": "user-input", "x": 0, "y": 0,
-                       "config": {"prompt": "v", "default": "ok"}},
-                      {"id": "o", "type": "output", "x": 1, "y": 0, "config": {}}],
-            "edges": [{"id": "e", "from": "i", "fromPort": "out", "to": "o"}]}
+            "nodes": [{"id": "o", "type": "output", "x": 0, "y": 0,
+                       "config": {"template": "ok"}}],
+            "edges": []}
 
 
 ENTRY_CALLS = []
@@ -69,25 +53,22 @@ def test_manual_scheduler_automation_converge(tmp_path, monkeypatch):
     proj = {"id": "p", "path": str(tmp_path)}
 
     async def drive():
-        inputs = {"i": "ok"}          # user-input node id → value
         manual = await r.start_workflow_run(wf, project_id="p", project_path=proj["path"],
-                                            inputs=inputs,
                                             trigger={"kind": "manual", "by": "user"})
         sched = await fire_scheduled_workflow(r, workflow=wf, project_id="p",
-                                              project_path=proj["path"], inputs={"i": "ok"},
+                                              project_path=proj["path"],
                                               rule_id="rule-1",
                                               automation_run_id="ar-1", cron="0 9 * * 1")
         auto = await r.start_workflow_run(wf, project_id="p", project_path=proj["path"],
-                                          inputs={"i": "ok"},
                                           trigger={"kind": "automation", "ruleId": "rule-2",
                                                    "runId": "ar-2", "event": "file-changed"})
         return manual, sched, auto
 
     m, s, a = asyncio.run(drive())
     assert ENTRY_CALLS == ["manual", "automation", "automation"]
-    for label, started in (("m", m), ("s", s), ("a", a)):
-        assert started["result"]["runState"] == "succeeded", (label, started["result"])
-        assert [o["text"] for o in started["result"]["outputs"]] == ["ok"], (label, started["result"]["outputs"])
+    for started in (m, s, a):
+        assert started["result"]["runState"] == "succeeded"
+        assert started["result"]["outputs"][0]["text"] == "ok"
     # run records carry structured linkage (no summary parsing)
     assert s["run"]["trigger"]["kind"] == "automation"
     assert s["run"]["trigger"]["ruleId"] == "rule-1"

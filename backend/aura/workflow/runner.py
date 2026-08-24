@@ -22,6 +22,7 @@ def compute_envelope(nodes: list[dict]) -> dict:
     scope list, which must be exact.
     """
     from .nodes_core import GOVERNED_TYPES
+    from ..executors import EXECUTOR_TABLE
 
     scopes: dict[str, dict] = {}
     for n in nodes:
@@ -31,7 +32,7 @@ def compute_envelope(nodes: list[dict]) -> dict:
             "shell-command": "terminal.execute", "export-file": "filesystem.write",
             "git-status": "git.status", "changed-files": "git.status",
             "git-diff": "git.diff", "git-commit": "git.commit",
-            "git-branch": "git.branch",
+            "git-branch": "git.branch", "git-push": "git.push",
             "http-request": "http.request",
         }.get(n["type"])
         cap = next((c for c in _manifest_caps() if c["id"] == binding_cap), None)
@@ -43,7 +44,7 @@ def compute_envelope(nodes: list[dict]) -> dict:
         for p in cap.get("permissions") or []:
             entry["scope-set"].add(p)
     return {"capabilities": sorted(
-        [{"capabilityId": cid, "scopes": sorted(v["scope-set"]),
+        [{"capabilityId": cid, **{"scopes": sorted(v["scope-set"])},
           "risk": v["risk"], "nodeIds": v["capabilityIds"]}
          for cid, v in scopes.items()], key=lambda x: x["capabilityId"])}
 
@@ -85,29 +86,13 @@ class WorkflowRunner:
                                  approved_capabilities: list[str] | None = None,
                                  actor: dict | None = None,
                                  emit: Any = lambda e: None,
-                                 on_run_created=None,
-                                 max_node_executions: int | None = None) -> dict:
+                                 on_run_created=None) -> dict:
         return await self.start({"workflow": workflow, "projectId": project_id,
                                  "projectPath": project_path,
                                  "projectName": project_name or workflow.get("name", ""),
                                  "trigger": trigger, "inputs": inputs,
                                  "approvedCapabilities": approved_capabilities,
-                                 "actor": actor,
-                                 "maxNodeExecutions": max_node_executions}, emit)
-
-    workflows = None  # optional store seam; automation resolves ids via it
-
-    def _agent_runner(self, *, run: dict, envelope: dict, redact, signal):
-        if self.fabric is None:
-            return None
-        from .agent.runner import AgentRunner
-
-        return AgentRunner(
-            fabric=self.fabric, envelope=envelope, redact=redact,
-            workflow_id=run["workflowId"], run_id=run["id"],
-            project_id=run["projectId"], project_path=run["projectPath"],
-            model=getattr(self, "model", None),
-            actor={"kind": "agent", "id": "agent:workflow"})
+                                 "actor": actor}, emit)
 
     def cancel_workflow_run(self, run_id: str) -> bool:
         ev = self.live_runs.get(run_id)
@@ -209,7 +194,7 @@ class WorkflowRunner:
         if self.fabric is not None:
             governor = create_governor(
                 fabric=self.fabric,
-                secrets=self.secrets or type("S", (), {"known_values": staticmethod(list)})(),
+                secrets=self.secrets or type("S", (), {"known_values": staticmethod(lambda: [])})(),
                 workflow_id=run["workflowId"], run_id=run["id"],
                 project_id=run["projectId"], project_path=run["projectPath"],
                 actor=actor,
@@ -225,15 +210,10 @@ class WorkflowRunner:
                 "projectId": run["projectId"], "projectPath": run["projectPath"],
                 "projectName": input.get("projectName"), "inputs": run.get("inputs"),
                 "signal": signal, "run": run, "runs": self.runs,
-                "governor": governor,
-                "model": getattr(self, "model", None),
-                "agents": self._agent_runner(run=run, envelope=envelope,
-                                             redact=governor.redact if governor else (lambda t: t),
-                                             signal=signal),
+                "governor": governor, "agents": None,
                 "timeoutMs": input.get("timeoutMs"),
                 "replay": input.get("replay"),
                 "agentResume": input.get("agentResume"),
-                "maxNodeExecutions": input.get("maxNodeExecutions"),
             }, emit)
         finally:
             watcher.cancel()

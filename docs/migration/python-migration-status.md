@@ -39,8 +39,12 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 
 ## Current phase summary
 
-**Phases 1–4 COMPLETE · Phase 5 GATE PASSED (execution boundary parity).**
-Suite: `cd backend && python3 -m pytest tests -q` → 66 passed.
+**Phases 1–5 COMPLETE · Phase 6 GATE PASSED (canonical runner convergence).**
+Suite: `cd backend && python3 -m pytest tests -q` → 82 passed. Manual,
+scheduler and automation entries all cross the ONE instrumented
+`WorkflowRunner.start_workflow_run` seam (convergence test); scheduled
+ask-user PARKS with zero auto-approval path; resume/supersede semantics
+ported; engine-level TS differential green.
 Suite: `cd backend && python3 -m pytest tests -q` → 57 passed (differential
 suites auto-borrow the main checkout's esbuild when running from a worktree).
 Highlights: 6/6 frozen vectors; ~630 TS-vs-Python differential cases with

@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
-from typing import Any
+from typing import Any, Callable
 
 from .nodes_core import bindings
 
@@ -54,13 +53,13 @@ class NodeGovernor:
         self.approved_capabilities = approved_capabilities
         self.timeout_ms = timeout_ms
         self._bindings = bindings()
-        self._secret_store = secrets if hasattr(secrets, "resolve") else None
-        _redactor = getattr(secrets, "redactor", None)
-        self._redact_fn = _redactor() if callable(_redactor) else None
+        known = list(getattr(secrets, "known_values", lambda: [])())
+        self._known = known
 
     def redact(self, text: str) -> str:
-        if self._redact_fn is not None:
-            return self._redact_fn(text)
+        for v in self._known:
+            if v:
+                text = text.replace(v, "<redacted>")
         return text
 
     async def run(self, node: dict, ctx: dict, input: dict,
@@ -140,10 +139,15 @@ class NodeGovernor:
                 "error": self.redact(result.get("detail") or ""), "evidence": evidence}
 
     def _resolve_secret(self, template: str) -> str:
-        """Terminal resolution at the Fabric boundary (governor.ts:141-163)."""
-        if self._secret_store is not None:
-            return self._secret_store.resolve(template)["text"]
-        raise RuntimeError(f'secret "{template}" is not configured')
+        """Resolve {{secret:NAME}} via the injected secrets store."""
+        store_resolve = getattr(self, "_resolve_one", None)
+
+        def repl(m):
+            if store_resolve:
+                return store_resolve(m.group(1))
+            raise RuntimeError(f'secret "{m.group(1)}" is not configured')
+
+        return _SECRET_REF.sub(repl, template)
 
 
 def create_governor(**deps) -> NodeGovernor:

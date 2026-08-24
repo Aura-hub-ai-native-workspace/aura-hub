@@ -23,6 +23,18 @@ ESBUILD = REPO / "node_modules" / ".bin" / "esbuild"
 DRIVER = Path(__file__).parent / "ts_driver.mjs"
 
 
+WF_STUBS = {
+    "stub-secrets.mjs": "export const secrets = { redactor: () => (t) => t, resolve: (v) => ({ text: v }), known_values: () => [] };\nexport default { secrets };",
+    "stub-agentrunner.mjs": "export function createAgentRunner() { throw new Error('agent runtime not exercised'); }\nexport default { createAgentRunner };",
+}
+
+
+def _wf_stubs() -> None:
+    TSREF.mkdir(parents=True, exist_ok=True)
+    for name, content in WF_STUBS.items():
+        (TSREF / name).write_text(content, encoding="utf-8")
+
+
 STUB_ENV = """export async function probeNode() { throw new Error('probe unavailable in differential harness'); }
 export default { probeNode };
 """
@@ -112,12 +124,17 @@ def tsref() -> dict[str, Path]:
         )
         _write_stub_env()
         _build_fabric_wiring(REPO, ESBUILD, TSREF)
+        _wf_stubs()
+        subprocess.run([str(ESBUILD),
+            str(REPO / "packages/ai-service/src/workflow/engine.ts"),
+            "--bundle", "--format=esm", "--platform=node", "--external:typescript",
+            f"--outfile={TSREF / 'wfengine.mjs'}"], cwd=REPO, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
         pytest.skip(f"failed to build TS reference bundles: {e.stderr[-400:]}")
     return {
         "fabric": fabric_out, "index": index_out, "versions": versions_out,
         "wfstore": TSREF / "wfstore.mjs", "runstore": TSREF / "runstore.mjs",
-        "autostore": TSREF / "autostore.mjs", "fabricwiring": TSREF / "fabricwiring.mjs", "runtypes": TSREF / "runtypes.mjs",
+        "autostore": TSREF / "autostore.mjs", "fabricwiring": TSREF / "fabricwiring.mjs", "runtypes": TSREF / "runtypes.mjs", "wfengine": TSREF / "wfengine.mjs",
     }
 
 

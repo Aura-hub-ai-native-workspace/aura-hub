@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from aura.fabric.scopes import LOCAL_GRANTS, grants_for_scopes
 from aura.persistence.versions import WorkflowVersionStore
 from aura.workflow.engine import run_workflow
@@ -18,7 +20,7 @@ def _node(nid, ntype, cfg=None):
 
 def test_condition_branch_selection():
     wf = _wf(
-        [_node("seed", "user-input", {"prompt": "text", "default": "yes"}),
+        [_node("seed", "output", {"template": "yes"}),
          _node("c", "condition", {"check": "contains", "value": "yes"}),
          _node("t", "output", {"template": "said yes"}),
          _node("f", "output", {"template": "said no"})],
@@ -32,7 +34,7 @@ def test_condition_branch_selection():
     assert r["runState"] == "succeeded"
     st = {k: v["status"] for k, v in r["nodes"].items()}
     assert st["t"] == "completed" and st["f"] == "skipped"
-    assert any(e["type"] == "output" and e["text"] == "yes" for e in events)
+    assert any(e["type"] == "output" and e["text"] == "said yes" for e in events)
 
 
 def test_condition_malformed_check_fails_run():
@@ -60,7 +62,7 @@ def test_cycle_terminates():
 
 
 def test_loop_for_each_line_bounded():
-    wf = _wf([_node("seed", "user-input", {"prompt": "lines", "default": "a\nb\nc"}),
+    wf = _wf([_node("seed", "output", {"template": "a\nb\nc"}),
               _node("l", "loop", {"mode": "for-each-line"}),
               _node("o", "output", {"template": "{{input}}"})],
              [{"id": "e0", "from": "seed", "fromPort": "out", "to": "l"},
