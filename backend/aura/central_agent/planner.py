@@ -30,6 +30,26 @@ def _plan_id() -> str:
     return f"pln-{uuid.uuid4().hex[:12]}"
 
 
+def _write_inputs(intent: AgentIntent) -> dict:
+    """Write arguments from heuristic extras OR structured entities.
+    Entities are DATA describing the request; the executor still confines
+    the path and policy still gates the effect."""
+    wire = intent.wire()
+    path = wire.get("writePath")
+    content = wire.get("writeContent")
+    if not path:
+        for e in intent.entities:
+            if e.type == "path" and e.value:
+                path = e.value
+                break
+    if not content:
+        for e in intent.entities:
+            if e.type == "text" and e.value:
+                content = e.value
+                break
+    return {"path": path, "content": content}
+
+
 def _run_workflow_ref(intent: AgentIntent) -> str | None:
     """Detect 'run workflow <ref>' intents. Ref may be an id or a name."""
     match = re.search(r"\brun (?:the )?workflow (?:named |called )?(.+)",
@@ -128,11 +148,60 @@ def plan_run_workflow(intent: AgentIntent, session_id: str, now: str,
 
 
 class TaskPlanner:
-    """Deterministic decomposition. A model-driven planner can attach later
-    behind the same boundary; its output would face identical validation."""
+    """Deterministic decomposition + VALIDATED model proposals.
 
-    def __init__(self, workflow_resolver: Callable[[str], str | None] | None = None) -> None:
+    A model MAY propose a plan (plan_from_model); nothing else about it is
+    trusted: capability ids must exist in the registry, risk floors come
+    from the manifest (a proposal can only RAISE risk), bounds are re-applied,
+    and approval expectations are recomputed from preflight — never accepted.
+    """
+
+    def __init__(self, workflow_resolver: Callable[[str], str | None] | None = None,
+                 known_capabilities: Callable[[], set[str]] | None = None) -> None:
         self._resolve_workflow = workflow_resolver or (lambda ref: None)
+        self._known = known_capabilities or (lambda: set())
+
+    def plan_from_model(self, intent, session_id: str, now: str,
+                        proposal: dict) -> TaskPlan:
+        """Validate a model-proposed plan structure. Fails CLOSED."""
+        if intent.needsClarification:
+            raise PlanningError("intent needs clarification before planning")
+        try:
+            raw_tasks = proposal["tasks"]
+            if not isinstance(raw_tasks, list) or not raw_tasks:
+                raise PlanningError("proposal has no tasks")
+            if len(raw_tasks) > MAX_TASKS:
+                raise PlanningError(
+                    f"model proposed {len(raw_tasks)} tasks; bound is {MAX_TASKS}")
+            known = self._known()
+            tasks: list[TaskSpecification] = []
+            for i, rt in enumerate(raw_tasks[:MAX_TASKS]):
+                cap = rt.get("capabilityId")
+                if cap is not None and cap not in known:
+                    raise PlanningError(
+                        f"model proposed unknown capability '{cap}'")
+                risk = rt.get("risk") or "low"
+                tasks.append(_task(
+                    f"t{i + 1}",
+                    str(rt.get("description") or f"step {i + 1}"),
+                    capability_id=cap,
+                    input=rt.get("input") or {},
+                    verification=VerificationRequirement(
+                        kind=rt.get("verificationKind") or "audit-only",
+                        description=str(rt.get("verification") or "")),
+                ).model_copy(update={
+                    "risk": risk,
+                    "dependsOn": [f"t{d + 1}" for d in (rt.get("dependsOn") or [])
+                                  if isinstance(d, int) and 0 <= d < i],
+                }))
+            plan = TaskPlan(planId=_plan_id(), sessionId=session_id,
+                            intent=intent, tasks=tasks, createdAt=now)
+        except PlanningError:
+            raise
+        except Exception as exc:
+            raise PlanningError(f"invalid model plan: {exc}") from exc
+        self.validate(plan)
+        return plan
 
     def plan(self, intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
         if intent.needsClarification:
@@ -151,13 +220,13 @@ class TaskPlanner:
                         description="git exit-code verification in the Fabric."))],
                 createdAt=now)
         elif caps == {"fs.write_file"}:
+            write_input = _write_inputs(intent)
             plan = TaskPlan(
                 planId=_plan_id(), sessionId=session_id, intent=intent,
                 tasks=[_task(
-                    "t1", f"Write {intent.wire().get('writePath', 'file')}",
+                    "t1", f"Write {write_input.get('path', 'file')}",
                     capability_id="fs.write_file",
-                    input={"path": intent.wire().get("writePath"),
-                           "content": intent.wire().get("writeContent")},
+                    input=write_input,
                     verification=VerificationRequirement(
                         kind="read-back",
                         description="File reads back byte-identical."))],

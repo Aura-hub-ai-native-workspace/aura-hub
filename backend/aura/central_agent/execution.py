@@ -142,6 +142,39 @@ class ExecutionController:
             context["cwd"] = project_cwd
         if approval_id:
             context["approvalId"] = approval_id
+        # Phase 11 unification: effects with node bindings go through the
+        # SAME interpreter as workflows (one runner); everything else keeps
+        # the direct governed invoke (policy/audit identical).
+        engine = getattr(self, "engine", None)
+        if engine is not None and not approval_id and not project_cwd:
+            pass  # fall through to direct invoke below (no cwd context)
+        if engine is not None and task.capabilityId in engine.NODE_TO_CAPABILITY.values():
+            run, _nt = engine.run_ad_hoc(
+                task.capabilityId, payload, project_cwd, project_id,
+                approval_id=approval_id, task_label=task.description[:60])
+            invocations = [e["invocationId"] for e in (run.get("evidence") or [])]
+            state_map = {"succeeded": "done", "awaiting-approval": "awaiting-approval",
+                         "denied": "denied", "timed-out": "timed-out"}
+            outcome_state = state_map.get(run["state"], "failed")
+            parked = [n for n in run["nodes"].values()
+                      if n["state"] == "awaiting-approval"]
+            result.outcomes.append(TaskOutcome(
+                taskId=task.id, state=outcome_state,  # type: ignore[arg-type]
+                performed=run["state"] in ("succeeded",),
+                verified=all(n.get("state") == "succeeded"
+                             for n in run["nodes"].values())
+                if run["state"] == "succeeded" else None,
+                invocationIds=invocations,
+                approvalId=(parked[0].get("approval") or {}).get("requestId")
+                if parked else None,
+                detail=f"Run {run['id']} ended {run['state']}: "
+                       f"{next(iter(run['nodes'].values()), {}).get('summary', '')}",
+            ))
+            if result.run_id is None:
+                result.run_id = run["id"]
+            if outcome_state == "awaiting-approval" and result.run_id:
+                result.parked_runs[task.id] = result.run_id
+            return
         invocation = invoke_fabric(
             task.capabilityId, payload, context, self._cfg,
         )

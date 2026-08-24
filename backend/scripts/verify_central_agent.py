@@ -106,9 +106,10 @@ def main() -> int:
         agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
         before = len(audit.load())
         r = agent.submit("flurb the bazzle")
-        assert r.outcome == "blocked"
-        assert len(audit.load()) == before
-        return "ambiguous intent blocked with zero governed invocations"
+        assert r.outcome == "needs-clarification", r.outcome
+        assert len(audit.load()) == before, \
+            f"side effects occurred: {len(audit.load()) - before}"
+        return "clarification requested with zero governed invocations"
 
     def approval_park_and_single_use_spend():
         agent = CentralAgent(fabric_cfg=strict_cfg, session_store=AgentSessionStore(home))

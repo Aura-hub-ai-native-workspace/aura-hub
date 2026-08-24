@@ -65,15 +65,15 @@ class TestVerticalSlice:
     def test_ambiguous_intent_blocked_without_execution(self, env):
         home, audit, _, _, agent = env
         before = len(audit.load())
-        result = agent.submit("")
-        assert result.outcome == "blocked"
+        result = agent.submit("   ")
+        assert result.outcome == "needs-clarification"
         assert "clarif" in result.summary.lower() or "?" in result.summary
         assert len(audit.load()) == before  # NOTHING ran
 
     def test_unmappable_intent_never_touches_the_fabric(self, env):
         home, audit, _, _, agent = env
         result = agent.submit("flurb the bazzle quux")
-        assert result.outcome == "blocked"
+        assert result.outcome == "needs-clarification"
         assert len(audit.load()) == 0
 
     def test_policy_deny_blocks_plan_before_execution(self, monkeypatch, env):
