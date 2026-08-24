@@ -1,16 +1,73 @@
 # AURA Central Agent — Implementation
 
-> **Status:** IMPLEMENTED (milestone 1) · RUNTIME VERIFIED
+> **Status:** IMPLEMENTED (milestone 2: production execution) · RUNTIME VERIFIED 12/12
 >
-> This document records what was actually built on
-> `feature/aura-central-agent`, how it maps to the research and architecture
-> documents, what is verified, and what remains.
+> Milestone 2 connected the milestone-1 foundation to real execution:
+> a Python workflow engine, process/filesystem executors behind governance,
+> approval-park → resume across restarts, an HTTP/SSE API, MCP stdio
+> transport, model routing and bounded context assembly. Milestone-1 text
+> is preserved below where still accurate; §2/§6 have been superseded by
+> this header block and the roadmap.
 >
-> Companions: [Research](./AURA_CENTRAL_AGENT_RESEARCH.md) ·
+> Companions: [API](./AURA_CENTRAL_AGENT_API.md) ·
+> [Research](./AURA_CENTRAL_AGENT_RESEARCH.md) ·
 > [Architecture](./AURA_CENTRAL_AGENT_ARCHITECTURE.md) ·
 > [Roadmap](./AURA_CENTRAL_AGENT_ROADMAP.md) ·
-> [Security Model](./AURA_AGENT_SECURITY_MODEL.md) ·
-> [Component Map](./AURA_AGENT_COMPONENT_MAP.md)
+> [Security Model](./AURA_AGENT_SECURITY_MODEL.md)
+
+## Milestone-2 additions (all Python, all governed)
+
+| Subsystem | Module | Verified by |
+| --- | --- | --- |
+| Workflow engine (graph interpreter over the Fabric) | `aura/workflow/engine.py` | engine smoke + scenario F/G tests; conditions, bounded loops, node-execution bound, timeout, cancellation |
+| Real executors: `git.status` (fixed argv), `fs.write_file` / `fs.read_file` (root-confined, traversal/symlink-guarded, byte-capped) | `aura/fabric/executors.py` | scenarios A/B/C, security suite |
+| Dynamic capability registration (MCP normalization) | `aura/fabric/manifest.py::register_capability` | collision refused, MCP E2E test |
+| Run/workflow-node correlation on audit records + approval dedup keys | `aura/fabric/invoke.py` | resume-chain tests |
+| Parked-run resume across restart (new leg, superseded chain, single-use spend) | `central_agent/service.py::resume`, `workflow/engine.py::resume_run` | scenario G (restart-reload-approve-resume), denial path returns honest `denied` |
+| Honest outcome vocabulary (`denied`, `timeout` never collapsed into `failed`) | contracts + controller | denial/traversal tests |
+| HTTP/SSE API (stdlib server) incl. approvals decide surface with 409 replay guard | `aura/api.py` | API smoke in runtime gate; route docs in AURA_CENTRAL_AGENT_API.md |
+| MCP stdio transport (initialize/tools-list/tools-call), fixture server, Fabric executor adapter | `central_agent/mcp_transport.py`, `tests/mcp/fixture_server.py` | Scenario D/E tests: poisoned descriptors neutralized, untrusted output flows as data |
+| Model routing (provider chain, health/circuit, env-only keys, capped retries) | `central_agent/model_routing.py` | unit smoke: success, failover, honest RoutingError |
+| Bounded context assembly (provenance marks, untrusted fencing, size caps) | `central_agent/context.py` | render caps; wired into intent compilation |
+
+## Runtime verification (12 checks — `backend/scripts/verify_central_agent.py`)
+
+1. status slice end-to-end · 2. evidence ↔ trail linkage ·
+3. authoring slice with read-back graph hash · 4. ambiguous-intent block ·
+5. park→decide→single-use spend, replay refused · 6. deny pre-execution ·
+7. session reload · 8. no credential material in persisted state ·
+9. **Scenario A** real git via executor · 10. **Scenario B** governed write
+park/approve/resume, exactly one write · 11. **Scenario G**
+restart-reload-approve-resume without duplication ·
+12. live HTTP API surface.
+
+pytest: **118 passed** (`tests/unit` + `tests/integration`,
+excluding the parallel builder's own failing WIP file
+`tests/unit/test_persistence_invariants.py`). Frontend typecheck clean.
+
+## Definition-of-done mapping
+
+[✓] intent enters Python agent → [✓] bounded context → [✓] compile →
+[✓] plan → [✓] fabric discovery → [✓] authority preflight → [✓] policy →
+[✓] approval park/decide/spend → [✓] resume (incl. restart) →
+[✓] workflow compilation → [✓] Python engine executes graphs →
+[✓] fabric governs every node action → [✓] executors perform real effects →
+[✓] observations captured → [✓] independent verification →
+[✓] evidence from real records → [✓] append-only audit →
+[✓] truthful result → [✓] live events (SSE) → [✓] persistence survives
+restart → [✓] failure handling → [✓] security negatives →
+[✓] MCP boundary (stdio subset) → [✓] API contracts documented →
+[✓] e2e scenarios → [✓] zero TS backend dependency →
+[✓] zero fabricated behavior.
+
+Remaining for future milestones (NOT claimed): intelligence/generate node
+classes in the engine (fail honestly today); live-model accuracy for the
+intent compiler (port verified, provider not provisioned); resources/prompts
+MCP verbs; plugin packaging beyond capability mapping; React UI consumption.
+
+---
+
+# Milestone-1 record (foundation)
 
 ---
 
