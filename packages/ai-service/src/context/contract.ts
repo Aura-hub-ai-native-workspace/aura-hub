@@ -102,12 +102,6 @@ const list = (items: string[], max: number): string =>
 export interface RenderOptions {
   /** Override the view's own surface budget. */
   surface?: ContextSurface;
-  /** Omit sections that are usually irrelevant to a pure question. */
-  include?: {
-    environment?: boolean;
-    capabilities?: boolean;
-    activity?: boolean;
-  };
 }
 
 /**
