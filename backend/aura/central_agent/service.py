@@ -9,6 +9,7 @@ to aura.policy, and every effect to aura.fabric.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from ..audit import AuditStore
 from ..contracts import (
@@ -19,6 +20,8 @@ from ..contracts import (
     ExecutionPlan,
 )
 from ..fabric import FabricConfig
+from ..persistence.runs import WorkflowRunStore
+from ..persistence.workflows import WorkflowStore
 from .authority import AuthorityChecker
 from .discovery import CapabilityDiscovery
 from .evidence import EvidenceCollector
@@ -35,6 +38,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _engine_config(bus) -> Any:
+    from ..workflow import EngineConfig
+
+    def forward(event: dict) -> None:
+        # Engine events ride the same bus, namespaced — one stream for the UI.
+        bus.emit(AgentEvent(
+            type="invocation.observed", at=_now(), sessionId="-",
+            payload={"engine": event},
+        ))
+
+    return EngineConfig(emit=forward)
+
+
+def _default_version_store(workflow_store):
+    from ..persistence.versions import WorkflowVersionStore
+    return WorkflowVersionStore(clock=workflow_store._clock)
+
+
 class CentralAgent:
     def __init__(
         self,
@@ -45,21 +66,57 @@ class CentralAgent:
         planner: TaskPlanner | None = None,
         discovery: CapabilityDiscovery | None = None,
         compiler: WorkflowCompiler | None = None,
+        workflow_engine: Any | None = None,
+        workflow_store: WorkflowStore | None = None,
+        run_store: WorkflowRunStore | None = None,
     ) -> None:
         self.fabric_cfg = fabric_cfg
         self.sessions = session_store
         self.bus = bus or EventBus()
         self.intents = intent_compiler or IntentCompiler(mode="heuristic")
-        self.planner = planner or TaskPlanner()
+        if planner is not None:
+            self.planner = planner
+        else:
+            from ..workflow import WorkflowEngine, make_stores
+
+            stores = (workflow_store, run_store)
+            if any(s is None for s in stores) or workflow_engine is None:
+                default_ws, _, default_rs = make_stores()
+                workflow_store = workflow_store or default_ws
+                run_store = run_store or default_rs
+            self.engine = workflow_engine or WorkflowEngine(
+                fabric_cfg, workflow_store,
+                _default_version_store(workflow_store), run_store,
+                config=_engine_config(self.bus),
+            )
+            self.workflow_store = workflow_store
+            self.run_store = run_store
+            self.planner = TaskPlanner(
+                workflow_resolver=self._resolve_workflow_ref)
         self.discovery = discovery or CapabilityDiscovery()
         self.authority = AuthorityChecker(fabric_cfg)
         self.compiler = compiler or WorkflowCompiler()
-        self.controller = ExecutionController(fabric_cfg)
+        self.controller = ExecutionController(
+            fabric_cfg, engine=getattr(self, "engine", None))
         self.verifier = VerificationEngine()
         audit_store: AuditStore | None = fabric_cfg.audit_store
         self.evidence = EvidenceCollector(lambda: (audit_store.load() if audit_store else []))
 
-    # ── event helper ─────────────────────────────────────────────────────
+    # ── helpers ──────────────────────────────────────────────────────────
+    def _resolve_workflow_ref(self, ref: str) -> str | None:
+        """Resolve a user-visible reference to a stored workflow id."""
+        store = getattr(self, "workflow_store", None)
+        if store is None:
+            return None
+        direct = store.get(ref)
+        if direct is not None:
+            return ref
+        lowered = ref.strip().lower()
+        for wf in store.list():
+            if (wf.get("name") or "").strip().lower() == lowered:
+                return wf["id"]
+        return None
+
     def _emit(self, etype: str, session_id: str, **payload) -> None:
         self.bus.emit(AgentEvent(type=etype, at=_now(), sessionId=session_id, payload=payload))  # type: ignore[arg-type]
 
@@ -173,6 +230,26 @@ class CentralAgent:
                 evidence=bundle, failureReason=None,
             )
 
+        if outcome.denied:
+            report = self.verifier.verify(plan, outcome.outcomes)
+            bundle = self.evidence.collect(sid, plan.planId, outcome.outcomes,
+                                           f"Denied: {outcome.stop_reason}", _now())
+            self._emit("agent.failed", sid, reason="policy denial", denied=True)
+            return AgentResult(status="failed", outcome="denied",
+                               summary=f"Policy denied this request: {outcome.stop_reason}",
+                               performed=[o.taskId for o in outcome.outcomes if o.performed],
+                               evidence=bundle, failureReason="policy-denied")
+        if outcome.timed_out:
+            bundle = self.evidence.collect(sid, plan.planId, outcome.outcomes,
+                                           "Timed out.", _now())
+            self._emit("agent.failed", sid, reason="timeout")
+            return AgentResult(status="failed", outcome="timeout",
+                               summary=f"The work exceeded its time budget: {outcome.stop_reason}",
+                               performed=[o.taskId for o in outcome.outcomes if o.performed],
+                               evidence=bundle, failureReason="timeout")
+        if outcome.cancelled:
+            return AgentResult(status="cancelled", outcome="cancelled",
+                               summary=outcome.stop_reason)
         if outcome.stopped:
             return self._fail(session, outcome.stop_reason,
                               outcomes=outcome.outcomes)
@@ -207,6 +284,99 @@ class CentralAgent:
                                            outcomes, f"Failed: {reason}", _now())
         return AgentResult(status="failed", outcome="failed", summary=reason,
                            evidence=bundle, failureReason=reason)
+
+    # ── resume / cancel ──────────────────────────────────────────────────
+    def resume(self, session_id: str) -> AgentResult:
+        """Continue a parked session after a human decision.
+
+        Validates the grant BEFORE re-executing; the Fabric spends it
+        single-use at invoke time. A resumed run is a NEW leg — the parked
+        record is never mutated and evidence is never duplicated.
+        """
+        session = self.sessions.load(session_id)
+        if session is None:
+            raise ValueError(f"no such session: {session_id}")
+        last = session.lastResult
+        if last is None or last.outcome != "awaiting-approval":
+            raise ValueError("this session is not awaiting an approval")
+        approval_ids = last.evidence.approvalIds if last.evidence else []
+        ledger = self.fabric_cfg.ledger
+        grants: dict[str, str] = {}
+        for apr in approval_ids:
+            request = ledger.by_id(apr) if ledger else None
+            if not request or request.get("state") != "granted" \
+                    or request.get("consumedAt"):
+                raise PermissionError(
+                    f"approval {apr} is not spendable; obtain a fresh decision")
+            grants["_"] = apr  # task mapping resolved below
+        plan = None
+        # Rebuild the plan deterministically from the stored intent message.
+        user_messages = [m.content for m in session.messages if m.role == "user"]
+        if not user_messages:
+            raise ValueError("session has no intent to resume")
+        intent = self.intents.compile(user_messages[0])
+        plan = self.planner.plan(intent, session.sessionId, _now())
+        task = plan.tasks[-1]  # parked task is the last planned one
+        task_grants = {task.id: next(iter(grants.values()))} if grants else {}
+        self._emit("execution.started", session.sessionId,
+                   resumed=True, planId=plan.planId)
+        outcome = self.controller.execute(
+            plan, session.projectId, resume_grants=task_grants)
+        for o in outcome.outcomes:
+            self._emit("invocation.observed", session.sessionId,
+                       taskId=o.taskId, state=o.state,
+                       verified=o.verified, detail=o.detail[:200])
+        report = self.verifier.verify(plan, outcome.outcomes)
+        self._emit("verification.completed", session.sessionId, passed=report.passed)
+        bundle = self.evidence.collect(session.sessionId, plan.planId,
+                                       outcome.outcomes,
+                                       f"Resumed; {report.detail}", _now())
+        if outcome.stopped and outcome.approval_id:
+            result = AgentResult(
+                status="awaiting-approval", outcome="awaiting-approval",
+                summary=f"Resumed run parked again on {outcome.approval_id}.",
+                performed=[o.taskId for o in outcome.outcomes if o.performed],
+                evidence=bundle,
+            )
+        elif outcome.denied or outcome.timed_out or outcome.cancelled or outcome.stopped:
+            honest = ("denied" if outcome.denied else
+                      "timeout" if outcome.timed_out else
+                      "cancelled" if outcome.cancelled else "failed")
+            result = AgentResult(status="failed" if honest != "cancelled" else "cancelled",
+                                 outcome=honest,  # type: ignore[arg-type]
+                                 summary=outcome.stop_reason or honest,
+                                 performed=[o.taskId for o in outcome.outcomes if o.performed],
+                                 evidence=bundle, failureReason=outcome.stop_reason)
+        else:
+            result = AgentResult(
+                status="completed" if report.passed else "verifying",
+                outcome="completed",
+                summary=(f"Resumed and completed. "
+                         f"Evidence: {len(bundle.auditRecordIds)} audit record(s)."),
+                performed=[o.taskId for o in outcome.outcomes if o.performed],
+                verified=[o.taskId for o in report.outcomes if o.verified is True],
+                evidence=bundle,
+            )
+        self._emit("result.ready", session.sessionId, resumed=True,
+                   passed=result.outcome == "completed")
+        self.sessions.finish(session, result)
+        self.sessions.save(session)
+        return result
+
+    def cancel(self, session_id: str) -> bool:
+        session = self.sessions.load(session_id)
+        if session is None:
+            raise ValueError(f"no such session: {session_id}")
+        rid = getattr(self.controller, "_active_run_id", None)
+        cancelled = False
+        engine = getattr(self.controller, "engine", None)
+        if rid and engine is not None:
+            cancelled = engine.cancel(rid)
+        if not cancelled:
+            self._fail(session, "cancelled before completion")
+            cancelled = True
+        self._emit("agent.cancelled", session_id)
+        return cancelled
 
 
 __all__ = ["CentralAgent", "AgentIntent"]

@@ -8,7 +8,9 @@ Bounds are hard: at most MAX_TASKS tasks, dependencies must form a DAG.
 
 from __future__ import annotations
 
+import re
 import uuid
+from collections.abc import Callable
 
 from ..contracts import (
     AgentIntent,
@@ -26,6 +28,18 @@ class PlanningError(Exception):
 
 def _plan_id() -> str:
     return f"pln-{uuid.uuid4().hex[:12]}"
+
+
+def _run_workflow_ref(intent: AgentIntent) -> str | None:
+    """Detect 'run workflow <ref>' intents. Ref may be an id or a name."""
+    match = re.search(r"\brun (?:the )?workflow (?:named |called )?(.+)",
+                      intent.goal, re.IGNORECASE)
+    if not match:
+        return None
+    # Trailing qualifiers ("with project X", "for Y") are not part of the ref.
+    ref = re.split(r"\s+with\s|\s+for\s|\s+on\s", match.group(1).strip(),
+                   maxsplit=1, flags=re.IGNORECASE)[0].strip().strip("'\"")
+    return ref or None
 
 
 def _task(tid: str, description: str, capability_id: str | None = None,
@@ -85,15 +99,52 @@ def plan_status(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
     )
 
 
+def plan_run_workflow(intent: AgentIntent, session_id: str, now: str,
+                      workflow_ref: str) -> TaskPlan:
+    """Intent asks to RUN a stored workflow → one workflow-run task. The
+    engine loads the definition, versions it and drives it through the
+    Fabric; the agent never executes nodes itself."""
+    return TaskPlan(
+        planId=_plan_id(),
+        sessionId=session_id,
+        intent=intent,
+        tasks=[
+            _task(
+                "t1",
+                f"Run workflow {workflow_ref} through the Python engine",
+                capability_id=None,
+                input={"workflowRef": workflow_ref},
+            ).model_copy(update={
+                "route": "workflow-run",
+                "inputFrom": "literal",
+                "verification": VerificationRequirement(
+                    kind="audit-only",
+                    description="Run reaches a terminal state; evidence from node records.",
+                ),
+            })
+        ],
+        createdAt=now,
+    )
+
+
 class TaskPlanner:
     """Deterministic decomposition. A model-driven planner can attach later
     behind the same boundary; its output would face identical validation."""
+
+    def __init__(self, workflow_resolver: Callable[[str], str | None] | None = None) -> None:
+        self._resolve_workflow = workflow_resolver or (lambda ref: None)
 
     def plan(self, intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
         if intent.needsClarification:
             raise PlanningError("intent needs clarification before planning")
         required = [c for c in intent.requiredCapabilities if c]
-        if "workflow.create" in required:
+        run_ref = _run_workflow_ref(intent)
+        if run_ref is not None:
+            resolved = self._resolve_workflow(run_ref)
+            if resolved is None:
+                raise PlanningError(f"no stored workflow matches '{run_ref}'")
+            plan = plan_run_workflow(intent, session_id, now, resolved)
+        elif "workflow.create" in required:
             plan = plan_authoring(intent, session_id, now)
         elif "workflow.list" in required:
             plan = plan_status(intent, session_id, now)

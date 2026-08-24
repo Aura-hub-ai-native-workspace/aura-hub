@@ -86,11 +86,23 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
     authoring = any(w in text for w in _AUTHOR_WORDS)
     status = any(w in text for w in _STATUS_WORDS)
     fixing = any(w in text for w in _FIX_WORDS)
+    running_wf = re.search(r"\brun (?:the )?workflow\b", text) is not None
 
     constraints: list[str] = []
     if "only" in text or "simple" in text:
         constraints.append("Simple changes only")
 
+    if running_wf and not authoring:
+        return AgentIntent(
+            goal=user_message.strip(),
+            surface="workflows",
+            expectedOutcome="The stored workflow runs to a terminal state with evidence.",
+            constraints=constraints + ["Execution is governed node-by-node"],
+            requiredCapabilities=[],
+            urgency="scheduled" if scheduled else "immediate",
+            complexity="workflow",
+            approvalLikely=True,
+        )
     if authoring:
         goal = f"Author a workflow: {user_message.strip()}"
         return AgentIntent(

@@ -28,7 +28,7 @@ AgentSessionState = Literal[
 ]
 TaskState = Literal[
     "pending", "blocked", "ready", "awaiting-approval", "running", "done",
-    "failed", "skipped",
+    "failed", "skipped", "denied", "timed-out", "cancelled",
 ]
 ExecutionRoute = Literal["single-invocation", "workflow-run", "external-tool"]
 VerificationKind = Literal["read-back", "exit-code", "schema-match", "audit-only"]
@@ -216,8 +216,14 @@ class EvidenceBundle(ContractModel):
 
 
 class AgentResult(ContractModel):
+    """outcome is an HONEST terminal vocabulary: denied and timeout are
+    never collapsed into failed (mission §15)."""
+
     status: AgentSessionState
-    outcome: Literal["completed", "failed", "blocked", "awaiting-approval", "cancelled"]
+    outcome: Literal[
+        "completed", "failed", "blocked", "awaiting-approval",
+        "cancelled", "denied", "timeout",
+    ]
     summary: str
     performed: list[str] = Field(default_factory=list)
     verified: list[str] = Field(default_factory=list)
