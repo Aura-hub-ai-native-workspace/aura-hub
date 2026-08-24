@@ -23,6 +23,12 @@ process.stdin.on('data', (c) => { payload += c; });
 process.stdin.on('end', async () => {
   const req = JSON.parse(payload);
 
+  if (req.func === 'wfops') {
+    const out = await runWfOps(req);
+    process.stdout.write(JSON.stringify(out));
+    return;
+  }
+
   if (req.func === 'fabricops') {
     const out = req.config?.wiring ? await runFabricOpsWired(req) : await runFabricOps(req);
     process.stdout.write(JSON.stringify(out));
@@ -354,4 +360,31 @@ async function runFabricOpsWired(req) {
     } catch (e) { results.push({ __error__: String(e && e.message || e) }); }
   }
   return { results, events, slept: [] };
+}
+
+// ── wfops: drive the REAL TS workflow engine through graph scripts ──────────
+async function runWfOps(req) {
+  const startMs = req.startMs;
+  let tick = startMs;
+  const nextTick = () => (tick += 1);
+  class FakeDate extends Date {
+    constructor(...a) { super(...(a.length ? a : [nextTick()])); }
+    static now() { return nextTick(); }
+  }
+  globalThis.Date = FakeDate;
+  process.env.AURA_HOME = req.home;
+
+  const eng = await import(process.env.TSREF_WFENGINE);
+  const storeMod = await import(process.env.TSREF_RUNSTORE);
+
+  const runs = new storeMod.WorkflowRunStore();
+  const events = [];
+  const record = req.run ?? null;
+  const opts = {
+    projectId: 'p', projectPath: req.projPath, projectName: 'T',
+    inputs: req.inputs ?? {}, run: record, runs,
+    governor: req.governor, replay: req.replay,
+  };
+  const result = await eng.runWorkflow(req.workflow, opts, (e) => events.push(e));
+  return { result, events, run: JSON.parse(JSON.stringify(record)) };
 }
