@@ -26,6 +26,17 @@ export default defineConfig(() => ({
     port: 1420,
     strictPort: false,
     host: process.env.TAURI_DEV_HOST || false,
+    proxy: {
+      // The Central Agent service does not answer CORS preflights yet
+      // (Agent 2 — reported). In development the renderer therefore talks
+      // to it same-origin through this proxy; centralAgentClient defaults
+      // to '/agent-api' when running under Vite.
+      '/agent-api': {
+        target: process.env.VITE_AGENT_ORIGIN ?? 'http://127.0.0.1:4320',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/agent-api/, ''),
+      },
+    },
   },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {

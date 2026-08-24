@@ -61,3 +61,52 @@ into generic "done"/"failed".
 - Breakpoints: sections stack below `xl` (1280px); rows truncate with
   `min-w-0`; secondary metadata hides under `sm`. No horizontal overflow at
   1024 / 1280 / 1440. Dark and light themes via semantic tokens only.
+
+## Milestone 4 — session interaction + convergence
+
+### Complete session interaction (AskAuraHero)
+- **Phase strip** (`AgentPhaseStrip`): INTENT → PLAN → PERMISSION →
+  EXECUTION → VERIFICATION → RESULT, driven only by real SSE event types
+  and the terminal outcome. Unknown event types never guess a phase.
+- **Clarification loop**: `Needs your input` state renders the backend's
+  question with an answer field; the reply continues the SAME session via
+  `POST …/message`. Verified in-browser: ambiguous ask answered → completed.
+- **Cancel** while working (`POST …/cancel`).
+- **ApprovalGate reuse**: when parked, the hero fetches the real request
+  from the AGENT ledger (`centralAgentClient.pendingApprovals()`) and
+  renders the existing `ApprovalGate`. Two-ledger note: agent-parked ids
+  live on :4320; `useFabric` reads the workflow service's (:4319) — an
+  agent id must never be resolved through useFabric.
+- **Approve/Deny** call `POST …/approve` (decide+resume, same single-use
+  ledger). Replay returns the backend's **409** verbatim.
+- **Run linkage**: a result carrying `runId` shows "Inspect run" →
+  `agentLinkStore.requestRunInspection` → Automation domain opens that
+  exact run in the existing RunView (real ids end to end).
+
+### Command palette (⌘K)
+`Ask AURA`, `Open active Agent session`, `Decide approval: <title>` (when
+one is pending) join Navigate/Actions. Keyboard model unchanged.
+
+### Runtime verification
+`scripts/ui-central-agent-home.mjs` — Playwright against the REAL stack
+(dev server :1420 · workflow/AI service :4319 · Python agent API :4320 on a
+disposable AURA_HOME). 13 checks:
+T1 read-only intent → Completed + evidence + phase strip reached RESULT;
+T2 governed write parks → canonical ApprovalGate → approve → Completed,
+replay refused 409; T3 clarification loop completes; plus liveness,
+no-chain-of-thought rendering, hero render.
+
+### Dev proxy (CORS)
+The agent API does not answer OPTIONS preflights yet (**BACKEND CONTRACT
+REQUIRED — OWNER: Agent 2** — `aura.api` must handle OPTIONS +
+`access-control-allow-*` for packaged/Tauri builds where no dev proxy
+exists). Interim frontend solution: Vite proxies `/agent-api` → :4320 and
+the client defaults to the proxied path under `import.meta.env.DEV`.
+
+### Suite status (this tree)
+ui-workflow 68/68 · ui-agent 98/98 · ui-automation 58/58 · ui-dryrun 72/72 ·
+ui-central-agent-home 13/13 · typecheck ✓ · build ✓.
+Pre-existing failures unrelated to this milestone: `ui-approval-test`
+(stale decline-input selector vs current ApprovalGate), `ui-agent-noprovider`
+(harness TypeError before assertions), backend `tests/unit/
+test_persistence_invariants.py` (parallel builder WIP).
