@@ -1,6 +1,6 @@
 # AURA Central Agent — Implementation
 
-> **Status:** IMPLEMENTED (milestone 2: production execution) · RUNTIME VERIFIED 12/12
+> **Status:** IMPLEMENTED (milestone 3: real intelligence + agent loop) · RUNTIME VERIFIED 12/12 · pytest 138 · ruff clean
 >
 > Milestone 2 connected the milestone-1 foundation to real execution:
 > a Python workflow engine, process/filesystem executors behind governance,
@@ -14,6 +14,26 @@
 > [Architecture](./AURA_CENTRAL_AGENT_ARCHITECTURE.md) ·
 > [Roadmap](./AURA_CENTRAL_AGENT_ROADMAP.md) ·
 > [Security Model](./AURA_AGENT_SECURITY_MODEL.md)
+
+## Milestone-3 additions (real intelligence + one loop)
+
+| Subsystem | Module | Verified by |
+| --- | --- | --- |
+| Structured intent schema (`entities`, `ambiguity`, `confidence`, `requestedOutcome`) | contracts v2 + `central_agent/intent.py` | model-mode tests incl. ambiguity blocking |
+| DETERMINISTIC clarification policy — model confidence/ambiguity claims are advisory; a fixed threshold decides blocking | `intent.CLARIFICATION_CONFIDENCE` | ambiguous-model-request test; impossible→clarify |
+| Clarification continuation: persisted pending question, answer continues the SAME session with zero intervening effects | `service.submit`/`message` | clarification-loop tests (unit + API over HTTP) |
+| Model-proposed plans validated deterministically: registry-gated capability ids, manifest risk floors (proposal can only RAISE), size bounds REJECT (not truncate), dependency integrity | `planner.plan_from_model` | T3 + `TestModelCannotWiden.*` |
+| Authority scope transparency: requested vs policy-narrowed effective scope on every requirement | contracts + `authority.check_plan` | scope narrowing unit test |
+| ONE canonical runner: node-bound single effects execute as ephemeral ad-hoc runs through the SAME engine interpreter as full workflows | `workflow.engine.run_ad_hoc` + controller routing | whole suite re-run post-unification |
+| Result synthesis from actual records (verified-how lines + audit invocation reference, never bare "done") | `service._run` | slice summaries |
+| Real provider wire path: OpenAI-compatible HTTP fixture process (200/429/500/malformed), RoutedModelPort end-to-end | `tests/providers/*` | T1/T2/T4/T5 + failure tests |
+| API continuation surface: `POST …/message`, `POST …/approve` (decide+resume via the SAME ledger; replay → 409), `GET …/plan` (reasoning-free review) | `aura/api.py` | hardening suite over live HTTP |
+| Tooling: uv-canonical environment; ruff gate clean with documented per-file scoping of parallel-builder modules | pyproject | `uv run pytest` / `uv run ruff check .` |
+
+**Real-model honesty:** the E2E provider is a real local HTTP server speaking
+the OpenAI wire format with scripted replies. The ENTIRE provider path
+(HTTP, JSON parsing, status codes, fail-closed validation) is verified; no
+external LLM was consulted and none is claimed.
 
 ## Milestone-2 additions (all Python, all governed)
 
