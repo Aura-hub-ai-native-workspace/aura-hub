@@ -42,6 +42,20 @@ Key properties:
 | --- | --- | --- | --- | --- |
 | 2026-08-24 | phase 1 | fingerprintInvocation, hashGraph | 320 | **0 divergences** (after punctuation-bucket fix below) |
 | 2026-08-24 | phase 2 | sanitizePolicy + evaluatePolicy (full evaluation objects incl. reasons) | 250 | **0 divergences** on first full run |
+| 2026-08-24 | phase 3 | WorkflowStore/RunStore/VersionStore/AutomationStore op-script (returns AND whole AURA_HOME tree sha256) | 57 ops ×2 homes | **0 divergences** after fixing three real parity bugs (see below) |
+
+## Phase-3 findings caught by the store harness
+
+1. **Evaluation-order of clock draws matters**: TS evaluates
+   `{...input, createdAt: now()}` then `genId('wf')` then per-edge `genId('e')`
+   inside sanitize, then `updatedAt`. Matching draw ORDER (not just counts)
+   was required for byte-identical timestamps.
+2. **Object-literal key ORDER is persisted**: `publish()` writes
+   `note` BEFORE `graphHash` and `restoredFrom` last; Python dict-building had
+   to mirror the literal, not append conditionals at the end.
+3. **`Math.random().toString(36)` reproduction**: exact for binary fractions
+   k/2^22; the harness feeds BOTH languages such values so generated ids match
+   character-for-character.
 
 ## Collation findings recorded by the harness (2026-08-24)
 

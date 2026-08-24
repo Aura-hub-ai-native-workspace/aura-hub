@@ -5,20 +5,19 @@ Byte-parity including summary field order (index.json depends on it).
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import UTC, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from ._alias import CamelAlias
 from ..config import aura_path
 from ..jsonutil import read_json_file, write_json_file
-from ._alias import CamelAlias
 
 MAX_INDEX_ENTRIES = 5000
 
 
 def _now_default() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def summarize_automation_run(run: dict, rule_name: str | None = None) -> dict:
@@ -49,7 +48,7 @@ def summarize_automation_run(run: dict, rule_name: str | None = None) -> dict:
 def _default_id_gen(prefix: str) -> str:
     """TS-parity uniqueness when no injection: now36 + 6 rand chars."""
     import secrets
-    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     digits = "0123456789abcdefghijklmnopqrstuvwxyz"
     n = now_ms
     b36 = ""
@@ -317,8 +316,8 @@ class AutomationStore(CamelAlias):
                     or needle in (r.get("error") or "").lower()]
 
         total = len(runs)
-        offset = max(0, int(query.get("offset") or 0))
-        limit = max(1, min(500, int(query.get("limit") if query.get("limit") is not None else 100)))
+        offset = max(0, query.get("offset") or 0)
+        limit = max(1, min(500, query.get("limit") if query.get("limit") is not None else 100))
         return {"runs": runs[offset:offset + limit], "total": total, "offset": offset, "limit": limit}
 
     def run_stats(self, query: dict = {}) -> dict[str, int]:

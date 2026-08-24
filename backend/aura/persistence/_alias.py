@@ -13,7 +13,7 @@ class CamelAlias:
     ``ensureVersionForRun`` and dispatch to :meth:`ensure_version_for_run`.
     """
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str):  # noqa: D105
         if name.startswith("__"):
             raise AttributeError(name)
         snake = re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower()

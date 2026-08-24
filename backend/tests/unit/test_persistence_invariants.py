@@ -10,6 +10,7 @@ import json
 from aura.persistence.automation import load_schedule_state, save_schedule_state
 from aura.persistence.runs import WorkflowRunStore
 from aura.persistence.workflows import WorkflowStore
+from aura.jsonutil import read_json_file
 
 
 def _mk_run(store: WorkflowRunStore, wf_id: str, i: int, state="succeeded") -> dict:

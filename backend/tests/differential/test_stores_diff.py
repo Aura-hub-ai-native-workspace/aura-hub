@@ -12,18 +12,21 @@ deterministic clock/PRNG sequences. Compared on:
 
 from __future__ import annotations
 
-import sys
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
+
 from _tsrun import run_store_ops
+
 from conftest import tsref  # noqa: F401  (session fixture)
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from stores._pyops import run_py_store_ops
+import sys
+from pathlib import Path
 
-START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=UTC).timestamp() * 1000)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from stores._pyops import run_py_store_ops  # noqa: E402
+
+START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc).timestamp() * 1000)
 
 DEMO_WF = {
     "name": "  Demo  ", "description": "d", "category": "Eng",
