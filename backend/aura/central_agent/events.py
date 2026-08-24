@@ -7,6 +7,8 @@ blocks: subscriber faults are contained per-subscriber.
 
 from __future__ import annotations
 
+import json
+import queue
 from collections.abc import Callable
 
 from ..contracts import AgentEvent
@@ -40,3 +42,33 @@ class EventBus:
 
     def clear_tail(self) -> None:
         self._tail.clear()
+
+    def subscribe_stream(self, session_filter: str | None = None):
+        """Generator over serialized events: replays the tail, then follows
+        live. Terminates when the consumer closes the connection."""
+        q: "queue.Queue[str]" = queue.Queue(maxsize=1000)
+
+        def push(event: AgentEvent) -> None:
+            if session_filter and event.sessionId not in (session_filter, "-"):
+                return
+            try:
+                q.put_nowait(json.dumps(event.model_dump(), ensure_ascii=False))
+            except queue.Full:
+                pass  # drop for a slow consumer; audit stays authoritative
+
+        unsubscribe = self.subscribe(push)
+        try:
+            for event in self._tail:
+                if not session_filter or event.sessionId in (session_filter, "-"):
+                    yield json.dumps(event.model_dump(), ensure_ascii=False)
+            while True:
+                item = q.get()
+                if item is None:
+                    return
+                yield item
+        finally:
+            unsubscribe()
+
+    def close_stream(self) -> None:
+        self._tail.clear()
+

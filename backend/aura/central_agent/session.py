@@ -26,6 +26,7 @@ class AgentSessionStore:
     def __init__(self, home: Path | None = None, tail_limit: int = 50) -> None:
         self._home = home
         self._tail_limit = tail_limit
+        self._last_id: str | None = None
 
     def _dir(self) -> Path:
         return (self._home or aura_home()) / "agent" / "sessions"
@@ -39,7 +40,13 @@ class AgentSessionStore:
             updatedAt=ts,
         )
 
+    @property
+    def last_session_id(self) -> str | None:
+        """Most recently saved session — convenience for request/response APIs."""
+        return self._last_id
+
     def save(self, session: AgentSession) -> Path:
+        self._last_id = session.sessionId
         path = self._dir() / f"{session.sessionId}.json"
         # Full dump (not wire()'s exclude_unset): agent sessions are mutated
         # in place, so defaulted fields legitimately change after construction.

@@ -64,18 +64,15 @@ class ExecutionController:
 
             if task.route == "workflow-run":
                 grant_for_task = resume_grants.get(task.id)
-                parked_run = result.parked_runs.get(task.id) \
-                    if not result.resumed_run_id else None
                 if grant_for_task:
-                    if not parked_run:
-                        raise ValueError(
-                            f"no parked run recorded for task {task.id}")
-                    self._resume_workflow(task, parked_run, result)
+                    _, parked_rid = grant_for_task
+                    self._resume_workflow(task, parked_rid, result)
                 else:
                     self._run_workflow(task, plan, project_id, result)
             else:
+                grant_for_task = resume_grants.get(task.id)
                 self._invoke_single(task, project_id, compiled_workflow, result,
-                                    approval_id=resume_grants.get(task.id))
+                                    approval_id=grant_for_task[0] if grant_for_task else None)
 
             last = result.outcomes[-1] if result.outcomes else None
             if last is None:
