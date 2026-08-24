@@ -228,6 +228,7 @@ class CentralAgent:
                          f"{outcome.approval_id}. Nothing unauthorized has run."),
                 performed=[o.taskId for o in outcome.outcomes if o.performed],
                 evidence=bundle, failureReason=None,
+                runId=outcome.run_id,
             )
 
         if outcome.denied:
@@ -317,7 +318,13 @@ class CentralAgent:
         intent = self.intents.compile(user_messages[0])
         plan = self.planner.plan(intent, session.sessionId, _now())
         task = plan.tasks[-1]  # parked task is the last planned one
-        task_grants = {task.id: next(iter(grants.values()))} if grants else {}
+        parked_rid = last.runId
+        task_grants = (
+            {task.id: (next(iter(grants.values())), parked_rid)}
+            if grants and parked_rid and task.route == "workflow-run"
+            else ({task.id: (next(iter(grants.values())), "")}
+                  if grants else {})
+        )
         self._emit("execution.started", session.sessionId,
                    resumed=True, planId=plan.planId)
         outcome = self.controller.execute(
@@ -337,6 +344,7 @@ class CentralAgent:
                 summary=f"Resumed run parked again on {outcome.approval_id}.",
                 performed=[o.taskId for o in outcome.outcomes if o.performed],
                 evidence=bundle,
+                runId=outcome.run_id,
             )
         elif outcome.denied or outcome.timed_out or outcome.cancelled or outcome.stopped:
             honest = ("denied" if outcome.denied else

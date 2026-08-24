@@ -229,6 +229,8 @@ class AgentResult(ContractModel):
     verified: list[str] = Field(default_factory=list)
     evidence: EvidenceBundle | None = None
     failureReason: str | None = None
+    """Parked/resumed engine run this result refers to."""
+    runId: str | None = None
 
 
 class AgentMessage(ContractModel):

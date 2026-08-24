@@ -44,9 +44,9 @@ def _edge(src: str, dst: str, port: str = "out") -> WfEdge:
 def compile_graph_for_intent(intent: AgentIntent) -> tuple[list[WfNode], list[WfEdge]]:
     """Deterministic template graphs keyed on goal text.
 
-    Only pure/read-only node types are emitted today (current-project,
-    git-status, output): nothing here can perform a side effect even in
-    principle, because no engine has run the graph.
+    Pure/read-only nodes by default; a recognized write clause adds ONE
+    governed export-file node whose effect still passes policy + approval
+    at run time. Compilation never executes anything.
     """
     text = f"{intent.goal} {intent.surface}".lower()
     nodes: list[WfNode] = []
@@ -54,6 +54,7 @@ def compile_graph_for_intent(intent: AgentIntent) -> tuple[list[WfNode], list[Wf
 
     wants_git = any(w in text for w in ("git", "commit", "branch", "status"))
     wants_report = intent.complexity == "single" or "report" in text or statusish(text)
+    write = _extract_write_clause(intent.goal)
 
     entry = _node("src", "current-project", 0, 0, {})
     nodes.append(entry)
@@ -63,15 +64,36 @@ def compile_graph_for_intent(intent: AgentIntent) -> tuple[list[WfNode], list[Wf
         nodes.append(git)
         edges.append(_edge(last, git.id))
         last = git.id
+    if write is not None:
+        path, content = write
+        writer = _node("writer", "export-file", 330, 0,
+                       {"path": path, "content": content})
+        nodes.append(writer)
+        edges.append(_edge(last, writer.id))
+        last = writer.id
     out = _node("out", "output", 440, 0,
                 {"text": intent.expectedOutcome or "Status collected."})
     nodes.append(out)
     edges.append(_edge(last, out.id))
-
-    if not wants_git and not wants_report:
-        # Still a well-formed, side-effect-free graph: project → output.
-        pass
     return nodes, edges
+
+
+_WRITE_RE = re.compile(
+    r"\b(?:write|writes|writing|save|saves|store|stores)\s+(?:a\s+)?(?:file\s+)?"
+    r"(?:called\s+|named\s+)?['\"]?(.+?)['\"]?\s+(?:to|into|in)\s+"
+    r"(?:a\s+file\s+)?(?:called\s+|named\s+)?['\"]?([\w][\w ./-]*?)['\"]?\s*$",
+    re.IGNORECASE)
+
+
+def _extract_write_clause(goal: str) -> tuple[str, str] | None:
+    """'write hello to demo.txt' → ('demo.txt', 'hello'). Bounded and literal."""
+    match = _WRITE_RE.search(goal)
+    if not match:
+        return None
+    content, path = match.group(1).strip(), match.group(2).strip()
+    if not path or not content or len(content) > 4096 or ".." in path:
+        return None
+    return path, content
 
 
 def statusish(text: str) -> bool:
@@ -154,12 +176,14 @@ def _derive_name(plan: TaskPlan) -> str:
     goal = plan.intent.goal.strip()
     # An explicit "named X" wins; clause starters and qualifiers are not
     # part of the name ("named repo-check that shows git status" → repo-check).
-    named = re.search(r"\bnamed\s+['\"]?([^.]+?)['\"]?\s*$", goal, re.IGNORECASE)
+    named = re.search(r"\bnamed\s+(.+?)\s*$", goal, re.IGNORECASE)
     if named:
         candidate = re.split(
             r"\s+that\s+|\s+which\s+|\s+showing\s+|\s+with\s+|\s+for\s+|\s+to\s+",
             named.group(1).strip(), maxsplit=1, flags=re.IGNORECASE)[0].strip()
-        return (candidate or goal)[:60]
+        candidate = candidate.strip("'\"")
+        if candidate:
+            return candidate[:60]
     for prefix in ("Author a workflow:", "Create workflow:", "Build workflow:",
                    "create a workflow", "Author a workflow"):
         if goal.lower().startswith(prefix.lower()):
