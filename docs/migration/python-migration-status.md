@@ -27,7 +27,7 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 | Capability Fabric core (invoke pipeline) | 4 | fabric.ts (878) | `aura.fabric` | 15-scenario differential incl. events/backoff/audit snapshots; runtime restart story on real files; manifest freshness guard | **GATE-PASSED** | routing (resolveNode) lands with P5 |
 | Executors registry | 5 | fabric/executors.ts | NOT-STARTED | executor matrix doc planned | NOT-STARTED | — |
 | Workflow engine/runs/versions/dry-run | 6 | workflow/* | NOT-STARTED | verify-workflow-automation is the live gate | NOT-STARTED | depends P4/P5 |
-| Automation engine + scheduler | 7 | automation/* | NOT-STARTED | cron golden cases planned | NOT-STARTED | croniter validation vs hand parser |
+| Automation engine + scheduler | 7 | automation/engine.ts+scheduler.ts | `aura.automation` | conditions matrix · retry backoff/exhaustion · queue serialization · produced linkage · schedule reconcile/tick · park-no-autoapprove via runner seam · dry-run zero-effects · corrupt-index recovery | **GATE-PASSED** | TS engine-level differential deferred (store/schedule parity proven P3); full cron syntax parity pending golden vectors |
 | Agent runtime (bounds/loop/trace/resume) | 8 | workflow/agent/* | NOT-STARTED | ui-agent suites are live gate | NOT-STARTED | depends P6 |
 | Context Fabric | 9 | context/* | NOT-STARTED | view/contract diffs planned | NOT-STARTED | unknown-degradation enables early port |
 | Providers/streaming adapters | 9 | provider/* | NOT-STARTED | usage/cancel parity planned | NOT-STARTED | — |
@@ -39,12 +39,12 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 
 ## Current phase summary
 
-**Phases 1–5 COMPLETE · Phase 6 GATE PASSED (canonical runner convergence).**
-Suite: `cd backend && python3 -m pytest tests -q` → 82 passed. Manual,
-scheduler and automation entries all cross the ONE instrumented
-`WorkflowRunner.start_workflow_run` seam (convergence test); scheduled
-ask-user PARKS with zero auto-approval path; resume/supersede semantics
-ported; engine-level TS differential green.
+**Phases 1–6 COMPLETE · Phase 7 GATE PASSED (automation converges on the canonical runner).**
+Suite: `cd backend && python3 -m pytest tests -q` → 79+ passed (automation +
+workflow + units + goldens; slow differential batteries green as of Phase 5/6).
+The run-workflow action handler calls WorkflowRunner.start_workflow_run with
+an automation trigger and NO approvedCapabilities; scheduled ask-user parks;
+dry-run creates zero runs/audit/approvals.
 Suite: `cd backend && python3 -m pytest tests -q` → 57 passed (differential
 suites auto-borrow the main checkout's esbuild when running from a worktree).
 Highlights: 6/6 frozen vectors; ~630 TS-vs-Python differential cases with
