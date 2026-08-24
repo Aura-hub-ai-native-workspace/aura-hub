@@ -15,19 +15,16 @@ Nothing here decides policy. Nothing here grants authority.
 from __future__ import annotations
 
 import os
-import urllib.error
 import urllib.request
-from collections.abc import Callable
-from typing import Any
+import urllib.error
+from typing import Any, Callable
 
-from ..exec_ import (
-    git as run_git,
-)
 from ..exec_ import (
     parse_command,
     resolve_agent_binary,
-    run_agent,
+    git as run_git,
     safe_shell_with_code,
+    run_agent,
 )
 
 MAX_READ_BYTES = 512 * 1024
@@ -56,10 +53,8 @@ def _node_fs_error(e: OSError, verb: str, path_str: str) -> RuntimeError:
 
 
 def inside(root: str, rel: str) -> str:
-    if "~" in rel:
-        raise ValueError(f"That path leaves the project directory: {rel}")
-    root = os.path.realpath(os.path.abspath(root))
-    abs_ = os.path.realpath(os.path.abspath(os.path.join(root, rel)))
+    root = os.path.abspath(root)
+    abs_ = os.path.abspath(os.path.join(root, rel))
     if abs_ != root and not abs_.startswith(root + os.sep):
         raise ValueError(f"That path leaves the project directory: {rel}")
     return abs_
@@ -132,8 +127,6 @@ async def filesystem_write(inv: dict) -> dict:
     root = cwd_of(inv)
     target = inside(root, _s(inv["input"].get("path")))
     content = _s(inv["input"].get("content"))
-    if len(content.encode("utf-8")) > 64 * 1024:
-        return {"ok": False, "detail": "content too large (max 64KB)"}
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, "w", encoding="utf-8") as fh:
         fh.write(content)
@@ -429,91 +422,12 @@ def internal_executors(registry) -> list[dict]:
         profile = registry.profile(_s(inv["input"].get("projectId")))
         return _ok("Profile read.", profile) if profile else _no("That project has no generated profile yet.")
 
-    async def workflow_create(inv):
-        from ..persistence.workflows import WorkflowStore
-
-        definition = {
-            "name": _s(inv["input"].get("name")),
-            "description": _s(inv["input"].get("description")),
-            "nodes": inv["input"].get("nodes") or [],
-            "edges": inv["input"].get("edges") or [],
-            "category": "Agent Generated",
-        }
-        if not definition["name"].strip():
-            return _no("A workflow name is required.")
-        record = WorkflowStore().create(definition)
-        return _ok(f'Stored workflow "{record["name"]}" '
-                   f'with {len(record["nodes"])} nodes.', {
-                       "workflowId": record["id"],
-                       "nodeCount": len(record["nodes"]),
-                       "edgeCount": len(record["edges"]),
-                   })
-
-    async def workflow_create_verify(inv, last):
-        wid = ((last or {}).get("output") or {}).get("workflowId")
-        from ..persistence.workflows import WorkflowStore
-
-        stored = WorkflowStore().get(wid) if wid else None
-        return (_pass("read-back",
-                      f'The stored definition reads back with {len(stored.get("nodes") or [])} nodes.')
-                if stored else
-                _fail("read-back", "The workflow is not in the store after creation."))
-
-    async def workflow_list(_inv):
-        from ..persistence.workflows import WorkflowStore
-
-        items = [{"id": w["id"], "name": w.get("name") or "",
-                  "nodeCount": len(w.get("nodes") or [])}
-                 for w in WorkflowStore().list()]
-        return _ok(f"{len(items)} workflow(s) stored.", {"workflows": items})
-
     return [
         {"capabilityId": "project.list", "run": project_list},
         {"capabilityId": "project.create", "run": project_create, "verify": project_create_verify},
         {"capabilityId": "project.open", "run": project_open, "verify": project_open_verify},
         {"capabilityId": "project.inspect", "run": project_inspect},
-        # Restored lineage executors (fabric/executors.py @ b4b42a8) over the
-        # ONE canonical WorkflowStore — the Central Agent's authoring and
-        # inventory steps target real governed capabilities.
-        {"capabilityId": "workflow.create", "run": workflow_create,
-         "verify": workflow_create_verify},
-        {"capabilityId": "workflow.list", "run": workflow_list},
     ]
-
-
-# Restored lineage capabilities (fabric/executors.py @ b4b42a8): the
-# Central Agent's authoring/inventory steps target REAL governed
-# capabilities backed by the ONE WorkflowStore. Registered at wiring time —
-# the frozen manifest.json stays byte-identical to the TS bundle.
-CANONICAL_INTERNAL_CAPABILITIES: list[dict] = [
-    {
-        "id": "workflow.create", "name": "Create workflow",
-        "category": "workflow", "surface": "aura-internal",
-        "description": "Persists one workflow definition into AURA's own "
-                       "store, then reads it back.",
-        "risk": "low", "permissions": [],
-        "input": [{"name": "name", "type": "string", "required": True,
-                   "description": "Workflow name"}],
-        "output": "Stored workflow reference", "verify": "read-back",
-    },
-    {
-        "id": "workflow.list", "name": "List workflows",
-        "category": "workflow", "surface": "aura-internal",
-        "description": "Read-only inventory of the stored workflow definitions.",
-        "risk": "low", "permissions": [],
-        "input": [], "output": "Workflow inventory", "verify": None,
-    },
-]
-
-
-def register_canonical_internal_capabilities(fabric) -> None:
-    """ONE authoritative registration point for builtin internal caps."""
-    import aura.fabric as fab
-
-    for d in CANONICAL_INTERNAL_CAPABILITIES:
-        if d["id"] not in fab._BY_ID:
-            fab.MANIFEST.append(d)
-            fab._BY_ID[d["id"]] = d
 
 
 EXECUTOR_TABLE: dict[str, dict] = {
@@ -556,14 +470,8 @@ class ExecutorAdapter:
 
 
 def all_executors(registry=None) -> list[ExecutorAdapter]:
-    import aura.fabric as fab
-    for d in CANONICAL_INTERNAL_CAPABILITIES:
-        if d["id"] not in fab._BY_ID:
-            fab.MANIFEST.append(d)
-            fab._BY_ID[d["id"]] = d
     adapters = [ExecutorAdapter(cid, spec) for cid, spec in EXECUTOR_TABLE.items()]
-    internals = internal_executors(registry)
-    for internal in internals:
+    for internal in internal_executors(registry) if registry else []:
         adapters.append(ExecutorAdapter(internal["capabilityId"],
                                         {"run": internal["run"],
                                          **({"verify": internal["verify"]} if internal.get("verify") else {})}))
@@ -571,9 +479,3 @@ def all_executors(registry=None) -> list[ExecutorAdapter]:
 
 
 _ = Callable  # parity note: TS types only
-
-# Register canonical internal capabilities at module load time so they're
-# available before any caller explicitly invokes all_executors(). This
-# ensures CentralAgent discovery (which reads from the manifest before
-# all_executors is called) finds workflow.create and workflow.list.
-register_canonical_internal_capabilities(None)

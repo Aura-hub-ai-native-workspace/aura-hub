@@ -14,19 +14,43 @@ from aura.fabric import CapabilityFabric
 
 
 class ScriptedHost:
+    """Configurable host: scripted mode (P4) or wiring mode (P5)."""
+
     def __init__(self, cfg: dict) -> None:
         self.cfg = cfg
-        self.resolve_node = None  # Phase 5
+        self._present = cfg.get("presentNodes") or []
+        self.resolve_node = None
+        if cfg.get("wiring"):
+            from aura.fabric.routing import resolve_node_for
+
+            def _resolve(cap, ctx, can_use=None):
+                return resolve_node_for(cap, ctx, self._present, can_use)
+            self.resolve_node = _resolve
 
     def permissions_for(self, capability: dict, _context: dict) -> dict[str, bool]:
         return self.cfg.get("permissions", {}).get(
             capability["id"], {"read": True, "write": True, "execute": True, "autonomous": True})
 
     def node_available(self, capability: dict) -> bool | None:
+        # Wiring-mode semantics (fabric/index.ts:153-159): null unless the
+        # capability needs a node; internal surfaces never depend on one.
+        if self.cfg.get("wiring"):
+            needed = capability.get("requiresNodeCapability")
+            if not needed:
+                return None
+            if capability.get("surface") == "aura-internal":
+                return True
+            provided = set(self.cfg.get("providedNodeCapabilities") or [])
+            return needed in provided
         na = self.cfg.get("nodeAvailable") or {}
         return na[capability["id"]] if capability["id"] in na else True
 
-    async def request_approval(self, request: dict, _context: dict) -> bool:
+    async def request_approval(self, request: dict, context: dict) -> bool:
+        # Wiring-mode semantics (fabric/index.ts:170-176): grant ONLY when
+        # THIS call carried explicit authorization for every item.
+        if self.cfg.get("wiring"):
+            approved = set(context.get("approvedCapabilities") or [])
+            return all(i["capabilityId"] in approved for i in request.get("items") or [])
         mode = self.cfg.get("approvals")
         if mode == "grant":
             return True
@@ -90,6 +114,17 @@ def run_py_fabric_ops(home: str | None, start_ms: int, config: dict, ops: list[d
         from aura.policy import sanitize_policy
 
         fabric.set_policy(sanitize_policy(config["policyRaw"]))
+    from aura.executors import all_executors as _all_exec
+
+    registry_stub = type("R", (), {
+        "list_projects": staticmethod(lambda: []),
+        "profile": staticmethod(lambda pid: None),
+        "current_project": staticmethod(lambda: None),
+    })()
+    for adapter in _all_exec(registry_stub):
+        if config.get("executorIds") and adapter.capabilityId not in config["executorIds"]:
+            continue
+        fabric.register(adapter)
     for ex in config.get("executors") or []:
         fabric.register(ScriptedExecutor(ex))
 

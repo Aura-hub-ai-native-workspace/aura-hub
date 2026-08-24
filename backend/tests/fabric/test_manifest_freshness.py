@@ -15,9 +15,14 @@ import json
 import subprocess
 from pathlib import Path
 
-from conftest import tsref  # noqa: F401  (session fixture)
+import sys
+from pathlib import Path
 
-from _paths import BACKEND, REPO
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "differential"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from differential.conftest import tsref  # noqa: E402, F401  (session fixture)
+from _paths import BACKEND, REPO  # noqa: E402
 
 
 def test_manifest_snapshot_matches_typescript(tsref):  # noqa: F811

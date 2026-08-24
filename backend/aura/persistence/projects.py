@@ -6,14 +6,15 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+from typing import Any
 
 from ..config import aura_path
 from ..jsonutil import read_json_file, write_json_file
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def slug(name: str) -> str:

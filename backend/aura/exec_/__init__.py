@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass, field
+from typing import Any
 
 TIMEOUT_EXIT_CODE = 124
 SIGNAL_EXIT_BASE = 128
@@ -156,7 +157,7 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
         proc.terminate()
         try:
             out_b, err_b = await asyncio.wait_for(waiter, 5)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             proc.kill(); out_b, err_b = await waiter
         out = (out_b or b"").decode(errors="replace")
         err = (err_b or b"").decode(errors="replace")

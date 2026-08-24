@@ -313,19 +313,40 @@ class CapabilityFabric:
 
     # pre-flight ----------------------------------------------------------------
 
+    def _resolve(self, capability: dict, context: dict, can_use=None) -> dict:
+        if getattr(self.host, "resolve_node", None) is None:
+            return {"ok": True}
+        return self.host.resolve_node(capability, context, can_use)
+
     def evaluate(self, capability_id: str, context: dict) -> dict | None:
         capability = describe_capability(capability_id)
         if not capability:
             return None
-        available = self.host.node_available(capability)
+        resolution = self._resolve(capability, context)
+        if isinstance(resolution, dict) and resolution.get("ok") is False:
+            return {"decision": "deny", "rule": resolution["code"],
+                    "risk": capability["risk"], "reason": resolution["reason"]}
+        if getattr(self.host, "resolve_node", None) is not None:
+            available = bool(resolution.get("node")) if capability.get("requiresNodeCapability") else None
+        else:
+            available = self.host.node_available(capability)
         from ..policy import PolicyInput, PolicySubject, evaluate_policy
 
+        subj = self._subject_for({}, resolution.get("node"))
         return evaluate_policy(PolicyInput(
             capability=_as_descriptor(capability),
             config=self.policy,
             granted=grants_for(self.host.permissions_for(capability, context)),
             nodeAvailable=available,
-            subject=PolicySubject(),
+            subject=PolicySubject(
+                node=subj.get("node"),
+                requestedNodeId=subj.get("requestedNodeId"),
+                actorKind=subj.get("actorKind"),
+                actorId=subj.get("actorId"),
+                projectId=subj.get("projectId"),
+                missionId=subj.get("missionId"),
+                taskId=subj.get("taskId"),
+            ),
         ))
 
     # the ONE path --------------------------------------------------------------
@@ -364,8 +385,22 @@ class CapabilityFabric:
                  "reason": invalid},
                 started, started_at, 1)
 
-        # 2. routing — Phase 5 adds resolveNode; absence means ok/no-node.
-        resolution: dict = {"ok": True}
+        # 2. routing — which node, BEFORE anything is decided about it.
+        routing_executor = self.executors.get(capability_id)
+        can_use = (lambda node: routing_executor.supportsNode(node)) if (
+            routing_executor is not None and hasattr(routing_executor, "supportsNode")) else None
+        resolution = self._resolve(capability, context, can_use)
+        if isinstance(resolution, dict) and resolution.get("ok") is False:
+            self._emit({"type": "invocation.denied", "at": self._clock_iso(),
+                        "invocationId": invocation["id"], "reason": resolution["reason"]})
+            return self._settle(invocation, capability, "denied", resolution["reason"],
+                                dict(NO_VERIFICATION),
+                                {"decision": "deny", "rule": resolution["code"],
+                                 "risk": capability["risk"], "reason": resolution["reason"]},
+                                started, started_at, 0)
+        # The executor is handed its node; it discovers nothing itself.
+        if resolution.get("node") is not None:
+            invocation["node"] = resolution["node"]
 
         # 3. policy
         from ..policy import PolicyInput, PolicySubject, evaluate_policy
@@ -375,9 +410,12 @@ class CapabilityFabric:
             capability=_as_descriptor(capability),
             config=self.policy,
             granted=grants_for(self.host.permissions_for(capability, context)),
-            # resolveNode arrives in Phase 5; until then the host answers
-            # availability directly, exactly as fabric.ts:467/:543 does.
-            nodeAvailable=self.host.node_available(capability),
+            # With a router, availability derives from the RESOLUTION
+            # (fabric.ts:541-543) so the boolean floor and routing can never
+            # disagree; without one, the host answers directly.
+            nodeAvailable=(bool(resolution.get("node")) if capability.get("requiresNodeCapability")
+                           else None) if getattr(self.host, "resolve_node", None) is not None
+                          else self.host.node_available(capability),
             subject=PolicySubject(
                 node=subj.get("node"),
                 requestedNodeId=subj.get("requestedNodeId"),
