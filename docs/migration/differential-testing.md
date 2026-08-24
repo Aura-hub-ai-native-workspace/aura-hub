@@ -44,6 +44,24 @@ Key properties:
 | 2026-08-24 | phase 2 | sanitizePolicy + evaluatePolicy (full evaluation objects incl. reasons) | 250 | **0 divergences** on first full run |
 | 2026-08-24 | phase 3 | WorkflowStore/RunStore/VersionStore/AutomationStore op-script (returns AND whole AURA_HOME tree sha256) | 57 ops ×2 homes | **0 divergences** after fixing three real parity bugs (see below) |
 
+| 2026-08-24 | phase 4 | CapabilityFabric.invoke/evaluate/decide/consume — full result objects, ordered event streams, backoff schedule, audit+approval snapshots | 15 scenarios (~40 invocations incl. hostile) | **0 divergences** |
+
+## Phase-4 scenario matrix
+
+unknown-capability · contract missing-required / wrong-type / string[] ·
+permission-denied (multi-scope join) · no-provider deny · auto-execute with
+attribution guard (`output.nodeId` ignored without `requiresNodeCapability`) ·
+park→decide→re-invoke→respend cycle · named-approval spend happy path ·
+fingerprint-mismatch park · missing named approval · transient retry success
+(`slept=[400]`) · retry exhaustion after 3 · non-transient immediate failure ·
+unverified via verify-false / verify-throws / declared-but-unimplemented ·
+unsupported capability · override deny · host throwing inside
+requestApproval · secret redaction + 80-char target truncation.
+
+Notable TS-parity detail locked here: `output: undefined` DROPS the key from
+results/events (JSON.stringify semantics); Python omits it too instead of
+emitting `null`.
+
 ## Phase-3 findings caught by the store harness
 
 1. **Evaluation-order of clock draws matters**: TS evaluates

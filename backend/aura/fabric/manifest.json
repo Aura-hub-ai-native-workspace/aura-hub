@@ -270,8 +270,8 @@
       "id": "governance.audit",
       "name": "Run governance audit",
       "category": "quality",
-      "surface": "local-process",
-      "description": "Runs the engineering audit and health scorecard over the project: overall health and grade, top risks, new debt, architecture and security findings, and recommendations. Reads the repository and its git history; does NOT run a package-manager audit, so the result never depends on the network.",
+      "surface": "aura-internal",
+      "description": "Health scorecard, risk, release readiness.",
       "risk": "low",
       "permissions": [
         "aura.read",
@@ -283,15 +283,9 @@
           "type": "string",
           "required": true,
           "description": "Project id"
-        },
-        {
-          "name": "scope",
-          "type": "string",
-          "required": false,
-          "description": "One of: daily, weekly, release, architecture. Defaults to daily."
         }
       ],
-      "output": "Engineering audit report and health scorecard",
+      "output": "Scorecard",
       "verify": null
     },
     {

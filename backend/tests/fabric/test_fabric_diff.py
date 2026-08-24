@@ -15,22 +15,23 @@ deterministic via shared clock sequences (+1 ms per draw).
 
 from __future__ import annotations
 
-import sys
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
+
+import sys
+from pathlib import Path
 
 _DIFF = Path(__file__).resolve().parents[1] / "differential"
 sys.path.insert(0, str(_DIFF.parent))
 sys.path.insert(0, str(_DIFF))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from _tsrun import run_fabric_ops
-from differential.conftest import tsref  # noqa: F401  (session fixture)
-from fabric._pyfabric import run_py_fabric_ops
+from differential.conftest import tsref  # noqa: E402, F401  (session fixture)
+from _tsrun import run_fabric_ops  # noqa: E402
+from fabric._pyfabric import run_py_fabric_ops  # noqa: E402
 
-START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=UTC).timestamp() * 1000)
+START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc).timestamp() * 1000)
 
 MISSION_CTX = {
     "actor": {"kind": "agent", "role": "implementer", "id": "agent:workflow"},
@@ -207,8 +208,8 @@ def _build_all() -> list[tuple[str, dict, list[dict]]]:
     out.append(("verify-throws",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
                  "executors": base_executors()},
-                [{"op": "invoke", "capabilityId": "knowledge.graph",
-                  "input": {"projectId": "p"}, "context": PLAIN_CTX}]))
+                [{"op": "invoke", "capabilityId": "browser.read",
+                  "input": {"url": "https://example.test"}, "context": PLAIN_CTX}]))
     out.append(("declared-check-no-impl",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
                  "executors": base_executors()},
@@ -217,8 +218,8 @@ def _build_all() -> list[tuple[str, dict, list[dict]]]:
     out.append(("unsupported-capability",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
                  "executors": base_executors()},
-                [{"op": "invoke", "capabilityId": "knowledge.graph",
-                  "input": {"projectId": "p"}, "context": PLAIN_CTX}]))
+                [{"op": "invoke", "capabilityId": "project.list",
+                  "input": {}, "context": PLAIN_CTX}]))
     out.append(("override-deny",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
                  "policyRaw": {"overrides": {"filesystem.read": "deny"}},
