@@ -15,11 +15,11 @@
 | Phase | State |
 | --- | --- |
 | Phase 0 — contracts | **DONE** — runtime-verified round-trips; honest outcome vocabulary (`denied`/`timeout`) |
-| Phase 1 — intent compiler | **DONE (heuristic + fail-closed model port)** — model ROUTING now implemented (provider chain, health, env-only keys); live-provider accuracy still unprovisioned |
+| Phase 1 — intent compiler | **DONE** — structured schema (entities/ambiguity/confidence), real provider wire path verified against an OpenAI-compatible HTTP fixture; deterministic clarification policy owns blocking |
 | Phase 2 — planner + capability checker | **DONE** — direct git.status / fs.write_file / run-workflow templates |
 | Phase 3 — workflow compiler | **DONE** — frozen-vocabulary graphs incl. governed export-file synthesis from write clauses |
 | Phase 4 — execution + verification | **DONE both routes** — Python engine executes stored graphs node-by-node through the Fabric; park/resume across restarts |
-| Phase 5 — integration + MCP | **SUBSTANTIALLY DONE** — stdio MCP transport + fixture server through gateway→Fabric; HTTP/SSE API live; React consumption pending |
+| Phase 5 — integration + MCP | **SUBSTANTIALLY DONE** — stdio transport, HTTP/SSE API with continuation routes (`/message`, `/approve`, `/plan`); plan-review hides reasoning; React consumption pending |
 
 The original phase plan below is preserved unchanged for reference.
 

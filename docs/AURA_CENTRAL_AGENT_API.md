@@ -23,6 +23,21 @@ Submit one user intent. Creates a session and drives it synchronously.
 ### `GET /agent/sessions/{id}`
 Full persisted session (state, messages, lastResult).
 
+### `POST /agent/sessions/{id}/message`
+Continue the conversation: answer a pending clarification or add a follow-up.
+A pending question turns this message into its ANSWER (same session, zero
+effects in between). Follow-ups never replay already-completed effects.
+`{ "message": "temporary files only", "projectPath": "/optional" }`.
+
+### `POST /agent/sessions/{id}/approve`
+Convenience: record THIS human decision through the same single-use ledger,
+then resume the session in one call. `{ "approvalId": "apr-…", "granted": true }`.
+Second decisions return **409**, exactly like `/fabric/approvals/{id}/decide`.
+
+### `GET /agent/sessions/{id}/plan`
+Human-readable review of the active plan: steps, capabilities, risks,
+verification intents. NEVER contains model reasoning.
+
 ### `POST /agent/sessions/{id}/resume`
 Continue a parked session after a human decision. Validates the grant
 BEFORE re-executing; the Fabric spends it single-use. Denied decisions
