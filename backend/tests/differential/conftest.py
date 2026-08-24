@@ -19,6 +19,12 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
+# Worktree checkouts have no node_modules; borrow the main checkout's
+# TypeScript toolchain so the differential gate never silently skips.
+if not (REPO / "node_modules" / ".bin" / "esbuild").exists():
+    _main = Path("/mnt/storage/aura-hub")
+    if (_main / "node_modules" / ".bin" / "esbuild").exists():
+        REPO = _main
 TSREF = Path("/tmp/opencode/tsref")
 ESBUILD = REPO / "node_modules" / ".bin" / "esbuild"
 DRIVER = Path(__file__).parent / "ts_driver.mjs"
@@ -58,9 +64,29 @@ def tsref() -> dict[str, Path]:
             versions_out,
             ["--external:typescript"],
         )
+        _build_bundle(
+            REPO / "packages/ai-service/src/workflow/store.ts",
+            TSREF / "wfstore.mjs", [],
+        )
+        _build_bundle(
+            REPO / "packages/ai-service/src/workflow/run/store.ts",
+            TSREF / "runstore.mjs", [],
+        )
+        _build_bundle(
+            REPO / "packages/automation/src/store.ts",
+            TSREF / "autostore.mjs", [],
+        )
+        _build_bundle(
+            REPO / "packages/ai-service/src/workflow/run/types.ts",
+            TSREF / "runtypes.mjs", [],
+        )
     except subprocess.CalledProcessError as e:
         pytest.skip(f"failed to build TS reference bundles: {e.stderr[-400:]}")
-    return {"fabric": fabric_out, "index": index_out, "versions": versions_out}
+    return {
+        "fabric": fabric_out, "index": index_out, "versions": versions_out,
+        "wfstore": TSREF / "wfstore.mjs", "runstore": TSREF / "runstore.mjs",
+        "autostore": TSREF / "autostore.mjs", "runtypes": TSREF / "runtypes.mjs",
+    }
 
 
 def run_ts_batch(tsref_paths: dict[str, Path], func: str, cases: list[dict]) -> list[str]:
