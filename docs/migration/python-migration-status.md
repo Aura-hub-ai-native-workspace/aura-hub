@@ -39,7 +39,12 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 
 ## Current phase summary
 
-**Phases 1–6 COMPLETE · Phase 7 GATE PASSED (automation converges on the canonical runner).**
+**Phases 1–7 COMPLETE · Phase 8 SUBSTANTIALLY CLOSED (secrets/agent-core/dry-run gates green).**
+Dry-run: full AuthorityEnvelope + read-only proof, TS differential green
+(3 graphs; one verbatim oracle divergence recorded). Agent node runtime:
+bounds clamp, allowlist, park/deny/quarantine, honest stop reasons —
+scripted-model only. Secrets: cross-runtime crypto interop both directions.
+Suite: 115 passed.
 Suite: `cd backend && python3 -m pytest tests -q` → 79+ passed (automation +
 workflow + units + goldens; slow differential batteries green as of Phase 5/6).
 The run-workflow action handler calls WorkflowRunner.start_workflow_run with
