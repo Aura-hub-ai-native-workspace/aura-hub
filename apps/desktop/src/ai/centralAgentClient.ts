@@ -227,48 +227,98 @@ export const centralAgentClient = {
    * observability only — durable evidence stays authoritative, so a lost
    * stream never falsifies a result.
    */
-  events: (sessionId: string, onEvent: (frame: AgentEventFrame) => void): (() => void) => {
+  /**
+   * Subscribe to the session's live event stream with automatic reconnection.
+   *
+   * Reconnect policy (all client-side; the backend keeps no cursor):
+   *   • exponential backoff 250ms → 8s cap, reset on a successful frame;
+   *   • every received frame is deduplicated by its `at` timestamp + type
+   *     pair so a replayed tail after reconnect never double-renders;
+   *   • each reconnect emits an honest `stream.reconnecting` frame — the UI
+   *     must be able to say "live updates paused" rather than silently
+   *     stalling;
+   *   • the durable result always comes from submit/approve response bodies,
+   *     so a permanently lost stream can never fabricate or erase a result.
+   */
+  events: (
+    sessionId: string,
+    onEvent: (frame: AgentEventFrame) => void,
+  ): (() => void) => {
     const controller = new AbortController();
-    void (async () => {
-      try {
-        const res = await fetch(
-          `${BASE}/agent/sessions/${encodeURIComponent(sessionId)}/events`,
-          { signal: controller.signal },
-        );
-        if (!res.ok || !res.body) return;
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let idx: number;
-          // SSE frames are `data: <json>\n\n`; keep any partial tail.
-          while ((idx = buffer.indexOf('\n\n')) !== -1) {
-            const frame = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            for (const line of frame.split('\n')) {
-              if (!line.startsWith('data:')) continue;
-              try {
-                onEvent(JSON.parse(line.slice(5).trim()) as AgentEventFrame);
-              } catch { /* a malformed frame is skipped, not fatal */ }
+    const seen = new Set<string>();
+    let attempt = 0;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const emitDeduped = (frame: AgentEventFrame) => {
+      const key = `${frame.type}@${frame.at}`;
+      if (seen.has(key)) return; // dedupe replayed tails after reconnect
+      seen.add(key);
+      onEvent(frame);
+    };
+
+    const onFrame = (frame: AgentEventFrame) => {
+      attempt = 0; // a delivered frame proves connectivity — reset backoff
+      emitDeduped(frame);
+    };
+
+    const connectLoop = async () => {
+      while (!stopped && !controller.signal.aborted) {
+        try {
+          const res = await fetch(
+            `${BASE}/agent/sessions/${encodeURIComponent(sessionId)}/events`,
+            { signal: controller.signal },
+          );
+          if (!res.ok || !res.body) throw new Error(`stream status ${res.status}`);
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let idx: number;
+            while ((idx = buffer.indexOf('\n\n')) !== -1) {
+              const frameText = buffer.slice(0, idx);
+              buffer = buffer.slice(idx + 2);
+              for (const line of frameText.split('\n')) {
+                if (!line.startsWith('data:')) continue;
+                try {
+                  onFrame(JSON.parse(line.slice(5).trim()) as AgentEventFrame);
+                } catch { /* malformed frame skipped, not fatal */ }
+              }
             }
           }
-        }
-      } catch (err) {
-        if (!(err instanceof DOMException && err.name === 'AbortError')) {
-          // Stream loss is reported as an event, not swallowed: the UI must
-          // be able to say "live updates stopped" honestly.
-          onEvent({
-            type: 'stream.lost',
+          // Server closed the stream cleanly — treat as disconnect and retry.
+        } catch (err) {
+          if (stopped || controller.signal.aborted) return;
+          const aborted = err instanceof DOMException && err.name === 'AbortError';
+          if (aborted) return;
+          const msg = err instanceof Error ? err.message : String(err);
+          emitDeduped({
+            type: 'stream.reconnecting',
             at: new Date().toISOString(),
             sessionId,
-            payload: { message: String(err) },
+            payload: { attempt: attempt + 1, message: msg },
           });
         }
+        if (stopped || controller.signal.aborted) return;
+        // Capped exponential backoff between attempts.
+        const delay = Math.min(250 * 2 ** attempt, 8000);
+        attempt += 1;
+        await new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, delay);
+        });
       }
-    })();
-    return () => controller.abort();
+    };
+
+    void connectLoop();
+
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      controller.abort();
+    };
   },
+
 };

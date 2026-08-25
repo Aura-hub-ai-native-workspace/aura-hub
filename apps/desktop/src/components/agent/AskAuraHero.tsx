@@ -183,18 +183,45 @@ export function AskAuraHero({ className }: { className?: string }) {
    * against the same single-use ledger. A 409 lands here as an error and
    * is shown verbatim; success is whatever the returned result says.
    */
+  /** Guards against double-fire (double-click, StrictMode, replays). */
+  const decidingRef = useRef(false);
+
   const decide = useCallback(
     async (granted: boolean) => {
       const apr = result?.evidence?.approvalIds?.[0];
       if (!sessionId || !apr || phase !== 'needs-you') return;
+      if (decidingRef.current) return;
+      decidingRef.current = true;
       setPhase('working');
       try {
         const res = await centralAgentClient.approve(sessionId, apr, granted, 'Home decision');
         adoptResult(res.result, sessionId);
+        // If the approve response raced the resume write (still parked),
+        // reconcile against DURABLE session state until terminal or timeout.
+        // Live SSE cannot be trusted to deliver this reliably under load.
+        let current = res.result;
+        if (current.outcome === 'awaiting-approval') {
+          for (let waited = 0; waited < 12_000; waited += 750) {
+            await new Promise((r) => setTimeout(r, 750));
+            const session = await centralAgentClient.getSession(sessionId);
+            const lr = session.lastResult;
+            if (!lr) continue;
+            if (lr.outcome !== 'awaiting-approval') {
+              current = lr;
+              break;
+            }
+          }
+          // Adopt whatever durable state says — even if still parked.
+          setResult(current);
+          if (current.outcome === 'awaiting-approval') setPhase('needs-you');
+          else setPhase('done');
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         setErrorText(msg);
         setPhase('error');
+      } finally {
+        decidingRef.current = false;
       }
     },
     [sessionId, result, phase, adoptResult],
