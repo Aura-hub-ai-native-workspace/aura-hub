@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ..approvals import ApprovalLedger, usable_pending
