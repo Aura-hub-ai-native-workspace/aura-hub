@@ -396,6 +396,8 @@ async function runWfOps(req) {
 
 // ── autops: REAL AutomationEngine with deterministic clock/rand ─────────────
 async function runAutoOps(req) {
+  const { readdirSync, readFileSync, statSync, mkdirSync, rmSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
   let tick = req.startMs;
   const nextTick = () => (tick += 1000);
   class FakeDate extends Date {
@@ -414,10 +416,31 @@ async function runAutoOps(req) {
   const store = new storeMod.AutomationStore();
   const events = [];
   const slept = [];
-  const eng = new mod.AutomationEngine({ store, actions: Object.fromEntries(Object.entries(req.config.actions ?? {}).map(([k, v]) => [k, typeof v === 'function' ? v : async () => JSON.parse(JSON.stringify(v))])),
+  const gate = { open: false };
+      req.gate = gate;
+      const baseActions = Object.fromEntries(Object.entries(req.config.actions ?? {}).map(([k, v]) => [k, typeof v === 'function' ? v : async () => JSON.parse(JSON.stringify(v))]));
+      baseActions['gated'] = async () => {
+        while (!gate.open) await new Promise((r) => setImmediate(r));
+        return { ok: true, summary: 'ran' };
+      };
+    const eng = new mod.AutomationEngine({ store, actions: baseActions,
     emit: (e) => events.push(JSON.parse(JSON.stringify(e))), sleep: async (ms) => slept.push(ms) });
 
   const results = [];
+  const resolve = (v) => {
+    if (typeof v === 'string') {
+      const m = /^\$r(\d+)(?:\.(.*))?$/.exec(v);
+      if (m) {
+        let cur = results[Number(m[1])];
+        if (m[2]) for (const part of m[2].split('.')) cur = cur?.[/^\d+$/.test(part) ? Number(part) : part];
+        return cur;
+      }
+      return v;
+    }
+    if (Array.isArray(v)) return v.map(resolve);
+    if (v && typeof v === 'object') { const o = {}; for (const [k, x] of Object.entries(v)) o[k] = resolve(x); return o; }
+    return v;
+  };
   for (const op of req.ops) {
     try {
       switch (op.op) {
@@ -429,15 +452,36 @@ async function runAutoOps(req) {
           results.push(r ? JSON.parse(JSON.stringify(r)) : null);
           break;
         }
-        case 'listRuns': results.push(JSON.parse(JSON.stringify(store.listRuns(op.args[0])))); break;
+        case 'listRuns': results.push(JSON.parse(JSON.stringify(store.listRuns((op.args ?? [undefined])[0])))); break;
         case 'indexRuns': results.push(JSON.parse(JSON.stringify(store.indexRuns(op.args[0] ?? {})))); break;
+        case 'gate': req.gate.open = !!op.open; await new Promise((r) => setImmediate(r)); break;
+        case 'pause': results.push(JSON.parse(JSON.stringify(eng.pauseRule(resolve(op.args[0]))))); break;
+        case 'resume': {
+          const rr = eng.resumeRule(resolve(op.args[0]));
+          await new Promise((res) => setImmediate(res));
+          await new Promise((res) => setImmediate(res));
+          results.push(rr ? JSON.parse(JSON.stringify(rr)) : null);
+          break;
+        }
+        case 'cancel': {
+          const rc = eng.cancelRun(resolve(op.args[0]), resolve(op.args[1]));
+          await new Promise((res) => setImmediate(res));
+          await new Promise((res) => setImmediate(res));
+          results.push(rc ? JSON.parse(JSON.stringify(rc)) : null);
+          break;
+        }
+        case 'fs': {
+          const fp = join(req.home, op.path);
+          if (op.kind === 'write') { mkdirSync(join(fp, '..'), { recursive: true }); writeFileSync(fp, op.data); }
+          else if (op.kind === 'rm') { try { rmSync(fp, { force: true }); } catch {} }
+          results.push(null);
+          break;
+        }
         default: throw new Error(`op ${op.op}`);
       }
     } catch (e) { results.push({ __error__: String(e && e.message || e) }); }
   }
   const tree = {};
-  const { readdirSync, readFileSync, statSync } = await import('node:fs');
-  const { join } = await import('node:path');
   const walk = (dir, rel) => {
     let es = []; try { es = readdirSync(dir); } catch { return; }
     for (const e of es.sort()) {

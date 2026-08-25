@@ -130,13 +130,17 @@ class AutomationEngine:
                  emit: Callable | None = None,
                  sleep: Callable[[float], Any] | None = None,
                  clock_iso: Callable[[], str] = _now_iso,
-                 clock_ms: Callable[[], int] | None = None) -> None:
+                 clock_ms: Callable[[], int] | None = None,
+                 id_gen: Callable[[str], str] | None = None) -> None:
         self.store = store
         self.actions = actions
         self.emit = emit
         self._sleep = sleep or (lambda ms: asyncio_sleep(ms / 1000))
         self._iso = clock_iso
         self._ms = clock_ms or (lambda: int(datetime.now(timezone.utc).timestamp() * 1000))
+        # TS genId('t') consumes Date.now + Math.random per timeline entry;
+        # the deterministic differential requires identical draw counts.
+        self._id_gen = id_gen or (lambda p: f"{p}-{len(p)}")
         self.running: set[str] = set()
         self.live_runs: dict[str, dict] = {}
 
@@ -180,7 +184,7 @@ class AutomationEngine:
             run = self.store.create_run(rule, event)
             run["conditions"] = conds
             run["timeline"].append({
-                "id": f"t-{len(run['timeline'])+1}", "at": self._iso(),
+                "id": self._id_gen("t"), "at": self._iso(),
                 "type": "condition-check",
                 "message": f"{sum(1 for c in conds if c['passed'])}/{len(conds)} conditions passed",
                 "level": "info"})
@@ -429,7 +433,7 @@ class AutomationEngine:
     # helpers ----------------------------------------------------------------------
 
     def _timeline(self, run, type_, message, level="info", action_id=None):
-        entry = {"id": f"t-{len(run['timeline']) + 1}", "at": self._iso(),
+        entry = {"id": self._id_gen("t"), "at": self._iso(),
                  "type": type_, "message": message, "level": level}
         if action_id:
             entry["actionId"] = action_id
