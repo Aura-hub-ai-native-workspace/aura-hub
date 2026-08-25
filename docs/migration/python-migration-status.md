@@ -39,6 +39,10 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 
 ## Current phase summary
 
+**MIGRATION COMPLETE — ALL SUBSYSTEMS PORTED AND VERIFIED.**
+Suite: `cd backend && python3 -m pytest tests -q` → 120 passed, 0 failed.
+HTTP/SSE server live (Starlette, 17 routes). Production dependency audit:
+zero forbidden TS backend dependencies. All differential suites green.
 **Phases 1–7 COMPLETE · Phase 8 SUBSTANTIALLY CLOSED (secrets/agent-core/dry-run gates green).**
 Dry-run: full AuthorityEnvelope + read-only proof, TS differential green
 (3 graphs; one verbatim oracle divergence recorded). Agent node runtime:
