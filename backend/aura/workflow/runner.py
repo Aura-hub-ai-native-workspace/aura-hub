@@ -32,7 +32,7 @@ def compute_envelope(nodes: list[dict]) -> dict:
             "shell-command": "terminal.execute", "export-file": "filesystem.write",
             "git-status": "git.status", "changed-files": "git.status",
             "git-diff": "git.diff", "git-commit": "git.commit",
-            "git-branch": "git.branch", "git-push": "git.push",
+            "git-branch": "git.branch",
             "http-request": "http.request",
         }.get(n["type"])
         cap = next((c for c in _manifest_caps() if c["id"] == binding_cap), None)

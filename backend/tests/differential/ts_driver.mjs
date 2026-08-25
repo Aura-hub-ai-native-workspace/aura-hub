@@ -29,6 +29,12 @@ process.stdin.on('end', async () => {
     return;
   }
 
+  if (req.func === 'dryops') {
+    const out = await runDryOps(req);
+    process.stdout.write(JSON.stringify(out));
+    return;
+  }
+
   if (req.func === 'autops') {
     const out = await runAutoOps(req);
     process.stdout.write(JSON.stringify(out));
@@ -492,4 +498,44 @@ async function runAutoOps(req) {
   };
   walk(req.home, '');
   return { results, events, slept, tree };
+}
+
+// ── dryops: REAL TS dryRunWorkflow vs same graphs ───────────────────────────
+async function runDryOps(req) {
+  let tick = req.startMs;
+  const nextTick = () => (tick += 1000);
+  class FakeDate extends Date {
+    constructor(...a) { super(...(a.length ? a : [nextTick()])); }
+    static now() { return nextTick(); }
+  }
+  globalThis.Date = FakeDate;
+  process.env.AURA_HOME = req.home;
+
+  const mod = await import(process.env.TSREF_DRYRUN);
+  const fabricApi = await import(process.env.TSREF_FABRIC_INDEX);
+
+  class OracleFabric {
+    constructor() { this.evaluations = 0; this.invocations = 0; }
+    evaluate(capability_id, context) {
+      this.evaluations += 1;
+      const d = fabricApi.describeFabricCapability(capability_id);
+      if ((req.input.denyFor ?? []).includes(capability_id)) {
+        this.evaluations += 1;
+        return { decision: "deny", rule: "override:test", risk: d ? d.risk : "low",
+                 reason: "denied for the demo" };
+      }
+      const risk = d ? d.risk : "low";
+      const decision = { low: "auto-execute", medium: "ask-user", high: "require-approval" }[risk];
+      return { decision, rule: `risk-default:${risk}`, risk, reason: `${capability_id} ${decision}` };
+    }
+    async invoke() { throw new Error("DRY RUN INVOKED"); }
+  }
+  const fabric = new OracleFabric();
+  const input = { ...req.input, fabric };
+  const report = mod.dryRunWorkflow(input);
+  const out = JSON.parse(JSON.stringify(report));
+  out._fabricEvaluations = fabric.evaluations;
+  out._fabricInvocations = fabric.invocations;
+  out._fabricInvocations = fabric.invocations;
+  return out;
 }
