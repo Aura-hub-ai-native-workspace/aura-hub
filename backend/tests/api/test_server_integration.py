@@ -3,6 +3,9 @@ executes real effects, produces evidence/audit, handles dry-run, and
 survives restart — all against a disposable AURA_HOME."""
 from __future__ import annotations
 
+import json
+import tempfile
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -35,7 +38,7 @@ def test_workflow_crud_lifecycle(client):
     r3 = c.put(f"/workflows/{wid}", json={"name": "Renamed"})
     assert r3.json()["name"] == "Renamed"
     r4 = c.get("/workflows")
-    assert any(w["id"] == wid for w in r4.json()["workflows"])
+    assert any(w["id"] == wid for w in r4.json())
     r5 = c.delete(f"/workflows/{wid}")
     assert r5.json()["ok"] is True
 
