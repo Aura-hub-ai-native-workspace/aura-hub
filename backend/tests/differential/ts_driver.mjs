@@ -23,6 +23,12 @@ process.stdin.on('data', (c) => { payload += c; });
 process.stdin.on('end', async () => {
   const req = JSON.parse(payload);
 
+  if (req.func === 'agentops') {
+    const out = await runAgentOps(req);
+    process.stdout.write(JSON.stringify(out));
+    return;
+  }
+
   if (req.func === 'wfops') {
     const out = await runWfOps(req);
     process.stdout.write(JSON.stringify(out));
@@ -538,4 +544,74 @@ async function runDryOps(req) {
   out._fabricInvocations = fabric.invocations;
   out._fabricInvocations = fabric.invocations;
   return out;
+}
+
+// ── agentops: REAL TS AgentNodeRunner with scripted model/fabric ────────────
+async function runAgentOps(req) {
+  let tick = req.startMs;
+  const nextTick = () => (tick += 1000);
+  class FakeDate extends Date {
+    constructor(...a) { super(...(a.length ? a : [nextTick()])); }
+    static now() { return nextTick(); }
+  }
+  globalThis.Date = FakeDate;
+
+  const mod = await import(process.env.TSREF_AGENTRUNNER);
+
+  const script = ((req.fabricScript && req.fabricScript.length) ? req.fabricScript : [{ ok: true }]).map((s) => ({ ...s }));
+  let invSeq = 0;
+  const fabricHost = {
+    permissionsFor: () => ({ read: true, write: true, execute: true, autonomous: false }),
+    nodeAvailable: () => null,
+    isSupported: (id) => ["filesystem.read", "terminal.execute"].includes(id),
+    async requestApproval(request, _ctx) {
+      const approved = new Set(req.approvedCapabilities ?? []);
+      return request.items.every((item) => approved.has(item.capabilityId));
+    },
+    async invoke(capabilityId, input, context) {
+      const step = script.length > 1 ? script.shift() : script[0];
+      const base = {
+        invocationId: `inv-${++invSeq}`, capabilityId,
+        detail: "executed",
+        verification: { passed: null, kind: null, detail: "no mechanical check" },
+        policy: { decision: "auto-execute", rule: "risk-default:low",
+                  risk: "low", reason: "low" },
+        startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
+        durationMs: 1, attempts: 1,
+      };
+      if (step.park) Object.assign(base, { outcome: "awaiting-approval", approvalId: "apr-1" });
+      else if (step.deny) base.outcome = "denied";
+      else Object.assign(base, { outcome: "succeeded", output: { stdout: "ok" } });
+      return base;
+    },
+  };
+
+  const steps = req.model.map((s) => ({ ...s }));
+  const pipeline = { generate: async () => {
+    const step = steps.length > 1 ? steps.shift() : steps[0];
+    let body;
+    if (step.final !== undefined) body = { final: step.final };
+    else if (step.toolCall) body = { plan: "step", tool: { name: step.toolCall.capabilityId,
+                                                          input: step.toolCall.input } };
+    else body = { plan: "think", final: step.text ?? "" };
+    return { ok: true, text: JSON.stringify(body), usage: { totalTokens: step.tokens ?? 1 } };
+  }};
+
+  const envelope = req.envelope ?? { capabilities: [] };
+  const secretsStub = { redactor: () => (t) => t,
+                        resolve: (v) => ({ text: v, used: [] }) };
+
+  const runner = mod.createAgentRunner({
+    fabric: fabricHost, pipeline, secrets: secretsStub,
+    workflowId: "wf", runId: "wr", projectId: "p", projectPath: "/p",
+    actor: { kind: "agent", id: "agent:workflow" }, envelope,
+  });
+
+  const beats = [];
+  const outcome = await runner.run(req.node, {}, { text: "" }, {
+    interpolate: (t) => t,
+    onBeat: (b) => beats.push(JSON.parse(JSON.stringify(b))),
+    signal: undefined,
+  });
+  return { result: JSON.parse(JSON.stringify(outcome)), events: beats, slept: [] };
 }

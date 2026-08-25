@@ -6,14 +6,15 @@ stop reasons, beats, effective bounds, fired events, persisted state.
 from __future__ import annotations
 
 import json
-import json as _j
 import subprocess
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+import json as _j
 
 import pytest
 
-START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=UTC).timestamp() * 1000)
+START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc).timestamp() * 1000)
 DRIVER = Path(__file__).resolve().parents[1] / "differential" / "ts_driver.mjs"
 assert DRIVER.exists(), DRIVER
 ENV = {"TSREF_AGENTRUNNER": "/tmp/opencode/tsref/agentrunner.mjs",
@@ -78,8 +79,8 @@ def _py_agentops(home, start_ms, model_steps, fabric_script):
 
     clock = stepped_clock(start_ms)
     rand = counter_rand()
-    from aura.fabric import NO_VERIFICATION
     from aura.workflow.agent.runner import AgentRunner
+    from aura.fabric import NO_VERIFICATION
 
     script = [dict(s) for s in (fabric_script or [{"succeeded": True}])]
 
