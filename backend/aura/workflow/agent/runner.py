@@ -10,15 +10,16 @@ from __future__ import annotations
 import json
 import re
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from .bounds import AGENT_CEILINGS, AGENT_DEFAULTS, resolve_bounds, resolve_tools
 
 
 def _iso() -> str:
-    from datetime import datetime, timezone
 
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _parse_step(raw: str):

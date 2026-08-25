@@ -7,7 +7,8 @@ secrets resolve at the Fabric boundary only.
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 MAX_LOOP_ITERATIONS = 20
 MAX_NODE_EXECUTIONS = 400

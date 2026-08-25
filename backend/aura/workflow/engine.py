@@ -6,15 +6,26 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC
+from typing import Any
 
 from ..persistence.runs import (
-    MAX_RUN_LOG, MAX_TRANSITIONS, append_log, attach_evidence,
-    empty_node_record, run_state_for, transition_node,
+    MAX_RUN_LOG,
+    MAX_TRANSITIONS,
+    append_log,
+    attach_evidence,
+    empty_node_record,
+    run_state_for,
+    transition_node,
 )
 from .nodes_core import (
-    DEFAULT_RUN_TIMEOUT_MS, GOVERNED_TYPES, MAX_LOOP_ITERATIONS,
-    MAX_NODE_EXECUTIONS, PURE_RUNNERS, provenance_of,
+    DEFAULT_RUN_TIMEOUT_MS,
+    GOVERNED_TYPES,
+    MAX_LOOP_ITERATIONS,
+    MAX_NODE_EXECUTIONS,
+    PURE_RUNNERS,
+    provenance_of,
 )
 
 EVENT_STATE = {"queued": "queued", "running": "running",
@@ -33,7 +44,7 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
     if isinstance(emit, list):
         sink = emit
 
-        def emit(ev: dict) -> None:  # noqa: F811
+        def emit(ev: dict) -> None:
             sink.append(ev)
     t0 = time.time()
     timeout_ms = max(1000, opts.get("timeoutMs") or DEFAULT_RUN_TIMEOUT_MS)
@@ -445,9 +456,9 @@ async def _maybe_await(v):
 
 
 def _iso():
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 _ = asyncio, MAX_TRANSITIONS, MAX_RUN_LOG

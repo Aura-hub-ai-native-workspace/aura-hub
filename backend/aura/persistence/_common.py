@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 # ── Node-compatible time formatting ─────────────────────────────────────────
 
 
-def iso_from_ms(epoch_ms: int | float) -> str:
+def iso_from_ms(epoch_ms: float) -> str:
     """new Date(ms).toISOString() equivalent — millisecond precision, Z suffix."""
-    dt = _dt.datetime.fromtimestamp(epoch_ms / 1000, tz=_dt.timezone.utc)
+    dt = _dt.datetime.fromtimestamp(epoch_ms / 1000, tz=_dt.UTC)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
 
 
@@ -129,15 +130,15 @@ def rm_rf(path: Path) -> None:
 
 
 __all__ = [
+    "counter_rand",
     "iso_from_ms",
     "js_random_base36",
     "make_gen_id",
     "mulberry32",
-    "stepped_clock",
-    "counter_rand",
-    "tree_digest",
     "normalize_tokens",
     "rm_rf",
+    "stepped_clock",
+    "tree_digest",
 ]
 
 # silence linters about intentional re-export shape

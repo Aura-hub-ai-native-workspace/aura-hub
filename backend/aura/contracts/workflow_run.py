@@ -6,9 +6,9 @@ copy; `resumable` is stated on the record, not derived at read time.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
-from pydantic import Field, TypeAdapter
+from pydantic import Field
 
 from ._base import ContractModel
 
@@ -172,7 +172,7 @@ class ResumeTrigger(ContractModel):
 
 
 RunTrigger = Annotated[
-    Union[ManualTrigger, WebhookTrigger, AutomationTrigger, MissionTrigger, ResumeTrigger],
+    ManualTrigger | WebhookTrigger | AutomationTrigger | MissionTrigger | ResumeTrigger,
     Field(discriminator="kind"),
 ]
 

@@ -117,7 +117,7 @@ def run_py_fabric_ops(home: str | None, start_ms: int, config: dict, ops: list[d
     from aura.executors import all_executors as _all_exec
 
     registry_stub = type("R", (), {
-        "list_projects": staticmethod(lambda: []),
+        "list_projects": staticmethod(list),
         "profile": staticmethod(lambda pid: None),
         "current_project": staticmethod(lambda: None),
     })()

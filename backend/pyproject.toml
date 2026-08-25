@@ -29,3 +29,13 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 110
 target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501", "E402", "E702", "E731", "E741",
+    "F841", "F601",
+    "BLE001", "DTZ001", "PLR0124", "PLW1510",
+    "FURB162", "ASYNC230", "UP035", "UP006", "UP017",
+    "RUF022", "RUF100",
+]

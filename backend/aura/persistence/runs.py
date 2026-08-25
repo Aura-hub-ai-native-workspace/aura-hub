@@ -9,13 +9,14 @@ index.json verbatim.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from ._alias import CamelAlias
 from ..config import aura_path
 from ..jsonutil import read_json_file, write_json_file
+from ._alias import CamelAlias
 
 MAX_RUNS_PER_WORKFLOW = 200
 MAX_INDEX_ENTRIES = 5000
@@ -23,7 +24,7 @@ TERMINAL = ("succeeded", "failed", "cancelled", "timed-out")
 
 
 def _now_default() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def is_terminal(state: str) -> bool:
@@ -64,7 +65,7 @@ def _default_id_gen(prefix: str) -> str:
     """TS-parity uniqueness when no injection: now36 + 6 rand chars."""
     import secrets
 
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
     digits = "0123456789abcdefghijklmnopqrstuvwxyz"
     n = now_ms
     b36 = ""

@@ -18,13 +18,13 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "append_jsonl",
     "dumps_compact",
     "dumps_pretty",
     "loads_tolerant",
-    "write_json_file",
     "read_json_file",
-    "append_jsonl",
     "read_jsonl",
+    "write_json_file",
 ]
 
 

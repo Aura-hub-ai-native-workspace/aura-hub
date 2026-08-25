@@ -11,8 +11,6 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-import pytest
-
 from aura.automation.scheduler import next_after, parse_cron
 
 VECS = json.load(open(__file__.replace("__file__", "cron_vectors.json")

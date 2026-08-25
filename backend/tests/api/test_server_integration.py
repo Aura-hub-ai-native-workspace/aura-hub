@@ -3,9 +3,6 @@ executes real effects, produces evidence/audit, handles dry-run, and
 survives restart — all against a disposable AURA_HOME."""
 from __future__ import annotations
 
-import json
-import tempfile
-
 import pytest
 from starlette.testclient import TestClient
 

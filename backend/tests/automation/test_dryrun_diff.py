@@ -6,19 +6,18 @@ oracle-side measured invocations (must be 0) and evaluation counts.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
-
-import sys
-from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "differential"))
 sys.path.insert(0, str(_ROOT / "workflow"))
 
-START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc).timestamp() * 1000)
+START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=UTC).timestamp() * 1000)
 
 
 def _run_ts(graph, home, deny_for=None):

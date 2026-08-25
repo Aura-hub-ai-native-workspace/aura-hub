@@ -12,7 +12,6 @@ they never silently pass.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -46,7 +45,7 @@ STUB_ENV = """export async function probeNode() { throw new Error('probe unavail
 export default { probeNode };
 """
 
-BUILD_WIRING_JS = """
+BUILD_WIRING_JS = r"""
 import { build } from '<ESBUILD_LIB>';
 import { writeFileSync } from 'node:fs';
 const envStub = { name:'env-stub', setup(b){ b.onResolve({filter:/src\/environment$/}, () => ({path:'<TSREF>/stub-env.mjs'})); } };

@@ -13,12 +13,11 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-
-import sys
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT.parent))
@@ -26,12 +25,11 @@ sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "differential"))
 sys.path.insert(0, str(_ROOT / "fabric"))
 
-from differential.conftest import tsref  # noqa: E402, F401  (session fixture)
+from _tsrun import run_fabric_ops
+from differential.conftest import tsref  # noqa: F401  (session fixture)
+from fabric._pyfabric import run_py_fabric_ops
 
-from _tsrun import run_fabric_ops  # noqa: E402
-from fabric._pyfabric import run_py_fabric_ops  # noqa: E402
-
-START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc).timestamp() * 1000)
+START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=UTC).timestamp() * 1000)
 
 GIT_NODE = {"id": "node-git", "name": "Git", "binary": "git",
             "capabilities": ["source-control"]}

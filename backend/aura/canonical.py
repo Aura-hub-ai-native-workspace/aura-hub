@@ -24,11 +24,12 @@ from __future__ import annotations
 
 import hashlib
 import unicodedata
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from .jsonutil import dumps_compact
 
-__all__ = ["icu_root_key", "fingerprint_invocation", "graph_hash", "digest32"]
+__all__ = ["digest32", "fingerprint_invocation", "graph_hash", "icu_root_key"]
 
 # ── ICU root collation approximation ────────────────────────────────────────
 
