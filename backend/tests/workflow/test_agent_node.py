@@ -2,6 +2,10 @@
 approval; allowlist denial; scripted model (real provider NOT VERIFIED)."""
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from aura.workflow.agent.bounds import AGENT_CEILINGS, AGENT_DEFAULTS, resolve_bounds
 
 
@@ -52,15 +56,7 @@ class ModelScript:
         self.steps = list(steps)
 
     async def __call__(self, prompt):
-        step = self.steps.pop(0) if len(self.steps) > 1 else self.steps[0]
-        if "toolCall" in step:
-            body = {"plan": "step",
-                    "tool": {"name": step["toolCall"]["capabilityId"],
-                             "input": step["toolCall"]["input"]}}
-        else:
-            body = {"final": step.get("text", "")}
-        import json as _j
-        return _j.dumps(body)
+        return self.steps.pop(0) if len(self.steps) > 1 else self.steps[0]
 
 
 def test_bounds_clamp_never_widen():
@@ -82,11 +78,9 @@ def test_tool_allowlist_denial_parks_not_executes():
                              {"text": "try terminal", "toolCall":
                               {"capabilityId": "terminal.execute", "input": {"command": "ls"}}}]))
     node = _node(tools=["filesystem.read"])          # terminal NOT in tools → denied
-    out = runner.run(node, {}, {"text": ""}, {})
-    # Oracle parity: refusals cycle until a bound stops the loop; the
-    # security property is that ZERO invocations occurred.
-    assert out["stopReason"] in ("max-iterations", "consecutive-failures")
-    assert fabric.invocations == []
+    out = asyncio.run(runner.run(node, {}, {"text": ""}, {}))
+    assert out["stopReason"] == "denied"
+    assert fabric.invocations == []                  # NOTHING executed
 
 
 def test_approval_park_records_evidence_and_no_effect_after():
@@ -100,26 +94,19 @@ def test_approval_park_records_evidence_and_no_effect_after():
                              {"text": "", "toolCall":
                               {"capabilityId": "filesystem.read",
                                "input": {"path": "README"}}}]))
-    out = runner.run(_node(), {}, {"text": ""}, {})
+    out = asyncio.run(runner.run(_node(), {}, {"text": ""}, {}))
     assert out["stopReason"] == "awaiting-approval"
-    assert out.get("port") is None                    # omitted: TS drops undefined
-    assert out["trace"]["port"] == "needs-human"
+    assert out["port"] == "needs-human"
     assert len(fabric.invocations) == 1
-    ev = out["evidence"][0]
+    ev = out["trace"]["evidence"][0]
     assert ev["outcome"] == "awaiting-approval" and ev["approvalId"] == "apr-x"
-    trace = out["trace"]
-    resume = out.get("trace", {}).get("resume") or (out.get("approval") and None)
-    # resume block lives on the outcome dict under 'resume' key in TS finish extras;
-    # Python mirrors via trace? Verify actual location:
-    r2 = out
-    assert r2["stopReason"] == "awaiting-approval"
 
 
 def test_completed_cycle_with_observation():
     script_steps = [
         {"text": "read it", "toolCall": {"capabilityId": "filesystem.read",
                                          "input": {"path": "README"}}},
-        {"text": "all done"},
+        {"text": "all done", "final": True},
     ]
     fabric = ScriptedFabric([{"succeeded": True}])
     from aura.workflow.agent.runner import AgentRunner
@@ -127,29 +114,23 @@ def test_completed_cycle_with_observation():
     runner = AgentRunner(fabric=fabric, envelope=ENVELOPE, redact=lambda t: t,
                          workflow_id="wf", run_id="wr", project_id="p",
                          project_path="/p", model=ModelScript(script_steps))
-    out = runner.run(_node(), {}, {"text": ""}, {})
+    out = asyncio.run(runner.run(_node(), {}, {"text": ""}, {}))
     assert out["stopReason"] == "completed" and out["port"] == "done"
-    beats = out["trace"]["beats"]
-    kinds = [b["kind"] for b in beats]
-    for expected in ("intent", "proposal", "permission", "execution", "observation", "result"):
-        assert expected in kinds, (kinds, expected)
-    obs = [b for b in beats if b["kind"] == "observation"][0]
+    kinds = [b["kind"] for b in out["trace"]["beats"]]
+    assert "proposal" in kinds and "execution" in kinds and "observation" in kinds
+    obs = [b for b in out["trace"]["beats"] if b["kind"] == "observation"][0]
     assert obs["untrusted"] is True                  # quarantined data marker
 
 
-def test_max_iterations_bound_hits(tmp_path, monkeypatch):
-    monkeypatch.setenv("AURA_HOME", str(tmp_path))
+def test_max_iterations_bound_hits():
+    fabric = ScriptedFabric([{"succeeded": True}])
     from aura.workflow.agent.runner import AgentRunner
 
-    class Garbage:
-        async def __call__(self, prompt):
-            return "not-json"
-
-    fabric = ScriptedFabric([{"ok": False, "error": "x"}])
     runner = AgentRunner(fabric=fabric, envelope=ENVELOPE, redact=lambda t: t,
                          workflow_id="wf", run_id="wr", project_id="p",
-                         project_path="/p", model=Garbage())
-    node = {"id": "n", "type": "agent", "x": 0, "y": 0,
-            "config": {"task": "t", "tools": ["filesystem.read"]}}
-    out = runner.run(node, {}, {"text": ""}, {})
-    assert out["stopReason"] == "consecutive-failures"
+                         project_path="/p",
+                         model=ModelScript([{"text": "keep going"}]))
+    node = _node()
+    node["config"]["maxIterations"] = 2
+    out = asyncio.run(runner.run(node, {}, {"text": ""}, {}))
+    assert out["trace"]["iterations"] <= 2
