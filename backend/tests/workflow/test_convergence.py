@@ -18,9 +18,27 @@ class NullFabric:
         raise AssertionError("fabric must not be reached by pure-logic workflows")
 
 
+
+
+class _IdentitySecrets:
+    """No secrets stored: redactor is identity, resolve passes text through
+    and fails closed on any {{secret:}} reference (matches TS behavior)."""
+    def known_values(self):
+        return []
+    def redactor(self):
+        return lambda t: t
+    class resolve:
+        pass
+    def resolve(self, text):
+        import re as _re
+        if "{{secret:" in text:
+            raise RuntimeError("not stored")
+        return {"text": text, "used": []}
+
+
 def _runner(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_HOME", str(tmp_path))
-    return WorkflowRunner(fabric=None, run_scopes=RunScopeRegistry(),
+    return WorkflowRunner(fabric=None, secrets=_IdentitySecrets(), run_scopes=RunScopeRegistry(),
                           versions=WorkflowVersionStore(), runs=WorkflowRunStore())
 
 
