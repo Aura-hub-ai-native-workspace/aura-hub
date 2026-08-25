@@ -110,3 +110,35 @@ Pre-existing failures unrelated to this milestone: `ui-approval-test`
 (stale decline-input selector vs current ApprovalGate), `ui-agent-noprovider`
 (harness TypeError before assertions), backend `tests/unit/
 test_persistence_invariants.py` (parallel builder WIP).
+
+## Milestone 5 — RunView agent-native tab, unified approvals, SSE hardening
+
+### RunView · Agent tab
+Existing RunView gained an **Agent** tab (no second run viewer). It renders
+`workflows/agent/RunAgentPanel.tsx`: intent, per-step plan with live states,
+effective bounds (iterations / wall-clock / tokens), the full AgentTrace
+(reusing `agent/AgentTrace.tsx` — reasoning-free beats only), evidence count,
+stop reason, and superseded/resume chain. COMPLETED ≠ VERIFIED is preserved:
+verification state renders from evidence, never from run success alone.
+
+### Unified approvals inbox
+`ApprovalsInbox` now merges TWO real ledgers into one consequence-ranked list:
+the Workflow Fabric ledger (:4319 via `useFabric`) and the Central Agent
+ledger (:4320 via `useAgentApprovals`). Each item is tagged `Fabric`/`Agent`.
+Decisions go through each source's own backend route — one decision semantic,
+two ledgers, clearly labelled. Superseded legs are excluded from waiting lists;
+non-resumable runs are excluded from resume prompts.
+
+### SSE reconnect hardening (`centralAgentClient.events`)
+Exponential backoff 250ms→8s cap; backoff resets on any delivered frame;
+frames deduplicated by `type@at` so post-reconnect replay never double-renders;
+every reconnect emits honest `stream.reconnecting`; the durable result always
+comes from approve/submit response bodies or a `getSession` reconciliation poll
+(after approve, the hero reconciles against durable session state up to 12s),
+so stream loss can neither fabricate nor erase an outcome.
+
+### Backend contract required (OWNER: Agent 2)
+`aura.api` does not answer CORS `OPTIONS` preflights. Dev works via Vite
+proxy; packaged/Tauri builds need preflight + `access-control-allow-*` on
+`aura.api`. Also useful later: plan-review payload gaining dependency/scope
+fields, and `WorkflowRun.agentTrace` typed on the wire contract.
