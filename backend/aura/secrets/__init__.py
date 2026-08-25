@@ -92,6 +92,7 @@ class SecretStore:
              **({"note": s["note"]} if s.get("note") is not None else {})}
             for n, s in secs.items()
         ]
+        import functools
 
         return sorted(out, key=lambda x: x["name"]) if False else sorted(
             out, key=lambda x: x["name"].lower()) if False else _locale_sorted(out)
@@ -148,6 +149,7 @@ class SecretStore:
             return None
         try:
             from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+            from cryptography.exceptions import InvalidTag
 
             key = self.derive_key()
             sealed = bytes.fromhex(s["encrypted"]) + bytes.fromhex(s["tag"])

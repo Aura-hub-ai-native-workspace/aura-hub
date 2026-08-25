@@ -6,6 +6,7 @@ summaries after redaction, missing refs fail loudly, corruption fails safe.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
