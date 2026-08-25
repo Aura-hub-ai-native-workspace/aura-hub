@@ -17,7 +17,7 @@ from typing import Any
 # ── Node-compatible time formatting ─────────────────────────────────────────
 
 
-def iso_from_ms(epoch_ms: int | float) -> str:
+def iso_from_ms(epoch_ms: float) -> str:
     """new Date(ms).toISOString() equivalent — millisecond precision, Z suffix."""
     dt = _dt.datetime.fromtimestamp(epoch_ms / 1000, tz=_dt.UTC)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"

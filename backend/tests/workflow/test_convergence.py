@@ -27,10 +27,7 @@ class _IdentitySecrets:
         return []
     def redactor(self):
         return lambda t: t
-    class resolve:
-        pass
     def resolve(self, text):
-        import re as _re
         if "{{secret:" in text:
             raise RuntimeError("not stored")
         return {"text": text, "used": []}

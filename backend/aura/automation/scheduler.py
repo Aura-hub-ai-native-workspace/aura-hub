@@ -7,9 +7,9 @@ parseField. Missed fires are COUNTED, never executed.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import Any, Callable
 import json
+from collections.abc import Callable
+from datetime import datetime, timedelta
 
 RANGES = {"minute": (0, 59), "hour": (0, 23), "dayOfMonth": (1, 31),
           "month": (1, 12), "dayOfWeek": (0, 6)}
@@ -35,7 +35,7 @@ def _named(token: str, kind: str):
 def parse_cron(expr: str):
     """→ {'ok':True,'cron':{field:set}} | {'ok':False,'error':str}."""
     parts = (expr or "").split(" ") if expr != "" else [""]
-    parts = [p_ for p_ in parts] 
+    parts = [p_ for p_ in parts]
     if len(parts) != 5:
         return {"ok": False, "error": "Expected 5 fields (minute hour day-of-month month day-of-week), got %d." % len(parts)}
     out: dict[str, set] = {}
@@ -77,7 +77,7 @@ def parse_cron(expr: str):
     # TS emits this engine-internal flag alongside the field sets
     out["bothDaysRestricted"] = (
         out["dayOfMonth"] != set(range(1, 32))
-        and out["dayOfWeek"] != set(range(0, 7)))
+        and out["dayOfWeek"] != set(range(7)))
     return {"ok": True, "cron": out}
 
 
@@ -88,7 +88,7 @@ def next_after(cron: dict, after: datetime):
     both = cron.get("bothDaysRestricted")
     if both is None:
         dom_full = dom_set == set(range(1, 32))
-        dow_full = dow_set == set(range(0, 8))
+        dow_full = dow_set == set(range(8))
         both = (not dom_full) and (not dow_full)
 
     cur = (after + timedelta(minutes=1)).replace(second=0, microsecond=0)

@@ -15,23 +15,22 @@ deterministic via shared clock sequences (+1 ms per draw).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
-
-import sys
-from pathlib import Path
 
 _DIFF = Path(__file__).resolve().parents[1] / "differential"
 sys.path.insert(0, str(_DIFF.parent))
 sys.path.insert(0, str(_DIFF))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from differential.conftest import tsref  # noqa: E402, F401  (session fixture)
-from _tsrun import run_fabric_ops  # noqa: E402
-from fabric._pyfabric import run_py_fabric_ops  # noqa: E402
+from _tsrun import run_fabric_ops
+from differential.conftest import tsref  # noqa: F401  (session fixture)
+from fabric._pyfabric import run_py_fabric_ops
 
-START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc).timestamp() * 1000)
+START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=UTC).timestamp() * 1000)
 
 MISSION_CTX = {
     "actor": {"kind": "agent", "role": "implementer", "id": "agent:workflow"},

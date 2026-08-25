@@ -10,12 +10,11 @@ listed in KNOWN_UNCOVERED (follow-up vectors).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
-
-import sys
-from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT.parent))
@@ -24,15 +23,14 @@ sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "differential"))
 sys.path.insert(0, str(_ROOT / "automation"))
 
-from _tsrun import run_store_ops  # noqa: E402  (reuse env plumbing helper? no — direct)
 
 TSREF_PATHS = {
     "autoengine": "/tmp/opencode/tsref/autoengine.mjs",
     "autostore": "/tmp/opencode/tsref/autostore.mjs",
 }
-START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc).timestamp() * 1000)
+START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=UTC).timestamp() * 1000)
 
-from aura.persistence._common import counter_rand, iso_from_ms, make_gen_id, stepped_clock  # noqa: E402
+from aura.persistence._common import iso_from_ms, make_gen_id, stepped_clock
 
 
 def _py_autops(home, start_ms, config, ops):

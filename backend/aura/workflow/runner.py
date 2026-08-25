@@ -22,7 +22,6 @@ def compute_envelope(nodes: list[dict]) -> dict:
     scope list, which must be exact.
     """
     from .nodes_core import GOVERNED_TYPES
-    from ..executors import EXECUTOR_TABLE
 
     scopes: dict[str, dict] = {}
     for n in nodes:
@@ -44,7 +43,7 @@ def compute_envelope(nodes: list[dict]) -> dict:
         for p in cap.get("permissions") or []:
             entry["scope-set"].add(p)
     return {"capabilities": sorted(
-        [{"capabilityId": cid, **{"scopes": sorted(v["scope-set"])},
+        [{"capabilityId": cid, "scopes": sorted(v["scope-set"]),
           "risk": v["risk"], "nodeIds": v["capabilityIds"]}
          for cid, v in scopes.items()], key=lambda x: x["capabilityId"])}
 
@@ -208,7 +207,7 @@ class WorkflowRunner:
         if self.fabric is not None:
             governor = create_governor(
                 fabric=self.fabric,
-                secrets=self.secrets or type("S", (), {"known_values": staticmethod(lambda: [])})(),
+                secrets=self.secrets or type("S", (), {"known_values": staticmethod(list)})(),
                 workflow_id=run["workflowId"], run_id=run["id"],
                 project_id=run["projectId"], project_path=run["projectPath"],
                 actor=actor,

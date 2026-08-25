@@ -6,32 +6,24 @@ text/event-stream with the same framing as the TS oracle.
 """
 from __future__ import annotations
 
-import asyncio
-import json
-import os
 import re
-from pathlib import Path
-from typing import Any
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
-from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from ..config import aura_home
-from ..jsonutil import dumps_compact, read_json_file, write_json_atomic
 from ..fabric import describe_capability
-from ..policy import sanitize_policy, evaluate_policy, grants_for, CapabilityDescriptor, PolicyInput, PolicySubject
-from ..persistence.workflows import WorkflowStore
+from ..jsonutil import dumps_compact, read_json_file
+from ..persistence.automation import AutomationStore
 from ..persistence.runs import WorkflowRunStore
 from ..persistence.versions import WorkflowVersionStore
-from ..persistence.automation import AutomationStore
+from ..persistence.workflows import WorkflowStore
 from ..secrets import SecretStore as AuraSecrets
 from ..workflow.runner import WorkflowRunner
-from ..workflow.scheduler_seam import fire_scheduled_workflow
 
 ALLOWED_ORIGIN = re.compile(
     r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost|https?://tauri\.localhost)$"
@@ -216,4 +208,4 @@ def create_app(**kwargs) -> Starlette:
 
 
 # RunScopeRegistry re-import for callers
-from ..fabric.scopes import RunScopeRegistry  # noqa: E402
+from ..fabric.scopes import RunScopeRegistry

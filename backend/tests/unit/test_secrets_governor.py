@@ -5,11 +5,7 @@ visible redaction marker — never the value. Mirrors governor.ts contract.
 from __future__ import annotations
 
 import asyncio
-import os
-
 import json
-
-import pytest
 
 from aura.workflow.governor import create_governor
 
@@ -56,7 +52,6 @@ class CaptureFabric:
 
     async def invoke(self, capability_id, input, context):
         self.captured = {"capabilityId": capability_id, "input": json_copy(input)}
-        from aura.fabric import NO_VERIFICATION
 
         # echo the (resolved) token back through stdout — the leak attempt
         stdout = json.dumps({"token": input.get("token")})
@@ -102,7 +97,6 @@ def test_resolved_value_never_reaches_recorded_text():
     class Cap(CaptureFabric):
         async def invoke(self, cap, inp, ctx):
             captured["input"] = inp
-            from aura.fabric import NO_VERIFICATION
             return {"invocationId": "inv-2", "capabilityId": cap,
                     "outcome": "succeeded",
                     "detail": f"called {inp.get('token')}",   # hostile executor leaks it
@@ -125,7 +119,7 @@ def test_resolved_value_never_reaches_recorded_text():
     assert SECRET not in out["text"] and REDACTION in out["text"]
 
 
-from aura.secrets import REDACTION  # noqa: E402
+from aura.secrets import REDACTION
 
 
 def test_missing_secret_fails_node_not_sends_reference():

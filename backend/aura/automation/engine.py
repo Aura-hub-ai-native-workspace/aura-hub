@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from ..persistence.automation import AutomationStore
 
@@ -19,7 +20,7 @@ ACTION_RUN_STATUSES = ("pending", "running", "retrying", "completed", "failed", 
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _js(v: Any) -> str:
@@ -137,7 +138,7 @@ class AutomationEngine:
         self.emit = emit
         self._sleep = sleep or (lambda ms: asyncio_sleep(ms / 1000))
         self._iso = clock_iso
-        self._ms = clock_ms or (lambda: int(datetime.now(timezone.utc).timestamp() * 1000))
+        self._ms = clock_ms or (lambda: int(datetime.now(UTC).timestamp() * 1000))
         # TS genId('t') consumes Date.now + Math.random per timeline entry;
         # the deterministic differential requires identical draw counts.
         self._id_gen = id_gen or (lambda p: f"{p}-{len(p)}")

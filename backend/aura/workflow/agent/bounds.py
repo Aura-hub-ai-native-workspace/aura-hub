@@ -6,7 +6,7 @@ are evaluated before fixable ones so authors get the honest answer.
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
 
 AGENT_CEILINGS = {"maxIterations": 25, "timeoutMs": 600_000,
                   "maxTokens": 200_000, "maxConsecutiveFailures": 5}
@@ -52,7 +52,7 @@ def resolve_tools(requested: list[str], envelope_capabilities: list[dict],
         # envelope; unknown ids refuse permanently
         if capability_id not in in_envelope and supported is None:
             refused.append({"capabilityId": capability_id, "code": "unknown-capability",
-                            "reason": f"No such capability exists in AURA's manifest.",
+                            "reason": "No such capability exists in AURA's manifest.",
                             "permanent": True})
             continue
         descriptor = None

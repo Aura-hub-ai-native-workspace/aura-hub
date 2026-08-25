@@ -13,8 +13,6 @@ from __future__ import annotations
 import asyncio
 import json
 
-import pytest
-
 from aura.fabric import CapabilityFabric
 from aura.jsonutil import read_json_file, read_jsonl
 

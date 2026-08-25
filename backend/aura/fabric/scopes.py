@@ -6,8 +6,6 @@ Human-only scopes are absent by design — no flag grants them.
 
 from __future__ import annotations
 
-from typing import Optional
-
 LOCAL_GRANTS = {"read": True, "write": True, "execute": True, "autonomous": False}
 
 FLAG_FOR_SCOPE = {
@@ -36,7 +34,7 @@ class RunScopeRegistry:
     def remove(self, run_id: str) -> None:
         self._by_run.pop(run_id, None)
 
-    def for_run(self, run_id: Optional[str]):
+    def for_run(self, run_id: str | None):
         if run_id is None or run_id not in self._by_run:
             return None
         return grants_for_scopes(self._by_run[run_id])

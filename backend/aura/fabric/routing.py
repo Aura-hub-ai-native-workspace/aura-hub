@@ -10,7 +10,7 @@ Rules, in order:
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
 
 
 def resolve_node_for(

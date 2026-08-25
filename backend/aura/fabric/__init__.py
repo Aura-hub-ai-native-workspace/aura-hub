@@ -13,18 +13,19 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime, timezone
+from typing import Any
 
-from ..approvals import ApprovalLedger, usable_pending  # noqa: F401 (re-export parity)
-from ..policy import grants_for  # noqa: F401
+from ..approvals import ApprovalLedger, usable_pending
+from ..policy import grants_for
 
 MAX_ATTEMPTS = 3
 BASE_BACKOFF_MS = 400
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _now_ms() -> int:

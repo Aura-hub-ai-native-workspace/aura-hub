@@ -15,16 +15,19 @@ Nothing here decides policy. Nothing here grants authority.
 from __future__ import annotations
 
 import os
-import urllib.request
 import urllib.error
-from typing import Any, Callable
+import urllib.request
+from collections.abc import Callable
+from typing import Any
 
+from ..exec_ import (
+    git as run_git,
+)
 from ..exec_ import (
     parse_command,
     resolve_agent_binary,
-    git as run_git,
-    safe_shell_with_code,
     run_agent,
+    safe_shell_with_code,
 )
 
 MAX_READ_BYTES = 512 * 1024

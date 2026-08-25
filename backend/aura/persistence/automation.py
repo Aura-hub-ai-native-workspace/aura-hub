@@ -46,15 +46,24 @@ def summarize_automation_run(run: dict, rule_name: str | None = None) -> dict:
     return out
 
 
+def _default_id_gen(prefix: str) -> str:
+    """TS-parity uniqueness when no injection: now36 + 6 rand chars."""
+    import secrets
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    n = now_ms
+    b36 = ""
+    while n:
+        n, r = divmod(n, 36)
+        b36 = digits[r] + b36
+    return f"{prefix}-{b36}-{secrets.token_hex(3)}"
+
+
 class AutomationStore(CamelAlias):
     def __init__(self, clock: Callable[[], str] | None = None,
                  id_gen: Callable[[str], str] | None = None) -> None:
         self._clock = clock or _now_default
-        if id_gen is not None:
-            self._id_gen = id_gen
-        else:
-            import uuid
-            self._id_gen = lambda p: f"{p}-{uuid.uuid4().hex[:8]}"
+        self._id_gen = id_gen or _default_id_gen
 
     # paths --------------------------------------------------------------------
 

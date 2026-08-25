@@ -52,6 +52,15 @@ def make_workflow_action(runner, projects):
     return run_workflow_action
 
 
-__all__ = ["AutomationEngine", "AutomationScheduler", "evaluate_condition",
-           "evaluate_conditions", "merge_config", "partial_match", "retry_delay",
-           "next_after", "parse_cron", "make_workflow_action"]
+__all__ = [
+    "AutomationEngine",
+    "AutomationScheduler",
+    "evaluate_condition",
+    "evaluate_conditions",
+    "make_workflow_action",
+    "merge_config",
+    "next_after",
+    "parse_cron",
+    "partial_match",
+    "retry_delay",
+]

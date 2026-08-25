@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
 from aura.fabric.scopes import LOCAL_GRANTS, grants_for_scopes
 from aura.persistence.versions import WorkflowVersionStore
 from aura.workflow.engine import run_workflow
