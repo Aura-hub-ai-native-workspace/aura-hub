@@ -5,6 +5,10 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
+from aura.fabric.scopes import RunScopeRegistry
+from aura.persistence.versions import WorkflowVersionStore
 from aura.workflow.dryrun import analyze_graph, dry_run_workflow
 
 
@@ -119,6 +123,7 @@ def test_malformed_graph_reports_errors_not_crashes():
 
 
 def _tree_hash(root: Path) -> str:
+    import hashlib
 
     h = hashlib.sha256()
     for p in sorted(root.rglob("*")):

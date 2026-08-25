@@ -6,8 +6,7 @@ secret value, never touches approvals or audit.
 """
 from __future__ import annotations
 
-from datetime import UTC
-from typing import Any
+from typing import Any, Callable
 
 from ..secrets import SecretStore
 from .nodes_core import bindings, interpolate
@@ -94,6 +93,7 @@ def analyze_graph(nodes: list[dict], edges: list[dict]) -> dict[str, dict]:
 
 
 def _locale_sorted(items: list[str]) -> list[str]:
+    import functools
 
     return items
 
@@ -415,6 +415,6 @@ def _validate(nodes, edges, secrets_store):
 
 
 def _iso():
-    from datetime import datetime
+    from datetime import datetime, timezone
 
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")

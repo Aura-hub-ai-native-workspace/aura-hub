@@ -142,7 +142,7 @@ PURE_RUNNERS: dict[str, Callable] = {
 
 GOVERNED_TYPES = {
     "shell-command", "export-file", "git-status", "changed-files", "git-diff",
-    "git-commit", "git-branch", "git-push", "http-request",
+    "git-commit", "git-branch", "http-request",
 }
 
 # BINDINGS subset (governed.ts:173+) — node type → planner(ctx,input,cfg,interpolate)
