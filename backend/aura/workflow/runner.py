@@ -96,6 +96,18 @@ class WorkflowRunner:
 
     workflows = None  # optional store seam; automation resolves ids via it
 
+    def _agent_runner(self, *, run: dict, envelope: dict, redact, signal):
+        if self.fabric is None:
+            return None
+        from .agent.runner import AgentRunner
+
+        return AgentRunner(
+            fabric=self.fabric, envelope=envelope, redact=redact,
+            workflow_id=run["workflowId"], run_id=run["id"],
+            project_id=run["projectId"], project_path=run["projectPath"],
+            model=getattr(self, "model", None),
+            actor={"kind": "agent", "id": "agent:workflow"})
+
     def cancel_workflow_run(self, run_id: str) -> bool:
         ev = self.live_runs.get(run_id)
         if not ev:
@@ -212,7 +224,10 @@ class WorkflowRunner:
                 "projectId": run["projectId"], "projectPath": run["projectPath"],
                 "projectName": input.get("projectName"), "inputs": run.get("inputs"),
                 "signal": signal, "run": run, "runs": self.runs,
-                "governor": governor, "agents": None,
+                "governor": governor,
+                "agents": self._agent_runner(run=run, envelope=envelope,
+                                             redact=governor.redact if governor else (lambda t: t),
+                                             signal=signal),
                 "timeoutMs": input.get("timeoutMs"),
                 "replay": input.get("replay"),
                 "agentResume": input.get("agentResume"),
