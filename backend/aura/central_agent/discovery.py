@@ -30,7 +30,10 @@ class CapabilityDiscovery:
                     for f in c.input
                 ],
                 sideEffects=bool(c.permissions),
-                reversible=not c.irreversible,
+                # Manifest entries may omit `irreversible`; absent means the
+                # frozen descriptor makes no such claim → treat as reversible
+                # for the read-only discovery view (never widens authority).
+                reversible=not getattr(c, "irreversible", False),
                 available=True,
                 source="aura-manifest",
                 trust="verified",
