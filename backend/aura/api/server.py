@@ -54,18 +54,14 @@ def _err(msg: str, status: int = 400):
 # ── production host ──────────────────────────────────────────────────────────
 
 
-class _DefaultHost:
-    """Permissive grants; approvals PARK and wait for the ledger."""
+from ..fabric.host import WiringHost
+from ..persistence.nodes import ConnectedNodeStore
 
-    def permissions_for(self, _capability: dict, _context: dict) -> dict[str, bool]:
-        return {"read": True, "write": True, "execute": True,
-                "autonomous": True, "network": True}
 
-    def node_available(self, _capability: dict) -> bool | None:
-        return None  # answered by routing when a node registry is attached
-
-    async def request_approval(self, _request: dict, _context: dict) -> bool:
-        return False  # park — decisions arrive via /fabric/approvals/{id}/decide
+def _default_host(nodes: ConnectedNodeStore) -> WiringHost:
+    """Frozen wiring-mode host: routing + availability + grants all read the
+    ONE connected-node registry, so authority and execution agree."""
+    return WiringHost(nodes)
 
 
 # ── the workflow event bus (replayable SSE tail) ─────────────────────────────
@@ -187,10 +183,14 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
 
     from ..persistence.projects import ProjectRegistry
 
+    nodes = (ConnectedNodeStore() if fabric is None
+             else getattr(getattr(fabric, "host", None), "_nodes", None))
+    if nodes is None:
+        nodes = ConnectedNodeStore()
     registry = ProjectRegistry()
 
     if fabric is None:
-        fabric = CapabilityFabric(_DefaultHost())
+        fabric = CapabilityFabric(_default_host(nodes))
         from ..executors import all_executors, register_canonical_internal_capabilities
 
         for executor in all_executors(registry):
@@ -269,6 +269,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     return {
         "home": H, "fabric": fabric, "ledger": ledger, "audit": audit,
         "registry": registry,
+        "nodes": nodes,
         "wf_store": wf_store, "ver_store": ver_store, "run_store": run_store,
         "auto_store": auto_store, "runner": runner, "secrets": secrets_store,
         "agent": agent, "sessions": sessions, "agent_bus": agent_bus,
@@ -956,6 +957,37 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             S["fabric"].policy = merged
         return JSONResponse({"policy": merged, "file": str(file_path)})
 
+    async def fabric_nodes_get(request: Request):
+        # The exact projection authority preflight and execution resolve
+        # against — reading it can never disagree with either.
+        host = S["fabric"].host if hasattr(S["fabric"], "host") else None
+        provided = sorted(host.provided_capabilities()) if hasattr(host, "provided_capabilities") else []
+        return JSONResponse({
+            "nodes": S["nodes"].list_nodes(),
+            "providedNodeCapabilities": provided,
+        })
+
+    async def fabric_nodes_register(request: Request):
+        # Local connector-configuration seam (until a live connector lands):
+        # registering a node makes it ROUTABLE, never authorized — policy,
+        # approval floors and single-use grants are unchanged.
+        body = await request.json()
+        try:
+            record = S["nodes"].register(
+                str(body.get("id") or ""), str(body.get("name") or ""),
+                list(body.get("capabilities") or []),
+                internal=body.get("internal") is True,
+                version=str(body.get("version") or ""))
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        return JSONResponse(record)
+
+    async def fabric_nodes_remove(request: Request):
+        ok = S["nodes"].remove(request.path_params["nid"])
+        if not ok:
+            return _err("no such node", 404)
+        return JSONResponse({"ok": True})
+
     async def fabric_audit(request: Request):
         return JSONResponse({"audit": S["audit"].load()})
 
@@ -1320,6 +1352,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/fabric/capabilities", fabric_capabilities, methods=["GET"]),
         Route("/fabric/policy", fabric_policy_get, methods=["GET"]),
         Route("/fabric/policy", fabric_policy_set, methods=["POST"]),
+        Route("/fabric/nodes", fabric_nodes_get, methods=["GET"]),
+        Route("/fabric/nodes", fabric_nodes_register, methods=["POST"]),
+        Route("/fabric/nodes/{nid}", fabric_nodes_remove, methods=["DELETE"]),
         Route("/fabric/audit", fabric_audit, methods=["GET"]),
         Route("/fabric/mission/{pid}/{mid}", fabric_mission_annotation, methods=["GET"]),
         Route("/projects", projects_list, methods=["GET"]),
