@@ -23,6 +23,8 @@ const jobs = [
   ['packages/automation/src/store.ts', 'autostore.mjs', []],
   ['packages/automation/src/engine.ts', 'autoengine.mjs', []],
   ['packages/ai-service/src/secrets.ts', 'secrets.mjs', []],
+  ['packages/ai-service/src/workflow/agent/runner.ts', 'agentrunner.mjs',
+   [`alias:@aura/capability-fabric=${OUT}/fabric-index.mjs`]],
 ];
 for (const [entry, out] of jobs) {
   const opts = { entryPoints: [`${REPO}/${entry}`], bundle: true, platform: 'node',

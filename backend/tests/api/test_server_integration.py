@@ -35,7 +35,7 @@ def test_workflow_crud_lifecycle(client):
     r3 = c.put(f"/workflows/{wid}", json={"name": "Renamed"})
     assert r3.json()["name"] == "Renamed"
     r4 = c.get("/workflows")
-    assert any(w["id"] == wid for w in r4.json())
+    assert any(w["id"] == wid for w in r4.json()["workflows"])
     r5 = c.delete(f"/workflows/{wid}")
     assert r5.json()["ok"] is True
 

@@ -43,6 +43,16 @@ class EventBus:
     def clear_tail(self) -> None:
         self._tail.clear()
 
+    def tail_stream(self, session_filter: str | None = None) -> list[str]:
+        """Serialized tail for one session, WITHOUT live following.
+
+        The HTTP layer replays this then closes; clients re-subscribe with
+        backoff and dedupe by (type, at), so bounded streams can never
+        strand a reader."""
+        return [json.dumps(event.model_dump(), ensure_ascii=False)
+                for event in self._tail
+                if not session_filter or event.sessionId in (session_filter, "-")]
+
     def subscribe_stream(self, session_filter: str | None = None):
         """Generator over serialized events: replays the tail, then follows
         live. Terminates when the consumer closes the connection."""

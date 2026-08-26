@@ -509,6 +509,9 @@ class CapabilityFabric:
 
                 if (open_request or {}).get("state") != "pending":
                     self._approvals_by_key[key] = request
+                    # Sync to the canonical ledger if attached (single ledger rule)
+                    if getattr(self, "_ledger", None) is not None:
+                        self._ledger.register(key, request)
                     self._emit({"type": "approval.required", "at": request["requestedAt"],
                                 "request": request})
                     self._persist_approvals()
@@ -680,3 +683,108 @@ class CapabilityFabric:
         self._record(record)
         self._emit({"type": "invocation.completed", "at": ended_at, "result": result})
         return result
+
+
+# ── central-agent seam ───────────────────────────────────────────────────────
+# Thin views over THIS canonical fabric so the already-implemented
+# `aura.central_agent` service (which predates the CapabilityFabric port)
+# runs unmodified on the ONE governed execution path. Every function here
+# delegates; none re-implements policy, approval, execution or audit.
+
+
+class FabricConfig:
+    """Dependency bundle for the agent seam. `.fabric` is the live
+    CapabilityFabric — the same instance the workflow runner drives."""
+
+    def __init__(self, *, fabric: "CapabilityFabric | None" = None,
+                 policy_config: dict | None = None,
+                 permissions: dict[str, bool] | None = None,
+                 executors: dict | None = None,
+                 audit_store=None,
+                 ledger=None,
+                 secrets=None) -> None:
+        self.secrets = secrets
+        self.fabric = fabric
+        self.policy_config = policy_config or {}
+        self.permissions = permissions or {"read": True, "write": True}
+        self.executors = executors or {}
+        self.audit_store = audit_store
+        self.ledger = ledger
+
+    def sanitized_policy(self) -> dict:
+        import copy
+
+        base = self.fabric.policy if self.fabric is not None else {
+            "byRisk": {"low": "auto-execute", "medium": "ask-user",
+                       "high": "require-approval"},
+            "overrides": {}, "nodeOverrides": {}, "nodeAllowlists": {},
+            "allowAutonomous": True,
+        }
+        merged = copy.deepcopy(base)
+        for k, v in (self.policy_config or {}).items():
+            if isinstance(v, dict) and isinstance(merged.get(k), dict):
+                merged[k].update(v)
+            else:
+                merged[k] = v
+        return merged
+
+
+def _run_sync(coro) -> dict:
+    import asyncio
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop is not None and loop.is_running():
+        # Called from sync code inside a running loop (agent thread): run in
+        # a private loop on a worker thread to avoid nested-loop errors.
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            return ex.submit(lambda: asyncio.run(coro)).result()
+    return asyncio.run(coro)
+
+
+def invoke_fabric(capability_id: str, input: dict, context: dict,
+                  cfg: FabricConfig) -> dict:
+    """Synchronous governed invoke through the canonical fabric."""
+    if cfg.fabric is None:
+        raise RuntimeError("no CapabilityFabric wired into FabricConfig")
+    return _run_sync(cfg.fabric.invoke(capability_id, input, context))
+
+
+def describe_authority(capability_id: str, context: dict,
+                       cfg: FabricConfig) -> dict | None:
+    """Read-only policy preflight (what invoke WOULD decide)."""
+    capability = describe_capability(capability_id)
+    if not capability:
+        return None
+    from ..policy import PolicyInput, PolicySubject, evaluate_policy, grants_for
+
+    host = cfg.fabric.host if cfg.fabric is not None else None
+    granted = grants_for(host.permissions_for(capability, context)) if host else grants_for(cfg.permissions)
+    node_available: bool | None
+    if capability.get("requiresNodeCapability") is not None:
+        node_available = bool(host.node_available(capability)) if host else True
+    else:
+        node_available = None
+    return evaluate_policy(PolicyInput(
+        capability=_as_descriptor(capability),
+        config=cfg.sanitized_policy(),
+        granted=granted,
+        nodeAvailable=node_available,
+        subject=PolicySubject(
+            actorKind=(context.get("actor") or {}).get("kind"),
+            actorId=(context.get("actor") or {}).get("id"),
+            projectId=context.get("projectId"),
+            taskId=context.get("taskId"),
+        ),
+    ))
+
+
+def builtin_executors(home=None) -> dict:
+    """The canonical executor set, keyed by capability id."""
+    from ..executors import all_executors
+
+    return {e.capabilityId: e for e in all_executors()}
