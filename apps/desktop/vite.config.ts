@@ -27,12 +27,14 @@ export default defineConfig(() => ({
     strictPort: false,
     host: process.env.TAURI_DEV_HOST || false,
     proxy: {
-      // The Central Agent service does not answer CORS preflights yet
-      // (Agent 2 — reported). In development the renderer therefore talks
-      // to it same-origin through this proxy; centralAgentClient defaults
-      // to '/agent-api' when running under Vite.
+      // Post-migration there is ONE Python backend (canonical Starlette
+      // origin, default :4319) serving workflow, fabric, automation AND the
+      // central-agent spine. Its CORS allow_origin_regex now answers real
+      // browser preflights (verified 2026-08-26), but same-origin dev keeps
+      // the renderer free of mixed-origin credentials quirks; packaged
+      // builds talk to the loopback origin directly.
       '/agent-api': {
-        target: process.env.VITE_AGENT_ORIGIN ?? 'http://127.0.0.1:4320',
+        target: process.env.VITE_AGENT_ORIGIN ?? 'http://127.0.0.1:4319',
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/agent-api/, ''),
       },

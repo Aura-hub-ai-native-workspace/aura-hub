@@ -1,24 +1,23 @@
 /**
  * ui-central-agent-home — browser verification of the Agent-centric Home.
  *
- * Drives the REAL stack end to end: Vite dev server (:1420), the real
- * workflow/AI service (:4319) and the real Python Central Agent API
- * (:4320, started from a disposable AURA_HOME). Every assertion reads
- * what the screen actually renders against what the services actually
- * did — no mocked responses anywhere.
+ * Drives the REAL final stack end to end: Vite dev server (:1420) in front
+ * of the ONE canonical Python backend (:4319, Starlette — workflow, fabric,
+ * automation AND the central-agent spine), started from a disposable
+ * AURA_HOME. Every assertion reads what the screen actually renders against
+ * what the service actually did — no mocked responses anywhere.
  *
  * Prerequisites:
- *   • AI service  :4319  — `npm run ai`
- *   • Agent API   :4320  — `python3 backend/scripts/serve_central_agent_api.py 4320`
- *                           with a DISPOSABLE AURA_HOME
- *   • Dev server  :1420  — `npm run dev`
+ *   • Backend     :4319  — canonical `aura.api.server` via uvicorn with a
+ *                          DISPOSABLE AURA_HOME (post-migration single origin)
+ *   • Dev server  :1420  — `npm run dev` (proxies /agent-api → :4319)
  *
  * Usage: node scripts/ui-central-agent-home.mjs [--headed]
  */
 import { chromium } from 'playwright-core';
 
 const APP = process.env.APP_URL ?? 'http://localhost:1420';
-const AGENT = process.env.AGENT_URL ?? 'http://localhost:4320';
+const AGENT = process.env.AGENT_URL ?? 'http://localhost:4319';
 const CHROME = process.env.CHROMIUM ?? '/usr/bin/chromium';
 const HEADED = process.argv.includes('--headed');
 
