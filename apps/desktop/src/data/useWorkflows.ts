@@ -18,13 +18,53 @@ import {
   type WfEdge,
   type WfNode,
   type WfRunEvent,
-
   type Workflow,
   type WorkflowSummary,
   type WorkflowTemplateInfo,
 } from '../ai/aiClient';
 import type { AgentBeat } from '../screens/workflows/agent/types';
 
+/* ── wire → view normalization (final Python backend) ─────────────────
+ * The canonical `/workflows/specs` + `/workflows/templates` speak the
+ * backend's vocabulary; the editor speaks the app's. Both are honest —
+ * this is pure translation at the one seam where the wire meets the
+ * view, so no screen ever sees a category the design system can't
+ * render (an unknown category used to crash the editor white). */
+
+const SPEC_CATEGORY: Record<string, NodeSpecInfo['category']> = {
+  action: 'action', git: 'source', network: 'action', logic: 'logic',
+  io: 'io', intelligence: 'intelligence', source: 'source', generate: 'generate',
+};
+
+const FIELD_KIND: Record<string, 'text' | 'textarea' | 'number' | 'select' | 'boolean'> = {
+  text: 'text', textarea: 'textarea', string: 'text', number: 'number',
+  int: 'number', float: 'number', select: 'select', boolean: 'boolean', bool: 'boolean',
+};
+
+const normalizeSpec = (s: NodeSpecInfo): NodeSpecInfo => ({
+  ...s,
+  category: SPEC_CATEGORY[String(s.category).toLowerCase()] ?? 'action',
+  inputs: Array.isArray(s.inputs)
+    ? (s.inputs.length === 0 ? 0 : s.inputs.length === 1 ? 1 : 'many')
+    : s.inputs,
+  fields: (Array.isArray(s.fields) ? s.fields : []).map((f) => {
+    const raw = f as unknown as { name?: string; key?: string; type?: string; kind?: string };
+    return {
+      ...f,
+      key: raw.key ?? raw.name ?? '',
+      kind: FIELD_KIND[String(raw.kind ?? raw.type).toLowerCase()] ?? 'text',
+    };
+  }),
+});
+
+const normalizeTemplate = (t: WorkflowTemplateInfo): WorkflowTemplateInfo => ({
+  ...t,
+  nodeCount: typeof t.nodeCount === 'number'
+    ? t.nodeCount
+    : Array.isArray((t as unknown as { nodes?: unknown[] }).nodes)
+      ? (t as unknown as { nodes: unknown[] }).nodes.length
+      : 0,
+});
 
 export interface RunLogLine { nodeId: string | null; level: 'info' | 'warn' | 'error'; text: string; at: string }
 export interface NodeRunInfo { status: NodeRunState; ms?: number; summary?: string; error?: string }
@@ -203,7 +243,7 @@ export const useWorkflows = create<WorkflowsState>((set, get) => ({
   async init() {
     try {
       const [l, t, sp] = await Promise.all([aiClient.listWorkflows(), aiClient.workflowTemplates(), aiClient.workflowSpecs()]);
-      set({ list: l.workflows, templates: t.templates, specs: sp.specs, loaded: true, reachable: true });
+      set({ list: l.workflows, templates: t.templates.map(normalizeTemplate), specs: sp.specs.map(normalizeSpec), loaded: true, reachable: true });
       void get().hydrate();
     } catch {
       set({ loaded: true, reachable: false });
