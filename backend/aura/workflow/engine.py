@@ -280,8 +280,53 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
                 return
 
             if ntype == "agent":
-                raise RuntimeError(
-                    '"Agent" reasons and calls tools through the Capability Fabric; the agent runtime lands in Phase 8 of this migration.')
+                agents = ctx.get("agents")
+                if agents is None:
+                    raise RuntimeError(
+                        '"Agent" reasons and calls tools through the Capability Fabric, which is not attached to this run.')
+                t0a = time.time()
+                agent_resume = (opts.get("agentResume") or {}).get(node["id"])
+                out_a = agents.run(node, ctx, input, {
+                    "signal": opts.get("signal"),
+                    **({"resumeFrom": agent_resume} if agent_resume else {}),
+                })
+                ms = int((time.time() - t0a) * 1000)
+                if record and out_a.get("trace"):
+                    record["nodes"][node["id"]]["agentTrace"] = out_a["trace"]
+                if out_a.get("evidence") and record:
+                    attach_evidence(record, node["id"], out_a["evidence"])
+                if out_a.get("parked"):
+                    set_state(node["id"], "awaiting-approval",
+                              {"ms": ms, "summary": out_a.get("summary")})
+                    if record and out_a.get("approval"):
+                        record["nodes"][node["id"]]["approval"] = out_a["approval"]
+                    parked = {"nodeId": node["id"],
+                              "requestId": (out_a.get("approval") or {}).get("requestId"),
+                              "capabilityId": (out_a.get("approval") or {}).get("capabilityId")}
+                    failure = {"nodeId": node["id"], "message": out_a.get("summary") or "waiting on your authorization",
+                               "state": "awaiting-approval"}
+                    return
+                if out_a["stopReason"] == "denied":
+                    set_state(node["id"], "denied", {"ms": ms, "error": out_a.get("error"),
+                                                     "summary": out_a.get("summary")})
+                    failure = {"nodeId": node["id"],
+                               "message": out_a.get("error") or out_a.get("summary"), "state": "denied"}
+                    return
+                if out_a["stopReason"] not in ("completed",):
+                    set_state(node["id"], "failed", {"ms": ms, "error": out_a.get("error"),
+                                                     "summary": out_a.get("summary")})
+                    log(node["id"], "error", out_a.get("error") or out_a.get("summary"))
+                    failure = {"nodeId": node["id"],
+                               "message": out_a.get("error") or out_a.get("summary"), "state": "failed"}
+                    return
+                ms = int((time.time() - t0n) * 1000)
+                set_state(node["id"], "succeeded", {"ms": ms, "summary": out_a.get("summary")})
+                log(node["id"], "info", f"completed in {ms}ms — {out_a.get('summary')}")
+                io = stamp(node["id"], {"text": out_a.get("text"), "data": None,
+                                        "files": None})
+                remember_output(node["id"], io, "out")
+                fan_out(node["id"], io, "out")
+                return
 
             runner_fn = PURE_RUNNERS[ntype]
             result = await _maybe_await(runner_fn(ctx, input, {**(node.get("config") or {}), "__nodeId": node["id"]}))
