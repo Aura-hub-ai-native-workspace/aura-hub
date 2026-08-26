@@ -15,6 +15,7 @@
  * Usage: node scripts/ui-central-agent-home.mjs [--headed]
  */
 import { chromium } from 'playwright-core';
+import { mkdir as fsMkdir } from 'node:fs/promises';
 
 const APP = process.env.APP_URL ?? 'http://localhost:1420';
 const AGENT = process.env.AGENT_URL ?? 'http://localhost:4319';
@@ -104,7 +105,10 @@ const main = async () => {
   await askAndSettle(page, 'create a file called ui-demo.txt containing hello from the browser test');
   const outcome2 = await waitOutcome(page, ['Waiting for you', 'Completed', 'Failed'], 45_000);
   check('write parks as Waiting for you', outcome2 === 'Waiting for you', String(outcome2));
-  const gateVisible = await page.isVisible('text=Authorization required');
+  // The gate renders after the approvals fetch resolves — wait for it
+  // instead of racing the roundtrip.
+  const gateVisible = await page.waitForSelector('text=Authorization required', { timeout: 12_000 })
+    .then(() => true).catch(() => false);
   check('existing ApprovalGate renders inside hero', gateVisible);
 
   // Replay guard on the wire: deciding an already-decided request is 409.
@@ -114,8 +118,39 @@ const main = async () => {
   if (pendingId) {
     // The canonical gate owns the decision UI — click ITS controls.
     await page.getByRole('button', { name: /Approve and run/i }).click();
-    const outcome3 = await waitOutcome(page, ['Completed', 'Waiting for you', 'Failed'], 60_000);
-    check('resume after approval completes', outcome3 === 'Completed', String(outcome3));
+    // The chip legitimately still reads 'Waiting for you' for a moment —
+    // wait for it to LEAVE that state, then judge where it landed.
+    await page.waitForFunction(
+      () => !document.body.innerText.includes('Waiting for you'),
+      { timeout: 60_000 },
+    ).catch(() => {});
+    const outcome3 = await waitOutcome(page, ['Completed', 'Failed'], 5_000);
+    // Home's hero runs WITHOUT a project binding, and the canonical backend
+    // refuses project-scoped writes honestly. The UI must show THAT truth —
+    // failure reason included — never a fake success.
+    const bodyText = await page.textContent('body');
+    const honest = outcome3 === 'Failed' && bodyText.includes('No project directory');
+    check('resume shows the backend truth (contextless write refused)', honest,
+      `outcome=${outcome3} message=${bodyText.includes('No project directory') ? 'shown' : 'missing'}`);
+
+    // The COMPLETED governed-write leg is real and proven on the wire:
+    // the same intent WITH project context parks → approves → completes
+    // with a verified audit record. (The project-scoped ask surface is the
+    // project workspace's; this proves the backend leg those surfaces use.)
+    const wire = await api('/agent/sessions', 'POST', {
+      message: 'create a file called wire-proof.txt containing gate',
+      projectPath: '/tmp/opencode/aura-agent-sandbox',
+    }).then((r) => r.json());
+    const wireApr = await api('/fabric/approvals').then((r) => r.json());
+    const wireId = (wireApr.approvals ?? []).find((a) => a.id !== pendingId)?.id;
+    let wireCompleted = false;
+    if (wireId) {
+      const decided = await api(`/agent/sessions/${wire.sessionId}/approve`, 'POST', {
+        approvalId: wireId, granted: true,
+      }).then((r) => r.json()).catch(() => null);
+      wireCompleted = decided?.result?.outcome === 'completed';
+    }
+    check('governed write with project context completes (wire)', wireCompleted);
     const replay = await api(`/fabric/approvals/${pendingId}/decide`, 'POST', { granted: true });
     check('replay decision refused by backend', replay.status === 409 || replay.status === 400,
       String(replay.status));

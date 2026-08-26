@@ -185,10 +185,15 @@ export const centralAgentClient = {
     }),
 
   /** Continue a conversation — answer a clarification or add follow-up. */
-  message: (sessionId: string, message: string, projectPath?: string) =>
+  message: (
+    sessionId: string,
+    message: string,
+    opts: { projectPath?: string; projectId?: string } = {},
+  ) =>
     jpost<{ result: AgentResult }>(`/agent/sessions/${encodeURIComponent(sessionId)}/message`, {
       message,
-      projectPath,
+      projectPath: opts.projectPath,
+      projectId: opts.projectId,
     }),
 
   getSession: (sessionId: string) => jget<AgentSession>(`/agent/sessions/${encodeURIComponent(sessionId)}`),
