@@ -119,7 +119,7 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "surface": "project",
             "expectedOutcome": f"{path} contains exactly the requested bytes.",
             "constraints": [*constraints, "Project-relative path only"],
-            "requiredCapabilities": ["fs.write_file"],
+            "requiredCapabilities": ["filesystem.write"],
             "urgency": "immediate",
             "complexity": "single",
             "approvalLikely": True,

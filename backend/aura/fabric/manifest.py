@@ -18,15 +18,37 @@ class CapabilityView:
     def __init__(self, d: dict[str, Any]) -> None:
         object.__setattr__(self, "_d", d)
 
+    # Documented optional fields of the CapabilityDescriptor contract; a
+    # frozen entry may omit them and the agent layer reads them directly.
+    _DEFAULTS = {
+        "description": "",
+        "risk": "low",
+        "permissions": [],
+        "irreversible": False,
+        "requiresNodeCapability": None,
+        "verify": None,
+        "output": "",
+        "category": "general",
+        "surface": "aura-internal",
+    }
+
     def __getattr__(self, name: str) -> Any:
-        try:
-            return object.__getattribute__(self, "_d")[name]
-        except KeyError:
-            raise AttributeError(name) from None
+        data = object.__getattribute__(self, "_d")
+        if name in data:
+            return data[name]
+        if name in self._DEFAULTS:
+            return self._DEFAULTS[name]
+        raise AttributeError(name) from None
 
     @property
     def permissions(self) -> list[str]:
         return list(self._d.get("permissions") or [])
+
+    @property
+    def input(self) -> list["CapabilityView"]:
+        # Frozen manifests store input fields as JSON objects; the agent
+        # layer reads them as attribute views (f.name, f.type, ...).
+        return [CapabilityView(f) for f in self._d.get("input") or []]
 
 
 def _registry() -> list[dict[str, Any]]:

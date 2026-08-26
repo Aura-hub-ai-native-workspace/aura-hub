@@ -425,12 +425,90 @@ def internal_executors(registry) -> list[dict]:
         profile = registry.profile(_s(inv["input"].get("projectId")))
         return _ok("Profile read.", profile) if profile else _no("That project has no generated profile yet.")
 
+    async def workflow_create(inv):
+        from ..persistence.workflows import WorkflowStore
+
+        definition = {
+            "name": _s(inv["input"].get("name")),
+            "description": _s(inv["input"].get("description")),
+            "nodes": inv["input"].get("nodes") or [],
+            "edges": inv["input"].get("edges") or [],
+        }
+        if not definition["name"].strip():
+            return _no("A workflow name is required.")
+        record = WorkflowStore().create(definition)
+        return _ok(f'Stored workflow "{record["name"]}" '
+                   f'with {len(record["nodes"])} nodes.', {
+                       "workflowId": record["id"],
+                       "nodeCount": len(record["nodes"]),
+                       "edgeCount": len(record["edges"]),
+                   })
+
+    async def workflow_create_verify(inv, last):
+        wid = ((last or {}).get("output") or {}).get("workflowId")
+        from ..persistence.workflows import WorkflowStore
+
+        stored = WorkflowStore().get(wid) if wid else None
+        return (_pass("read-back",
+                      f'The stored definition reads back with {len(stored.get("nodes") or [])} nodes.')
+                if stored else
+                _fail("read-back", "The workflow is not in the store after creation."))
+
+    async def workflow_list(_inv):
+        from ..persistence.workflows import WorkflowStore
+
+        items = [{"id": w["id"], "name": w.get("name") or "",
+                  "nodeCount": len(w.get("nodes") or [])}
+                 for w in WorkflowStore().list()]
+        return _ok(f"{len(items)} workflow(s) stored.", {"workflows": items})
+
     return [
         {"capabilityId": "project.list", "run": project_list},
         {"capabilityId": "project.create", "run": project_create, "verify": project_create_verify},
         {"capabilityId": "project.open", "run": project_open, "verify": project_open_verify},
         {"capabilityId": "project.inspect", "run": project_inspect},
+        # Restored lineage executors (fabric/executors.py @ b4b42a8) over the
+        # ONE canonical WorkflowStore — the Central Agent's authoring and
+        # inventory steps target real governed capabilities.
+        {"capabilityId": "workflow.create", "run": workflow_create,
+         "verify": workflow_create_verify},
+        {"capabilityId": "workflow.list", "run": workflow_list},
     ]
+
+
+# Restored lineage capabilities (fabric/executors.py @ b4b42a8): the
+# Central Agent's authoring/inventory steps target REAL governed
+# capabilities backed by the ONE WorkflowStore. Registered at wiring time —
+# the frozen manifest.json stays byte-identical to the TS bundle.
+CANONICAL_INTERNAL_CAPABILITIES: list[dict] = [
+    {
+        "id": "workflow.create", "name": "Create workflow",
+        "category": "workflow", "surface": "aura-internal",
+        "description": "Persists one workflow definition into AURA's own "
+                       "store, then reads it back.",
+        "risk": "low", "permissions": [],
+        "input": [{"name": "name", "type": "string", "required": True,
+                   "description": "Workflow name"}],
+        "output": "Stored workflow reference", "verify": "read-back",
+    },
+    {
+        "id": "workflow.list", "name": "List workflows",
+        "category": "workflow", "surface": "aura-internal",
+        "description": "Read-only inventory of the stored workflow definitions.",
+        "risk": "low", "permissions": [],
+        "input": [], "output": "Workflow inventory", "verify": None,
+    },
+]
+
+
+def register_canonical_internal_capabilities(fabric) -> None:
+    """ONE authoritative registration point for builtin internal caps."""
+    import aura.fabric as fab
+
+    for d in CANONICAL_INTERNAL_CAPABILITIES:
+        if d["id"] not in fab._BY_ID:
+            fab.MANIFEST.append(d)
+            fab._BY_ID[d["id"]] = d
 
 
 EXECUTOR_TABLE: dict[str, dict] = {

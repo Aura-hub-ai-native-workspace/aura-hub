@@ -62,9 +62,13 @@ class WorkflowEngine:
     projection reads.
     """
 
+    # Only READ-ONLY ad-hoc routes ride the workflow interpreter. Write
+    # effects (filesystem.write) go through invoke_fabric directly: the
+    # frozen export-file binding sources content from UPSTREAM node input,
+    # which a synthesized single-node graph cannot supply honestly — and
+    # the direct governed invoke has identical policy/approval/audit.
     NODE_TO_CAPABILITY = {
         "git-status": "git.status",
-        "export-file": "filesystem.write",
     }
 
     def __init__(self, fabric_cfg=None, workflows=None, versions=None,

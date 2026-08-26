@@ -185,12 +185,17 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     if secrets_store is None:
         secrets_store = AuraSecrets()
 
+    from ..persistence.projects import ProjectRegistry
+
+    registry = ProjectRegistry()
+
     if fabric is None:
         fabric = CapabilityFabric(_DefaultHost())
-        from ..executors import all_executors
+        from ..executors import all_executors, register_canonical_internal_capabilities
 
-        for executor in all_executors():
+        for executor in all_executors(registry):
             fabric.register(executor)
+        register_canonical_internal_capabilities(fabric)
         from ..policy import DEFAULT_POLICY
 
         fabric.policy = read_json_file(H / "fabric-policy.json", DEFAULT_POLICY)
@@ -253,7 +258,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         for q in list(auto_subscribers):
             q.put_nowait(entry)
 
-    actions = {"workflow-run": make_workflow_action(runner, None)}
+    actions = {"run-workflow": make_workflow_action(runner, None)}
     auto_engine = AutomationEngine(auto_store, actions, emit=_auto_emit)
     scheduler = AutomationScheduler(
         auto_store,
@@ -263,6 +268,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
 
     return {
         "home": H, "fabric": fabric, "ledger": ledger, "audit": audit,
+        "registry": registry,
         "wf_store": wf_store, "ver_store": ver_store, "run_store": run_store,
         "auto_store": auto_store, "runner": runner, "secrets": secrets_store,
         "agent": agent, "sessions": sessions, "agent_bus": agent_bus,
@@ -961,6 +967,66 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             "the mission subsystem has no canonical backend implementation; "
             "capability annotation over stored missions is unavailable", 501)
 
+    # ── projects (REQUIRED migrated contract; ONE ProjectRegistry) ──
+    def _registry(self=None):
+        return S["registry"]
+
+    async def projects_list(request: Request):
+        registry = S["registry"]
+        return JSONResponse({"projects": registry.list_projects(),
+                             "current": registry.current_project()})
+
+    async def projects_add(request: Request):
+        import anyio
+
+        body = await request.json()
+        try:
+            record = await anyio.to_thread.run_sync(
+                lambda: S["registry"].add({
+                    "name": str(body.get("name") or ""),
+                    "path": str(body.get("path") or ""),
+                    "icon": body.get("icon"),
+                }))
+        except RuntimeError as exc:
+            return _err(str(exc), 400)
+        return JSONResponse(record)
+
+    async def project_open(request: Request):
+        import anyio
+
+        pid = request.path_params["pid"]
+        try:
+            opened = await anyio.to_thread.run_sync(
+                lambda: S["registry"].open(pid))
+        except RuntimeError as exc:
+            return _err(str(exc), 404)
+        profile = S["registry"].profile(pid)
+        return JSONResponse({
+            "project": opened,
+            "profile": profile,
+            "status": {"status": "ready"},
+        })
+
+    async def project_profile(request: Request):
+        pid = request.path_params["pid"]
+        if S["registry"].get(pid) is None:
+            return _err(f'no project is registered with id "{pid}"', 404)
+        profile = S["registry"].profile(pid)
+        if not profile:
+            return _err("no profile", 404)
+        return JSONResponse(profile)
+
+    # ── missions (C: explicitly unsupported — no canonical engine) ───
+    async def missions_unsupported(request: Request):
+        # Frozen honest refusal. The mission subsystem (stored MissionRecord,
+        # plan lifecycle, task execution) has NO canonical Python
+        # implementation. Nothing is faked; the dependency is documented in
+        # docs/migration/INTEGRATION_BLOCKERS_RESOLUTION.md.
+        return _err(
+            "the mission subsystem has no canonical backend implementation; "
+            "this surface stays unavailable until a domain owner lands it",
+            501)
+
     # ── secrets (metadata only — never values) ──────────────────────
     async def secrets_list(request: Request):
         store = AuraSecrets()
@@ -1031,11 +1097,17 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse({"ok": True})
 
     async def automation_rule_run(request: Request):
+        # Canonical contract (automation/engine.ts runRuleNow): the RUN DICT
+        # on success; {error, run:null} only when the rule does not match;
+        # 404 {error} for an unknown rule. The engine matches conditions and
+        # EXECUTES through WorkflowRunner — this route changes neither.
+        import anyio
+
         body = await request.json() if request.headers.get("content-type") == "application/json" else {}
         rid = request.path_params["rid"]
         rule = S["auto_store"].get_rule(rid)
         if rule is None:
-            return _err("not found", 404)
+            return _err("no such rule", 404)
         event = {
             "type": trigger_type_of(rule),
             "projectId": str(body.get("projectId") or rule.get("trigger", {}).get("projectId") or "default"),
@@ -1043,16 +1115,12 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             "at": _now(),
             "payload": body.get("payload") or {},
         }
-        import anyio
-
-        outcome = await anyio.to_thread.run_sync(
-            lambda: S["auto_engine"].handle_event(dict(event, ruleId=rid)))
-        run = (outcome or {}).get("run") if isinstance(outcome, dict) else None
-        if isinstance(outcome, dict) and outcome.get("ok") is False and run is None:
-            return JSONResponse({"error": outcome.get("summary") or "conditions not met",
-                                 "run": None})
-        return JSONResponse(run if run is not None
-                            else {"error": "conditions not met", "run": None})
+        run = await anyio.to_thread.run_sync(
+            lambda: asyncio.run(S["auto_engine"].run_rule_now(rid, event)))
+        if run is None:
+            return JSONResponse({"error": "conditions not met", "run": None})
+        persisted = S["auto_store"].get_run(rid, run["id"])
+        return JSONResponse(persisted or run)
 
     async def automation_rule_pause(request: Request):
         import anyio
@@ -1254,6 +1322,13 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/fabric/policy", fabric_policy_set, methods=["POST"]),
         Route("/fabric/audit", fabric_audit, methods=["GET"]),
         Route("/fabric/mission/{pid}/{mid}", fabric_mission_annotation, methods=["GET"]),
+        Route("/projects", projects_list, methods=["GET"]),
+        Route("/projects", projects_add, methods=["POST"]),
+        Route("/projects/{pid}/open", project_open, methods=["POST"]),
+        Route("/projects/{pid}/profile", project_profile, methods=["GET"]),
+        Route("/missions/dashboard", missions_unsupported, methods=["GET"]),
+        Route("/projects/{pid}/missions", missions_unsupported, methods=["GET"]),
+        Route("/projects/{pid}/missions/{mid}", missions_unsupported, methods=["GET"]),
         Route("/secrets", secrets_list, methods=["GET"]),
         Route("/automation/templates", automation_templates, methods=["GET"]),
         Route("/automation/rules", automation_rules_list, methods=["GET"]),
