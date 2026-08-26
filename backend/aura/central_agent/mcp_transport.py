@@ -92,6 +92,46 @@ class StdioMcpClient:
         return self._request("tools/call",
                              {"name": name, "arguments": arguments or {}})
 
+    # ── resources & prompts (AGENT 2 context half; additive at 6308a1f+) ──
+    def list_resources(self) -> list[dict]:
+        result = self._request("resources/list")
+        resources = result.get("resources")
+        if not isinstance(resources, list):
+            raise McpTransportError("resources/list returned no resource array")
+        return [r for r in resources if isinstance(r, dict)]
+
+    def read_resource(self, uri: str) -> str:
+        result = self._request("resources/read", {"uri": uri})
+        contents = result.get("contents")
+        if not isinstance(contents, list) or not contents:
+            raise McpTransportError(f"resource {uri!r} returned no contents")
+        first = contents[0] if isinstance(contents[0], dict) else {}
+        text = first.get("text")
+        if text is None and first.get("blob"):
+            import base64
+
+            text = base64.b64decode(str(first["blob"])).decode("utf-8", "replace")
+        if not isinstance(text, str):
+            raise McpTransportError(f"resource {uri!r} carried no text")
+        return text
+
+    def list_prompts(self) -> list[dict]:
+        result = self._request("prompts/list")
+        prompts = result.get("prompts")
+        if not isinstance(prompts, list):
+            raise McpTransportError("prompts/list returned no prompt array")
+        return [p for p in prompts if isinstance(p, dict)]
+
+    def get_prompt(self, name: str) -> str:
+        result = self._request("prompts/get", {"name": name})
+        messages = result.get("messages")
+        parts: list[str] = []
+        for m in messages if isinstance(messages, list) else []:
+            content = m.get("content") if isinstance(m, dict) else None
+            if isinstance(content, dict) and isinstance(content.get("text"), str):
+                parts.append(content["text"])
+        return "\n".join(parts)
+
     @property
     def server_info(self) -> dict | None:
         return self._server_info

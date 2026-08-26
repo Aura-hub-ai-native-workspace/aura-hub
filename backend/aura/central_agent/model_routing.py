@@ -84,6 +84,9 @@ class RoutingError(Exception):
     """All configured providers failed or none is configured."""
 
 
+CIRCUIT_COOLDOWN_S = 60.0
+
+
 class RoutedModelPort(ModelPort):
     """ModelPort over a provider chain, tried in order."""
 
@@ -93,13 +96,38 @@ class RoutedModelPort(ModelPort):
         self.health: dict[str, ProviderHealth] = {
             p.id: ProviderHealth() for p in providers}
         self._post = post or _http_post_json
+        self._circuit_opened_at: dict[str, float] = {}
+
+    def health(self) -> dict:
+        """Operator-facing per-provider snapshot. Circuits report OPEN only
+        while their cooldown is running — a healed provider re-enters the
+        rotation automatically once the cooldown elapses."""
+        now = time.monotonic()
+        return {"providers": [
+            {"id": p.id, "baseUrl": p.base_url, "model": p.model,
+             "calls": self.health[p.id].calls,
+             "consecutiveFailures": self.health[p.id].consecutive_failures,
+             "lastError": self.health[p.id].last_error,
+             "circuit": ("open" if now - self._circuit_opened_at.get(p.id, 0.0)
+                         < CIRCUIT_COOLDOWN_S else "closed")}
+            for p in self.providers]}
+
+    def _circuit_open(self, spec: ProviderSpec) -> bool:
+        opened_at = self._circuit_opened_at.get(spec.id)
+        if opened_at is None:
+            return False
+        if time.monotonic() - opened_at >= CIRCUIT_COOLDOWN_S:
+            del self._circuit_opened_at[spec.id]
+            self.health[spec.id].consecutive_failures = 0
+            return False
+        return True
 
     def complete_json(self, system: str, user: str) -> dict | None:
         last_error = "no providers configured"
         for spec in self.providers:
             health = self.health[spec.id]
-            if health.consecutive_failures >= 5:
-                continue  # circuit open; operator heals by fixing the cause
+            if self._circuit_open(spec):
+                continue  # cooling down; re-enters rotation after the window
             key = os.environ.get(spec.api_key_env, "")
             if not key:
                 health.last_error = f"env {spec.api_key_env} not set"
@@ -123,13 +151,22 @@ class RoutedModelPort(ModelPort):
                         f"{spec.base_url}/chat/completions",
                         payload, headers, spec.timeout_s)
                     content = (body["choices"][0]["message"]["content"] or "")
-                    health.consecutive_failures = 0
                     match = _first_json_object(content)
-                    return json.loads(match) if match else None
+                    if match is None:
+                        # The provider SPOKE but produced no JSON object.
+                        # Retrying the same endpoint hides a systematic
+                        # problem — fail over with an honest reason instead.
+                        raise ValueError("provider returned no JSON object")
+                    health.consecutive_failures = 0
+                    self._circuit_opened_at.pop(spec.id, None)
+                    return json.loads(match)
                 except Exception as exc:
                     health.consecutive_failures += 1
                     health.last_error = str(exc)[:200]
                     last_error = f"{spec.id}: {str(exc)[:120]}"
+                    if health.consecutive_failures >= 5:
+                        self._circuit_opened_at.setdefault(
+                            spec.id, time.monotonic())
                     if attempt > spec.max_retries:
                         break
                     time.sleep(min(2 ** attempt * 0.25, 2.0))
