@@ -29,11 +29,11 @@ const node = (id, type, config = {}) =>
 const FIXTURES = [
   {
     name: 'Seeded — Release Notes (read-only)',
-    description: 'Four read-only steps: status, diff, changed files, output.',
+    description: 'Local steps with inspector-covered types.',
     nodes: [
-      node('n1', 'git-status'),
-      node('n2', 'git-diff'),
-      node('n3', 'changed-files'),
+      node('n1', 'shell-command', { command: 'echo seeded' }),
+      node('n2', 'variables', { vars: { source: 'seeded' } }),
+      node('n3', 'delay', { ms: 50 }),
       node('n4', 'output', { title: 'Release notes input' }),
     ],
     edges: [{ source: 'n1', target: 'n2' }, { source: 'n2', target: 'n3' }, { source: 'n3', target: 'n4' }],
@@ -48,7 +48,7 @@ const FIXTURES = [
     name: 'Seeded — Governed Publish',
     description: 'Shell + file-write steps so policy/dry-run has governed nodes.',
     nodes: [
-      node('g0', 'git-status'),
+      node('g0', 'shell-command', { command: 'echo publish-seed' }),
       node('g1', 'shell-command', { command: 'rm -rf ./build' }),
       node('g2', 'export-file', { path: 'reports/publish.md', text: '# Publish report' }),
     ],

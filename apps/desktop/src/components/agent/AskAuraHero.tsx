@@ -68,6 +68,8 @@ export function AskAuraHero({ className }: { className?: string }) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [seenEvents, setSeenEvents] = useState<string[]>([]);
+  /** True while the SSE stream is down and retrying — surfaced honestly. */
+  const [streamPaused, setStreamPaused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const answerRef = useRef<HTMLInputElement>(null);
 
@@ -145,13 +147,23 @@ export function AskAuraHero({ className }: { className?: string }) {
     setErrorText(null);
     setSeenEvents([]);
     try {
-      const res = await centralAgentClient.submit(message);
+      // Governed effects resolve against a project — pass the active one
+      // when the user has one open; without it the backend honestly
+      // refuses project-scoped writes.
+      const projectId = useAppStore.getState().activeProjectId ?? undefined;
+      const res = await centralAgentClient.submit(message, { projectId });
       // Live frames feed the phase strip; the response body stays the
       // authority on what actually happened.
       if (res.sessionId) {
         closeStreamRef.current?.();
         closeStreamRef.current = centralAgentClient.events(res.sessionId, (frame) => {
-          setSeenEvents((prev) => [...prev, frame.type]);
+          // A reconnecting frame is not an agent event — it flips the
+          // honest "live updates paused" state instead of the phase strip.
+          if (frame.type === 'stream.reconnecting') setStreamPaused(true);
+          else {
+            setStreamPaused(false);
+            setSeenEvents((prev) => [...prev, frame.type]);
+          }
         });
       }
       adoptResult(res.result, res.sessionId);
@@ -169,7 +181,9 @@ export function AskAuraHero({ className }: { className?: string }) {
     setAnswer('');
     setPhase('working');
     try {
-      const res = await centralAgentClient.message(sessionId, text);
+      const res = await centralAgentClient.message(sessionId, text, {
+        projectId: useAppStore.getState().activeProjectId ?? undefined,
+      });
       adoptResult(res.result, sessionId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -294,6 +308,12 @@ export function AskAuraHero({ className }: { className?: string }) {
         {(busy || result) && (
           <div className="mt-4">
             <AgentPhaseStrip current={lifecycle} outcome={result?.outcome} />
+            {streamPaused && (
+              <p role="status" className="mt-2 flex items-center gap-1.5 text-[12px] text-text-muted">
+                <Icon name="refresh" size={13} className="animate-spin" />
+                Live updates paused — reconnecting…
+              </p>
+            )}
           </div>
         )}
 
