@@ -22,6 +22,7 @@ from ..persistence.runs import (
 from .nodes_core import (
     DEFAULT_RUN_TIMEOUT_MS,
     GOVERNED_TYPES,
+    INTELLIGENCE_TYPES,
     MAX_LOOP_ITERATIONS,
     MAX_NODE_EXECUTIONS,
     PURE_RUNNERS,
@@ -51,6 +52,7 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
     record = opts.get("run")
     store = opts.get("runs")
     governor = opts.get("governor")
+    model = opts.get("model")
     redact: Callable[[str], str] = getattr(governor, "redact", lambda t: t)
     signal: dict | None = opts.get("signal")
 
@@ -79,6 +81,12 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
         "projectName": opts.get("projectName"), "vars": dict((record or {}).get("vars") or {}),
         "runInputs": opts.get("inputs") or {}, "signal": signal,
         "sleep": (lambda ms: None),
+        "model": opts.get("model"),
+        "agents": opts.get("agents"),
+        "coding_engine": getattr(opts.get("pipeline"), "coding", None)
+        if opts.get("pipeline") is not None else None,
+        "fullstack_engine": getattr(opts.get("pipeline"), "fullstack", None)
+        if opts.get("pipeline") is not None else None,
     }
     current: list[str | None] = [None]
 
@@ -218,6 +226,33 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
     async def exec_node(node, input):
         nonlocal failure, parked, executions, current
         ntype = node["type"]
+        if ntype in INTELLIGENCE_TYPES and ntype != "agent":
+            from .intelligence import INTELLIGENCE_RUNNERS
+
+            t0i = time.time()
+            try:
+                result_i = await _maybe_await(
+                    INTELLIGENCE_RUNNERS[ntype](ctx, input,
+                                                {**(node.get("config") or {}),
+                                                 "__nodeId": node["id"]}))
+            except RuntimeError as exc:
+                ms = int((time.time() - t0i) * 1000)
+                set_state(node["id"], "failed",
+                          {"ms": ms, "error": str(exc), "summary": str(exc)})
+                log(node["id"], "error", str(exc))
+                failure = {"nodeId": node["id"], "message": str(exc),
+                           "state": "failed"}
+                return
+            ms = int((time.time() - t0i) * 1000)
+            set_state(node["id"], "succeeded",
+                      {"ms": ms, "summary": result_i.get("summary")})
+            log(node["id"], "info", f"completed in {ms}ms - " + str(result_i.get("summary")))
+            io_i = stamp(node["id"], {"text": result_i.get("text"),
+                                      "data": result_i.get("data"),
+                                      "files": result_i.get("files")})
+            remember_output(node["id"], io_i, "out")
+            fan_out(node["id"], io_i, "out")
+            return
         if ntype not in PURE_RUNNERS and ntype not in GOVERNED_TYPES and ntype != "agent":
             set_state(node["id"], "skipped", {"summary": "unknown node type"})
             skip_downstream(node["id"])

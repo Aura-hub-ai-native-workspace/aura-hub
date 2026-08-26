@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -70,29 +71,75 @@ class _DefaultHost:
 # ── the workflow event bus (replayable SSE tail) ─────────────────────────────
 
 
-class WorkflowEventBus:
-    """Ring buffer of run events + live subscriber queues.
+_BUS_REGISTRY: dict[str, "WorkflowEventBus"] = {}
 
-    Every frame gets a monotonically increasing seq; Last-Event-ID replays
-    everything after that point. Frames are observability — durable run
-    records stay authoritative.
+
+def _bus_for_home(home) -> "WorkflowEventBus":
+    """ONE event bus per AURA_HOME (in-process): every app instance over the
+    same home shares it, so sequence stays monotonic and no second writer
+    can interleave into the journal."""
+    key = str(home)
+    if key not in _BUS_REGISTRY:
+        _BUS_REGISTRY[key] = WorkflowEventBus(Path(home) / "events" / "workflow.jsonl")
+    return _BUS_REGISTRY[key]
+
+
+class WorkflowEventBus:
+    """Ring buffer + RESTART-SAFE journal of run events.
+
+    ADDITIVE Python behavior (no TypeScript oracle exists for SSE replay):
+      • every frame gets a monotonically increasing seq that SURVIVES
+        restarts via an append-only JSONL journal under AURA_HOME;
+      • Last-Event-ID / since cursors replay STRICTLY-AFTER entries;
+      • live subscribers receive each frame exactly once.
+    Frames remain observability — durable run records stay authoritative.
     """
 
     MAX_TAIL = 2000
 
-    def __init__(self) -> None:
+    def __init__(self, journal_path=None) -> None:
         self._tail: list[dict] = []
         self._subs: list[asyncio.Queue] = []
+        self._journal = journal_path
+        self._seq = 0
+        if journal_path is not None and journal_path.exists():
+            try:
+                for line in journal_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # a torn final write never breaks replay
+                    if isinstance(entry, dict) and isinstance(entry.get("seq"), int):
+                        self._tail.append(entry)
+                        self._seq = max(self._seq, entry["seq"])
+                del self._tail[:-self.MAX_TAIL]
+            except OSError:
+                pass
 
     def publish(self, frame: dict) -> None:
-        entry = {"seq": len(self._tail) + 1, **frame}
+        self._seq += 1
+        entry = {"seq": self._seq, **frame}
         self._tail.append(entry)
         del self._tail[:-self.MAX_TAIL]
+        if self._journal is not None:
+            try:
+                self._journal.parent.mkdir(parents=True, exist_ok=True)
+                with open(self._journal, "a", encoding="utf-8") as fh:
+                    fh.write(dumps_compact(entry) + "\n")
+            except OSError:
+                pass  # observability must never break execution
         for q in list(self._subs):
             q.put_nowait(entry)
 
     def after(self, last_event_id: int) -> list[dict]:
         return [e for e in self._tail if e["seq"] > last_event_id]
+
+    @property
+    def last_seq(self) -> int:
+        return self._seq
 
     def subscribe(self, last_event_id: int = 0) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue()
@@ -219,7 +266,8 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         "wf_store": wf_store, "ver_store": ver_store, "run_store": run_store,
         "auto_store": auto_store, "runner": runner, "secrets": secrets_store,
         "agent": agent, "sessions": sessions, "agent_bus": agent_bus,
-        "bus": WorkflowEventBus(), "auto_engine": auto_engine,
+        "bus": _bus_for_home(H),
+        "auto_engine": auto_engine,
         "scheduler": scheduler, "auto_emit": _auto_emit,
         "auto_events": auto_events, "auto_subs": auto_subscribers,
     }
@@ -243,8 +291,12 @@ def _agent_event(etype: str, session_id: str, payload: dict) -> dict:
         sessionId=session_id, payload=payload)
 
 
-def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None) -> Starlette:
+def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
+                      model=None) -> Starlette:
     S = _wire(fabric=fabric, run_scopes=run_scopes, secrets_store=secrets_store)
+    if model is not None:
+        # The provider seam for intelligence nodes and the agent runtime.
+        S["runner"].model = model
     wf_store, ver_store, run_store = S["wf_store"], S["ver_store"], S["run_store"]
     runner, agent, sessions = S["runner"], S["agent"], S["sessions"]
     bus: WorkflowEventBus = S["bus"]
@@ -1119,14 +1171,25 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None) -> St
         header = request.headers.get("last-event-id")
         if header and header.isdigit():
             last_id = int(header)
+        since = request.query_params.get("since")
+        if since is not None and since.isdigit():
+            # ?since= cursor; Last-Event-ID wins when both are present.
+            last_id = max(last_id, int(since))
+        until_raw = request.query_params.get("until")
+        until = int(until_raw) if until_raw is not None and until_raw.isdigit() else None
         q = bus.subscribe(last_id)
 
         async def gen():
             try:
-                yield ": connected\n\n"
+                yield f": connected, head={bus.last_seq}\n\n"
                 while True:
                     entry = await q.get()
                     yield f"id: {entry['seq']}\ndata: {dumps_compact(entry)}\n\n"
+                    if until is not None and entry["seq"] >= until:
+                        # Bounded catch-up: replay through `until`, then stop.
+                        # Clients reconnect from the delivered id.
+                        yield "data: [DONE]\n\n"
+                        return
             except asyncio.CancelledError:
                 pass
             finally:

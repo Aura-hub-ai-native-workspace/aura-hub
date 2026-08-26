@@ -23,6 +23,11 @@ process.stdin.on('data', (c) => { payload += c; });
 process.stdin.on('end', async () => {
   const req = JSON.parse(payload);
 
+  if (req.func === 'intentops') {
+    process.stdout.write(JSON.stringify(await runIntentOps(req)));
+    return;
+  }
+
   if (req.func === 'agentops') {
     const out = await runAgentOps(req);
     process.stdout.write(JSON.stringify(out));
@@ -614,4 +619,32 @@ async function runAgentOps(req) {
     signal: undefined,
   });
   return { result: JSON.parse(JSON.stringify(outcome)), events: beats, slept: [] };
+}
+
+
+// ── intentops: frozen KeywordIntentClassifier/TemplatePromptEnhancer parity ──
+async function runIntentOps(req) {
+  const { KeywordIntentClassifier } = await import(process.env.TSREF_INTENTCLS);
+  const { TemplatePromptEnhancer } = await import(process.env.TSREF_PROMPTENH);
+  const cls = new KeywordIntentClassifier();
+  const enh = new TemplatePromptEnhancer();
+  const out = [];
+  for (const text of req.input.texts) {
+    const intent = await cls.classify({ input: text });
+    const prompt = await enh.enhance({ input: text }, intent);
+    out.push({
+      text,
+      intent: {
+        type: intent.type,
+        confidence: Math.round(intent.confidence * 1e6) / 1e6,
+        rationale: intent.rationale ?? null,
+        alternatives: (intent.alternatives ?? []).map((a) => ({
+          type: a.type, confidence: Math.round(a.confidence * 1e6) / 1e6 })),
+      },
+      enhanced: prompt.enhanced,
+      systemHints: prompt.systemHints ?? null,
+      directives: prompt.directives ?? null,
+    });
+  }
+  return out;
 }

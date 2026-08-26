@@ -25,6 +25,8 @@ const jobs = [
   ['packages/ai-service/src/secrets.ts', 'secrets.mjs', []],
   ['packages/ai-service/src/workflow/agent/runner.ts', 'agentrunner.mjs',
    [`alias:@aura/capability-fabric=${OUT}/fabric-index.mjs`]],
+  ['packages/intelligence/src/pipeline/intentClassifier.ts', 'intentcls.mjs', []],
+  ['packages/intelligence/src/pipeline/promptEnhancer.ts', 'promptenh.mjs', []],
 ];
 for (const [entry, out] of jobs) {
   const opts = { entryPoints: [`${REPO}/${entry}`], bundle: true, platform: 'node',
