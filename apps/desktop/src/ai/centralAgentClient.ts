@@ -23,10 +23,13 @@ const ENV = import.meta.env as unknown as Record<string, string | undefined>;
 /**
  * Base URL resolution:
  *   • explicit VITE_AGENT_URL always wins;
- *   • under the Vite dev server we use the same-origin proxy ('/agent-api')
- *     because the agent API cannot answer CORS preflights yet (Agent 2);
- *   • packaged/Tauri builds talk to the loopback service directly and
- *     REQUIRE that preflight support to land.
+ *   • under the Vite dev server we use the same-origin proxy ('/agent-api'):
+ *     the FINAL Python backend's CORS middleware declares wildcard PORTS as
+ *     literal strings ("http://localhost:*"), which Starlette does not glob —
+ *     verified 2026-08-26: OPTIONS from http://localhost:1420 → 400
+ *     "Disallowed CORS origin". Backend fix required: allow_origin_regex.
+ *   • packaged/Tauri builds talk to the loopback service directly and stay
+ *     BLOCKED until that regex-based origin matching lands.
  */
 const BASE =
   ENV.VITE_AGENT_URL?.replace(/\/$/, '') ??
@@ -124,8 +127,6 @@ export interface AgentSession {
   activePlanId?: string | null;
   lastResult?: AgentResult | null;
   eventCount: number;
-  /** Present while the agent is waiting on a clarifying answer. */
-  pendingQuestion?: string | null;
 }
 
 export interface PlanReviewStep {
@@ -220,7 +221,18 @@ export const centralAgentClient = {
   /** Reasoning-free plan review: steps, capabilities, risks, approvals. */
   planReview: (sessionId: string) => jget<PlanReview>(`/agent/sessions/${encodeURIComponent(sessionId)}/plan`),
 
-  evidence: (sessionId: string) => jget<AgentEvidenceBundle>(`/agent/sessions/${encodeURIComponent(sessionId)}/evidence`),
+  /**
+   * The EvidenceBundle of the session's last result. The route returns the
+   * bundle flat when one exists and `{"evidence": null}` when it does not;
+   * both are normalized to `AgentEvidenceBundle | null` here.
+   */
+  evidence: async (sessionId: string) => {
+    const body = await jget<AgentEvidenceBundle | { evidence: AgentEvidenceBundle | null }>(
+      `/agent/sessions/${encodeURIComponent(sessionId)}/evidence`,
+    );
+    if (body && typeof body === 'object' && 'evidence' in body) return body.evidence;
+    return body as AgentEvidenceBundle;
+  },
 
   /**
    * Subscribe to the session's live events. Returns a closer. Frames are
