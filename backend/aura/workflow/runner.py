@@ -224,6 +224,7 @@ class WorkflowRunner:
                 "projectName": input.get("projectName"), "inputs": run.get("inputs"),
                 "signal": signal, "run": run, "runs": self.runs,
                 "governor": governor,
+                "model": getattr(self, "model", None),
                 "agents": self._agent_runner(run=run, envelope=envelope,
                                              redact=governor.redact if governor else (lambda t: t),
                                              signal=signal),

@@ -133,12 +133,39 @@ def run_variables_ts(ctx, input, cfg):
     return {**input, "summary": f"{count} set"}
 
 
+def run_prompt(ctx, input, cfg):
+    """TS nodes.ts 'prompt' — pure interpolation, never a model call."""
+    template = str(cfg.get("template") or "")
+    if not template.strip():
+        raise RuntimeError("empty prompt template")
+    text = interpolate(template, ctx, input)
+    return {"text": text, "summary": text[:46]}
+
+
 PURE_RUNNERS: dict[str, Callable] = {
+    "prompt": run_prompt,
     "condition": run_condition,
     "variables": run_variables_ts,
     "user-input": run_user_input_ts,
     "output": run_output,
     "delay": run_delay,
+}
+
+# Model/compute nodes - pure compute per the frozen design; they invoke
+# nothing, so no approval gate applies.
+#
+# PARITY NOTE (explicit): the FROZEN TypeScript workflow ENGINE skips every
+# one of these types (the oracle differential probes research-engine as the
+# unknown-type case and expects a skip). Executing the model-backed types
+# below is ADDITIVE Python behavior requested by the central-agent compiler;
+# each runner body is a faithful port of its nodes.ts spec where one exists,
+# but engine-level execution of them has NO TS-oracle counterpart.
+# "research-engine" is deliberately EXCLUDED so the frozen skip parity holds;
+# it stays honest-by-refusal exactly as before.
+INTELLIGENCE_TYPES = {
+    "groq", "generate-markdown", "generate-code", "generate-json",
+    "intent-classifier", "prompt-enhancer", "coding-engine",
+    "fullstack-engine", "agent",
 }
 
 GOVERNED_TYPES = {

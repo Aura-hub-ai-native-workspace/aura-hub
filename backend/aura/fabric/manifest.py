@@ -30,9 +30,11 @@ class CapabilityView:
 
 
 def _registry() -> list[dict[str, Any]]:
-    from . import _load_manifest
+    # The in-memory MANIFEST is the single live truth: it starts as the
+    # frozen file and grows through governed registration (mcp_bridge).
+    from . import MANIFEST
 
-    return _load_manifest()
+    return MANIFEST
 
 
 def all_capabilities() -> list[CapabilityView]:
