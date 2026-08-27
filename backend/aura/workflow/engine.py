@@ -321,10 +321,14 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
                         '"Agent" reasons and calls tools through the Capability Fabric, which is not attached to this run.')
                 t0a = time.time()
                 agent_resume = (opts.get("agentResume") or {}).get(node["id"])
-                out_a = agents.run(node, ctx, input, {
+                runner_call = getattr(agents, "run_async", None)
+                out_a = await (_maybe_await(runner_call(node, ctx, input, {
                     "signal": opts.get("signal"),
                     **({"resumeFrom": agent_resume} if agent_resume else {}),
-                })
+                })) if runner_call is not None
+                    else asyncio.ensure_future(_maybe_await(agents.run(
+                        node, ctx, input,
+                        {"signal": opts.get("signal")}))))
                 ms = int((time.time() - t0a) * 1000)
                 if record and out_a.get("trace"):
                     record["nodes"][node["id"]]["agentTrace"] = out_a["trace"]
