@@ -317,8 +317,8 @@ class AutomationStore(CamelAlias):
                     or needle in (r.get("error") or "").lower()]
 
         total = len(runs)
-        offset = max(0, query.get("offset") or 0)
-        limit = max(1, min(500, query.get("limit") if query.get("limit") is not None else 100))
+        offset = max(0, int(query.get("offset") or 0))
+        limit = max(1, min(500, int(query.get("limit") if query.get("limit") is not None else 100)))
         return {"runs": runs[offset:offset + limit], "total": total, "offset": offset, "limit": limit}
 
     def run_stats(self, query: dict = {}) -> dict[str, int]:

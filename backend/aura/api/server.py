@@ -1311,12 +1311,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     async def automation_runs_index(request: Request):
         query = dict(request.query_params)
         page = S["auto_store"].index_runs(query)
-        runs = page.get("runs") or []
-        total = len(runs)
-        offset = max(0, int(query.get("offset", 0)))
-        limit = max(1, min(200, int(query.get("limit", 50))))
-        return JSONResponse({"runs": runs[offset:offset + limit],
-                             "total": total, "offset": offset, "limit": limit})
+        return JSONResponse(page)
 
     async def automation_stats_reindex(request: Request):
         count = S["auto_store"].rebuild_run_index()
