@@ -98,6 +98,13 @@ class AgentRunner:
     def run(self, node: dict, _ctx: dict, input: dict, opts: dict | None = None) -> dict:
         return asyncio_run(self._run(node, input, opts or {}))
 
+    def run_async(self, node: dict, ctx: dict, input: dict,
+                  opts: dict | None = None):
+        """In-loop entry: the workflow engine's event loop is already
+        running, so the agent coroutine must be awaited there — never
+        asyncio.run() inside it."""
+        return self._run(node, input, opts or {})
+
     async def _run(self, node: dict, input: dict, opts: dict) -> dict:
         cfg = {**(node.get("config") or {}), "tools": (node.get("config") or {}).get("tools") or []}
         bounds = resolve_bounds(cfg)

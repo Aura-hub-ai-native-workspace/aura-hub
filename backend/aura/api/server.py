@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from pathlib import Path
 
@@ -1059,6 +1060,85 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             "this surface stays unavailable until a domain owner lands it",
             501)
 
+    # ── providers (truthful read-only; writes at composition root) ───
+    async def providers_get(request: Request):
+        """Reflect the provider configuration that is already running.
+
+        The Python backend configures providers at startup via environment
+        variables or an injected model seam.  There is no registry to
+        query or mutate at runtime.  GET /providers returns the truth
+        about what is active; POST /providers/* returns honest 501s.
+        """
+        base_url = os.environ.get("AURA_AI_BASE_URL", "").rstrip("/")
+        api_key = os.environ.get("AURA_AI_KEY", "")
+        model_id = os.environ.get("AURA_AI_MODEL", "unknown")
+
+        has_provider = bool(base_url)
+        status_type = "byoak" if has_provider else "none"
+        label = base_url.split("//")[-1].split("/")[0] if has_provider else "none"
+
+        # The runner carries the live model seam (set in create_api_server).
+        runner_model = getattr(S["runner"], "model", None)
+        active_model = model_id if has_provider else "none"
+        provider_id = "aura" if has_provider else None
+
+        providers = []
+        connected = []
+        if has_provider:
+            providers.append({
+                "id": "aura",
+                "name": label,
+                "description": f"AURA Hub model provider ({label})",
+                "apiEndpoint": base_url,
+            })
+            connected.append({
+                "id": "aura",
+                "name": label,
+                "fingerprint": api_key[:8] + "…" if api_key else "",
+                "models": [{"id": model_id, "name": model_id}],
+                "activeModel": model_id,
+                "health": None,
+            })
+
+        return JSONResponse({
+            "providers": providers,
+            "defaultProvider": provider_id,
+            "connected": connected,
+            "active": provider_id,
+            "activeModel": active_model,
+            "status": {
+                "type": status_type,
+                "providerId": provider_id,
+                "label": label,
+                "model": active_model,
+            },
+        })
+
+    async def providers_connect(request: Request):
+        return _err(
+            "provider configuration is performed at composition root via "
+            "environment variables (AURA_AI_BASE_URL, AURA_AI_KEY); "
+            "runtime connect/disconnect is not supported",
+            501)
+
+    async def providers_disconnect(request: Request):
+        return _err(
+            "provider configuration is performed at composition root via "
+            "environment variables; runtime disconnect is not supported",
+            501)
+
+    async def providers_switch(request: Request):
+        return _err(
+            "provider/model switching is performed at composition root; "
+            "runtime switch is not supported",
+            501)
+
+    async def providers_models(request: Request):
+        return _err(
+            "model discovery is performed at composition root; "
+            "runtime model discovery is not supported",
+            501)
+
     # ── secrets (metadata only — never values) ──────────────────────
     async def secrets_list(request: Request):
         store = AuraSecrets()
@@ -1364,6 +1444,11 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/missions/dashboard", missions_unsupported, methods=["GET"]),
         Route("/projects/{pid}/missions", missions_unsupported, methods=["GET"]),
         Route("/projects/{pid}/missions/{mid}", missions_unsupported, methods=["GET"]),
+        Route("/providers", providers_get, methods=["GET"]),
+        Route("/providers/connect", providers_connect, methods=["POST"]),
+        Route("/providers/disconnect", providers_disconnect, methods=["POST"]),
+        Route("/providers/switch", providers_switch, methods=["POST"]),
+        Route("/providers/models", providers_models, methods=["POST"]),
         Route("/secrets", secrets_list, methods=["GET"]),
         Route("/automation/templates", automation_templates, methods=["GET"]),
         Route("/automation/rules", automation_rules_list, methods=["GET"]),
