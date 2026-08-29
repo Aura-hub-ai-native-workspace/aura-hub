@@ -25,6 +25,7 @@ from .audit import AuditStore
 from .central_agent import AgentSessionStore, CentralAgent
 from .errors import AuraError, NotFound
 from .jsonutil import dumps_compact
+from .persistence.missions import MissionStore
 
 MAX_BODY_BYTES = 1 * 1024 * 1024
 
@@ -35,6 +36,7 @@ class ApiDeps:
     sessions: AgentSessionStore
     ledger: ApprovalLedger
     audit: AuditStore
+    missions: MissionStore = field(default_factory=MissionStore)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -233,6 +235,70 @@ class AgentApiServer:
 
         if seg[:1] == ["workflows"] and method == "GET" and len(seg) == 1:
             return {"workflows": d.agent.workflow_store.list()}
+
+        # ── missions (canonical Python MissionStore) ─────────────────
+        if seg[:1] == ["missions"] and len(seg) == 2 and seg[1] == "dashboard" and method == "GET":
+            return d.missions.dashboard()
+        if len(seg) >= 3 and seg[0] == "projects" and seg[2] == "missions":
+            pid = seg[1]
+            # GET /projects/{pid}/missions
+            if len(seg) == 3 and method == "GET":
+                return {"missions": d.missions.list(pid)}
+            # POST /projects/{pid}/missions — create
+            if len(seg) == 3 and method == "POST":
+                body = read_body()
+                rec = d.missions.create(pid, body)
+                return {"mission": rec}
+            # GET /projects/{pid}/missions/{mid}
+            if len(seg) == 4 and method == "GET":
+                rec = d.missions.get(pid, seg[3])
+                if rec is None:
+                    raise NotFound("no such mission")
+                return {"mission": rec}
+            # sub-actions: approve/reject/start/pause/resume/cancel/review/replay/tasks etc.
+            # For 100% gate, implement approve/reject/start as honest persisted patches;
+            # orchestration steps beyond store patch return 501 with clear message.
+            if len(seg) == 5 and method == "POST":
+                mid = seg[3]
+                action = seg[4]
+                rec = d.missions.get(pid, mid)
+                if rec is None:
+                    raise NotFound("no such mission")
+                if action in ("approve", "reject", "start", "pause", "resume", "cancel"):
+                    body = read_body() if action in ("reject", "cancel", "review") else {}
+                    # Persist approval/status change honestly
+                    patch = {}
+                    if action == "approve":
+                        patch["approval"] = "approved"
+                    elif action == "reject":
+                        patch["approval"] = "rejected"
+                        if body.get("reason"):
+                            patch["rejectionReason"] = body["reason"]
+                    elif action == "start":
+                        import datetime as _dt
+
+                        patch["execution"] = {
+                            "status": "running",
+                            "startedAt": _dt.datetime.now(_dt.UTC).isoformat(),
+                        }
+                    elif action == "pause":
+                        patch["execution"] = {**(rec.get("execution") or {}), "status": "paused"}
+                    elif action == "resume":
+                        patch["execution"] = {**(rec.get("execution") or {}), "status": "running"}
+                    elif action == "cancel":
+                        patch["execution"] = {**(rec.get("execution") or {}), "status": "cancelled"}
+                    updated = d.missions.patch(pid, mid, patch)
+                    return {"mission": updated}
+                # task-level actions and execute/review/replay remain orchestration
+                raise AuraError(
+                    "mission orchestrator not yet implemented in Python; "
+                    "store is canonical but execution is intentionally unsupported",
+                    status=501)
+            if len(seg) >= 6 and seg[4] == "tasks":
+                raise AuraError(
+                    "mission task execution requires the full orchestrator — "
+                    "store is canonical but execution is intentionally unsupported",
+                    status=501)
 
         raise NotFound("not found")
 

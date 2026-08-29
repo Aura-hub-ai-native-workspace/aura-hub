@@ -40,7 +40,11 @@ class WorkflowStore(CamelAlias):
     def __init__(self, clock: Callable[[], str] | None = None,
                  id_gen: Callable[[str], str] | None = None) -> None:
         self._clock = clock or _now_default
-        self._id_gen = id_gen or (lambda p: f"{p}-{os.getpid()}")
+        if id_gen is not None:
+            self._id_gen = id_gen
+        else:
+            import uuid
+            self._id_gen = lambda p: f"{p}-{uuid.uuid4().hex[:8]}"
         self._dir: Path | None = None
 
     # paths -------------------------------------------------------------------
