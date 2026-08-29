@@ -13,9 +13,8 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 from pptx.util import Inches, Pt
-
 
 OUT = Path(__file__).with_name("presentation.pptx")
 
@@ -258,7 +257,9 @@ def mini_step(slide, x, y, w, title, subtitle, accent=BLUE, number=None, h=0.90)
     text(slide, subtitle, x + 0.54, y + 0.42, w - 0.66, h - 0.48, 8.1, MUTED, line_spacing=1.0)
 
 
-def dot_matrix(slide, x, y, cols, rows, dx=0.13, dy=0.13, color=C("1D2A40")):
+def dot_matrix(slide, x, y, cols, rows, dx=0.13, dy=0.13, color=None):
+    if color is None:
+        color = C("1D2A40")
     for col in range(cols):
         for row in range(rows):
             circle(slide, x + col * dx, y + row * dy, 0.025, color, None)

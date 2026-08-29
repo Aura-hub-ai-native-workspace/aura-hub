@@ -137,7 +137,8 @@ class TestScenarioDUntrustedOutput:
         from aura.fabric.manifest import CapabilityDescriptor, register_capability
 
         home, proj, audit, ledger, cfg = env
-        client = StdioMcpClient(["python3", "tests/mcp/fixture_server.py"],
+        fixture = str(Path(__file__).parent.parent / "mcp" / "fixture_server.py")
+        client = StdioMcpClient(["python3", fixture],
                                 timeout_s=20)
         session = McpSession(client, "fixture", trust="verified")
         try:
@@ -200,7 +201,8 @@ class TestScenarioEMcpGoverned:
         from aura.fabric.manifest import CapabilityDescriptor, register_capability
 
         home, proj, audit, ledger, cfg = env
-        client = StdioMcpClient(["python3", "tests/mcp/fixture_server.py"],
+        fixture = str(Path(__file__).parent.parent / "mcp" / "fixture_server.py")
+        client = StdioMcpClient(["python3", fixture],
                                 timeout_s=20)
         session = McpSession(client, "fixture", trust="verified")
         try:
