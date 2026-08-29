@@ -226,6 +226,13 @@ export function liveRun(
       error: s?.error,
       attempts: s ? 1 : 0,
       evidence: [],
+      /* The live stream carries node STATUS, not the state history — only
+         the persisted record has that. An empty list is the honest
+         projection: the run view renders a history when one exists and
+         says nothing when it does not, rather than inventing one from the
+         single status this projection knows about. */
+      transitions: [],
+
       startedAt: s && s.status !== 'queued' ? startedAt : undefined,
       /* Beats that have arrived on the stream, as a partial ledger.
        *

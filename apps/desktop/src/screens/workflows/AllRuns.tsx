@@ -1,43 +1,74 @@
 /**
  * AllRuns — every run, across every workflow.
  * ==================================================================
- * The service indexes runs per workflow (`GET /workflows/:id/runs`), so
- * this flattens the summaries the store has already read and sorts them
- * by time. Selecting a row loads the full record and opens the same
- * `RunView` the editor uses.
+ * Backed by the service's own index (`GET /workflow-runs`), which
+ * filters, sorts and pages server-side.
  *
- * The list is honest about its own completeness: it covers the workflows
- * currently in the library, and says so, rather than implying it is every
- * run the machine has ever performed.
+ * This used to flatten the per-workflow histories the store had already
+ * read. That was wrong twice over: it covered only the workflows whose
+ * history happened to have been fetched, and its counts were counts of
+ * what the client held rather than of what exists. The totals shown here
+ * are now the service's, over everything it has.
+ *
+ * The filters are query parameters, not array predicates. Nothing is
+ * re-derived locally — including "waiting for you", which has its own
+ * route because a superseded leg keeps its `awaiting-approval` state and
+ * only the service knows which legs were continued.
  */
 
-import { useMemo, useState } from 'react';
-import { Badge, Button, Icon } from '@aura/ui';
-import { aiClient, type NodeSpecInfo, type RunState, type WorkflowRun, type WorkflowRunSummary } from '../../ai/aiClient';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Badge, Button, Icon, IconButton } from '@aura/ui';
+import {
+  aiClient,
+  type NodeSpecInfo,
+  type RunIndexQuery,
+  type RunState,
+  type RunTriggerKind,
+  type WorkflowRun,
+  type WorkflowRunSummary,
+} from '../../ai/aiClient';
 import { useWorkflows } from '../../data/useWorkflows';
+import { useAgentLink } from '../../ai/agentLinkStore';
 import { EmptyState } from '../../components/EmptyState';
+import { ErrorState } from '../../components/ErrorState';
 import { RunView } from './RunView';
 import {
   RUN_STATE_LABEL,
   TRIGGER_LABEL,
   carriedThroughFor,
   fmtDuration,
-  isPending,
   runStateLabel,
   runStateTone,
 } from './runs';
 
-type Filter = 'all' | 'failed' | 'awaiting-approval';
+/** Outcome filters. `awaiting` is a route, not a state match — see below. */
+type Outcome = 'all' | 'awaiting' | 'succeeded' | 'failed' | 'timed-out' | 'cancelled';
 
-/* "Waiting for you" is a question about whether anyone is actually
-   waiting, not about the stored state: a superseded leg keeps
-   `awaiting-approval` because that is how it ended, but another run has
-   already picked its work up. See `docs/AGENT_RESUME_SEMANTICS.md`. */
-const matches = (r: WorkflowRunSummary, f: Filter): boolean =>
-  f === 'all' ? true : f === 'awaiting-approval' ? isPending(r) : r.state === f;
+const OUTCOME_LABEL: Record<Outcome, string> = {
+  all: 'All',
+  awaiting: 'Waiting for you',
+  succeeded: RUN_STATE_LABEL.succeeded,
+  failed: RUN_STATE_LABEL.failed,
+  'timed-out': RUN_STATE_LABEL['timed-out'],
+  cancelled: RUN_STATE_LABEL.cancelled,
+};
 
-/** Runs a rule started, versus runs a person started. */
-type Origin = 'any' | 'automation' | 'manual';
+/* The service's own trigger vocabulary — a workflow run has no
+   `schedule` kind of its own: a scheduled RULE starts one, and that
+   arrives as `automation`. Listing a kind the index can never return
+   would be a filter that always finds nothing. */
+const TRIGGERS: (RunTriggerKind | 'any')[] = ['any', 'manual', 'automation', 'webhook', 'mission', 'resume'];
+
+/** How far back to look. Sent as `since`, an ISO instant the service compares. */
+type Window = 'any' | '24h' | '7d' | '30d';
+const WINDOW_LABEL: Record<Window, string> = { any: 'Any time', '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days' };
+const sinceFor = (w: Window): string | undefined => {
+  if (w === 'any') return undefined;
+  const ms = w === '24h' ? 86_400_000 : w === '7d' ? 7 * 86_400_000 : 30 * 86_400_000;
+  return new Date(Date.now() - ms).toISOString();
+};
+
+const PAGE = 50;
 
 export function AllRuns({
   specs,
@@ -46,40 +77,115 @@ export function AllRuns({
   specs: Map<string, NodeSpecInfo>;
   onOpenWorkflow: (id: string) => void;
 }) {
-  const runsByWorkflow = useWorkflows((s) => s.runs);
-  const hydrating = useWorkflows((s) => s.hydrating);
-  const [filter, setFilter] = useState<Filter>('all');
-  const [origin, setOrigin] = useState<Origin>('any');
+  const library = useWorkflows((s) => s.list);
+
+  const [outcome, setOutcome] = useState<Outcome>('all');
+  const [trigger, setTrigger] = useState<RunTriggerKind | 'any'>('any');
+  const [workflowId, setWorkflowId] = useState<string>('');
+  const [window_, setWindow] = useState<Window>('any');
+  const [search, setSearch] = useState('');
+  const [offset, setOffset] = useState(0);
+
+  const [page, setPage] = useState<{ runs: WorkflowRunSummary[]; total: number } | null>(null);
+  const [stats, setStats] = useState<Record<string, number>>({});
+  const [awaitingCount, setAwaitingCount] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
   const [open, setOpen] = useState<WorkflowRun | null>(null);
-  /** The legs of the open run's execution, when it has more than one. */
   const [chain, setChain] = useState<WorkflowRunSummary[] | undefined>(undefined);
-  /** Per node, where the previous leg's carried-forward reasoning ends. */
   const [carried, setCarried] = useState<Record<string, number> | undefined>(undefined);
-  const [loading, setLoading] = useState(false);
+  const [loadingOne, setLoadingOne] = useState(false);
 
-  const all = useMemo(() => {
-    const flat: WorkflowRunSummary[] = [];
-    for (const list of Object.values(runsByWorkflow)) flat.push(...list);
-    return flat.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  }, [runsByWorkflow]);
+  /* Debounced, because `q` is a server round trip per keystroke otherwise.
+     The delay is on the QUERY, not on the input, so typing stays instant. */
+  const [debounced, setDebounced] = useState('');
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebounced(search.trim()), 250);
+    return () => window.clearTimeout(t);
+  }, [search]);
 
-  const shown = useMemo(
-    () =>
-      all
-        .filter((r) => matches(r, filter))
-        .filter((r) => (origin === 'any' ? true : origin === 'automation' ? r.trigger === 'automation' : r.trigger === 'manual')),
-    [all, filter, origin],
-  );
-  const automationCount = useMemo(() => all.filter((r) => r.trigger === 'automation').length, [all]);
-  const counts = (s: RunState) => all.filter((r) => matches(r, s as Filter)).length;
+  const query = useMemo<RunIndexQuery>(() => ({
+    workflowId: workflowId || undefined,
+    // `awaiting` has its own route: a superseded leg still reads
+    // `awaiting-approval`, so filtering by that state would list work
+    // that has already been picked up by another run.
+    state: outcome === 'all' || outcome === 'awaiting' ? undefined : (outcome as RunState),
+    trigger: trigger === 'any' ? undefined : trigger,
+    q: debounced || undefined,
+    since: sinceFor(window_),
+    limit: PAGE,
+    offset,
+  }), [workflowId, outcome, trigger, debounced, window_, offset]);
+
+  const load = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (outcome === 'awaiting') {
+        /* The service's own answer. It is not paged, because the number of
+           things genuinely waiting on a person is small by construction —
+           if it ever is not, that is the problem, not the page size. */
+        const res = await aiClient.runsAwaiting();
+        if ('error' in res) throw new Error(String(res.error));
+        const runs = res.runs.filter((r) => (workflowId ? r.workflowId === workflowId : true));
+        setPage({ runs, total: runs.length });
+      } else {
+        const res = await aiClient.runIndex(query);
+        if ('error' in res) throw new Error(String(res.error));
+        setPage({ runs: res.runs, total: res.total });
+      }
+    } catch (e) {
+      setError((e as Error).message);
+      setPage(null);
+    } finally {
+      setBusy(false);
+    }
+  }, [query, outcome, workflowId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  // A Central Agent result can deep-link its engine run here. The lookup
+  // uses the index-free find route; an unknown id surfaces the service's
+  // own error rather than a silent no-op.
+  const pendingAgentRun = useAgentLink((s) => s.pendingRunRequest);
+  const consumeAgentRun = useAgentLink((s) => s.consumeRunRequest);
+  const [agentLookupBusy, setAgentLookupBusy] = useState(false);
+  useEffect(() => {
+    if (!pendingAgentRun || agentLookupBusy || loadingOne) return;
+    setAgentLookupBusy(true);
+    const { runId } = pendingAgentRun;
+    consumeAgentRun();
+    void aiClient
+      .findRun(runId)
+      .then(async (rec) => {
+        if (!('id' in rec)) throw new Error(`run ${runId} was not found`);
+        await openRun({ workflowId: rec.workflowId, id: rec.id });
+      })
+      .catch((e) => setError((e as Error).message))
+      .finally(() => setAgentLookupBusy(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per requested id
+  }, [pendingAgentRun]);
+
+
+  // Counts come from the index too, so a badge never disagrees with a list.
+  useEffect(() => {
+    let alive = true;
+    void aiClient.runStats().then((s) => alive && 'stats' in s && setStats(s.stats)).catch(() => {});
+    void aiClient.runsAwaiting().then((r) => alive && 'runs' in r && setAwaitingCount(r.runs.length)).catch(() => {});
+    return () => { alive = false; };
+  }, [page]);
+
+  // Any filter change restarts paging; staying on page 4 of a different
+  // result set shows an empty table for no stated reason.
+  useEffect(() => { setOffset(0); }, [outcome, trigger, workflowId, window_, debounced]);
 
   const openRun = async (r: { workflowId: string; id: string }) => {
-    setLoading(true);
+    setLoadingOne(true);
     try {
       const rec = await aiClient.workflowRun(r.workflowId, r.id);
       if ('id' in rec) {
         setOpen(rec);
-        // Only when the record says there is a chain to read.
         setChain(
           rec.supersededBy || rec.trigger.kind === 'resume'
             ? await aiClient
@@ -88,21 +194,17 @@ export function AllRuns({
                 .catch(() => undefined)
             : undefined,
         );
-        // The earlier leg, so the ledger can say where its carried beats end.
         const priorId = rec.trigger.kind === 'resume' ? rec.trigger.of : undefined;
         setCarried(
           typeof priorId === 'string'
             ? carriedThroughFor(
-                await aiClient
-                  .workflowRun(r.workflowId, priorId)
-                  .then((p) => ('id' in p ? p : null))
-                  .catch(() => null),
+                await aiClient.workflowRun(r.workflowId, priorId).then((p) => ('id' in p ? p : null)).catch(() => null),
               )
             : undefined,
         );
       }
     } finally {
-      setLoading(false);
+      setLoadingOne(false);
     }
   };
 
@@ -110,7 +212,7 @@ export function AllRuns({
     return (
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex items-center gap-2 border-b border-line px-4 py-2">
-          <Button variant="ghost" size="sm" icon="projects" onClick={() => setOpen(null)}>All runs</Button>
+          <Button variant="ghost" size="sm" icon="projects" onClick={() => { setOpen(null); void load(); }}>All runs</Button>
           <span className="text-[13px] font-semibold text-text">{open.workflowName}</span>
           <span className="text-[11.5px] text-text-subtle">{new Date(open.createdAt).toLocaleString()}</span>
           <Button variant="ghost" size="sm" icon="workflows" className="ml-auto" onClick={() => onOpenWorkflow(open.workflowId)}>
@@ -131,61 +233,123 @@ export function AllRuns({
     );
   }
 
+  const runs = page?.runs ?? [];
+  const total = page?.total ?? 0;
+  const showingTo = Math.min(offset + runs.length, total);
+  const paged = outcome !== 'awaiting' && total > PAGE;
+
   return (
     <div className="mx-auto max-w-5xl px-6 py-6">
-      <header className="mb-4">
-        <h2 className="text-[17px] font-semibold tracking-[-0.01em] text-text">Runs</h2>
-        <p className="mt-1 text-[12.5px] text-text-muted">
-          {hydrating && !all.length
-            ? 'Reading run history…'
-            : all.length === 0
-              ? 'No runs recorded yet.'
-              : `${all.length} across your workflows · ${counts('succeeded')} succeeded · ${counts('failed')} failed`}
-        </p>
+      <header className="mb-4 flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-[17px] font-semibold tracking-[-0.01em] text-text">Runs</h2>
+          <p className="mt-1 text-[12.5px] text-text-muted">
+            {busy && !page
+              ? 'Reading the run index…'
+              : total === 0
+                ? 'No runs match.'
+                : `${total.toLocaleString()} run${total === 1 ? '' : 's'} · ${(stats.succeeded ?? 0).toLocaleString()} succeeded · ${(stats.failed ?? 0).toLocaleString()} failed`}
+          </p>
+        </div>
+        <IconButton icon="refresh" label="Reload the run index" size="sm" onClick={() => void load()} />
       </header>
 
-      {all.length > 0 && (
-        <div className="mb-3 flex flex-wrap items-center gap-1.5">
-          {(['all', 'failed', 'awaiting-approval'] as Filter[]).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`rounded-full px-3 py-1 text-[11.5px] font-medium transition-colors ${
-                filter === f ? 'bg-accent text-white' : 'bg-surface-active text-text-muted hover:text-text'
-              }`}
-            >
-              {f === 'all' ? 'All' : RUN_STATE_LABEL[f as RunState]}
-              {f !== 'all' && <span className="ml-1 opacity-70">{counts(f as RunState)}</span>}
-            </button>
-          ))}
-
-          <span className="mx-1 h-4 w-px bg-line" />
-
-          {/* Who started it. An unattended run and one you watched deserve
-              different attention, so they are separable. */}
-          {(['any', 'automation', 'manual'] as Origin[]).map((o) => (
-            <button
-              key={o}
-              onClick={() => setOrigin(o)}
-              className={`rounded-full px-3 py-1 text-[11.5px] font-medium transition-colors ${
-                origin === o ? 'bg-accent text-white' : 'bg-surface-active text-text-muted hover:text-text'
-              }`}
-            >
-              {o === 'any' ? 'Any source' : o === 'automation' ? 'Started by a rule' : 'Started by you'}
-              {o === 'automation' && <span className="ml-1 opacity-70">{automationCount}</span>}
-            </button>
-          ))}
+      {error && (
+        <div className="mb-4">
+          <ErrorState
+            icon="bug"
+            title="Couldn't read the run index"
+            description={error}
+            action={<Button size="sm" variant="secondary" icon="refresh" onClick={() => void load()}>Retry</Button>}
+          />
         </div>
       )}
 
-      {shown.length === 0 ? (
+      {/* ── filters: every one of these is a query parameter ─────────── */}
+      <div className="mb-3 space-y-2">
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter by outcome">
+          {(Object.keys(OUTCOME_LABEL) as Outcome[]).map((o) => {
+            const count = o === 'awaiting' ? awaitingCount : o === 'all' ? null : stats[o];
+            return (
+              <button
+                key={o}
+                onClick={() => setOutcome(o)}
+                aria-pressed={outcome === o}
+                className={`rounded-full px-3 py-1 text-[11.5px] font-medium transition-colors ${
+                  outcome === o ? 'bg-accent text-white' : 'bg-surface-active text-text-muted hover:text-text'
+                }`}
+              >
+                {OUTCOME_LABEL[o]}
+                {count !== null && count !== undefined && <span className="ml-1 opacity-70">{count}</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1.5">
+            <span className="text-[10.5px] uppercase tracking-[0.09em] text-text-subtle">Workflow</span>
+            <select
+              value={workflowId}
+              onChange={(e) => setWorkflowId(e.target.value)}
+              aria-label="Filter by workflow"
+              className="rounded-lg border border-line bg-surface px-2 py-1 text-[11.5px] text-text"
+            >
+              <option value="">Any workflow</option>
+              {library.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-1.5">
+            <span className="text-[10.5px] uppercase tracking-[0.09em] text-text-subtle">Trigger</span>
+            <select
+              value={trigger}
+              onChange={(e) => setTrigger(e.target.value as RunTriggerKind | 'any')}
+              aria-label="Filter by what started the run"
+              className="rounded-lg border border-line bg-surface px-2 py-1 text-[11.5px] text-text"
+            >
+              {TRIGGERS.map((t) => (
+                <option key={t} value={t}>{t === 'any' ? 'Any source' : TRIGGER_LABEL[t as RunTriggerKind] ?? t}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="flex items-center gap-1.5">
+            <span className="text-[10.5px] uppercase tracking-[0.09em] text-text-subtle">When</span>
+            <select
+              value={window_}
+              onChange={(e) => setWindow(e.target.value as Window)}
+              aria-label="Filter by when the run started"
+              className="rounded-lg border border-line bg-surface px-2 py-1 text-[11.5px] text-text"
+            >
+              {(Object.keys(WINDOW_LABEL) as Window[]).map((w) => <option key={w} value={w}>{WINDOW_LABEL[w]}</option>)}
+            </select>
+          </label>
+
+          <label className="ml-auto flex items-center gap-1.5">
+            <span className="sr-only">Search runs by workflow name</span>
+            <span className="flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2 py-1">
+              <Icon name="search" size={12} className="text-text-subtle" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by workflow name"
+                aria-label="Search runs by workflow name"
+                className="w-48 bg-transparent text-[11.5px] text-text outline-none placeholder:text-text-subtle"
+              />
+            </span>
+          </label>
+        </div>
+      </div>
+
+      {runs.length === 0 && !error ? (
         <EmptyState
           icon="activity"
-          title={all.length ? 'Nothing matches that filter' : 'No runs recorded yet'}
+          title={busy ? 'Reading…' : 'Nothing matches those filters'}
           description={
-            all.length
-              ? 'Change the filter to see the others.'
-              : 'Run a workflow and the service records every step, governed action and result it produced.'
+            outcome === 'awaiting'
+              ? 'Nothing is waiting on a decision from you right now.'
+              : 'Change the filters to see other runs. Runs are recorded by the service for every workflow it executes.'
           }
         />
       ) : (
@@ -203,7 +367,7 @@ export function AllRuns({
               </tr>
             </thead>
             <tbody>
-              {shown.map((r) => (
+              {runs.map((r) => (
                 <tr
                   key={r.id}
                   onClick={() => void openRun(r)}
@@ -212,7 +376,10 @@ export function AllRuns({
                   <td className="px-3 py-2 font-medium text-text">{r.workflowName}</td>
                   <td className="px-3 py-2 text-text-muted">{new Date(r.createdAt).toLocaleString()}</td>
                   <td className="px-3 py-2">
-                    <Badge tone={runStateTone(r)}>{runStateLabel(r)}</Badge>
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <Badge tone={runStateTone(r)}>{runStateLabel(r)}</Badge>
+                      {r.supersededBy && <span className="text-[10px] text-text-subtle">continued</span>}
+                    </span>
                   </td>
                   <td className="px-3 py-2 text-text-muted">{TRIGGER_LABEL[r.trigger] ?? r.trigger}</td>
                   <td className="px-3 py-2 tabular-nums text-text-muted">
@@ -228,14 +395,39 @@ export function AllRuns({
         </div>
       )}
 
-      {loading && <p className="mt-3 text-center text-[11.5px] text-text-subtle">Loading run…</p>}
-
-      {all.length > 0 && (
-        <p className="mt-4 flex items-start gap-1.5 text-[10.5px] leading-relaxed text-text-subtle">
-          <Icon name="eye" size={11} className="mt-0.5 shrink-0" />
-          Covers the workflows currently in your library. Runs belonging to a deleted workflow are not listed here.
-        </p>
+      {paged && (
+        <nav className="mt-3 flex items-center justify-between gap-2" aria-label="Run index pages">
+          <span className="text-[11.5px] tabular-nums text-text-muted">
+            {offset + 1}–{showingTo} of {total.toLocaleString()}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={offset === 0 || busy}
+              onClick={() => setOffset(Math.max(0, offset - PAGE))}
+            >
+              Newer
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={showingTo >= total || busy}
+              onClick={() => setOffset(offset + PAGE)}
+            >
+              Older
+            </Button>
+          </span>
+        </nav>
       )}
+
+      {loadingOne && <p className="mt-3 text-center text-[11.5px] text-text-subtle">Loading run…</p>}
+
+      <p className="mt-4 flex items-start gap-1.5 text-[10.5px] leading-relaxed text-text-subtle">
+        <Icon name="eye" size={11} className="mt-0.5 shrink-0" />
+        Filtered and counted by the service over every run it holds — not by this screen over the ones it happens to
+        have read.
+      </p>
     </div>
   );
 }

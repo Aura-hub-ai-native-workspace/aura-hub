@@ -193,8 +193,12 @@ export function validate(wf: Workflow, specs: Map<string, NodeSpecInfo>): Valida
     }
 
     // A node that needs an input but has none will run on empty text.
+    // This is not a hard error — the engine delivers an empty value for
+    // entry nodes, and the seeded fixtures rely on this (e.g. a leading
+    // shell-command). Blocking Run here would make those workflows
+    // unrunnable via the UI while the service accepts them.
     if (spec.inputs === 1 && !(inbound.get(n.id) ?? 0)) {
-      add({ id: `noinput:${n.id}`, level: 'error', nodeId: n.id, message: `${label(n)} has nothing connected to its input.`, fix: 'Drag from an upstream node’s output port to this node.' });
+      add({ id: `noinput:${n.id}`, level: 'warning', nodeId: n.id, message: `${label(n)} has nothing connected to its input — it will run on empty text.`, fix: 'Connect an upstream node if this step needs prior output.' });
     }
     if (spec.inputs === 'many' && !(inbound.get(n.id) ?? 0) && !entries.includes(n)) {
       add({ id: `noinput-many:${n.id}`, level: 'warning', nodeId: n.id, message: `${label(n)} has no input connected — it will run on empty text.`, fix: 'Connect an upstream node, or configure the node so it does not need one.' });

@@ -70,10 +70,14 @@ class CentralAgent:
         workflow_engine: Any | None = None,
         workflow_store: WorkflowStore | None = None,
         run_store: WorkflowRunStore | None = None,
+        mcp_context_provider: Any | None = None,
     ) -> None:
         self.fabric_cfg = fabric_cfg
         self.sessions = session_store
         self.bus = bus or EventBus()
+        # Optional AGENT 2 extension: MCP resources/prompts context feed
+        # (untrusted, fenced — see mcp_context.py). Inert when absent.
+        self._mcp_context_provider = mcp_context_provider
         self.intents = intent_compiler or IntentCompiler(mode="heuristic")
         if planner is not None:
             self.planner = planner
@@ -179,6 +183,11 @@ class CentralAgent:
         bundle = self.context.assemble(
             session_id=session.sessionId,
             project_path=getattr(session, "projectPath", None))
+        if self._mcp_context_provider is not None:
+            try:
+                bundle.items.extend(self._mcp_context_provider()[:8])
+            except Exception:  # noqa: BLE001 — context must never break intent
+                pass
         intent = self.intents.compile(user_message,
                                       context_summary=bundle.render(4000))
         if intent.needsClarification:

@@ -1,520 +1,548 @@
-"""Workflow engine — graph interpretation over governed invocations.
-
-Node classes supported this milestone:
-  pure      current-project, variables, output
-  control   condition (true/false ports), loop (bounded; each/out ports)
-  governed  git-status → git.status, export-file → fs.write_file
-Anything else fails the node honestly ('failed' with the reason) — never a
-silent skip.
-
-Bounds are engine-owned and cannot be widened by a workflow definition:
-MAX_NODE_EXECUTIONS total node runs, MAX_LOOP_ITERATIONS per loop,
-RUN_TIMEOUT_MS wall clock. Every stop maps to its own run state
-(awaiting-approval / cancelled / timed-out / failed / succeeded).
+"""Workflow engine — port of engine.ts (633 lines): sequential, observable,
+node-by-node execution with checkpointing, replay, parking and honest states.
+Governed nodes REQUIRE a governor; there is no ungoverned fallback.
 """
-
 from __future__ import annotations
 
+import asyncio
 import time
-import uuid
 from collections.abc import Callable
-from copy import deepcopy
-from dataclasses import dataclass
-from pathlib import Path
+from datetime import UTC
 from typing import Any
 
-from ..approvals import ApprovalLedger
-from ..fabric import FabricConfig, invoke_fabric
 from ..persistence.runs import (
-    WorkflowRunStore,
+    MAX_RUN_LOG,
+    MAX_TRANSITIONS,
     append_log,
     attach_evidence,
     empty_node_record,
-    is_terminal,
+    run_state_for,
     transition_node,
 )
-from ..persistence.versions import WorkflowVersionStore
-from ..persistence.workflows import WorkflowStore
+from .nodes_core import (
+    DEFAULT_RUN_TIMEOUT_MS,
+    GOVERNED_TYPES,
+    INTELLIGENCE_TYPES,
+    MAX_LOOP_ITERATIONS,
+    MAX_NODE_EXECUTIONS,
+    PURE_RUNNERS,
+    provenance_of,
+)
 
-MAX_NODE_EXECUTIONS = 200
-MAX_LOOP_ITERATIONS = 50
-RUN_TIMEOUT_MS = 120_000
+EVENT_STATE = {"queued": "queued", "running": "running",
+               "awaiting-approval": "awaiting-approval", "succeeded": "completed",
+               "failed": "failed", "denied": "denied", "skipped": "skipped",
+               "cancelled": "cancelled", "timed-out": "timed-out"}
 
-GOVERNED_BINDINGS: dict[str, tuple[str, Callable[[dict, dict], dict]]] = {
-    # node type → (capability id, config+vars → invocation input)
-    "git-status": lambda cfg, vars_: {"detail": bool(cfg.get("detail", True))},
-    "export-file": lambda cfg, vars_: {
-        "path": _template(str(cfg.get("path", "")), vars_),
-        "content": _template(str(cfg.get("content", "")), vars_),
-    },
-}
-
-
-def _template(text: str, vars_: dict[str, str]) -> str:
-    """Substitute {{var}} placeholders. Unknown names stay literal text."""
-    import re
-
-    def sub(match: re.Match[str]) -> str:
-        return str(vars_.get(match.group(1).strip(), match.group(0)))
-
-    return re.sub(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}", sub, text)
+MAX_CHECKPOINT_TEXT = 64 * 1024
 
 
-def _evaluate_condition(expr: str, vars_: dict[str, str]) -> bool:
-    """Bounded predicate language: '<var> <op> <value>' with op in
-    == != contains exists. No eval, no attribute access — parsing only."""
-    parts = expr.strip().split(None, 2)
-    if not parts:
-        return False
-    if parts[0] == "exists":
-        return parts[1].strip() in vars_ if len(parts) > 1 else False
-    if len(parts) < 3:
-        return False
-    name, op, rest = parts[0], parts[1], parts[2]
-    left = str(vars_.get(name, ""))
-    right = rest
-    match op:
-        case "==":
-            return left == right
-        case "!=":
-            return left != right
-        case "contains":
-            return right in left
-        case _:
-            raise ValueError(f"unsupported condition operator: {op}")
+class RunOptions(dict):
+    pass
 
 
-@dataclass
-class EngineConfig:
-    max_node_executions: int = MAX_NODE_EXECUTIONS
-    max_loop_iterations: int = MAX_LOOP_ITERATIONS
-    run_timeout_ms: int = RUN_TIMEOUT_MS
-    emit: Callable[[dict], None] | None = None
+async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
+    if isinstance(emit, list):
+        sink = emit
 
+        def emit(ev: dict) -> None:
+            sink.append(ev)
+    t0 = time.time()
+    timeout_ms = max(1000, opts.get("timeoutMs") or DEFAULT_RUN_TIMEOUT_MS)
+    record = opts.get("run")
+    store = opts.get("runs")
+    governor = opts.get("governor")
+    model = opts.get("model")
+    redact: Callable[[str], str] = getattr(governor, "redact", lambda t: t)
+    signal: dict | None = opts.get("signal")
 
-@dataclass
-class NodeOutcome:
-    state: str
-    ports: list[str]  # outbound ports to follow, in order
+    def aborted() -> bool:
+        return bool(signal and signal.get("aborted"))
 
+    nodes = {n["id"]: n for n in wf["nodes"]}
+    out_edges: dict[str, list] = {}
+    in_edges: dict[str, list] = {}
+    for e in wf["edges"]:
+        if e["from"] not in nodes or e["to"] not in nodes:
+            continue
+        out_edges.setdefault(e["from"], []).append(e)
+        in_edges.setdefault(e["to"], []).append(e)
 
-class WorkflowEngine:
-    def __init__(
-        self,
-        fabric_cfg: FabricConfig,
-        workflows: WorkflowStore,
-        versions: WorkflowVersionStore,
-        runs: WorkflowRunStore,
-        config: EngineConfig | None = None,
-    ) -> None:
-        self.fabric_cfg = fabric_cfg
-        self.workflows = workflows
-        self.versions = versions
-        self.runs = runs
-        self.config = config or EngineConfig()
-        self._cancelled: set[str] = set()
+    states: dict[str, str] = {}
+    timings: dict[str, int] = {}
+    received: dict[str, dict[str, dict]] = {}
+    outputs: list[dict] = []
+    executions = 0
+    failure: dict | None = None
+    parked: dict | None = None
 
-    # ── events ───────────────────────────────────────────────────────────
-    def _emit(self, kind: str, **payload: Any) -> None:
-        if self.config.emit:
-            try:
-                self.config.emit({"type": kind, "at": self.runs._clock(), **payload})
-            except Exception:
-                pass  # observers never break execution
+    ctx: dict[str, Any] = {
+        "projectId": opts["projectId"], "projectPath": opts["projectPath"],
+        "projectName": opts.get("projectName"), "vars": dict((record or {}).get("vars") or {}),
+        "runInputs": opts.get("inputs") or {}, "signal": signal,
+        "sleep": (lambda ms: None),
+        "model": opts.get("model"),
+        "agents": opts.get("agents"),
+        "coding_engine": getattr(opts.get("pipeline"), "coding", None)
+        if opts.get("pipeline") is not None else None,
+        "fullstack_engine": getattr(opts.get("pipeline"), "fullstack", None)
+        if opts.get("pipeline") is not None else None,
+    }
+    current: list[str | None] = [None]
 
-    # ── entry points ─────────────────────────────────────────────────────
-    def start_run(
-        self,
-        wf_id: str,
-        inputs: dict[str, str] | None = None,
-        project_id: str | None = None,
-        project_path: str | None = None,
-        trigger: dict | None = None,
-        actor_by: str = "user",
-    ) -> dict:
-        wf = self.workflows.get(wf_id)
-        if wf is None:
-            raise ValueError(f"no such workflow: {wf_id}")
-        version = self.versions.ensure_version_for_run(wf, "central-agent")
-        project_path = project_path or "."
-        run = self.runs.create({
-            "workflowId": wf_id,
-            "versionId": version["id"],
-            "workflowName": wf.get("name") or wf_id,
-            "projectId": project_id or "-",
-            "projectPath": project_path,
-            "trigger": trigger or {"kind": "manual", "by": actor_by},
-            "inputs": inputs or {},
-        })
-        run["state"] = "running"
-        run["startedAt"] = self.runs._clock()
-        self.runs.save(run)
-        self._emit("run.started", runId=run["id"], workflowId=wf_id)
-        return self._drive(run, version)
+    def log(node_id, level, text):
+        safe = redact(text)
+        emit({"type": "log", "nodeId": node_id, "level": level, "text": safe,
+              "at": _iso()})
+        if record:
+            append_log(record, node_id, level, safe)
 
-    NODE_TO_CAPABILITY = {"git-status": "git.status", "export-file": "fs.write_file"}
+    def set_state(node_id, state, extra=None):
+        extra = extra or {}
+        states[node_id] = state
+        if extra.get("ms") is not None:
+            timings[node_id] = extra["ms"]
+        if record:
+            node = record["nodes"].get(node_id) or record["nodes"].setdefault(
+                node_id, empty_node_record(node_id, nodes.get(node_id, {}).get("type", "unknown")))
+            note = (redact(extra["error"]) if extra.get("error")
+                    else redact(extra["summary"]) if extra.get("summary") else None)
+            transition_node(node, state, note, clock=_iso)
+            if extra.get("ms") is not None:
+                node["ms"] = extra["ms"]
+            if extra.get("summary") is not None:
+                node["summary"] = redact(extra["summary"])
+            if extra.get("error") is not None:
+                node["error"] = redact(extra["error"])
+            if state == "running":
+                node["startedAt"] = _iso()
+            if state not in ("queued", "running"):
+                node["finishedAt"] = _iso()
+        ev: dict[str, Any] = {"type": "node", "nodeId": node_id,
+                              "status": extra.get("eventStatus") or EVENT_STATE[state]}
+        if extra.get("ms") is not None:
+            ev["ms"] = extra["ms"]
+        if extra.get("summary") is not None:
+            ev["summary"] = redact(extra["summary"])
+        if extra.get("error") is not None:
+            ev["error"] = redact(extra["error"])
+        emit(ev)
 
-    def run_ad_hoc(
-        self,
-        capability_id: str,
-        payload: dict,
-        project_path: str | None,
-        project_id: str | None,
-        actor_by: str = "central-agent",
-        approval_id: str | None = None,
-        task_label: str = "",
-    ) -> tuple[dict, str]:
-        """ONE canonical runner for single-step governed effects: the same
-        interpreter, stores and evidence path as full workflows — an
-        ephemeral single-node graph instead of a persisted definition."""
-        node_type = {v: k for k, v in self.NODE_TO_CAPABILITY.items()}.get(
-            capability_id)
-        if node_type is None:
-            # Non-node capabilities keep the direct fabric path; they are
-            # still governed by policy/approval/audit inside invoke_fabric.
-            return {}, capability_id
-        nodes = [{"id": "ad", "type": node_type, "x": 0, "y": 0,
-                  "config": dict(payload)}]
-        run = self.runs.create({
-            "workflowId": "-ad-hoc-",
-            "versionId": "-",
-            "workflowName": task_label or f"agent:{capability_id}",
-            "projectId": project_id or "-",
-            "projectPath": project_path or ".",
-            "trigger": {"kind": "manual", "by": actor_by},
-        })
-        run["state"] = "running"
-        run["startedAt"] = self.runs._clock()
-        self.runs.save(run)
-        version = {"nodes": nodes, "edges": []}
-        final = self._drive(run, version, resume_grants=(
-            {"ad": approval_id} if approval_id else {}))
-        return final, node_type
+    def checkpoint():
+        if not record or not store:
+            return
+        record["vars"] = dict(ctx["vars"])
+        record["ms"] = int((time.time() - t0) * 1000)
+        store.checkpoint(record)
 
-    def resume_run(self, rid: str, actor_by: str = "user") -> dict:
-        old = self.runs.find(rid)
-        if old is None:
-            raise ValueError(f"no such run: {rid}")
-        if old["state"] != "awaiting-approval" or not old.get("resumable"):
-            raise ValueError(
-                f"run {rid} is not resumable (state={old['state']})")
-        if old.get("supersededBy"):
-            raise ValueError(f"run {rid} was already superseded")
-        parked = [
-            n for n in old["nodes"].values()
-            if n["state"] == "awaiting-approval"
-        ]
-        if not parked:
-            raise ValueError("no parked node found on this run")
+    emit({"type": "start", "workflowId": wf["id"], "at": _iso(),
+          **({"runId": record["id"]} if record else {}),
+          **({"versionId": record["versionId"]} if record else {})})
+    if record:
+        record["state"] = "running"
+        record["startedAt"] = _iso()
+        for n in wf["nodes"]:
+            record["nodes"].setdefault(n["id"], empty_node_record(n["id"], n["type"]))
+    for n in wf["nodes"]:
+        set_state(n["id"], "queued")
+    checkpoint()
 
-        # Validate authority BEFORE creating the leg: every parked node must
-        # hold a GRANTED, unspent approval. The grant itself is spent by the
-        # Fabric at invoke time (named-approval path), not here.
-        ledger: ApprovalLedger | None = self.fabric_cfg.ledger
-        for node in parked:
-            request_id = (node.get("approval") or {}).get("requestId")
-            request = ledger.by_id(request_id) if (ledger and request_id) else None
-            if not request or request.get("state") != "granted" \
-                    or request.get("consumedAt"):
-                raise PermissionError(
-                    f"approval for node {node['nodeId']} is not spendable")
+    def merge_inputs(node_id):
+        dels = [d for d in (received.get(node_id) or {}).values() if d["io"] is not None]
+        if not dels:
+            return {"text": ""}
+        if len(dels) == 1:
+            return dels[0]["io"]
+        texts = [d["io"].get("text") for d in dels if d["io"].get("text")]
+        files = [f for d in dels for f in (d["io"].get("files") or [])]
+        provs = [d["io"].get("provenance") or "external" for d in dels]
+        weakest = min(provs, key=lambda p: ["external", "tool", "system", "authored"].index(p))
+        return {"text": "\n\n".join(texts), "files": files,
+                "data": dels[-1]["io"].get("data"), "provenance": weakest}
 
-        new = self.runs.create({
-            "workflowId": old["workflowId"],
-            "versionId": old["versionId"],
-            "workflowName": old["workflowName"],
-            "projectId": old["projectId"],
-            "projectPath": old["projectPath"],
-            "trigger": {"kind": "resume", "of": old["id"]},
-            "inputs": dict(old.get("inputs") or {}),
-        })
-        new["state"] = "running"
-        new["startedAt"] = self.runs._clock()
-        new["vars"] = dict(old.get("vars") or {})
-        # Completed work carries forward so evidence is never duplicated.
-        # Deep-copied on purpose: mutating a shared record would rewrite the
-        # parked leg's history.
-        for nid, rec in old["nodes"].items():
-            if rec["state"] not in ("awaiting-approval",):
-                new["nodes"][nid] = deepcopy(rec)
-        self.runs.save(new)
-        self.runs.mark_superseded(old["workflowId"], old["id"], new["id"])
-        self._emit("run.resumed", runId=new["id"], of=old["id"])
-        version = self.versions.get(old["workflowId"], old["versionId"]) \
-            or {"nodes": [], "edges": []}
-        return self._drive(new, version, resume_grants={
-            n["nodeId"]: (n.get("approval") or {}).get("requestId")
-            for n in parked
-        })
+    def ready_to_run(node_id):
+        ins = in_edges.get(node_id) or []
+        got = received.get(node_id) or {}
+        return all(e["id"] in got for e in ins)
 
-    def cancel(self, rid: str) -> bool:
-        run = self.runs.find(rid)
-        if run is None or is_terminal(run["state"]):
+    def all_inputs_skipped(node_id):
+        ins = in_edges.get(node_id) or []
+        if not ins:
             return False
-        self._cancelled.add(rid)
-        return True
+        got = received.get(node_id) or {}
+        return all(got.get(e["id"], {}).get("io") is None for e in ins)
 
-    # ── the interpreter ──────────────────────────────────────────────────
-    def _drive(
-        self,
-        run: dict,
-        version: dict,
-        resume_grants: dict[str, str] | None = None,
-    ) -> dict:
-        nodes = {n["id"]: n for n in version["nodes"]}
-        edges = [e for e in version["edges"]]
-        out_ports: dict[str, list[tuple[str, str]]] = {}
-        for e in edges:
-            out_ports.setdefault(e["from"], []).append((e["to"], e.get("fromPort", "out")))
+    queue: list[str] = []
 
-        started = time.monotonic()
-        executions = 0
-        visit_counts: dict[str, int] = {}
-        vars_: dict[str, str] = run.setdefault("vars", {})
-        project_cwd = run.get("projectPath") or "."
+    def deliver(edge, io):
+        received.setdefault(edge["to"], {})[edge["id"]] = {"io": io}
+        if ready_to_run(edge["to"]) and states.get(edge["to"]) == "queued":
+            queue.append(edge["to"])
 
-        frontier: list[tuple[str, str | None]] = [(self._entry(nodes, edges), None)] \
-            if nodes else []
-        stop_state: str | None = None
-        stop_reason: str | None = None
-
-        while frontier:
-            if run["id"] in self._cancelled:
-                stop_state, stop_reason = "cancelled", "cancelled by operator"
-                break
-            elapsed_ms = (time.monotonic() - started) * 1000
-            if elapsed_ms > self.config.run_timeout_ms:
-                stop_state, stop_reason = "timed-out", "run exceeded time budget"
-                break
-            if executions >= self.config.max_node_executions:
-                stop_state, stop_reason = "failed", "node-execution bound reached"
-                break
-
-            nid, arrive_port = frontier.pop(0)
-            node_def = nodes.get(nid)
-            if node_def is None:
+    def skip_downstream(node_id, port=None):
+        for e in out_edges.get(node_id) or []:
+            if port is not None and e["fromPort"] != port:
                 continue
-            record = run["nodes"].get(nid) or empty_node_record(
-                nid, node_def["type"], iteration=visit_counts.get(nid, 0))
-            record["attempts"] += 1
-            transition_node(record, "running", clock=self.runs._clock)
-            record["startedAt"] = self.runs._clock()
-            run["nodes"][nid] = record
-            executions += 1
-            visit_counts[nid] = visit_counts.get(nid, 0) + 1
-            self._emit("node.started", runId=run["id"], nodeId=nid, type=node_def["type"])
+            deliver(e, None)
 
+    def fan_out(node_id, io, port):
+        for e in out_edges.get(node_id) or []:
+            deliver(e, io if e["fromPort"] == port else None)
+
+    def stamp(node_id, io):
+        node = nodes.get(node_id)
+        inbound = [d["io"].get("provenance") or "external"
+                   for d in (received.get(node_id) or {}).values() if d["io"] is not None]
+        trigger = (record or {}).get("trigger") or {"kind": "manual", "by": "unknown"}
+        return {**io, "provenance": provenance_of(node["type"] if node else "", inbound, trigger)}
+
+    def remember_input(node_id, io):
+        if not record:
+            return
+        node = record["nodes"].get(node_id)
+        if not node:
+            return
+        text = io.get("text") or ""
+        truncated = len(text) > MAX_CHECKPOINT_TEXT
+        node["input"] = {"text": redact(text[:MAX_CHECKPOINT_TEXT] if truncated else text),
+                         "files": io.get("files"),
+                         **({"truncated": True} if truncated else {}),
+                         "fromNodeIds": [e["from"] for e in in_edges.get(node_id) or []],
+                         "provenance": io.get("provenance")}
+
+    def remember_output(node_id, io, port):
+        if not record:
+            return
+        node = record["nodes"].get(node_id)
+        if not node:
+            return
+        text = io.get("text") or ""
+        truncated = len(text) > MAX_CHECKPOINT_TEXT
+        node["output"] = {"text": redact(text[:MAX_CHECKPOINT_TEXT] if truncated else text),
+                          "files": io.get("files"), "port": port,
+                          **({"truncated": True} if truncated else {}),
+                          "provenance": io.get("provenance")}
+
+    async def exec_node(node, input):
+        nonlocal failure, parked, executions, current
+        ntype = node["type"]
+        if ntype in INTELLIGENCE_TYPES and ntype != "agent":
+            from .intelligence import INTELLIGENCE_RUNNERS
+
+            t0i = time.time()
             try:
-                outcome = self._execute_node(node_def, record, run, vars_, project_cwd,
-                                             resume_grants or {})
-                transition_node(record, outcome.state, clock=self.runs._clock)
-            except Exception as exc:
-                record["error"] = str(exc)[:500]
-                transition_node(record, "failed", clock=self.runs._clock)
-                append_log(run, nid, "error", f"node failed: {exc}",
-                           clock=self.runs._clock)
-                self._emit("node.failed", runId=run["id"], nodeId=nid, error=str(exc)[:200])
-                stop_state, stop_reason = "failed", f"node {nid} failed: {exc}"
+                result_i = await _maybe_await(
+                    INTELLIGENCE_RUNNERS[ntype](ctx, input,
+                                                {**(node.get("config") or {}),
+                                                 "__nodeId": node["id"]}))
+            except RuntimeError as exc:
+                ms = int((time.time() - t0i) * 1000)
+                set_state(node["id"], "failed",
+                          {"ms": ms, "error": str(exc), "summary": str(exc)})
+                log(node["id"], "error", str(exc))
+                failure = {"nodeId": node["id"], "message": str(exc),
+                           "state": "failed"}
+                return
+            ms = int((time.time() - t0i) * 1000)
+            set_state(node["id"], "succeeded",
+                      {"ms": ms, "summary": result_i.get("summary")})
+            log(node["id"], "info", f"completed in {ms}ms - " + str(result_i.get("summary")))
+            io_i = stamp(node["id"], {"text": result_i.get("text"),
+                                      "data": result_i.get("data"),
+                                      "files": result_i.get("files")})
+            remember_output(node["id"], io_i, "out")
+            fan_out(node["id"], io_i, "out")
+            return
+        if ntype not in PURE_RUNNERS and ntype not in GOVERNED_TYPES and ntype != "agent":
+            set_state(node["id"], "skipped", {"summary": "unknown node type"})
+            skip_downstream(node["id"])
+            return
+        replayed = (opts.get("replay") or {}).get(node["id"])
+        if replayed:
+            set_state(node["id"], "succeeded",
+                      {"ms": timings.get(node["id"], 0), "summary": "replayed from checkpoint"})
+            log(node["id"], "info", "replayed from checkpoint — not re-executed")
+            fan_out(node["id"], stamp(node["id"], {"text": replayed.get("text"),
+                                                   "data": replayed.get("data"),
+                                                   "files": replayed.get("files")}),
+                    replayed.get("port") or "out")
+            return
+        executions += 1
+        if executions > MAX_NODE_EXECUTIONS:
+            raise RuntimeError("execution limit reached")
+        current[0] = node["id"]
+        set_state(node["id"], "running",
+                  {"eventStatus": "waiting"} if ntype == "delay" else {})
+        t0n = time.time()
+        if record:
+            record["nodes"][node["id"]]["attempts"] += 1
+        try:
+            if ntype in GOVERNED_TYPES:
+                if governor is None:
+                    raise RuntimeError(
+                        f'"{node["type"]}" performs a real effect and must run through the Capability Fabric, which is not attached to this run.')
+                outcome = await governor.run(
+                    node, ctx, input,
+                    lambda t2, _c=ctx, _i=input: __import__("aura.workflow.nodes_core", fromlist=["interpolate"]).interpolate(t2, _c, _i))
+                ms = int((time.time() - t0n) * 1000)
+                if outcome.get("evidence") and record:
+                    attach_evidence(record, node["id"], outcome["evidence"])
+                if outcome["kind"] == "awaiting-approval":
+                    set_state(node["id"], "awaiting-approval", {"ms": ms, "summary": outcome["summary"]})
+                    if record and outcome.get("approval"):
+                        record["nodes"][node["id"]]["approval"] = outcome["approval"]
+                    log(node["id"], "info", f"parked — {outcome['summary']}")
+                    parked = {"nodeId": node["id"],
+                              "requestId": (outcome.get("approval") or {}).get("requestId"),
+                              "capabilityId": (outcome.get("approval") or {}).get("capabilityId")}
+                    failure = {"nodeId": node["id"], "message": "waiting on your authorization",
+                               "state": "awaiting-approval"}
+                    return
+                if outcome["kind"] in ("denied", "failed"):
+                    st = "denied" if outcome["kind"] == "denied" else "failed"
+                    set_state(node["id"], st, {"ms": ms, "error": outcome.get("error"),
+                                               "summary": outcome["summary"]})
+                    log(node["id"], "error", outcome.get("error") or outcome["summary"])
+                    failure = {"nodeId": node["id"],
+                               "message": outcome.get("error") or outcome["summary"], "state": st}
+                    return
+                set_state(node["id"], "succeeded", {"ms": ms, "summary": outcome["summary"]})
+                log(node["id"], "info", f"completed in {ms}ms — {outcome['summary']}")
+                io = stamp(node["id"], {"text": outcome.get("text"), "data": outcome.get("data"),
+                                        "files": outcome.get("files")})
+                remember_output(node["id"], io, "out")
+                fan_out(node["id"], io, "out")
+                return
+
+            if ntype == "agent":
+                agents = ctx.get("agents")
+                if agents is None:
+                    raise RuntimeError(
+                        '"Agent" reasons and calls tools through the Capability Fabric, which is not attached to this run.')
+                t0a = time.time()
+                agent_resume = (opts.get("agentResume") or {}).get(node["id"])
+                runner_call = getattr(agents, "run_async", None)
+                out_a = await (_maybe_await(runner_call(node, ctx, input, {
+                    "signal": opts.get("signal"),
+                    **({"resumeFrom": agent_resume} if agent_resume else {}),
+                })) if runner_call is not None
+                    else asyncio.ensure_future(_maybe_await(agents.run(
+                        node, ctx, input,
+                        {"signal": opts.get("signal")}))))
+                ms = int((time.time() - t0a) * 1000)
+                if record and out_a.get("trace"):
+                    record["nodes"][node["id"]]["agentTrace"] = out_a["trace"]
+                if out_a.get("evidence") and record:
+                    attach_evidence(record, node["id"], out_a["evidence"])
+                if out_a.get("parked"):
+                    set_state(node["id"], "awaiting-approval",
+                              {"ms": ms, "summary": out_a.get("summary")})
+                    if record and out_a.get("approval"):
+                        record["nodes"][node["id"]]["approval"] = out_a["approval"]
+                    parked = {"nodeId": node["id"],
+                              "requestId": (out_a.get("approval") or {}).get("requestId"),
+                              "capabilityId": (out_a.get("approval") or {}).get("capabilityId")}
+                    failure = {"nodeId": node["id"], "message": out_a.get("summary") or "waiting on your authorization",
+                               "state": "awaiting-approval"}
+                    return
+                if out_a["stopReason"] == "denied":
+                    set_state(node["id"], "denied", {"ms": ms, "error": out_a.get("error"),
+                                                     "summary": out_a.get("summary")})
+                    failure = {"nodeId": node["id"],
+                               "message": out_a.get("error") or out_a.get("summary"), "state": "denied"}
+                    return
+                if out_a["stopReason"] not in ("completed",):
+                    set_state(node["id"], "failed", {"ms": ms, "error": out_a.get("error"),
+                                                     "summary": out_a.get("summary")})
+                    log(node["id"], "error", out_a.get("error") or out_a.get("summary"))
+                    failure = {"nodeId": node["id"],
+                               "message": out_a.get("error") or out_a.get("summary"), "state": "failed"}
+                    return
+                ms = int((time.time() - t0n) * 1000)
+                set_state(node["id"], "succeeded", {"ms": ms, "summary": out_a.get("summary")})
+                log(node["id"], "info", f"completed in {ms}ms — {out_a.get('summary')}")
+                io = stamp(node["id"], {"text": out_a.get("text"), "data": None,
+                                        "files": None})
+                remember_output(node["id"], io, "out")
+                fan_out(node["id"], io, "out")
+                return
+
+            runner_fn = PURE_RUNNERS[ntype]
+            result = await _maybe_await(runner_fn(ctx, input, {**(node.get("config") or {}), "__nodeId": node["id"]}))
+            ms = int((time.time() - t0n) * 1000)
+            set_state(node["id"], "succeeded", {"ms": ms, "summary": result.get("summary")})
+            log(node["id"], "info",
+                f"completed in {ms}ms{(' — ' + result['summary']) if result.get('summary') else ''}")
+            if ntype == "output":
+                title = str((node.get("config") or {}).get("title") or "") or "Result"
+                text = redact(result.get("text") or "")
+                outputs.append({"nodeId": node["id"], "title": title, "text": text})
+                if record:
+                    record["outputs"].append({"nodeId": node["id"], "title": title, "text": text})
+                emit({"type": "output", "nodeId": node["id"], "title": title, "text": text})
+            port = result.get("port") or "out"
+            io = stamp(node["id"], {"text": result.get("text"), "data": result.get("data"),
+                                    "files": result.get("files")})
+            remember_output(node["id"], io, port)
+            fan_out(node["id"], io, port)
+        except Exception as err:  # noqa: BLE001
+            ms = int((time.time() - t0n) * 1000)
+            message = redact(str(err))
+            timed_out = time.time() * 1000 > t0 * 1000 + timeout_ms
+            state = ("cancelled" if aborted() else "timed-out" if timed_out else "failed")
+            set_state(node["id"], state, {"ms": ms, "error": message})
+            log(node["id"], "error", message)
+            failure = {"nodeId": node["id"], "message": message, "state": state}
+        finally:
+            current[0] = None
+            checkpoint()
+
+    async def exec_loop(node, input):
+        nonlocal failure
+        cfgm = node.get("config") or {}
+        mode = str(cfgm.get("mode") or "repeat")
+        times = max(1, min(MAX_LOOP_ITERATIONS, int(_num(cfgm.get("times"), 3))))
+        if mode == "for-each-line":
+            lines = [l.strip() for l in (input.get("text") or "").splitlines() if l.strip()]
+            items = [{"text": l} for l in lines[:MAX_LOOP_ITERATIONS]]
+        else:
+            items = [input] * times
+        set_state(node["id"], "running")
+        t0l = time.time()
+        each_edges = [e for e in out_edges.get(node["id"]) or [] if e["fromPort"] == "each"]
+        subtree: set[str] = set()
+
+        def walk(nid):
+            if nid in subtree:
+                return
+            subtree.add(nid)
+            for e in out_edges.get(nid) or []:
+                walk(e["to"])
+        for e in each_edges:
+            walk(e["to"])
+
+        log(node["id"], "info",
+            f"loop: {len(items)} iteration{'s' if len(items) != 1 else ''} over {len(subtree)} node{'s' if len(subtree) != 1 else ''}")
+        for i, item in enumerate(items):
+            if failure or aborted():
                 break
+            for nid in subtree:
+                states[nid] = "queued"
+                received.get(nid, {}).clear()
+                if record and record["nodes"].get(nid):
+                    record["nodes"][nid]["iteration"] = i
+            for e in each_edges:
+                deliver(e, item)
+            await drain(subtree)
+        ms = int((time.time() - t0l) * 1000)
+        if not failure:
+            set_state(node["id"], "succeeded", {"ms": ms, "summary": f"{len(items)} iterations"})
+            loop_io = stamp(node["id"], input)
+            for e in out_edges.get(node["id"]) or []:
+                if e["fromPort"] == "done":
+                    deliver(e, loop_io)
+                elif e["fromPort"] != "each":
+                    deliver(e, None)
+        else:
+            set_state(node["id"],
+                      "awaiting-approval" if failure["state"] == "awaiting-approval" else "failed",
+                      {"ms": ms, "error": None if failure["state"] == "awaiting-approval" else "a loop iteration failed"})
+        checkpoint()
 
-            record["finishedAt"] = self.runs._clock()
-            record["ms"] = record.get("ms", 0.0)
-            self.runs.save(run)
-            self._emit("node.finished", runId=run["id"], nodeId=nid, state=outcome.state)
-
-            if outcome.state == "awaiting-approval":
-                stop_state, stop_reason = "awaiting-approval", \
-                    f"node {nid} is waiting on human approval"
+    async def drain(restrict: set | None = None):
+        nonlocal failure
+        while queue and not failure:
+            if aborted():
+                failure = {"nodeId": "", "message": "run cancelled", "state": "cancelled"}
                 break
-            if outcome.state in ("denied", "failed"):
-                stop_state, stop_reason = "failed", \
-                    f"node {nid} {outcome.state}: {record.get('summary', '')}"
+            if time.time() * 1000 > t0 * 1000 + timeout_ms:
+                failure = {"nodeId": "",
+                           "message": f"run exceeded its {round(timeout_ms / 1000)}s budget",
+                           "state": "timed-out"}
                 break
+            nid = queue.pop(0)
+            if restrict and nid not in restrict:
+                continue
+            if states.get(nid) != "queued":
+                continue
+            node = nodes[nid]
+            if all_inputs_skipped(nid):
+                set_state(nid, "skipped")
+                skip_downstream(nid)
+                continue
+            input = merge_inputs(nid)
+            remember_input(nid, input)
+            if node["type"] == "loop":
+                await exec_loop(node, input)
+            else:
+                await exec_node(node, input)
 
-            followed = set(outcome.ports) or {"out"}
-            for target, port in out_ports.get(nid, []):
-                if port in followed:
-                    frontier.append((target, port))
+    for n in wf["nodes"]:
+        if not in_edges.get(n["id"]) and states.get(n["id"]) == "queued":
+            queue.append(n["id"])
+    await drain()
 
-        run["ms"] = round((time.monotonic() - started) * 1000, 1)
-        if stop_state is None:
-            stop_state = "succeeded"
-            stop_reason = None
-        run["state"] = stop_state  # type: ignore[assignment]
-        run["finishedAt"] = self.runs._clock()
-        run["resumable"] = stop_state == "awaiting-approval"
-        if stop_reason and stop_state != "succeeded":
-            run["error"] = stop_reason
-        append_log(run, None, "info", f"run {stop_state}", clock=self.runs._clock)
-        self.runs.save(run)
-        self.runs.reconcile_interrupted.__self__  # noqa: B018 — keep store warm
-        self._emit("run.finished", runId=run["id"], state=stop_state)
-        return run
+    stopped_early = failure is not None
+    for nid, st in states.items():
+        if st != "queued":
+            continue
+        set_state(nid, "queued" if stopped_early else "skipped",
+                  None if stopped_early else {"summary": "unreachable"})
 
-    @staticmethod
-    def _entry(nodes: dict[str, dict], edges: list[dict]) -> str:
-        targets = {e["to"] for e in edges}
-        for nid in nodes:
-            if nid not in targets:
-                return nid
-        return next(iter(nodes))
+    ms = int((time.time() - t0) * 1000)
+    f = failure
+    run_state = (run_state_for(f["state"]) or "failed") if f else "succeeded"
+    status = "completed" if run_state == "succeeded" else "failed"
 
-    def _execute_node(
-        self,
-        node_def: dict,
-        record: dict,
-        run: dict,
-        vars_: dict[str, str],
-        project_cwd: str,
-        resume_grants: dict[str, str],
-    ) -> NodeOutcome:
-        ntype = node_def["type"]
-        cfg = node_def.get("config") or {}
+    if record:
+        record["state"] = run_state
+        record["ms"] = ms
+        record["finishedAt"] = _iso()
+        if f:
+            record["error"] = redact(f["message"])
+        completed = sum(1 for n in record["nodes"].values() if n.get("state") == "succeeded")
+        if run_state == "awaiting-approval":
+            record["resumable"] = True
+            record.pop("notResumableReason", None)
+        elif run_state == "succeeded":
+            record["resumable"] = False
+            record.pop("notResumableReason", None)
+        elif completed > 0:
+            record["resumable"] = True
+        else:
+            record["resumable"] = False
+            record["notResumableReason"] = "No node completed, so there is no checkpoint to resume from."
+        checkpoint()
 
-        # pure ─ current-project
-        if ntype == "current-project":
-            vars_.setdefault("projectPath", project_cwd)
-            record["summary"] = f"Project context bound ({project_cwd})."
-            return NodeOutcome("succeeded", ["out"])
-
-        # pure ─ variables
-        if ntype == "variables":
-            sets = cfg.get("set") if isinstance(cfg.get("set"), dict) else {}
-            for k, v in sets.items():
-                vars_[str(k)] = _template(str(v), vars_)
-            record["summary"] = f"{len(sets)} variable(s) set."
-            return NodeOutcome("succeeded", ["out"])
-
-        # pure ─ output
-        if ntype == "output":
-            text = _template(str(cfg.get("text", "")), vars_)
-            run["outputs"].append({"nodeId": node_def["id"],
-                                   "title": str(cfg.get("title") or "Output"),
-                                   "text": text[:4000]})
-            record["summary"] = "Output captured."
-            return NodeOutcome("succeeded", ["out"])
-
-        # control ─ condition
-        if ntype == "condition":
-            expr = str(cfg.get("when", ""))
-            try:
-                taken = _evaluate_condition(expr, vars_)
-            except ValueError as exc:
-                record["error"] = str(exc)
-                return NodeOutcome("failed", [])
-            branch = "true" if taken else "false"
-            record["summary"] = f"Condition '{expr}' → {branch}."
-            return NodeOutcome("succeeded", [branch])
-
-        # control ─ loop (bounded)
-        if ntype == "loop":
-            count = min(int(cfg.get("count", 0) or 0), self.config.max_loop_iterations)
-            items = cfg.get("over")
-            if isinstance(items, list):
-                count = min(len(items), self.config.max_loop_iterations)
-            done = int(record.get("iteration") or 0)
-            if done >= max(count, 0):
-                record["summary"] = f"Loop complete after {done} iteration(s)."
-                return NodeOutcome("succeeded", ["out"])
-            record["iteration"] = done + 1
-            vars_["loopIndex"] = str(done)
-            record["summary"] = f"Iteration {done + 1}/{count}."
-            return NodeOutcome("succeeded", ["each"])
-
-        # governed ─ fixed bindings through the Fabric
-        if ntype in GOVERNED_BINDINGS:
-            capability_id = {
-                "git-status": "git.status",
-                "export-file": "fs.write_file",
-            }[ntype]
-            input_payload = GOVERNED_BINDINGS[ntype](cfg, vars_)
-            return self._invoke_for_node(capability_id, input_payload, node_def,
-                                         record, run, project_cwd, resume_grants)
-
-        # intelligence/generate families: NOT implemented in Python yet.
-        record["error"] = f"node type '{ntype}' has no Python executor yet"
-        return NodeOutcome("failed", [])
-
-    def _invoke_for_node(
-        self,
-        capability_id: str,
-        payload: dict,
-        node_def: dict,
-        record: dict,
-        run: dict,
-        project_cwd: str,
-        resume_grants: dict[str, str],
-    ) -> NodeOutcome:
-        context = {
-            "actor": {"kind": "system",
-                      "id": f"workflow:{run['workflowId']}:{node_def['id']}"},
-            "projectId": run.get("projectId"),
-            "cwd": project_cwd,
-            "taskId": node_def["id"],
-            "workflowId": run["workflowId"],
-            "runId": run["id"],
-            "workflowNodeId": node_def["id"],
-        }
-        grant = resume_grants.get(node_def["id"])
-        if grant:
-            context["approvalId"] = grant
-        record["input"] = payload
-        result = invoke_fabric(capability_id, payload, context, self.fabric_cfg)
-
-        evidence = {
-            "invocationId": result["invocationId"],
-            "capabilityId": result["capabilityId"],
-            "outcome": result["outcome"],
-            "decision": result["policy"]["decision"],
-            "decisionRule": result["policy"]["rule"],
-            "risk": result["policy"]["risk"],
-            "verified": result["verification"]["passed"],
-            "at": result["at"],
-            "durationMs": 0.0,
-            "nodeId": node_def["id"],
-        }
-        attach_evidence(run, node_def["id"], evidence)
-        record["summary"] = result["detail"][:300]
-
-        if result["outcome"] == "awaiting-approval":
-            record["approval"] = {
-                "requestId": result.get("approvalId"),
-                "capabilityId": capability_id,
-                "requestedAt": result["at"],
-                "summary": result["detail"][:300],
-            }
-            append_log(run, node_def["id"], "warn",
-                       f"parked on approval {result.get('approvalId')}",
-                       clock=self.runs._clock)
-            return NodeOutcome("awaiting-approval", [])
-
-        output = result.get("output")
-        if isinstance(output, dict) and isinstance(output.get("text"), str):
-            # Tool output is UNTRUSTED DATA. It may be stored and displayed;
-            # it is never interpreted as instruction here.
-            record["output"] = {"text": output["text"][:4000]}
-        if result["outcome"] in ("succeeded", "unverified"):
-            return NodeOutcome("succeeded", ["out"])
-        record["error"] = result["detail"][:500]
-        return NodeOutcome(
-            "denied" if result["outcome"] == "denied" else "failed", [])
+    emit({"type": "done", "status": status, "ms": ms,
+          **({"error": redact(f["message"])} if f else {}),
+          "runState": run_state, **({"runId": record["id"]} if record else {})})
+    return {"status": status, "runState": run_state, "ms": ms, "outputs": outputs,
+            "nodes": {nid: {"status": EVENT_STATE[st], "ms": timings.get(nid, 0)}
+                      for nid, st in states.items()},
+            **({"error": redact(f["message"])} if f else {}),
+            **({"awaiting": parked} if parked else {})}
 
 
-def make_stores(
-    home: Path | None = None,
-    clock: Callable[[], str] | None = None,
-) -> tuple[WorkflowStore, WorkflowVersionStore, WorkflowRunStore]:
-    """Stores wired with unique id generation.
+def _num(v, d):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return d
 
-    The persisted-formats spec requires globally unique ids per instant;
-    process-pid placeholders collide across legs, so every engine consumer
-    goes through here rather than constructing stores bare.
-    """
-    def gen(prefix: str) -> str:
-        return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
-    return (
-        WorkflowStore(clock=clock, id_gen=gen),
-        WorkflowVersionStore(clock=clock, id_gen=gen),
-        WorkflowRunStore(clock=clock, id_gen=gen),
-    )
+async def _maybe_await(v):
+    import inspect
+
+    if inspect.isawaitable(v):
+        return await v
+    return v
+
+
+def _iso():
+    from datetime import datetime
+
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+_ = asyncio, MAX_TRANSITIONS, MAX_RUN_LOG

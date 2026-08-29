@@ -481,7 +481,17 @@ export interface EvidenceRef {
   durationMs: number;
 }
 
+/** One step in a node's state history, with the reason when it has one. */
+export interface StateTransition {
+  at: string;
+  from: NodeState;
+  to: NodeState;
+  /** Present when the transition carries a reason — a denial rule, a timeout. */
+  note?: string;
+}
+
 export interface NodeRunRecord {
+
   nodeId: string;
   type: string;
   state: NodeState;
@@ -491,8 +501,29 @@ export interface NodeRunRecord {
   ms: number;
   summary?: string;
   error?: string;
-  output?: { text: string; data?: unknown; files?: string[]; port?: string; truncated?: boolean };
+  /**
+   * Every state this node passed through, in order.
+   *
+   * `state` says where it ended; this says how it got there. "queued →
+   * running → awaiting-approval → running → succeeded" tells a story that
+   * "succeeded" hides, and that story is what someone debugging is
+   * actually after. Bounded by the service.
+   */
+  transitions: StateTransition[];
+  /**
+   * What this node RECEIVED, redacted and bounded by the service.
+   *
+   * Distinct from the node's configuration: the config is what an author
+   * wrote, this is what actually arrived after interpolation and after
+   * however many edges merged into it. "What did it actually get" is the
+   * first question asked of a node that produced the wrong thing, and
+   * without this the only honest answer is to guess from an upstream
+   * node's output — which is wrong the moment two edges merge.
+   */
+  input?: { text: string; files?: string[]; truncated?: boolean; fromNodeIds?: string[]; provenance?: string };
+  output?: { text: string; data?: unknown; files?: string[]; port?: string; truncated?: boolean; provenance?: string };
   attempts: number;
+
   evidence: EvidenceRef[];
   approval?: { requestId: string; capabilityId: string; requestedAt: string; summary: string };
   /**
@@ -548,7 +579,33 @@ export interface WorkflowRun {
 }
 
 
+/**
+ * What the run index can be asked. Mirrors `WorkflowRunStore.index`.
+ *
+ * `q` is a substring match on the workflow name, `since` an ISO instant.
+ * The service clamps `limit` to 500 and defaults it to 100.
+ */
+export interface RunIndexQuery {
+  workflowId?: string;
+  projectId?: string;
+  state?: RunState;
+  trigger?: RunTriggerKind;
+  q?: string;
+  since?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** One page of the index, plus the total the page was taken from. */
+export interface RunIndexPage {
+  runs: WorkflowRunSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 export interface WorkflowRunSummary {
+
   id: string;
   workflowId: string;
   versionId: string;
@@ -817,8 +874,38 @@ export const aiClient = {
   /* runs — persisted by the service, so history survives this window */
   workflowRuns: (id: string) => jget<{ runs: WorkflowRunSummary[] }>(`/workflows/${id}/runs`),
   workflowRun: (id: string, runId: string) => jget<WorkflowRun>(`/workflows/${id}/runs/${runId}`),
+  /* ── the cross-workflow run index ───────────────────────────────
+     Filtered, sorted and paged BY THE SERVICE. The client must not merge
+     per-workflow histories to build this: such a merge only ever covers
+     the workflows whose history happens to have been read, and it goes
+     wrong the moment retention prunes one workflow's runs and not
+     another's. The counts here are the service's, over everything it
+     holds. */
+
+  /** One page of runs across every workflow, with the true total. */
+  runIndex: (q: RunIndexQuery = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== '') p.set(k, String(v));
+    const qs = p.toString();
+    return jget<RunIndexPage>(`/workflow-runs${qs ? `?${qs}` : ''}`);
+  },
+  /** Counts by state over the whole index — not over the page. */
+  runStats: (projectId?: string) =>
+    jget<{ stats: Record<string, number> }>(`/workflow-runs/stats${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`),
+  /**
+   * Runs genuinely waiting on a person, across every workflow.
+   *
+   * The service excludes superseded legs itself, so this is the one
+   * authority on "is someone waiting on me?" — the frontend does not
+   * re-derive it. See `docs/AGENT_RESUME_SEMANTICS.md`.
+   */
+  runsAwaiting: () => jget<{ runs: WorkflowRunSummary[] }>('/workflow-runs/awaiting'),
+  /** A run by id alone, when the workflow it belongs to is not known. */
+  findRun: (runId: string) => jget<WorkflowRun>(`/workflow-runs/${runId}`),
+
   /**
    * Every leg of one logical execution, oldest first.
+
    *
    * Navigable from either end — hand it any leg and it walks back to the
    * head and forward to the tail. This is how a UI renders one execution

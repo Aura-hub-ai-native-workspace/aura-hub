@@ -177,7 +177,12 @@ try {
     `${mine.length} record(s); actor=${sample?.actor?.kind} decision=${sample?.decision} rule=${sample?.decisionRule} mission=${sample?.missionId} task=${sample?.taskId}`);
   check('AUDIT2. nodeId is recorded where the executor named one',
     withNode.length > 0, `${withNode.length}/${mine.length} carry nodeId`);
-  const secrets = JSON.stringify(audit).match(/sk-[A-Za-z0-9]{8,}|api[_-]?key["':\s]+[A-Za-z0-9]{12,}/gi);
+  // `\b` before `sk-` is load-bearing, and node-policy-verify already has
+  // it. Without it the pattern matches inside AURA's own task ids —
+  // `ta`+`sk-ms99e1xr` out of `task-ms99e1xr-86upwl` — and reports a secret
+  // leak that is really an id. A check that cries wolf on the system's own
+  // identifiers stops being a security check.
+  const secrets = JSON.stringify(audit).match(/\bsk-[A-Za-z0-9]{8,}|api[_-]?key["':\s]+[A-Za-z0-9]{12,}/gi);
   check('AUDIT3. no secrets appear in the audit log', !secrets, secrets ? 'FOUND SECRETS' : 'none found');
 
   /* ── the repository is untouched ──────────────────────────────── */

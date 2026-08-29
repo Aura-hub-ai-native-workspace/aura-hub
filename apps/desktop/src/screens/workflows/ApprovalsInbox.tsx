@@ -60,10 +60,22 @@ export function ApprovalsInbox() {
     [agentApprovals],
   );
 
-  const allPending = useMemo(
-    () => [...fabricPending, ...agentPending].sort((a, b) => rank(b) - rank(a) || a.requestedAt.localeCompare(b.requestedAt)),
-    [fabricPending, agentPending],
-  );
+  const allPending = useMemo(() => {
+    // In dev, both ledgers proxy to the same backend (4319), so the same
+    // pending approvals appear in both fetches. Deduplicate by id to avoid
+    // React key collisions and double-rendering. In production the two
+    // origins are distinct (4319 vs 4320) and no dedup is needed, but it is
+    // harmless.
+    const seen = new Set<string>();
+    const merged: typeof fabricPending = [];
+    for (const a of [...fabricPending, ...agentPending]) {
+      if (!seen.has(a.id)) {
+        seen.add(a.id);
+        merged.push(a as (typeof fabricPending)[number]);
+      }
+    }
+    return merged.sort((a, b) => rank(b) - rank(a) || a.requestedAt.localeCompare(b.requestedAt));
+  }, [fabricPending, agentPending]);
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-6">

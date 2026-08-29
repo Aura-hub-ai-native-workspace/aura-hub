@@ -33,6 +33,11 @@ interface AppState {
   activeProjectId: string | null;
   /** Active tab within the project workspace. */
   projectTab: ProjectTab;
+  /** Whether "Ask AURA" is open full-screen inside the project. Lives here
+   *  rather than in ProjectWorkspace's local state because the router needs
+   *  it to switch the screen into a fixed-viewport layout — the chat owns
+   *  its own internal scrolling, exactly like the Code Workspace. */
+  askAuraOpen: boolean;
   /** Left rail expanded vs. rail-only. */
   sidebarExpanded: boolean;
   /** Right context panel visibility. */
@@ -56,6 +61,7 @@ interface AppState {
   theme: Theme;
 
   setNav: (nav: NavKey) => void;
+  setAskAuraOpen: (open: boolean) => void;
   setBooted: (booted: boolean) => void;
   /** Marks onboarding complete (persisted) and skips the redundant generic
    *  boot animation this one time — the onboarding's own Ready screen
@@ -79,6 +85,7 @@ export const useAppStore = create<AppState>((set) => ({
   nav: 'home',
   activeProjectId: null,
   projectTab: 'overview',
+  askAuraOpen: false,
   sidebarExpanded: false,
   rightPanelOpen: false,
   paletteOpen: false,
@@ -97,13 +104,17 @@ export const useAppStore = create<AppState>((set) => ({
   pushRecentCommand: (id) =>
     set((s) => ({ recentCommandIds: [id, ...s.recentCommandIds.filter((x) => x !== id)].slice(0, 5) })),
 
-  setNav: (nav) => set({ nav, activeProjectId: null }),
+  // Leaving a project — by navigating away, entering another one, or
+  // closing it — always closes Ask AURA. It is a view *of* the project, so
+  // it must never survive into a screen that project no longer backs.
+  setNav: (nav) => set({ nav, activeProjectId: null, askAuraOpen: false }),
   // Project entry now lives on Home (the former standalone Projects
   // screen was folded into it) — opening a project always returns you to
   // Home once it's closed, rather than a dedicated "Projects" nav key.
-  openProject: (id) => set({ nav: 'home', activeProjectId: id, projectTab: 'overview' }),
-  closeProject: () => set({ activeProjectId: null }),
+  openProject: (id) => set({ nav: 'home', activeProjectId: id, projectTab: 'overview', askAuraOpen: false }),
+  closeProject: () => set({ activeProjectId: null, askAuraOpen: false }),
   setProjectTab: (projectTab) => set({ projectTab }),
+  setAskAuraOpen: (askAuraOpen) => set({ askAuraOpen }),
   toggleSidebar: () => set((s) => ({ sidebarExpanded: !s.sidebarExpanded })),
   toggleRightPanel: () => set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),

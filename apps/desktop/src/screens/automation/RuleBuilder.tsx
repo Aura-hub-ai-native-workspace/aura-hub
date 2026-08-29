@@ -51,6 +51,8 @@ export function RuleBuilder({ ruleId, onClose, onSaved }: RuleBuilderProps) {
   const projects = useWorkspace((s) => s.projects);
   const openProjectId = useWorkspace((s) => s.openId);
   const openProjectName = useWorkspace((s) => s.projects.find((p) => p.id === s.openId)?.name ?? null);
+  // Only so a sample event can name the project the service expects.
+  const openProjectPath = useWorkspace((s) => s.projects.find((p) => p.id === s.openId)?.path ?? null);
   const [draft, setDraft] = useState<RuleDraft>(() => emptyDraft());
   const [dirty, setDirty] = useState(false);
   const [loading, setLoading] = useState(Boolean(ruleId));
@@ -105,6 +107,7 @@ export function RuleBuilder({ ruleId, onClose, onSaved }: RuleBuilderProps) {
         rule={saved}
         projectId={openProjectId}
         projectName={openProjectName}
+        projectPath={openProjectPath}
         onClose={() => setPreviewing(false)}
       />
     );

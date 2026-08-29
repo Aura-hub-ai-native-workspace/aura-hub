@@ -28,6 +28,7 @@ import { AiMarkdown } from '../../ai/AiMarkdown';
 import { ApprovalGate } from '../missions/ApprovalGate';
 import { CATEGORY } from './shared';
 import { AgentTrace } from './agent/AgentTrace';
+import { AgentRunPanel } from './agent/RunAgentPanel';
 import { isPartialTrace, type AgentTrace as AgentTraceShape, type AnyAgentTrace } from './agent/types';
 import { nodeEffect } from './effects';
 import {
@@ -45,7 +46,7 @@ import {
 } from './runs';
 
 
-type Tab = 'steps' | 'output' | 'evidence' | 'logs';
+type Tab = 'steps' | 'output' | 'evidence' | 'logs' | 'agent';
 
 const STATE_ICON: Record<NodeState, IconName> = {
   queued: 'dot',
@@ -286,6 +287,7 @@ export function RunView({
         <TabButton id="output" tab={tab} setTab={setTab} label="Output" count={run.outputs.length} />
         <TabButton id="evidence" tab={tab} setTab={setTab} label="Evidence" count={run.evidence.length} />
         <TabButton id="logs" tab={tab} setTab={setTab} label="Logs" count={run.log.length} />
+        <TabButton id="agent" tab={tab} setTab={setTab} label="Agent" />
       </nav>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -343,6 +345,19 @@ export function RunView({
               <EmptyNote text="No log lines." />
             )}
           </div>
+        )}
+
+        {tab === 'agent' && (
+          <AgentRunPanel
+            run={run}
+            specs={specs}
+            graphOrder={graphOrder}
+            approvals={approvals}
+            onDecideApproval={onDecideApproval}
+            decidingId={decidingId}
+            chain={chain}
+            carriedThrough={carriedThrough}
+          />
         )}
       </div>
     </div>
@@ -483,10 +498,84 @@ function asAgentTrace(v: unknown): AnyAgentTrace | null {
 }
 
 
+/**
+ * One redacted, bounded payload — what a step received, or what it emitted.
+ *
+ * The service redacts and truncates before writing the record, so this
+ * renders what it was given and says when something was cut rather than
+ * implying it has the whole value. There is no "reveal" affordance,
+ * because there is no contract behind one: a secret is not hidden here,
+ * it was never written here.
+ */
+function Payload({
+  title,
+  hint,
+  text,
+  truncated,
+  files,
+  provenance,
+  from,
+  port,
+}: {
+  title: string;
+  hint: string;
+  text: string;
+  truncated?: boolean;
+  files?: string[];
+  provenance?: string;
+  from?: string[];
+  port?: string;
+}) {
+  const empty = !text?.trim();
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-text-subtle">{title}</span>
+        {provenance && (
+          <span title="Where this value came from, as the service classified it">
+            <Badge tone="neutral">{provenance}</Badge>
+          </span>
+        )}
+
+        {port && (
+          <span className="rounded bg-surface-active px-1.5 py-0.5 font-mono text-[10px] text-text-subtle" title="The port it left by">
+            → {port}
+          </span>
+        )}
+      </div>
+      <p className="mt-0.5 text-[10.5px] leading-relaxed text-text-subtle">{hint}</p>
+      {from && from.length > 0 && (
+        <p className="mt-0.5 text-[10.5px] text-text-subtle">
+          Merged from {from.length} upstream step{from.length === 1 ? '' : 's'}:{' '}
+          {from.map((id) => <code key={id} className="mr-1 rounded bg-surface-active px-1">{id}</code>)}
+        </p>
+      )}
+      {empty ? (
+        <p className="mt-1 text-[11px] italic text-text-subtle">Nothing recorded.</p>
+      ) : (
+        <pre className="selectable mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-active px-2.5 py-1.5 font-mono text-[10.5px] leading-relaxed text-text-muted">
+          {text}
+        </pre>
+      )}
+      {truncated && (
+        <p className="mt-0.5 text-[10px] text-attention">
+          Truncated by the service when it was recorded — this is not the whole value.
+        </p>
+      )}
+      {files && files.length > 0 && (
+        <p className="mt-0.5 text-[10.5px] text-text-subtle">
+          {files.length} file{files.length === 1 ? '' : 's'}: {files.join(', ')}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function StepRow({
   node,
   spec,
   slowest,
+
   onFocus,
   approvals,
   onDecideApproval,
@@ -507,6 +596,8 @@ function StepRow({
   const share = node.ms ? Math.max(2, Math.round((node.ms / slowest) * 100)) : 0;
   const trace = asAgentTrace(node.agentTrace);
   const [openTrace, setOpenTrace] = useState(false);
+  const [openDetail, setOpenDetail] = useState(false);
+
 
   return (
     <li>
@@ -572,7 +663,87 @@ function StepRow({
         </span>
       </button>
 
+      {/* ── what this step received, did and became ────────────────
+          Configured input is what an author wrote; resolved input is what
+          actually arrived after interpolation and after however many
+          edges merged into this node. Keeping them apart is the whole
+          point — a node that produced the wrong thing is diagnosed by
+          what it GOT, and inferring that from an upstream output is wrong
+          the moment two edges merge.
+
+          Everything here is redacted and bounded by the service before it
+          is written. This view never un-redacts and never asks for a raw
+          value: there is no contract that would return one. */}
+      {(node.input || node.output || node.transitions?.length > 0) && (
+        <div className="border-t border-line/50 bg-surface/40">
+          <button
+            onClick={() => setOpenDetail((o) => !o)}
+            aria-expanded={openDetail}
+            className="flex w-full items-center gap-2 px-4 py-1.5 text-left transition-colors hover:bg-surface-hover"
+          >
+            <Icon name="knowledge" size={11} className="text-text-subtle" />
+            <span className="text-[11.5px] font-medium text-text">Input, output and state</span>
+            <span className="text-[10.5px] text-text-subtle">
+              {[
+                node.input ? 'input' : null,
+                node.output ? 'output' : null,
+                node.transitions?.length ? `${node.transitions.length} transitions` : null,
+              ].filter(Boolean).join(' · ')}
+            </span>
+            <span className="ml-auto text-[10.5px] text-text-subtle">{openDetail ? 'hide' : 'show'}</span>
+          </button>
+
+          {openDetail && (
+            <div className="space-y-2.5 border-t border-line/50 px-4 py-2.5">
+              {node.input && (
+                <Payload
+                  title="Resolved input"
+                  hint="What this step actually received when it ran — not what the node is configured with."
+                  text={node.input.text}
+                  truncated={node.input.truncated}
+                  files={node.input.files}
+                  provenance={node.input.provenance}
+                  from={node.input.fromNodeIds}
+                />
+              )}
+              {node.output && (
+                <Payload
+                  title="Output"
+                  hint="What it emitted, as checkpointed. A resume feeds this downstream rather than running the step again."
+                  text={node.output.text}
+                  truncated={node.output.truncated}
+                  files={node.output.files}
+                  provenance={node.output.provenance}
+                  port={node.output.port}
+                />
+              )}
+              {node.transitions?.length > 0 && (
+                <div>
+                  <div className="text-[10.5px] font-semibold uppercase tracking-wide text-text-subtle">
+                    State history
+                  </div>
+                  <ol className="mt-1 space-y-0.5">
+                    {node.transitions.map((t, i) => (
+                      <li key={`${i}-${t.at}`} className="flex flex-wrap items-baseline gap-1.5 text-[10.5px]">
+                        <span className="tabular-nums text-text-subtle">
+                          {new Date(t.at).toLocaleTimeString()}
+                        </span>
+                        <span className="text-text-muted">{NODE_STATE_LABEL[t.from]}</span>
+                        <Icon name="chevron-right" size={9} className="text-text-subtle" />
+                        <span className="font-medium text-text">{NODE_STATE_LABEL[t.to]}</span>
+                        {t.note && <span className="text-text-muted">— {t.note}</span>}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* An agent step's reasoning, reviewable where the run is. The trace
+
           renders in its own component — this view is not a second one. */}
       {trace && (
         <div className="border-t border-line/50 bg-surface/40">

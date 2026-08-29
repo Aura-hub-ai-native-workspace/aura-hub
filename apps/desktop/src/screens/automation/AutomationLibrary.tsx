@@ -35,6 +35,7 @@ export function AutomationLibrary({ onOpenRule, onNewRule, onOpenRuns }: Automat
   const workflows = useWorkflows((s) => s.list);
   const openProjectId = useWorkspace((s) => s.openId);
   const openProjectName = useWorkspace((s) => s.projects.find((p) => p.id === s.openId)?.name ?? null);
+
   const [q, setQ] = useState('');
   const [runTarget, setRunTarget] = useState<string | null>(null);
 
@@ -165,6 +166,7 @@ export function AutomationLibrary({ onOpenRule, onNewRule, onOpenRuns }: Automat
         rule={runTarget ? auto.defs[runTarget] ?? null : null}
         open={Boolean(runTarget)}
         projectName={openProjectName}
+
         busy={auto.busy === runTarget}
         onClose={() => setRunTarget(null)}
         onRun={(payload) => void runNow(payload)}

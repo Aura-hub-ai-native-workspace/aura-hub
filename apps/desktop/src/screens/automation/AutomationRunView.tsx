@@ -295,8 +295,8 @@ function RunDetail({
       <section className="rounded-xl border border-line bg-canvas p-3">
         <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-subtle">Timeline</h4>
         <ul className="relative ml-2 space-y-2 border-l border-line pl-4">
-          {run.timeline.map((t) => (
-            <li key={t.id} className="relative">
+          {run.timeline.map((t, i) => (
+            <li key={`${t.id}-${i}`} className="relative">
               <span className="absolute -left-[22px] top-0.5 grid h-[13px] w-[13px] place-items-center rounded-full border border-line bg-surface">
                 <Icon name={TIMELINE_ICON[t.type]} size={8} style={{ color: TIMELINE_COLOR[t.type] }} />
               </span>

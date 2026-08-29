@@ -3,8 +3,8 @@ import { motion } from 'framer-motion';
 import { spring, useAppStore, cn } from '@aura/core';
 import { Badge, Button, Icon, PanelSection, PropertyRow } from '@aura/ui';
 import { useWorkspace } from '../data/useWorkspace';
-import { useLayoutStore } from '../ops/layoutStore';
 import { aiClient, type HealthResult, type ProviderStatus } from '../ai/aiClient';
+import { ContextPanel } from '../context/ContextPanel';
 
 export function RightPanel() {
   const nav = useAppStore((s) => s.nav);
@@ -61,6 +61,10 @@ function ProjectContext({ projectId }: { projectId: string }) {
         <PropertyRow label="Files" value={String(profile?.fileCount ?? 0)} />
         <PropertyRow label="Memory items" value={String(live ? memory.length : 0)} />
       </PanelSection>
+
+      {/* What AURA understands about this project, and how current it is.
+          Scoped to this project id — never the merged workspace. */}
+      <ContextPanel projectId={projectId} />
     </>
   );
 }
@@ -69,7 +73,6 @@ function NavContext() {
   const setNav = useAppStore((s) => s.setNav);
   const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
   const openAddProjectDialog = useAppStore((s) => s.openAddProjectDialog);
-  const openPanel = useLayoutStore((s) => s.openPanel);
   const projectCount = useWorkspace((s) => s.projects.length);
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [reachable, setReachable] = useState<boolean | null>(null);
@@ -82,7 +85,6 @@ function NavContext() {
 
   const actions = [
     { icon: 'plus' as const, label: 'Add Project', hint: 'Import a real folder', run: () => { setNav('home'); openAddProjectDialog(); } },
-    { icon: 'spark' as const, label: 'Help Chat Assistant', hint: 'Chat over your project', run: () => { setNav('workspace'); openPanel('ai-chat'); } },
     { icon: 'command' as const, label: 'Command Bar', hint: 'Run any command', run: () => setPaletteOpen(true) },
   ];
 
@@ -106,9 +108,9 @@ function NavContext() {
         <div className="space-y-2">
           <PropertyRow label="Connection" value={
             <span className={cn('inline-flex items-center gap-1.5 text-[11.5px] font-medium',
-              reachable === false ? 'text-critical' : health?.health.ok ? 'text-positive' : 'text-text-subtle')}>
+              reachable === false ? 'text-critical' : 'text-positive')}>
               <span className="h-1.5 w-1.5 rounded-full bg-current" />
-              {reachable === false ? 'Offline' : health?.health.ok ? `${health.health.latencyMs}ms` : 'Not connected'}
+              {reachable === false ? 'Offline' : health?.health.ok ? `${health.health.latencyMs}ms` : 'Connected'}
             </span>
           } />
           <PropertyRow label="Provider" value={!provStatus || provStatus.type === 'none' ? 'Not connected' : provStatus.label} />

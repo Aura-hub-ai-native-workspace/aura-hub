@@ -219,13 +219,13 @@ class TaskPlanner:
                         kind="audit-only",
                         description="git exit-code verification in the Fabric."))],
                 createdAt=now)
-        elif caps == {"fs.write_file"}:
+        elif caps == {"filesystem.write"}:
             write_input = _write_inputs(intent)
             plan = TaskPlan(
                 planId=_plan_id(), sessionId=session_id, intent=intent,
                 tasks=[_task(
                     "t1", f"Write {write_input.get('path', 'file')}",
-                    capability_id="fs.write_file",
+                    capability_id="filesystem.write",
                     input=write_input,
                     verification=VerificationRequirement(
                         kind="read-back",

@@ -267,14 +267,27 @@ async function main() {
     section('Run history, filtered by what started it');
     await page.getByRole('tab', { name: /^Runs/ }).first().click();
     await page.waitForTimeout(2500);
-    const byRule = page.getByRole('button', { name: /Started by a rule/ }).first();
-    check('runs can be filtered to those a rule started', await byRule.count() > 0);
-    if (await byRule.count()) {
-      await byRule.click();
-      await page.waitForTimeout(1200);
-      const filtered = await page.textContent('body');
-      check('the automation-started run is listed', filtered.includes('Automation rule'));
-    }
+    /* The origin filter was a local predicate over a client-side merge.
+       It is now a `trigger` query parameter on the service's index, so
+       the assertion is that the filter really narrows to what the
+       service returns for that trigger — which the old one could not
+       check, because both sides were the same array. */
+    const triggerSelect = page.getByLabel('Filter by what started the run');
+    check('runs can be filtered by what started them', await triggerSelect.count() > 0);
+    await triggerSelect.selectOption('automation');
+    await page.waitForTimeout(1800);
+    const fromService = await api('/workflow-runs?trigger=automation&limit=50');
+    const rowsShown = await page.locator('tbody tr').count();
+    check(
+      'and the filter is the service’s answer, not a local predicate',
+      rowsShown === Math.min(fromService.runs.length, 50),
+      `${rowsShown} rows, service returned ${fromService.runs.length} of ${fromService.total}`,
+    );
+
+    // Still filtered to `automation` from the check above.
+    const filtered = await page.textContent('body');
+    check('the automation-started run is listed', filtered.includes('Automation rule'));
+
 
     section('States are reported as the service reports them');
     // Not a vocabulary spot-check: the exact state string the service holds

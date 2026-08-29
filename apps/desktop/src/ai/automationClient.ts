@@ -21,7 +21,7 @@
  *     automation waiting on a person — not as a failure.
  */
 
-import { aiClient } from './aiClient';
+import { aiClient, type DryRunReport } from './aiClient';
 
 const BASE = aiClient.base;
 
@@ -346,7 +346,88 @@ const jsend = <T>(method: string, p: string, body?: unknown): Promise<T> =>
     body: body === undefined ? undefined : JSON.stringify(body),
   }).then((r) => r.json() as Promise<T>);
 
+/* ── rule dry run (POST /automation/rules/:id/dry-run) ────────────
+   The service's own answer to "what would this rule do?". It evaluates
+   conditions and policy and creates nothing — the report carries its own
+   proof of that, which the verification suite checks against the real
+   system rather than taking on trust.
+
+   The certainty vocabulary is the service's, not a presentation choice:
+   `known` means it was actually determined, `conditional` means it
+   depends on something a dry run cannot decide, and `unknown` means it
+   could not be reasoned about at all. `value` is null unless `known`, so
+   there is no such thing as a guessed answer here. */
+
+export type Certainty = 'known' | 'conditional' | 'unknown';
+
+export interface Determination<T> {
+  certainty: Certainty;
+  /** Null whenever `certainty` is not `known`. Never a guess. */
+  value: T | null;
+  reason: string;
+  /** What it hinges on, for `conditional`. */
+  dependsOn?: string;
+}
+
+export interface PlannedRuleAction {
+
+  actionId: string;
+  action: string;
+  label: string;
+  /** Would the chain reach this action at all? */
+  reached: Determination<boolean>;
+  /** Present for `run-workflow`: the nested workflow's own dry run. */
+  workflow?: { workflowId: string; workflowName: string; dryRun: DryRunReport | null; error?: string };
+  capabilities: { capabilityId: string; decision: string; rule: string; risk: string; wouldAskHuman: boolean; wouldBeDenied: boolean }[];
+  continueOnError: boolean;
+}
+
+export interface RuleDryRunReport {
+  ruleId: string;
+  ruleName: string;
+  enabled: boolean;
+  at: string;
+  /** Structural problems: a rule carrying these can never run correctly. */
+  issues: { field: string; message: string }[];
+  trigger: {
+    type: string;
+    accepted: Determination<boolean>;
+    schedule?: { cron: string; description: string; nextFireAt: string | null; timezone: 'local' };
+  };
+  conditions: {
+    outcome: Determination<boolean>;
+    /** Populated only when a sample event was supplied. */
+    evaluations: ConditionEvaluation[];
+  };
+  actions: PlannedRuleAction[];
+  capabilitiesRequested: string[];
+  approvalsRequired: { actionId: string; capabilityId: string; reason: string; rule: string }[];
+  denials: { actionId: string; capabilityId: string; reason: string; rule: string }[];
+  wouldRunUnattended: Determination<boolean>;
+  /** Named uncertainties, so the report states its own limits. */
+  unknowns: { what: string; why: string }[];
+  /** The service's proof that it did nothing. Displayed, never asserted. */
+  sideEffects: {
+    automationRunsCreated: 0;
+    workflowRunsCreated: 0;
+    invocations: 0;
+    approvalsCreated: 0;
+    filesWritten: 0;
+    note: string;
+  };
+}
+
+/** A sample event to reason against. Shapes the known/conditional line. */
+export interface SampleEvent {
+  type: string;
+  projectId: string;
+  projectPath: string;
+  at: string;
+  payload: Record<string, unknown>;
+}
+
 export const automationClient = {
+
   templates: () => jget<{ templates: AutomationTemplateInfo[] }>('/automation/templates'),
 
   listRules: () => jget<{ rules: AutomationRuleSummary[] }>('/automation/rules'),
@@ -388,6 +469,18 @@ export const automationClient = {
   resumeRule: (id: string) => jsend<AutomationRun | { error: string }>('POST', `/automation/rules/${id}/resume`, {}),
 
   listRuns: (ruleId: string) => jget<{ runs: AutomationRunSummary[] }>(`/automation/rules/${ruleId}/runs`),
+
+  /**
+   * What this rule would do, without doing any of it.
+   *
+   * Supplying `sampleEvent` is exactly what moves the trigger and the
+   * conditions from `conditional` to `known`: with a payload the service
+   * really evaluates them, and without one it says so rather than
+   * assuming they pass.
+   */
+  dryRunRule: (ruleId: string, body: { sampleEvent?: SampleEvent; projectId?: string } = {}) =>
+    jsend<RuleDryRunReport | { error: string }>('POST', `/automation/rules/${ruleId}/dry-run`, body),
+
 
   /**
    * Every automation run, across every rule, filtered and paged by the

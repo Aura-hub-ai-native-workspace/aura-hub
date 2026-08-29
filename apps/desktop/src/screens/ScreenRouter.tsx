@@ -59,16 +59,17 @@ export function ScreenRouter() {
   const nav = useAppStore((s) => s.nav);
   const activeProjectId = useAppStore((s) => s.activeProjectId);
   const projectTab = useAppStore((s) => s.projectTab);
+  const askAuraOpen = useAppStore((s) => s.askAuraOpen);
 
   const inProject = Boolean(activeProjectId);
   const key = inProject ? `project:${activeProjectId}` : nav;
 
-  // The workflow editor and the Code Workspace are fixed-viewport canvases
-  // (their own internal scrolling regions); every other screen scrolls the
-  // page normally.
+  // The workflow editor, the Code Workspace and Ask AURA are fixed-viewport
+  // canvases (their own internal scrolling regions); every other screen
+  // scrolls the page normally.
   const fixedViewport =
     (!inProject && (nav === 'workflows' || nav === 'workspace' || nav === 'environment')) ||
-    (inProject && projectTab === 'code');
+    (inProject && (projectTab === 'code' || askAuraOpen));
 
   return (
     <motion.div

@@ -1,147 +1,80 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { popVariants, scrimVariants } from '@aura/core';
-import { Button, Icon, IconButton } from '@aura/ui';
+import { popVariants, scrimVariants, useAppStore } from '@aura/core';
+import { Badge, Button, Icon, IconButton } from '@aura/ui';
 import { AiMarkdown } from '../ai/AiMarkdown';
+import { useWorkspace } from '../data/useWorkspace';
+import {
+  aiClient, contextUnavailable,
+  type ContextFreshness, type ContextView,
+} from '../ai/aiClient';
 
 /**
- * AskAuraChatbox — the dashboard's "Ask AURA" quick chat.
+ * AskAuraChatbox — the dashboard's "Ask AURA".
  * ------------------------------------------------------------------
- * A large, frontend-only chat modal. Everything here is local mock
- * behaviour: typing indicator, streaming answers and canned replies —
- * the backend and its APIs are never touched.
+ * Answers come from the real AI service (`POST /stream`), grounded in
+ * the open project's context. There are no canned replies: if the
+ * service cannot answer, the failure is shown as the failure it is.
+ *
+ * This component gathers NO repository context of its own. Grounding is
+ * the Context Fabric's job — the service assembles it server-side for
+ * the mounted project, and this surface only *reports* which project and
+ * how fresh that understanding is, so the user can see what an answer
+ * rests on.
+ *
+ * It uses the one `aiClient`. There is no second AI client.
  */
 
 interface ChatMsg {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** A transport/service failure, rendered as an error rather than an answer. */
+  failed?: boolean;
 }
 
 const SUGGESTIONS = [
-  'What can you do?',
-  'How do I add a project?',
-  'Explain the AURA Hub architecture',
-  'Tips for the frontend',
+  'Explain this project',
+  'What changed recently?',
+  'Describe the architecture',
+  'What is this repository for?',
 ];
 
-const GREETING = 'Hi! I\'m AURA. How can I help you?';
-
-const MOCK_ANSWERS: { match: RegExp; answer: string }[] = [
-  {
-    match: /^(hi|hello|hey|yo|good (morning|afternoon|evening))/i,
-    answer: `Hello! It's good to hear from you. Here's a quick tour of what I can help with:
-
-- **Projects** — add a real folder, index it, and ask me about its code.
-- **Environment** — navigation, shortcuts, panels and settings.
-- **Frontend** — structure, theming and UI patterns in this app.
-
-Go ahead and ask me anything.`,
-  },
-  {
-    match: /what can you do|help|capabil|features|about you/i,
-    answer: `I can help you get the most out of AURA Hub:
-
-- **Answer questions** about your projects and this environment.
-- **Explain code** — structure, entry points, architecture.
-- **Point you to the right tool** — command bar, settings, editor.
-
-For deep, project-grounded answers, open a project and use the full **AI Workspace** — it retrieves context from the project's code, system graph and memory.
-
-> This quick chat is a lightweight preview with local responses.`,
-  },
-  {
-    match: /add.*project|new project|import/i,
-    answer: `Adding a project is easy:
-
-1. Click **Add Project** on the dashboard.
-2. Enter the absolute path of a real folder (in the packaged app, a native folder picker fills it for you).
-3. AURA profiles it and starts indexing — languages, frameworks, dependencies and system graph.
-
-After that the project appears under **Continue working**, and you can ask project-specific questions in the AI Workspace.`,
-  },
-  {
-    match: /architect|structure|stack|monorepo|how.*built|works/i,
-    answer: `AURA Hub is a **monorepo** with a workspace-based architecture:
-
-- **apps/desktop** — the React + Vite + Tauri shell that renders everything you see.
-- **packages/ui** — the shared design system (buttons, cards, icons, dialogs).
-- **packages/core** — shared state, motion presets and theming tokens.
-
-The shell is organized around screens, a sidebar, a right context panel, and project-scoped workspaces. Intelligence is kept deliberately separate from the environment chrome.`,
-  },
-  {
-    match: /frontend|design|theme|ui|style|colors|look/i,
-    answer: `The frontend is built with **React + Tailwind CSS**, using a semantic theme layer:
-
-- **Dark theme** — deep canvas with layered surfaces.
-- **Blue/cyan accents** — glow, rounded corners and soft spring motion.
-- **Design tokens** — colors swap in global.css per theme; no hard-coded palette.
-
-Everything is responsive: the sidebar collapses on narrow viewports, and dialogs adapt to small screens.`,
-  },
-  {
-    match: /backend|api|server|database|endpoint/i,
-    answer: `AURA Hub's backend concerns (AI provider, indexing, persistence) live outside the shell. This quick chat is **frontend-only** — it answers locally without calling any backend service.
-
-For real backend-grounded answers:
-
-1. Open a project from the dashboard.
-2. Use **Ask AURA** there (or the AI Workspace nav).
-3. Answers stream from the AI service, grounded in that project's code.`,
-  },
-];
-
-const FALLBACK =
-  `Good question. For a precise answer grounded in real data, open a project and use the **AI Workspace** — it retrieves context from the project's code, system graph and memory.
-
-In the meantime, you can also try the **Command Bar** (\u2318K) to run any action, or ask me about one of these topics:
-
-- What can you do?
-- How do I add a project?
-- Explain the AURA Hub architecture
-- Tips for the frontend`;
+const FRESHNESS_LABEL: Record<ContextFreshness, { label: string; tone: 'positive' | 'attention' | 'neutral' }> = {
+  fresh: { label: 'Context fresh', tone: 'positive' },
+  stale: { label: 'Context stale', tone: 'attention' },
+  unknown: { label: 'Context unknown', tone: 'neutral' },
+};
 
 let chatId = 0;
 const nextId = () => `ask-aura-${++chatId}`;
 
-function mockAnswer(question: string): string {
-  const hit = MOCK_ANSWERS.find((m) => m.match.test(question));
-  return hit ? hit.answer : FALLBACK;
-}
-
 export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState('');
-  const [typing, setTyping] = useState(false);
-  const seeded = useRef(false);
+  const [streaming, setStreaming] = useState(false);
+  const [context, setContext] = useState<ContextView | null>(null);
+
+  const openId = useWorkspace((s) => s.openId);
+  const setNav = useAppStore((s) => s.setNav);
+
   const sending = useRef(false);
-  const timers = useRef<number[]>([]);
+  const abort = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const clearTimers = () => {
-    timers.current.forEach((t) => window.clearTimeout(t));
-    timers.current = [];
-  };
-
-  // Seed the greeting once, the first time the chatbox opens.
+  /* Which project an answer would be grounded in, and how current that
+     understanding is. Read-only — opening this chat never mounts or
+     indexes anything. */
   useEffect(() => {
-    if (!isOpen || seeded.current) return;
-    seeded.current = true;
-    const id = nextId();
-    setMessages([{ id, role: 'assistant', content: '' }]);
-    setTyping(true);
-    let i = 0;
-    const step = () => {
-      i += 2 + Math.floor(Math.random() * 3);
-      setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: GREETING.slice(0, i) } : m)));
-      if (i < GREETING.length) timers.current.push(window.setTimeout(step, 12));
-      else setTyping(false);
-    };
-    timers.current.push(window.setTimeout(step, 350));
-  }, [isOpen]);
+    if (!isOpen || !openId) { setContext(null); return; }
+    let cancelled = false;
+    void aiClient.contextView(openId)
+      .then((res) => { if (!cancelled) setContext(contextUnavailable(res) ? null : res); })
+      .catch(() => { if (!cancelled) setContext(null); });
+    return () => { cancelled = true; };
+  }, [isOpen, openId]);
 
   // Escape to close + body scroll lock (same behaviour as <Dialog>).
   useEffect(() => {
@@ -158,42 +91,67 @@ export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: 
   // Focus the composer whenever the chatbox opens.
   useEffect(() => {
     if (!isOpen) return;
-    timers.current.push(window.setTimeout(() => inputRef.current?.focus(), 120));
+    const t = window.setTimeout(() => inputRef.current?.focus(), 120);
+    return () => window.clearTimeout(t);
   }, [isOpen]);
 
   // Keep the thread scrolled to the newest message.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, typing, isOpen]);
+  }, [messages, streaming, isOpen]);
 
-  // Stop any pending mock work on unmount.
-  useEffect(() => clearTimers, []);
+  // A closed chat must not keep a stream open against the service.
+  useEffect(() => {
+    if (isOpen) return;
+    abort.current?.abort();
+    abort.current = null;
+    sending.current = false;
+    setStreaming(false);
+  }, [isOpen]);
 
-  const send = (raw?: string) => {
+  useEffect(() => () => abort.current?.abort(), []);
+
+  const send = useCallback((raw?: string) => {
     const text = (raw ?? input).trim();
-    if (!text || sending.current) return;
+    if (!text || sending.current || !openId) return;
+
     sending.current = true;
     setInput('');
-    setMessages((prev) => [...prev, { id: nextId(), role: 'user', content: text }]);
+    setStreaming(true);
 
-    setTyping(true);
-    const answer = mockAnswer(text);
-    timers.current.push(
-      window.setTimeout(() => {
-        setTyping(false);
-        sending.current = false;
-        const id = nextId();
-        setMessages((prev) => [...prev, { id, role: 'assistant', content: '' }]);
-        let i = 0;
-        const step = () => {
-          i += 2 + Math.floor(Math.random() * 3);
-          setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: answer.slice(0, i) } : m)));
-          if (i < answer.length) timers.current.push(window.setTimeout(step, 14));
-        };
-        step();
-      }, 550 + Math.random() * 550),
+    const replyId = nextId();
+    setMessages((prev) => [
+      ...prev,
+      { id: nextId(), role: 'user', content: text },
+      { id: replyId, role: 'assistant', content: '' },
+    ]);
+
+    const write = (fn: (m: ChatMsg) => ChatMsg) =>
+      setMessages((prev) => prev.map((m) => (m.id === replyId ? fn(m) : m)));
+
+    const ac = new AbortController();
+    abort.current = ac;
+
+    void aiClient.stream(
+      text,
+      {
+        onToken: (t) => write((m) => ({ ...m, content: m.content + t })),
+        onDone: () => { sending.current = false; setStreaming(false); },
+        onError: (e) => {
+          sending.current = false;
+          setStreaming(false);
+          // The real reason, verbatim. Never a canned recovery answer.
+          write((m) => ({
+            ...m,
+            failed: true,
+            content: m.content || e.message || 'The AURA service could not answer.',
+          }));
+        },
+      },
+      ac.signal,
+      { projectId: openId },
     );
-  };
+  }, [input, openId]);
 
   const onKey = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -201,6 +159,8 @@ export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: 
       send();
     }
   };
+
+  const freshness = context ? FRESHNESS_LABEL[context.freshness] : null;
 
   return createPortal(
     <AnimatePresence>
@@ -235,16 +195,16 @@ export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: 
                 </span>
                 <div className="min-w-0">
                   <h2 className="text-[15.5px] font-semibold tracking-[-0.01em] text-text">Ask AURA</h2>
-                  <div className="mt-0.5 flex items-center gap-1.5">
-                    <span className="relative flex h-1.5 w-1.5">
-                      <span className="absolute inline-flex h-full w-full rounded-full bg-positive aura-live" />
-                      <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-positive" />
-                    </span>
-                    <span className="text-[11px] font-medium text-text-muted">Online</span>
-                  </div>
+                  {/* What an answer would be grounded in. Stated, not implied. */}
+                  <p className="mt-0.5 truncate text-[11px] text-text-muted">
+                    {context ? `Grounded in ${context.project.name}` : openId ? 'Reading context…' : 'No project open'}
+                  </p>
                 </div>
               </div>
-              <IconButton icon="close" label="Close chat" size="sm" onClick={onClose} />
+              <div className="flex shrink-0 items-center gap-2">
+                {freshness && <Badge tone={freshness.tone} dot>{freshness.label}</Badge>}
+                <IconButton icon="close" label="Close chat" size="sm" onClick={onClose} />
+              </div>
             </div>
 
             {/* Thread */}
@@ -262,8 +222,16 @@ export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: 
                       <div className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-accent-50 text-accent dark:bg-accent/15">
                         <Icon name="spark" size={15} />
                       </div>
-                      <div className="min-w-0 flex-1 rounded-2xl rounded-tl-md border border-line bg-surface-hover/60 px-4 py-2.5">
-                        {m.content ? (
+                      <div
+                        className={
+                          m.failed
+                            ? 'min-w-0 flex-1 rounded-2xl rounded-tl-md border border-critical/40 bg-critical/10 px-4 py-2.5 text-[13px] text-critical'
+                            : 'min-w-0 flex-1 rounded-2xl rounded-tl-md border border-line bg-surface-hover/60 px-4 py-2.5'
+                        }
+                      >
+                        {m.failed ? (
+                          m.content
+                        ) : m.content ? (
                           <AiMarkdown source={m.content} />
                         ) : (
                           <div className="flex h-6 items-center gap-1.5">
@@ -282,28 +250,24 @@ export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: 
                   ),
                 )}
 
-                {typing && messages.length > 0 && messages[messages.length - 1].role === 'user' && (
-                  <div className="flex gap-3">
-                    <div className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-accent-50 text-accent dark:bg-accent/15">
-                      <Icon name="spark" size={15} />
-                    </div>
-                    <div className="inline-flex items-center gap-2 rounded-2xl rounded-tl-md border border-line bg-surface-hover/60 px-4 py-3">
-                      <span className="flex gap-1">
-                        {[0, 1, 2].map((i) => (
-                          <motion.span
-                            key={i}
-                            className="h-1.5 w-1.5 rounded-full bg-accent"
-                            animate={{ opacity: [0.25, 1, 0.25], y: [0, -3, 0] }}
-                            transition={{ duration: 0.9, repeat: Infinity, delay: i * 0.16 }}
-                          />
-                        ))}
-                      </span>
-                      <span className="text-[12.5px] text-text-muted">AURA is thinking…</span>
-                    </div>
+                {/* No project open: say so and point at the fix. Ask AURA is
+                    grounded in a project — answering without one would mean
+                    inventing the subject. */}
+                {messages.length === 0 && !openId && (
+                  <div className="rounded-2xl border border-dashed border-line px-4 py-6 text-center">
+                    <Icon name="folder" size={22} className="mx-auto text-text-subtle" />
+                    <p className="mt-2 text-[13px] font-medium text-text">No project is open</p>
+                    <p className="mx-auto mt-1 max-w-sm text-[12px] leading-relaxed text-text-muted">
+                      AURA answers from a project's real code, architecture and history. Open one and
+                      its context becomes the ground for every answer here.
+                    </p>
+                    <Button size="sm" variant="secondary" className="mt-3" onClick={() => { onClose(); setNav('home'); }}>
+                      Choose a project
+                    </Button>
                   </div>
                 )}
 
-                {messages.length === 0 && (
+                {messages.length === 0 && openId && (
                   <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                     {SUGGESTIONS.map((s) => (
                       <button
@@ -329,14 +293,18 @@ export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: 
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={onKey}
                     rows={1}
-                    placeholder="Ask AURA anything..."
-                    className="max-h-40 min-h-[24px] flex-1 resize-none bg-transparent px-2 py-1.5 text-[13.5px] text-text outline-none placeholder:text-text-subtle"
+                    disabled={!openId}
+                    placeholder={openId ? 'Ask about this project…' : 'Open a project to ask AURA'}
+                    className="max-h-40 min-h-[24px] flex-1 resize-none bg-transparent px-2 py-1.5 text-[13.5px] text-text outline-none placeholder:text-text-subtle disabled:cursor-not-allowed"
                   />
-                  <Button size="sm" icon="arrow-right" disabled={!input.trim() || typing} onClick={() => send()}>
+                  <Button size="sm" icon="arrow-right" disabled={!input.trim() || streaming || !openId} onClick={() => send()}>
                     Send
                   </Button>
                 </div>
-                <div className="mt-1.5 px-1 text-[10.5px] text-text-subtle">Enter to send · Shift+Enter for a new line · local preview responses</div>
+                <div className="mt-1.5 px-1 text-[10.5px] text-text-subtle">
+                  Enter to send · Shift+Enter for a new line
+                  {context?.contextVersion !== null && context !== null && ` · context v${context.contextVersion}`}
+                </div>
               </div>
             </div>
           </motion.div>

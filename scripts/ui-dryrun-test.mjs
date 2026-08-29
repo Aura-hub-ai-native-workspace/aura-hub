@@ -22,7 +22,11 @@ const HEADED = process.argv.includes('--headed');
 
 const RULE_NAME = 'Dry-run test — previews a governed workflow';
 
+/** The repository this suite plans against — a real, registered project. */
+const PROJECT_PATH = '/mnt/storage/aura-hub';
+
 let failures = 0;
+
 let checks = 0;
 const check = (name, pass, detail = '') => {
   checks += 1;
@@ -212,20 +216,113 @@ async function main() {
     await page.waitForTimeout(5000);
     const rp = await page.textContent('body');
 
-    check('the rule preview declares itself', rp.includes('THIS IS A PREVIEW. NO ACTIONS WERE EXECUTED.'));
-    check('it states no automation run was created', rp.includes('No automation run was created'));
-    check('it states no workflow run was created', rp.includes('No workflow run was created'));
-    check('the chain is laid out trigger → conditions → steps', rp.includes('Trigger') && rp.includes('Conditions'));
-    check('conditions are marked UNKNOWN, not guessed', rp.includes('UNKNOWN'));
-    check('it says why conditions cannot be evaluated', rp.includes('would be a second engine'));
-    check('the workflow step shows real policy', rp.includes(governed.report.envelope.cannot.slice(0, 30)));
-    check('the full plan is reachable from the rule preview', await page.getByRole('button', { name: /Full plan/ }).count() > 0);
+    /* This block used to assert a preview COMPOSED in the renderer,
+       because no rule-level dry run existed: conditions were marked
+       UNKNOWN with "would be a second engine" as the reason, and the gap
+       was disclosed on screen. `POST /automation/rules/:id/dry-run` now
+       exists and the screen renders the service's report, so the same
+       questions are asked of the real contract instead. */
+    const svcReport = await post(`/automation/rules/${created.id}/dry-run`, { projectId: 'aura-hub-2' });
+    check('the service has a rule dry-run contract', !('error' in svcReport), Object.keys(svcReport).join(','));
+    check('the rule preview declares itself', rp.includes('THIS IS A PREVIEW. NOTHING WAS EXECUTED.'));
     check(
-      'the missing rule-dry-run contract is disclosed',
-      rp.includes('no rule-level dry run yet'),
+      'the inertness counts are the service’s own',
+      rp.includes(svcReport.sideEffects.note.slice(0, 40)),
+      svcReport.sideEffects.note.slice(0, 50),
+    );
+    check('the chain is laid out trigger → conditions → actions', rp.includes('Trigger') && rp.includes('Conditions') && rp.includes('Actions'));
+    check(
+      'certainty is rendered in the service’s own vocabulary',
+      rp.includes(svcReport.trigger.accepted.certainty.toUpperCase()),
+      `trigger certainty ${svcReport.trigger.accepted.certainty}`,
+    );
+    check(
+      'and the reason shown is the service’s reason',
+      rp.includes(svcReport.trigger.accepted.reason.slice(0, 40)),
+    );
+    check(
+      'the condition outcome comes from the service',
+      rp.includes(svcReport.conditions.outcome.reason.slice(0, 40)),
+      svcReport.conditions.outcome.certainty,
+    );
+    check(
+      'what the preview cannot know is named',
+      svcReport.unknowns.length === 0 || rp.includes(svcReport.unknowns[0].what),
+      `${svcReport.unknowns.length} unknowns`,
+    );
+    const nested = svcReport.actions.find((a) => a.workflow?.dryRun);
+    check(
+      'a run-workflow action carries the nested workflow plan',
+      Boolean(nested),
+      nested ? `${nested.workflow.workflowName}: ${nested.workflow.dryRun.plan.length} steps` : 'none',
+    );
+    check(
+      'and that plan is reachable from the rule preview',
+      !nested || rp.includes(nested.workflow.workflowName),
     );
 
+
+    /* ── the sample event, which is what moves the line ────────────
+       Without a payload the service cannot say whether the conditions
+       pass — only what they depend on. With one it really evaluates
+       them. That boundary IS the known/conditional distinction, so it is
+       worth proving rather than assuming. */
+    section('A sample event moves conditions from conditional to known');
+    const noSample = await post(`/automation/rules/${created.id}/dry-run`, { projectId: 'aura-hub-2' });
+    check('without a sample the conditions are not claimed',
+      noSample.conditions.outcome.certainty !== 'known' && noSample.conditions.outcome.value === null,
+      `${noSample.conditions.outcome.certainty}, value ${JSON.stringify(noSample.conditions.outcome.value)}`);
+    check('and no per-condition results are invented',
+      noSample.conditions.evaluations.length === 0);
+
+    const withSample = await post(`/automation/rules/${created.id}/dry-run`, {
+      projectId: 'aura-hub-2',
+      sampleEvent: {
+        type: 'pr-merged', projectId: 'aura-hub-2', projectPath: PROJECT_PATH,
+        at: new Date().toISOString(), payload: { commit: 'abc1234' },
+      },
+    });
+    check('with a sample the conditions are really evaluated',
+      withSample.conditions.outcome.certainty === 'known',
+      `${withSample.conditions.outcome.certainty}, value ${JSON.stringify(withSample.conditions.outcome.value)}`);
+    check('and each condition reports its own result',
+      withSample.conditions.evaluations.length === 1 && withSample.conditions.evaluations[0].field === 'commit',
+      JSON.stringify(withSample.conditions.evaluations));
+
+    // A payload that does NOT satisfy the condition must be answered
+    // `known: false`, not merely "conditional" — otherwise the report is
+    // only ever optimistic.
+    const failing = await post(`/automation/rules/${created.id}/dry-run`, {
+      projectId: 'aura-hub-2',
+      sampleEvent: {
+        type: 'pr-merged', projectId: 'aura-hub-2', projectPath: PROJECT_PATH,
+        at: new Date().toISOString(), payload: {},
+      },
+    });
+    check('a payload that fails the condition is answered, not hedged',
+      failing.conditions.outcome.certainty === 'known' && failing.conditions.outcome.value === false,
+      `${failing.conditions.outcome.certainty}, value ${JSON.stringify(failing.conditions.outcome.value)}`);
+
+    // Now through the UI, which must show the service's evaluation.
+    const sampleBtn = page.getByRole('button', { name: /Reason about a specific event/ }).first();
+    check('the preview offers a sample event', await sampleBtn.count() > 0);
+    if (await sampleBtn.count()) {
+      await sampleBtn.click();
+      await page.waitForTimeout(600);
+      const box = page.getByLabel('Sample event payload as JSON');
+      await box.fill('{"commit":"abc1234"}');
+      await page.getByRole('button', { name: /Preview against this event/ }).first().click();
+      await page.waitForTimeout(3500);
+      const sampled = await page.textContent('body');
+      check('the UI shows the condition was evaluated', sampled.includes('KNOWN'));
+      check('and names the field the service evaluated', sampled.includes('commit'));
+      check('the reason shown is the service’s reason',
+        sampled.includes(withSample.conditions.outcome.reason.slice(0, 40)),
+        withSample.conditions.outcome.reason.slice(0, 50));
+    }
+
     section('Zero side effects — measured, not asserted');
+
     const auditAfter = (await api('/fabric/audit')).audit.length;
     const runsAfter = (await api(`/workflows/${governed.id}/runs`)).runs.length;
     const autoRuns = (await api(`/automation/rules/${created.id}/runs`)).runs.length;

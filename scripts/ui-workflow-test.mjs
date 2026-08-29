@@ -18,7 +18,21 @@ const APP = process.env.APP_URL ?? 'http://localhost:1420';
 const CHROME = process.env.CHROMIUM ?? '/usr/bin/chromium';
 const HEADED = process.argv.includes('--headed');
 
+/** How the UI words each node state. Mirrors `NODE_STATE_LABEL` in runs.ts. */
+const NODE_STATE_WORDS = {
+  queued: 'queued',
+  running: 'running',
+  'awaiting-approval': 'waiting for you',
+  succeeded: 'succeeded',
+  failed: 'failed',
+  denied: 'denied by policy',
+  skipped: 'skipped',
+  cancelled: 'cancelled',
+  'timed-out': 'timed out',
+};
+
 let failures = 0;
+
 let checks = 0;
 const check = (name, pass, detail = '') => {
   checks += 1;
@@ -113,14 +127,22 @@ async function main() {
     await page.getByRole('tab', { name: /^Runs/ }).first().click();
     await page.waitForTimeout(700);
     const runsText = await page.textContent('body');
+    /* These two used to assert that the list disclosed its own
+       incompleteness — it merged the per-workflow histories the store
+       happened to hold, and said so. It now reads the service's index,
+       so the honest claim changed: the question is no longer "does it
+       admit what it misses" but "does it agree with the service". */
+    const indexPage = await api('/workflow-runs?limit=1');
     check(
-      'the run list says where it comes from',
-      runsText.includes('No runs recorded yet') || runsText.includes('Covers the workflows currently in your library'),
+      'the run list says the service filtered it',
+      runsText.includes('Filtered and counted by the service'),
     );
     check(
-      'the run list states its own scale',
-      /No runs recorded yet|across your workflows/.test(runsText),
+      'and its total is the service’s total, not the page size',
+      indexPage.total === 0 || runsText.includes(indexPage.total.toLocaleString()),
+      `service total ${indexPage.total}`,
     );
+
 
     section('Approvals surface — the real Fabric store');
     await page.getByRole('tab', { name: /^Approvals/ }).first().click();
@@ -132,7 +154,7 @@ async function main() {
       'the approvals surface matches the service',
       pending.length > 0
         ? apprText.includes('Authorization required')
-        : apprText.includes('Nothing is waiting on you'),
+        : apprText.includes('Nothing waiting on you') || apprText.includes('Nothing is waiting on you'),
       `${pending.length} pending on the service`,
     );
     check(
@@ -184,7 +206,7 @@ async function main() {
     // contain a node whose label the search filtered out of the list.
     const palette = await page.locator('input[placeholder="Search nodes…"]').first()
       .evaluate((el) => el.closest('div.flex.w-\\[240px\\]')?.textContent ?? '');
-    check('search narrows the palette', palette.includes('Git Commit') && !palette.includes('Current Conversation'), palette.slice(0, 80));
+    check('search narrows the palette', palette.includes('Git Diff') && !palette.includes('Shell Command'), palette.slice(0, 80));
     await search.fill('');
     await page.waitForTimeout(400);
 
@@ -338,9 +360,98 @@ async function main() {
       await page.waitForTimeout(1200);
       const histText = await page.textContent('body');
       check('the run appears in this workflow’s history', latest ? histText.includes(latest.versionId) : false);
+
+      /* ── per-step INPUT / OUTPUT / STATE / TRANSITIONS / EVIDENCE ──
+         `NodeRunRecord` carries `input`, `output` and `transitions`, all
+         redacted and bounded by the service before they are written.
+         None of it used to be rendered, so "what did this step actually
+         receive" — the first question asked of a node that produced the
+         wrong thing — had no answer in the UI. */
+      section('Per-step resolved input, output and state history');
+      const stepRec = await api(`/workflows/${withNodes.id}/runs/${latest.id}`);
+      const nodesWith = Object.values(stepRec.nodes);
+      const withInput = nodesWith.find((n) => n.input);
+      const withTransitions = nodesWith.find((n) => (n.transitions ?? []).length > 1);
+      check('the service records what a step received', Boolean(withInput), withInput ? withInput.nodeId : 'none');
+      check('and every state it passed through', Boolean(withTransitions),
+        withTransitions ? withTransitions.transitions.map((t) => t.to).join('→') : 'none');
+
+      await page.locator('tbody tr').first().click();
+      await page.waitForTimeout(2000);
+      const detailToggle = page.getByRole('button', { name: /Input, output and state/ }).first();
+      check('the run view offers the step detail', await detailToggle.count() > 0);
+      if (await detailToggle.count()) {
+        await detailToggle.click();
+        await page.waitForTimeout(900);
+        const dt = await page.textContent('body');
+        check('resolved input is labelled as what the step received', dt.includes('Resolved input'));
+        check('and distinguished from what the author configured',
+          dt.includes('not what the node is configured with'));
+        check('the output is shown separately', dt.includes('Output'));
+        check('the state history is rendered', dt.includes('State history'));
+        if (withTransitions) {
+          const last = withTransitions.transitions[withTransitions.transitions.length - 1];
+          check('and it is the service’s own history',
+            dt.includes(NODE_STATE_WORDS[last.to] ?? last.to), `ends ${last.to}`);
+        }
+        /* Redaction is done at the source. The check that matters is that
+           this view offers no way to ask for a raw value — there is no
+           contract behind one, so a "reveal" control could only lie. */
+        check('no control offers to un-redact a value',
+          (await page.getByRole('button', { name: /reveal|unmask|show secret/i }).count()) === 0);
+      }
     } else {
       check('the workflow could be run', false, 'Run was disabled — validation blocked it');
     }
+
+    /* ── the cross-workflow index, server-side ────────────────────── */
+    section('The run index is the service’s, not a client-side merge');
+    // Out of the open run, out of the editor, then to the cross-workflow
+    // Runs surface — the editor's Runs tab is one workflow's history.
+    await page.getByRole('button', { name: /^All runs$/ }).first().click().catch(() => {});
+    await page.waitForTimeout(900);
+    await page.getByRole('button', { name: /^Library$/ }).first().click().catch(() => {});
+    await page.waitForTimeout(1500);
+    await page.getByRole('tab', { name: /^Runs/ }).first().click();
+    await page.waitForTimeout(3000);
+
+
+    const idxAll = await api('/workflow-runs?limit=50');
+    const shownRows = await page.locator('tbody tr').count();
+    check('the index reports a total beyond one page', idxAll.total > 0, `${idxAll.total} runs, page of ${idxAll.limit}`);
+    check('the page is bounded by the service, not the client',
+      shownRows <= 50 && shownRows === Math.min(idxAll.runs.length, 50),
+      `${shownRows} rows`);
+
+    if (idxAll.total > 50) {
+      check('paging controls appear only when there is more than a page',
+        (await page.getByRole('button', { name: /^Older$/ }).count()) > 0);
+      await page.getByRole('button', { name: /^Older$/ }).first().click();
+      await page.waitForTimeout(1800);
+      const pageTwo = await api('/workflow-runs?limit=50&offset=50');
+      const rows2 = await page.locator('tbody tr').count();
+      check('a second page is fetched from the service',
+        rows2 === Math.min(pageTwo.runs.length, 50), `${rows2} rows at offset 50`);
+      const bodyTwo = await page.textContent('body');
+      check('and the range shown is the service’s offset', bodyTwo.includes('51–'), 'offset 50');
+      await page.getByRole('button', { name: /^Newer$/ }).first().click();
+      await page.waitForTimeout(1500);
+    }
+
+    // "Waiting for you" has its OWN route, because a superseded leg keeps
+    // `awaiting-approval` and only the service knows which were continued.
+    const awaiting = await api('/workflow-runs/awaiting');
+    const byState = await api('/workflow-runs?state=awaiting-approval&limit=200');
+    const supersededParked = byState.runs.filter((r) => r.supersededBy);
+    await page.getByRole('button', { name: /Waiting for you/ }).first().click();
+    await page.waitForTimeout(1800);
+    const waitRows = await page.locator('tbody tr').count();
+    check('there are superseded parked legs to get wrong', supersededParked.length > 0,
+      `${supersededParked.length} superseded of ${byState.runs.length} parked`);
+    check('"waiting for you" uses the service’s own list',
+      waitRows === awaiting.runs.length,
+      `${waitRows} rows, service says ${awaiting.runs.length}`);
+
 
     section('Theme and accessibility');
     await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));

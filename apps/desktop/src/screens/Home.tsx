@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import { motion } from 'framer-motion';
-import { useAppStore, cn, spring } from '@aura/core';
+import { useAppStore, cn } from '@aura/core';
 import { Badge, Button, Card, CardHeader, Icon, IconButton, Input, Menu, useToast } from '@aura/ui';
 import { PageContainer, PageBlock } from './PageContainer';
 import { EmptyState } from '../components/EmptyState';
 import { AddProjectDialog } from '../components/AddProjectDialog';
 import { CreateProjectDialog } from '../components/CreateProjectDialog';
 import { AskAuraChatbox } from '../components/AskAuraChatbox';
+import { AskAuraHero } from '../components/agent/AskAuraHero';
+import { ActiveSection, AutomationsSection, ActivitySection } from '../components/home/HomeSections';
 import { useWorkspace } from '../data/useWorkspace';
 import { hasUnsavedWorkFor } from '../editor/editorStore';
 import { aiClient, type HealthResult, type ProjectRecord } from '../ai/aiClient';
@@ -58,8 +59,6 @@ export function Home() {
     aiClient.health().then((h) => { setHealth(h); setReachable(true); }).catch(() => setReachable(false));
   }, [refresh]);
 
-  const hour = new Date().getHours();
-  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const allProjects = useMemo(() => [...localProjects, ...projects], [localProjects, projects]);
   const recents = allProjects.slice(0, 4);
   const enter = (id: string) => {
@@ -73,9 +72,6 @@ export function Home() {
   };
   const askAura = () => setIsAskAuraOpen(true);
 
-  const subtitle = allProjects.length === 0
-    ? 'No projects yet — add a real folder to begin.'
-    : `${allProjects.length} project${allProjects.length > 1 ? 's' : ''} in your workspace.`;
 
   return (
     <PageContainer wide>
@@ -83,36 +79,22 @@ export function Home() {
       <CreateProjectDialog open={createProjectDialogOpen} onClose={closeCreateProjectDialog} />
       <AskAuraChatbox isOpen={isAskAuraOpen} onClose={() => setIsAskAuraOpen(false)} />
 
-      <PageBlock className="mb-8">
-        <div className="relative overflow-hidden rounded-3xl border border-line bg-surface p-8">
-          <div className="pointer-events-none absolute -right-16 -top-24 h-72 w-72 rounded-full bg-accent/10 blur-3xl" />
-          <div className="relative flex flex-wrap items-end justify-between gap-6">
-            <div>
-              <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-accent">
-                <Icon name="spark" size={15} />
-                {reachable === false ? 'Backend offline' : 'Environment ready'}
-              </div>
-              <h1 className="text-[32px] font-semibold tracking-[-0.02em] text-text">{greeting}, Groot</h1>
-              <p className="mt-2 max-w-lg text-[14px] text-text-muted">{subtitle}</p>
-            </div>
-            <div className="flex flex-wrap gap-2.5">
-              <motion.button
-                type="button"
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.95 }}
-                transition={spring.snappy}
-                onClick={openCreateProjectDialog}
-                className="relative inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-[#00b3ff] px-4 text-[13px] font-medium text-white shadow-[0_0_16px_rgba(0,179,255,0.45)] outline-none select-none transition-all duration-200 hover:bg-[#2fc2ff] hover:shadow-[0_0_26px_rgba(0,179,255,0.65)] active:bg-[#0093d4] active:shadow-[0_0_12px_rgba(0,179,255,0.35)] focus-visible:ring-2 focus-visible:ring-cyan-300/60"
-              >
-                <Icon name="folder" size={16} />
-                <span className="truncate">Create Project</span>
-              </motion.button>
-              <Button variant="primary" icon="plus" onClick={openAddProjectDialog}>Add Project</Button>
-              <Button variant="secondary" icon="command" onClick={() => setPaletteOpen(true)}>Command Bar</Button>
-            </div>
-          </div>
+      <PageBlock className="mb-5">
+        <AskAuraHero />
+        <div className="mt-4 flex flex-wrap items-center gap-2.5">
+          <Button variant="primary" icon="plus" onClick={openAddProjectDialog}>Add Project</Button>
+          <Button variant="secondary" onClick={openCreateProjectDialog}>Create Project</Button>
+          <Button variant="secondary" icon="command" onClick={() => setPaletteOpen(true)}>Command Bar</Button>
+          <span className="ml-auto text-[12px] text-text-subtle">
+            {reachable === false
+              ? 'Workflow backend offline'
+              : health?.health.ok ? `AI runtime connected · ${health.health.latencyMs}ms` : null}
+          </span>
         </div>
       </PageBlock>
+
+      <ActiveSection />
+
 
       <div className="grid grid-cols-12 gap-5">
         {/* Continue working */}
@@ -174,13 +156,17 @@ export function Home() {
           </Card>
         </PageBlock>
 
+        {/* Automations + verified activity */}
+        <AutomationsSection />
+        <ActivitySection />
+
         {/* Quick actions */}
         <PageBlock className="col-span-12 lg:col-span-6">
           <Card className="h-full">
             <CardHeader title="Quick actions" />
             <div className="mt-4 grid grid-cols-2 gap-2.5">
               <QuickAction icon="plus" label="Add Project" hint="Import a real folder" onClick={openAddProjectDialog} />
-              <QuickAction icon="spark" label="Help Chat Assistant" hint="Chat over your project" onClick={askAura} />
+              <QuickAction icon="spark" label="Ask AURA" hint="Chat over your project" onClick={askAura} />
               <QuickAction icon="command" label="Command Bar" hint="Do anything, instantly" onClick={() => setPaletteOpen(true)} />
               <QuickAction icon="settings" label="AI Provider" hint="Connect an AI provider" onClick={() => setNav('settings')} />
             </div>
@@ -194,8 +180,8 @@ export function Home() {
             <div className="mt-4 space-y-3">
               <StatusRow
                 label="Connection"
-                value={reachable === false ? 'Backend offline' : health?.health.ok ? `Connected · ${health.health.latencyMs}ms` : 'Not connected'}
-                tone={reachable === false ? 'critical' : health?.health.ok ? 'positive' : 'neutral'}
+                value={reachable === false ? 'Backend offline' : health?.health.ok ? `Connected · ${health.health.latencyMs}ms` : 'Connected'}
+                tone={reachable === false ? 'critical' : 'positive'}
               />
               <StatusRow
                 label="API key"

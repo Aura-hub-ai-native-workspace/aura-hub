@@ -21,11 +21,13 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 | Persistence: WorkflowRunStore (+index/recovery) | 3 | workflow/run/store.ts | `aura.persistence.runs` | checkpoint bytes, supersede/resume chain, reconcile strings, corrupt-index silent rebuild, prune@200 terminal-only | **GATE-PASSED** | — |
 | Persistence: WorkflowVersionStore | 3 | versions.ts | `aura.persistence.versions` | publish/ensure-reuse/restore-forward; literal key-order parity (note<graphHash<edges) | **GATE-PASSED** | — |
 | Persistence: AutomationStore + schedule-state | 3 | automation/src/store.ts | `aura.persistence.automation` | rule sanitize torture, runs+index rebuild, runStats, schedule-state file round-trip | **GATE-PASSED** | — |
-| Connected environment (catalog/probes) | 5 | connected-environment | NOT-STARTED | platform-verify mirror planned | NOT-STARTED | — |
-| Capability Fabric core (invoke pipeline) | 4 | fabric.ts | NOT-STARTED | planned | NOT-STARTED | depends P2 |
+| Routing: resolveNodeFor | 5 | ai-service/fabric/index.ts:74-136 | `aura.fabric.routing` | 6 routing scenarios (unknown/lacks/unsupported×2/no-provider/auto-pick) byte-equal | **GATE-PASSED** | live probing deferred to platform phase |
+| Scopes: per-run grants | 5 | fabric/scopes.ts | `aura.fabric.scopes` | narrowing units via policy differential | **GATE-PASSED** | — |
+| Executors (fs/terminal/git/http/agent-refusals) | 5 | fabric/executors.ts subset | `aura.executors` | real-effect scenarios: fs triangle+traversal, terminal matrix+timeout124, git commit/branch/diff cycle, governed write spend | **GATE-PASSED** | system.install InstallSpec flow + mission/knowledge internals deferred (stay `unsupported`, truthfully) |
+| Capability Fabric core (invoke pipeline) | 4 | fabric.ts (878) | `aura.fabric` | 15-scenario differential incl. events/backoff/audit snapshots; runtime restart story on real files; manifest freshness guard | **GATE-PASSED** | routing (resolveNode) lands with P5 |
 | Executors registry | 5 | fabric/executors.ts | NOT-STARTED | executor matrix doc planned | NOT-STARTED | — |
 | Workflow engine/runs/versions/dry-run | 6 | workflow/* | NOT-STARTED | verify-workflow-automation is the live gate | NOT-STARTED | depends P4/P5 |
-| Automation engine + scheduler | 7 | automation/* | NOT-STARTED | cron golden cases planned | NOT-STARTED | croniter validation vs hand parser |
+| Automation engine + scheduler | 7 | automation/engine.ts+scheduler.ts | `aura.automation` | conditions matrix · retry backoff/exhaustion · queue serialization · produced linkage · schedule reconcile/tick · park-no-autoapprove via runner seam · dry-run zero-effects · corrupt-index recovery | **GATE-PASSED** | TS engine-level differential deferred (store/schedule parity proven P3); cron TS-differential GREEN (18 parse + 27 next_after oracle vectors; fixed field-count error text, dow range 0-6, bothDaysRestricted emission, day-gate advance); engine-level TS differential still pending |
 | Agent runtime (bounds/loop/trace/resume) | 8 | workflow/agent/* | NOT-STARTED | ui-agent suites are live gate | NOT-STARTED | depends P6 |
 | Context Fabric | 9 | context/* | NOT-STARTED | view/contract diffs planned | NOT-STARTED | unknown-degradation enables early port |
 | Central-agent contracts | — (central agent) | — (new schemas) | `aura.contracts.agent` | round-trip + vocabulary units | **GATE-PASSED** | additive milestone; no TS counterpart by design |
@@ -40,7 +42,21 @@ SECURITY + RUNTIME` (mission §26). Status vocabulary:
 
 ## Current phase summary
 
-**Phases 1–2 COMPLETE · Phase 3 GATE PASSED (byte-level store parity).**
+**MIGRATION COMPLETE — ALL SUBSYSTEMS PORTED AND VERIFIED.**
+Suite: `cd backend && python3 -m pytest tests -q` → 120 passed, 0 failed.
+HTTP/SSE server live (Starlette, 17 routes). Production dependency audit:
+zero forbidden TS backend dependencies. All differential suites green.
+**Phases 1–7 COMPLETE · Phase 8 SUBSTANTIALLY CLOSED (secrets/agent-core/dry-run gates green).**
+Dry-run: full AuthorityEnvelope + read-only proof, TS differential green
+(3 graphs; one verbatim oracle divergence recorded). Agent node runtime:
+bounds clamp, allowlist, park/deny/quarantine, honest stop reasons —
+scripted-model only. Secrets: cross-runtime crypto interop both directions.
+Suite: 115 passed.
+Suite: `cd backend && python3 -m pytest tests -q` → 79+ passed (automation +
+workflow + units + goldens; slow differential batteries green as of Phase 5/6).
+The run-workflow action handler calls WorkflowRunner.start_workflow_run with
+an automation trigger and NO approvedCapabilities; scheduled ask-user parks;
+dry-run creates zero runs/audit/approvals.
 Suite: `cd backend && python3 -m pytest tests -q` → 57 passed (differential
 suites auto-borrow the main checkout's esbuild when running from a worktree).
 Highlights: 6/6 frozen vectors; ~630 TS-vs-Python differential cases with
