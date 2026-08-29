@@ -305,6 +305,7 @@ def test_b4_automation_runs_index_persisted_run_reload(svc):
     c, rule_ids = _make_rules_and_runs(svc, n_rules=1, n_runs=2)
     # New client = new process state, same AURA_HOME
     from starlette.testclient import TestClient
+
     from aura.api.server import create_app
     fresh = TestClient(create_app())
     r = fresh.get("/automation/runs")
