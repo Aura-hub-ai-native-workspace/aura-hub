@@ -16,13 +16,11 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { KeywordIntentClassifier, TemplatePromptEnhancer, createRequest } from '@aura/intelligence';
 import { engineeringMemory } from '@aura/engineering-memory';
-import { guardedFetch } from '../net/ssrfGuard';
 import type { PipelineManager } from '../pipeline';
 import { ProjectConversations } from '../conversations';
 import { loadProfile } from '../profile';
 import { homePath } from '../persist';
 import type { FieldSpec, NodeCategory, NodeIO, NodeSpecInfo, WfNodeType } from './types';
-import { git as sharedGit, safeShell as sharedSafeShell, type ProcessOutput } from '../exec/process';
 
 export interface RunCtx {
   projectId: string;
@@ -53,8 +51,17 @@ const s = (v: unknown, d = '') => (typeof v === 'string' ? v : d);
 const n = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : d);
 const clip = (t: string, max = 60) => (t.length > max ? t.slice(0, max - 1) + '…' : t);
 
-/** {{input}}, {{project}}, and {{NAME}} (variables) interpolation. */
-function interpolate(template: string, ctx: RunCtx, input: NodeIO): string {
+/**
+ * `{{input}}`, `{{project}}` and `{{NAME}}` (variables) interpolation.
+ *
+ * Exported because the governed path in `governor.ts` needs the SAME
+ * substitution the ungoverned nodes use — a second interpolator would
+ * mean a capability argument could differ from what the node face showed.
+ * Note what it does NOT touch: `{{secret:NAME}}` is left intact here and
+ * resolved only at the Fabric boundary, so a secret can never land in a
+ * summary, a log line or a node output.
+ */
+export function interpolate(template: string, ctx: RunCtx, input: NodeIO): string {
   return template.replace(/\{\{\s*([\w.-]+)\s*\}\}/g, (_, key: string) => {
     if (key === 'input') return input.text;
     if (key === 'project') return ctx.projectName;
@@ -69,74 +76,27 @@ function insideProject(root: string, rel: string): string {
   return abs;
 }
 
-/*
- * The spawn primitives moved to `../exec/process` so the Workflow Engine
- * and the Capability Fabric share ONE hardened path to a child process.
- * Behaviour is identical; these thin wrappers keep the call sites in this
- * file unchanged by adapting `RunCtx` to the shared options shape.
- */
-function git(ctx: RunCtx, args: string[]): Promise<ProcessOutput> {
-  return sharedGit(args, { cwd: ctx.projectPath, signal: ctx.signal });
-}
-function safeShell(ctx: RunCtx, command: string): Promise<string> {
-  return sharedSafeShell(command, { cwd: ctx.projectPath, signal: ctx.signal });
-}
-
-export async function runGit(projectPath: string, args: string[], opts?: { signal?: AbortSignal }): Promise<ProcessOutput> {
-  return sharedGit(args, { cwd: projectPath, signal: opts?.signal });
-}
-
-const MAX_HTTP_RESPONSE = 512 * 1024; // enough for a real API response, not enough to hang a run on a large download
-
 /**
- * Real outbound fetch, bounded by timeout and response size, and guarded
- * at the resolver.
+ * The runtime of a GOVERNED node.
  *
- * The bounded-timeout/maxBuffer pattern was here already and is kept. The
- * IP deny list is new, and the comment it replaces argued against one on
- * the grounds that AURA is single-user and has no multi-tenant boundary.
+ * These node types reach outside AURA — the project's files, a child
+ * process, git, the network — and every one of them now executes through
+ * the Capability Fabric via `governor.ts`, where it is evaluated by the
+ * one policy engine, gated by the one approval system and written to the
+ * one audit trail.
  *
- * That is right about tenancy and wrong about the threat. The attacker is
- * not another tenant, it is the CONTENT: AURA reads web pages, tool
- * output and repository files, and a model that has just read an
- * attacker-authored page can be induced to request a URL. Pointed at
- * `169.254.169.254` that returns cloud credentials; pointed at
- * `127.0.0.1:4319` it returns AURA's own unauthenticated local API.
- * Neither needs a second tenant — it needs one persuasive paragraph in a
- * README. See `net/ssrfGuard.ts`, which also re-checks every redirect hop.
+ * Their `run` is this refusal rather than a working implementation on
+ * purpose. Leaving the old direct implementation in place "for library
+ * use" or "for tests" would leave a second, ungoverned execution path in
+ * the tree, and a bypass that exists only in some configurations is still
+ * a bypass. Anything that reaches this line has skipped the governed path,
+ * and the safe response to that is to perform no effect at all.
  */
-async function sandboxedFetch(url: string, opts: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number; signal?: AbortSignal }): Promise<{ status: number; text: string }> {
-  if (!/^https?:\/\//i.test(url)) throw new Error('only http(s) URLs are allowed');
-  const timeout = Math.max(1000, Math.min(30_000, opts.timeoutMs ?? 10_000));
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), timeout);
-  const onOuterAbort = () => ac.abort();
-  opts.signal?.addEventListener('abort', onOuterAbort, { once: true });
-  try {
-    const res = await guardedFetch(url, { method: opts.method ?? 'GET', headers: opts.headers, body: opts.body, signal: ac.signal });
-    const buf = await res.arrayBuffer();
-    const text = Buffer.from(buf.slice(0, MAX_HTTP_RESPONSE)).toString('utf8');
-    return { status: res.status, text };
-  } catch (err) {
-    if ((err as Error).name === 'AbortError') throw new Error(`request timed out after ${timeout}ms`);
-    throw err;
-  } finally {
-    clearTimeout(t);
-    opts.signal?.removeEventListener('abort', onOuterAbort);
-  }
-}
-
-/** `Key: Value` per line — real HTTP header syntax, distinct from the `variables` node's `KEY=value` convention. */
-function parseHeaderLines(text: string): Record<string, string> {
-  const headers: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t) continue;
-    const sep = t.indexOf(':');
-    if (sep <= 0) continue;
-    headers[t.slice(0, sep).trim()] = t.slice(sep + 1).trim();
-  }
-  return headers;
+function governedOnly(label: string): never {
+  throw new Error(
+    `${label} performs a real effect and runs only through the Capability Fabric. `
+    + 'This node was executed outside the governed path, so nothing was run.',
+  );
 }
 
 async function generate(ctx: RunCtx, system: string, user: string, opts: { json?: boolean } = {}): Promise<string> {
@@ -197,12 +157,7 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
     return { text: parts.join('\n\n'), files, summary: `${files.length} file${files.length === 1 ? '' : 's'}` };
   }),
 
-  'changed-files': spec('changed-files', 'Changed Files (Git)', 'source', 'Files with uncommitted changes, from real git status.', { inputs: 0 }, async (ctx) => {
-    const { out } = await git(ctx, ['status', '--porcelain']);
-    const files = out.split('\n').filter(Boolean).map((l) => l.slice(3).trim());
-    const text = files.length ? `Changed files:\n${files.map((f) => `- ${f}`).join('\n')}` : 'No uncommitted changes.';
-    return { text, files, data: files, summary: `${files.length} changed` };
-  }),
+  'changed-files': spec('changed-files', 'Changed Files (Git)', 'source', 'Files with uncommitted changes, from real git status.', { inputs: 0 }, async () => governedOnly('Changed Files')),
 
   'current-conversation': spec('current-conversation', 'Current Conversation', 'source', "The open project's most recent conversation.", {
     inputs: 0,
@@ -443,66 +398,28 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
 
   'export-file': spec('export-file', 'Export File', 'action', 'Writes the input to a file inside the project root.', {
     fields: [field('path', 'Relative path', 'text', { placeholder: 'docs/REVIEW.md' })],
-  }, async (ctx, input, config) => {
-    const rel = s(config.path);
-    if (!rel.trim()) throw new Error('no export path configured');
-    const abs = insideProject(ctx.projectPath, rel);
-    mkdirSync(path.dirname(abs), { recursive: true });
-    writeFileSync(abs, input.text);
-    return { ...input, files: [rel], summary: rel };
-  }),
+  }, async () => governedOnly('Export File')),
 
   'shell-command': spec('shell-command', 'Run Shell Command (safe)', 'action', 'Runs an allow-listed command with plain arguments in the project root.', {
     inputs: 'many',
     fields: [field('command', 'Command', 'text', { placeholder: 'npm test' })],
-  }, async (ctx, input, config) => {
-    const cmd = interpolate(s(config.command), ctx, input);
-    const out = await safeShell(ctx, cmd);
-    return { text: out || '(no output)', summary: clip(cmd, 40) };
-  }),
+  }, async () => governedOnly('Run Shell Command')),
 
-  'git-status': spec('git-status', 'Git Status', 'action', 'Real `git status` of the project.', { inputs: 0 }, async (ctx) => {
-    const { out } = await git(ctx, ['status', '--short', '--branch']);
-    return { text: out || 'clean', summary: clip(out.split('\n')[0] ?? '', 40) };
-  }),
+  'git-status': spec('git-status', 'Git Status', 'action', 'Real `git status` of the project.', { inputs: 0 }, async () => governedOnly('Git Status')),
 
   'git-diff': spec('git-diff', 'Git Diff', 'action', 'Real `git diff` (uncommitted changes).', {
     inputs: 0,
     fields: [field('staged', 'Staged only', 'boolean', { default: false })],
-  }, async (ctx, _input, config) => {
-    const args = ['diff', '--stat', '-p', '--no-color'];
-    if (config.staged === true) args.splice(1, 0, '--cached');
-    const { out } = await git(ctx, args);
-    const text = out.length > 60_000 ? out.slice(0, 60_000) + '\n…(truncated)' : out;
-    return { text: text || 'no changes', summary: text === 'no changes' || !out ? 'no changes' : clip(out.split('\n').pop() ?? '', 40) };
-  }),
+  }, async () => governedOnly('Git Diff')),
 
   'git-commit': spec('git-commit', 'Git Commit', 'action', 'Stages all changes and commits with the configured message.', {
     fields: [field('message', 'Commit message ({{input}} allowed)', 'text', { placeholder: 'chore: workflow commit' })],
-  }, async (ctx, input, config) => {
-    const message = interpolate(s(config.message), ctx, input).split('\n')[0].trim();
-    if (!message) throw new Error('no commit message configured');
-    const status = await git(ctx, ['status', '--porcelain']);
-    if (!status.out) return { text: 'nothing to commit', summary: 'nothing to commit' };
-    await git(ctx, ['add', '-A']);
-    const res = await git(ctx, ['commit', '-m', message]);
-    if (res.code !== 0) throw new Error(res.out || 'git commit failed');
-    return { text: res.out, summary: clip(message, 40) };
-  }),
+  }, async () => governedOnly('Git Commit')),
 
   'git-branch': spec('git-branch', 'Git Branch', 'action', 'Shows the current branch, or creates/switches when a name is set.', {
     inputs: 0,
     fields: [field('name', 'Branch to create/switch to (optional)', 'text')],
-  }, async (ctx, _input, config) => {
-    const name = s(config.name).trim();
-    if (name) {
-      const res = await git(ctx, ['checkout', '-B', name]);
-      if (res.code !== 0) throw new Error(res.out || 'git checkout failed');
-      return { text: res.out || `on ${name}`, summary: name };
-    }
-    const { out } = await git(ctx, ['branch', '--show-current']);
-    return { text: out || '(detached)', summary: out || '(detached)' };
-  }),
+  }, async () => governedOnly('Git Branch')),
 
   'http-request': spec('http-request', 'HTTP Request', 'action', 'Calls an external HTTP(S) URL. The input becomes the request body when no body template is set.', {
     inputs: 'many',
@@ -513,17 +430,7 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
       field('body', 'Body (optional — falls back to input)', 'textarea'),
       field('timeoutMs', 'Timeout (ms)', 'number', { default: 10_000 }),
     ],
-  }, async (ctx, input, config) => {
-    const url = interpolate(s(config.url), ctx, input);
-    if (!url.trim()) throw new Error('no URL configured');
-    const method = s(config.method, 'GET').toUpperCase();
-    const headers = parseHeaderLines(interpolate(s(config.headers), ctx, input));
-    const bodyTemplate = s(config.body);
-    const body = method === 'GET' || method === 'DELETE' ? undefined : (bodyTemplate.trim() ? interpolate(bodyTemplate, ctx, input) : (input.text || undefined));
-    const { status, text } = await sandboxedFetch(url, { method, headers, body, timeoutMs: n(config.timeoutMs, 10_000), signal: ctx.signal });
-    if (status >= 400) throw new Error(`HTTP ${status}: ${clip(text, 200)}`);
-    return { text, summary: `${status} · ${clip(url, 30)}` };
-  }),
+  }, async () => governedOnly('HTTP Request')),
 
   'slack-notify': spec('slack-notify', 'Slack Notify', 'action', "Posts a message to a Slack Incoming Webhook URL — create one in Slack's own app settings, no AURA-side setup needed.", {
     inputs: 'many',
@@ -531,15 +438,30 @@ export const NODE_SPECS: Record<WfNodeType, NodeSpec> = {
       field('webhookUrl', 'Slack Incoming Webhook URL', 'text', { placeholder: 'https://hooks.slack.com/services/...' }),
       field('message', 'Message (optional — falls back to input)', 'textarea'),
     ],
-  }, async (ctx, input, config) => {
-    const url = s(config.webhookUrl).trim();
-    if (!url) throw new Error('no Slack webhook URL configured');
-    const text = interpolate(s(config.message), ctx, input) || input.text;
-    if (!text.trim()) throw new Error('nothing to send — connect an upstream node or set a message');
-    const { status, text: respText } = await sandboxedFetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), timeoutMs: 10_000, signal: ctx.signal });
-    if (status >= 400) throw new Error(`Slack webhook rejected the message (${status}): ${clip(respText, 200)}`);
-    return { ...input, summary: 'sent to Slack' };
-  }),
+  }, async () => governedOnly('Slack Notify')),
+
+  agent: spec('agent', 'AI Agent (bounded)', 'intelligence', 'Reasons toward a task using only the tools this workflow already has. Bounded by iterations, wall clock and token budget.', {
+    inputs: 'many',
+    outputs: ['done', 'needs-human', 'failed'],
+    /* Enabled only because the whole path is runtime-verified end to end:
+       dispatch, bounds, envelope narrowing, Fabric invocation, policy,
+       approval parking, resume-with-grant, denial, cancellation, timeout
+       and audit reconstruction. See `scripts/verify-workflow-automation.mjs`
+       §27. The ledger every run produces is what makes it reviewable —
+       an agent nobody can review is not one this product should run, and
+       that ledger is now persisted on the run record. */
+    fields: [
+      field('task', 'Task', 'textarea', { placeholder: 'Triage the open issues and summarise the top three.' }),
+      field('maxIterations', 'Max iterations', 'number', { default: 10 }),
+      field('timeoutMs', 'Wall clock (ms)', 'number', { default: 60_000 }),
+      field('maxTokens', 'Token budget', 'number', { default: 10_000 }),
+      field('tools', 'Tools (capability ids, one per line)', 'textarea', { help: "Narrowed to this workflow's own authority — anything outside it is refused with a reason." }),
+    ],
+    /* The runtime lives in `agent/runner.ts` and is dispatched by the
+       engine, exactly as a governed node's runtime lives in the Fabric.
+       Reaching this line means the agent path was bypassed, and the safe
+       response to that is to reason about nothing. */
+  }, async () => { throw new Error('The AI Agent node runs through the agent runtime, which was not attached to this run. Nothing was reasoned about and no tool was called.'); }),
 
   /* ── io ─────────────────────────────────────────────────────────── */
 

@@ -26,7 +26,17 @@ export type AutomationTriggerType =
   | 'file-changed'        // real changed files detected (git porcelain / reindex)
   | 'readme-changed'      // README/CHANGELOG/docs file changed
   | 'dependency-changed'  // package manifest changed (new/removed/updated deps)
-  | 'pr-merged';          // a merge commit landed (git log --merges)
+  | 'pr-merged'           // a merge commit landed (git log --merges)
+  /**
+   * A wall-clock moment the user asked for, delivered by the scheduler.
+   *
+   * Modelled as a TRIGGER, not as a new kind of rule, because that is what
+   * it is: the scheduler's whole job is to push an `AutomationEvent` at
+   * the right minute, and everything downstream — conditions, the action
+   * chain, retries, the timeline — is unchanged. A separate "scheduled
+   * rule" concept would have been a second execution path wearing a clock.
+   */
+  | 'schedule';
 
 /**
  * A real event pushed into the engine by the host at the real moment it
@@ -80,7 +90,18 @@ export type AutomationActionType =
   | 'run-security-review'  // Security Engine
   | 'run-docs-review'      // Documentation Governance
   | 'update-knowledge'     // FullStack Knowledge Engine incremental update
-  | 'save-memory';         // Project Memory write
+  | 'save-memory'          // Project Memory write
+  /**
+   * Hand a workflow to the Workflow Engine.
+   *
+   * This is the bridge that makes trigger → orchestration → governance one
+   * system instead of two disconnected ones. It is an ACTION, not a second
+   * executor: the handler the host injects calls the existing
+   * `WorkflowRunner`, which is the same path the Run button uses. The
+   * Automation Engine still knows nothing about graphs, capabilities or
+   * policy — it knows how to run an action, and this is one.
+   */
+  | 'run-workflow';
 
 export interface RuleAction {
   id: string;
@@ -114,6 +135,22 @@ export interface AutomationRule {
     type: AutomationTriggerType;
     /** Optional coarse event filter — all key/values must match payload. */
     match?: Record<string, unknown>;
+    /**
+     * Five-field cron expression. Required when `type === 'schedule'` and
+     * ignored otherwise. Validated on save — a rule whose cron does not
+     * parse is refused rather than stored as a schedule that never fires.
+     */
+    cron?: string;
+    /**
+     * Project this schedule runs against.
+     *
+     * A time-triggered rule has no event to tell it which project it is
+     * about, so it must be told at authoring time. Without this the
+     * scheduler would have to guess "whatever is open at 9am", which is
+     * exactly the ambient-project bug the workflow trigger path already
+     * had to fix.
+     */
+    projectId?: string;
   };
   conditions: Condition[];
   /** Ordered action chain executed when the trigger fires. */
@@ -149,6 +186,31 @@ export type RunStatus =
 
 export type RunActionStatus = 'pending' | 'running' | 'retrying' | 'completed' | 'failed' | 'skipped';
 
+/**
+ * A thing an action brought into existence, named rather than described.
+ *
+ * The first version of this carried `workflowRunId` and `workflowRunState`
+ * as loose strings on `ActionRunState`, and it had two defects. It did not
+ * carry the WORKFLOW id, so a client holding a run id had to search every
+ * workflow's history to find the run — the exact merge-on-the-client
+ * problem the run index exists to remove. And it could only ever describe
+ * one kind of product, so the next one (a mission, a diagnosis) would have
+ * added a second pair of loose fields beside it.
+ *
+ * A discriminated union fixes both: the `kind` says what to do with the
+ * rest, and every reference is complete enough to fetch without a search.
+ * Adding a product later is a new member, not a new pair of fields.
+ */
+export type ProducedRef =
+  | {
+      kind: 'workflow-run';
+      /** Both ids, so `GET /workflows/:workflowId/runs/:runId` resolves directly. */
+      workflowId: string;
+      runId: string;
+      /** The run's own state vocabulary, unflattened. */
+      state: string;
+    };
+
 export interface ActionRunState {
   actionId: string;
   action: AutomationActionType;
@@ -160,6 +222,24 @@ export interface ActionRunState {
   ms?: number;
   error?: string;
   summary?: string;
+  /**
+   * What this action produced, when it produced something addressable.
+   *
+   * The causal chain has to be walkable from either end: from a rule, to
+   * see what it actually did; and from a workflow run, to see why it ran.
+   * Nothing here requires parsing a summary string to discover.
+   */
+  produced?: ProducedRef;
+  /**
+   * @deprecated Mirrors `produced` for clients written against the first
+   * shape. Kept because the desktop Automation UI is already verified
+   * against them and breaking a shipped contract to tidy a field name is
+   * not a trade worth making. Written whenever `produced` is written, so
+   * the two can never disagree; read `produced` in new code.
+   */
+  workflowRunId?: string;
+  /** @deprecated See `workflowRunId`. */
+  workflowRunState?: string;
 }
 
 export type TimelineType =
@@ -201,18 +281,32 @@ export interface AutomationRun {
   error?: string;
   /** Id of the next run in the rule's queue (for the same trigger moment). */
   nextRunId?: string;
+  /**
+   * Everything this run produced, flattened from its actions.
+   *
+   * A rollup, not a second record: it is derived from `actions[].produced`
+   * whenever an action reports one, and exists so the run index can filter
+   * by workflow without loading and walking every action of every run.
+   */
+  produced?: ProducedRef[];
 }
 
 export interface AutomationRunSummary {
   id: string;
   ruleId: string;
+  /** Denormalised so a cross-rule list does not need a rule lookup per row. */
+  ruleName?: string;
   trigger: AutomationTriggerType;
   status: RunStatus;
+  /** The project the triggering event was about. Needed to filter by project. */
+  projectId?: string;
   actionCount: number;
   startedAt: string;
   finishedAt?: string;
   ms?: number;
   error?: string;
+  /** What the run produced, so the index can filter by workflow. */
+  produced?: ProducedRef[];
 }
 
 /* ── Action host contract ─────────────────────────────────────────── */
@@ -221,6 +315,16 @@ export interface ActionCtx {
   projectId: string;
   projectPath: string;
   event: AutomationEvent;
+  /**
+   * Correlation back to the rule and execution that caused this action.
+   *
+   * Added so an action that delegates to another engine can carry the
+   * causal chain with it — a workflow run started by an automation records
+   * which rule and which automation run triggered it, and the audit trail
+   * can be walked from the event to the governed effect without guessing.
+   */
+  ruleId: string;
+  runId: string;
   log: (level: 'info' | 'warn' | 'error', text: string) => void;
   signal?: AbortSignal;
 }
@@ -230,6 +334,11 @@ export interface ActionResult {
   summary?: string;
   error?: string;
   result?: unknown;
+  /**
+   * What the action brought into existence, if anything. Recorded on the
+   * run state verbatim — the engine never infers a product from a summary.
+   */
+  produced?: ProducedRef;
 }
 
 export type ActionHandler = (ctx: ActionCtx, config: Record<string, unknown>) => Promise<ActionResult>;

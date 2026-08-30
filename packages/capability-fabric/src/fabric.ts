@@ -16,14 +16,14 @@
  * used for the audit trail and nothing else.
  */
 
+import { createHash } from 'node:crypto';
 import type {
   ApprovalPersistence,
   ApprovalRequest,
-  AuditRecord,
   AuditPersistence,
+  AuditRecord,
   CapabilityDescriptor,
   Executor,
-  ExecutorResult,
   FabricEvent,
   FabricEventListener,
   Invocation,
@@ -37,7 +37,6 @@ import type {
 } from './types';
 import { describeFabricCapability } from './manifest';
 import { DEFAULT_POLICY, evaluatePolicy, grantsFor } from './policy';
-import { actionFingerprint } from './inputBinding';
 
 /* ── recovery bounds (§16) ──────────────────────────────────────── */
 
@@ -51,29 +50,6 @@ const BASE_BACKOFF_MS = 400;
  */
 function isTransient(detail: string): boolean {
   return /\b(timeout|timed out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|socket hang up|429|503|temporarily)\b/i.test(detail);
-}
-
-/**
- * Whether this failure may be retried automatically.
- *
- * Being transient is necessary but not sufficient. A transient error says
- * the *transport* failed; it says nothing about whether the *effect*
- * happened first. For a reversible capability that distinction does not
- * matter — repeating it costs a little time. For an irreversible one it is
- * the whole question: a delegated coding agent that timed out may already
- * have rewritten the repository, and running it again would compound edits
- * the user approved exactly once.
- *
- * So an irreversible capability is retried only when the executor has
- * PROVEN the effect never began. Unknown counts as started. This is
- * decided from `capability.irreversible` — the same metadata the policy
- * engine's irreversible floor uses — so it governs every capability,
- * present and future, with no per-capability special cases.
- */
-function mayRetry(capability: CapabilityDescriptor, result: ExecutorResult): boolean {
-  if (!isTransient(result.detail)) return false;
-  if (!capability.irreversible) return true;
-  return result.effectStarted === false;
 }
 
 /* ── host wiring ────────────────────────────────────────────────── */
@@ -126,6 +102,41 @@ export interface FabricHost {
   requestApproval(request: ApprovalRequest, context: InvocationContext): Promise<boolean>;
 }
 
+/**
+ * Identity of an exact invocation, for binding an approval to it.
+ *
+ * Deliberately a plain, deterministic digest and NOT a keyed MAC. There is
+ * no secret this package could hold that an attacker able to edit AURA's
+ * own files could not also read, so a MAC would buy authenticity it cannot
+ * actually deliver. What this does buy is real: the authoritative
+ * fingerprint lives on the approval record, which only the Fabric writes,
+ * and it is compared against a fingerprint recomputed from whatever
+ * arguments are presented at spend time. Tampering with the persisted call
+ * changes the recomputed value and the grant stops matching.
+ *
+ * Included: the capability, every argument, and the two context fields
+ * that decide WHERE an effect lands. Excluded: ids that vary between the
+ * two legs of a resume by design — a resumed run has a new `runId`, and
+ * requiring it to match would make every approval unusable.
+ */
+export function fingerprintInvocation(
+  capabilityId: string,
+  input: Record<string, unknown>,
+  context: Pick<InvocationContext, 'projectId' | 'cwd' | 'workflowId' | 'workflowNodeId'>,
+): string {
+  const canonical = JSON.stringify({
+    capabilityId,
+    // Sorted so an argument object rebuilt in a different key order is the
+    // same call, while a changed VALUE is a different one.
+    input: Object.fromEntries(Object.entries(input).sort(([a], [b]) => a.localeCompare(b))),
+    projectId: context.projectId ?? null,
+    cwd: context.cwd ?? null,
+    workflowId: context.workflowId ?? null,
+    workflowNodeId: context.workflowNodeId ?? null,
+  });
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 32);
+}
+
 let seq = 0;
 function invocationId(): string {
   seq += 1;
@@ -133,30 +144,7 @@ function invocationId(): string {
 }
 
 /** Bounded, redacted input summary for the audit record. */
-/**
- * The bounded, redacted summary of an invocation's input.
- *
- * The field-name rule below catches an argument that IS a credential. It
- * cannot catch a credential inside one that is not — `terminal.execute`
- * carries a whole command line, and `curl -H 'Authorization: Bearer …'`
- * is an ordinary thing to find there. That was survivable while the audit
- * log lived in an array that died with the process. It is not survivable
- * now that the record is written to disk and kept: a leak that used to
- * evaporate would become a file.
- *
- * So the value is also passed through the host's redactor. The Fabric
- * does not own one — text filtering is not a policy decision, and the
- * patterns belong beside the prompt composers that share them — so the
- * host supplies it exactly as it supplies the audit sink. The default is
- * the identity function, which is precisely the behaviour that shipped
- * before, so an unwired Fabric is no worse than it was; the verification
- * suite is what proves the real one is wired.
- */
-function summarizeInput(
-  capability: CapabilityDescriptor,
-  input: Record<string, unknown>,
-  redactValue: (text: string) => string,
-): string {
+function summarizeInput(capability: CapabilityDescriptor, input: Record<string, unknown>): string {
   const SECRET = /^(apiKey|token|secret|password)$/i;
   const parts: string[] = [];
   for (const field of capability.input) {
@@ -166,9 +154,7 @@ function summarizeInput(
       parts.push(`${field.name}=<redacted>`);
       continue;
     }
-    // Redact BEFORE truncating: truncating first can cut a credential in
-    // half, and half a credential still identifies which one it was.
-    const text = redactValue(String(raw));
+    const text = String(raw);
     parts.push(`${field.name}=${text.length > 60 ? `${text.slice(0, 57)}…` : text}`);
   }
   return parts.join(' ') || '(no arguments)';
@@ -215,8 +201,6 @@ export class CapabilityFabric {
   private executors = new Map<string, Executor>();
   private listeners = new Set<FabricEventListener>();
   private auditLog: AuditRecord[] = [];
-  private auditStore: AuditPersistence | null = null;
-  private redactValue: (text: string) => string = (text) => text;
   private policy: PolicyConfig = DEFAULT_POLICY;
 
   /**
@@ -237,7 +221,42 @@ export class CapabilityFabric {
    */
   private approvalStore: ApprovalPersistence | null = null;
 
+  /**
+   * Optional durable backing for `auditLog`, injected like the approval
+   * store. Without it the trail is in-process only and a restart forgets
+   * everything the Fabric governed — which is exactly what
+   * `docs/WORKSPACE_2_PHASE1_AUDIT.md` records as finding S-2.
+   */
+  private auditStore: AuditPersistence | null = null;
+
   constructor(private host: FabricHost) {}
+
+  /**
+   * Give the audit trail a life beyond this process.
+   *
+   * Unlike approvals, **everything** is restored: an audit record is a
+   * statement about something that already happened, so dropping it on
+   * restart would not be cautious, it would be forgetful. The host bounds
+   * how much tail it keeps.
+   */
+  attachAuditStore(store: AuditPersistence): void {
+    this.auditStore = store;
+    this.auditLog = [...store.load(), ...this.auditLog];
+  }
+
+  /**
+   * The ONE place an audit record is written.
+   *
+   * Both writers (a settled invocation and a human approval decision) go
+   * through here so persistence can never be added to one path and
+   * forgotten on the other. A failing store must not take down an
+   * execution that already happened — the in-memory trail stays correct
+   * either way, and a lost write is better than a lost effect.
+   */
+  private record(entry: AuditRecord): void {
+    this.auditLog.push(entry);
+    try { this.auditStore?.append(entry); } catch { /* never fail an action on a logging failure */ }
+  }
 
   /**
    * Give pending authorization requests a life beyond this process.
@@ -257,7 +276,9 @@ export class CapabilityFabric {
       if (!item) continue;
       const key = request.missionId && request.taskId
         ? `${request.missionId}:${request.taskId}:${item.capabilityId}`
-        : `inv:${item.invocationId}`;
+        : request.runId && request.workflowNodeId
+          ? `${request.runId}:${request.workflowNodeId}:${item.capabilityId}`
+          : `inv:${item.invocationId}`;
       this.approvals.set(key, request);
     }
   }
@@ -312,72 +333,6 @@ export class CapabilityFabric {
     return this.auditLog;
   }
 
-  /**
-   * Give the audit trail a life beyond this process.
-   *
-   * The Fabric keeps producing exactly the record it always produced and
-   * still holds the in-memory log every existing reader uses; the store
-   * is how a host makes that record durable. Supplying it is the host's
-   * decision because the Fabric has no filesystem and should not acquire
-   * one — `@aura/capability-fabric` is the policy authority, not a store.
-   *
-   * Unlike approvals, records are restored in full: an audit trail that
-   * forgets is not an audit trail, and replaying a historical record
-   * cannot cause an action. Restored records are placed ahead of what is
-   * already in memory, in time order, so `audit()` does not report that
-   * AURA had done nothing every time the service restarted — the exact
-   * failure the journal exists to fix, moved one layer up.
-   *
-   * This adds no second sink. `record()` writes one entry, to one place;
-   * this only decides whether that place survives a restart.
-   */
-  attachAuditStore(store: AuditPersistence): void {
-    this.auditStore = store;
-    const restored = store.load();
-    if (restored.length) this.auditLog = [...restored, ...this.auditLog];
-  }
-
-  /**
-   * Whether this Fabric's audit trail survives the process.
-   *
-   * Exposed because it is a *precondition*, not a diagnostic: a bounded
-   * autonomous loop that cannot be reconstructed afterwards is not
-   * governed, it is merely bounded. The agent loop's flag reads this and
-   * refuses to arm without it.
-   */
-  hasDurableAudit(): boolean {
-    return this.auditStore !== null;
-  }
-
-  /**
-   * How the Fabric strips credential-shaped text out of what it records.
-   *
-   * Supplied by the host so there is one set of patterns in the product
-   * rather than one here and another beside the prompt composers. See
-   * {@link summarizeInput} for why a name-based rule alone is not enough
-   * once the audit record is durable.
-   */
-  setInputRedactor(redactValue: ((text: string) => string) | null): void {
-    this.redactValue = redactValue ?? ((text) => text);
-  }
-
-  /**
-   * The one place an audit record is retained. Both callers — a human
-   * authorization decision and a settled invocation — go through here, so
-   * a third kind of record added later cannot forget the durable half.
-   */
-  private record(entry: AuditRecord): void {
-    this.auditLog.push(entry);
-    if (!this.auditStore) return;
-    /* A store that throws is swallowed for the same reason a listener
-       that throws is: an unwritable disk must not turn a completed action
-       into an exception unwinding through the code that was recording it.
-       The loss is detectable — the journal's sequence is gapless, so a
-       record that never arrived leaves no hole to mistake for a
-       legitimate gap. */
-    try { this.auditStore.append(entry); } catch { /* see attachAuditStore */ }
-  }
-
   /* ── approvals ────────────────────────────────────────────────── */
 
   /**
@@ -390,9 +345,14 @@ export class CapabilityFabric {
    * is the best available identity and each call stands alone.
    */
   private static approvalKey(capabilityId: string, context: InvocationContext, invocationId: string): string {
-    return context.missionId && context.taskId
-      ? `${context.missionId}:${context.taskId}:${capabilityId}`
-      : `inv:${invocationId}`;
+    if (context.missionId && context.taskId) return `${context.missionId}:${context.taskId}:${capabilityId}`;
+    // A workflow run has the same shape of identity as a mission task: the
+    // same node of the same run asking for the same capability is ONE
+    // question, however many times the run is resumed. Without this a
+    // resumed run would mint a fresh request and the answer the user
+    // already gave would be stranded against the old one.
+    if (context.runId && context.workflowNodeId) return `${context.runId}:${context.workflowNodeId}:${capabilityId}`;
+    return `inv:${invocationId}`;
   }
 
   /** Requests still waiting on a human. */
@@ -433,9 +393,7 @@ export class CapabilityFabric {
       risk: item?.risk ?? 'low',
       // The policy decision that opened the gate, kept alongside the human
       // answer so the record shows both why it was asked and what was said.
-      decision: request.rule === 'irreversible-floor' || request.rule === 'irreversible-retry'
-        ? 'require-approval'
-        : 'ask-user',
+      decision: request.rule === 'irreversible-floor' ? 'require-approval' : 'ask-user',
       decisionRule: request.rule ?? 'approval',
       approvalId: request.id,
       outcome: granted ? 'awaiting-approval' : 'denied',
@@ -592,40 +550,64 @@ export class CapabilityFabric {
     }
 
     /* 4. approval */
+    let spentNamedApproval = false;
     if (evaluation.decision !== 'auto-execute') {
       // Identity of the QUESTION, not of the attempt. Pressing Run three
       // times on a gated task asks one question three times, and must not
       // produce three notifications and three buttons.
       const key = CapabilityFabric.approvalKey(capabilityId, context, invocation.id);
+      const fingerprint = fingerprintInvocation(capabilityId, input, context);
+      const open = this.approvals.get(key);
 
-      // A caller resuming a specific answered question addresses it by id,
-      // because the key above is derived from THIS invocation and a
-      // resume is always a new one.
-      //
-      // Matching the CAPABILITY was once what kept that handle honest.
-      // It did not: `terminal.execute` approved for `node --version` was
-      // in substance `terminal.execute` approved for anything, because
-      // the input the human read was never part of what the grant
-      // covered. So the match is on the ACTION — this capability WITH
-      // this input — and a grant is spendable only on an item carrying
-      // the same fingerprint. See `inputBinding.ts`.
-      const fingerprint = actionFingerprint(capabilityId, input);
-      const covers = (r: ApprovalRequest | undefined | null): boolean =>
-        Boolean(r?.items.some((i) => i.capabilityId === capabilityId && i.inputHash === fingerprint));
-
-      const named = context.resumeApprovalId ? this.approvalById(context.resumeApprovalId) : null;
-      const resumable = covers(named) ? named : null;
-
-      // The mission-keyed question is checked the same way. Fixing only
-      // the resume path would fix nothing: a mission task's key is
-      // `mission:task:capability` and holds across input changes, so the
-      // substitution works there too.
-      const keyed = this.approvals.get(key);
-      const open = resumable ?? (covers(keyed) ? keyed : undefined);
+      /* A caller spending a NAMED approval.
+         
+         This is the argument-bound path. The request is looked up in the
+         Fabric's own store — never taken from the caller — and three things
+         must all hold: it was granted, it has not been spent, and the
+         fingerprint recorded when the human saw it matches the call being
+         made now. Any mismatch falls through to asking again rather than
+         executing, because the safe reading of "this is not the action that
+         was approved" is that nothing has been approved. */
+      if (context.approvalId) {
+        const named = this.approvalById(context.approvalId);
+        const usable = named
+          && named.state === 'granted'
+          && !named.consumedAt
+          && named.items.some((i) => i.capabilityId === capabilityId && i.fingerprint === fingerprint);
+        if (usable && this.consumeApproval(named.id)) {
+          this.emit({
+            type: 'approval.granted',
+            at: new Date().toISOString(),
+            requestId: named.id,
+          });
+          // Authorized for exactly this call. Fall through to execution —
+          // every later step (executor, verification, recovery, audit) is
+          // the unchanged one.
+          spentNamedApproval = true;
+        } else {
+        // Not usable. Deliberately NOT an error: the request may simply be
+        // stale, and the correct behaviour is to refuse THIS call while
+        // leaving the standing question alone.
+        this.emit({
+          type: 'invocation.denied',
+          at: new Date().toISOString(),
+          invocationId: invocation.id,
+          reason: named
+            ? 'The approval named for this call does not authorize it — the action or its arguments changed since it was granted.'
+            : 'The approval named for this call no longer exists.',
+        });
+        return this.settle(invocation, capability, 'awaiting-approval',
+          named
+            ? `${capability.name} was not run: the authorization on record is for a different action than the one requested. Nothing has run, and the request stands.`
+            : `${capability.name} was not run: the authorization it named no longer exists. Nothing has run.`,
+          NO_VERIFICATION, evaluation, started, startedAt, 0, named?.id);
+        }
+      }
 
       // Already answered "yes" out of band (the approval UI). Spend it —
       // once — and fall through to execution.
-      const preGranted = open?.state === 'granted' && !open.consumedAt && this.consumeApproval(open.id);
+      const preGranted = spentNamedApproval
+        || (open?.state === 'granted' && !open.consumedAt && Boolean(this.consumeApproval(open.id)));
 
       if (!preGranted) {
         // Reuse the open question rather than minting a duplicate.
@@ -638,6 +620,9 @@ export class CapabilityFabric {
           projectId: context.projectId ?? undefined,
           missionId: context.missionId,
           taskId: context.taskId,
+          workflowId: context.workflowId,
+          runId: context.runId,
+          workflowNodeId: context.workflowNodeId,
           target: describeTarget(capability, input),
           // Both consequences are stated, because an approval prompt that
           // only says what happens if you say yes is not a real choice.
@@ -649,18 +634,13 @@ export class CapabilityFabric {
             invocationId: invocation.id,
             capabilityId,
             title: capability.name,
-            detail: summarizeInput(capability, input, this.redactValue),
+            detail: summarizeInput(capability, input),
             risk: capability.risk,
             irreversible: Boolean(capability.irreversible),
-            inputHash: fingerprint,
+            fingerprint,
           }],
         };
 
-        // A pending question already under this key that describes a
-        // DIFFERENT action is superseded, not reused. The mission key
-        // holds across input changes, so leaving the stale one in place
-        // would leave the new question with nowhere to live and the
-        // human answering something no longer being asked.
         if (open?.state !== 'pending') {
           this.approvals.set(key, request);
           this.emit({ type: 'approval.required', at: request.requestedAt, request });
@@ -676,7 +656,7 @@ export class CapabilityFabric {
         if (!granted) {
           return this.settle(invocation, capability, 'awaiting-approval',
             `${capability.name} is ready and waiting on your go-ahead. Nothing has run.`,
-            NO_VERIFICATION, evaluation, started, startedAt, 0, request.id, undefined, false);
+            NO_VERIFICATION, evaluation, started, startedAt, 0, request.id);
         }
         if (request.state === 'pending') {
           request.state = 'granted';
@@ -700,52 +680,17 @@ export class CapabilityFabric {
     this.emit({ type: 'invocation.started', at: new Date().toISOString(), invocationId: invocation.id, capabilityId });
 
     let attempts = 0;
-    let last: ExecutorResult = { ok: false, detail: 'Not attempted.' };
-    /** Non-null when the loop withheld an automatic retry for governance. */
-    let withheld: { rule: string; effectStarted?: boolean; requestId?: string; output?: unknown } | null = null;
+    let last = { ok: false, detail: 'Not attempted.' } as Awaited<ReturnType<Executor['run']>>;
 
     while (attempts < MAX_ATTEMPTS) {
       attempts += 1;
       try {
         last = await executor.run(invocation);
       } catch (error) {
-        // An executor that throws mid-flight may already have started its
-        // effect. We cannot prove otherwise, and the safe reading of
-        // "unknown" is "may have started" — never "proven not started".
-        last = {
-          ok: false,
-          detail: (error as Error).message || 'The executor threw with no message.',
-          effectStarted: true,
-        };
+        last = { ok: false, detail: (error as Error).message || 'The executor threw with no message.' };
       }
       if (last.ok) break;
       if (attempts >= MAX_ATTEMPTS || !isTransient(last.detail)) break;
-
-      /* Capability-aware recovery — `mayRetry` is the single decision
-         predicate. Being transient is necessary but not sufficient: an
-         irreversible capability is retried automatically ONLY while its
-         effect is proven not to have started. Any other state — started,
-         or unknown — must not be repeated without a fresh human decision,
-         so the loop parks the invocation on the Fabric's own approval
-         mechanism instead. The decision reads `capability.irreversible`,
-         never a capability id, so a future irreversible capability
-         inherits it for free. */
-      if (!mayRetry(capability, last)) {
-        const authorized = await this.authorizeIrreversibleRetry(invocation, capability, input);
-        if (!authorized.granted) {
-          withheld = {
-            rule: 'irreversible-retry',
-            effectStarted: last.effectStarted,
-            requestId: authorized.requestId,
-            output: last.output,
-          };
-          break;
-        }
-        // A fresh human grant covers exactly ONE more execution. It is not
-        // a licence to keep retrying: the next failure is re-evaluated by
-        // this loop.
-        continue;
-      }
 
       this.emit({
         type: 'invocation.retrying',
@@ -759,28 +704,6 @@ export class CapabilityFabric {
       await new Promise((r) => setTimeout(r, BASE_BACKOFF_MS * 2 ** (attempts - 1)));
     }
 
-    /* An automatic retry was withheld because the action is irreversible
-       and its effect may already exist. This is a governance pause, NOT a
-       normal failure: the invocation is parked awaiting a human decision
-       on the Fabric's own approval request, and is executed again only
-       with a fresh grant. */
-    if (withheld) {
-      const reason =
-        `${capability.name} may already have taken effect. The previous attempt failed while its effect was uncertain, `
-        + 'so an automatic retry was withheld — retrying could repeat or compound the action. '
-        + 'A human grant is therefore required before another execution.';
-      return this.settle(
-        invocation, capability, 'awaiting-approval',
-        `${capability.name} may already have taken effect, and an automatic retry was withheld. `
-          + 'It is waiting on a human go-ahead before it can be attempted again. Nothing further has run.',
-        NO_VERIFICATION,
-        { decision: 'require-approval', rule: withheld.rule, risk: capability.risk, reason },
-        started, startedAt, attempts, withheld.requestId, withheld.output,
-        withheld.effectStarted,
-        { withheld: true, rule: withheld.rule, effectStarted: withheld.effectStarted },
-      );
-    }
-
     if (!last.ok) {
       // "did not succeed", not "did not complete" — a command that ran and
       // exited non-zero did complete, and saying otherwise misdescribes
@@ -792,8 +715,7 @@ export class CapabilityFabric {
       // precisely when something went wrong.
       return this.settle(invocation, capability, 'failed',
         `${capability.name} did not succeed${tried}. ${last.detail}`,
-        NO_VERIFICATION, evaluation, started, startedAt, attempts, undefined, last.output,
-        last.effectStarted);
+        NO_VERIFICATION, evaluation, started, startedAt, attempts, undefined, last.output);
     }
 
     /* 6. verify */
@@ -827,102 +749,7 @@ export class CapabilityFabric {
       ? `${capability.name} ran, but the check did not confirm it. ${verification.detail}`
       : `${capability.name} completed. ${last.detail}`;
 
-    return this.settle(invocation, capability, outcome, detail, verification, evaluation, started, startedAt, attempts, undefined, last.output, last.effectStarted);
-  }
-
-  /**
-   * Ask a human whether an irreversible action whose effect may already
-   * exist may be attempted again.
-   *
-   * Uses the SAME approval mechanism as every other gate: an
-   * `ApprovalRequest` on the existing map, persisted through the existing
-   * `ApprovalPersistence`, decided through the existing `decideApproval`
-   * path, with the rule `irreversible-retry`. There is deliberately no
-   * second approval store, no second decision mechanism and no capability
-   * id special case — this is reached only because the descriptor says
-   * `irreversible`.
-   *
-   * One deliberate asymmetry with the step-4 gate: the context's
-   * per-invocation `approvedCapabilities` grant is NOT honoured here.
-   * Authorizing the action once is not authorizing a re-run of an action
-   * that may already have happened — that is a materially different
-   * question, and answering it automatically is exactly the retry the
-   * invariant forbids. Only deciding THIS request can grant the retry.
-   */
-  private async authorizeIrreversibleRetry(
-    invocation: Invocation,
-    capability: CapabilityDescriptor,
-    input: Record<string, unknown>,
-  ): Promise<{ granted: boolean; requestId?: string }> {
-    const key = CapabilityFabric.approvalKey(invocation.capabilityId, invocation.context, invocation.id);
-    const fingerprint = actionFingerprint(invocation.capabilityId, input);
-    const keyed = this.approvals.get(key);
-
-    // Bound to the action here too. This gate is reached only for an
-    // irreversible capability, which is where a substituted input costs
-    // the most: the grant exists because the previous attempt may
-    // ALREADY have taken effect, and re-running something the human did
-    // not read is exactly the compounding this gate was written to stop.
-    const open = keyed?.items.some(
-      (i) => i.capabilityId === invocation.capabilityId && i.inputHash === fingerprint,
-    ) ? keyed : undefined;
-
-    // A grant already given out of band and not yet spent covers exactly
-    // this retry — once.
-    const preGranted = open?.state === 'granted' && !open.consumedAt && this.consumeApproval(open.id);
-    if (preGranted) return { granted: true, requestId: open!.id };
-
-    const rule = 'irreversible-retry';
-    const reason =
-      `${capability.name} may already have taken effect. The previous attempt failed while its effect was uncertain, `
-      + 'so an automatic retry was withheld — retrying could repeat or compound the action. '
-      + 'A human grant is therefore required before another execution.';
-    const request: ApprovalRequest = open?.state === 'pending' ? open : {
-      id: `apr-retry-${invocation.id}`,
-      state: 'pending',
-      requestedAt: new Date().toISOString(),
-      summary: reason,
-      rule,
-      projectId: invocation.context.projectId ?? undefined,
-      missionId: invocation.context.missionId,
-      taskId: invocation.context.taskId,
-      target: describeTarget(capability, input),
-      onAccept: `${capability.name} is executed once more with this grant. The prior attempt may already have taken effect, so this can repeat or compound it.`,
-      onDecline: 'No further execution happens. The failure is recorded, and nothing more runs.',
-      items: [{
-        invocationId: invocation.id,
-        capabilityId: capability.id,
-        title: capability.name,
-        detail: summarizeInput(capability, input, this.redactValue),
-        risk: capability.risk,
-        irreversible: true,
-        inputHash: fingerprint,
-      }],
-    };
-
-    if (open?.state !== 'pending') {
-      this.approvals.set(key, request);
-      this.emit({ type: 'approval.required', at: request.requestedAt, request });
-      // Durable the moment it is asked, so a crash between asking and
-      // answering does not lose the question.
-      this.persistApprovals();
-    }
-
-    // The retry is a NEW question, not a continuation of the original
-    // authorization: strip the per-invocation grant so a host that honors
-    // `approvedCapabilities` cannot auto-answer it.
-    const contextForDecision = { ...invocation.context, approvedCapabilities: undefined };
-    const granted = await this.host.requestApproval(request, contextForDecision).catch(() => false);
-    if (!granted) return { granted: false, requestId: request.id };
-    if (request.state === 'pending') {
-      request.state = 'granted';
-      request.decidedAt = new Date().toISOString();
-      request.decidedBy = invocation.context.actor.id;
-      request.consumedAt = request.decidedAt;
-      this.emit({ type: 'approval.granted', at: request.decidedAt, requestId: request.id });
-      this.persistApprovals();
-    }
-    return { granted: true, requestId: request.id };
+    return this.settle(invocation, capability, outcome, detail, verification, evaluation, started, startedAt, attempts, undefined, last.output);
   }
 
   /* ── audit + result assembly ──────────────────────────────────── */
@@ -937,9 +764,6 @@ export class CapabilityFabric {
     return {
       node: node ? { id: node.id, name: node.name } : undefined,
       requestedNodeId: invocation.context.nodeId,
-      // Attested by the transport, not asserted by the caller — the one
-      // subject field besides `node` that a policy rule may rely on.
-      initiator: invocation.context.initiator ?? 'request',
       actorKind: invocation.context.actor.kind,
       actorId: invocation.context.actor.id,
       projectId: invocation.context.projectId,
@@ -956,23 +780,6 @@ export class CapabilityFabric {
   private nodeIdOfOutput(output: unknown): string | undefined {
     const id = (output as { nodeId?: unknown } | undefined)?.nodeId;
     return typeof id === 'string' && id ? id : undefined;
-  }
-
-  /**
-   * Whether the executor reported receiving a canonical AURA context.
-   *
-   * Read from the executor's own output for the same reason
-   * `executedNodeId` is: the Fabric never sees the injected prompt. The
-   * host wiring hands the executor a COPY of the invocation carrying it,
-   * so only the executor can attest to what it actually received.
-   *
-   * `undefined` when nothing ran — an invocation parked at approval has no
-   * execution to attribute, and reporting `false` there would read as "it
-   * ran without context".
-   */
-  private contextInjectedOf(output: unknown, attempts: number): boolean | undefined {
-    if (attempts === 0) return undefined;
-    return (output as { contextInjected?: unknown } | undefined)?.contextInjected === true;
   }
 
   /**
@@ -1013,8 +820,6 @@ export class CapabilityFabric {
     attempts: number,
     approvalId?: string,
     output?: unknown,
-    effectStarted?: boolean,
-    retry?: NonNullable<AuditRecord['retry']>,
   ): InvocationResult {
     const endedAt = new Date().toISOString();
     const durationMs = Date.now() - started;
@@ -1027,20 +832,12 @@ export class CapabilityFabric {
       output,
       verification,
       policy,
+      approvalId,
       startedAt,
       endedAt,
       durationMs,
       attempts,
     };
-    if (effectStarted !== undefined) result.effectStarted = effectStarted;
-    if (capability?.irreversible === true) result.irreversible = true;
-    // `InvocationResult.approvalId` was declared and never populated — it
-    // only ever reached the audit record below. That is why a parked
-    // standalone invocation could not be resumed: the caller was told to
-    // wait for an approval whose id it was never given. Surfacing it is
-    // what makes `context.resumeApprovalId` usable by anything other than
-    // a mission, which already had a stable key of its own.
-    if (approvalId !== undefined) result.approvalId = approvalId;
 
     this.record({
       invocationId: invocation.id,
@@ -1050,22 +847,17 @@ export class CapabilityFabric {
       projectId: invocation.context.projectId,
       missionId: invocation.context.missionId,
       taskId: invocation.context.taskId,
+      workflowId: invocation.context.workflowId,
+      runId: invocation.context.runId,
+      workflowNodeId: invocation.context.workflowNodeId,
       risk: policy.risk,
       decision: policy.decision,
       decisionRule: policy.rule,
-      /* Which channel asked. This is the one provenance field the Fabric
-         can state rather than accept: `actor` is whatever the caller said
-         it was, while `initiator` is set by the transport from a token the
-         shell minted, so 'user-direct' cannot be claimed by a request. A
-         record that cannot distinguish "the user clicked" from "something
-         on this machine asked" cannot answer the only question that
-         matters after the fact. */
-      initiator: invocation.context.initiator ?? 'request',
       approvalId,
       outcome,
       verified: verification.passed,
       durationMs,
-      inputSummary: capability ? summarizeInput(capability, invocation.input, this.redactValue) : '(unknown capability)',
+      inputSummary: capability ? summarizeInput(capability, invocation.input) : '(unknown capability)',
       // Routing is recorded in full: what was asked for, what the Fabric
       // chose, and what actually ran. Collapsing these would hide a
       // substitution — the one thing routing must never do quietly.
@@ -1078,8 +870,6 @@ export class CapabilityFabric {
       nodeId: this.executedNodeId(invocation, capability, attempts, output),
       requestedNodeId: invocation.context.nodeId,
       executedNodeId: this.executedNodeId(invocation, capability, attempts, output),
-      contextInjected: this.contextInjectedOf(output, attempts),
-      ...(retry ? { retry } : {}),
     });
 
     this.emit({ type: 'invocation.completed', at: endedAt, result });

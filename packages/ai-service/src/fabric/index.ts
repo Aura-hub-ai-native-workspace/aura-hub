@@ -22,23 +22,25 @@ import {
   type NodeResolution,
 } from '@aura/capability-fabric';
 import { allExecutors } from './executors';
+import { LOCAL_GRANTS, RunScopeRegistry } from './scopes';
 import { loadPolicy } from './policyStore';
 import { createApprovalStore } from './approvalStore';
-import { appendAudit, readAuditRecords } from './auditStore';
-import { redact } from '../context/redact';
+import { createAuditStore } from './auditStore';
 import type { WorkspaceManager } from '../workspace';
 
-/**
- * Grants for the local machine. AURA is a single-user desktop app and
- * the service already runs with the user's own privileges, so read,
- * write and execute are genuinely available. `autonomous` stays false:
- * the *policy* engine decides what runs unattended, and it should not be
- * pre-empted by a blanket grant here.
+/*
+ * `LOCAL_GRANTS` — the ceiling — now lives in `./scopes`, alongside the
+ * per-run narrowing that reads it. Keeping the ceiling and the only thing
+ * that lowers it in one file is what stops them drifting apart.
  */
-const LOCAL_GRANTS = { read: true, write: true, execute: true, autonomous: false };
 
 export interface FabricDeps {
   manager: WorkspaceManager;
+  /**
+   * Per-run least privilege. Supplied by the host so this module stays a
+   * wiring file: it holds no state and decides nothing, it only asks.
+   */
+  runScopes?: RunScopeRegistry;
   /**
    * Which node capabilities are currently provided. Read at decision
    * time (not construction time) so a node connected mid-session takes
@@ -55,19 +57,6 @@ export interface FabricDeps {
    * refs carry only what routing needs.
    */
   presentNodes?: () => NodeRef[];
-  /**
-   * Compose the canonical AURA prompt for a delegated agent.
-   *
-   * Supplied by the host because composing it needs live service state
-   * (the environment scan, the mission store, the provider) that the
-   * Fabric deliberately does not own. Returning null means "no context
-   * available for this project" — the agent then receives the bare task,
-   * which is honest, rather than a prompt claiming knowledge AURA lacks.
-   *
-   * This is the ONLY way project context reaches an executor. Executors
-   * never collect context themselves (§ agent.delegate in executors.ts).
-   */
-  agentPrompt?: (projectId: string, task: string) => Promise<string | null>;
 }
 
 /**
@@ -148,8 +137,17 @@ function resolveNodeFor(
 
 export function createFabric(deps: FabricDeps): CapabilityFabric {
   const host: FabricHost = {
-    permissionsFor(_capability: CapabilityDescriptor, _context: InvocationContext) {
-      return LOCAL_GRANTS;
+    /**
+     * What the acting caller may do.
+     *
+     * An invocation carrying a `runId` is bounded by that run's envelope;
+     * everything else keeps the machine ceiling exactly as before. This
+     * can only narrow — see `scopes.ts` — so no caller gains anything it
+     * did not already have, and a workflow gains considerably less.
+     */
+    permissionsFor(_capability: CapabilityDescriptor, context: InvocationContext) {
+      const scoped = deps.runScopes?.forRun(context.runId);
+      return scoped ?? LOCAL_GRANTS;
     },
 
     nodeAvailable(capability: CapabilityDescriptor): boolean | null {
@@ -178,48 +176,8 @@ export function createFabric(deps: FabricDeps): CapabilityFabric {
     },
   };
 
-  /**
-   * Inject the canonical prompt into `agent.delegate`, and only there.
-   *
-   * Wrapping `run` — rather than changing the Fabric or teaching the
-   * executor to gather context — keeps three properties intact:
-   *
-   *   • The pipeline is untouched. validate → resolveNode → policy →
-   *     approval → execute → verify → audit still runs exactly as before;
-   *     this sits INSIDE execute, after every gate has already decided.
-   *   • `executors.ts` collects nothing. It receives an already-composed
-   *     string and uses it, so there is no second context collector.
-   *   • Correlation, mission and task ids ride on `invocation.context`
-   *     and are never rewritten here.
-   *
-   * A capability other than `agent.delegate` is returned untouched.
-   */
-  const withCanonicalContext = (executor: ReturnType<typeof allExecutors>[number]) => {
-    if (executor.capabilityId !== 'agent.delegate' || !deps.agentPrompt) return executor;
-    const inner = executor.run.bind(executor);
-    return {
-      ...executor,
-      run: async (invocation: Parameters<typeof inner>[0]) => {
-        const projectId = invocation.context.projectId;
-        const task = typeof invocation.input.task === 'string' ? invocation.input.task : '';
-        // No project, no task, or a composition failure ⇒ the agent runs
-        // with what it had before. Context is an improvement to the call,
-        // never a precondition for it.
-        let prompt: string | null = null;
-        if (projectId && task) {
-          try {
-            prompt = await deps.agentPrompt!(projectId, task);
-          } catch {
-            prompt = null;
-          }
-        }
-        return inner(prompt ? { ...invocation, input: { ...invocation.input, auraPrompt: prompt } } : invocation);
-      },
-    };
-  };
-
   const fabric = new CapabilityFabric(host);
-  for (const executor of allExecutors(deps.manager)) fabric.register(withCanonicalContext(executor));
+  for (const executor of allExecutors(deps.manager)) fabric.register(executor);
   // The operator's saved caution settings outlive the process. Loaded
   // through `sanitizePolicy`, so a corrupt file degrades to the shipped
   // default instead of loosening anything.
@@ -227,17 +185,9 @@ export function createFabric(deps: FabricDeps): CapabilityFabric {
   // Pending gates outlive the process too: a question asked before a
   // restart is still waiting for its answer afterwards, with the same id.
   fabric.attachApprovalStore(createApprovalStore());
-  /* And so does the record of what was decided. The Fabric produced a
-     complete audit record all along and kept it in an array that died with
-     the process, so "what did AURA do, and who authorized it?" had no
-     answer that survived a restart. Attaching the store makes each new
-     record durable AND starts the in-memory view from the history rather
-     than from empty, so every existing reader of `audit()` becomes
-     continuous without knowing the journal exists. */
-  fabric.attachAuditStore({ load: readAuditRecords, append: appendAudit });
-  /* The same patterns the prompt composers use. `terminal.execute` carries
-     a whole command line into `inputSummary`, so without this a credential
-     passed on a command line would be written to the journal and kept. */
-  fabric.setInputRedactor(redact);
+  // The trail outlives the process too. Without this, everything the
+  // Fabric governed is forgotten on exit — see the master handoff's
+  // finding S-2, which this closes.
+  fabric.attachAuditStore(createAuditStore());
   return fabric;
 }

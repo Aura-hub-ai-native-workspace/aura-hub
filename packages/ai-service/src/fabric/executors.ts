@@ -21,14 +21,9 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
 import { git, parseCommand, resolveAgentBinary, runAgent, runInstaller, safeShellWithCode } from '../exec/process';
-import { guardedFetch, BlockedAddressError } from '../net/ssrfGuard';
 import { isPlan, planInstall } from '../exec/install';
 import { catalogEntry } from '@aura/connected-environment';
 import { probeNode } from '../environment';
-import { getEngineeringAudit, getEngineeringScorecard, type AuditScope } from '@aura/governance';
-
-/** Declared in the manifest's prose; the manifest has no enum type yet. */
-const AUDIT_SCOPES: readonly string[] = ['daily', 'weekly', 'release', 'architecture'];
 import type { WorkspaceManager } from '../workspace';
 
 const MAX_READ_BYTES = 512 * 1024;
@@ -53,18 +48,7 @@ function cwdOf(inv: Invocation): string {
 }
 
 const ok = (detail: string, output?: unknown): ExecutorResult => ({ ok: true, detail, output });
-const no = (detail: string, opts: { effectStarted?: boolean; output?: unknown } = {}): ExecutorResult => ({ ok: false, detail, ...opts });
-
-/**
- * A refusal made BEFORE anything was spawned or written.
- *
- * `effectStarted: false` is a claim the Fabric relies on to decide whether
- * an irreversible capability may be retried automatically, so it is only
- * ever used where the code has demonstrably not acted yet — a missing
- * argument, an unresolved node, a binary that is not on the allow-list.
- * Never after a process has been started.
- */
-const notStarted = (detail: string): ExecutorResult => ({ ok: false, detail, effectStarted: false });
+const no = (detail: string): ExecutorResult => ({ ok: false, detail });
 
 const pass = (kind: VerificationReport['kind'], detail: string): VerificationReport =>
   ({ passed: true, kind, detail });
@@ -184,14 +168,29 @@ const AGENT_INVOCATIONS: Record<string, AgentInvocation> = {
 };
 
 /**
- * The agent binaries AURA has a VERIFIED non-interactive invocation for.
+ * How much context may ride along with a task.
  *
- * Exported so the Context Fabric can report "present but not drivable"
- * without restating the list. This file stays the authority: a node being
- * on the agent allow-list is not the same as AURA being able to drive it,
- * and only the invocation table above knows the difference.
+ * The whole brief reaches the CLI as ONE argv element, and Windows caps a
+ * command line at 32,767 characters. Staying well under that keeps the
+ * same call working on every platform rather than failing only on one.
  */
-export const drivableAgentBinaries = (): string[] => Object.keys(AGENT_INVOCATIONS);
+const MAX_CONTEXT_CHARS = 12_000;
+
+/**
+ * Compose the brief an agent actually receives: AURA's context, then the
+ * task, fenced so the agent can tell orientation from instruction.
+ *
+ * Truncation is announced in the text itself. An agent that silently
+ * received half its context would reason confidently from a fragment.
+ */
+function withContext(task: string, rawContext: string): string {
+  const context = rawContext.trim();
+  if (!context) return task;
+  const body = context.length > MAX_CONTEXT_CHARS
+    ? `${context.slice(0, MAX_CONTEXT_CHARS)}\n[context truncated by AURA at ${MAX_CONTEXT_CHARS} characters]`
+    : context;
+  return `${body}\n\n<TASK>\n${task}\n</TASK>`;
+}
 
 const agentDelegate: Executor = {
   capabilityId: 'agent.delegate',
@@ -211,117 +210,75 @@ const agentDelegate: Executor = {
   },
 
   async run(inv) {
-    /* Every refusal before the agent CLI is spawned is provably
-       pre-execution: the agent never ran, so nothing it could have done
-       has happened. These report `effectStarted: false` so a retry of
-       this irreversible capability is allowed when the failure is
-       transient. */
     // Confinement first: the agent runs in the project directory the
     // server resolved from the registry, never one the caller supplied.
-    let cwd: string;
-    try {
-      cwd = cwdOf(inv);
-    } catch (error) {
-      return no((error as Error).message, { effectStarted: false });
-    }
+    const cwd = cwdOf(inv);
     const task = s(inv.input.task).trim();
-    if (!task) return notStarted('No task was given for the agent to carry out.');
+    if (!task) return no('No task was given for the agent to carry out.');
     const model = s(inv.input.model).trim() || undefined;
-
-    /* The canonical AURA prompt — system rules + this project's context +
-       the task — composed by the Fabric wiring before this executor was
-       called (see `withCanonicalContext` in fabric/index.ts).
-
-       This executor deliberately does NOT build it. Composing context here
-       would mean a second collector reaching for the registry, the
-       environment scan and the mission store, and a delegated agent could
-       then be told something different from what Ask AURA was told about
-       the same project. Absent ⇒ the agent gets the bare task, exactly as
-       it did before Phase C. */
-    const auraPrompt = s(inv.input.auraPrompt).trim();
-    const payload = auraPrompt || task;
+    // Context is CONSUMED, never composed here. The caller supplies an
+    // already-rendered AURA context contract; this executor only decides
+    // how to hand it to the CLI. Assembling repository understanding in
+    // this file would create a second one beside Repository Intelligence.
+    const brief = withContext(task, s(inv.input.context));
 
     /* Routing is the Fabric's job now (§22). This executor no longer
        searches the catalogue or probes anything: it is handed the node
        that policy was evaluated against, and refuses if it was not. */
     const node = inv.node;
     if (!node) {
-      return notStarted('No coding-agent node was resolved for this call, so nothing was run.');
+      return no('No coding-agent node was resolved for this call, so nothing was run.');
     }
 
     const bin = node.binary;
     if (!bin) {
-      return notStarted(`${node.name} has no executable recorded in the catalogue, so it cannot be run.`);
+      return no(`${node.name} has no executable recorded in the catalogue, so it cannot be run.`);
     }
     // The allow-list is still enforced here, at the point of execution —
     // routing decides WHICH node, never whether its binary may be spawned.
     if (!resolveAgentBinary(bin).ok) {
-      return notStarted(`${node.name} is not on the coding-agent allow-list, so it was not run.`);
+      return no(`${node.name} is not on the coding-agent allow-list, so it was not run.`);
     }
     const invocationSpec = AGENT_INVOCATIONS[bin];
     // A resolved node whose CLI has not been verified FAILS. It is never
     // silently swapped for one that would have worked — that substitution
     // is exactly what routing must not do.
     if (!invocationSpec) {
-      return notStarted(
+      return no(
         `${node.name} is connected, but AURA has no verified non-interactive invocation for it yet, `
         + `so nothing was run. Verified today: ${Object.keys(AGENT_INVOCATIONS).join(', ')}.`,
       );
     }
 
     const target = { nodeId: node.id, name: node.name, bin, invocation: invocationSpec };
-    // `payload` still travels as the LAST single argv element, never
-    // concatenated into a shell string — the same guarantee the bare task
-    // had. Adding context changes the content of that argument, not the
-    // way it is passed.
-    const args = target.invocation.args(payload, cwd, model);
+    const args = target.invocation.args(brief, cwd, model);
     let res: Awaited<ReturnType<typeof runAgent>>;
     try {
       res = await runAgent(target.bin, args, { cwd, timeoutMs: inv.context.timeoutMs });
     } catch (e) {
-      // `runAgent` rejects only when the spawn itself failed (binary
-      // missing, arguments the OS refused) — the agent never started.
-      return no(`${target.name} could not be run: ${(e as Error).message}`, { effectStarted: false });
+      return no(`${target.name} could not be run: ${(e as Error).message}`);
     }
 
-    // The agent ran — it may have read and edited files even if it
-    // exited non-zero or was cut short. `effectStarted: true` from here
-    // on: a missing success response is never proof nothing happened.
     // `nodeId` travels with the result so the work is attributable to the
     // agent that did it rather than to "some coding agent".
-    /* The payload argument is now a multi-kilobyte prompt. Reporting it
-       verbatim would push the whole of it into the executor result and
-       from there into the audit record, which is meant to stay a readable
-       trace of what ran — not a transcript of what was said. The shape of
-       the invocation is preserved; the payload is summarised. */
-    const reportedArgs = args.map((a) => (a === payload ? `<aura-prompt:${payload.length} chars>` : a));
-
     const output = {
       stdout: res.out,
       exitCode: res.code,
       nodeId: target.nodeId,
       agent: target.name,
-      args: reportedArgs,
-      contextInjected: auraPrompt.length > 0,
+      args,
       timedOut: res.timedOut ?? false,
       signal: res.signal,
     };
-    if (res.code === 0) return { ok: true, effectStarted: true, detail: `${target.name} completed the task. Exit code 0.`, output };
+    if (res.code === 0) return ok(`${target.name} completed the task. Exit code 0.`, output);
     // A run that was cut short is reported as cut short, not as a
     // generic failure — the operator needs to know it may be half-done.
-    // A timeout is named as a timeout so the Fabric's transient
-    // classifier sees it: an irreversible agent run that timed out must
-    // reach the retry-governance gate, never a silent re-run.
     const why = res.timedOut
-      ? `${target.name} timed out and was stopped. Its changes, if any, are partial.`
+      ? `${target.name} ran out of time and was stopped. Its changes, if any, are partial.`
       : res.signal
         ? `${target.name} was terminated by ${res.signal}.`
         : `${target.name} exited ${res.code}.`;
-    /* The process ran. Whatever it did to the repository, it did — a
-       timeout in particular is the case where work is most likely to be
-       half-finished. Reporting `effectStarted: true` is what stops the
-       Fabric retrying an approved irreversible action on top of it. */
-    return { ok: false, detail: `${why} ${res.out.slice(0, 400)}`.trim(), output, effectStarted: true };
+    return { ok: false, detail: `${why} ${res.out.slice(0, 400)}`.trim(), output };
   },
   async verify(_inv, result) {
     const exit = (result.output as { exitCode?: number } | undefined)?.exitCode;
@@ -573,46 +530,16 @@ const gitCommit: Executor = {
   },
 };
 
-/**
- * The real git push executor, exported so governed-execution verification
- * scripts can register the production implementation itself (never a
- * stand-in) on a disposable fixture. `allExecutors` remains the single
- * place a running service wires its capabilities.
- */
-export const gitPush: Executor = {
+const gitPush: Executor = {
   capabilityId: 'git.push',
   async run(inv) {
-    // Everything before the push process is spawned is provably
-    // pre-execution: a failure here means nothing reached the remote.
-    let cwd: string;
-    try {
-      cwd = cwdOf(inv);
-    } catch (error) {
-      return no((error as Error).message, { effectStarted: false });
-    }
+    const cwd = cwdOf(inv);
     const remote = s(inv.input.remote, 'origin');
-    let branch = s(inv.input.branch);
-    if (!branch) {
-      try {
-        branch = (await git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd })).out;
-      } catch (error) {
-        // The branch probe failed before any push could start.
-        return no((error as Error).message, { effectStarted: false });
-      }
-    }
-    // From here a push process is spawned. The push may reach the remote
-    // even when the transport fails or times out afterwards, so the
-    // honest attestation is "may have started" — a missing success
-    // response is never proof that nothing happened.
-    let res: Awaited<ReturnType<typeof git>>;
-    try {
-      res = await git(['push', remote, branch], { cwd });
-    } catch (error) {
-      return no((error as Error).message, { effectStarted: true });
-    }
+    const branch = s(inv.input.branch) || (await git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd })).out;
+    const res = await git(['push', remote, branch], { cwd });
     return res.code === 0
-      ? { ok: true, effectStarted: true, detail: `Pushed ${branch} to ${remote}.`, output: { remote, branch, exitCode: res.code } }
-      : { ok: false, effectStarted: true, detail: res.out || 'The push failed.', output: { exitCode: res.code } };
+      ? ok(`Pushed ${branch} to ${remote}.`, { remote, branch, exitCode: res.code })
+      : { ok: false, detail: res.out || 'The push failed.', output: { exitCode: res.code } };
   },
   async verify(_inv, result) {
     const exit = (result.output as { exitCode?: number } | undefined)?.exitCode;
@@ -636,11 +563,7 @@ const httpRequest: Executor = {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(inv.context.timeoutMs ?? 10_000, 30_000));
     try {
-      /* Guarded at the resolver, and at every redirect hop. A URL that
-         resolves to loopback, link-local or RFC1918 is refused before a
-         connection is made - see `net/ssrfGuard.ts` for why that matters
-         in a single-user app. */
-      const res = await guardedFetch(url, {
+      const res = await fetch(url, {
         method: s(inv.input.method, 'GET').toUpperCase(),
         body: inv.input.body === undefined ? undefined : s(inv.input.body),
         signal: controller.signal,
@@ -653,11 +576,6 @@ const httpRequest: Executor = {
       // real cause nested underneath. Propagating that code matters: the
       // Fabric's retry classifier keys off it, so swallowing it here
       // silently turns every transient network blip into a hard failure.
-      /* A blocked address is a refusal, not a network failure. It is
-         reported with the reason and NOT with a transient error code, so
-         the Fabric's retry classifier does not retry a request that will
-         be refused identically every time. */
-      if (error instanceof BlockedAddressError) return no(error.message);
       const err = error as Error & { cause?: { code?: string } };
       const code = err.cause?.code;
       const reason = err.name === 'AbortError' ? 'timeout' : (code ?? err.message);
@@ -745,53 +663,6 @@ function internalExecutors(manager: WorkspaceManager): Executor[] {
       },
     },
     {
-      capabilityId: 'mission.create',
-      async run(inv) {
-        const projectId = s(inv.input.projectId);
-        const text = s(inv.input.text);
-        if (!text) return no('A mission description is required.');
-        try {
-          const record = await manager.runMissionCreation(projectId, text, () => {});
-          return ok('Mission created.', record);
-        } catch (e) {
-          return no((e as Error).message || 'Mission creation failed.');
-        }
-      },
-      /* The read-back looks the mission up by the id CREATION returned.
-         It used to pass `text.slice(0, 60)` where `getMission` expects a
-         mission id, so the lookup could never succeed and every successful
-         creation was reported `unverified` — which the mission layer
-         deliberately treats as failure. The id is in the executor's own
-         result; `verify` receives that result and simply was not reading
-         it. Nothing else can identify the mission: two missions may share
-         a description, and a prefix of the text was never an identity. */
-      async verify(inv, result) {
-        const created = result.output as { id?: unknown } | null | undefined;
-        const missionId = typeof created?.id === 'string' ? created.id : '';
-        if (!missionId) {
-          return fail('read-back', 'Creation reported success without a mission id, so there is nothing to read back.');
-        }
-        const mission = manager.getMission(s(inv.input.projectId), missionId);
-        return mission
-          ? pass('read-back', `The mission is in the store (${missionId}).`)
-          : fail('read-back', 'The mission could not be found after creation.');
-      },
-    },
-    {
-      capabilityId: 'mission.start',
-      async run(inv) {
-        const result = manager.startMissionExecution(s(inv.input.projectId), s(inv.input.missionId));
-        return result.ok ? ok('Mission execution started.', result.mission) : no(result.error ?? 'Could not start mission execution.');
-      },
-      async verify(inv) {
-        const mission = manager.getMission(s(inv.input.projectId), s(inv.input.missionId)) as
-          { execution?: { status?: string } } | null;
-        return mission?.execution?.status === 'running'
-          ? pass('read-back', 'The mission is executing.')
-          : fail('read-back', 'The mission is not running after start.');
-      },
-    },
-    {
       capabilityId: 'knowledge.graph',
       async run(inv) {
         const graph = manager.knowledgeGraph(s(inv.input.projectId));
@@ -811,94 +682,67 @@ function internalExecutors(manager: WorkspaceManager): Executor[] {
       },
     },
     {
-      /* The capability declared "Health scorecard, risk, release
-         readiness" and returned the project's stored profile with the
-         detail "Audit inputs collected." — it gathered the inputs to an
-         audit and never ran one. A capability that reports success for
-         work it did not do is worse than one that is missing: the manifest
-         is what the model and the operator both read, and this one was
-         describing a different capability.
-
-         The audit engine it was describing already exists and is already
-         reachable over HTTP (`@aura/governance`). Wiring it is the fix;
-         downgrading the declaration would have kept the gap and only
-         stopped admitting to it.
-
-         `runNpmAudit` stays off. It spawns a package manager, which is a
-         different permission profile from reading a repository, and
-         `security_review.ts` hardcodes `npm.cmd` — so on Linux and macOS
-         it would fail rather than audit. That is a separate fix; asking
-         for it here would make this capability fail for a reason that has
-         nothing to do with governance. */
+      /**
+       * `workflow.run` — the Fabric delegating to the Workflow Engine.
+       *
+       * The capability has existed in the manifest since the first
+       * release and has had no executor, which meant nothing governed
+       * could start a workflow: a mission could not, and neither could a
+       * direct `/fabric/invoke`. This closes that.
+       *
+       * Note what it does NOT do. It does not execute a graph — it calls
+       * `startWorkflowRun`, the same single entry point the Run button
+       * and the Automation Engine use. There is no second workflow
+       * executor here, only a door into the existing one. And it passes
+       * no `approvedCapabilities`, so the nodes INSIDE the workflow are
+       * governed on their own terms: authorizing "run this workflow" is
+       * not authorizing everything the workflow contains.
+       */
+      capabilityId: 'workflow.run',
+      async run(inv) {
+        const workflowId = s(inv.input.workflowId);
+        const projectId = s(inv.input.projectId);
+        const wf = manager.workflows.get(workflowId);
+        if (!wf) return no(`No workflow is stored under "${workflowId}".`);
+        const started = await manager.startWorkflowRun(wf, {
+          projectId,
+          trigger: { kind: 'mission', missionId: inv.context.missionId ?? 'none', taskId: inv.context.taskId ?? 'none' },
+          actor: inv.context.actor,
+        }, () => {});
+        const { run, result } = started;
+        const detail = `${wf.name} — ${result.runState}, ${Object.keys(run.nodes).length} nodes, run ${run.id}.`;
+        // A parked run is not a failure: it is the policy engine working
+        // inside the workflow. It is reported as such rather than being
+        // flattened into "did not succeed".
+        if (result.runState === 'succeeded' || result.runState === 'awaiting-approval') {
+          return ok(detail, { runId: run.id, versionId: run.versionId, runState: result.runState, outputs: result.outputs });
+        }
+        return { ok: false, detail, output: { runId: run.id, versionId: run.versionId, runState: result.runState } };
+      },
+      async verify(_inv, result) {
+        // Read-back: the run record must exist and must not be mid-flight.
+        const runId = (result.output as { runId?: string } | undefined)?.runId;
+        if (!runId) return fail('read-back', 'The run reported no id, so it cannot be read back.');
+        const run = manager.workflowRuns.find(runId);
+        if (!run) return fail('read-back', 'No durable record exists for that run.');
+        return run.state === 'running' || run.state === 'queued'
+          ? fail('read-back', `The run record still says ${run.state}, which cannot be true once this returned.`)
+          : pass('read-back', `Run ${run.id} is recorded as ${run.state} against version ${run.versionId}.`);
+      },
+    },
+    {
       capabilityId: 'governance.audit',
       async run(inv) {
         const projectId = s(inv.input.projectId);
-        const root = cwdOf(inv);
-        const scope = AUDIT_SCOPES.includes(s(inv.input.scope) as AuditScope)
-          ? (s(inv.input.scope) as AuditScope)
-          : 'daily';
-        try {
-          // Both, because the declaration promises both: the report carries
-          // risk and recommendations, the scorecard carries the dimensions
-          // the health number is made of.
-          const [report, scorecard] = await Promise.all([
-            getEngineeringAudit({ projectPath: root, scope, runNpmAudit: false }),
-            getEngineeringScorecard({ projectPath: root, runNpmAudit: false }),
-          ]);
-          return ok(
-            `Audit complete: health ${report.overallHealth} (${report.grade}), ${report.topRisks.length} risk(s).`,
-            { projectId, scope, report, scorecard },
-          );
-        } catch (e) {
-          return no((e as Error).message || 'The governance audit could not be completed.');
-        }
+        const profile = manager.profile(projectId);
+        if (!profile) return no('That project has no profile to audit yet.');
+        return ok('Audit inputs collected.', { projectId, profile });
       },
     },
   ];
 }
 
 /* ══════════════════════════════════════════════════════════════════ */
-
-/**
- * Late-bound `workflow.run` hook.
- *
- * The Fabric registers executors before the WorkflowBridge exists, and
- * the bridge cannot import the fabric (cycle). So the hook is stored at
- * module scope here and the bridge registers itself on construction.
- * The executor reads it at invocation time — a capability is never
- * half-wired.
- */
-export interface WorkflowRunHook {
-  runWorkflow(input: {
-    workflowId: string;
-    projectId?: string | null;
-    inputs?: Record<string, string>;
-  }): Promise<{ runId: string; status: 'running' | 'completed' | 'failed' | 'paused'; error?: string }>;
-}
-
-let workflowRunHook: WorkflowRunHook | null = null;
-
-export function registerWorkflowRunHook(hook: WorkflowRunHook | null): void {
-  workflowRunHook = hook;
-}
-
-const workflowRunExecutor: Executor = {
-  capabilityId: 'workflow.run',
-  async run(inv) {
-    const hook = workflowRunHook;
-    if (!hook) return no('workflow.run is not wired in this process');
-    const workflowId = s(inv.input.workflowId);
-    if (!workflowId) return no('workflowId is required');
-    const projectId = s(inv.input.projectId) || null;
-    const inputs = (inv.input.inputs ?? {}) as Record<string, string>;
-    const res = await hook.runWorkflow({ workflowId, projectId, inputs });
-    if (res.status === 'failed') return no(res.error ?? `child workflow ${workflowId} failed`);
-    // A paused child is success for the parent node: the run parked at an
-    // approval and is resumable via the approval API; correlation is
-    // carried in the output so the audit trail connects both runs.
-    return ok(`Child workflow ${res.status} (run ${res.runId}).`, { runId: res.runId, childStatus: res.status });
-  },
-};
 
 /**
  * Every executor that genuinely works today. Capabilities absent from
@@ -913,7 +757,6 @@ export function allExecutors(manager: WorkspaceManager): Executor[] {
     systemInstall,
     gitStatus, gitDiff, gitBranch, gitCommit, gitPush,
     httpRequest,
-    workflowRunExecutor,
     ...internalExecutors(manager),
   ];
 }

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aura:migration/audit-record.schema.json",
+  "title": "AuditRecord (one JSON line of ~/.aura/fabric-audit.jsonl)",
+  "description": "Source: packages/capability-fabric/src/types.ts:520-566. Store: ai-service/src/fabric/auditStore.ts — append-only, keep 5000, trim past 6000 oldest-first, truncated last line skipped.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["invocationId", "at", "capabilityId", "actor", "projectId", "risk", "decision", "decisionRule", "outcome", "verified", "durationMs", "inputSummary"],
+  "properties": {
+    "invocationId": { "type": "string", "minLength": 1 },
+    "at": { "type": "string", "minLength": 1 },
+    "capabilityId": { "type": "string", "minLength": 1 },
+    "actor": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["agent", "human", "system"] },
+        "role": { "type": "string" },
+        "id": { "type": "string" }
+      }
+    },
+    "projectId": { "type": ["string", "null"] },
+    "missionId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "workflowId": { "type": "string" },
+    "runId": { "type": "string" },
+    "workflowNodeId": { "type": "string" },
+    "risk": { "enum": ["low", "medium", "high"] },
+    "decision": { "enum": ["auto-execute", "ask-user", "require-approval", "deny"] },
+    "decisionRule": { "type": "string" },
+    "approvalId": { "type": "string" },
+    "outcome": { "enum": ["succeeded", "unverified", "denied", "awaiting-approval", "failed", "unsupported"] },
+    "verified": { "type": ["boolean", "null"], "description": "null when the capability declares no mechanical check." },
+    "durationMs": { "type": "number" },
+    "inputSummary": { "type": "string", "description": "Redacted+bounded: secret-named fields become <redacted>, values cut at 60 chars with ellipsis (fabric.ts:147-159)." },
+    "nodeId": { "type": "string", "description": "Executor-attributed environment node; absent = unattributable, never guessed." },
+    "requestedNodeId": { "type": "string" },
+    "executedNodeId": { "type": "string" },
+    "approvalDecision": { "enum": ["granted", "denied"], "description": "Present only on records written for a human decision rather than an execution." },
+    "decidedBy": { "type": "string" }
+  }
+}
