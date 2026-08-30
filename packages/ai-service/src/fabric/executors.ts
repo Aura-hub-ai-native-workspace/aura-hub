@@ -17,6 +17,7 @@
  */
 
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
 import { git, parseCommand, resolveAgentBinary, runAgent, runInstaller, safeShellWithCode } from '../exec/process';
@@ -166,6 +167,31 @@ const AGENT_INVOCATIONS: Record<string, AgentInvocation> = {
   },
 };
 
+/**
+ * How much context may ride along with a task.
+ *
+ * The whole brief reaches the CLI as ONE argv element, and Windows caps a
+ * command line at 32,767 characters. Staying well under that keeps the
+ * same call working on every platform rather than failing only on one.
+ */
+const MAX_CONTEXT_CHARS = 12_000;
+
+/**
+ * Compose the brief an agent actually receives: AURA's context, then the
+ * task, fenced so the agent can tell orientation from instruction.
+ *
+ * Truncation is announced in the text itself. An agent that silently
+ * received half its context would reason confidently from a fragment.
+ */
+function withContext(task: string, rawContext: string): string {
+  const context = rawContext.trim();
+  if (!context) return task;
+  const body = context.length > MAX_CONTEXT_CHARS
+    ? `${context.slice(0, MAX_CONTEXT_CHARS)}\n[context truncated by AURA at ${MAX_CONTEXT_CHARS} characters]`
+    : context;
+  return `${body}\n\n<TASK>\n${task}\n</TASK>`;
+}
+
 const agentDelegate: Executor = {
   capabilityId: 'agent.delegate',
 
@@ -190,6 +216,11 @@ const agentDelegate: Executor = {
     const task = s(inv.input.task).trim();
     if (!task) return no('No task was given for the agent to carry out.');
     const model = s(inv.input.model).trim() || undefined;
+    // Context is CONSUMED, never composed here. The caller supplies an
+    // already-rendered AURA context contract; this executor only decides
+    // how to hand it to the CLI. Assembling repository understanding in
+    // this file would create a second one beside Repository Intelligence.
+    const brief = withContext(task, s(inv.input.context));
 
     /* Routing is the Fabric's job now (§22). This executor no longer
        searches the catalogue or probes anything: it is handed the node
@@ -220,7 +251,7 @@ const agentDelegate: Executor = {
     }
 
     const target = { nodeId: node.id, name: node.name, bin, invocation: invocationSpec };
-    const args = target.invocation.args(task, cwd, model);
+    const args = target.invocation.args(brief, cwd, model);
     let res: Awaited<ReturnType<typeof runAgent>>;
     try {
       res = await runAgent(target.bin, args, { cwd, timeoutMs: inv.context.timeoutMs });
@@ -336,9 +367,10 @@ const systemInstall: Executor = {
     try {
       // cwd is the user's home rather than a project: installing a global
       // tool is not project work, and pointing an installer at a project
-      // root invites it to write lockfiles there.
+      // root invites it to write lockfiles there. `os.homedir()` is the
+      // fallback rather than `/`, because Windows does not set `HOME`.
       res = await runInstaller(plan.bin, plan.args, {
-        cwd: process.env.HOME || '/',
+        cwd: process.env.HOME || os.homedir(),
         timeoutMs: inv.context.timeoutMs,
       });
     } catch (e) {
@@ -647,6 +679,55 @@ function internalExecutors(manager: WorkspaceManager): Executor[] {
               `${m.title ?? ''} ${m.summary ?? ''}`.toLowerCase().includes(query))
           : items;
         return ok(`${(matched as unknown[]).length} matching records.`, matched);
+      },
+    },
+    {
+      /**
+       * `workflow.run` — the Fabric delegating to the Workflow Engine.
+       *
+       * The capability has existed in the manifest since the first
+       * release and has had no executor, which meant nothing governed
+       * could start a workflow: a mission could not, and neither could a
+       * direct `/fabric/invoke`. This closes that.
+       *
+       * Note what it does NOT do. It does not execute a graph — it calls
+       * `startWorkflowRun`, the same single entry point the Run button
+       * and the Automation Engine use. There is no second workflow
+       * executor here, only a door into the existing one. And it passes
+       * no `approvedCapabilities`, so the nodes INSIDE the workflow are
+       * governed on their own terms: authorizing "run this workflow" is
+       * not authorizing everything the workflow contains.
+       */
+      capabilityId: 'workflow.run',
+      async run(inv) {
+        const workflowId = s(inv.input.workflowId);
+        const projectId = s(inv.input.projectId);
+        const wf = manager.workflows.get(workflowId);
+        if (!wf) return no(`No workflow is stored under "${workflowId}".`);
+        const started = await manager.startWorkflowRun(wf, {
+          projectId,
+          trigger: { kind: 'mission', missionId: inv.context.missionId ?? 'none', taskId: inv.context.taskId ?? 'none' },
+          actor: inv.context.actor,
+        }, () => {});
+        const { run, result } = started;
+        const detail = `${wf.name} — ${result.runState}, ${Object.keys(run.nodes).length} nodes, run ${run.id}.`;
+        // A parked run is not a failure: it is the policy engine working
+        // inside the workflow. It is reported as such rather than being
+        // flattened into "did not succeed".
+        if (result.runState === 'succeeded' || result.runState === 'awaiting-approval') {
+          return ok(detail, { runId: run.id, versionId: run.versionId, runState: result.runState, outputs: result.outputs });
+        }
+        return { ok: false, detail, output: { runId: run.id, versionId: run.versionId, runState: result.runState } };
+      },
+      async verify(_inv, result) {
+        // Read-back: the run record must exist and must not be mid-flight.
+        const runId = (result.output as { runId?: string } | undefined)?.runId;
+        if (!runId) return fail('read-back', 'The run reported no id, so it cannot be read back.');
+        const run = manager.workflowRuns.find(runId);
+        if (!run) return fail('read-back', 'No durable record exists for that run.');
+        return run.state === 'running' || run.state === 'queued'
+          ? fail('read-back', `The run record still says ${run.state}, which cannot be true once this returned.`)
+          : pass('read-back', `Run ${run.id} is recorded as ${run.state} against version ${run.versionId}.`);
       },
     },
     {

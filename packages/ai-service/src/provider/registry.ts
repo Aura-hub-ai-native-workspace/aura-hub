@@ -10,6 +10,7 @@ import { CerebrasAdapter } from './adapters/cerebras';
 import { KimiAdapter } from './adapters/kimi';
 import { NovitaAdapter } from './adapters/novita';
 import { QwenAdapter } from './adapters/qwen';
+import { Kage7Adapter } from './adapters/kage7';
 
 // Bring-your-own-key providers. There is NO built-in default — the hub has
 // no AI until the user connects one of these with their own API key.
@@ -25,6 +26,7 @@ const ALL: ProviderAdapter[] = [
   new KimiAdapter(),
   new NovitaAdapter(),
   new QwenAdapter(),
+  new Kage7Adapter(),
 ];
 
 const adapters: Map<string, ProviderAdapter> = new Map(ALL.map((a) => [a.metadata.id, a]));
@@ -37,6 +39,11 @@ const adapters: Map<string, ProviderAdapter> = new Map(ALL.map((a) => [a.metadat
 export const ENV_VAR_BY_PROVIDER: Record<string, string> = {
   mistral: 'MISTRAL_API_KEY',
   cerebras: 'CEREBRAS_API_KEY',
+  // The gateway URL is separate configuration (KAGE7_BASE_URL, read by the
+  // adapter) — only the key belongs here, and only ever from the
+  // environment: it is encrypted into the credential store on connect and
+  // never written to source, config or logs.
+  kage7: 'KAGE7_API_KEY',
 };
 
 export function registerAdapter(adapter: ProviderAdapter): void {

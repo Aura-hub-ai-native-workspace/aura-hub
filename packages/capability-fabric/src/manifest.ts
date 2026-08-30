@@ -185,6 +185,12 @@ const LOCAL: CapabilityDescriptor[] = [
     input: [
       f('task', 'string', true, 'What the agent should do, in plain language'),
       f('model', 'string', false, 'Optional provider/model override, e.g. "anthropic/claude-sonnet-4"'),
+      // Supplied BY THE CALLER, from the AURA Context Fabric. The executor
+      // never assembles this itself: composing context inside the executor
+      // would put a second understanding of the project beside Repository
+      // Intelligence, and the two would drift. An agent that receives it
+      // starts oriented instead of re-scanning the repository.
+      f('context', 'string', false, 'AURA context contract to orient the agent, composed by the caller'),
       // `nodeId` is deliberately NOT an input any more. Which node runs an
       // action is routing, not an argument, and it now lives on
       // `InvocationContext.nodeId` (§22.2). The transport still accepts it

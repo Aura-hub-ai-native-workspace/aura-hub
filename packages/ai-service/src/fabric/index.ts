@@ -22,21 +22,25 @@ import {
   type NodeResolution,
 } from '@aura/capability-fabric';
 import { allExecutors } from './executors';
+import { LOCAL_GRANTS, RunScopeRegistry } from './scopes';
 import { loadPolicy } from './policyStore';
 import { createApprovalStore } from './approvalStore';
+import { createAuditStore } from './auditStore';
 import type { WorkspaceManager } from '../workspace';
 
-/**
- * Grants for the local machine. AURA is a single-user desktop app and
- * the service already runs with the user's own privileges, so read,
- * write and execute are genuinely available. `autonomous` stays false:
- * the *policy* engine decides what runs unattended, and it should not be
- * pre-empted by a blanket grant here.
+/*
+ * `LOCAL_GRANTS` — the ceiling — now lives in `./scopes`, alongside the
+ * per-run narrowing that reads it. Keeping the ceiling and the only thing
+ * that lowers it in one file is what stops them drifting apart.
  */
-const LOCAL_GRANTS = { read: true, write: true, execute: true, autonomous: false };
 
 export interface FabricDeps {
   manager: WorkspaceManager;
+  /**
+   * Per-run least privilege. Supplied by the host so this module stays a
+   * wiring file: it holds no state and decides nothing, it only asks.
+   */
+  runScopes?: RunScopeRegistry;
   /**
    * Which node capabilities are currently provided. Read at decision
    * time (not construction time) so a node connected mid-session takes
@@ -133,8 +137,17 @@ function resolveNodeFor(
 
 export function createFabric(deps: FabricDeps): CapabilityFabric {
   const host: FabricHost = {
-    permissionsFor(_capability: CapabilityDescriptor, _context: InvocationContext) {
-      return LOCAL_GRANTS;
+    /**
+     * What the acting caller may do.
+     *
+     * An invocation carrying a `runId` is bounded by that run's envelope;
+     * everything else keeps the machine ceiling exactly as before. This
+     * can only narrow — see `scopes.ts` — so no caller gains anything it
+     * did not already have, and a workflow gains considerably less.
+     */
+    permissionsFor(_capability: CapabilityDescriptor, context: InvocationContext) {
+      const scoped = deps.runScopes?.forRun(context.runId);
+      return scoped ?? LOCAL_GRANTS;
     },
 
     nodeAvailable(capability: CapabilityDescriptor): boolean | null {
@@ -172,5 +185,9 @@ export function createFabric(deps: FabricDeps): CapabilityFabric {
   // Pending gates outlive the process too: a question asked before a
   // restart is still waiting for its answer afterwards, with the same id.
   fabric.attachApprovalStore(createApprovalStore());
+  // The trail outlives the process too. Without this, everything the
+  // Fabric governed is forgotten on exit — see the master handoff's
+  // finding S-2, which this closes.
+  fabric.attachAuditStore(createAuditStore());
   return fabric;
 }

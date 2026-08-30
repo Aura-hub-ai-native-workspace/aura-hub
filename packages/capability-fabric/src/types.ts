@@ -192,6 +192,20 @@ export interface InvocationContext {
   cwd?: string;
   missionId?: string;
   taskId?: string;
+  /**
+   * Correlation keys into the authoritative workflow run record, exactly
+   * as `missionId`/`taskId` correlate into the `MissionRecord`. The Fabric
+   * owns no workflow state; these travel onto the audit record so a run
+   * and its governed actions can be reconciled afterwards.
+   *
+   * `workflowNodeId` is a node in a workflow GRAPH. It is deliberately not
+   * called `nodeId` — that name is already taken by the connected
+   * environment node that performs work, and collapsing the two would make
+   * the audit trail ambiguous about which "node" it means.
+   */
+  workflowId?: string;
+  runId?: string;
+  workflowNodeId?: string;
   /** Milliseconds. The executor must abort past this. */
   timeoutMs?: number;
   /**
@@ -201,6 +215,23 @@ export interface InvocationContext {
    * the next one. Absent means nothing was approved.
    */
   approvedCapabilities?: string[];
+  /**
+   * "I am spending THIS approval, and only for THIS exact call."
+   *
+   * `approvedCapabilities` is capability-scoped: it says a capability was
+   * authorized, not which invocation of it. That is adequate where the
+   * arguments come from an immutable source, and inadequate where they do
+   * not — an agent's parked call is chosen by a model and persisted to a
+   * run checkpoint, so a hostile edit to that file could keep the
+   * capability id and change the path being written.
+   *
+   * Naming the approval closes that. The Fabric looks the request up in
+   * its OWN store, recomputes the fingerprint from the arguments actually
+   * presented, and refuses when the two differ. The checkpoint therefore
+   * carries only a pointer; the authority on what was approved stays with
+   * the approval.
+   */
+  approvalId?: string;
   /**
    * The node the caller wants this to run on — routing **intent**, not a
    * report of what ran.
@@ -259,6 +290,17 @@ export interface InvocationResult {
   output?: unknown;
   verification: VerificationReport;
   policy: PolicyEvaluation;
+  /**
+   * The authorization request this invocation is waiting on, present only
+   * when `outcome === 'awaiting-approval'`.
+   *
+   * Without it a caller that gets parked has no handle on the question it
+   * is parked behind — it can see that approval is needed but not which
+   * request answers it, which makes "resume this run when the user
+   * decides" unimplementable. The id was already written to the audit
+   * record; this simply stops it being the only place it appears.
+   */
+  approvalId?: string;
   startedAt: string;
   endedAt: string;
   durationMs: number;
@@ -333,12 +375,32 @@ export interface ApprovalRequest {
     detail: string;
     risk: RiskLevel;
     irreversible: boolean;
+    /**
+     * Identity of the EXACT call this item authorizes.
+     *
+     * A hash over the capability, the arguments, and the execution context
+     * that decides where the effect lands (project and working directory).
+     * Recomputed at spend time and compared: an approval is a decision
+     * about one specific action, and a decision that survived a change to
+     * that action would not be the decision the person made.
+     */
+    fingerprint?: string;
   }[];
 
   /* ── correlation into the authoritative MissionRecord ──────────── */
   projectId?: string;
   missionId?: string;
   taskId?: string;
+
+  /* ── correlation into the authoritative WorkflowRun ────────────── */
+  /**
+   * Present when a workflow node opened this gate. Carried so a request
+   * that outlives a restart can still be matched back to the run it
+   * parked, and so an approvals inbox can say which workflow is waiting.
+   */
+  workflowId?: string;
+  runId?: string;
+  workflowNodeId?: string;
 
   /* ── why the gate opened, and what the user is choosing between ── */
   /** The policy rule that demanded this. Recorded for audit. */
@@ -371,6 +433,22 @@ export interface ApprovalRequest {
 export interface ApprovalPersistence {
   load(): ApprovalRequest[];
   save(requests: ApprovalRequest[]): void;
+}
+
+/**
+ * Durable storage for the audit trail, supplied by the host.
+ *
+ * Narrower than `ApprovalPersistence` on purpose: an audit record is
+ * **append-only and immutable**, so this port has no `save(all)` — a host
+ * that could rewrite the whole trail could also quietly erase part of it.
+ * `append` is called once per settled invocation and once per human
+ * approval decision; `load` restores the tail at startup so a restart does
+ * not make the system forget what it did.
+ */
+export interface AuditPersistence {
+  /** The most recent records, oldest first. Bounded by the host. */
+  load(): AuditRecord[];
+  append(record: AuditRecord): void;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -447,6 +525,10 @@ export interface AuditRecord {
   projectId: string | null;
   missionId?: string;
   taskId?: string;
+  /** Workflow-run correlation, mirroring `missionId`/`taskId`. */
+  workflowId?: string;
+  runId?: string;
+  workflowNodeId?: string;
   risk: RiskLevel;
   decision: PolicyDecision;
   decisionRule: string;

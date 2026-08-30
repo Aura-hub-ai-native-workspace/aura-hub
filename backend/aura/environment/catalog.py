@@ -1,0 +1,572 @@
+"""Environment catalog — canonical node knowledge for the workspace execution environment.
+
+This is pure data derived from the TypeScript catalog.ts. It contains every
+node that the Connected Environment knows about, including their probe
+commands, capabilities, and install specs.
+
+Security invariant: The catalog is the SOLE source of truth for install
+commands. The system.install executor receives a nodeId from the caller,
+looks up the install spec in THIS catalog, and constructs the install
+command from the catalog data only. The caller can never invent a command.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class ProbeSpec:
+    command: str
+    args: list[str]
+
+
+@dataclass(frozen=True)
+class InstallSpec:
+    method: str
+    package: str
+    privilege: str
+    distro: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CatalogEntry:
+    id: str
+    name: str
+    category: str
+    capabilities: list[str]
+    transport: str
+    auth: str
+    license: str
+    cross_platform: bool
+    maintained: bool
+    summary: str
+    homepage: str
+    probe: ProbeSpec | None = None
+    endpoint: str | None = None
+    install: InstallSpec | None = None
+
+
+HUB: list[CatalogEntry] = [
+    CatalogEntry(
+        id="aura-mission-control",
+        name="Mission Control",
+        category="hub",
+        capabilities=["mission-control"],
+        transport="internal",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Plans, approves and executes engineering missions.",
+        homepage="https://github.com/Aura-hub-ai-native-workspace/aura-hub",
+    ),
+    CatalogEntry(
+        id="aura-knowledge",
+        name="Knowledge Fabric",
+        category="hub",
+        capabilities=["knowledge-graph"],
+        transport="internal",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Structural knowledge graph of the open project.",
+        homepage="https://github.com/Aura-hub-ai-native-workspace/aura-hub",
+    ),
+    CatalogEntry(
+        id="aura-memory",
+        name="Engineering Memory",
+        category="hub",
+        capabilities=["engineering-memory"],
+        transport="internal",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Why past decisions were made, and what came of them.",
+        homepage="https://github.com/Aura-hub-ai-native-workspace/aura-hub",
+    ),
+    CatalogEntry(
+        id="aura-diagnosis",
+        name="Diagnosis Engine",
+        category="hub",
+        capabilities=["diagnosis"],
+        transport="internal",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Finds, explains and patches defects.",
+        homepage="https://github.com/Aura-hub-ai-native-workspace/aura-hub",
+    ),
+    CatalogEntry(
+        id="aura-governance",
+        name="Engineering Governance",
+        category="hub",
+        capabilities=["governance"],
+        transport="internal",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Health scoring, risk, audits and release readiness.",
+        homepage="https://github.com/Aura-hub-ai-native-workspace/aura-hub",
+    ),
+]
+
+DEVELOPMENT: list[CatalogEntry] = [
+    CatalogEntry(
+        id="git",
+        name="Git",
+        category="development",
+        capabilities=["source-control"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Distributed version control.",
+        homepage="https://git-scm.com",
+        probe=ProbeSpec("git", ["--version"]),
+    ),
+    CatalogEntry(
+        id="github-cli",
+        name="GitHub CLI",
+        category="development",
+        capabilities=["code-hosting", "ci-cd", "issue-tracker"],
+        transport="local-process",
+        auth="cli-session",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Repositories, pull requests, issues and Actions from the terminal.",
+        homepage="https://cli.github.com",
+        probe=ProbeSpec("gh", ["--version"]),
+    ),
+    CatalogEntry(
+        id="glab",
+        name="GitLab CLI",
+        category="development",
+        capabilities=["code-hosting", "ci-cd", "issue-tracker"],
+        transport="local-process",
+        auth="cli-session",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="GitLab projects, merge requests and pipelines from the terminal.",
+        homepage="https://gitlab.com/gitlab-org/cli",
+        probe=ProbeSpec("glab", ["--version"]),
+        install=InstallSpec("system-package", "glab", "root"),
+    ),
+    CatalogEntry(
+        id="vscode",
+        name="Visual Studio Code",
+        category="development",
+        capabilities=["code-editor"],
+        transport="local-process",
+        auth="none",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Opens files, folders and diffs in the editor.",
+        homepage="https://code.visualstudio.com",
+        probe=ProbeSpec("code", ["--version"]),
+    ),
+    CatalogEntry(
+        id="cursor",
+        name="Cursor",
+        category="development",
+        capabilities=["code-editor", "coding-agent"],
+        transport="local-process",
+        auth="none",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="AI-native editor with in-repo code generation.",
+        homepage="https://cursor.com",
+        probe=ProbeSpec("cursor", ["--version"]),
+    ),
+    CatalogEntry(
+        id="claude-code",
+        name="Claude Code",
+        category="development",
+        capabilities=["coding-agent", "terminal"],
+        transport="local-process",
+        auth="cli-session",
+        license="commercial",
+        cross_platform=True,
+        maintained=True,
+        summary="Agentic coding in the terminal.",
+        homepage="https://claude.com/claude-code",
+        probe=ProbeSpec("claude", ["--version"]),
+    ),
+    CatalogEntry(
+        id="codex-cli",
+        name="Codex CLI",
+        category="development",
+        capabilities=["coding-agent"],
+        transport="local-process",
+        auth="cli-session",
+        license="commercial",
+        cross_platform=True,
+        maintained=True,
+        summary="Terminal coding agent.",
+        homepage="https://github.com/openai/codex",
+        probe=ProbeSpec("codex", ["--version"]),
+    ),
+    CatalogEntry(
+        id="gemini-cli",
+        name="Gemini CLI",
+        category="development",
+        capabilities=["coding-agent"],
+        transport="local-process",
+        auth="cli-session",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Terminal coding agent.",
+        homepage="https://github.com/google-gemini/gemini-cli",
+        probe=ProbeSpec("gemini", ["--version"]),
+        install=InstallSpec("npm-global", "@google/gemini-cli", "user"),
+    ),
+    CatalogEntry(
+        id="qwen-cli",
+        name="Qwen Code",
+        category="development",
+        capabilities=["coding-agent"],
+        transport="local-process",
+        auth="cli-session",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Terminal coding agent.",
+        homepage="https://github.com/QwenLM/qwen-code",
+        install=InstallSpec("npm-global", "@qwen-code/qwen-code", "user"),
+    ),
+    CatalogEntry(
+        id="opencode",
+        name="OpenCode",
+        category="development",
+        capabilities=["coding-agent", "terminal"],
+        transport="local-process",
+        auth="cli-session",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Open-source terminal coding agent.",
+        homepage="https://opencode.ai",
+        install=InstallSpec("npm-global", "opencode-ai", "user"),
+    ),
+    CatalogEntry(
+        id="bash",
+        name="Bash",
+        category="development",
+        capabilities=["terminal"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="POSIX shell.",
+        homepage="https://www.gnu.org/software/bash",
+        probe=ProbeSpec("bash", ["--version"]),
+    ),
+    CatalogEntry(
+        id="zsh",
+        name="Zsh",
+        category="development",
+        capabilities=["terminal"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Z shell.",
+        homepage="https://zsh.sourceforge.io",
+        probe=ProbeSpec("zsh", ["--version"]),
+    ),
+    CatalogEntry(
+        id="powershell",
+        name="PowerShell",
+        category="development",
+        capabilities=["terminal"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Cross-platform object shell.",
+        homepage="https://microsoft.com/powershell",
+        probe=ProbeSpec("pwsh", ["--version"]),
+    ),
+    CatalogEntry(
+        id="node",
+        name="Node.js",
+        category="development",
+        capabilities=["language-runtime"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="JavaScript and TypeScript runtime.",
+        homepage="https://nodejs.org",
+        probe=ProbeSpec("node", ["--version"]),
+    ),
+    CatalogEntry(
+        id="python",
+        name="Python",
+        category="development",
+        capabilities=["language-runtime"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Python interpreter.",
+        homepage="https://python.org",
+        probe=ProbeSpec("python3", ["--version"]),
+    ),
+    CatalogEntry(
+        id="go",
+        name="Go",
+        category="development",
+        capabilities=["language-runtime", "package-manager"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Go toolchain.",
+        homepage="https://go.dev",
+        probe=ProbeSpec("go", ["version"]),
+    ),
+    CatalogEntry(
+        id="rust",
+        name="Rust",
+        category="development",
+        capabilities=["language-runtime", "package-manager"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Cargo toolchain for Rust.",
+        homepage="https://rust-lang.org",
+        probe=ProbeSpec("cargo", ["--version"]),
+    ),
+    CatalogEntry(
+        id="npm",
+        name="npm",
+        category="development",
+        capabilities=["package-manager"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Default Node package manager.",
+        homepage="https://npmjs.com",
+        probe=ProbeSpec("npm", ["--version"]),
+    ),
+    CatalogEntry(
+        id="pnpm",
+        name="pnpm",
+        category="development",
+        capabilities=["package-manager"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Content-addressed Node package manager.",
+        homepage="https://pnpm.io",
+        probe=ProbeSpec("pnpm", ["--version"]),
+        install=InstallSpec("npm-global", "pnpm", "user"),
+    ),
+    CatalogEntry(
+        id="bun",
+        name="Bun",
+        category="development",
+        capabilities=["package-manager", "language-runtime", "testing-framework"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="JavaScript runtime, bundler and package manager.",
+        homepage="https://bun.sh",
+        probe=ProbeSpec("bun", ["--version"]),
+    ),
+    CatalogEntry(
+        id="docker",
+        name="Docker",
+        category="development",
+        capabilities=["container-runtime", "container-registry"],
+        transport="local-process",
+        auth="none",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Builds and runs containers locally.",
+        homepage="https://docker.com",
+        probe=ProbeSpec("docker", ["--version"]),
+        install=InstallSpec("system-package", "docker.io", "root", distro={"debian": "docker.io", "ubuntu": "docker.io", "fedora": "docker", "arch": "docker"}),
+    ),
+    CatalogEntry(
+        id="kubectl",
+        name="Kubernetes CLI",
+        category="development",
+        capabilities=["app-hosting", "observability"],
+        transport="local-process",
+        auth="cli-session",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Deploys and inspects Kubernetes workloads.",
+        homepage="https://kubernetes.io",
+        probe=ProbeSpec("kubectl", ["version", "--client"]),
+    ),
+    CatalogEntry(
+        id="terraform",
+        name="Terraform",
+        category="development",
+        capabilities=["virtual-machine", "secrets-management"],
+        transport="local-process",
+        auth="cli-session",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Declarative infrastructure provisioning.",
+        homepage="https://terraform.io",
+        probe=ProbeSpec("terraform", ["--version"]),
+        install=InstallSpec("system-package", "terraform", "root"),
+    ),
+]
+
+CLOUD: list[CatalogEntry] = [
+    CatalogEntry(
+        id="vercel",
+        name="Vercel",
+        category="cloud",
+        capabilities=["static-hosting", "serverless-compute", "edge-network"],
+        transport="local-process",
+        auth="cli-session",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Frontend and serverless hosting with preview deployments.",
+        homepage="https://vercel.com",
+        probe=ProbeSpec("vercel", ["--version"]),
+        install=InstallSpec("npm-global", "vercel", "user"),
+    ),
+    CatalogEntry(
+        id="netlify",
+        name="Netlify",
+        category="cloud",
+        capabilities=["static-hosting", "serverless-compute"],
+        transport="local-process",
+        auth="cli-session",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Static and edge-function hosting.",
+        homepage="https://netlify.com",
+    ),
+    CatalogEntry(
+        id="cloudflare",
+        name="Cloudflare",
+        category="cloud",
+        capabilities=["edge-network", "serverless-compute", "object-storage", "static-hosting"],
+        transport="local-process",
+        auth="cli-session",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Workers, Pages, R2 and the edge network.",
+        homepage="https://cloudflare.com",
+        probe=ProbeSpec("wrangler", ["--version"]),
+        install=InstallSpec("npm-global", "wrangler", "user"),
+    ),
+    CatalogEntry(
+        id="supabase",
+        name="Supabase",
+        category="cloud",
+        capabilities=["sql-database", "auth-service", "object-storage"],
+        transport="local-process",
+        auth="cli-session",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Postgres, auth and storage as a managed service.",
+        homepage="https://supabase.com",
+        probe=ProbeSpec("supabase", ["--version"]),
+    ),
+    CatalogEntry(
+        id="aws",
+        name="Amazon Web Services",
+        category="cloud",
+        capabilities=["virtual-machine", "object-storage", "serverless-compute", "sql-database", "container-registry"],
+        transport="local-process",
+        auth="cli-session",
+        license="commercial",
+        cross_platform=True,
+        maintained=True,
+        summary="General-purpose cloud platform.",
+        homepage="https://aws.amazon.com",
+        probe=ProbeSpec("aws", ["--version"]),
+    ),
+    CatalogEntry(
+        id="postgres",
+        name="PostgreSQL",
+        category="cloud",
+        capabilities=["sql-database", "vector-store"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Relational database.",
+        homepage="https://postgresql.org",
+        probe=ProbeSpec("psql", ["--version"]),
+    ),
+    CatalogEntry(
+        id="redis",
+        name="Redis",
+        category="cloud",
+        capabilities=["cache", "vector-store"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="In-memory data store.",
+        homepage="https://redis.io",
+        probe=ProbeSpec("redis-cli", ["--version"]),
+    ),
+]
+
+ALL: list[CatalogEntry] = HUB + DEVELOPMENT + CLOUD
+
+BY_ID: dict[str, CatalogEntry] = {e.id: e for e in ALL}
+
+
+def catalog_entry(node_id: str) -> CatalogEntry | None:
+    return BY_ID.get(node_id)
+
+
+def entries_with_capability(capability: str) -> list[CatalogEntry]:
+    return [e for e in ALL if capability in e.capabilities]
+
+
+def is_connectable(entry: CatalogEntry) -> bool:
+    return entry.transport in ("local-process", "http", "internal")
+
+
+def entries_for_scan() -> list[CatalogEntry]:
+    return [
+        e for e in ALL
+        if (e.transport == "local-process" and e.probe is not None)
+        or (e.transport == "http" and e.endpoint is not None)
+        or e.transport == "internal"
+    ]
