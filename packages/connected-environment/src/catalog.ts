@@ -149,7 +149,7 @@ const DEVELOPMENT: CatalogEntry[] = [
   make('development', { id: 'node', name: 'Node.js', caps: ['language-runtime'], probe: 'node', summary: 'JavaScript and TypeScript runtime.', homepage: 'https://nodejs.org' }),
   make('development', { id: 'python', name: 'Python', caps: ['language-runtime'], probe: ['python3', '--version'], summary: 'Python interpreter.', homepage: 'https://python.org' }),
   make('development', { id: 'go', name: 'Go', caps: ['language-runtime', 'package-manager'], probe: ['go', 'version'], summary: 'Go toolchain.', homepage: 'https://go.dev' }),
-  make('development', { id: 'java', name: 'Java', caps: ['language-runtime'], probe: ['java', '-version'], license: 'free-tier', summary: 'JVM runtime.', homepage: 'https://openjdk.org' }),
+  make('development', { id: 'java', name: 'Java', caps: ['language-runtime'], probe: ['java', '-version'], install: systemPackage('openjdk-17-jdk', { arch: 'jdk-openjdk', fedora: 'java-17-openjdk' }), license: 'free-tier', summary: 'JVM runtime.', homepage: 'https://openjdk.org' }),
   make('development', { id: 'rust', name: 'Rust', caps: ['language-runtime', 'package-manager'], probe: 'cargo', summary: 'Cargo toolchain for Rust.', homepage: 'https://rust-lang.org' }),
 
   make('development', { id: 'npm', name: 'npm', caps: ['package-manager'], probe: 'npm', summary: 'Default Node package manager.', homepage: 'https://npmjs.com' }),

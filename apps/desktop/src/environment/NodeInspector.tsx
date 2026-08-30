@@ -18,8 +18,9 @@ import {
   type EnvironmentNode,
   type NodePermissions,
 } from '@aura/connected-environment';
-import { fabricClient, type InstallResultView } from '../ai/fabricClient';
+import type { InstallResultView } from '../ai/fabricClient';
 import { STATUS_LABEL, STATUS_TONE, TONE_DOT, TONE_TEXT } from './presentation';
+import { useEnvironmentStore } from './environmentStore';
 
 const TRANSPORT_EXPLAINER: Record<EnvironmentNode['entry']['transport'], string> = {
   internal: 'Runs inside AURA Hub. No network, no credentials, no quota.',
@@ -45,6 +46,8 @@ export function NodeInspector({
   const phrase = describeNode(node);
   const tone = STATUS_TONE[node.health.status];
   const connectable = isConnectable(node.entry);
+  const isMissing = node.health.status === 'not-installed';
+  const isInstalling = node.health.status === 'installing';
 
   return (
     <div className="space-y-3 p-3">
@@ -72,7 +75,14 @@ export function NodeInspector({
           >
             Disconnect
           </button>
-        ) : (
+        ) : isInstalling ? (
+          <button
+            disabled
+            className="rounded-lg bg-accent px-2.5 py-1 text-[11px] font-medium text-white opacity-60"
+          >
+            Installing…
+          </button>
+        ) : isMissing ? null : (
           <button
             onClick={onConnect}
             disabled={busy}
@@ -174,6 +184,7 @@ export function NodeInspector({
  * the compatibility contract in §25.1.
  */
 function InstallPanel({ node }: { node: EnvironmentNode }) {
+  const storeInstall = useEnvironmentStore((s) => s.install);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<InstallResultView | null>(null);
   const [gate, setGate] = useState<string | null>(null);
@@ -182,18 +193,24 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
 
   const spec = node.entry.install;
   const missing = node.health.status === 'not-installed';
+  const installing = node.health.status === 'installing';
 
-  // Nothing to offer: either it is already here, or AURA has no verified
-  // way to install it. Both are honest silences rather than a dead button.
-  if (!missing || !spec) return null;
+  // Nothing to offer: AURA has no verified way to install it, or it is
+  // already here and there is no active result to show. Both are honest
+  // silences rather than a dead button. Keep the panel visible while an
+  // install is in flight or a result/gate/error is being shown, even if
+  // the node has just transitioned to available after a successful install.
+  if (!spec) return null;
+  if (!missing && !installing && !result && !gate && !error) return null;
 
   const install = async () => {
+    if (busy || installing) return;
     setBusy(true);
     setError(null);
     setGate(null);
     setResult(null);
     try {
-      const res = await fabricClient.invoke('system.install', { nodeId: node.id });
+      const res = await storeInstall(node.id);
       if (res.outcome === 'awaiting-approval') {
         setGate('This needs your approval before anything runs. Open the approval gate to allow it.');
       } else if (res.outcome === 'denied' || res.outcome === 'unsupported') {
@@ -225,16 +242,18 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
         <div className="flex items-center gap-2">
           <button
             onClick={install}
-            disabled={busy}
+            disabled={busy || installing}
             data-testid="node-install-start"
             className="rounded-lg bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
           >
-            {busy ? 'Working…' : `Install ${node.entry.name}`}
+            {busy || installing ? 'Installing…' : `Install ${node.entry.name}`}
           </button>
           <span className="text-[10.5px] text-text-subtle">
-            {spec.privilege === 'root'
-              ? 'Needs administrator rights — AURA will show you the command.'
-              : 'AURA will ask before it runs anything.'}
+            {installing
+              ? 'Installation is running — AURA will check again when it finishes.'
+              : spec.privilege === 'root'
+                ? 'Needs administrator rights — AURA will show you the command.'
+                : 'AURA will ask before it runs anything.'}
           </span>
         </div>
       )}
@@ -294,7 +313,7 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
       {result?.installOutcome === 'installed' && (
         <p data-testid="node-install-installed" data-install-outcome="installed" className="text-[11.5px] leading-relaxed text-positive">
           {node.entry.name} is installed and verified
-          {result.probe?.version ? ` (${result.probe.version})` : ''}. Scan again to bring it onto the canvas.
+          {result.probe?.version ? ` (${result.probe.version})` : ''}. You can now connect it.
         </p>
       )}
     </section>
