@@ -186,7 +186,7 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
 
     # Floors are a LOWER BOUND seeded into the decision, not early returns:
     # layers below fold with _stricter() and can only escalate.
-    decision: PolicyDecision = cfg["byRisk"][risk]
+    decision: PolicyDecision = cfg.get("byRisk", {}).get(risk, "auto-execute")
     rule = f"risk-default:{risk}"
     reason = ""
 
@@ -223,7 +223,7 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
             reason = why
         decision = _stricter(decision, candidate)
 
-    apply(cfg["overrides"].get(cap.id), f"override:{cap.id}", "")
+    apply(cfg.get("overrides", {}).get(cap.id), f"override:{cap.id}", "")
 
     node = inp.subject.node if inp.subject else None
     if node:
@@ -248,7 +248,7 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
                 f"{node['name']} is not on the list of nodes permitted to perform {cap.name.lower()}.",
             )
 
-    if not cfg["allowAutonomous"] and decision == "auto-execute":
+    if not cfg.get("allowAutonomous", True) and decision == "auto-execute":
         decision = "ask-user"
         rule = "autonomy-disabled"
         reason = ""

@@ -41,7 +41,7 @@ WRITE_REPLY = json.dumps({
     "ambiguity": "clear", "confidence": 0.9,
     "entities": [{"type": "path", "value": "report.md"},
                  {"type": "text", "value": "hello"}],
-    "requiredCapabilities": ["fs.write_file"],
+    "requiredCapabilities": ["filesystem.write"],
 })
 CLEAN_REPLY = json.dumps({
     "goal": "clean my project",
@@ -63,7 +63,7 @@ REPORT_PLAN = {
          "capabilityId": "git.status", "risk": "low",
          "verificationKind": "exit-code"},
         {"description": "Write report.md summarising status",
-         "capabilityId": "fs.write_file", "risk": "medium",
+         "capabilityId": "filesystem.write", "risk": "medium",
          "input": {"path": "report.md", "content": "# Status report\n"},
          "dependsOn": [0], "verificationKind": "read-back"},
     ]
@@ -79,6 +79,16 @@ def make_agent(home: Path, cfg: FabricConfig):
 
 @pytest.fixture()
 def model_env(tmp_path, monkeypatch):
+    from aura.fabric import CapabilityFabric, FabricHost
+
+    class _H(FabricHost):
+        def permissions_for(self, _cap, _ctx):
+            return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
+        def node_available(self, _cap):
+            return True
+        async def request_approval(self, _req, _ctx):
+            return False
+
     home = tmp_path / "home"
     proj = tmp_path / "project"
     proj.mkdir()
@@ -88,8 +98,20 @@ def model_env(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_HOME", str(home))
     audit = AuditStore(home / "audit" / "trail.jsonl")
     ledger = ApprovalLedger(audit_append=audit.append)
-    cfg = FabricConfig(policy_config={}, permissions={"read": True, "write": True},
-                       executors=builtin_executors(home),
+    host = _H()
+    fabric = CapabilityFabric(host)
+    fabric.attach_audit_store(audit.load, audit.append)
+    fabric.attach_approval_store(lambda: [], lambda x: None)
+    fabric._ledger = ledger
+    execs = builtin_executors(home)
+    for exe in execs.values():
+        try:
+            fabric.register(exe)
+        except Exception:
+            pass
+    cfg = FabricConfig(fabric=fabric, policy_config={},
+                       permissions={"read": True, "write": True},
+                       executors=execs,
                        audit_store=audit, ledger=ledger)
     return home, proj, audit, ledger, cfg
 
@@ -128,7 +150,7 @@ class TestRealProviderPath:
             assert second.outcome == "completed"
             assert (proj / "report.md").read_text() == "hello"
             writes = [r for r in audit.load()
-                      if r["capabilityId"] == "fs.write_file"
+                      if r["capabilityId"] == "filesystem.write"
                       and r["outcome"] == "succeeded"]
             assert len(writes) == 1
         finally:
@@ -156,9 +178,9 @@ class TestRealProviderPath:
             plan = planner.plan_from_model(intent, "agt-x", "now", REPORT_PLAN)
             # deterministic validation kept both steps; deps preserved
             assert [t.capabilityId for t in plan.tasks] == \
-                ["git.status", "fs.write_file"]
+                ["git.status", "filesystem.write"]
             assert plan.tasks[1].dependsOn == ["t1"]
-            assert known >= {"git.status", "fs.write_file"}
+            assert known >= {"git.status", "filesystem.write"}
             # the write step still parks for its human approval
         finally:
             harness.stop()

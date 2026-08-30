@@ -56,6 +56,29 @@ def _n(v: Any, d: float = 0.0) -> float:
 
 def run_condition(ctx, input, cfg):
     check = cfg.get("check") or "contains"
+    when_val = cfg.get("when")
+    if when_val is not None:
+        vars_ = ctx.get("vars", {})
+        when_str = str(when_val).strip()
+        passed = False
+        if when_str:
+            parts = when_str.split("==")
+            if len(parts) == 2:
+                key = parts[0].strip()
+                val = parts[1].strip()
+                if key in vars_:
+                    passed = str(vars_[key]) == val
+            else:
+                parts = when_str.split("!=")
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    val = parts[1].strip()
+                    if key in vars_:
+                        passed = str(vars_[key]) != val
+                else:
+                    passed = bool(when_str and when_str in vars_ and vars_[when_str])
+        return {**input, "port": "true" if passed else "false",
+                "summary": f"when → {str(passed).lower()}"}
     value = interpolate(str(cfg.get("value") or ""), ctx, input)
     text = input.get("text") or ""
     if check == "contains":

@@ -35,7 +35,7 @@ from ..policy.engine import (
     grants_for,
     sanitize_policy,
 )
-from .manifest import CapabilityDescriptor, describe_capability
+from .manifest import describe_capability
 
 NO_VERIFICATION: dict[str, Any] = {
     "passed": None,
@@ -62,50 +62,51 @@ def _invocation_id() -> str:
     return f"inv-{uuid.uuid4().hex[:12]}"
 
 
-def summarize_input(capability: CapabilityDescriptor, input: dict[str, Any]) -> str:
+def summarize_input(capability: dict, input: dict[str, Any]) -> str:
     """Bounded, redacted summary for the audit record (fabric.ts:147-161)."""
     parts: list[str] = []
-    for f in capability.input:
-        raw = input.get(f.name)
+    for f in (capability.get("input") or []):
+        raw = input.get(f.get("name"))
         if raw is None:
             continue
-        if f.name.lower().replace("_", "") in _SECRET:
-            parts.append(f"{f.name}=<redacted>")
+        if f.get("name", "").lower().replace("_", "") in _SECRET:
+            parts.append(f"{f.get('name')}=<redacted>")
             continue
         text = raw if isinstance(raw, str) else dumps_compact(raw)
-        parts.append(f"{f.name}={text[:57]}…" if len(text) > 60 else f"{f.name}={text}")
+        parts.append(f"{f.get('name')}={text[:57]}…" if len(text) > 60 else f"{f.get('name')}={text}")
     return " ".join(parts) or "(no arguments)"
 
 
-def describe_target(capability: CapabilityDescriptor, input: dict[str, Any]) -> str | None:
+def describe_target(capability: dict, input: dict[str, Any]) -> str | None:
     for key in ("path", "url", "command", "name", "branch", "message", "projectId"):
         value = input.get(key)
         if isinstance(value, str) and value.strip():
             return value[:77] + "…" if len(value) > 80 else value
-    return "AURA Hub" if capability.surface == "aura-internal" else None
+    return "AURA Hub" if capability.get("surface") == "aura-internal" else None
 
 
-def validate_input(capability: CapabilityDescriptor, input: dict[str, Any]) -> str | None:
+def validate_input(capability: dict, input: dict[str, Any]) -> str | None:
     """Reject arguments violating the declared contract (fabric.ts:179-192)."""
-    for f in capability.input:
-        value = input.get(f.name)
+    for f in (capability.get("input") or []):
+        name = f.get("name", "")
+        value = input.get(name)
         if value is None or value == "":
-            if f.required:
-                return f"{f.name} is required."
+            if f.get("required"):
+                return f"{name} is required."
             continue
         actual = "array" if isinstance(value, list) else type(value).__name__
-        if f.type == "number":
+        if f.get("type") == "number":
             ok = isinstance(value, (int, float)) and not isinstance(value, bool)
-        elif f.type == "boolean":
+        elif f.get("type") == "boolean":
             ok = isinstance(value, bool)
-        elif f.type == "array":
+        elif f.get("type") == "array":
             ok = isinstance(value, list)
-        elif f.type == "object":
+        elif f.get("type") == "object":
             ok = isinstance(value, dict)
         else:
             ok = isinstance(value, str)
         if not ok:
-            return f"{f.name} should be a {f.type}, got {actual}."
+            return f"{name} should be a {f.get('type')}, got {actual}."
     return None
 
 
@@ -133,7 +134,7 @@ def _settle(
     invocation_id: str,
     capability_id: str,
     context: dict[str, Any],
-    capability: CapabilityDescriptor | None,
+    capability: PolicyCapability | None,
     outcome: str,
     detail: str,
     verification: dict[str, Any] | None,

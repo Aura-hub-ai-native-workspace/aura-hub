@@ -16,7 +16,6 @@ import json
 import subprocess
 import threading
 from pathlib import Path
-from typing import Any
 
 from .mcp_gateway import McpGateway
 
@@ -187,22 +186,38 @@ def make_mcp_tool_executor(session: McpSession, tool_name: str):
     risk floors decide how policy treats each invocation.
     """
 
+    cap_id = f"mcp:{session.server_id}:{tool_name}"
+
     class McpToolExecutor:
         name = f"mcp:{session.server_id}:{tool_name}"
+        capabilityId = cap_id
+        descriptor = {
+            "id": cap_id,
+            "name": f"MCP {tool_name}",
+            "category": "mcp",
+            "surface": "mcp",
+            "description": f"MCP tool {tool_name} from server {session.server_id}",
+            "risk": "low",
+            "permissions": [],
+            "input": [],
+            "output": "MCP tool output",
+            "verify": None,
+        }
 
-        def run(self, input: dict, context: dict) -> tuple[Any | None, str]:
+        async def run(self, invocation: dict) -> dict:
+            """Async wrapper for Fabric's invoke protocol."""
+            input = invocation.get("input", {})
+            context = invocation.get("context", {})
             result = session.call(tool_name, input)
             content = result.get("content") or []
             text = "\n".join(
                 c.get("text", "") for c in content if isinstance(c, dict))
             is_error = bool(result.get("isError"))
             if is_error:
-                raise RuntimeError(f"tool reported error: {text[:200]}")
-            return {"text": text[:MAX_RESPONSE_BYTES]}, (
-                f"MCP tool {tool_name} returned {len(text)} chars "
-                "(untrusted external output).")
+                return {"ok": False, "detail": f"tool reported error: {text[:200]}"}
+            return {"ok": True, "output": {"text": text[:MAX_RESPONSE_BYTES]}}
 
-        def verify(self, input: dict, context: dict, output) -> None:
+        async def verify(self, invocation: dict, result: dict) -> dict:
             return None  # external output cannot be mechanically confirmed here
 
     return McpToolExecutor()

@@ -23,10 +23,13 @@ __all__ = ["EngineConfig", "WorkflowEngine", "make_stores", "WorkflowRunner"]
 
 class EngineConfig:
     """Observability hook bundle. `emit` receives engine-level events so
-    they can ride the agent event bus; it never influences execution."""
+    they can ride the agent event bus; `max_node_executions` enforces
+    hard bound on node traversals (pure-runner cycles included)."""
 
-    def __init__(self, *, emit: Any = None, **_ignored: Any) -> None:
+    def __init__(self, *, emit: Any = None, max_node_executions: int | None = None,
+                 **_ignored: Any) -> None:
         self.emit = emit
+        self.max_node_executions = max_node_executions
 
 
 def make_stores(home=None):
@@ -105,7 +108,8 @@ class WorkflowEngine:
             wf, project_id=project_id or "default",
             project_path=project_path,
             trigger={"kind": "agent", "by": "central-agent"},
-            inputs=inputs))
+            inputs=inputs,
+            max_node_executions=self._config.max_node_executions))
         return out["run"]
 
     def resume_run(self, rid: str, actor_by: str = "user") -> dict:

@@ -56,8 +56,10 @@ def _node_fs_error(e: OSError, verb: str, path_str: str) -> RuntimeError:
 
 
 def inside(root: str, rel: str) -> str:
-    root = os.path.abspath(root)
-    abs_ = os.path.abspath(os.path.join(root, rel))
+    if "~" in rel:
+        raise ValueError(f"That path leaves the project directory: {rel}")
+    root = os.path.realpath(os.path.abspath(root))
+    abs_ = os.path.realpath(os.path.abspath(os.path.join(root, rel)))
     if abs_ != root and not abs_.startswith(root + os.sep):
         raise ValueError(f"That path leaves the project directory: {rel}")
     return abs_
@@ -130,6 +132,8 @@ async def filesystem_write(inv: dict) -> dict:
     root = cwd_of(inv)
     target = inside(root, _s(inv["input"].get("path")))
     content = _s(inv["input"].get("content"))
+    if len(content.encode("utf-8")) > 64 * 1024:
+        return {"ok": False, "detail": "content too large (max 64KB)"}
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, "w", encoding="utf-8") as fh:
         fh.write(content)
@@ -433,6 +437,7 @@ def internal_executors(registry) -> list[dict]:
             "description": _s(inv["input"].get("description")),
             "nodes": inv["input"].get("nodes") or [],
             "edges": inv["input"].get("edges") or [],
+            "category": "Agent Generated",
         }
         if not definition["name"].strip():
             return _no("A workflow name is required.")
@@ -551,8 +556,14 @@ class ExecutorAdapter:
 
 
 def all_executors(registry=None) -> list[ExecutorAdapter]:
+    import aura.fabric as fab
+    for d in CANONICAL_INTERNAL_CAPABILITIES:
+        if d["id"] not in fab._BY_ID:
+            fab.MANIFEST.append(d)
+            fab._BY_ID[d["id"]] = d
     adapters = [ExecutorAdapter(cid, spec) for cid, spec in EXECUTOR_TABLE.items()]
-    for internal in internal_executors(registry) if registry else []:
+    internals = internal_executors(registry)
+    for internal in internals:
         adapters.append(ExecutorAdapter(internal["capabilityId"],
                                         {"run": internal["run"],
                                          **({"verify": internal["verify"]} if internal.get("verify") else {})}))
@@ -560,3 +571,9 @@ def all_executors(registry=None) -> list[ExecutorAdapter]:
 
 
 _ = Callable  # parity note: TS types only
+
+# Register canonical internal capabilities at module load time so they're
+# available before any caller explicitly invokes all_executors(). This
+# ensures CentralAgent discovery (which reads from the manifest before
+# all_executors is called) finds workflow.create and workflow.list.
+register_canonical_internal_capabilities(None)

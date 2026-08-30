@@ -169,9 +169,9 @@ class GitStatusExecutor:
 
 
 class FsWriteFileExecutor:
-    """fs.write_file — create/overwrite one file inside the project root."""
+    """filesystem.write — create/overwrite one file inside the project root."""
 
-    name = "fs.write_file"
+    name = "filesystem.write"
 
     def run(self, input: dict[str, Any], context: dict[str, Any]) -> tuple[Any | None, str]:
         root = _require_cwd(context)
