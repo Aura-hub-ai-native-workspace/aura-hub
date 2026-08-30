@@ -17,11 +17,35 @@ import sys
 
 def build_fabric_config(audit, ledger):
     """FabricConfig wired to this installation's stores."""
-    from ..fabric import FabricConfig, builtin_executors
+    from ..executors import all_executors, register_canonical_internal_capabilities
+    from ..fabric import CapabilityFabric, FabricConfig, FabricHost
+
+    class _H(FabricHost):
+        def permissions_for(self, _cap, _ctx):
+            return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
+        def node_available(self, _cap):
+            return True
+        async def request_approval(self, _req, _ctx):
+            return False
+
+    register_canonical_internal_capabilities(None)
+    host = _H()
+    fabric = CapabilityFabric(host)
+    fabric.attach_audit_store(audit.load, audit.append)
+    fabric.attach_approval_store(lambda: [], lambda x: None)
+    fabric._ledger = ledger
+    execs = {}
+    for exe in all_executors():
+        try:
+            fabric.register(exe)
+            execs[exe.capabilityId] = exe
+        except Exception:
+            pass
     return FabricConfig(
+        fabric=fabric,
         policy_config={},
         permissions={"read": True, "write": True},
-        executors=builtin_executors(),
+        executors=execs,
         audit_store=audit,
         ledger=ledger,
     )

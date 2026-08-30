@@ -72,9 +72,10 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
     timings: dict[str, int] = {}
     received: dict[str, dict[str, dict]] = {}
     outputs: list[dict] = []
-    executions = 0
+    node_transversals = 0
     failure: dict | None = None
     parked: dict | None = None
+    max_node_executions = opts.get("maxNodeExecutions")
 
     ctx: dict[str, Any] = {
         "projectId": opts["projectId"], "projectPath": opts["projectPath"],
@@ -170,7 +171,7 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
         if not ins:
             return False
         got = received.get(node_id) or {}
-        return all(got.get(e["id"], {}).get("io") is None for e in ins)
+        return all(e["id"] in got and got[e["id"]].get("io") is None for e in ins)
 
     queue: list[str] = []
 
@@ -224,7 +225,7 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
                           "provenance": io.get("provenance")}
 
     async def exec_node(node, input):
-        nonlocal failure, parked, executions, current
+        nonlocal failure, parked, node_transversals, current
         ntype = node["type"]
         if ntype in INTELLIGENCE_TYPES and ntype != "agent":
             from .intelligence import INTELLIGENCE_RUNNERS
@@ -267,9 +268,8 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
                                                    "files": replayed.get("files")}),
                     replayed.get("port") or "out")
             return
-        executions += 1
-        if executions > MAX_NODE_EXECUTIONS:
-            raise RuntimeError("execution limit reached")
+        node_transversals += 1
+        limit = max_node_executions if max_node_executions is not None else MAX_NODE_EXECUTIONS
         current[0] = node["id"]
         set_state(node["id"], "running",
                   {"eventStatus": "waiting"} if ntype == "delay" else {})
@@ -277,6 +277,8 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
         if record:
             record["nodes"][node["id"]]["attempts"] += 1
         try:
+            if node_transversals > limit:
+                raise RuntimeError("execution limit reached")
             if ntype in GOVERNED_TYPES:
                 if governor is None:
                     raise RuntimeError(

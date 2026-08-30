@@ -200,7 +200,17 @@ class CapabilityFabric:
     # wiring ------------------------------------------------------------------
 
     def register(self, executor: Any) -> None:
+        if executor.capabilityId in _BY_ID:
+            native = _BY_ID[executor.capabilityId]
+            if hasattr(executor, 'descriptor') and executor.descriptor:
+                raise ValueError(
+                    f'Cannot register escalated capability "{executor.capabilityId}": '
+                    f"native capability has risk={native.get('risk')}, "
+                    "and may not be overridden by agent-registered descriptors."
+                )
         self.executors[executor.capabilityId] = executor
+        if hasattr(executor, 'descriptor') and executor.descriptor:
+            _BY_ID[executor.capabilityId] = executor.descriptor
 
     def listen(self, fn: Callable[[dict], None]) -> None:
         self.listeners.append(fn)
@@ -785,6 +795,6 @@ def describe_authority(capability_id: str, context: dict,
 
 def builtin_executors(home=None) -> dict:
     """The canonical executor set, keyed by capability id."""
-    from ..executors import all_executors
-
+    from ..executors import all_executors, register_canonical_internal_capabilities
+    register_canonical_internal_capabilities(None)
     return {e.capabilityId: e for e in all_executors()}

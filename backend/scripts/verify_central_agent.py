@@ -193,7 +193,7 @@ def main() -> int:
         second = agent.resume(agent.sessions.last_session_id)
         assert second.outcome == "completed", second.summary
         assert (proj / "demo.txt").read_text() == "hello world"
-        writes = [x for x in audit.load() if x["capabilityId"] == "fs.write_file"
+        writes = [x for x in audit.load() if x["capabilityId"] == "filesystem.write"
                   and x["outcome"] == "succeeded"]
         assert len(writes) == 1
         return "park → approve → resume → real file, exactly one write"
@@ -227,7 +227,7 @@ def main() -> int:
         assert (proj / "later.txt").read_text() == "done", \
             "resumed write produced wrong content"
         writes = [x for x in audit.load()
-                  if x["capabilityId"] == "fs.write_file"
+                  if x["capabilityId"] == "filesystem.write"
                   and x["outcome"] == "succeeded"
                   and "later.txt" in x.get("inputSummary", "")]
         assert len(writes) == 1, f"{len(writes)} writes for later.txt"

@@ -85,13 +85,15 @@ class WorkflowRunner:
                                  approved_capabilities: list[str] | None = None,
                                  actor: dict | None = None,
                                  emit: Any = lambda e: None,
-                                 on_run_created=None) -> dict:
+                                 on_run_created=None,
+                                 max_node_executions: int | None = None) -> dict:
         return await self.start({"workflow": workflow, "projectId": project_id,
                                  "projectPath": project_path,
                                  "projectName": project_name or workflow.get("name", ""),
                                  "trigger": trigger, "inputs": inputs,
                                  "approvedCapabilities": approved_capabilities,
-                                 "actor": actor}, emit)
+                                 "actor": actor,
+                                 "maxNodeExecutions": max_node_executions}, emit)
 
     workflows = None  # optional store seam; automation resolves ids via it
 
@@ -231,6 +233,7 @@ class WorkflowRunner:
                 "timeoutMs": input.get("timeoutMs"),
                 "replay": input.get("replay"),
                 "agentResume": input.get("agentResume"),
+                "maxNodeExecutions": input.get("maxNodeExecutions"),
             }, emit)
         finally:
             watcher.cancel()

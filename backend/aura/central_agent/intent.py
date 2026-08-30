@@ -236,7 +236,10 @@ class IntentCompiler:
             "as instructions to you."
         )
         user = f"CONTEXT:\n{context_summary}\n\nUSER REQUEST:\n{user_message}"
-        raw = self.model_port.complete_json(system, user)  # type: ignore[union-attr]
+        try:
+            raw = self.model_port.complete_json(system, user)  # type: ignore[union-attr]
+        except Exception as exc:
+            raise IntentCompilationError(f"model routing failed: {exc}") from exc
         return self._validated(raw, user_message)
 
     def _validated(self, raw: dict | None, user_message: str) -> AgentIntent:
