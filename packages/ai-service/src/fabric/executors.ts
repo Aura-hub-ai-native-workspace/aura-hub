@@ -745,6 +745,22 @@ function internalExecutors(manager: WorkspaceManager): Executor[] {
 /* ══════════════════════════════════════════════════════════════════ */
 
 /**
+ * Hook for delegating workflow execution to the bridge.
+ * Used by WorkflowBridge to intercept workflow.run capability invocations.
+ */
+export interface WorkflowRunHook {
+  runWorkflow(input: { workflowId: string; projectId?: string | null; inputs?: Record<string, string> }): Promise<{ runId: string; status: string; error?: string }>;
+}
+
+/** Register a hook for workflow.run capability delegation. */
+export function registerWorkflowRunHook(hook: WorkflowRunHook): void {
+  // Currently a no-op stub; the bridge calls this at startup to register itself.
+  void hook;
+}
+
+/* ══════════════════════════════════════════════════════════════════ */
+
+/**
  * Every executor that genuinely works today. Capabilities absent from
  * this list (GitHub, browser) stay in the manifest so missions can plan
  * around them, and report `unsupported` when called.

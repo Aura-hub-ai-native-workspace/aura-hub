@@ -26,7 +26,7 @@
  */
 
 import type { ContextView } from './types';
-import { renderContextContract, type RenderOptions } from './promptContract';
+import { renderContextContract } from './contract';
 
 /**
  * The operating rules. Stable text — callers must not edit it per-call,
@@ -95,8 +95,6 @@ export interface AgentPromptInput {
   view: ContextView;
   /** The user's task, verbatim. Never merged into the rules or the facts. */
   task: string;
-  /** Trim context sections a given surface does not need. */
-  include?: RenderOptions['include'];
 }
 
 /**
@@ -111,8 +109,8 @@ export interface AgentPromptInput {
  * context is indistinguishable from an AURA-supplied fact, which is both a
  * correctness problem and an injection surface.
  */
-export function buildAgentPrompt({ view, task, include }: AgentPromptInput): string {
-  const contract = renderContextContract(view, include ? { include } : undefined);
+export function buildAgentPrompt({ view, task }: AgentPromptInput): string {
+  const contract = renderContextContract(view);
   return [
     AURA_SYSTEM_PROMPT,
     contract,
@@ -134,13 +132,13 @@ export interface PromptMeasurement {
 }
 
 /** Measure a composed prompt, for budget reporting and diagnostics. */
-export function measureAgentPrompt({ view, task, include }: AgentPromptInput): PromptMeasurement {
-  const contract = renderContextContract(view, include ? { include } : undefined);
+export function measureAgentPrompt({ view, task }: AgentPromptInput): PromptMeasurement {
+  const contract = renderContextContract(view);
   const systemChars = AURA_SYSTEM_PROMPT.length;
   const contextChars = contract.length;
   const taskChars = task.length;
   // +2 separators of '\n\n' plus the <TASK> wrapper, mirroring buildAgentPrompt.
-  const totalChars = buildAgentPrompt({ view, task, include }).length;
+  const totalChars = buildAgentPrompt({ view, task }).length;
   return {
     systemChars,
     contextChars,

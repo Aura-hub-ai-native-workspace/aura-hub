@@ -367,7 +367,7 @@ export class PipelineManager {
    * the Context Fabric composes a view before this runs, and both need the
    * same answer to "what changed?".
    */
-  async inspect(text: string, scan?: TreeScan): Promise<InspectResult> {
+  async inspect(text: string, _scan?: TreeScan): Promise<InspectResult> {
     const m = this.mounted;
     const req = createRequest(text);
     const intent = await this.classifier.classify(req);
@@ -438,7 +438,6 @@ export class PipelineManager {
         graphContextText,
         memoryContextText,
         coding.files,
-        scan,
       );
     }
 

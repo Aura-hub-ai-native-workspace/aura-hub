@@ -37,8 +37,7 @@ function usable(value: unknown): value is ApprovalRequest {
     r && typeof r.id === 'string' && r.id
     && r.state === 'pending'
     && Array.isArray(r.items) && r.items.length > 0
-    && typeof r.items[0]?.capabilityId === 'string'
-    && r.items.every((i) => typeof i?.inputHash === 'string' && i.inputHash.length > 0),
+    && typeof r.items[0]?.capabilityId === 'string',
   );
 }
 
