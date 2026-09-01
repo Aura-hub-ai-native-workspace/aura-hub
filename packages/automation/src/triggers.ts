@@ -9,8 +9,10 @@
  * detector at the platform moments it already knows about (after a
  * reindex, after a mission batch, before/after a PR review).
  *
- * Mirrors `mission/gitSignals.ts`'s safety rules: execFile with an
- * allow-listed binary, no shell strings, bounded timeout, never throws.
+ * Mirrors `exec/process.ts`'s safety rules — execFile with an
+ * allow-listed binary, no shell strings, bounded timeout, never throws —
+ * and its exit-status convention, which is the part that matters to a
+ * caller reading `code !== 0` to decide whether it got an answer.
  */
 import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
@@ -18,12 +20,41 @@ import path from 'node:path';
 import { homePath } from './persist';
 import type { AutomationEvent } from './types';
 
+/**
+ * `@aura/automation` cannot import `@aura/ai-service`, so this cannot be
+ * the one process primitive — the dependency runs the other way. What it
+ * can do is stop lying the same way the primitive stopped lying.
+ *
+ * `typeof code === 'number' ? code : 0` reported a child killed by a
+ * signal — which is what a timeout looks like — as a clean exit 0. Every
+ * caller here reads `code !== 0` to mean "not a repository, no answer",
+ * so a git that ran out of time was indistinguishable from a git that
+ * genuinely found nothing, and a detector would report "no changed
+ * files" for a repository it never managed to read.
+ *
+ * Timeout and signal now get distinct non-zero codes, matching
+ * `exec/process`'s convention (124 for a timeout, 128+n for a signal) so
+ * the two layers describe the same event the same way. ENOENT keeps its
+ * own -1: "git is not installed" is a third thing again.
+ */
+const TIMEOUT_CODE = 124;
+const SIGNAL_BASE = 128;
+const SIGNAL_NUMBERS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15 };
+
 function git(cwd: string, args: string[]): Promise<{ out: string; code: number }> {
   return new Promise((resolve) => {
     execFile('git', args, { cwd, timeout: 20_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return resolve({ out: '', code: -1 });
-      const code = (err as { code?: number } | null)?.code;
-      resolve({ out: (stdout + (stderr ? `\n${stderr}` : '')).trim(), code: typeof code === 'number' ? code : 0 });
+      const out = (stdout + (stderr ? `\n${stderr}` : '')).trim();
+      if (!err) return resolve({ out, code: 0 });
+      const e = err as { code?: number | string; killed?: boolean; signal?: string };
+      if (e.killed === true) return resolve({ out, code: TIMEOUT_CODE });
+      if (typeof e.signal === 'string') {
+        return resolve({ out, code: SIGNAL_BASE + (SIGNAL_NUMBERS[e.signal] ?? 0) });
+      }
+      // An error with no numeric status is still an error. Reporting 0
+      // here is exactly what produced the false "nothing to report".
+      resolve({ out, code: typeof e.code === 'number' ? e.code : 1 });
     });
   });
 }

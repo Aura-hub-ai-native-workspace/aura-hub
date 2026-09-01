@@ -1,0 +1,75 @@
+{
+  "id": "ar-demo-0001",
+  "ruleId": "rule-mt6p764n-demo1",
+  "event": {
+    "type": "schedule",
+    "projectId": "p-demo",
+    "projectPath": "/projects/demo",
+    "at": "2026-08-24T09:00:00.000Z",
+    "payload": {
+      "cron": "0 9 * * 1-5"
+    }
+  },
+  "status": "completed",
+  "timeline": [
+    {
+      "id": "t1",
+      "at": "2026-08-24T09:00:00.010Z",
+      "type": "queued",
+      "message": "Queued by scheduler"
+    },
+    {
+      "id": "t2",
+      "at": "2026-08-24T09:00:00.020Z",
+      "type": "started",
+      "message": "Run started"
+    },
+    {
+      "id": "t3",
+      "at": "2026-08-24T09:00:00.100Z",
+      "type": "action-started",
+      "message": "Run demo workflow",
+      "actionId": "a1"
+    },
+    {
+      "id": "t4",
+      "at": "2026-08-24T09:00:05.000Z",
+      "type": "action-completed",
+      "message": "Workflow run wr-demo-0001 succeeded",
+      "actionId": "a1"
+    },
+    {
+      "id": "t5",
+      "at": "2026-08-24T09:00:05.010Z",
+      "type": "completed",
+      "message": "Rule completed"
+    }
+  ],
+  "actions": [
+    {
+      "status": "completed",
+      "produced": [
+        {
+          "kind": "workflow-run",
+          "workflowId": "wf-mt6p764n-yeej95",
+          "workflowRunId": "wr-demo-0001"
+        }
+      ],
+      "id": "a1",
+      "workflowRunId": "wr-demo-0001",
+      "workflowRunState": "succeeded"
+    }
+  ],
+  "conditions": [],
+  "startedAt": "2026-08-24T09:00:00.020Z",
+  "ruleName": "Demo schedule",
+  "finishedAt": "2026-08-24T09:00:05.010Z",
+  "ms": 4990.0,
+  "produced": [
+    {
+      "kind": "workflow-run",
+      "workflowId": "wf-mt6p764n-yeej95",
+      "workflowRunId": "wr-demo-0001"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aura:migration/workflow-version.schema.json",
+  "title": "WorkflowVersion (~/.aura/workflow-versions/<wfId>/<verId>.json)",
+  "description": "Source: packages/ai-service/src/workflow/versions.ts:44-70. Immutable; a run executes a version, never the live definition. graphHash algorithm pinned in canonicalization-spec.md §2.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["id", "workflowId", "number", "name", "description", "createdAt", "createdBy", "graphHash", "nodes", "edges"],
+  "properties": {
+    "id": { "type": "string" },
+    "workflowId": { "type": "string", "pattern": "^wf-" },
+    "number": { "type": "integer", "minimum": 1, "description": "Monotonic per workflow, starts at 1." },
+    "name": { "type": "string", "description": "Name at publish time — renames must not retitle finished runs." },
+    "description": { "type": "string" },
+    "createdAt": { "type": "string" },
+    "createdBy": { "type": "string", "description": "'user' | 'run:<id>' | 'ai-generate' | 'import'" },
+    "note": { "type": "string" },
+    "graphHash": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "restoredFrom": { "type": "string" },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "type", "x", "y", "config"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "type": "string" },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "config": { "type": "object" }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "from", "fromPort", "to"],
+        "properties": {
+          "id": { "type": "string" },
+          "from": { "type": "string" },
+          "fromPort": { "type": "string" },
+          "to": { "type": "string" }
+        }
+      }
+    }
+  }
+}

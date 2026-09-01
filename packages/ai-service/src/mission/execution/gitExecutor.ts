@@ -14,7 +14,7 @@
  *      git tasks can never race each other in the same working tree.
  */
 import type { PipelineManager } from '../../pipeline';
-import { runGit } from '../../workflow/nodes';
+import { git as runGit } from '../../exec/process';
 import { parseModelJson } from '../../jsonMode';
 import type { MissionGoal, MissionTask, TaskOperation, TaskProposal } from '../types';
 
@@ -48,9 +48,9 @@ function sanitizeBranchName(raw: unknown): string {
 /* ── Read-only preview ─────────────────────────────────────────────── */
 
 export async function previewGitState(projectPath: string, signal?: AbortSignal): Promise<GitPreview> {
-  const status = await runGit(projectPath, ['status', '--short', '--branch'], { signal });
-  const diff = await runGit(projectPath, ['diff', '--stat', '--no-color'], { signal });
-  const last = await runGit(projectPath, ['log', '-1', '--oneline', '--no-color'], { signal }).catch(() => ({ out: '', code: 0 }));
+  const status = await runGit(['status', '--short', '--branch'], { cwd: projectPath, signal });
+  const diff = await runGit(['diff', '--stat', '--no-color'], { cwd: projectPath, signal });
+  const last = await runGit(['log', '-1', '--oneline', '--no-color'], { cwd: projectPath, signal }).catch(() => ({ out: '', code: 0 }));
   // `status --short` never prints "nothing to commit": cleanliness must be
   // derived from the entry lines beyond the `## branch` header. Untracked
   // files count as changes — `git add -A` at Accept would commit them.
@@ -190,7 +190,7 @@ export async function executeGitOperation(
 
   // Read-only operations need no lock.
   if (op.operation === 'status' || op.operation === 'diff' || op.operation === 'log') {
-    const res = await runGit(projectPath, buildArgs(), { signal });
+    const res = await runGit(buildArgs(), { cwd: projectPath, signal });
     if (res.code !== 0) return { ok: false, output: res.out, error: res.out || `git ${op.operation} failed` };
     return { ok: true, output: res.out || `git ${op.operation} — clean` };
   }
@@ -198,17 +198,17 @@ export async function executeGitOperation(
   // Mutating operations are serialized per project.
   return withProjectLock(projectPath, async () => {
     if (op.operation === 'commit') {
-      const staged = await runGit(projectPath, ['add', '-A'], { signal });
+      const staged = await runGit(['add', '-A'], { cwd: projectPath, signal });
       if (staged.code !== 0) return { ok: false, output: staged.out, error: staged.out || 'git add failed' };
-      const commit = await runGit(projectPath, buildArgs(), { signal });
+      const commit = await runGit(buildArgs(), { cwd: projectPath, signal });
       if (commit.code !== 0) return { ok: false, output: commit.out, error: commit.out || 'git commit failed' };
       // `--stat` verify: the audit trail shows EXACTLY which files the
       // accepted commit carried, so an Accept can never silently sweep in
       // unrelated working-tree changes.
-      const verify = await runGit(projectPath, ['log', '-1', '--stat', '--oneline', '--no-color'], { signal });
+      const verify = await runGit(['log', '-1', '--stat', '--oneline', '--no-color'], { cwd: projectPath, signal });
       return { ok: true, output: [commit.out, verify.out].filter(Boolean).join('\n') };
     }
-    const res = await runGit(projectPath, buildArgs(), { signal });
+    const res = await runGit(buildArgs(), { cwd: projectPath, signal });
     if (res.code !== 0) return { ok: false, output: res.out, error: res.out || `git ${op.operation} failed` };
     return { ok: true, output: res.out || `git ${op.operation} — done` };
   });

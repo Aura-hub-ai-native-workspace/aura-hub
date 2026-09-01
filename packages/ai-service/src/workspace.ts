@@ -10,6 +10,16 @@ import { buildKnowledgeGraph, type KnowledgeGraph } from './knowledgeGraph';
 import { runProjectIntelligence, runWorkspaceIntelligence, type ProjectIntelligenceReport, type WorkspaceIntelligenceReport } from './intelligence';
 import { loadChangeLog, analyzeChangePatterns, getChangeVelocity, detectHotspots, type ChangeEntry, type ChangePattern } from './intelligence/changeIntelligence';
 import { WorkflowStore } from './workflow/store';
+import { WorkflowVersionStore } from './workflow/versions';
+import { WorkflowRunStore } from './workflow/run/store';
+import { dryRunWorkflow, type DryRunReport } from './workflow/dryrun';
+import { dryRunRule, type RuleDryRunReport } from './automationDryRun';
+import { describeCron, type AutomationRuleSummary, type AutomationStore } from '@aura/automation';
+import type { RunTrigger, WorkflowRun, WorkflowRunSummary } from './workflow/run/types';
+import { WorkflowRunner, type StartedRun } from './workflow/runner';
+import { computeEnvelope, diffEnvelopes, type AuthorityEnvelope, type EnvelopeDiff } from './workflow/envelope';
+import { RunScopeRegistry } from './fabric/scopes';
+import type { RunEvent, Workflow } from './workflow/types';
 import { createAutomationRuntime, automationEvent, type AutomationRuntime, type AutomationEvent } from './automation';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -20,15 +30,17 @@ import { splicePatch } from './diagnosis/patchLimiter';
 import { resolveInsideProject } from './diagnosis/repoScan';
 import type { DiagnosisEvent, DiagnosisRecord, DiagnosisRequest, DiagnosisSummary, PatchCandidate } from './diagnosis/types';
 import { MissionStore } from './mission/store';
+import {
+  composeContextView, renderContextContract,
+  type ComposeOptions, type ContextResult, type EnvironmentSnapshot,
+} from './context';
 import { runMissionCreation } from './mission/orchestrator';
 import { generateTaskProposal } from './mission/taskGen';
 import { planTaskInvocation, type CapabilityFabric } from '@aura/capability-fabric';
 import { MissionExecutionEngine } from './mission/execution/engine';
 import type { RunReadyOptions, RunTaskResult } from './mission/execution/engine';
 import type { ExecutionEvent } from './mission/execution/types';
-import { resolveNodeForTask, executionNodeStatus, type TaskNode } from './mission/execution/nodes';
-import { planGitOperation, executeGitOperation } from './mission/execution/gitExecutor';
-import type { MissionEvent, MissionRecord, MissionSummary, MissionTask, TaskProposal } from './mission/types';
+import type { MissionEvent, MissionRecord, MissionSummary, MissionTask } from './mission/types';
 import { getAdapter, getAllAdapters, ENV_VAR_BY_PROVIDER } from './provider/registry';
 import { storeKey, removeKey, getKey, getActive, getAllProviderStores, storeModels, storeHealth } from './provider/credentialStore';
 import { detectProvider } from './provider/detector';
@@ -381,9 +393,297 @@ export class WorkspaceManager {
     return runWorkspaceIntelligence(this.registry.list().map((p) => ({ id: p.id, root: p.path })));
   }
 
+  /* ── context fabric ─────────────────────────────────────────────── */
+
+  /**
+   * Compose one project's `ContextView` — AURA's shared understanding,
+   * in the shape every downstream surface consumes.
+   *
+   * This is a read. It resolves the project through the registry (the
+   * single project authority) and never mounts, indexes or scans: the
+   * environment must be supplied by the caller from the scan it already
+   * performed, and every other section is loaded from an artifact an
+   * authority already wrote. Composing context cannot change what the
+   * context describes.
+   *
+   * An unknown project id yields an explicit `unavailable` result rather
+   * than an empty view, so no caller can read "no such project" as "a
+   * project with nothing in it".
+   */
+  async contextView(
+    projectId: string,
+    options: ComposeOptions & { environment?: EnvironmentSnapshot | null } = {},
+  ): Promise<ContextResult> {
+    return composeContextView(
+      projectId,
+      {
+        registry: this.registry,
+        missions: this.missions,
+        mountedProjectId: this.pipeline.currentProjectId,
+        fabric: this.fabric,
+        environment: options.environment ?? null,
+      },
+      options,
+    );
+  }
+
+  /**
+   * The same view, rendered as the stable text contract an agent reads.
+   * Returns null when the project cannot be resolved — callers must not
+   * hand an agent a contract for a project that does not exist.
+   */
+  async contextContract(
+    projectId: string,
+    options: ComposeOptions & { environment?: EnvironmentSnapshot | null } = {},
+  ): Promise<string | null> {
+    const view = await this.contextView(projectId, options);
+    return 'status' in view ? null : renderContextContract(view);
+  }
+
   /* ── workflows ──────────────────────────────────────────────────── */
 
   readonly workflows = new WorkflowStore();
+  readonly workflowVersions = new WorkflowVersionStore();
+  readonly workflowRuns = new WorkflowRunStore();
+  /** Per-run least privilege, read by the Fabric host. Never persisted. */
+  readonly runScopes = new RunScopeRegistry();
+
+  /**
+   * In-flight runs, so a run can be cancelled from another request.
+   * Deliberately in memory: a controller for a run this process is not
+   * executing would be a lie, and `reconcileWorkflowRuns()` is what makes
+   * runs from a previous process honest instead.
+   */
+  private readonly liveRuns = new Map<string, AbortController>();
+
+  private get runner(): WorkflowRunner {
+    return new WorkflowRunner({
+      pipeline: this.pipeline,
+      fabric: this.fabric,
+      runScopes: this.runScopes,
+      versions: this.workflowVersions,
+      runs: this.workflowRuns,
+    });
+  }
+
+  /**
+   * What WOULD happen, computed without anything happening.
+   *
+   * Delegates to `dryRunWorkflow`, which never invokes a capability. The
+   * project is resolved the same way a real run resolves it, so the plan
+   * is about the project the run would actually target.
+   */
+  dryRunWorkflow(wf: Workflow, opts: { projectId?: string; inputs?: Record<string, string>; versionId?: string } = {}): DryRunReport {
+    const project = opts.projectId ? this.registry.get(opts.projectId) : this.currentProject();
+    if (!project) throw new Error('open a project before simulating a workflow');
+    // A dry run of a specific VERSION is what the Runs view needs when
+    // explaining a past run; the draft is what the editor needs.
+    const version = opts.versionId ? this.workflowVersions.get(wf.id, opts.versionId) : null;
+    if (opts.versionId && !version) throw new Error('no such version');
+    return dryRunWorkflow({
+      workflowId: wf.id,
+      workflowName: version?.name ?? wf.name,
+      nodes: version?.nodes ?? wf.nodes,
+      edges: version?.edges ?? wf.edges,
+      projectId: project.id,
+      projectPath: project.path,
+      projectName: project.name,
+      fabric: this.fabric,
+      inputs: opts.inputs,
+    });
+  }
+
+  /**
+   * What an automation rule WOULD do. Executes nothing.
+   *
+   * Composed from the pieces that already exist: the engine's condition
+   * evaluator, the scheduler's arithmetic and the workflow dry run — which
+   * itself only calls the Fabric's read-only pre-flight.
+   */
+  dryRunAutomationRule(ruleId: string, opts: { sampleEvent?: AutomationEvent; projectId?: string } = {}): RuleDryRunReport | { error: string } {
+    const rule = this.automation.store.getRule(ruleId);
+    if (!rule) return { error: 'no such rule' };
+    return dryRunRule({
+      rule,
+      sampleEvent: opts.sampleEvent,
+      projectId: opts.projectId,
+      resolveWorkflow: (id) => this.workflows.get(id),
+      dryRunWorkflow: (wf, projectId) => this.dryRunWorkflow(wf, { projectId: projectId || undefined }),
+    });
+  }
+
+  /** The cross-rule automation run index, filtered and paged server-side. */
+  automationRunIndex(query: Parameters<AutomationStore['indexRuns']>[0] = {}) {
+    return this.automation.store.indexRuns(query);
+  }
+
+  /**
+   * Rule summaries with their schedule state folded in.
+   *
+   * The store stays the authority on rules and the scheduler stays the
+   * authority on clocks; this joins them at read time rather than copying
+   * clock state into the rule file, where it would go stale the moment the
+   * scheduler recomputed.
+   */
+  listAutomationRules(): (AutomationRuleSummary & {
+    cron?: string;
+    scheduleProjectId?: string;
+    schedule?: { nextFireAt?: string; missedCount: number; lastFiredAt?: string; error?: string; description?: string; timezone: 'local' };
+  })[] {
+    const state = this.automation.scheduler.status();
+    return this.automation.store.listRules().map((summary) => {
+      const rule = this.automation.store.getRule(summary.id);
+      if (rule?.trigger.type !== 'schedule') return summary;
+      const s = state[summary.id];
+      return {
+        ...summary,
+        cron: rule.trigger.cron,
+        scheduleProjectId: rule.trigger.projectId,
+        schedule: {
+          nextFireAt: s?.nextFireAt,
+          missedCount: s?.missedCount ?? 0,
+          lastFiredAt: s?.lastFiredAt,
+          error: s?.error,
+          description: rule.trigger.cron ? describeCron(rule.trigger.cron) : undefined,
+          // A fact about the scheduler, not an option. It has no timezone
+          // database, so anything other than 'local' would be a lie.
+          timezone: 'local' as const,
+        },
+      };
+    });
+  }
+
+  /** The cross-workflow run index, filtered and paged server-side. */
+  runIndex(query: Parameters<WorkflowRunStore['index']>[0] = {}) {
+    return this.workflowRuns.index(query);
+  }
+
+  /** What a workflow would be permitted to do, without running it. */
+  workflowEnvelope(wf: Workflow): AuthorityEnvelope {
+    return computeEnvelope(wf.nodes);
+  }
+
+  /**
+   * How this draft's authority differs from the last published version.
+   * Null when there is no earlier version to compare against.
+   */
+  workflowEnvelopeDiff(wf: Workflow): EnvelopeDiff | null {
+    const latest = this.workflowVersions.latest(wf.id);
+    if (!latest) return null;
+    return diffEnvelopes(computeEnvelope(latest.nodes), computeEnvelope(wf.nodes));
+  }
+
+  /**
+   * Execute a workflow. The ONE entry point — the Run button, a webhook,
+   * the Automation Engine and `workflow.run` all arrive here.
+   */
+  async startWorkflowRun(
+    wf: Workflow,
+    opts: {
+      inputs?: Record<string, string>;
+      trigger?: RunTrigger;
+      approvedCapabilities?: string[];
+      actor?: { kind: 'human' | 'agent' | 'system'; id: string };
+      signal?: AbortSignal;
+      projectId?: string;
+      timeoutMs?: number;
+    },
+    emit: (e: RunEvent) => void,
+  ): Promise<StartedRun> {
+    // A run is bound to ONE project, named at start. A workflow triggered
+    // from outside must not silently execute against whatever happens to
+    // be mounted when it lands.
+    const project = opts.projectId ? this.registry.get(opts.projectId) : this.currentProject();
+    if (!project) throw new Error('open a project before running a workflow');
+    await this.pipeline.whenIndexed();
+
+    const controller = new AbortController();
+    const external = opts.signal;
+    if (external) {
+      if (external.aborted) controller.abort();
+      else external.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+
+    let runId: string | null = null;
+    try {
+      return await this.runner.start({
+        workflow: wf,
+        projectId: project.id,
+        projectPath: project.path,
+        projectName: project.name,
+        trigger: opts.trigger ?? { kind: 'manual', by: opts.actor?.id ?? 'user' },
+        inputs: opts.inputs,
+        approvedCapabilities: opts.approvedCapabilities,
+        actor: opts.actor,
+        signal: controller.signal,
+        timeoutMs: opts.timeoutMs,
+        onRunCreated: (run) => { runId = run.id; this.liveRuns.set(run.id, controller); },
+      }, emit);
+    } finally {
+      if (runId) this.liveRuns.delete(runId);
+    }
+  }
+
+  /** Resume a parked or interrupted run from its checkpoint. */
+  async resumeWorkflowRun(
+    workflowId: string,
+    runId: string,
+    emit: (e: RunEvent) => void,
+    opts: { approvedCapabilities?: string[]; signal?: AbortSignal; actor?: { kind: 'human' | 'agent' | 'system'; id: string } } = {},
+  ): Promise<StartedRun | { error: string }> {
+    const wf = this.workflows.get(workflowId);
+    if (!wf) return { error: 'no such workflow' };
+    await this.pipeline.whenIndexed();
+    const controller = new AbortController();
+    if (opts.signal) opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    let created: string | null = null;
+    try {
+      return await this.runner.resume(wf, runId, emit, {
+        ...opts,
+        signal: controller.signal,
+        onRunCreated: (run) => { created = run.id; this.liveRuns.set(run.id, controller); },
+      });
+    } finally {
+      if (created) this.liveRuns.delete(created);
+    }
+  }
+
+  /**
+   * Stop an in-flight run.
+   *
+   * Only ever affects a run THIS process is executing. Reporting success
+   * for a run started by a process that has since died would be a lie the
+   * Runs view would then display.
+   */
+  cancelWorkflowRun(runId: string): boolean {
+    const controller = this.liveRuns.get(runId);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  }
+
+  listWorkflowRuns(workflowId?: string): WorkflowRunSummary[] {
+    return this.workflowRuns.list(workflowId);
+  }
+
+  getWorkflowRun(workflowId: string, runId: string): WorkflowRun | null {
+    return this.workflowRuns.get(workflowId, runId);
+  }
+
+  /** Every leg of one logical execution, oldest first. */
+  workflowRunChain(workflowId: string, runId: string): WorkflowRun[] {
+    return this.workflowRuns.resumeChain(workflowId, runId);
+  }
+
+  /**
+   * Mark runs orphaned by a crash. Called once at startup.
+   *
+   * A record still saying `running` after the process that was running it
+   * is gone asserts something false, and the Runs view would display it.
+   */
+  reconcileWorkflowRuns(): WorkflowRunSummary[] {
+    return this.workflowRuns.reconcileInterrupted();
+  }
 
   /* ── Automation Engine ─────────────────────────────────────────────
    * Event-driven workflows: rules react to REAL platform moments by
@@ -408,6 +708,25 @@ export class WorkspaceManager {
       pipelineFor: () => this.pipeline,
       memoryFor: (projectId) => this.memoryOf(projectId),
       diagnoses: this.diagnoses,
+      // The bridge. An automation rule reaches the ONE workflow engine
+      // through the ONE runner — it does not gain an executor of its own.
+      runWorkflow: async ({ workflowId, projectId, ruleId, automationRunId, event, signal }) => {
+        const wf = this.workflows.get(workflowId);
+        if (!wf) return { ok: false as const, error: `no such workflow: ${workflowId}` };
+        try {
+          const started = await this.startWorkflowRun(wf, {
+            projectId,
+            trigger: { kind: 'automation', ruleId, runId: automationRunId, event },
+            // No grant. An automation fires with nobody watching, so
+            // anything above auto-execute parks and waits for a person.
+            actor: { kind: 'system', id: `automation:${ruleId}` },
+            signal,
+          }, () => {});
+          return { ok: true as const, runId: started.run.id, runState: started.result.runState };
+        } catch (e) {
+          return { ok: false as const, error: (e as Error).message };
+        }
+      },
     });
   }
 
@@ -636,70 +955,25 @@ export class WorkspaceManager {
         const goal = record.goalGraph?.goals.find((g) => g.id === task.goalId);
         if (!project || !goal) return { ok: false, error: 'invalid mission state' };
 
-// ── Fabric first ───────────────────────────────────────────────────
-        // A task the Capability Fabric can express is executed under policy,
-        // approval, verification, recovery and audit. Nothing bypasses it for
-        // convenience — the node fabric below is reached only for tasks the
-        // Fabric genuinely cannot express as a call.
+        // Fabric first: a task it can execute is executed under policy,
+        // approval, verification, recovery and audit. Nothing bypasses it
+        // for convenience — the proposal path below is reached only for
+        // tasks the Fabric genuinely cannot express as a call.
         const viaFabric = await this.runTaskThroughFabric(id, record, task, approvedCapabilities);
         if (viaFabric) return viaFabric;
 
-        // ── Multi-node execution: ONE mission → capability → node ──────
-        // Every remaining task is resolved to exactly one execution node
-        // through the node Capability Fabric. The contract is preserved:
-        //   requested ≠ resolved ≠ executed ≠ recorded.
-        // A requested node is honored EXACTLY or fails explicitly — there is
-        // NO silent fallback to another node. Nodes that are detected but not
-        // executable (opencode, claude-code) fail here, on purpose.
-        const fail = (type: string, message: string): { ok: false; executedNode?: TaskNode; proposal: TaskProposal } => ({
-          ok: false,
-          executedNode: undefined,
-          // Failures ride on the proposal so the failure is EXPLICIT and
-          // visible on the task run (statusForTask → 'failed', message shown).
-          proposal: { explanation: '', newCode: null, error: { type, message, retryable: type === 'executor_error' } },
-        });
-        const resolution = await resolveNodeForTask(task);
-        if ('error' in resolution) return fail('node_resolution_failed', `node resolution failed: ${resolution.error}`);
-        if (resolution.node === 'manual') {
-          return fail('manual_node', 'This task has no governed execution node — resolve it manually (Mark Done) instead of running it.');
+        if (task.kind !== 'file-operation' || !task.targetFile) {
+          // The planner's own words for why this is not a capability call —
+          // a specific next step instead of a generic refusal.
+          const plan = planTaskInvocation(task, id);
+          return { ok: false, error: plan.kind === 'unbound' ? plan.reason : 'This task has no single target file — complete it manually instead of running it.' };
         }
-        // Last-writer-wins so the resolved node is never overwritten by a
-        // stale planning field, and it persists with the next commit.
-        const idx = record.goalGraph?.tasks.findIndex((t) => t.id === task.id) ?? -1;
-        if (idx >= 0 && record.goalGraph) {
-          record.goalGraph.tasks[idx] = { ...record.goalGraph.tasks[idx], resolvedNode: resolution.node };
-        }
-
-        let executedNode: TaskNode | undefined;
-        let result: { ok: boolean; proposal?: TaskProposal; mode?: 'diff' | 'new-file' };
-        switch (resolution.node) {
-          case 'aura-ai': {
-            // AURA's own governed proposal generator — the real execution
-            // backend for code implementation. Preserved unchanged.
-            executedNode = 'aura-ai';
-            const gen = await generateTaskProposal(this.pipeline, project.path, task, goal, record.text, signal);
-            result = { ok: gen.ok, proposal: gen.proposal, mode: gen.isNewFile ? 'new-file' : 'diff' };
-            break;
-          }
-          case 'git': {
-            // Governed git node — read-only PREVIEW + one allow-listed plan.
-            // Nothing mutates here; mutation happens on human Accept.
-            executedNode = 'git';
-            const plan = await planGitOperation(this.pipeline, {
-              projectPath: project.path, task, goal, missionText: record.text, signal,
-            });
-            result = { ok: plan.ok, proposal: plan.proposal };
-            break;
-          }
-          default:
-            return fail('executor_not_wired', `resolved node "${resolution.node}" has no governed executor wired into the Capability Fabric`);
-        }
+        const result = await generateTaskProposal(this.pipeline, project.path, task, goal, record.text, signal);
         return {
           ok: result.ok,
-          error: result.ok ? undefined : result.proposal?.error?.message,
+          error: result.ok ? undefined : result.proposal.error?.message,
           proposal: result.proposal,
-          mode: result.mode,
-          executedNode,
+          mode: result.isNewFile ? 'new-file' : 'diff',
         };
       },
       persist: (rec) => { this.missions.save(id, rec); },
@@ -769,11 +1043,11 @@ export class WorkspaceManager {
     return { ok: result.ok, error: result.error, awaitingApproval: result.awaitingApproval, mission: result.record };
   }
 
-/**
-   * The only place a mission task's proposal is ever executed — requires an
-   * explicit human Accept.
+  /**
+   * The only place a mission task's proposal is ever written to disk —
+   * requires an explicit human Accept.
    *
-   * The file write itself goes through the Capability Fabric's
+   * The write itself goes through the Capability Fabric's
    * `filesystem.write`, not a direct `fs` call. That is what subjects the
    * single most consequential action in the mission system to policy, to
    * read-back verification, to bounded recovery and to the audit trail.
@@ -790,68 +1064,46 @@ export class WorkspaceManager {
     if (!mission) return { ok: false, error: 'no such mission' };
     const task = mission.goalGraph?.tasks.find((t) => t.id === taskId);
     const run = mission.taskRuns.find((r) => r.taskId === taskId);
-    if (!task || !run || run.status !== 'proposed' || run.proposal?.error) return { ok: false, error: 'no pending proposal for this task' };
-    if (!run.proposal?.newCode && !run.proposal?.operation) return { ok: false, error: 'no pending proposal for this task' };
+    if (!task || !run || run.status !== 'proposed' || !run.proposal?.newCode) return { ok: false, error: 'no pending proposal for this task' };
     const project = this.registry.get(id);
     if (!project) return { ok: false, error: 'no such project' };
 
-// Governed git node: the human Accept IS the authorization to mutate.
-    // The operation was allow-listed and previewed at plan time; this runs
-    // the exact same governed runner as the workflow engine — no shell,
-    // fixed binary, real exit code — and serializes per working tree.
-    let memoryTitle = '';
-    if (run.proposal.operation?.type === 'git') {
-      const executed = await executeGitOperation(project.path, run.proposal.operation);
-      if (!executed.ok) return { ok: false, error: `git node execution failed: ${executed.error ?? 'unknown error'}`, mission };
-      // Audit trail: attach the governed execution result to the proposal
-      // before the engine records the acceptance.
-      run.proposal.operation.result = executed.output;
-      run.proposal.explanation = `${run.proposal.explanation}\n\nExecuted (human Accept):\n${executed.output}`;
-      memoryTitle = `Git task accepted: ${task.title}`;
-    } else {
-      // File-operation path — the write goes through the Capability
-      // Fabric's `filesystem.write` (policy, read-back verification,
-      // recovery, audit), with the direct write kept only for library use
-      // without a host.
-      if (!task.targetFile || run.proposal.newCode == null) return { ok: false, error: 'no pending proposal for this task' };
-      if (this.fabric) {
-        const result = await this.fabric.invoke(
-          'filesystem.write',
-          { path: task.targetFile as string, content: run.proposal.newCode },
-          {
-            actor: { kind: 'human', id: 'user' },
-            projectId: id,
-            cwd: project.path,
-            missionId: mission.id,
-            taskId,
-            approvedCapabilities,
-          },
-        );
-        if (result.outcome !== 'succeeded') {
-          // Nothing was written, or it was written and failed its read-back.
-          // Either way the task must not be marked accepted. `result.detail`
-          // already carries the verification reason — appending it again
-          // would print the same sentence twice to the operator.
-          return { ok: false, error: result.detail, mission };
-        }
-      } else {
-        // No Fabric attached (library use without a host) — the original
-        // direct write, kept so the manager is never left unable to accept.
-        let abs: string;
-        try {
-          abs = resolveInsideProject(project.path, task.targetFile as string);
-        } catch (e) {
-          return { ok: false, error: (e as Error).message };
-        }
-        fs.writeFileSync(abs, run.proposal.newCode);
+    if (this.fabric) {
+      const result = await this.fabric.invoke(
+        'filesystem.write',
+        { path: task.targetFile as string, content: run.proposal.newCode },
+        {
+          actor: { kind: 'human', id: 'user' },
+          projectId: id,
+          cwd: project.path,
+          missionId: mission.id,
+          taskId,
+          approvedCapabilities,
+        },
+      );
+      if (result.outcome !== 'succeeded') {
+        // Nothing was written, or it was written and failed its read-back.
+        // Either way the task must not be marked accepted. `result.detail`
+        // already carries the verification reason — appending it again
+        // would print the same sentence twice to the operator.
+        return { ok: false, error: result.detail, mission };
       }
-      memoryTitle = `Mission task accepted: ${task.title}`;
+    } else {
+      // No Fabric attached (library use without a host) — the original
+      // direct write, kept so the manager is never left unable to accept.
+      let abs: string;
+      try {
+        abs = resolveInsideProject(project.path, task.targetFile as string);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+      fs.writeFileSync(abs, run.proposal.newCode);
     }
 
     const updated = this.missionEngine(id).acceptTask(mission, taskId);
     if (this.pipeline.currentProjectId === id) void this.pipeline.reindex();
     const memory = this.pipeline.currentProjectId === id ? this.pipeline.memory : this.memoryOf(id);
-    memory?.add({ kind: 'accepted', title: memoryTitle, body: run.proposal.explanation });
+    memory?.add({ kind: 'accepted', title: `Mission task accepted: ${task.title}`, body: run.proposal.explanation });
 
     // Real platform moment → Automation Engine (mission-accepted).
     this.automation.engine.handleEvent(automationEvent('mission-accepted', id, project.path, {
@@ -894,12 +1146,12 @@ export class WorkspaceManager {
     return { ok: true, mission: updated };
   }
 
-  /** Manual/review/approval/documentation/research tasks (no governed node) are resolved by the human directly — no AI call, no file write. */
+  /** Manual/review/approval/documentation/research tasks (no single target file) are resolved by the human directly — no AI call, no file write. */
   completeManualTask(id: string, mid: string, taskId: string): { ok: boolean; error?: string; mission?: MissionRecord } {
     const mission = this.missions.get(id, mid);
     const task = mission?.goalGraph?.tasks.find((t) => t.id === taskId);
     if (!mission || !task) return { ok: false, error: 'no such task' };
-    if (task.kind === 'file-operation' || task.kind === 'git-operation') return { ok: false, error: 'this task has a governed execution node — run it instead of completing it manually' };
+    if (task.kind === 'file-operation') return { ok: false, error: 'this task has a target file — run it instead of completing it manually' };
     const updated = this.missionEngine(id).completeManualTask(mission, taskId);
     if (updated) {
       this.recordMissionMemory(id, updated, 'completed', taskId);
@@ -990,11 +1242,6 @@ export class WorkspaceManager {
       metrics: mission.execution.metrics,
       checkpoints: mission.execution.checkpoints,
     };
-  }
-
-  /** Real environment detection + executable status of every execution node in the Capability Fabric. */
-  executionNodes() {
-    return executionNodeStatus();
   }
 
   /** Global engineering dashboard — aggregates every mission across every registered project. */

@@ -1,364 +1,539 @@
 /**
- * composeContextView — the Context Fabric's composition layer.
+ * AURA Context Fabric — composition
  * ==================================================================
- * Turns the systems that already own project facts into one bounded
- * `ContextView`. It reads; it never writes, never scans the repository
- * itself, and never becomes the authority for anything it reports.
+ * This is a FACADE. It computes no repository understanding of its own.
+ * Every value it returns is projected from an authority that already
+ * owns that fact:
  *
- * ── Why the caller supplies live state ───────────────────────────────
- * Node presence, missions, approvals and the provider are LIVE service
- * state owned by `server.ts`/`WorkspaceManager`. If this module reached
- * for them itself it would need its own scanner, its own store handles
- * and its own provider lookup — three duplicate authorities acquired by
- * accident. They arrive as `ContextSources` instead, so composition stays
- * a pure projection of state someone else already owns.
+ *   identity, modules, profile, health   → intelligence/*  (loaders only)
+ *   context version                      → intelligence/versioning.ts
+ *   staleness rule                       → intelligence/index.ts isCacheStale
+ *   change intelligence                  → intelligence/changeIntelligence.ts
+ *   git                                  → mission/gitSignals.ts (read-only)
+ *   project root / identity              → projects.ts ProjectRegistry
+ *   environment                          → the caller's last observed scan
+ *   capabilities                         → @aura/capability-fabric
+ *   missions                             → mission/store.ts MissionStore
+ *   activity                             → CapabilityFabric.audit()
  *
- * What this module DOES read directly is only already-persisted, per-project
- * intelligence on disk (identity, summary, version) plus git — both cheap,
- * both derived, neither an authority this module competes with.
+ * Three hard rules, enforced by construction:
  *
- * ── Cost ────────────────────────────────────────────────────────────
- * One `detectChanges` tree diff (Phase A: ~15ms on a 600-file repo) plus
- * two short `git` calls. It never triggers re-indexing: a stale view is
- * reported AS stale and the user refreshes through the existing
- * re-index path. Composing context must never silently start a scan.
+ *   1. **One project.** Composition takes one project id, resolves it
+ *      through the registry, and derives every section from that
+ *      project's own root. Facts that cannot be attributed to it are
+ *      reported `unknown` rather than borrowed from elsewhere.
+ *
+ *   2. **Read-only.** Nothing here writes, spawns, mounts, indexes or
+ *      snapshots. It calls `load*` and `get*`, never `generate*`,
+ *      `save*` or `createVersion`. Composing context can never change
+ *      what the context describes.
+ *
+ *   3. **No rescans.** The environment is supplied by the caller from
+ *      the scan it already performed. Staleness uses one `stat` (the
+ *      engine's own rule), not a repository walk.
  */
 
 import os from 'node:os';
-import type { ProjectRecord } from '../projects';
-import type { ProjectProfile } from '../profile';
-import type { MissionSummary } from '../mission/types';
-import { loadIdentity } from '../intelligence/identity';
+import path from 'node:path';
+
+import type { ProjectRegistry } from '../projects';
+import type { MissionStore } from '../mission/store';
+import { loadProfile } from '../profile';
+
+import { loadIdentity, identityNeedsRegeneration } from '../intelligence/identity';
 import { loadRepositorySummary } from '../intelligence/moduleSummarizer';
-import { detectChanges, isArtifactStale, type IndexResult } from '../intelligence/performance';
+import { loadRepositoryProfile } from '../intelligence/repositoryMemory';
+import { loadRepositoryHealth } from '../intelligence/healthEngine';
 import { getCurrentVersion } from '../intelligence/versioning';
+import { isCacheStale } from '../intelligence';
+import {
+  loadChangeLog, analyzeChangePatterns, getChangeVelocity, detectHotspots,
+  type ChangeLog,
+} from '../intelligence/changeIntelligence';
 import { gatherGitStatus, gatherRecentCommits } from '../mission/gitSignals';
+
+import {
+  CAPABILITY_MANIFEST,
+  type CapabilityFabric,
+  type InvocationContext,
+} from '@aura/capability-fabric';
+
 import type {
-  ContextView, ContextFreshness, RepositoryContext, GitContext,
-  EnvironmentContext, ToolsContext, AgentsContext, MissionContext,
-  ActivityContext, ContextConstraint, EnvironmentNodeRef, AgentRef,
+  ContextActivity, ContextCapability, CapabilityAvailability,
+  ContextChanges, ContextConstraint, ContextEnvironment, ContextGit,
+  ContextMission, ContextProject, ContextRepository, ContextResult,
+  ContextSurface, Freshness, Section,
 } from './types';
 
-/* ── Bounds. A ContextView is a briefing, not an inventory. ────────── */
-const MAX_MODULES = 12;
-const MAX_PRESENT_NODES = 40;
-const MAX_MISSING_CAPABILITIES = 12;
-const MAX_COMMITS = 5;
-const MAX_ACTIVITY = 12;
-
-/** A node as the environment scanner reports it. */
-export interface ContextNodeRef {
-  id: string;
-  name: string;
-  capabilities: string[];
-  binary?: string;
-  version?: string | null;
-}
+/* ══════════════════════════════════════════════════════════════════
+   Input ports — what the caller must already have observed
+   ══════════════════════════════════════════════════════════════════ */
 
 /**
- * Live service state the caller must supply. Everything here is owned by an
- * existing authority; this module only projects it.
+ * The environment as the caller last measured it. Supplied rather than
+ * scanned: `server.ts` already holds the result of the one environment
+ * scanner, and composing context must never trigger a second scan.
  */
-export interface ContextSources {
-  /** THE canonical project, resolved from the caller's activeProjectId. */
-  project: ProjectRecord;
-  /** Which project the service currently has mounted (pipeline authority). */
-  mountedProjectId: string | null;
-  /** The project's derived profile, when the project is mounted. */
-  profile: ProjectProfile | null;
-  /** Nodes that answered a probe — from `scanEnvironment`, never re-probed here. */
-  presentNodes: ContextNodeRef[];
-  /** Capability ids something present provides. */
-  providedCapabilities: string[];
-  /** Every capability id the catalogue knows about. */
-  knownCapabilities: string[];
-  /** Size of the node catalogue, for an honest "N of M present". */
-  catalogueSize: number;
-  /** When the environment was last scanned. */
+export interface EnvironmentSnapshot {
   scannedAt: string | null;
-  /** Missions for THIS project — the existing MissionStore list projection. */
-  missions: MissionSummary[];
-  /** Approval requests currently awaiting a human, from the approval store. */
-  pendingApprovals: number;
-  /**
-   * The connected provider. The caller passes id/model/connected ONLY —
-   * never a key, never a fingerprint. See `assertNoSecrets` below.
-   */
-  provider: { id: string | null; connected: boolean; model: string | null };
-  /** Coding-agent binaries AURA has a verified invocation for. */
-  drivableAgentBinaries: string[];
-  /** Recent activity, already projected by the caller from its own sources. */
-  activity: ActivityContext['events'];
-  /**
-   * A tree diff already taken this request.
-   *
-   * Composing a view and running the intelligence pipeline both need the
-   * same answer to "what changed?", and in one Ask AURA request they used
-   * to walk the same tree twice. Supplying it here shares the ONE
-   * observation. Composition still never rebases the baseline — that
-   * remains the pipeline's job, so composing context stays read-only.
-   */
-  changes?: IndexResult;
+  /** Present nodes in catalogue order. */
+  nodes: { id: string; name: string; capabilities: string[]; version?: string; internal?: boolean }[];
+  providedCapabilities: string[];
 }
 
-/* ── Freshness ────────────────────────────────────────────────────── */
+export interface ContextSources {
+  registry: ProjectRegistry;
+  missions: MissionStore;
+  /** The project the pipeline currently has mounted, if any. Never changed here. */
+  mountedProjectId: string | null;
+  /** Null when the Fabric is not attached — capabilities then read `unknown`. */
+  fabric: CapabilityFabric | null;
+  /** Null when nothing has been scanned yet — environment then reads `unknown`. */
+  environment: EnvironmentSnapshot | null;
+}
+
+export interface ComposeOptions {
+  surface?: ContextSurface;
+  /**
+   * A git snapshot the caller already took. Supplied to avoid re-reading
+   * the same repository twice in one request.
+   */
+  git?: ContextGit | null;
+  /** Skip the git read entirely (git then reads `unknown`). */
+  includeGit?: boolean;
+  /** How many audit records to project. Bounded to keep the view compact. */
+  activityLimit?: number;
+  /** How many missions to project. */
+  missionLimit?: number;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Freshness helpers
+   ══════════════════════════════════════════════════════════════════ */
+
+const unknown = <T>(reason: string): Section<T> =>
+  ({ value: null, freshness: 'unknown', generatedAt: null, reason });
 
 /**
- * Freshness is about the UNDERSTANDING, not the view. `generatedAt` is the
- * oldest artifact timestamp we have, because a view is only as current as
- * its stalest input — reporting the newest would overstate it.
+ * Grade an artifact using the engine's OWN staleness rule, so the Fabric
+ * can never call something fresh that the engine would regenerate.
  */
-function composeFreshness(
+function grade(generatedAt: string | null | undefined, root: string): SectionGrade {
+  if (!generatedAt) return { freshness: 'unknown', generatedAt: null, reason: 'never computed' };
+  return isCacheStale(generatedAt, root)
+    ? { freshness: 'stale', generatedAt, reason: 'the repository changed after this was computed' }
+    : { freshness: 'fresh', generatedAt };
+}
+
+interface SectionGrade {
+  freshness: Freshness;
+  generatedAt: string | null;
+  reason?: string;
+}
+
+/** The worst of several gradings — a view is only as fresh as its weakest known part. */
+function worst(grades: Freshness[]): Freshness {
+  if (grades.includes('stale')) return 'stale';
+  if (grades.includes('fresh')) return 'fresh';
+  return 'unknown';
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   Section projections
+   ══════════════════════════════════════════════════════════════════ */
+
+/** L0/L1/L2 — identity, modules, architecture profile, health scores. */
+function projectRepository(projectId: string, root: string): Section<ContextRepository> {
+  const identity = loadIdentity(projectId);
+  const summary = loadRepositorySummary(projectId);
+  const profile = loadRepositoryProfile(projectId);
+  const health = loadRepositoryHealth(projectId);
+
+  if (!identity && !summary && !profile && !health) {
+    return unknown('the repository has not been indexed yet');
+  }
+
+  // Identity has its own regeneration test — prefer it over the generic
+  // timestamp rule, because it is the check the engine actually applies.
+  const identityStale = identity ? identityNeedsRegeneration(projectId, root) : false;
+  const grades: SectionGrade[] = [
+    identity
+      ? (identityStale
+          ? { freshness: 'stale', generatedAt: identity.generatedAt, reason: 'the project fingerprint changed' }
+          : { freshness: 'fresh', generatedAt: identity.generatedAt })
+      : { freshness: 'unknown', generatedAt: null, reason: 'identity never computed' },
+    grade(summary?.generatedAt, root),
+    grade(profile?.generatedAt, root),
+    grade(health?.generatedAt, root),
+  ];
+
+  const newest = grades
+    .map((g) => g.generatedAt)
+    .filter((t): t is string => !!t)
+    .sort()
+    .pop() ?? null;
+
+  const value: ContextRepository = {
+    identity,
+    // Modules are reduced to orientation only. The full summary can be
+    // hundreds of entries; an agent needs to know the shape, then look.
+    modules: (summary?.modules ?? []).slice(0, 24).map((m) => ({
+      name: m.name,
+      path: m.path,
+      fileCount: m.fileCount,
+      description: m.description,
+    })),
+    totalFiles: summary?.totalFiles ?? null,
+    entryPoints: identity?.entryPoints ?? [],
+    profile,
+    health: health ? { score: health.score } : null,
+  };
+
+  const stale = grades.filter((g) => g.freshness === 'stale');
+  return {
+    value,
+    freshness: worst(grades.map((g) => g.freshness)),
+    generatedAt: newest,
+    reason: stale.length ? stale[0].reason : undefined,
+  };
+}
+
+/**
+ * L3 — change intelligence, scoped to this project.
+ *
+ * The change log is a single workspace-wide file whose entries carry a
+ * file path but no project id. Attribution is therefore by path prefix.
+ * When entries exist but none are absolute paths they cannot be
+ * attributed to any project, and this reports `unknown` rather than
+ * silently lending another project's history to this one.
+ */
+function projectChanges(root: string): Section<ContextChanges> {
+  const log = loadChangeLog();
+  if (!log) return unknown('no change history has been recorded');
+
+  const attributable = log.entries.filter((e) => path.isAbsolute(e.file));
+  if (log.entries.length > 0 && attributable.length === 0) {
+    return unknown('recorded changes carry no absolute path, so they cannot be attributed to this project');
+  }
+
+  const scopedEntries = attributable.filter(
+    (e) => e.file === root || e.file.startsWith(root + path.sep),
+  );
+  // Re-run the existing analysers over the project-scoped slice, so the
+  // maths stays owned by changeIntelligence.ts rather than copied here.
+  const scoped: ChangeLog = { entries: scopedEntries, patterns: [], generatedAt: log.generatedAt };
+
+  return {
+    value: {
+      velocity: getChangeVelocity(scoped),
+      hotspots: detectHotspots(scoped).slice(0, 8),
+      patterns: analyzeChangePatterns(scoped).slice(0, 6).map((p) => p.pattern),
+    },
+    freshness: 'fresh',
+    generatedAt: log.generatedAt,
+  };
+}
+
+/** L4 — git, read through the existing read-only signal gatherers. */
+async function projectGit(root: string): Promise<Section<ContextGit>> {
+  const status = await gatherGitStatus(root);
+  const at = new Date().toISOString();
+  if (!status.available) {
+    return { value: null, freshness: 'unknown', generatedAt: null, reason: status.reason };
+  }
+  const recentCommits = await gatherRecentCommits(root, 5);
+  return {
+    value: {
+      branch: status.branch,
+      dirty: status.dirty,
+      changedFiles: status.changedFiles,
+      recentCommits,
+    },
+    // Git is read live at composition time, so it is fresh by construction.
+    freshness: 'fresh',
+    generatedAt: at,
+  };
+}
+
+/** L4 — the machine, from the caller's already-observed scan. */
+function projectEnvironment(snapshot: EnvironmentSnapshot | null): Section<ContextEnvironment> {
+  if (!snapshot || !snapshot.scannedAt) {
+    return unknown('the environment has not been scanned yet');
+  }
+  return {
+    value: {
+      os: `${os.platform()} ${os.release()}`,
+      arch: os.arch(),
+      // Version is the probe's own output. No credential, token or
+      // environment variable is read here — only what a `--version` said.
+      tools: snapshot.nodes.map((n) => ({
+        id: n.id,
+        name: n.name,
+        capabilities: n.capabilities,
+        version: n.version ?? null,
+        internal: n.internal ?? false,
+      })),
+      providedCapabilities: [...snapshot.providedCapabilities].sort(),
+    },
+    freshness: 'fresh',
+    generatedAt: snapshot.scannedAt,
+  };
+}
+
+/**
+ * L4 — what can actually be done right now.
+ *
+ * Read straight from the Capability Fabric: the manifest for the list,
+ * `isSupported` for whether an executor exists, and `evaluate` for the
+ * real policy decision including node routing. No capability registry is
+ * duplicated and nothing is executed.
+ */
+function projectCapabilities(
+  fabric: CapabilityFabric | null,
   projectId: string,
   root: string,
-  identityAt: string | null,
-  summaryAt: string | null,
-  precomputed?: IndexResult,
-): { freshness: ContextFreshness; changes: IndexResult } {
-  const changes = precomputed ?? detectChanges(projectId, root);
+): Section<ContextCapability[]> {
+  if (!fabric) return unknown('the capability fabric is not attached to this service');
 
-  const stamps = [identityAt, summaryAt].filter((s): s is string => !!s);
-  if (stamps.length === 0) {
+  const context: InvocationContext = {
+    actor: { kind: 'system', id: 'context-fabric' },
+    projectId,
+    cwd: root,
+  };
+
+  const value: ContextCapability[] = CAPABILITY_MANIFEST.map((cap) => {
+    if (!fabric.isSupported(cap.id)) {
+      return {
+        id: cap.id, name: cap.name, risk: cap.risk,
+        availability: 'not-drivable' as CapabilityAvailability,
+        reason: 'no executor is registered for this capability',
+      };
+    }
+
+    const evaluation = fabric.evaluate(cap.id, context);
+    if (!evaluation) {
+      return {
+        id: cap.id, name: cap.name, risk: cap.risk,
+        availability: 'unavailable' as CapabilityAvailability,
+        reason: 'the fabric does not describe this capability',
+      };
+    }
+
+    let availability: CapabilityAvailability;
+    if (evaluation.decision === 'deny') {
+      // `node-unsupported` is the honest "installed but AURA cannot drive
+      // it" case — e.g. a catalogued coding agent with no verified
+      // non-interactive invocation. It is not the same as absent, and the
+      // difference decides whether "install it" is useful advice.
+      availability = evaluation.rule === 'node-unsupported' ? 'not-drivable' : 'unavailable';
+    } else if (evaluation.decision === 'auto-execute') {
+      availability = 'available';
+    } else {
+      availability = 'approval';
+    }
+
     return {
-      changes,
-      freshness: {
-        state: 'unknown',
-        generatedAt: null,
-        reason: 'AURA has not analysed this project yet, so there is nothing to be current or out of date.',
-        changedFiles: changes.changed.length,
-        addedFiles: changes.added.length,
-        removedFiles: changes.removed.length,
-        truncated: changes.truncated,
-      },
+      id: cap.id,
+      name: cap.name,
+      risk: cap.risk,
+      availability,
+      rule: evaluation.rule,
+      reason: evaluation.reason,
     };
-  }
+  });
 
-  const oldest = stamps.reduce((a, b) => (Date.parse(a) <= Date.parse(b) ? a : b));
-  const stale = isArtifactStale(oldest, changes);
-
-  const parts: string[] = [];
-  if (changes.changed.length) parts.push(`${changes.changed.length} file${changes.changed.length === 1 ? '' : 's'} changed`);
-  if (changes.added.length) parts.push(`${changes.added.length} added`);
-  if (changes.removed.length) parts.push(`${changes.removed.length} removed`);
-
-  return {
-    changes,
-    freshness: {
-      state: stale ? 'stale' : 'fresh',
-      generatedAt: oldest,
-      reason: stale
-        ? (parts.length
-          ? `${parts.join(', ')} since AURA last analysed this project.`
-          : 'The project changed since AURA last analysed it.')
-        : null,
-      changedFiles: changes.changed.length,
-      addedFiles: changes.added.length,
-      removedFiles: changes.removed.length,
-      truncated: changes.truncated,
-    },
-  };
-}
-
-/* ── Sections ─────────────────────────────────────────────────────── */
-
-function composeRepository(
-  identity: ReturnType<typeof loadIdentity>,
-  summary: ReturnType<typeof loadRepositorySummary>,
-  profile: ProjectProfile | null,
-): RepositoryContext {
-  const intelligence = identity && summary ? 'ready' : identity || summary ? 'partial' : 'absent';
-  return {
-    purpose: identity?.purpose ?? null,
-    repositoryType: identity?.repositoryType ?? null,
-    architectureStyle: identity?.architectureStyle ?? null,
-    primaryLanguage: identity?.primaryLanguage ?? profile?.primaryLanguage ?? null,
-    secondaryLanguages: identity?.secondaryLanguages ?? [],
-    frameworks: identity?.frameworks ?? profile?.frameworks ?? [],
-    buildSystem: identity?.buildSystem ?? null,
-    packageManager: profile?.packageManager ?? null,
-    mainModules: identity?.mainModules ?? [],
-    entryPoints: identity?.entryPoints ?? [],
-    fileCount: summary?.totalFiles ?? profile?.fileCount ?? null,
-    modules: (summary?.modules ?? []).slice(0, MAX_MODULES).map((m) => ({
-      name: m.name, path: m.path, description: m.description,
-    })),
-    intelligence,
-  };
-}
-
-async function composeGit(root: string): Promise<GitContext> {
-  const status = await gatherGitStatus(root);
-  if (!status.available) {
-    return { available: false, branch: null, dirty: null, changedFiles: null, recentCommits: [], reason: status.reason };
-  }
-  const commits = await gatherRecentCommits(root, MAX_COMMITS);
-  return {
-    available: true,
-    branch: status.branch,
-    dirty: status.dirty,
-    changedFiles: status.changedFiles,
-    recentCommits: commits.map((c) => ({ hash: c.hash, subject: c.subject, date: c.date })),
-    reason: null,
-  };
-}
-
-function composeEnvironment(s: ContextSources): EnvironmentContext {
-  const present: EnvironmentNodeRef[] = s.presentNodes
-    .slice(0, MAX_PRESENT_NODES)
-    .map((n) => ({ id: n.id, name: n.name, version: n.version ?? null }));
-  return {
-    os: `${os.type()} ${os.release()}`,
-    platform: process.platform,
-    arch: process.arch,
-    nodeVersion: process.version,
-    shell: process.env.SHELL ?? null,
-    presentNodes: present,
-    presentCount: s.presentNodes.length,
-    catalogueCount: s.catalogueSize,
-    scannedAt: s.scannedAt,
-  };
-}
-
-function composeTools(s: ContextSources): ToolsContext {
-  const have = new Set(s.providedCapabilities);
-  return {
-    available: [...have].sort(),
-    missing: s.knownCapabilities.filter((c) => !have.has(c)).slice(0, MAX_MISSING_CAPABILITIES),
-  };
-}
-
-function composeAgents(s: ContextSources): AgentsContext {
-  const drivable = new Set(s.drivableAgentBinaries);
-  const codingAgents: AgentRef[] = s.presentNodes
-    .filter((n) => n.capabilities.includes('coding-agent'))
-    .map((n) => ({
-      id: n.id,
-      name: n.name,
-      version: n.version ?? null,
-      // Present but undrivable is reported as such — never omitted, or the
-      // user would think AURA can delegate to a tool it cannot actually run.
-      drivable: !!n.binary && drivable.has(n.binary),
-    }));
-  return { codingAgents, provider: s.provider };
-}
-
-function composeMission(s: ContextSources): MissionContext {
-  const mine = s.missions.filter((m) => m.projectId === s.project.id);
-  const sorted = [...mine].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const top = sorted[0];
-  return {
-    active: top
-      ? {
-        id: top.id,
-        text: top.text,
-        // Execution status when the mission got that far, otherwise the
-        // approval state — both are the mission system's own vocabulary,
-        // never a status invented here.
-        status: top.execution?.status ?? top.approval?.status ?? 'planning',
-        createdAt: top.createdAt,
-      }
-      : null,
-    total: mine.length,
-    pendingApprovals: s.pendingApprovals,
-  };
+  return { value, freshness: 'fresh', generatedAt: new Date().toISOString() };
 }
 
 /**
- * Constraints worth telling a human or a model BEFORE it acts. Derived, not
- * authored: each one corresponds to a real condition in this view.
+ * L4 — missions, from the one MissionStore.
+ *
+ * Reports execution-level status only. The mission model has no per-task
+ * RUNNING state, so no task is ever described as "working" — the count of
+ * genuinely completed tasks is reported instead.
  */
-function composeConstraints(view: {
-  freshness: ContextFreshness;
-  git: GitContext;
-  agents: AgentsContext;
-  project: { mounted: boolean };
-}): ContextConstraint[] {
-  const out: ContextConstraint[] = [];
-  if (view.freshness.state === 'stale') {
-    out.push({ id: 'stale-understanding', text: 'AURA\'s understanding of this project is out of date. Re-index before relying on the repository summary.' });
+function projectMissions(missions: MissionStore, projectId: string, limit: number): Section<ContextMission[]> {
+  let list;
+  try {
+    list = missions.list(projectId);
+  } catch {
+    return unknown('the mission store could not be read');
   }
-  if (view.freshness.state === 'unknown') {
-    out.push({ id: 'no-understanding', text: 'This project has not been analysed yet. Repository facts are unavailable rather than empty.' });
+
+  const value: ContextMission[] = list.slice(0, limit).map((m) => ({
+    id: m.id,
+    text: m.text,
+    createdAt: m.createdAt,
+    category: m.category,
+    status: m.execution?.status ?? null,
+    taskCount: m.taskCount,
+    completedTasks: countCompleted(missions, projectId, m.id),
+    approved: m.approval?.status === 'approved',
+  }));
+
+  return { value, freshness: 'fresh', generatedAt: new Date().toISOString() };
+}
+
+/** Terminal task states only. `proposed` is not progress; it is a question. */
+function countCompleted(missions: MissionStore, projectId: string, missionId: string): number {
+  const record = missions.get(projectId, missionId);
+  const tasks = record?.goalGraph?.tasks ?? [];
+  return tasks.filter((t) => t.status === 'accepted' || t.status === 'done').length;
+}
+
+/**
+ * L4 — recent activity, projected from the Capability Fabric's audit
+ * trail. This is a read of the existing authority; no activity record is
+ * created, copied or persisted here.
+ *
+ * The trail is in-memory and therefore covers this service process only.
+ * That limit is reported honestly rather than papered over: an empty
+ * trail after a restart is `fresh` and empty, because the authority
+ * genuinely holds nothing.
+ */
+function projectActivity(
+  fabric: CapabilityFabric | null,
+  projectId: string,
+  limit: number,
+): Section<ContextActivity[]> {
+  if (!fabric) return unknown('the capability fabric is not attached to this service');
+
+  const value = fabric.audit()
+    .filter((r) => r.projectId === projectId)
+    .slice(-limit)
+    .reverse()
+    .map((r) => ({
+      at: r.at,
+      capabilityId: r.capabilityId,
+      actor: r.actor.kind,
+      nodeId: r.executedNodeId ?? r.nodeId,
+      outcome: r.outcome,
+      decision: r.decision,
+    }));
+
+  return { value, freshness: 'fresh', generatedAt: new Date().toISOString() };
+}
+
+/**
+ * Constraints an agent must obey. Each one is derived from an observed
+ * fact, not from advice: the root comes from the registry, the approval
+ * rule from the policy floors that genuinely exist, and the uncommitted
+ * -work warning only appears when git actually reports a dirty tree.
+ */
+function projectConstraints(project: ContextProject, git: ContextGit | null, freshness: Freshness): ContextConstraint[] {
+  const out: ContextConstraint[] = [
+    {
+      id: 'project-boundary',
+      text: `All work belongs to the project "${project.name}" rooted at ${project.root}. Do not read or modify files outside this root.`,
+    },
+    {
+      id: 'governed-execution',
+      text: 'Execution is governed by the AURA Capability Fabric. High-risk capabilities require explicit human approval and cannot be self-authorized.',
+    },
+    {
+      id: 'no-fabrication',
+      text: 'The facts in this context were computed by AURA. Where a section is marked unknown, treat it as not established — do not substitute an assumption.',
+    },
+  ];
+
+  if (git?.dirty) {
+    out.push({
+      id: 'uncommitted-work',
+      text: `The working tree has ${git.changedFiles} uncommitted change(s) on branch "${git.branch}". Never reset, clean, stash, checkout over or discard this work.`,
+    });
   }
-  if (view.freshness.truncated) {
-    out.push({ id: 'scan-truncated', text: 'The file scan hit its cap, so change counts describe part of the tree, not all of it.' });
+
+  if (freshness === 'stale') {
+    out.push({
+      id: 'stale-context',
+      text: 'Part of this context is stale: the repository changed after it was computed. Verify against the files before relying on the affected sections.',
+    });
   }
-  if (!view.project.mounted) {
-    out.push({ id: 'not-mounted', text: 'This project is not currently mounted in the service, so live index status is unavailable.' });
-  }
-  if (view.git.available && view.git.dirty) {
-    out.push({ id: 'dirty-tree', text: `The working tree has ${view.git.changedFiles} uncommitted change(s). Existing work must not be reverted or overwritten.` });
-  }
-  if (!view.agents.provider.connected) {
-    out.push({ id: 'no-provider', text: 'No AI provider is connected, so reasoning capabilities are unavailable.' });
-  }
+
   return out;
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   The composer
+   ══════════════════════════════════════════════════════════════════ */
+
 /**
- * Defence in depth against a credential reaching a prompt or a panel.
+ * Compose one project's `ContextView`.
  *
- * The provider section is built from a caller-supplied triple that should
- * never contain a key, but "should never" is not a guarantee when a future
- * caller edits the shape. Anything that looks like a secret is dropped
- * loudly rather than forwarded quietly.
+ * Resolves the project through the registry — the single project
+ * authority — and never mounts, opens or touches it. An unresolvable id
+ * yields an explicit `unavailable` result so a caller can never read
+ * "no such project" as "an empty project".
  */
-function assertNoSecrets(provider: AgentsContext['provider']): AgentsContext['provider'] {
-  const suspicious = /(^|[^a-z])(sk|api[_-]?key|token|secret|bearer)([^a-z]|$)/i;
-  const bad = (v: string | null) => !!v && (suspicious.test(v) || v.length > 64);
-  return {
-    id: bad(provider.id) ? null : provider.id,
-    connected: provider.connected,
-    model: bad(provider.model) ? null : provider.model,
-  };
-}
+export async function composeContextView(
+  projectId: string,
+  sources: ContextSources,
+  options: ComposeOptions = {},
+): Promise<ContextResult> {
+  const record = sources.registry.get(projectId);
+  if (!record) {
+    return { contractVersion: 1, status: 'unavailable', projectId, reason: `no project is registered with id "${projectId}"` };
+  }
 
-/* ── The composer ─────────────────────────────────────────────────── */
+  const root = record.path;
+  const profile = loadProfile(projectId);
 
-export async function composeContextView(sources: ContextSources): Promise<ContextView> {
-  const t0 = performance.now();
-  const { project } = sources;
-
-  // Per-project artifacts, keyed by the canonical project id. Reading them
-  // by any other id is what would let one project's context describe another.
-  const identity = loadIdentity(project.id);
-  const summary = loadRepositorySummary(project.id);
-  const version = getCurrentVersion(project.id);
-
-  const { freshness } = composeFreshness(
-    project.id,
-    project.path,
-    identity?.generatedAt ?? null,
-    summary?.generatedAt ?? null,
-    sources.changes,
-  );
-
-  const git = await composeGit(project.path);
-  const agents = composeAgents(sources);
-  agents.provider = assertNoSecrets(agents.provider);
-
-  const projectSection = {
-    id: project.id,
-    name: project.name,
-    root: project.path,
-    type: project.type,
-    language: project.language,
-    mounted: sources.mountedProjectId === project.id,
+  const project: ContextProject = {
+    id: record.id,
+    name: record.name,
+    root,
+    type: profile?.type ?? record.type,
+    language: profile?.primaryLanguage ?? record.language,
+    mounted: sources.mountedProjectId === record.id,
+    lastOpenedAt: record.lastOpenedAt,
   };
 
+  const surface = options.surface ?? 'general';
+  const includeGit = options.includeGit ?? true;
+
+  const repository = projectRepository(projectId, root);
+  const changes = projectChanges(root);
+  const environment = projectEnvironment(sources.environment);
+  const capabilities = projectCapabilities(sources.fabric, projectId, root);
+  const missions = projectMissions(sources.missions, projectId, options.missionLimit ?? 5);
+  const activity = projectActivity(sources.fabric, projectId, options.activityLimit ?? 10);
+
+  const git: Section<ContextGit> = options.git
+    ? { value: options.git, freshness: 'fresh', generatedAt: new Date().toISOString() }
+    : includeGit
+      ? await projectGit(root)
+      : unknown('git was not read for this request');
+
+  /**
+   * Overall freshness IS the repository understanding's freshness.
+   *
+   * Not a blend: live reads (git, capabilities, missions, activity) are
+   * fresh by construction and would mask an unindexed project behind a
+   * confident headline. And it is not the worst of everything either —
+   * the workspace-wide change log is normally empty, which would pin
+   * every project to `unknown` forever and make the signal useless.
+   *
+   * The repository artifacts are exactly what `contextVersion` snapshots,
+   * so the two always describe the same thing.
+   */
+  const freshness: Freshness = repository.freshness;
+
+  const version = getCurrentVersion(projectId);
+
   return {
-    contextVersion: version?.version ?? 0,
-    generatedAt: new Date().toISOString(),
+    contractVersion: 1,
+    contextVersion: version?.version ?? null,
+    composedAt: new Date().toISOString(),
+    surface,
     freshness,
-    project: projectSection,
-    repository: composeRepository(identity, summary, sources.profile),
+    project,
+    repository,
+    changes,
     git,
-    environment: composeEnvironment(sources),
-    tools: composeTools(sources),
-    agents,
-    mission: composeMission(sources),
-    activity: { events: sources.activity.slice(0, MAX_ACTIVITY) },
-    constraints: composeConstraints({ freshness, git, agents, project: projectSection }),
-    buildMs: Math.round(performance.now() - t0),
+    environment,
+    capabilities,
+    missions,
+    activity,
+    constraints: projectConstraints(project, git.value, freshness),
   };
 }

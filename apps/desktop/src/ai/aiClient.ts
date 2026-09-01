@@ -56,64 +56,6 @@ export interface VerificationSection { name: string; score: number; status: 'pas
    The service remains the authority for the SHAPE; this is the wire
    contract as the UI reads it. */
 
-export type FreshnessState = 'fresh' | 'stale' | 'unknown';
-
-export interface ContextView {
-  contextVersion: number;
-  generatedAt: string;
-  freshness: {
-    state: FreshnessState;
-    generatedAt: string | null;
-    reason: string | null;
-    changedFiles: number;
-    addedFiles: number;
-    removedFiles: number;
-    truncated: boolean;
-  };
-  project: { id: string; name: string; root: string; type: string; language: string; mounted: boolean };
-  repository: {
-    purpose: string | null;
-    repositoryType: string | null;
-    architectureStyle: string | null;
-    primaryLanguage: string | null;
-    secondaryLanguages: string[];
-    frameworks: string[];
-    buildSystem: string | null;
-    packageManager: string | null;
-    mainModules: string[];
-    entryPoints: string[];
-    fileCount: number | null;
-    modules: { name: string; path: string; description: string }[];
-    intelligence: 'ready' | 'partial' | 'absent';
-  };
-  git: {
-    available: boolean;
-    branch: string | null;
-    dirty: boolean | null;
-    changedFiles: number | null;
-    recentCommits: { hash: string; subject: string; date: string }[];
-    reason: string | null;
-  };
-  environment: {
-    os: string; platform: string; arch: string; nodeVersion: string; shell: string | null;
-    presentNodes: { id: string; name: string; version: string | null }[];
-    presentCount: number; catalogueCount: number; scannedAt: string | null;
-  };
-  tools: { available: string[]; missing: string[] };
-  agents: {
-    codingAgents: { id: string; name: string; version: string | null; drivable: boolean }[];
-    provider: { id: string | null; connected: boolean; model: string | null };
-  };
-  mission: {
-    active: { id: string; text: string; status: string; createdAt: string } | null;
-    total: number;
-    pendingApprovals: number;
-  };
-  activity: { events: { at: string; kind: string; summary: string }[] };
-  constraints: { id: string; text: string }[];
-  buildMs: number;
-}
-
 export interface ProjectIntelligence {
   verification: { overallScore: number; summary: string; sections: VerificationSection[]; recommendations: string[] };
   architecture: {
@@ -288,12 +230,78 @@ export interface NodeSpecInfo {
   description: string; inputs: 0 | 1 | 'many'; outputs: string[]; disabled?: boolean; fields: FieldSpec[];
 }
 export type NodeRunState = 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'skipped';
+export type NodeState =
+  | 'queued' | 'running' | 'awaiting-approval' | 'succeeded'
+  | 'failed' | 'denied' | 'skipped' | 'cancelled' | 'timed-out';
 export type WfRunEvent =
   | { type: 'start'; workflowId: string; at: string }
   | { type: 'node'; nodeId: string; status: NodeRunState; ms?: number; summary?: string; error?: string }
   | { type: 'log'; nodeId: string | null; level: 'info' | 'warn' | 'error'; text: string; at: string }
   | { type: 'output'; nodeId: string; title: string; text: string }
   | { type: 'done'; status: 'completed' | 'failed'; ms: number; error?: string };
+
+/* ── Context Fabric ─────────────────────────────────────────────── */
+export type ContextFreshness = 'fresh' | 'stale' | 'unknown';
+export interface ContextSection<T> {
+  value: T | null;
+  freshness: ContextFreshness;
+  generatedAt: string | null;
+  reason?: string;
+}
+export type ContextSurface = 'general' | 'coding' | 'debugging' | 'architecture' | 'git' | 'testing' | 'mission' | 'planning' | 'review';
+export type CapabilityAvailability = 'available' | 'approval' | 'not-drivable' | 'unavailable';
+export interface ContextView {
+  contractVersion: 1;
+  contextVersion: number | null;
+  composedAt: string;
+  surface: ContextSurface;
+  freshness: ContextFreshness;
+  project: { id: string; name: string; root: string; type: string; language: string; mounted: boolean; lastOpenedAt: string | null };
+  repository: ContextSection<{ identity: { name: string; purpose: string; repositoryType: string; primaryLanguage: string; architectureStyle: string; frameworks: string[]; entryPoints: string[] } | null; modules: { name: string; path: string; fileCount: number; description: string }[]; totalFiles: number | null; entryPoints: string[]; profile: { architectureStyle: string; designPatterns: string[]; keyDecisions: string[] } | null; health: { score: { overall: number } } | null }>;
+  changes: ContextSection<{ velocity: number; hotspots: { file: string; score: number; reason: string }[]; patterns: string[] }>;
+  git: ContextSection<{ branch: string; dirty: boolean; changedFiles: number; recentCommits: { hash: string; date: string; subject: string }[] }>;
+  environment: ContextSection<{ os: string; arch: string; tools: { id: string; name: string; capabilities: string[]; version: string | null; internal: boolean }[]; providedCapabilities: string[] }>;
+  capabilities: ContextSection<{ id: string; name: string; risk: string; availability: CapabilityAvailability; rule?: string; reason?: string }[]>;
+  missions: ContextSection<{ id: string; text: string; createdAt: string; category: string; status: string | null; taskCount: number; completedTasks: number; approved: boolean }[]>;
+  activity: ContextSection<{ at: string; capabilityId: string; actor: string; nodeId?: string; outcome: string; decision: string }[]>;
+  constraints: { id: string; text: string }[];
+}
+export interface ContextUnavailable { contractVersion: 1; status: 'unavailable'; projectId: string; reason: string; }
+export const contextUnavailable = (r: ContextView | ContextUnavailable): r is ContextUnavailable => (r as ContextUnavailable).status === 'unavailable';
+
+/* ── Evidence and Node Records ─────────────────────────────────────── */
+export interface EvidenceRef {
+  invocationId: string;
+  capabilityId: string;
+  outcome: string;
+  decision: string;
+  decisionRule: string;
+  risk: string;
+  verified: boolean | null;
+  approvalId?: string;
+  nodeId?: string;
+  at: string;
+  durationMs: number;
+}
+export interface StateTransition {
+  at: string;
+  from: NodeState;
+  to: NodeState;
+  note?: string;
+}
+export interface NodeRunRecord {
+  nodeId: string;
+  type: string;
+  state: NodeState;
+  iteration: number;
+  startedAt?: string;
+  finishedAt?: string;
+  ms: number;
+  summary?: string;
+  error?: string;
+  transitions?: StateTransition[];
+  evidence?: EvidenceRef[];
+}
 
 const jget = <T>(p: string): Promise<T> => fetch(BASE + p).then((r) => r.json() as Promise<T>);
 const jsend = <T>(method: string, p: string, body?: unknown): Promise<T> =>
@@ -318,6 +326,14 @@ export const aiClient = {
    */
   reindexProject: (id: string) => jpost<IndexStatus | { error: string; requested: string; mounted: string | null }>(`/projects/${id}/reindex`, {}),
   codeAction: (req: CodeActionRequest) => jpost<CodeActionResponse>('/code/action', req),
+
+  /* Context Fabric */
+  contextView: (id: string, surface: ContextSurface = 'general') =>
+    jget<ContextView | ContextUnavailable>(`/projects/${id}/context?surface=${surface}`),
+  contextContract: (id: string, surface: ContextSurface = 'general') =>
+    jget<{ projectId: string; surface: ContextSurface; contract: string } | { error: string }>(
+      `/projects/${id}/context/contract?surface=${surface}`,
+    ),
 
   /* BYOAK providers */
   getProviders: () => jget<ProvidersResult>('/providers'),

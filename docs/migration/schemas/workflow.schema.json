@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aura:migration/workflow.schema.json",
+  "title": "Workflow (~/.aura/workflows/<wfId>.json)",
+  "description": "Source: packages/ai-service/src/workflow/types.ts:71-100. Store: workflow/store.ts:15-20. webhookToken is lazily generated and NEVER included in list/export responses.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["id", "name", "description", "category", "favorite", "createdAt", "updatedAt", "nodes", "edges"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^wf-" },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "category": { "type": "string" },
+    "favorite": { "type": "boolean" },
+    "createdAt": { "type": "string" },
+    "updatedAt": { "type": "string" },
+    "webhookToken": { "type": "string" },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "type", "x", "y", "config"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": { "$ref": "#/$defs/nodeType" },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "config": { "type": "object" }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["id", "from", "fromPort", "to"],
+        "properties": {
+          "id": { "type": "string" },
+          "from": { "type": "string" },
+          "fromPort": { "type": "string", "description": "'out' | 'true' | 'false' | 'each' | 'done' per node type." },
+          "to": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nodeType": {
+      "enum": [
+        "current-project", "selected-files", "changed-files", "current-conversation",
+        "project-memory", "engineering-memory",
+        "coding-engine", "fullstack-engine", "research-engine", "intent-classifier",
+        "prompt-enhancer", "agent",
+        "prompt", "groq", "generate-markdown", "generate-code", "generate-json",
+        "condition", "loop", "delay", "variables", "user-input",
+        "save-memory", "create-note", "export-file", "shell-command",
+        "git-status", "git-diff", "git-commit", "git-branch", "http-request",
+        "slack-notify", "output"
+      ]
+    }
+  }
+}

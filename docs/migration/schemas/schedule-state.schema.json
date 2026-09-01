@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aura:migration/schedule-state.schema.json",
+  "title": "SchedulerState (~/.aura/automation/schedule-state.json)",
+  "description": "Source: packages/automation/src/scheduler.ts + schedule.ts. Empty object when no schedule rules are enabled (observed live). Kept schema-open so the Phase 7 field-level freeze can extend it without breaking readers.",
+  "type": "object",
+  "additionalProperties": true
+}

@@ -116,11 +116,14 @@ const INTERNAL: CapabilityDescriptor[] = [
     output: 'DiagnosisRecord', verify: null,
   }),
   cap({
-    id: 'governance.audit', name: 'Run governance audit', category: 'quality', surface: 'aura-internal',
-    description: 'Health scorecard, risk, release readiness.',
+    id: 'governance.audit', name: 'Run governance audit', category: 'quality', surface: 'local-process',
+    description: 'Runs the engineering audit and health scorecard over the project: overall health and grade, top risks, new debt, architecture and security findings, and recommendations. Reads the repository and its git history; does NOT run a package-manager audit, so the result never depends on the network.',
     risk: 'low', permissions: ['aura.read', 'project.read'],
-    input: [f('projectId', 'string', true, 'Project id')],
-    output: 'Scorecard', verify: null,
+    input: [
+      f('projectId', 'string', true, 'Project id'),
+      f('scope', 'string', false, 'One of: daily, weekly, release, architecture. Defaults to daily.'),
+    ],
+    output: 'Engineering audit report and health scorecard', verify: null,
   }),
   cap({
     id: 'workflow.run', name: 'Run workflow', category: 'automation', surface: 'aura-internal',
@@ -185,6 +188,12 @@ const LOCAL: CapabilityDescriptor[] = [
     input: [
       f('task', 'string', true, 'What the agent should do, in plain language'),
       f('model', 'string', false, 'Optional provider/model override, e.g. "anthropic/claude-sonnet-4"'),
+      // Supplied BY THE CALLER, from the AURA Context Fabric. The executor
+      // never assembles this itself: composing context inside the executor
+      // would put a second understanding of the project beside Repository
+      // Intelligence, and the two would drift. An agent that receives it
+      // starts oriented instead of re-scanning the repository.
+      f('context', 'string', false, 'AURA context contract to orient the agent, composed by the caller'),
       // `nodeId` is deliberately NOT an input any more. Which node runs an
       // action is routing, not an argument, and it now lives on
       // `InvocationContext.nodeId` (§22.2). The transport still accepts it
