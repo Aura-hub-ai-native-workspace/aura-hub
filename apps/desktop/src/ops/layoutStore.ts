@@ -63,13 +63,42 @@ export type SearchScope =
   | 'all' | 'files' | 'symbols' | 'knowledge' | 'missions'
   | 'diagnoses' | 'documentation' | 'memory' | 'architecture';
 
+/**
+ * Which ENTITY a detail panel is showing, inside the one active project.
+ *
+ * There is deliberately no `projectId` here. It used to carry one, and
+ * consumers resolved `focused.projectId ?? openId` — so a focus set from a
+ * notification, a memory record or a search hit belonging to another
+ * project silently became the panel's scope, while the rest of the shell
+ * still showed the active project. It was also persisted across relaunches
+ * by ops/session.ts, making it a second, durable project pointer.
+ *
+ * Every writer was examined and none of them needed it: search already
+ * switched the active project, the panel's own re-focus was passing its own
+ * scope back to itself, and the notification/memory writers were the leak
+ * itself. A detail focus is now `activeProjectId + entityId`, which is what
+ * they all actually meant.
+ *
+ * A detail belonging to another project is reached by switching to that
+ * project first — deliberately, through the one authority. See
+ * `ops/openDetail.ts`.
+ */
 export interface DetailFocus {
-  projectId: string | null;
   missionId: string | null;
   diagnosisId: string | null;
 }
 
-const PRESETS_KEY = 'aura.ops.layouts';
+/**
+ * Saved layouts are stored PER PROJECT.
+ *
+ * One global key meant a layout saved while working on project A would be
+ * offered — and restored — under project B. The project id is supplied by
+ * the caller rather than held here: this store deliberately owns no
+ * project pointer (see `DetailFocus`).
+ */
+const PRESETS_KEY_BASE = 'aura.ops.layouts';
+const presetsKey = (projectId: string | null) =>
+  (projectId ? `${PRESETS_KEY_BASE}:${projectId}` : PRESETS_KEY_BASE);
 const DEFAULT_W = 560;
 const DEFAULT_H = 420;
 const MIN_W = 280;
@@ -206,7 +235,7 @@ interface LayoutState {
 export const useLayoutStore = create<LayoutState>((set, get) => ({
   windows: [],
   focusedWindowId: null,
-  focused: { projectId: null, missionId: null, diagnosisId: null },
+  focused: { missionId: null, diagnosisId: null },
   searchScope: null,
   searchOpen: false,
   presets: {},
@@ -337,7 +366,23 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
     });
   },
 
-  setFocused: (partial) => set((s) => ({ focused: { ...s.focused, ...partial } })),
+  /**
+   * Built field-by-field rather than spread, so the focus can only ever
+   * hold entity ids.
+   *
+   * `{ ...s.focused, ...partial }` copied whatever the caller passed —
+   * TypeScript rejects a stray `projectId`, but the store is also reached
+   * from plain JS and from restored session snapshots, and at runtime the
+   * spread would have carried it straight through. Since the whole point
+   * of this shape is that it CANNOT hold a project, the guarantee has to
+   * be structural, not just typed.
+   */
+  setFocused: (partial) => set((s) => ({
+    focused: {
+      missionId: partial.missionId !== undefined ? partial.missionId : s.focused.missionId,
+      diagnosisId: partial.diagnosisId !== undefined ? partial.diagnosisId : s.focused.diagnosisId,
+    },
+  })),
 
   setSearchScope: (scope, open = true) => set({ searchScope: scope, searchOpen: open }),
 
@@ -436,10 +481,10 @@ function isWindowStateShape(v: unknown): v is WindowState {
  * shape) degrades safely: it's silently discarded, not migrated, since
  * that concept no longer exists.
  */
-export function hydratePresets(): Record<string, WindowState[]> {
+export function hydratePresets(projectId: string | null): Record<string, WindowState[]> {
   if (typeof localStorage === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(PRESETS_KEY);
+    const raw = localStorage.getItem(presetsKey(projectId));
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const out: Record<string, WindowState[]> = {};
@@ -458,10 +503,10 @@ export function hydratePresets(): Record<string, WindowState[]> {
   }
 }
 
-export function persistPresets(presets: Record<string, WindowState[]>): void {
+export function persistPresets(projectId: string | null, presets: Record<string, WindowState[]>): void {
   if (typeof localStorage === 'undefined') return;
   try {
-    localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
+    localStorage.setItem(presetsKey(projectId), JSON.stringify(presets));
   } catch {
     /* ignore */
   }

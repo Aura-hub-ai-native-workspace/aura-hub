@@ -12,6 +12,7 @@
 //! governed path (Capability Fabric → policy → approval → audit). The
 //! desktop shell must not become a way around that.
 
+mod appimage;
 mod service;
 
 use serde::Serialize;
@@ -27,6 +28,54 @@ use tauri::{Manager, RunEvent};
 #[tauri::command]
 fn environment_ping() -> String {
     "aura://ready".to_string()
+}
+
+/// This boot's UI token, so the renderer can prove which window it is.
+///
+/// The service mints the token and writes it to `$AURA_HOME/ui-token`
+/// with 0600; this reads it back. Nothing is generated here, so there is
+/// exactly one authority for the value and no way for the shell and the
+/// service to disagree about it.
+///
+/// Read-only, argument-free, and confined to a single fixed filename —
+/// it cannot be pointed at another path. Returning `None` is normal, not
+/// an error: it means the service has not finished booting yet, or this
+/// renderer is a browser in dev mode with no shell behind it. The caller
+/// then simply sends no token and every action stays on the governed
+/// path, which is the safe direction to fail in.
+#[tauri::command]
+fn ui_token() -> Option<String> {
+    let value = fs::read_to_string(service::aura_home().join("ui-token")).ok()?;
+    let value = value.trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
+}
+
+/// How this copy of AURA Hub was installed, which decides whether the
+/// updater can replace it in place.
+///
+/// Read-only and argument-free: it inspects the process's own environment
+/// and nothing else. It executes nothing, downloads nothing, and cannot be
+/// pointed at anything by a caller — the renderer may ask *what am I*, and
+/// that is the whole of it.
+///
+/// Linux is the only platform where this is ambiguous. Tauri's Linux
+/// updater replaces the running AppImage, which sets `APPIMAGE` for the
+/// process it launches; a `.deb` install has no such variable and is owned
+/// by the system package manager, which the updater must not fight.
+/// Windows and macOS installs are always self-updating.
+#[tauri::command]
+fn update_install_kind() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        match std::env::var("APPIMAGE") {
+            Ok(v) if !v.is_empty() => "self-updating".to_string(),
+            _ => "managed".to_string(),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "self-updating".to_string()
+    }
 }
 
 /// Directories the Code Workspace never lists — generated/vendored
@@ -194,14 +243,44 @@ pub struct ServiceState {
 fn resolve_service_script(app: &tauri::App) -> Option<PathBuf> {
     if let Ok(packaged) = app.path().resolve("resources/ai-service.mjs", BaseDirectory::Resource) {
         if packaged.is_file() {
-            return Some(packaged);
+            return Some(strip_verbatim(packaged));
         }
     }
     // `CARGO_MANIFEST_DIR` is apps/desktop/src-tauri; the repo root is three up.
     let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
         .join(".aura/ai-service.mjs");
-    dev.canonicalize().ok().filter(|p| p.is_file())
+    dev.canonicalize().ok().filter(|p| p.is_file()).map(strip_verbatim)
+}
+
+/// Turn a Windows verbatim path back into an ordinary one.
+///
+/// `canonicalize` and Tauri's resource resolver both hand back verbatim
+/// paths on Windows (`\\?\D:\…`). Rust and the Win32 API are perfectly
+/// happy with those; **Node is not**. Given one as its main module it
+/// parses the device root, tries to `lstat` the bare drive letter, and
+/// dies with `EISDIR: illegal operation on a directory, lstat 'D:'` —
+/// which surfaces to the user as the service "stopping while starting up"
+/// with no indication that a path form was the cause.
+///
+/// The prefix exists to lift MAX_PATH and separator normalisation, neither
+/// of which matters for a path we are about to hand to another program, so
+/// dropping it costs nothing and makes the child able to read it.
+/// Guarded with `cfg!` rather than `#[cfg]` on purpose: a `#[cfg(windows)]`
+/// body is not compiled on Linux, so the one branch that only ever runs on
+/// Windows would be the one branch no Linux build ever type-checks. This
+/// way the developer machine and the Linux CI runner both compile it, and
+/// only its execution is platform-specific. No Unix path begins with
+/// `\\?\`, so the check is inert there in any case.
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return p;
+    }
+    let s = p.to_string_lossy().to_string();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => p,
+    }
 }
 
 /// The service's current condition, re-checked on every call.
@@ -230,9 +309,30 @@ pub fn run() {
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(DEFAULT_PORT);
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // The updater, the restart it needs, and the OS identity it asks for
+    // first. Registered before anything else so the plugins are available
+    // for the whole app lifetime.
+    //
+    // `tauri_plugin_os` is what injects the global the renderer reads to
+    // learn its platform and architecture. Without it the updater cannot
+    // name its own target, so it cannot tell which artifact in a manifest
+    // is for this machine — and it fails before it ever reaches the
+    // network. It answers "what am I", nothing more.
+    //
+    // `cfg` rather than an unconditional call because the plugins are
+    // declared under the same desktop cfg in Cargo.toml — on any other
+    // target the crates are absent and this would not compile.
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    let builder = builder
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+
+    let app = builder
         .manage(ServiceState {
-            handle: ServiceHandle::new(),
+            handle: ServiceHandle::new(port),
             port,
             status: Mutex::new(ServiceStatus {
                 state: "starting".into(),
@@ -243,11 +343,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             environment_ping,
+            ui_token,
             service_status,
             code_read_dir,
             code_read_file,
             code_write_file,
             code_create_file,
+            appimage::appimage_status,
+            appimage::appimage_install,
+            appimage::appimage_uninstall,
+            update_install_kind,
         ])
         .setup(move |app| {
             let script = resolve_service_script(app);

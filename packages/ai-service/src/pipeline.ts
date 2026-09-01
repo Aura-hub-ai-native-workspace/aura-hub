@@ -25,6 +25,7 @@ import {
   type RepositoryHealth,
   type RepositoryIntentType,
   type AssembledContext,
+  type IndexResult,
 } from './intelligence';
 
 export interface MountTarget {
@@ -54,6 +55,13 @@ interface Mount {
 }
 
 export interface NormalizedError { type: string; message: string; retryable: boolean }
+
+/**
+ * A tree diff plus the observation it came from, taken once per request.
+ * Threaded rather than recomputed so one Ask AURA request walks the
+ * repository once. See `scanAndDiff` in intelligence/performance.ts.
+ */
+export type TreeScan = { result: IndexResult; snapshot: Record<string, number> };
 
 /**
  * Classifies thrown errors into a stable, user-facing shape. Provider
@@ -353,7 +361,13 @@ export class PipelineManager {
 
   /* ── inspection (single pass — no double work) ─────────────────── */
 
-  async inspect(text: string): Promise<InspectResult> {
+  /**
+   * `scan` is a tree diff+snapshot already taken this request. Passing it
+   * lets one Ask AURA request walk the repository ONCE instead of twice —
+   * the Context Fabric composes a view before this runs, and both need the
+   * same answer to "what changed?".
+   */
+  async inspect(text: string, _scan?: TreeScan): Promise<InspectResult> {
     const m = this.mounted;
     const req = createRequest(text);
     const intent = await this.classifier.classify(req);
@@ -449,8 +463,42 @@ export class PipelineManager {
 
   /* ── context assembly (uses intelligence engine output) ──────────── */
 
-  private buildContextMessages(text: string, meta: InspectResult, history?: ConversationTurn[]): { messages: RuntimeMessage[]; info: { contextTokens: number } } {
+  /**
+   * Build the message list for one request.
+   *
+   * `auraContext` is the canonical project contract for THIS request and
+   * is passed down the call path rather than held on the instance.
+   *
+   * It used to be stored as `this.auraContext`, set by the host just
+   * before `ask`/`streamEvents`. That was a correctness bug:
+   * `PipelineManager` is a single instance shared by every request, and
+   * both entry points `await this.inspect(...)` before reading the field.
+   * Two overlapping requests therefore interleaved — the second one's
+   * context overwrote the first's while the first was suspended, and the
+   * first answered about the second's project. Request-scoped data cannot
+   * live in singleton mutable state; the parameter is the fix.
+   *
+   * The pipeline still does not COMPOSE the contract — composing needs
+   * live service state it does not own, and a second collector here is
+   * how Ask AURA and delegated agents would start describing the same
+   * project differently. It only carries what the host handed it.
+   */
+  private buildContextMessages(
+    text: string,
+    meta: InspectResult,
+    history?: ConversationTurn[],
+    auraContext?: string | null,
+  ): { messages: RuntimeMessage[]; info: { contextTokens: number } } {
     const messages: RuntimeMessage[] = [];
+
+    /* Canonical project context leads. It states WHAT IS TRUE about the
+       project — identity, branch, environment, capabilities, freshness —
+       ahead of the assembler's retrieval-derived material below, which
+       supplies specifics. Ordering matters: freshness has to be readable
+       before the facts it qualifies. */
+    if (auraContext) {
+      messages.push({ role: 'system', content: auraContext });
+    }
 
     // Use the intelligence engine's assembled context as the system message
     // This is the single source of truth — no rebuilding
@@ -471,8 +519,8 @@ export class PipelineManager {
 
   /* ── generation ─────────────────────────────────────────────────── */
 
-  async ask(text: string, signal?: AbortSignal, history?: ConversationTurn[]) {
-    const meta = await this.inspect(text);
+  async ask(text: string, signal?: AbortSignal, history?: ConversationTurn[], auraContext?: string | null, scan?: TreeScan) {
+    const meta = await this.inspect(text, scan);
     const runtime = this.runtimeManager.runtime;
     if (!runtime) return { ok: false as const, error: NO_PROVIDER, meta };
     if (!isModelValidForProvider(this.runtimeManager.getProviderId(), this.runtimeManager.getModel())) {
@@ -482,7 +530,7 @@ export class PipelineManager {
     const onAbort = () => runtime.cancel();
     signal?.addEventListener('abort', onAbort);
     try {
-      const { messages } = this.buildContextMessages(text, meta, history);
+      const { messages } = this.buildContextMessages(text, meta, history, auraContext);
       const request: GenerateRequest = {
         messages,
         temperature: this.settings.temperature,
@@ -555,10 +603,10 @@ export class PipelineManager {
     }
   }
 
-  async streamEvents(text: string, emit: (e: StreamEmit) => void, signal?: AbortSignal, history?: ConversationTurn[]): Promise<void> {
+  async streamEvents(text: string, emit: (e: StreamEmit) => void, signal?: AbortSignal, history?: ConversationTurn[], auraContext?: string | null, scan?: TreeScan): Promise<void> {
     let meta: InspectResult;
     try {
-      meta = await this.inspect(text);
+      meta = await this.inspect(text, scan);
       emit({ type: 'meta', meta });
     } catch (e) {
       emit({ type: 'error', error: normalize(e) });
@@ -573,7 +621,7 @@ export class PipelineManager {
     const onAbort = () => runtime.cancel();
     signal?.addEventListener('abort', onAbort);
     const t0 = performance.now();
-    const { messages } = this.buildContextMessages(text, meta, history);
+    const { messages } = this.buildContextMessages(text, meta, history, auraContext);
     const request: GenerateRequest = {
       messages,
       temperature: this.settings.temperature,

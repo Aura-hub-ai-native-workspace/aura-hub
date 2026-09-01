@@ -139,6 +139,11 @@ export interface PolicySubject {
   /** What the caller asked for, when they named a node. */
   requestedNodeId?: string;
   actorKind?: string;
+  /**
+   * Attested transport channel, not a caller claim. See `Initiator`.
+   * This is the only subject field any rule consults besides `node`.
+   */
+  initiator?: string;
   actorId?: string;
   projectId?: string | null;
   missionId?: string;
@@ -207,9 +212,33 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
    * configuration can go beneath a floor; a denial can still rise above
    * one.
    */
-  let decision: PolicyDecision = config.byRisk[risk];
-  let rule = `risk-default:${risk}`;
-  let reason = '';
+  /**
+   * A direct user action carries its own consent.
+   *
+   * `user-direct` is set by the transport when the request arrived on the
+   * channel only AURA's own window can use — it is never a claim the
+   * caller makes about itself (contrast `actorKind`, which any caller
+   * could always assert and which therefore governs nothing).
+   *
+   * When a person clicks a labelled control, the consent every gate below
+   * exists to *obtain* has already been given, in the one place where the
+   * user could see what they were agreeing to. Asking again is not extra
+   * safety; it is asking the same question twice and teaching people to
+   * click through gates without reading them.
+   *
+   * The narrowness is the point. This seeds `auto-execute` and suppresses
+   * exactly one floor — the one whose stated purpose is "still the user's
+   * call". Every other floor below still fires and still escalates,
+   * because they exist for reasons a click does not answer: an action
+   * that cannot be undone is no more reversible for having been clicked.
+   * Operator configuration also still escalates, so a workspace policy or
+   * a node allowlist continues to win.
+   */
+  const userDirect = input.subject?.initiator === 'user-direct';
+
+  let decision: PolicyDecision = userDirect ? 'auto-execute' : config.byRisk[risk];
+  let rule = userDirect ? 'user-direct' : `risk-default:${risk}`;
+  let reason = userDirect ? 'You asked for this directly, so AURA is doing it now.' : '';
 
   const floor = (name: string, why: string) => {
     decision = stricter(decision, 'require-approval');
@@ -228,12 +257,19 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
   } else if (capability.permissions.includes('account.authorize')) {
     floor('authorization-floor',
       `${capability.name} acts against your account, so you authorize it yourself.`);
-  } else if (capability.permissions.includes('system.modify')) {
+  } else if (capability.permissions.includes('system.modify') && !userDirect) {
     // Changing what software exists on the machine reaches outside every
     // project boundary the rest of this engine reasons about, so it is
     // never silent — not even where an operator has set high risk to
     // auto-execute. Reversible (you can uninstall), which is why it is not
     // the irreversible floor, but still always the user's call.
+    //
+    // `!userDirect` is what makes that last clause literal rather than
+    // procedural. The floor demands the user's go-ahead; a direct action
+    // IS the user's go-ahead. Suppressing it for a request — from a
+    // model, a mission, or anything else that merely asserts good
+    // intentions — is not possible: `initiator` is set by the transport
+    // from an attested channel, not read from the request body.
     floor('system-floor',
       `${capability.name} changes software on this machine, so it always needs your go-ahead.`);
   }
@@ -287,7 +323,10 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
     }
   }
 
-  if (!config.allowAutonomous && decision === 'auto-execute') {
+  // The autonomy switch governs AURA acting on its own. A person clicking
+  // a button is the opposite of that, so turning autonomy off must not
+  // disable the user's own controls — it would read as the app breaking.
+  if (!config.allowAutonomous && decision === 'auto-execute' && !userDirect) {
     decision = 'ask-user';
     rule = 'autonomy-disabled';
     reason = '';

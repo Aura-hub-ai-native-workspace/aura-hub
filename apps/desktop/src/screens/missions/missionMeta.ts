@@ -112,6 +112,7 @@ export const TASK_STATUS_TONE: Record<TaskStatus, StatusTone> = {
 
 export const KIND_LABEL: Record<TaskKind, string> = {
   'file-operation': 'File edit',
+  'git-operation': 'Git operation',
   'manual-operation': 'Manual',
   review: 'Review',
   approval: 'Approval',
@@ -121,11 +122,21 @@ export const KIND_LABEL: Record<TaskKind, string> = {
 
 export const KIND_ICON: Record<TaskKind, IconName> = {
   'file-operation': 'code',
+  'git-operation': 'git-branch',
   'manual-operation': 'check',
   review: 'eye',
   approval: 'shield',
   documentation: 'doc',
   research: 'research',
+};
+
+/** Execution-node identity — shown per task (resolved node, then requested, never fabricated). */
+export const NODE_LABEL: Record<string, string> = {
+  'aura-ai': 'AURA AI',
+  git: 'Git',
+  opencode: 'OpenCode',
+  'claude-code': 'Claude Code',
+  manual: 'Manual',
 };
 
 export const PRIORITY_TONE: Record<TaskPriority, StatusTone> = {

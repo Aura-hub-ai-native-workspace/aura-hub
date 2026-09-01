@@ -190,7 +190,15 @@ export type RunEvent =
    */
   | { type: 'done'; status: 'completed' | 'failed'; ms: number; error?: string; runState?: string; runId?: string };
 
-/** Field metadata so the inspector renders real controls per node type. */
+/** The run summary returned to the caller (kept from the legacy engine so
+ *  the bridge's SSE contract is unchanged). */
+export interface RunResult {
+  status: 'completed' | 'failed';
+  ms: number;
+  outputs: { nodeId: string; title: string; text: string }[];
+  nodes: Record<string, { status: NodeRunState; ms: number }>;
+  error?: string;
+}
 export interface FieldSpec {
   key: string;
   label: string;

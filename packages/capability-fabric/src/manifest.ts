@@ -116,11 +116,14 @@ const INTERNAL: CapabilityDescriptor[] = [
     output: 'DiagnosisRecord', verify: null,
   }),
   cap({
-    id: 'governance.audit', name: 'Run governance audit', category: 'quality', surface: 'aura-internal',
-    description: 'Health scorecard, risk, release readiness.',
+    id: 'governance.audit', name: 'Run governance audit', category: 'quality', surface: 'local-process',
+    description: 'Runs the engineering audit and health scorecard over the project: overall health and grade, top risks, new debt, architecture and security findings, and recommendations. Reads the repository and its git history; does NOT run a package-manager audit, so the result never depends on the network.',
     risk: 'low', permissions: ['aura.read', 'project.read'],
-    input: [f('projectId', 'string', true, 'Project id')],
-    output: 'Scorecard', verify: null,
+    input: [
+      f('projectId', 'string', true, 'Project id'),
+      f('scope', 'string', false, 'One of: daily, weekly, release, architecture. Defaults to daily.'),
+    ],
+    output: 'Engineering audit report and health scorecard', verify: null,
   }),
   cap({
     id: 'workflow.run', name: 'Run workflow', category: 'automation', surface: 'aura-internal',

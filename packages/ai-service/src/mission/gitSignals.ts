@@ -3,25 +3,30 @@
  * Mission Control's Stage 3 (Project Analysis). Distinct from
  * `diagnosis/gitSignals.ts`, which is per-FILE (history/blame for one
  * path) — this is per-REPO (branch/dirty state, the last N commits
- * across the whole project). Its own small `execFile` wrapper, same
- * shape and same reasoning as the diagnosis version: never a shell
- * string, an allow-listed `git` binary only, bounded timeout. Never
- * throws — any failure (not a repo, git missing) reports back as an
+ * across the whole project). Spawns through the one process primitive
+ * (`exec/process`): never a shell string, an argument array only,
+ * bounded timeout, and a kill that reaches the whole process group.
+ * Never throws — any failure (not a repo, git missing) reports back as an
  * honest `{available:false, reason}` rather than blowing up mission
  * creation.
  */
-import { execFile } from 'node:child_process';
+import { git as runGit } from '../exec/process';
 import type { GitStatusSignal, RecentCommit } from './types';
 
-function git(cwd: string, args: string[]): Promise<{ out: string; code: number }> {
-  return new Promise((resolve, reject) => {
-    execFile('git', args, { cwd, timeout: 20_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return reject(new Error('git is not installed'));
-      const code = (err as { code?: number } | null)?.code;
-      resolve({ out: (stdout + (stderr ? `\n${stderr}` : '')).trim(), code: typeof code === 'number' ? code : 0 });
-    });
-  });
-}
+/**
+ * Both files used to carry a private copy of this wrapper, and both said
+ * in their header that the duplication was deliberate because the
+ * hardened one was not exported. It is exported now, so the copies are
+ * gone: one call shape, one timeout policy, one exit-status decision.
+ *
+ * The copies also reported a timed-out git as exit 0 — the precise bug
+ * `settle` was written to fix — so "no commits touch this file" and "git
+ * ran out of time" were the same answer. They are not any more.
+ *
+ * Containment comes with it: a git that hangs is now killed as a process
+ * group rather than as a single pid.
+ */
+const git = (cwd: string, args: string[]) => runGit(args, { cwd, timeoutMs: 20_000 });
 
 export async function gatherGitStatus(projectPath: string): Promise<GitStatusSignal> {
   try {

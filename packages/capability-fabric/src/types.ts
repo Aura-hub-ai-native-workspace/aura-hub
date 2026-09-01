@@ -306,6 +306,16 @@ export interface InvocationResult {
   durationMs: number;
   /** How many attempts the recovery loop made, including the first. */
   attempts: number;
+  /**
+   * Attestation from the executor that the effect may already exist in the world.
+   * Used by the workflow runtime to prevent automatic retries of irreversible effects.
+   */
+  irreversible?: boolean;
+  /**
+   * Whether the effect has definitely started (false =还没开始, true = started).
+   * When irreversible is true and effectStarted is not false, automatic retry is blocked.
+   */
+  effectStarted?: boolean;
 }
 
 /* ══════════════════════════════════════════════════════════════════

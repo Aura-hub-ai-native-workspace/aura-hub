@@ -1,22 +1,38 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
-import { popVariants, scrimVariants } from '@aura/core';
+import { popVariants, scrimVariants, useAppStore } from '@aura/core';
 import { Button, Icon, IconButton } from '@aura/ui';
 import { AiMarkdown } from '../ai/AiMarkdown';
+import { aiClient } from '../ai/aiClient';
 
 /**
  * AskAuraChatbox — the dashboard's "Ask AURA" quick chat.
  * ------------------------------------------------------------------
- * A large, frontend-only chat modal. Everything here is local mock
- * behaviour: typing indicator, streaming answers and canned replies —
- * the backend and its APIs are never touched.
+ * Answers come from the REAL AURA service. This modal used to reply from
+ * a table of regex-matched canned answers (`MOCK_ANSWERS`) and, in its own
+ * words, "the backend and its APIs are never touched" — so it confidently
+ * described the project without ever having looked at it, which is the
+ * one failure mode AURA cannot afford.
+ *
+ * It now streams from the existing `/stream` endpoint through the existing
+ * `aiClient`. Nothing about the UI changed, and no second AI client was
+ * introduced: the retrieval, repository intelligence and context assembly
+ * all happen service-side, exactly as they do for the project's own Ask
+ * AURA surface.
+ *
+ * Context is NOT gathered here. The chatbox passes the canonical
+ * `activeProjectId` as scope and the service composes everything else —
+ * the Context Fabric seam (`composeContextView`/`renderContextContract`)
+ * stays the one place project context is assembled.
  */
 
 interface ChatMsg {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** Rendered as an error notice rather than as an answer. */
+  error?: boolean;
 }
 
 const SUGGESTIONS = [
@@ -28,88 +44,9 @@ const SUGGESTIONS = [
 
 const GREETING = 'Hi! I\'m AURA. How can I help you?';
 
-const MOCK_ANSWERS: { match: RegExp; answer: string }[] = [
-  {
-    match: /^(hi|hello|hey|yo|good (morning|afternoon|evening))/i,
-    answer: `Hello! It's good to hear from you. Here's a quick tour of what I can help with:
-
-- **Projects** — add a real folder, index it, and ask me about its code.
-- **Environment** — navigation, shortcuts, panels and settings.
-- **Frontend** — structure, theming and UI patterns in this app.
-
-Go ahead and ask me anything.`,
-  },
-  {
-    match: /what can you do|help|capabil|features|about you/i,
-    answer: `I can help you get the most out of AURA Hub:
-
-- **Answer questions** about your projects and this environment.
-- **Explain code** — structure, entry points, architecture.
-- **Point you to the right tool** — command bar, settings, editor.
-
-For deep, project-grounded answers, open a project and use the full **AI Workspace** — it retrieves context from the project's code, system graph and memory.
-
-> This quick chat is a lightweight preview with local responses.`,
-  },
-  {
-    match: /add.*project|new project|import/i,
-    answer: `Adding a project is easy:
-
-1. Click **Add Project** on the dashboard.
-2. Enter the absolute path of a real folder (in the packaged app, a native folder picker fills it for you).
-3. AURA profiles it and starts indexing — languages, frameworks, dependencies and system graph.
-
-After that the project appears under **Continue working**, and you can ask project-specific questions in the AI Workspace.`,
-  },
-  {
-    match: /architect|structure|stack|monorepo|how.*built|works/i,
-    answer: `AURA Hub is a **monorepo** with a workspace-based architecture:
-
-- **apps/desktop** — the React + Vite + Tauri shell that renders everything you see.
-- **packages/ui** — the shared design system (buttons, cards, icons, dialogs).
-- **packages/core** — shared state, motion presets and theming tokens.
-
-The shell is organized around screens, a sidebar, a right context panel, and project-scoped workspaces. Intelligence is kept deliberately separate from the environment chrome.`,
-  },
-  {
-    match: /frontend|design|theme|ui|style|colors|look/i,
-    answer: `The frontend is built with **React + Tailwind CSS**, using a semantic theme layer:
-
-- **Dark theme** — deep canvas with layered surfaces.
-- **Blue/cyan accents** — glow, rounded corners and soft spring motion.
-- **Design tokens** — colors swap in global.css per theme; no hard-coded palette.
-
-Everything is responsive: the sidebar collapses on narrow viewports, and dialogs adapt to small screens.`,
-  },
-  {
-    match: /backend|api|server|database|endpoint/i,
-    answer: `AURA Hub's backend concerns (AI provider, indexing, persistence) live outside the shell. This quick chat is **frontend-only** — it answers locally without calling any backend service.
-
-For real backend-grounded answers:
-
-1. Open a project from the dashboard.
-2. Use **Ask AURA** there (or the AI Workspace nav).
-3. Answers stream from the AI service, grounded in that project's code.`,
-  },
-];
-
-const FALLBACK =
-  `Good question. For a precise answer grounded in real data, open a project and use the **AI Workspace** — it retrieves context from the project's code, system graph and memory.
-
-In the meantime, you can also try the **Command Bar** (\u2318K) to run any action, or ask me about one of these topics:
-
-- What can you do?
-- How do I add a project?
-- Explain the AURA Hub architecture
-- Tips for the frontend`;
-
 let chatId = 0;
 const nextId = () => `ask-aura-${++chatId}`;
 
-function mockAnswer(question: string): string {
-  const hit = MOCK_ANSWERS.find((m) => m.match.test(question));
-  return hit ? hit.answer : FALLBACK;
-}
 
 export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -120,6 +57,13 @@ export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: 
   const timers = useRef<number[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  /** In-flight request, so closing the chat stops the stream. */
+  const abortRef = useRef<AbortController | null>(null);
+
+  /* The canonical project, used ONLY as scope for the request. Reading it
+     here is a read of the one authority — the chatbox holds no project
+     pointer of its own. */
+  const activeProjectId = useAppStore((s) => s.activeProjectId);
 
   const clearTimers = () => {
     timers.current.forEach((t) => window.clearTimeout(t));
@@ -166,33 +110,73 @@ export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: 
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [messages, typing, isOpen]);
 
-  // Stop any pending mock work on unmount.
-  useEffect(() => clearTimers, []);
+  // Stop pending UI timers and any in-flight request on unmount.
+  useEffect(() => () => { clearTimers(); abortRef.current?.abort(); }, []);
 
-  const send = (raw?: string) => {
+  // Closing the chat cancels a stream in progress rather than letting it
+  // run on invisibly against the provider.
+  useEffect(() => {
+    if (isOpen) return;
+    abortRef.current?.abort();
+    abortRef.current = null;
+    sending.current = false;
+    setTyping(false);
+  }, [isOpen]);
+
+  /**
+   * Ask the real service.
+   *
+   * Tokens are appended as they arrive, so what the user watches is the
+   * model's actual output rather than a typewriter replaying a fixed
+   * string. Failures — no provider, service down, an invalid model — are
+   * shown as the service words them; the chatbox never substitutes a
+   * cheerful answer for an error, which is what the mock did by design.
+   */
+  const send = async (raw?: string) => {
     const text = (raw ?? input).trim();
     if (!text || sending.current) return;
     sending.current = true;
     setInput('');
     setMessages((prev) => [...prev, { id: nextId(), role: 'user', content: text }]);
-
     setTyping(true);
-    const answer = mockAnswer(text);
-    timers.current.push(
-      window.setTimeout(() => {
-        setTyping(false);
-        sending.current = false;
-        const id = nextId();
-        setMessages((prev) => [...prev, { id, role: 'assistant', content: '' }]);
-        let i = 0;
-        const step = () => {
-          i += 2 + Math.floor(Math.random() * 3);
-          setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: answer.slice(0, i) } : m)));
-          if (i < answer.length) timers.current.push(window.setTimeout(step, 14));
-        };
-        step();
-      }, 550 + Math.random() * 550),
+
+    const id = nextId();
+    let opened = false;
+    /** Create the assistant bubble on first token, so the typing dots show until then. */
+    const openBubble = () => {
+      if (opened) return;
+      opened = true;
+      setTyping(false);
+      setMessages((prev) => [...prev, { id, role: 'assistant', content: '' }]);
+    };
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    await aiClient.stream(
+      text,
+      {
+        onToken: (t) => {
+          openBubble();
+          setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: m.content + t } : m)));
+        },
+        onError: (e) => {
+          setTyping(false);
+          setMessages((prev) => {
+            const rest = opened ? prev.filter((m) => m.id !== id || m.content.length > 0) : prev;
+            return [...rest, { id: nextId(), role: 'assistant', content: e.message, error: true }];
+          });
+        },
+      },
+      controller.signal,
+      // Scope only. Everything else — retrieval, repository intelligence,
+      // context assembly — is the service's job, and stays there.
+      activeProjectId ? { projectId: activeProjectId } : undefined,
     );
+
+    setTyping(false);
+    sending.current = false;
+    abortRef.current = null;
   };
 
   const onKey = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -262,8 +246,19 @@ export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: 
                       <div className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-accent-50 text-accent dark:bg-accent/15">
                         <Icon name="spark" size={15} />
                       </div>
-                      <div className="min-w-0 flex-1 rounded-2xl rounded-tl-md border border-line bg-surface-hover/60 px-4 py-2.5">
-                        {m.content ? (
+                      <div
+                        data-testid={m.error ? 'ask-aura-error' : 'ask-aura-answer'}
+                        className={
+                          m.error
+                            // A failure is shown AS a failure. The mock's worst
+                            // habit was answering confidently regardless.
+                            ? 'min-w-0 flex-1 rounded-2xl rounded-tl-md border border-critical/30 bg-critical/5 px-4 py-2.5 text-[13px] text-critical'
+                            : 'min-w-0 flex-1 rounded-2xl rounded-tl-md border border-line bg-surface-hover/60 px-4 py-2.5'
+                        }
+                      >
+                        {m.error ? (
+                          m.content
+                        ) : m.content ? (
                           <AiMarkdown source={m.content} />
                         ) : (
                           <div className="flex h-6 items-center gap-1.5">
