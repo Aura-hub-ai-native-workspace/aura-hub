@@ -41,6 +41,19 @@ export default defineConfig(() => ({
     port: 1420,
     strictPort: false,
     host: process.env.TAURI_DEV_HOST || false,
+    proxy: {
+      // Post-migration there is ONE Python backend (canonical Starlette
+      // origin, default :4319) serving workflow, fabric, automation AND the
+      // central-agent spine. Its CORS allow_origin_regex now answers real
+      // browser preflights (verified 2026-08-26), but same-origin dev keeps
+      // the renderer free of mixed-origin credentials quirks; packaged
+      // builds talk to the loopback origin directly.
+      '/agent-api': {
+        target: process.env.VITE_AGENT_ORIGIN ?? 'http://127.0.0.1:4319',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/agent-api/, ''),
+      },
+    },
   },
   envPrefix: ['VITE_', 'TAURI_'],
   build: {

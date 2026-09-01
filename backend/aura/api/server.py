@@ -1466,8 +1466,6 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/automation/reindex", automation_stats_reindex, methods=["POST"]),
         Route("/automation/events/stream", automation_events_stream, methods=["GET"]),
         Route("/events/workflow", sse_workflow_events, methods=["GET"]),
-        Route("/environment/scan", environment_scan, methods=["POST"]),
-        Route("/environment/probe", environment_probe, methods=["POST"]),
     ]
 
     app = Starlette(
@@ -1515,37 +1513,3 @@ async def automation_validate_route(request: Request):
 
     body = await request.json()
     return JSONResponse({"issues": validate_rule(body)})
-
-
-async def environment_scan(request: Request):
-    """Scan the machine for known catalog nodes.
-
-    POST /environment/scan
-    Body: { ids?: string[], refresh?: boolean }
-    Returns: { results: Record<string, ProbeResult>, scannedAt: string, found: number }
-    """
-    from ..environment import scan_environment, scan_result_to_dict
-
-    body = await request.json()
-    node_ids = body.get("ids")
-    refresh = bool(body.get("refresh", False))
-    result = scan_environment(node_ids=node_ids if node_ids else None, refresh=refresh)
-    return JSONResponse(scan_result_to_dict(result))
-
-
-async def environment_probe(request: Request):
-    """Probe a specific catalog node.
-
-    POST /environment/probe
-    Body: { id: string, refresh?: boolean }
-    Returns: { result?: ProbeResult }
-    """
-    from ..environment import probe_node, probe_result_to_dict
-
-    body = await request.json()
-    node_id = str(body.get("id") or "").strip()
-    if not node_id:
-        return JSONResponse({"result": {"present": False, "detail": "No node id was provided."}})
-    refresh = bool(body.get("refresh", False))
-    result = probe_node(node_id, refresh=refresh)
-    return JSONResponse({"result": probe_result_to_dict(result)})

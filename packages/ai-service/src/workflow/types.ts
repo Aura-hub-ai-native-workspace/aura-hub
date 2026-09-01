@@ -199,8 +199,6 @@ export interface RunResult {
   nodes: Record<string, { status: NodeRunState; ms: number }>;
   error?: string;
 }
-
-/** Field metadata so the inspector renders real controls per node type. */
 export interface FieldSpec {
   key: string;
   label: string;
