@@ -59,7 +59,6 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg0NjlDNDlFNkMzRDYyOTcKUldTWFlqMXNuc1JwaEVzTWxiVFQ5SEN2dENqdnh4ckZPcFF5Mks4aU5zem15dmdBZE52ZklsaFEK",
       "endpoints": [
         "https://github.com/Aura-hub-ai-native-workspace/aura-hub/releases/latest/download/latest.json"
       ],
