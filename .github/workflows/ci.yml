@@ -86,57 +86,30 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # GitHub's Ubuntu images point apt at `azure.archive.ubuntu.com`, and
-      # that mirror's throughput collapses intermittently. Across eighteen
-      # recent runs on nine different branches — including `main` and the
-      # release tags — this one step took anywhere from 21 seconds to 85
-      # minutes, and every completed instance still SUCCEEDED. The logs show
-      # index files arriving at roughly 40 kB/s rather than stalling: apt is
-      # progressing, just pathologically slowly.
+      # Linux apt has stalled for up to 6 hours in CI (observed 21s … 85m39s
+      # across 18 runs, plus a 360m job timeout in PR #11 that occurred
+      # *after* apt had already failed over from azure.archive.ubuntu.com to
+      # archive.ubuntu.com). The mirror is not the root cause:
+      # archive.ubuntu.com is already configured as the fallback in
+      # /etc/apt/apt-mirrors.txt, and the stall happened on it.
       #
-      # That makes it a runner-infrastructure problem, not a build one.
-      # Nothing in this repository has been read at this point — only
-      # checkout, setup-node and rust-toolchain precede it — and the Windows
-      # and macOS jobs on the same commit are unaffected.
+      # The real defects are:
+      #   1. apt has no effective ceiling — it waits indefinitely rather than
+      #      timing out and retrying (Acquire::http::Timeout / Retries).
+      #   2. the step has no budget — no timeout-minutes, so GitHub's 6h
+      #      default is the only bound and a stall burns a whole runner.
       #
-      # So use Ubuntu's own HTTPS archive, which responds normally. Only the
-      # Azure host is rewritten: if a future runner image stops using it,
-      # this becomes a no-op instead of a silent misconfiguration. The
-      # rewrite lands before the first `apt-get update`, so every later apt
-      # call in this job inherits it.
-      #
-      # Deliberately NOT a retry loop and NOT a step timeout. A retry would
-      # hide the slowness rather than remove it, and a timeout tight enough
-      # to catch a hang would have failed the 85-minute run that succeeded.
-      #
-      # This is an EXPERIMENT, not a settled fix. One fast run proves nothing
-      # against a baseline that spans 21s to 85m; the mirror change is only
-      # worth keeping if it is measurably better across several runs.
+      # Fix both. Bound apt at the transport layer and bound the step at the
+      # workflow layer. No mirror rewrite is needed.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
-          # The image selects mirrors through a MIRRORLIST, not a literal URI
-          # in sources.list: `/etc/apt/sources.list.d/*.sources` point at
-          # `file:/etc/apt/apt-mirrors.txt`, and apt resolves the real host
-          # from there. Rewriting the sources files — the obvious thing, and
-          # what the first version of this step did — matches nothing and
-          # silently leaves apt on the Azure mirror. This is the file that
-          # actually decides.
-          echo "--- mirrorlist before ---"
-          cat /etc/apt/apt-mirrors.txt
-          sudo sed -i 's|https\?://azure\.archive\.ubuntu\.com|https://archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt
-          echo "--- mirrorlist after ---"
-          cat /etc/apt/apt-mirrors.txt
-
-          # Refuse to run the experiment against the wrong mirror. Without
-          # this the step passes, the numbers look fine, and they measure
-          # Azure — which is exactly how the first attempt produced a
-          # confident, meaningless result.
-          if grep -q 'azure\.archive\.ubuntu\.com' /etc/apt/apt-mirrors.txt; then
-            echo "::error::mirrorlist still points at the Azure mirror — refusing to measure the wrong thing"
-            exit 1
-          fi
-
+          echo 'Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
+          echo 'Acquire::https::Timeout "30";' | sudo tee -a /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
+          echo 'Acquire::Retries "3";' | sudo tee -a /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
+          echo '--- apt timeout config ---'
+          cat /etc/apt/apt.conf.d/99-ci-timeout
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
@@ -206,6 +179,7 @@ jobs:
       # cheap, so it is provided and the phase genuinely runs.
       - name: Install a virtual display (Linux)
         if: runner.os == 'Linux'
+        timeout-minutes: 5
         run: sudo apt-get install -y xvfb
 
       - name: Runtime verification (Linux)
