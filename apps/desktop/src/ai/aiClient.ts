@@ -639,35 +639,6 @@ export interface ContextUnavailable {
 export const contextUnavailable = (r: ContextView | ContextUnavailable): r is ContextUnavailable =>
   (r as ContextUnavailable).status === 'unavailable';
 
-/* ── Context Fabric ─────────────────────────────────────────────── */
-export type ContextFreshness = 'fresh' | 'stale' | 'unknown';
-export interface ContextSection<T> {
-  value: T | null;
-  freshness: ContextFreshness;
-  generatedAt: string | null;
-  reason?: string;
-}
-export type ContextSurface = 'general' | 'coding' | 'debugging' | 'architecture' | 'git' | 'testing' | 'mission' | 'planning' | 'review';
-export type CapabilityAvailability = 'available' | 'approval' | 'not-drivable' | 'unavailable';
-export interface ContextView {
-  contractVersion: 1;
-  contextVersion: number | null;
-  composedAt: string;
-  surface: ContextSurface;
-  freshness: ContextFreshness;
-  project: { id: string; name: string; root: string; type: string; language: string; mounted: boolean; lastOpenedAt: string | null };
-  repository: ContextSection<{ identity: { name: string; purpose: string; repositoryType: string; primaryLanguage: string; architectureStyle: string; frameworks: string[]; entryPoints: string[] } | null; modules: { name: string; path: string; fileCount: number; description: string }[]; totalFiles: number | null; entryPoints: string[]; profile: { architectureStyle: string; designPatterns: string[]; keyDecisions: string[] } | null; health: { score: { overall: number } } | null }>;
-  changes: ContextSection<{ velocity: number; hotspots: { file: string; score: number; reason: string }[]; patterns: string[] }>;
-  git: ContextSection<{ branch: string; dirty: boolean; changedFiles: number; recentCommits: { hash: string; date: string; subject: string }[] }>;
-  environment: ContextSection<{ os: string; arch: string; tools: { id: string; name: string; capabilities: string[]; version: string | null; internal: boolean }[]; providedCapabilities: string[] }>;
-  capabilities: ContextSection<{ id: string; name: string; risk: string; availability: CapabilityAvailability; rule?: string; reason?: string }[]>;
-  missions: ContextSection<{ id: string; text: string; createdAt: string; category: string; status: string | null; taskCount: number; completedTasks: number; approved: boolean }[]>;
-  activity: ContextSection<{ at: string; capabilityId: string; actor: string; nodeId?: string; outcome: string; decision: string }[]>;
-  constraints: { id: string; text: string }[];
-}
-export interface ContextUnavailable { contractVersion: 1; status: 'unavailable'; projectId: string; reason: string; }
-export const contextUnavailable = (r: ContextView | ContextUnavailable): r is ContextUnavailable => (r as ContextUnavailable).status === 'unavailable';
-
 /* ── Evidence and Node Records ─────────────────────────────────────── */
 export interface EvidenceRef {
   invocationId: string;
@@ -687,19 +658,6 @@ export interface StateTransition {
   from: NodeState;
   to: NodeState;
   note?: string;
-}
-export interface NodeRunRecord {
-  nodeId: string;
-  type: string;
-  state: NodeState;
-  iteration: number;
-  startedAt?: string;
-  finishedAt?: string;
-  ms: number;
-  summary?: string;
-  error?: string;
-  transitions?: StateTransition[];
-  evidence?: EvidenceRef[];
 }
 
 const jget = <T>(p: string): Promise<T> => fetch(BASE + p).then((r) => r.json() as Promise<T>);
@@ -805,15 +763,6 @@ export const aiClient = {
   profile: (id: string) => jget<ProjectProfile>(`/projects/${id}/profile`),
   indexStatus: () => jget<IndexStatus>('/index'),
 
-  /* context fabric — read-only, always explicitly project-scoped */
-  contextView: (id: string, surface: ContextSurface = 'general') =>
-    jget<ContextView | ContextUnavailable>(`/projects/${id}/context?surface=${surface}`),
-  /** The rendered agent contract for a project. Never composed in the UI. */
-  contextContract: (id: string, surface: ContextSurface = 'general') =>
-    jget<{ projectId: string; surface: ContextSurface; contract: string } | { error: string }>(
-      `/projects/${id}/context/contract?surface=${surface}`,
-    ),
-
   /* graph + retrieval */
   graph: () => jget<GraphView>('/graph'),
   knowledgeGraph: (id: string) => jget<KnowledgeGraph>(`/projects/${id}/graph`),
@@ -918,6 +867,21 @@ export const aiClient = {
   /* runs — persisted by the service, so history survives this window */
   workflowRuns: (id: string) => jget<{ runs: WorkflowRunSummary[] }>(`/workflows/${id}/runs`),
   workflowRun: (id: string, runId: string) => jget<WorkflowRun>(`/workflows/${id}/runs/${runId}`),
+  /**
+   * Cross-workflow run index, filtered and paged server-side.
+   */
+  runIndex: (query?: { workflowId?: string; projectId?: string; state?: string; trigger?: string; q?: string; since?: string; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams();
+    if (query?.workflowId) q.set('workflowId', query.workflowId);
+    if (query?.projectId) q.set('projectId', query.projectId);
+    if (query?.state) q.set('state', query.state);
+    if (query?.trigger) q.set('trigger', query.trigger);
+    if (query?.q) q.set('q', query.q);
+    if (query?.since) q.set('since', query.since);
+    if (query?.limit) q.set('limit', String(query.limit));
+    if (query?.offset) q.set('offset', String(query.offset));
+    return jget<{ runs: WorkflowRunSummary[]; total: number; offset: number; limit: number }>(`/workflow-runs?${q.toString()}`);
+  },
   /**
    * Every leg of one logical execution, oldest first.
    *

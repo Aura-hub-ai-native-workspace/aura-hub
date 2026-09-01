@@ -977,25 +977,11 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           }
         }
         if (seg[2] === 'runs') {
-          if (seg.length === 3 && method === 'GET') return json(res, 200, { runs: manager.listWorkflowRuns(id) });
-          if (seg.length === 4 && method === 'GET') {
-            const run = manager.getWorkflowRun(id, seg[3]);
-            return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
-          }
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> b23fe9f (feat(backend): stream and persist agent execution traces)
           if (seg[4] === 'chain' && method === 'GET') {
             // One logical execution across however many resume legs it took.
             const chain = manager.workflowRunChain(id, seg[3]);
             return chain.length ? json(res, 200, { chain: chain.map(summarizeRun) }) : json(res, 404, { error: 'no such run' });
           }
-<<<<<<< HEAD
-=======
->>>>>>> 916ba80 (feat(backend): govern workflow execution and integrate the bounded agent)
-=======
->>>>>>> b23fe9f (feat(backend): stream and persist agent execution traces)
           if (seg[4] === 'cancel' && method === 'POST') {
             return json(res, 200, { cancelled: manager.cancelWorkflowRun(seg[3]) });
           }
