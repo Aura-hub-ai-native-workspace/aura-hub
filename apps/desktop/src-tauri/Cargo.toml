@@ -1,6 +1,6 @@
 [package]
 name = "aura-hub"
-version = "0.1.4"
+version = "0.1.5"
 description = "AURA Hub — an AI Operating Environment"
 authors = ["AURA"]
 edition = "2021"

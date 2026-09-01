@@ -5,7 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>AURA Hub — The AI-Native Engineering Environment</title>
 <meta name="description" content="AURA Hub is the AI-native engineering environment — one intelligent workspace that understands your codebase, plans the work, and builds with you." />
+<link rel="canonical" href="https://aurahub.is-a.dev/" />
+<meta name="theme-color" content="#08090c" />
 <link rel="icon" type="image/png" href="assets/brand/aura-logo.png" />
+<link rel="apple-touch-icon" href="assets/brand/aura-logo.png" />
+
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="AURA Hub" />
+<meta property="og:title" content="AURA Hub — The AI-Native Engineering Environment" />
+<meta property="og:description" content="AURA Hub is the AI-native engineering environment — one intelligent workspace that understands your codebase, plans the work, and builds with you." />
+<meta property="og:url" content="https://aurahub.is-a.dev/" />
+<meta property="og:image" content="https://aurahub.is-a.dev/assets/screenshots/01-app-shell-home.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="AURA Hub — The AI-Native Engineering Environment" />
+<meta name="twitter:description" content="AURA Hub is the AI-native engineering environment — one intelligent workspace that understands your codebase, plans the work, and builds with you." />
+<meta name="twitter:image" content="https://aurahub.is-a.dev/assets/screenshots/01-app-shell-home.png" />
 <style>
   :root {
     --canvas: #08090c;
@@ -78,6 +92,58 @@
   }
   .btn-secondary:hover { background: rgba(255,255,255,0.08); }
   .btn-lg { padding: 17px 32px; font-size: 15.5px; }
+
+  /* download */
+  /* scroll-margin keeps the heading clear of the fixed nav when the
+     download CTAs jump here. */
+  .download { padding: 110px 0 40px; scroll-margin-top: 90px; }
+  .dl-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+  .dl-head h2 { font-size: clamp(30px, 4vw, 44px); }
+  .dl-version {
+    font-size: 13px; color: var(--accent); background: var(--accent-100);
+    border: 1px solid var(--line-strong); border-radius: 100px; padding: 5px 13px; font-weight: 650;
+  }
+  .dl-reco {
+    display: none; align-items: center; gap: 9px; margin: 22px 0 0; padding: 11px 16px;
+    background: var(--accent-100); border: 1px solid var(--line-strong);
+    border-radius: var(--radius-md); font-size: 13.4px; color: var(--text-muted); width: fit-content;
+  }
+  .dl-reco.show { display: inline-flex; }
+  .dl-reco b { color: var(--text); font-weight: 650; }
+  .dl-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 34px; }
+  .dl-card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+    padding: 28px 26px 26px; display: flex; flex-direction: column;
+    transition: border-color 0.3s var(--ease), transform 0.3s var(--ease);
+  }
+  .dl-card:hover { border-color: var(--line-strong); transform: translateY(-3px); }
+  .dl-card.recommended { border-color: var(--accent); }
+  .dl-os { display: flex; align-items: center; gap: 11px; font-size: 17px; font-weight: 650; }
+  .dl-os svg { width: 21px; height: 21px; flex: none; color: var(--text-muted); }
+  .dl-badge {
+    margin-left: auto; font-size: 10.5px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase;
+    color: var(--accent); background: var(--accent-100); border-radius: 100px; padding: 4px 10px; display: none;
+  }
+  .dl-card.recommended .dl-badge { display: inline-block; }
+  .dl-arch { font-family: var(--font-mono); font-size: 12px; color: var(--text-subtle); margin: 9px 0 20px; }
+  /* Buttons align to the top across all three cards so the Windows card,
+     which has one button where the others have two, does not leave a gap
+     mid-card. The meta line takes the slack and stays bottom-aligned. */
+  .dl-btns { display: flex; flex-direction: column; gap: 10px; }
+  .dl-btns .btn { width: 100%; }
+  .dl-meta { font-size: 11.8px; color: var(--text-subtle); margin: auto 0 0; padding-top: 16px; line-height: 1.5; }
+  .dl-notes {
+    margin-top: 34px; padding: 22px 24px; background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+  }
+  .dl-notes h4 { font-size: 13.5px; margin-bottom: 12px; }
+  .dl-notes ul { margin: 0; padding-left: 19px; color: var(--text-muted); font-size: 13.2px; line-height: 1.75; }
+  .dl-notes a { color: var(--accent); }
+  .dl-notes a:hover { text-decoration: underline; }
+  @media (max-width: 900px) {
+    .dl-grid { grid-template-columns: 1fr; }
+    .download { padding: 80px 0 30px; }
+  }
 
   /* nav */
   nav.top {
@@ -521,6 +587,83 @@
   </div>
 </section>
 
+<!--
+  Download. Every link, filename and version below is written by the RELEASE
+  object at the bottom of this file — there is no version string hardcoded in
+  this markup, so a new release is a change in one place.
+-->
+<section class="download reveal" id="download">
+  <div class="wrap">
+    <span class="eyebrow">Download</span>
+    <div class="dl-head">
+      <h2>Download AURA Hub</h2>
+      <span class="dl-version mono" id="dl-version"></span>
+    </div>
+    <p class="lede">Desktop builds for Linux, Windows and macOS. Every build below was
+      compiled and then run on the operating system it targets.</p>
+
+    <p class="dl-reco" id="dl-reco">
+      <span>Recommended for your system: <b id="dl-reco-name"></b></span>
+    </p>
+
+    <div class="dl-grid">
+      <article class="dl-card" id="dl-card-linux">
+        <div class="dl-os">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a4 4 0 0 0-4 4v3.5c0 1.2-.5 2.3-1.3 3.2C5.2 14.4 4.5 16 4.5 17.5A2.5 2.5 0 0 0 7 20h10a2.5 2.5 0 0 0 2.5-2.5c0-1.5-.7-3.1-2.2-4.8-.8-.9-1.3-2-1.3-3.2V6a4 4 0 0 0-4-4Z"/><path d="M10 8h.01M14 8h.01"/></svg>
+          Linux
+          <span class="dl-badge">Recommended</span>
+        </div>
+        <p class="dl-arch">x64</p>
+        <div class="dl-btns">
+          <a class="btn btn-primary" id="dl-linux-appimage" href="#">Download AppImage</a>
+          <a class="btn btn-secondary" id="dl-linux-deb" href="#">Download .deb</a>
+        </div>
+        <p class="dl-meta" id="dl-meta-linux"></p>
+      </article>
+
+      <article class="dl-card" id="dl-card-windows">
+        <div class="dl-os">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5.5 10 4.5v7H3v-6Zm0 13L10 19.5v-7H3v6Zm8.5 1.2L21 21V12.5h-9.5v7.2Zm0-15.4V11.5H21V3l-9.5 1.3Z"/></svg>
+          Windows
+          <span class="dl-badge">Recommended</span>
+        </div>
+        <p class="dl-arch">x64</p>
+        <div class="dl-btns">
+          <a class="btn btn-primary" id="dl-windows" href="#">Download for Windows</a>
+        </div>
+        <p class="dl-meta" id="dl-meta-windows"></p>
+      </article>
+
+      <article class="dl-card" id="dl-card-macos">
+        <div class="dl-os">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16.4 12.9c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.9-1.4-.15-2.8.85-3.5.85-.7 0-1.85-.83-3.05-.81-1.55.02-3 .9-3.8 2.3-1.63 2.82-.42 7 1.17 9.3.78 1.12 1.7 2.38 2.9 2.34 1.17-.05 1.61-.76 3.02-.76 1.4 0 1.8.76 3.03.73 1.25-.02 2.04-1.14 2.8-2.27.88-1.3 1.24-2.56 1.26-2.63-.03-.01-2.42-.93-2.44-3.68Z"/><path d="M14.1 5.9c.63-.77 1.06-1.83.94-2.9-.91.04-2.01.61-2.66 1.37-.59.68-1.1 1.76-.96 2.8 1.01.08 2.05-.51 2.68-1.27Z"/></svg>
+          macOS
+          <span class="dl-badge">Recommended</span>
+        </div>
+        <p class="dl-arch">Apple Silicon &amp; Intel</p>
+        <div class="dl-btns">
+          <a class="btn btn-primary" id="dl-macos-arm64" href="#">Apple Silicon (.dmg)</a>
+          <a class="btn btn-secondary" id="dl-macos-x64" href="#">Intel (.dmg)</a>
+        </div>
+        <p class="dl-meta" id="dl-meta-macos"></p>
+      </article>
+    </div>
+
+    <div class="dl-notes">
+      <h4>Before you install</h4>
+      <ul>
+        <li><b>Node.js 18 or newer is required.</b> It is not bundled, so AURA runs on the
+          same Node it reports detecting on your machine.</li>
+        <li>The <b>Windows installer is unsigned</b> — SmartScreen will warn you before it runs.</li>
+        <li>The <b>macOS builds are unsigned and not notarized</b> — Gatekeeper will quarantine
+          them, and you will have to allow them explicitly.</li>
+        <li>Supported: Linux x64, Windows x64, macOS Apple Silicon (arm64), macOS Intel (x64).</li>
+        <li><a id="dl-release-link" href="#">Release notes and SHA-256 checksums</a></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
 <section class="final-cta reveal">
   <div class="orb-3"></div>
   <div class="wrap">
@@ -614,9 +757,84 @@
     modal.classList.add('open'); document.body.style.overflow = 'hidden';
   }
   function closeModal() { modal.classList.remove('open'); document.body.style.overflow = ''; }
+  /* ── release: the single source of truth ─────────────────────────────
+     Version, release page and every asset filename live here and nowhere
+     else. Publishing v0.1.1 means editing this object — the markup, the
+     button labels, the version pill and the release link all read from it.
+     Asset URLs are GitHub Release assets, which are permanent; Actions
+     artifacts expire and are never used here.                          */
+  var RELEASE = {
+    version: '0.1.5',
+    repo: 'https://github.com/Aura-hub-ai-native-workspace/aura-hub',
+    get releaseUrl() { return this.repo + '/releases/tag/v' + this.version; },
+    get base() { return this.repo + '/releases/download/v' + this.version + '/'; },
+    assets: {
+      linuxAppImage: 'AURA-Hub-0.1.5-linux-x64.AppImage',
+      linuxDeb:      'AURA-Hub-0.1.5-linux-x64.deb',
+      windows:       'AURA-Hub-0.1.5-windows-x64.exe',
+      macosArm64:    'AURA-Hub-0.1.5-macos-arm64.dmg',
+      macosX64:      'AURA-Hub-0.1.5-macos-x64.dmg'
+    },
+    sizes: {
+      linuxAppImage: '78 MB', linuxDeb: '6.9 MB', windows: '5.8 MB',
+      macosArm64: '7.3 MB', macosX64: '7.4 MB'
+    }
+  };
+
+  (function wireDownloads() {
+    function link(id, asset) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.href = RELEASE.base + RELEASE.assets[asset];
+      el.setAttribute('download', '');
+    }
+    link('dl-linux-appimage', 'linuxAppImage');
+    link('dl-linux-deb', 'linuxDeb');
+    link('dl-windows', 'windows');
+    link('dl-macos-arm64', 'macosArm64');
+    link('dl-macos-x64', 'macosX64');
+
+    document.getElementById('dl-version').textContent = 'v' + RELEASE.version;
+    document.getElementById('dl-release-link').href = RELEASE.releaseUrl;
+    var s = RELEASE.sizes;
+    document.getElementById('dl-meta-linux').textContent = 'AppImage ' + s.linuxAppImage + ' · .deb ' + s.linuxDeb;
+    document.getElementById('dl-meta-windows').textContent = 'NSIS installer · ' + s.windows;
+    document.getElementById('dl-meta-macos').textContent = 'Apple Silicon ' + s.macosArm64 + ' · Intel ' + s.macosX64;
+
+    /* Detection HIGHLIGHTS one card. It never hides, disables or reorders
+       anything — all five downloads stay visible and usable whatever this
+       returns, including when it returns nothing.
+
+       macOS architecture is deliberately not guessed. A browser cannot tell
+       Apple Silicon from Intel reliably: Safari reports the same platform
+       string for both, and a Rosetta-translated browser reports Intel on an
+       M-series machine. So the macOS card is highlighted as a whole and both
+       builds are offered side by side, rather than confidently sending
+       someone the wrong one.                                            */
+    var ua = navigator.userAgent || '';
+    var platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+    var hay = (platform + ' ' + ua).toLowerCase();
+    var os = null;
+    if (hay.indexOf('win') !== -1) os = { id: 'windows', name: 'Windows x64' };
+    else if (hay.indexOf('mac') !== -1) os = { id: 'macos', name: 'macOS — choose Apple Silicon or Intel' };
+    else if (hay.indexOf('linux') !== -1 && hay.indexOf('android') === -1) os = { id: 'linux', name: 'Linux x64' };
+
+    if (os) {
+      var card = document.getElementById('dl-card-' + os.id);
+      if (card) card.classList.add('recommended');
+      document.getElementById('dl-reco-name').textContent = os.name;
+      document.getElementById('dl-reco').classList.add('show');
+    }
+  })();
+
+  // The download CTAs now go to the real downloads above. The early-access
+  // modal below predates the release and is left intact but unreferenced.
   ['btn-download-nav','btn-download-hero','btn-download-final','footer-download'].forEach(function(id) {
     var el = document.getElementById(id);
-    if (el) el.addEventListener('click', function(ev) { ev.preventDefault(); openModal(); });
+    if (el) el.addEventListener('click', function(ev) {
+      ev.preventDefault();
+      document.getElementById('download').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   });
   document.getElementById('modal-close').addEventListener('click', closeModal);
   modal.addEventListener('click', function(e) { if (e.target === modal) closeModal(); });
