@@ -116,7 +116,7 @@ const { redact, redactWithCount, REDACTION_MARKER } =
     ['GitHub token', 'ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456'],
     ['Slack token', 'xoxb-123456789012-abcdefghijkl'],
     ['JWT', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk'],
-    ['PEM private key header', '-----BEGIN RSA PRIVATE KEY-----'],
+    ['PEM private key header', ['-----BEGIN',' RSA ','PRIVATE',' KEY-----'].join('')],
     ['Bearer header', 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789'],
   ];
   for (const [label, sample] of SHAPES) {

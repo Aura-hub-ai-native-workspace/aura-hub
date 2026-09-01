@@ -764,16 +764,16 @@
      Asset URLs are GitHub Release assets, which are permanent; Actions
      artifacts expire and are never used here.                          */
   var RELEASE = {
-    version: '0.1.4',
+    version: '0.1.5',
     repo: 'https://github.com/Aura-hub-ai-native-workspace/aura-hub',
     get releaseUrl() { return this.repo + '/releases/tag/v' + this.version; },
     get base() { return this.repo + '/releases/download/v' + this.version + '/'; },
     assets: {
-      linuxAppImage: 'AURA-Hub-0.1.4-linux-x64.AppImage',
-      linuxDeb:      'AURA-Hub-0.1.4-linux-x64.deb',
-      windows:       'AURA-Hub-0.1.4-windows-x64.exe',
-      macosArm64:    'AURA-Hub-0.1.4-macos-arm64.dmg',
-      macosX64:      'AURA-Hub-0.1.4-macos-x64.dmg'
+      linuxAppImage: 'AURA-Hub-0.1.5-linux-x64.AppImage',
+      linuxDeb:      'AURA-Hub-0.1.5-linux-x64.deb',
+      windows:       'AURA-Hub-0.1.5-windows-x64.exe',
+      macosArm64:    'AURA-Hub-0.1.5-macos-arm64.dmg',
+      macosX64:      'AURA-Hub-0.1.5-macos-x64.dmg'
     },
     sizes: {
       linuxAppImage: '78 MB', linuxDeb: '6.9 MB', windows: '5.8 MB',
