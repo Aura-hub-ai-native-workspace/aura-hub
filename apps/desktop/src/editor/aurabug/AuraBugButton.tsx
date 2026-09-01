@@ -8,13 +8,11 @@
  */
 import { useState } from 'react';
 import { IconButton } from '@aura/ui';
-import { useEditorStore } from '../editorStore';
 import { useProjectData } from '../../screens/project/sections/shared';
 import { AuraBugPanel } from './AuraBugPanel';
 import { useAuraBug } from './useAuraBug';
 
 export function AuraBugButton({ projectId }: { projectId: string }) {
-  const activePath = useEditorStore((s) => s.activePath);
   const [open, setOpen] = useState(false);
   const { graph } = useProjectData(projectId);
   const aura = useAuraBug(projectId, graph, open);
@@ -23,10 +21,9 @@ export function AuraBugButton({ projectId }: { projectId: string }) {
     <>
       <IconButton
         icon="bug"
-        label="AuraBug — scan the open file for bugs"
+        label="AuraBug — find, review, approve and verify bug fixes"
         size="sm"
         active={open}
-        disabled={!activePath}
         onClick={() => setOpen((o) => !o)}
         className="mr-1 shrink-0"
       />

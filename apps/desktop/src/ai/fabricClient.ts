@@ -10,8 +10,16 @@
  * the request it stored. A compromised or hand-crafted client can
  * therefore replay a decision, but it can never invent an authorization
  * for something the Fabric did not itself decide to ask about.
+ *
+ * `invokeAsUser` does not weaken that. It sends no grant either — it
+ * presents this boot's UI token, which says *where the call came from*,
+ * not *what may be done*. The service alone decides what that channel is
+ * worth, and policy still evaluates every floor: a direct action is
+ * exempt from the one gate that exists to ask the user, and from nothing
+ * else. See `uiToken.ts` and `policy.ts`.
  */
 import { aiClient } from './aiClient';
+import { userActionHeaders } from './uiToken';
 
 const BASE = aiClient.base;
 
@@ -59,7 +67,33 @@ export interface CapabilityDescriptorView {
   risk: RiskLevel;
   supported: boolean;
   requiresNodeCapability?: string;
+  /**
+   * The rest of the descriptor as the service sends it. `/fabric/capabilities`
+   * spreads the whole `CapabilityDescriptor` (`{ ...c, supported }`), so these
+   * are on the wire already — they are typed here because the Permission
+   * Envelope reads them, and reading them from the service is what keeps the
+   * service authoritative about risk rather than the renderer.
+   */
+  description?: string;
+  category?: string;
+  surface?: 'aura-internal' | 'local-process' | 'http' | 'browser';
+  permissions?: PermissionScope[];
+  irreversible?: boolean;
+  output?: string;
+  verify?: 'read-back' | 'exit-code' | 'http-status' | null;
 }
+
+/** Coarse permission scopes, as declared by the service's manifest. */
+export type PermissionScope =
+  | 'project.read'
+  | 'project.write'
+  | 'process.execute'
+  | 'network.outbound'
+  | 'account.authorize'
+  | 'resource.destroy'
+  | 'system.modify'
+  | 'aura.read'
+  | 'aura.write';
 
 export interface CapabilityCatalogue {
   capabilities: CapabilityDescriptorView[];
@@ -179,6 +213,32 @@ export const fabricClient = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ capabilityId, input, context }),
     }).then((r) => r.json()),
+
+  /**
+   * Run a capability *because the user just asked for it here*.
+   *
+   * Use this only from a control the person actually clicked, where the
+   * label said what would happen. It is a separate method rather than a
+   * flag on `invoke` so that reaching for it is a deliberate act that
+   * shows up in review — an agent-driven path calling this would be a
+   * visible mistake, not a silently passed `true`.
+   *
+   * The extra header is the whole difference. Everything else — policy,
+   * floors, node routing, verification, audit — runs exactly as it does
+   * for `invoke`.
+   */
+  invokeAsUser: async (
+    capabilityId: string,
+    input: Record<string, unknown>,
+    context: Record<string, unknown> = {},
+  ): Promise<InvocationResultView> => {
+    const res = await fetch(`${BASE}/fabric/invoke`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(await userActionHeaders()) },
+      body: JSON.stringify({ capabilityId, input, context }),
+    });
+    return res.json();
+  },
 
   /**
    * Answer one request. `granted` is the whole decision — the capability,

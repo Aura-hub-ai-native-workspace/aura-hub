@@ -1,0 +1,27 @@
+[
+  {
+    "id": "apr-demo0001",
+    "state": "pending",
+    "requestedAt": "2026-08-24T10:00:00.000Z",
+    "summary": "Write file src/a.ts in demo project",
+    "items": [
+      {
+        "invocationId": "invdemo00001",
+        "capabilityId": "filesystem.write",
+        "title": "filesystem.write",
+        "detail": "Write 2 bytes to src/a.ts",
+        "risk": "medium",
+        "irreversible": false,
+        "fingerprint": "8d7839564ce695cfa9e0421c10a55d06"
+      }
+    ],
+    "projectId": "p-demo",
+    "workflowId": "wf-mt6p764n-yeej95",
+    "runId": "wr-demo-0001",
+    "workflowNodeId": "n-ag",
+    "rule": "risk-default",
+    "onAccept": "The file is written.",
+    "onDecline": "Nothing is written; the agent continues without it.",
+    "target": "src/a.ts"
+  }
+]

@@ -20,6 +20,7 @@
 import { useMemo } from 'react';
 import { create } from 'zustand';
 import {
+  appendLog,
   applyConnect,
   applyDisconnect,
   applyProbe,
@@ -34,19 +35,22 @@ import {
 } from '@aura/connected-environment';
 import { environmentClient } from './environmentClient';
 import { transportFor } from './transports';
+import { fabricClient, type InvocationResultView } from '../ai/fabricClient';
 
 interface EnvironmentState {
   nodes: EnvironmentNode[];
   /** A scan is in flight. */
   scanning: boolean;
   lastScanAt: string | null;
-  /** Node ids with a connect/disconnect in flight. */
+  /** Node ids with a connect/disconnect/install in flight. */
   busy: string[];
 
   scan: (refresh?: boolean) => Promise<void>;
   connect: (id: string) => Promise<void>;
   disconnect: (id: string) => void;
   setNodePermissions: (id: string, partial: Partial<NodePermissions>) => void;
+  /** Governed install via the existing system.install capability. */
+  install: (id: string) => Promise<InvocationResultView>;
 }
 
 export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
@@ -88,6 +92,96 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
 
   setNodePermissions: (id, partial) => {
     set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? withPermissions(n, partial) : n)) }));
+  },
+
+  install: async (id) => {
+    const node = get().nodes.find((n) => n.id === id);
+    if (!node) {
+      return { invocationId: '', outcome: 'unsupported', detail: 'That node is not in the catalog.' };
+    }
+    if (get().busy.includes(id) || node.health.status === 'installing') {
+      return { invocationId: '', outcome: 'unsupported', detail: 'An install is already in progress for this node.' };
+    }
+    if (!node.entry.install) {
+      return {
+        invocationId: '',
+        outcome: 'unsupported',
+        detail: `AURA has no verified way to install ${node.entry.name}, so it will not guess at one. See ${node.entry.homepage} for the project's own instructions.`,
+      };
+    }
+
+    // Mark installing and busy before anything leaves the machine.
+    set((s) => ({
+      busy: [...s.busy, id],
+      nodes: s.nodes.map((n) =>
+        n.id === id
+          ? {
+              ...n,
+              health: {
+                status: 'installing',
+                detail: 'Installation is running — AURA will look for it again when this finishes.',
+                checkedAt: new Date().toISOString(),
+                version: n.health.version,
+              },
+              log: appendLog(n.log, 'info', `Install requested for ${n.entry.name}.`),
+            }
+          : n,
+      ),
+    }));
+
+    let result: InvocationResultView;
+    try {
+      result = await fabricClient.invoke('system.install', { nodeId: id });
+    } catch (e) {
+      const detail = (e as Error).message || 'The install request did not complete.';
+      // Re-probe honestly before reporting the transport failure.
+      try {
+        const probeResult = await environmentClient.probe(id, true);
+        set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? applyProbe(n, probeResult) : n)) }));
+      } catch {
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  health: { status: 'not-installed', detail, checkedAt: new Date().toISOString() },
+                  log: appendLog(n.log, 'error', detail),
+                }
+              : n,
+          ),
+        }));
+      }
+      set((s) => ({ busy: s.busy.filter((b) => b !== id) }));
+      return { invocationId: '', outcome: 'failed', detail };
+    }
+
+    // Successful installation triggers real re-probing with refresh: true.
+    // The verdict comes from the machine, not from the install result text.
+    try {
+      const probeResult = await environmentClient.probe(id, true);
+      set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? applyProbe(n, probeResult) : n)) }));
+    } catch {
+      // Probe transport failed — leave the installing marker to be resolved by
+      // the next scan rather than guessing at a status.
+      set((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === id
+            ? {
+                ...n,
+                health: {
+                  status: 'not-installed',
+                  detail: result.detail || 'Installation finished, but the follow-up check did not complete. Scan again.',
+                  checkedAt: new Date().toISOString(),
+                  version: n.health.version,
+                },
+              }
+            : n,
+        ),
+      }));
+    }
+
+    set((s) => ({ busy: s.busy.filter((b) => b !== id) }));
+    return result;
   },
 }));
 

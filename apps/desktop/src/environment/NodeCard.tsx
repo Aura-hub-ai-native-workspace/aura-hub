@@ -12,12 +12,14 @@
  * who delegated the work actually wants to see.
  */
 
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { cn, spring } from '@aura/core';
 import { Icon } from '@aura/ui';
 import { describeNode, isConnectable, type EnvironmentNode } from '@aura/connected-environment';
 import { CATEGORY_ICON, STATUS_LABEL, STATUS_TONE, TONE_DOT, TONE_TEXT } from './presentation';
+import { useEnvironmentStore } from './environmentStore';
+import type { InstallResultView } from '../ai/fabricClient';
 
 interface NodeCardProps {
   node: EnvironmentNode;
@@ -33,6 +35,38 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
   const running = node.activity.filter((a) => a.state === 'running');
   const connectable = isConnectable(node.entry);
   const isInternal = node.entry.transport === 'internal';
+  const storeInstall = useEnvironmentStore((s) => s.install);
+  const [gate, setGate] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<InstallResultView | null>(null);
+  const [installBusy, setInstallBusy] = useState(false);
+  const hasInstallSpec = Boolean(node.entry.install);
+  const isMissing = node.health.status === 'not-installed';
+  const isInstalling = node.health.status === 'installing';
+
+  const handleInstall = async () => {
+    if (busy || isInstalling || installBusy) return;
+    setGate(null);
+    setError(null);
+    setResult(null);
+    setInstallBusy(true);
+    try {
+      const res = await storeInstall(node.id);
+      if (res.outcome === 'awaiting-approval') {
+        setGate('This needs your approval before anything runs. Open the approval gate to allow it.');
+      } else if (res.outcome === 'denied' || res.outcome === 'unsupported') {
+        setError(res.detail);
+      } else {
+        const out = res.output as InstallResultView | undefined;
+        if (out) setResult(out);
+        else if (res.detail) setError(res.detail);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setInstallBusy(false);
+    }
+  };
 
   return (
     <motion.div
@@ -100,6 +134,35 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
           >
             Disconnect
           </button>
+        ) : isInstalling ? (
+          <button
+            disabled
+            className="rounded-lg bg-accent px-2.5 py-1 text-[10.5px] font-medium text-white opacity-60"
+            data-testid="node-card-installing"
+          >
+            Installing…
+          </button>
+        ) : isMissing ? (
+          hasInstallSpec ? (
+            <button
+              onClick={handleInstall}
+              disabled={busy || installBusy}
+              data-testid="node-card-install"
+              className="rounded-lg bg-accent px-2.5 py-1 text-[10.5px] font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+            >
+              {busy || installBusy ? 'Installing…' : 'Install'}
+            </button>
+          ) : (
+            <a
+              href={node.entry.homepage}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[10.5px] font-medium text-text-muted transition-colors hover:border-line-strong hover:text-text"
+            >
+              <Icon name="link" size={10} />
+              Open site
+            </a>
+          )
         ) : connectable ? (
           <button
             onClick={onConnect}
@@ -129,6 +192,40 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
           <Icon name="maximize" size={11} />
         </button>
       </div>
+      {isMissing && hasInstallSpec && gate && (
+        <p data-testid="node-card-gate" className="mt-1.5 text-[10.5px] leading-relaxed text-accent">{gate}</p>
+      )}
+      {isMissing && hasInstallSpec && error && (
+        <p data-testid="node-card-error" className="mt-1.5 text-[10.5px] leading-relaxed text-attention">{error}</p>
+      )}
+      {isMissing && hasInstallSpec && result && (
+        <div className="mt-1.5 space-y-1">
+          {result.installOutcome === 'guided' && (
+            <div data-testid="node-card-guided" data-install-outcome="guided" className="rounded-lg border border-line bg-surface-active p-1.5">
+              <p className="text-[10.5px] font-medium text-attention">Your action required</p>
+              <p className="mt-0.5 text-[10.5px] leading-relaxed text-text-muted">{result.why} AURA did not run anything.</p>
+              {result.command && (
+                <code data-testid="node-card-command" className="mt-1 block overflow-x-auto rounded border border-line bg-surface px-1.5 py-1 font-mono text-[10px] text-text">{result.command}</code>
+              )}
+            </div>
+          )}
+          {result.installOutcome === 'unverified' && (
+            <p data-testid="node-card-unverified" data-install-outcome="unverified" className="text-[10.5px] leading-relaxed text-attention">
+              The installer finished but {node.entry.name} still cannot be found. {result.probe?.detail}
+            </p>
+          )}
+          {result.installOutcome === 'failed' && (
+            <p data-testid="node-card-failed" data-install-outcome="failed" className="text-[10.5px] leading-relaxed text-attention">
+              {node.entry.name} was not installed. {result.why}{result.exitCode !== undefined ? ` (exit ${result.exitCode})` : ''}
+            </p>
+          )}
+          {result.installOutcome === 'installed' && (
+            <p data-testid="node-card-installed" data-install-outcome="installed" className="text-[10.5px] leading-relaxed text-positive">
+              {node.entry.name} is installed and verified{result.probe?.version ? ` (${result.probe.version})` : ''}.
+            </p>
+          )}
+        </div>
+      )}
     </motion.div>
   );
 });

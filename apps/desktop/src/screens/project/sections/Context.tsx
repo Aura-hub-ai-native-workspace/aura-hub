@@ -21,7 +21,7 @@ import { cn } from '@aura/core';
 import { Badge, Button, Icon } from '@aura/ui';
 import { SectionView, Block } from '../components/kit';
 import { EmptyState } from '../../../components/EmptyState';
-import { aiClient, type ContextView } from '../../../ai/aiClient';
+import { aiClient, type ContextView, type ContextFreshness } from '../../../ai/aiClient';
 
 function relTime(iso: string | null): string {
   if (!iso) return 'never';
@@ -157,15 +157,15 @@ export function Context({ projectId }: { projectId: string }) {
 
         <Block className="col-span-12 lg:col-span-6">
           <Panel title="Git" icon="git">
-            {view.git.available ? (
+            {view.git.value?.branch ? (
               <>
                 <Rows rows={[
-                  ['Branch', <span className="font-mono text-[11.5px]">{view.git.branch}</span>],
-                  ['Working tree', view.git.dirty ? `${view.git.changedFiles} uncommitted change(s)` : 'Clean'],
+                  ['Branch', <span className="font-mono text-[11.5px]">{view.git.value.branch}</span>],
+                  ['Working tree', view.git.value.dirty ? `${view.git.value.changedFiles} uncommitted change(s)` : 'Clean'],
                 ]} />
-                {view.git.recentCommits.length > 0 && (
+                {view.git.value.recentCommits.length > 0 && (
                   <div className="mt-3 space-y-1.5 border-t border-line pt-3">
-                    {view.git.recentCommits.map((c) => (
+                    {view.git.value.recentCommits.map((c) => (
                       <div key={c.hash} className="flex gap-2.5 text-[12px]">
                         <span className="shrink-0 font-mono text-[11px] text-text-subtle">{c.hash.slice(0, 7)}</span>
                         <span className="truncate text-text-muted">{c.subject}</span>
@@ -185,33 +185,26 @@ export function Context({ projectId }: { projectId: string }) {
             title="Repository"
             icon="architecture"
             action={
-              <Badge tone={r.intelligence === 'ready' ? 'positive' : r.intelligence === 'partial' ? 'attention' : 'neutral'}>
-                {/* Plain words. `ready|partial|absent` is AURA's internal
-                    vocabulary, and "absent" in particular reads as an error
-                    rather than "we haven't looked yet". */}
-                {r.intelligence === 'ready' ? 'Analysed'
-                  : r.intelligence === 'partial' ? 'Partly analysed'
-                    : 'Not analysed yet'}
+              <Badge tone={r.value?.identity ? 'positive' : 'neutral'}>
+                {r.value?.identity ? 'Analysed' : 'Not analysed yet'}
               </Badge>
             }
           >
-            {r.intelligence === 'absent' ? (
+            {!r.value?.identity ? (
               <Unavailable reason="AURA has not analysed this project yet. These facts are unavailable, not empty." />
             ) : (
               <>
-                {r.purpose && <p className="mb-3 text-[13px] leading-relaxed text-text-muted">{r.purpose}</p>}
+                {r.value.identity.purpose && <p className="mb-3 text-[13px] leading-relaxed text-text-muted">{r.value.identity.purpose}</p>}
                 <Rows rows={[
-                  ['Kind', r.repositoryType],
-                  ['Architecture', r.architectureStyle],
-                  ['Primary language', r.primaryLanguage],
-                  ['Frameworks', r.frameworks.length ? r.frameworks.join(', ') : null],
-                  ['Build system', r.buildSystem],
-                  ['Package manager', r.packageManager],
-                  ['Files', r.fileCount !== null ? String(r.fileCount) : null],
+                  ['Kind', r.value.identity.repositoryType],
+                  ['Architecture', r.value.identity.architectureStyle],
+                  ['Primary language', r.value.identity.primaryLanguage],
+                  ['Frameworks', r.value.identity.frameworks.length ? r.value.identity.frameworks.join(', ') : null],
+                  ['Files', r.value.modules.length > 0 ? String(r.value.modules.length) + ' modules' : null],
                 ]} />
-                {r.modules.length > 0 && (
+                {r.value.modules.length > 0 && (
                   <div className="mt-4 grid grid-cols-1 gap-px overflow-hidden rounded-xl bg-line sm:grid-cols-2">
-                    {r.modules.map((m) => (
+                    {r.value.modules.map((m) => (
                       <div key={m.path} className="bg-surface p-3">
                         <div className="text-[12.5px] font-medium text-text">{m.name}</div>
                         <div className="mt-0.5 font-mono text-[10.5px] text-text-subtle">{m.path}</div>
@@ -229,82 +222,76 @@ export function Context({ projectId }: { projectId: string }) {
           <Panel
             title="Environment"
             icon="cpu"
-            action={<span className="text-[11.5px] text-text-subtle">scanned {relTime(view.environment.scannedAt)}</span>}
+            action={<span className="text-[11.5px] text-text-subtle">scanned {relTime(view.environment.generatedAt)}</span>}
           >
-            <Rows rows={[
-              ['OS', `${view.environment.os} (${view.environment.arch})`],
-              ['Node', view.environment.nodeVersion],
-              ['Shell', view.environment.shell],
-              ['Tools detected', `${view.environment.presentCount} of ${view.environment.catalogueCount}`],
-            ]} />
-            <div className="mt-3 flex flex-wrap gap-1.5 border-t border-line pt-3">
-              {view.environment.presentNodes.map((n) => (
-                <span key={n.id} className="rounded-lg bg-surface-active/60 px-2 py-1 text-[11px] text-text-muted">
-                  {n.name}{n.version ? ` ${n.version}` : ''}
-                </span>
-              ))}
-            </div>
-          </Panel>
-        </Block>
-
-        <Block className="col-span-12 lg:col-span-6">
-          <Panel title="Agents & capabilities" icon="spark">
-            <Rows rows={[
-              ['AI provider', view.agents.provider.connected
-                ? `${view.agents.provider.id}${view.agents.provider.model ? ` · ${view.agents.provider.model}` : ''}`
-                : 'None connected'],
-              ['Capabilities', `${view.tools.available.length} available`],
-            ]} />
-            {view.agents.codingAgents.length > 0 && (
-              <div className="mt-3 space-y-1.5 border-t border-line pt-3">
-                {view.agents.codingAgents.map((a) => (
-                  <div key={a.id} className="flex items-center justify-between gap-3 text-[12px]">
-                    <span className="text-text">{a.name}</span>
-                    {/* Present-but-undrivable is stated, never hidden: AURA
-                        cannot delegate to it, and pretending otherwise
-                        would be the one thing a user cannot recover from. */}
-                    <span className={cn('text-[11px]', a.drivable ? 'text-positive' : 'text-text-subtle')}>
-                      {a.drivable ? 'AURA can delegate' : 'installed · not drivable'}
+            {view.environment.value ? (
+              <>
+                <Rows rows={[
+                  ['OS', `${view.environment.value.os} (${view.environment.value.arch})`],
+                ]} />
+                <div className="mt-3 flex flex-wrap gap-1.5 border-t border-line pt-3">
+                  {view.environment.value.tools.map((n) => (
+                    <span key={n.id} className="rounded-lg bg-surface-active/60 px-2 py-1 text-[11px] text-text-muted">
+                      {n.name}{n.version ? ` ${n.version}` : ''}
                     </span>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <Unavailable reason={view.environment.reason ?? 'Environment not scanned.'} />
             )}
           </Panel>
         </Block>
 
         <Block className="col-span-12 lg:col-span-6">
-          <Panel title="Mission" icon="deploy">
-            {view.mission.active ? (
-              <>
-                <p className="text-[13px] text-text">{view.mission.active.text}</p>
-                <div className="mt-2 flex items-center gap-2">
-                  <Badge tone="neutral">{view.mission.active.status}</Badge>
-                  <span className="text-[11.5px] text-text-subtle">{relTime(view.mission.active.createdAt)}</span>
-                </div>
-                {view.mission.pendingApprovals > 0 && (
-                  <p className="mt-2 text-[12px] text-attention">{view.mission.pendingApprovals} approval(s) awaiting you.</p>
-                )}
-              </>
+          <Panel title="Capabilities" icon="spark">
+            {view.capabilities.value && view.capabilities.value.length > 0 ? (
+              <div className="space-y-1.5">
+                {view.capabilities.value.map((cap) => (
+                  <div key={cap.id} className="flex items-center justify-between gap-3 text-[12px]">
+                    <span className="text-text">{cap.name}</span>
+                    <span className={cn('text-[11px]',
+                      cap.availability === 'available' ? 'text-positive' : 'text-text-subtle')}>
+                      {cap.availability}
+                    </span>
+                  </div>
+                ))}
+              </div>
             ) : (
-              <Unavailable reason="No missions for this project yet." />
+              <Unavailable reason={view.capabilities.reason ?? 'No capabilities measured.'} />
+            )}
+          </Panel>
+        </Block>
+
+        <Block className="col-span-12 lg:col-span-6">
+          <Panel title="Missions" icon="deploy">
+            {view.missions.value && view.missions.value.length > 0 ? (
+              <div className="space-y-2">
+                {view.missions.value.map((m) => (
+                  <div key={m.id} className="flex items-start gap-2 text-[12px]">
+                    <span className="text-text-muted">{m.text}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Unavailable reason={view.missions.reason ?? 'No missions for this project yet.'} />
             )}
           </Panel>
         </Block>
 
         <Block className="col-span-12 lg:col-span-6">
           <Panel title="Recent activity" icon="activity">
-            {view.activity.events.length ? (
+            {view.activity.value && view.activity.value.length > 0 ? (
               <div className="space-y-1.5">
-                {view.activity.events.map((e, i) => (
+                {view.activity.value.map((e, i) => (
                   <div key={`${e.at}-${i}`} className="flex gap-2.5 text-[12px]">
                     <span className="shrink-0 text-[11px] text-text-subtle">{relTime(e.at)}</span>
-                    <span className="truncate text-text-muted"><span className="text-text">{e.kind}</span> — {e.summary}</span>
+                    <span className="truncate text-text-muted">{e.decision}</span>
                   </div>
                 ))}
               </div>
             ) : (
-              <Unavailable reason="Nothing has run through the Capability Fabric for this project yet." />
+              <Unavailable reason={view.activity.reason ?? 'Nothing has run for this project yet.'} />
             )}
           </Panel>
         </Block>
@@ -315,14 +302,14 @@ export function Context({ projectId }: { projectId: string }) {
 
 /* ── pieces ──────────────────────────────────────────────────────── */
 
-function FreshnessBanner({ freshness }: { freshness: ContextView['freshness'] }) {
+function FreshnessBanner({ freshness }: { freshness: ContextFreshness }) {
   const tone =
-    freshness.state === 'fresh' ? 'positive'
-      : freshness.state === 'stale' ? 'attention'
+    freshness === 'fresh' ? 'positive'
+      : freshness === 'stale' ? 'attention'
         : 'neutral';
   const label =
-    freshness.state === 'fresh' ? 'Context is current'
-      : freshness.state === 'stale' ? 'Context is out of date'
+    freshness === 'fresh' ? 'Context is current'
+      : freshness === 'stale' ? 'Context is out of date'
         : 'Project not analysed yet';
 
   return (
@@ -340,13 +327,6 @@ function FreshnessBanner({ freshness }: { freshness: ContextView['freshness'] })
           tone === 'neutral' && 'bg-text-subtle')} />
         <span className="text-[13px] font-medium text-text">{label}</span>
       </span>
-      {freshness.reason && <span className="text-[12.5px] text-text-muted">{freshness.reason}</span>}
-      {freshness.generatedAt && (
-        <span className="text-[11.5px] text-text-subtle">analysed {relTime(freshness.generatedAt)}</span>
-      )}
-      {freshness.truncated && (
-        <span className="text-[11.5px] text-attention">scan hit its file cap — counts are partial</span>
-      )}
     </div>
   );
 }
