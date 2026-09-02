@@ -545,3 +545,42 @@ export function recordDiagnosisMemory(projectId: string, input: DiagnosisMemoryI
     dedupe: `diagnosis:${input.id}:${input.event}`,
   });
 }
+
+export interface BugBotMemoryInput {
+  filePath: string;
+  event: 'fix-approved' | 'fix-rejected' | 'fix-reverted' | 'fix-failed';
+  title: string;
+  summary: string;
+  severity: string;
+}
+
+/**
+ * Record a Bug Bot decision — a governed, user-approved fix being applied
+ * to (or explicitly rejected for / reverted from) a real file. Same layer
+ * as the other explicit event hooks: never fabricated, keyed to the real
+ * file path, deduped against the actual event.
+ */
+export function recordBugBotMemory(input: BugBotMemoryInput): void {
+  const projectId = useEditorStore.getState().projectId ?? useWorkspace.getState().openId;
+  if (!projectId) return;
+  const importance: MemoryImportance = input.event === 'fix-rejected' ? 'medium' : 'high';
+  record({
+    projectId,
+    category: 'diagnosis',
+    importance,
+    title: input.title,
+    summary: input.summary,
+    reason:
+      input.event === 'fix-approved'
+        ? 'Bug Bot fix approved and applied by the user'
+        : input.event === 'fix-reverted'
+          ? 'Bug Bot fix reverted by the user after failed verification'
+          : input.event === 'fix-failed'
+            ? 'Bug Bot fix could not be written to disk'
+            : 'Bug Bot fix proposal declined by the user',
+    user: 'human',
+    files: [input.filePath],
+    source: 'bug-bot',
+    dedupe: `bug-bot:${projectId}:${input.filePath}:${input.event}:${Date.now()}`,
+  });
+}

@@ -1,8 +1,10 @@
 import { useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Badge, Button, Card, Dialog, Icon, IconButton, Input, Menu, useToast } from '@aura/ui';
-import { aiClient, type WorkflowSummary } from '../../ai/aiClient';
+import { aiClient, type AuthorityEnvelope, type WorkflowRunSummary, type WorkflowSummary } from '../../ai/aiClient';
 import { useWorkflows } from '../../data/useWorkflows';
+import { RUN_STATE_LABEL, RUN_STATE_TONE, relTime } from './runs';
+import { envelopeSummary } from './PermissionEnvelope';
 import { EmptyState } from '../../components/EmptyState';
 
 /**
@@ -100,7 +102,8 @@ export function WorkflowLibrary() {
                     </div>
                   </div>
                   {w.description && <p className="mt-2.5 line-clamp-2 text-[12px] leading-relaxed text-text-muted">{w.description}</p>}
-                  <div className="mt-3 flex items-center gap-2">
+                  <CardState envelope={wf.envelopes[w.id]} runs={wf.runs[w.id]} />
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
                     <Badge tone="neutral">{w.category}</Badge>
                     {w.favorite && <Badge tone="info">favorite</Badge>}
                   </div>
@@ -150,6 +153,49 @@ export function WorkflowLibrary() {
         }>
         <Input value={renameText} onChange={(e) => setRenameText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && renaming && renameText.trim()) { void wf.patchMeta(renaming.id, { name: renameText.trim() }); setRenaming(null); } }} autoFocus />
       </Dialog>
+    </div>
+  );
+}
+
+/**
+ * CardState — the two things that decide whether you trust a workflow
+ * enough to open it: what it is permitted to do, and whether it last
+ * worked.
+ *
+ * Both come from the service — the authority envelope it computes, and
+ * the runs it persisted. While either is still loading the strip renders
+ * nothing rather than a placeholder that could be read as an answer.
+ */
+function CardState({ envelope, runs }: { envelope?: AuthorityEnvelope; runs?: WorkflowRunSummary[] }) {
+  const last = runs?.[0] ?? null;
+  if (!envelope && !last) return null;
+  const perms = envelope ? envelopeSummary(envelope) : null;
+  const tone = (t: string) => (t === 'critical' ? 'text-danger' : t === 'attention' ? 'text-attention' : 'text-text-muted');
+
+  return (
+    <div className="mt-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px]">
+      {perms && (
+        <span className="flex items-center gap-1">
+          <Icon name="shield" size={11} className={tone(perms.tone)} />
+          <span className={tone(perms.tone)}>{perms.text}</span>
+        </span>
+      )}
+      {envelope?.offlineCapable && <span className="text-text-subtle">· offline-capable</span>}
+      {last && (
+        <span className="ml-auto flex items-center gap-1">
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              RUN_STATE_TONE[last.state] === 'positive' ? 'bg-positive'
+                : RUN_STATE_TONE[last.state] === 'critical' ? 'bg-danger'
+                : RUN_STATE_TONE[last.state] === 'attention' ? 'bg-attention'
+                : 'bg-text-subtle'
+            }`}
+          />
+          <span className="text-text-subtle">
+            {RUN_STATE_LABEL[last.state].toLowerCase()} · {relTime(last.createdAt)}
+          </span>
+        </span>
+      )}
     </div>
   );
 }

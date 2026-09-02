@@ -27,6 +27,7 @@ import type {
   TaskRisk,
   TaskStatus,
 } from '../types';
+import type { TaskNode } from './nodes';
 
 /* ── Task runtime state machine ───────────────────────────────────── */
 /**
@@ -84,6 +85,8 @@ export interface DagNode {
   risk: TaskRisk;
   owner: 'ai' | 'human';
   estimatedDurationMinutes: number;
+  /** Execution node this task is resolved to (when known at DAG build time). */
+  node?: TaskNode;
   /** Topological depth — longest chain of dependencies above this node. */
   depth: number;
   /** Batch (wave) index — nodes with the same batch can run in parallel. */
@@ -227,3 +230,4 @@ export const PLANNING_TO_RUNTIME: Record<TaskStatus, ExecutionTaskStatus> = {
 
 /** Convenience re-exports so callers can import the whole domain in one line. */
 export type { MissionCategory, TaskKind, TaskMode, TaskPriority, TaskRisk };
+export type { TaskNode } from './nodes';

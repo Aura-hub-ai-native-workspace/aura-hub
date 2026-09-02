@@ -1,0 +1,289 @@
+{
+  "id": "wr-demo-0001",
+  "workflowId": "wf-mt6p764n-yeej95",
+  "versionId": "wv-demo-0001",
+  "workflowName": "Demo summarize",
+  "projectId": "p-demo",
+  "projectPath": "/projects/demo",
+  "state": "succeeded",
+  "trigger": {
+    "kind": "manual",
+    "by": "user"
+  },
+  "createdAt": "2026-08-24T10:00:00.000Z",
+  "ms": 4000.0,
+  "nodes": {
+    "n-src": {
+      "nodeId": "n-src",
+      "type": "current-project",
+      "state": "succeeded",
+      "transitions": [
+        {
+          "at": "2026-08-24T10:00:01.100Z",
+          "from": "queued",
+          "to": "running"
+        },
+        {
+          "at": "2026-08-24T10:00:01.300Z",
+          "from": "running",
+          "to": "succeeded"
+        }
+      ],
+      "iteration": 0,
+      "ms": 200.0,
+      "attempts": 1,
+      "evidence": [],
+      "input": {
+        "text": "",
+        "fromNodeIds": []
+      },
+      "startedAt": "2026-08-24T10:00:01.100Z",
+      "finishedAt": "2026-08-24T10:00:01.300Z",
+      "summary": "Project loaded",
+      "output": {
+        "text": "/projects/demo",
+        "files": [
+          "src/a.ts"
+        ],
+        "port": "out",
+        "provenance": "system"
+      }
+    },
+    "n-ag": {
+      "nodeId": "n-ag",
+      "type": "agent",
+      "state": "succeeded",
+      "transitions": [
+        {
+          "at": "2026-08-24T10:00:01.400Z",
+          "from": "queued",
+          "to": "running"
+        },
+        {
+          "at": "2026-08-24T10:00:04.800Z",
+          "from": "running",
+          "to": "succeeded"
+        }
+      ],
+      "iteration": 1,
+      "ms": 3400.0,
+      "attempts": 1,
+      "evidence": [
+        {
+          "invocationId": "invdemo00001",
+          "capabilityId": "filesystem.write",
+          "outcome": "succeeded",
+          "decision": "auto-execute",
+          "decisionRule": "risk-default",
+          "risk": "medium",
+          "verified": true,
+          "at": "2026-08-24T10:00:02.500Z",
+          "durationMs": 12.0,
+          "approvalId": "apr-demo0001"
+        }
+      ],
+      "input": {
+        "text": "Summarize the project.",
+        "fromNodeIds": [
+          "n-src"
+        ],
+        "provenance": "authored"
+      },
+      "startedAt": "2026-08-24T10:00:01.400Z",
+      "finishedAt": "2026-08-24T10:00:04.800Z",
+      "summary": "Agent completed in 2 iterations",
+      "output": {
+        "text": "Demo project summary.",
+        "port": "done",
+        "provenance": "tool"
+      },
+      "agentTrace": {
+        "beats": [
+          {
+            "seq": 1,
+            "iteration": 1,
+            "at": "2026-08-24T10:00:01.500Z",
+            "kind": "intent",
+            "actor": "system",
+            "text": "Summarize the project."
+          },
+          {
+            "seq": 2,
+            "iteration": 1,
+            "at": "2026-08-24T10:00:02.000Z",
+            "kind": "plan",
+            "actor": "ai",
+            "text": "Read the file, then write a note."
+          },
+          {
+            "seq": 3,
+            "iteration": 1,
+            "at": "2026-08-24T10:00:02.400Z",
+            "kind": "proposal",
+            "actor": "ai",
+            "text": "filesystem.write src/a.ts",
+            "capabilityId": "filesystem.write"
+          },
+          {
+            "seq": 4,
+            "iteration": 1,
+            "at": "2026-08-24T10:00:02.450Z",
+            "kind": "permission",
+            "actor": "fabric",
+            "text": "auto-execute",
+            "capabilityId": "filesystem.write",
+            "rule": "risk-default",
+            "decision": "auto-execute"
+          },
+          {
+            "seq": 5,
+            "iteration": 1,
+            "at": "2026-08-24T10:00:02.500Z",
+            "kind": "execution",
+            "actor": "fabric",
+            "text": "Wrote src/a.ts",
+            "capabilityId": "filesystem.write",
+            "evidence": {
+              "invocationId": "invdemo00001",
+              "capabilityId": "filesystem.write",
+              "outcome": "succeeded",
+              "decision": "auto-execute",
+              "decisionRule": "risk-default",
+              "risk": "medium",
+              "verified": true,
+              "at": "2026-08-24T10:00:02.500Z",
+              "durationMs": 12.0,
+              "approvalId": "apr-demo0001"
+            }
+          },
+          {
+            "seq": 6,
+            "iteration": 1,
+            "at": "2026-08-24T10:00:03.000Z",
+            "kind": "observation",
+            "actor": "fabric",
+            "text": "exit 0",
+            "untrusted": true
+          },
+          {
+            "seq": 7,
+            "iteration": 2,
+            "at": "2026-08-24T10:00:04.700Z",
+            "kind": "decision",
+            "actor": "ai",
+            "text": "The file is written; done."
+          },
+          {
+            "seq": 8,
+            "iteration": 2,
+            "at": "2026-08-24T10:00:04.750Z",
+            "kind": "result",
+            "actor": "ai",
+            "text": "Demo project summary."
+          }
+        ],
+        "iterations": 2,
+        "tokensUsed": 940,
+        "ms": 3400.0,
+        "stopReason": "completed",
+        "port": "done",
+        "output": "Demo project summary.",
+        "evidence": [
+          {
+            "invocationId": "invdemo00001",
+            "capabilityId": "filesystem.write",
+            "outcome": "succeeded",
+            "decision": "auto-execute",
+            "decisionRule": "risk-default",
+            "risk": "medium",
+            "verified": true,
+            "at": "2026-08-24T10:00:02.500Z",
+            "durationMs": 12.0,
+            "approvalId": "apr-demo0001"
+          }
+        ],
+        "refusedTools": [],
+        "effectiveBounds": {
+          "maxIterations": 25,
+          "timeoutMs": 600000,
+          "maxTokens": 200000,
+          "maxConsecutiveFailures": 5,
+          "tools": [
+            "filesystem.read",
+            "filesystem.write"
+          ]
+        },
+        "tokenSource": "estimated"
+      }
+    },
+    "n-out": {
+      "nodeId": "n-out",
+      "type": "output",
+      "state": "succeeded",
+      "transitions": [
+        {
+          "at": "2026-08-24T10:00:04.900Z",
+          "from": "queued",
+          "to": "running"
+        },
+        {
+          "at": "2026-08-24T10:00:04.950Z",
+          "from": "running",
+          "to": "succeeded"
+        }
+      ],
+      "iteration": 0,
+      "ms": 50.0,
+      "attempts": 1,
+      "evidence": [],
+      "input": {
+        "text": "Demo project summary.",
+        "fromNodeIds": [
+          "n-ag"
+        ]
+      },
+      "startedAt": "2026-08-24T10:00:04.900Z",
+      "finishedAt": "2026-08-24T10:00:04.950Z"
+    }
+  },
+  "vars": {},
+  "inputs": {},
+  "outputs": [
+    {
+      "nodeId": "n-out",
+      "title": "Result",
+      "text": "Demo project summary."
+    }
+  ],
+  "evidence": [
+    {
+      "invocationId": "invdemo00001",
+      "capabilityId": "filesystem.write",
+      "outcome": "succeeded",
+      "decision": "auto-execute",
+      "decisionRule": "risk-default",
+      "risk": "medium",
+      "verified": true,
+      "at": "2026-08-24T10:00:02.500Z",
+      "durationMs": 12.0,
+      "approvalId": "apr-demo0001"
+    }
+  ],
+  "resumable": false,
+  "log": [
+    {
+      "at": "2026-08-24T10:00:01.000Z",
+      "nodeId": null,
+      "level": "info",
+      "text": "Run started (manual by user)"
+    },
+    {
+      "at": "2026-08-24T10:00:04.995Z",
+      "nodeId": null,
+      "level": "info",
+      "text": "Run succeeded"
+    }
+  ],
+  "startedAt": "2026-08-24T10:00:01.000Z",
+  "finishedAt": "2026-08-24T10:00:05.000Z"
+}

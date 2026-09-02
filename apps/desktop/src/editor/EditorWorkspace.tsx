@@ -18,6 +18,7 @@ import { useProjectData } from '../screens/project/sections/shared';
 import { AIActionDialog } from './AIActionDialog';
 import { DiagnosisPanel } from './DiagnosisPanel';
 import { TextPromptDialog } from './TextPromptDialog';
+import { AuraBugButton } from './aurabug/AuraBugButton';
 
 /**
  * EditorWorkspace — AURA's Code Workspace root.
@@ -140,6 +141,7 @@ export function EditorWorkspace({ projectId }: { projectId: string }) {
           <div className="min-w-0 flex-1">
             <EditorTabs />
           </div>
+          <AuraBugButton projectId={project.id} />
           <IconButton
             icon="panel"
             label={aiPanelOpen ? 'Hide AI Context' : 'Show AI Context'}

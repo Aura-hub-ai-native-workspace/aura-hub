@@ -3,6 +3,8 @@ import { useAppStore, type Command } from '@aura/core';
 import { useWorkspace } from '../data/useWorkspace';
 import { useLayoutStore } from '../ops/layoutStore';
 import { hasUnsavedWorkFor } from '../editor/editorStore';
+import { useAgentLink } from '../ai/agentLinkStore';
+import { useFabric } from '../data/useFabric';
 
 /**
  * Builds the command registry for the palette — the Global Command
@@ -23,6 +25,10 @@ export function useCommands(): Command[] {
   const projectList = useWorkspace((s) => s.projects);
   const setSearchScope = useLayoutStore((s) => s.setSearchScope);
   const openPanel = useLayoutStore((s) => s.openPanel);
+  const focusAskAura = useAgentLink((s) => s.focusAskAura);
+  const lastSessionId = useAgentLink((s) => s.lastSessionId);
+  const pendingApproval = useFabric((s) =>
+    s.approvals.find((a) => a.state === 'pending')) ?? null;
 
   return useMemo<Command[]>(() => {
       const inWorkspace = (run: () => void) => () => { setNav('workspace'); run(); };
@@ -31,13 +37,13 @@ export function useCommands(): Command[] {
         { id: 'nav-home', title: 'Go to Home', section: 'Navigate', icon: 'home', run: () => setNav('home') },
         { id: 'nav-workflows', title: 'Go to Workflow', section: 'Navigate', icon: 'workflows', run: () => setNav('workflows') },
         { id: 'nav-workspace', title: 'Go to Workspace', section: 'Navigate', icon: 'layout', run: () => setNav('workspace') },
-        { id: 'nav-marketplace', title: 'Go to Extended Environment', section: 'Navigate', icon: 'marketplace', run: () => setNav('marketplace') },
+        { id: 'nav-environment', title: 'Go to Connected Environment', section: 'Navigate', icon: 'link', keywords: ['nodes', 'tools', 'connect', 'integrations'], run: () => setNav('environment') },
         { id: 'nav-settings', title: 'Go to Settings', section: 'Navigate', icon: 'settings', run: () => setNav('settings') },
         // Knowledge/AI/Missions/Dashboard/Twin/Governance no longer have their
         // own nav destinations — they're Workspace panels now (see 'Actions'
         // section below), consistent with every other panel-opening command.
         { id: 'open-knowledge', title: 'Open Knowledge', section: 'Actions', icon: 'knowledge', run: inWorkspace(() => openPanel('knowledge')) },
-        { id: 'open-ai-chat', title: 'Ask AURA', section: 'Actions', icon: 'spark', run: inWorkspace(() => openPanel('ai-chat')) },
+        { id: 'open-ai-chat', title: 'Help Chat Assistant', section: 'Actions', icon: 'spark', run: inWorkspace(() => openPanel('ai-chat')) },
         { id: 'open-dashboard', title: 'Open Engineering Dashboard', section: 'Actions', icon: 'activity', run: inWorkspace(() => openPanel('dashboard')) },
         { id: 'open-twin', title: 'Open Engineering Twin', section: 'Actions', icon: 'cpu', run: inWorkspace(() => openPanel('twin')) },
         { id: 'open-governance', title: 'Open Governance', section: 'Actions', icon: 'shield', run: inWorkspace(() => openPanel('governance')) },
@@ -196,6 +202,37 @@ export function useCommands(): Command[] {
       },
     ];
 
-    return [...actions, ...nav, ...projects];
-  }, [setNav, openProject, openAddProjectDialog, openWorkspace, projectList, toggleTheme, toggleRightPanel, toggleSidebar, setSearchScope, openPanel]);
+    const agentCommands: Command[] = [
+      {
+        id: 'agent-ask',
+        title: 'Ask AURA',
+        section: 'Central Agent',
+        icon: 'spark',
+        keywords: ['intent', 'assistant', 'task'],
+        run: () => { setNav('home'); focusAskAura(); },
+      },
+    ];
+    if (lastSessionId) {
+      agentCommands.push({
+        id: 'agent-session-open',
+        title: 'Open active Agent session',
+        section: 'Central Agent',
+        icon: 'activity',
+        keywords: ['session', 'resume', 'result'],
+        run: () => setNav('home'),
+      });
+    }
+    if (pendingApproval) {
+      agentCommands.push({
+        id: 'agent-decide-approval',
+        title: `Decide approval: ${pendingApproval.items[0]?.title ?? pendingApproval.summary}`,
+        section: 'Central Agent',
+        icon: 'shield',
+        keywords: ['approve', 'deny', 'permission'],
+        run: () => setNav('workflows'),
+      });
+    }
+
+    return [...actions, ...nav, ...projects, ...agentCommands];
+  }, [setNav, openProject, openAddProjectDialog, openWorkspace, projectList, toggleTheme, toggleRightPanel, toggleSidebar, setSearchScope, openPanel, focusAskAura, lastSessionId, pendingApproval]);
 }

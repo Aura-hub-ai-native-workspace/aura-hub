@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { NAV_TITLES, useAppStore, cn, popVariants } from '@aura/core';
 import { Icon, IconButton, Tooltip } from '@aura/ui';
@@ -15,6 +16,16 @@ import { NotificationCenter } from '../ops/NotificationCenter';
  * tool: the bell shows an unread badge and opens a small popover (the
  * same NotificationCenter the old dockable panel used), never a full
  * inbox panel a user has to arrange windows around.
+ *
+ * That popover is **portaled to `document.body`**, like every other
+ * floating surface in AURA (Dialog, CommandPalette, Toast,
+ * WindowSwitcher). It has to be: this header carries `backdrop-blur-xl`,
+ * and `backdrop-filter` creates a stacking context, so a popover rendered
+ * inside the header is trapped in it. `<main>` is a *later sibling* of the
+ * header, so it paints on top of the header's entire subtree no matter how
+ * large the popover's own z-index is — raising it would change nothing.
+ * Portaling is the fix; the z-layer below only orders it against the other
+ * portaled surfaces.
  */
 export function CommandBar() {
   const nav = useAppStore((s) => s.nav);
@@ -28,13 +39,45 @@ export function CommandBar() {
   const unread = useUnreadCount();
   const [notifOpen, setNotifOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  /** Viewport coordinates for the portaled popover, anchored to the bell. */
+  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
 
   const project = useWorkspace((s) => s.projects.find((p) => p.id === activeProjectId));
+
+  // The popover lives outside this subtree, so it cannot inherit the bell's
+  // position — it is measured from the bell and re-measured whenever the
+  // viewport moves under it.
+  const place = useCallback(() => {
+    const el = notifRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setAnchor({ top: r.bottom + 8, right: Math.max(8, window.innerWidth - r.right) });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!notifOpen) return;
+    place();
+    window.addEventListener('resize', place);
+    // Capture phase: any scrolling container in the app can shift the bell,
+    // and scroll events from nested scrollers don't bubble to window.
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [notifOpen, place]);
 
   useEffect(() => {
     if (!notifOpen) return;
     const onDown = (e: MouseEvent) => {
-      if (notifRef.current && !notifRef.current.contains(e.target as Node)) setNotifOpen(false);
+      const target = e.target as Node;
+      // The bell toggles itself; the panel is no longer a DOM descendant of
+      // the bell, so it must be checked separately or every click *inside*
+      // the panel would close it on mousedown — before the click landed.
+      if (notifRef.current?.contains(target)) return;
+      if (popRef.current?.contains(target)) return;
+      setNotifOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setNotifOpen(false);
     window.addEventListener('mousedown', onDown);
@@ -97,19 +140,29 @@ export function CommandBar() {
               )}
             </button>
           </Tooltip>
-          <AnimatePresence>
-            {notifOpen && (
-              <motion.div
-                variants={popVariants}
-                initial="initial"
-                animate="animate"
-                exit="exit"
-                className="absolute right-0 top-full z-50 mt-2 max-h-[70vh] w-[360px] overflow-hidden rounded-2xl border border-line bg-surface shadow-lg"
-              >
-                <NotificationCenter embedded onNavigate={() => setNotifOpen(false)} />
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {createPortal(
+            <AnimatePresence>
+              {notifOpen && anchor && (
+                <motion.div
+                  ref={popRef}
+                  variants={popVariants}
+                  initial="initial"
+                  animate="animate"
+                  exit="exit"
+                  style={{ top: anchor.top, right: anchor.right }}
+                  // `flex flex-col` is load-bearing: it gives the inner
+                  // PanelBody a shrinkable flex item inside the 70vh cap, so
+                  // its `overflow-y-auto` actually engages. As a plain block
+                  // the body sized to its content and the overflow was simply
+                  // clipped, leaving later notifications unreachable.
+                  className="fixed z-[90] flex max-h-[70vh] w-[360px] flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-lg"
+                >
+                  <NotificationCenter embedded onNavigate={() => setNotifOpen(false)} />
+                </motion.div>
+              )}
+            </AnimatePresence>,
+            document.body,
+          )}
         </div>
         <Tooltip content="Context panel">
           <IconButton

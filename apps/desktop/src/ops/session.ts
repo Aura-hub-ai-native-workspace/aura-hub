@@ -2,17 +2,18 @@
  * session — workspace session persistence (Part 4).
  * ------------------------------------------------------------------
  * On relaunch, AURA restores the state of the whole engineering
- * environment: the selected project, the mission/diagnosis focus, the
- * open editor tabs and the workspace layout (the layout itself persists
- * separately via ops/layoutStore, but session owns project + focus so
- * relaunch lands exactly where you left off).
+ * environment: the selected project, the mission/diagnosis focus and the
+ * open editor tabs. The Workspace's docked layout is deliberately NOT
+ * part of this — it always starts empty; only named layout presets
+ * (ops/layoutStore's `presets`) are restored, as data the user can
+ * explicitly load, never as windows opened on their behalf.
  *
  * Restore is best-effort: if the backend is down or a project was
  * removed, the environment simply boots clean instead of erroring.
  */
 import { useWorkspace } from '../data/useWorkspace';
 import { useEditorStore } from '../editor/editorStore';
-import { hydrateLayouts, hydratePresets, useLayoutStore, type DetailFocus } from './layoutStore';
+import { clearStaleLayoutCache, hydratePresets, useLayoutStore, type DetailFocus } from './layoutStore';
 
 const KEY = 'aura.ops.session';
 
@@ -48,7 +49,13 @@ export function hydrateSession(): SessionSnapshot | null {
     if (!parsed || typeof parsed !== 'object') return null;
     return {
       projectId: typeof parsed.projectId === 'string' ? parsed.projectId : null,
-      focused: parsed.focused ?? { projectId: null, missionId: null, diagnosisId: null },
+      // Older snapshots carried a `projectId` here. It is dropped on read:
+      // restoring it would resurrect the second project pointer this focus
+      // model exists to remove.
+      focused: {
+        missionId: typeof parsed.focused?.missionId === 'string' ? parsed.focused.missionId : null,
+        diagnosisId: typeof parsed.focused?.diagnosisId === 'string' ? parsed.focused.diagnosisId : null,
+      },
       editor: {
         openOrder: Array.isArray(parsed.editor?.openOrder) ? parsed.editor.openOrder : [],
         activePath: typeof parsed.editor?.activePath === 'string' ? parsed.editor.activePath : null,
@@ -61,13 +68,21 @@ export function hydrateSession(): SessionSnapshot | null {
 
 /** Reopen a project and its editor tabs, then restore the focus. */
 export async function restoreSession(): Promise<void> {
+  // Wipe any leftover ambient layout cache from an older build unconditionally,
+  // before the snapshot check below — so it can never be read back as if it
+  // were a real layout, regardless of whether a session snapshot exists.
+  clearStaleLayoutCache();
+
   const snap = hydrateSession();
   if (!snap) return;
 
   const layout = useLayoutStore.getState();
-  // Restore the saved docked layout + presets (or default for new users).
-  if (!layout.root) layout.setRoot(hydrateLayouts());
-  const presets = hydratePresets();
+  // `root` is deliberately never auto-populated here — a workspace starts
+  // empty on every launch. Only named presets are restored (as data the
+  // user can explicitly load, never as windows opened on their behalf).
+  // Scoped to the project the session belongs to. A single global key meant
+  // layouts arranged for project A were restored under project B.
+  const presets = hydratePresets(snap.projectId);
   if (Object.keys(presets).length) useLayoutStore.setState({ presets });
   layout.setFocused(snap.focused);
 

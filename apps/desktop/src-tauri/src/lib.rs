@@ -1,20 +1,81 @@
 //! AURA Hub — Tauri core.
 //!
-//! Deliberately thin. The desktop wrapper's only job today is to host
-//! the web environment in a native window. Native capabilities (file
-//! system access, local model runners, system integration) will be
-//! added here as tightly-scoped `#[tauri::command]`s — one clean seam
-//! between the environment and the operating system.
+//! Deliberately thin. The desktop wrapper hosts the web environment in a
+//! native window and owns the lifecycle of AURA's local service. Native
+//! capabilities are exposed as tightly-scoped `#[tauri::command]`s — one
+//! clean seam between the environment and the operating system.
+//!
+//! What this layer deliberately does NOT do is execute anything on the
+//! user's behalf. There is no shell command here, no spawn-what-you-are-
+//! told, no filesystem escape: the only process this shell ever starts is
+//! AURA's own service, and every tool invocation continues to travel the
+//! governed path (Capability Fabric → policy → approval → audit). The
+//! desktop shell must not become a way around that.
+
+mod appimage;
+mod service;
 
 use serde::Serialize;
+use service::{ServiceHandle, Startup, DEFAULT_PORT};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use tauri::path::BaseDirectory;
+use tauri::{Manager, RunEvent};
 
 /// A trivial command kept as a wiring example / health check for the
 /// JS <-> Rust bridge. Remove or replace when real commands land.
 #[tauri::command]
 fn environment_ping() -> String {
     "aura://ready".to_string()
+}
+
+/// This boot's UI token, so the renderer can prove which window it is.
+///
+/// The service mints the token and writes it to `$AURA_HOME/ui-token`
+/// with 0600; this reads it back. Nothing is generated here, so there is
+/// exactly one authority for the value and no way for the shell and the
+/// service to disagree about it.
+///
+/// Read-only, argument-free, and confined to a single fixed filename —
+/// it cannot be pointed at another path. Returning `None` is normal, not
+/// an error: it means the service has not finished booting yet, or this
+/// renderer is a browser in dev mode with no shell behind it. The caller
+/// then simply sends no token and every action stays on the governed
+/// path, which is the safe direction to fail in.
+#[tauri::command]
+fn ui_token() -> Option<String> {
+    let value = fs::read_to_string(service::aura_home().join("ui-token")).ok()?;
+    let value = value.trim().to_string();
+    if value.is_empty() { None } else { Some(value) }
+}
+
+/// How this copy of AURA Hub was installed, which decides whether the
+/// updater can replace it in place.
+///
+/// Read-only and argument-free: it inspects the process's own environment
+/// and nothing else. It executes nothing, downloads nothing, and cannot be
+/// pointed at anything by a caller — the renderer may ask *what am I*, and
+/// that is the whole of it.
+///
+/// Linux is the only platform where this is ambiguous. Tauri's Linux
+/// updater replaces the running AppImage, which sets `APPIMAGE` for the
+/// process it launches; a `.deb` install has no such variable and is owned
+/// by the system package manager, which the updater must not fight.
+/// Windows and macOS installs are always self-updating.
+#[tauri::command]
+fn update_install_kind() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        match std::env::var("APPIMAGE") {
+            Ok(v) if !v.is_empty() => "self-updating".to_string(),
+            _ => "managed".to_string(),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "self-updating".to_string()
+    }
 }
 
 /// Directories the Code Workspace never lists — generated/vendored
@@ -150,16 +211,214 @@ fn code_create_file(root: String, rel_path: String, contents: String) -> Result<
     fs::write(&file, contents).map_err(|e| e.to_string())
 }
 
+/* ── local service supervision ───────────────────────────────────── */
+
+/// What the shell knows about the local service, as the UI sees it.
+#[derive(Clone, Serialize)]
+pub struct ServiceStatus {
+    /// `starting` | `ready` | `failed`
+    state: String,
+    /// `reused` when a compatible service was already running, `spawned`
+    /// when this process started it, empty otherwise. The distinction is
+    /// not cosmetic — it is who owns shutdown.
+    origin: String,
+    /// Plain-language detail. Carries the reason on failure.
+    message: String,
+    port: u16,
+}
+
+pub struct ServiceState {
+    handle: ServiceHandle,
+    port: u16,
+    status: Mutex<ServiceStatus>,
+}
+
+/// Where the packaged service bundle lives.
+///
+/// Two resolutions, in order of trust: the packaged resource directory
+/// (the real answer in an installed application), then the repository's
+/// build output (the answer while developing). Nothing is guessed — if
+/// neither exists the caller reports an incomplete installation rather
+/// than starting something arbitrary.
+fn resolve_service_script(app: &tauri::App) -> Option<PathBuf> {
+    if let Ok(packaged) = app.path().resolve("resources/ai-service.mjs", BaseDirectory::Resource) {
+        if packaged.is_file() {
+            return Some(strip_verbatim(packaged));
+        }
+    }
+    // `CARGO_MANIFEST_DIR` is apps/desktop/src-tauri; the repo root is three up.
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .join(".aura/ai-service.mjs");
+    dev.canonicalize().ok().filter(|p| p.is_file()).map(strip_verbatim)
+}
+
+/// Turn a Windows verbatim path back into an ordinary one.
+///
+/// `canonicalize` and Tauri's resource resolver both hand back verbatim
+/// paths on Windows (`\\?\D:\…`). Rust and the Win32 API are perfectly
+/// happy with those; **Node is not**. Given one as its main module it
+/// parses the device root, tries to `lstat` the bare drive letter, and
+/// dies with `EISDIR: illegal operation on a directory, lstat 'D:'` —
+/// which surfaces to the user as the service "stopping while starting up"
+/// with no indication that a path form was the cause.
+///
+/// The prefix exists to lift MAX_PATH and separator normalisation, neither
+/// of which matters for a path we are about to hand to another program, so
+/// dropping it costs nothing and makes the child able to read it.
+/// Guarded with `cfg!` rather than `#[cfg]` on purpose: a `#[cfg(windows)]`
+/// body is not compiled on Linux, so the one branch that only ever runs on
+/// Windows would be the one branch no Linux build ever type-checks. This
+/// way the developer machine and the Linux CI runner both compile it, and
+/// only its execution is platform-specific. No Unix path begins with
+/// `\\?\`, so the check is inert there in any case.
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    if !cfg!(windows) {
+        return p;
+    }
+    let s = p.to_string_lossy().to_string();
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => p,
+    }
+}
+
+/// The service's current condition, re-checked on every call.
+///
+/// Deliberately live rather than cached: a service that crashed after a
+/// clean start must not keep reporting `ready`, or the UI would go on
+/// claiming an execution backend that is gone.
+#[tauri::command]
+fn service_status(state: tauri::State<'_, ServiceState>) -> ServiceStatus {
+    let mut status = state.status.lock().unwrap();
+    if status.state == "ready" && !service::is_healthy(state.port) {
+        status.state = "failed".into();
+        status.message = "AURA's local service stopped responding.".into();
+    }
+    status.clone()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // Installed before anything is spawned, so there is no window in which
+    // a termination signal could leave a service behind.
+    service::install_termination_handlers();
+
+    let port = std::env::var("AI_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(DEFAULT_PORT);
+
+    let builder = tauri::Builder::default();
+
+    // The updater, the restart it needs, and the OS identity it asks for
+    // first. Registered before anything else so the plugins are available
+    // for the whole app lifetime.
+    //
+    // `tauri_plugin_os` is what injects the global the renderer reads to
+    // learn its platform and architecture. Without it the updater cannot
+    // name its own target, so it cannot tell which artifact in a manifest
+    // is for this machine — and it fails before it ever reaches the
+    // network. It answers "what am I", nothing more.
+    //
+    // `cfg` rather than an unconditional call because the plugins are
+    // declared under the same desktop cfg in Cargo.toml — on any other
+    // target the crates are absent and this would not compile.
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    let builder = builder
+        .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+
+    let app = builder
+        .manage(ServiceState {
+            handle: ServiceHandle::new(port),
+            port,
+            status: Mutex::new(ServiceStatus {
+                state: "starting".into(),
+                origin: String::new(),
+                message: "Starting AURA's local service…".into(),
+                port,
+            }),
+        })
         .invoke_handler(tauri::generate_handler![
             environment_ping,
+            ui_token,
+            service_status,
             code_read_dir,
             code_read_file,
             code_write_file,
             code_create_file,
+            appimage::appimage_status,
+            appimage::appimage_install,
+            appimage::appimage_uninstall,
+            update_install_kind,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running AURA Hub");
+        .setup(move |app| {
+            let script = resolve_service_script(app);
+            let handle = app.handle().clone();
+
+            // Off the UI thread: startup can take seconds (module load,
+            // knowledge index), and blocking here would freeze the shell.
+            // The window is configured hidden and is shown below, so the
+            // user never sees a live window pointed at a dead backend.
+            std::thread::spawn(move || {
+                let state = handle.state::<ServiceState>();
+                let outcome = match script {
+                    Some(path) => service::ensure_running(&state.handle, path, port),
+                    None => Err("AURA's local service bundle is missing from this installation.".to_string()),
+                };
+
+                {
+                    let mut status = state.status.lock().unwrap();
+                    *status = match &outcome {
+                        Ok(Startup::Reused) => ServiceStatus {
+                            state: "ready".into(),
+                            origin: "reused".into(),
+                            message: format!("Connected to the AURA service already running on port {port}."),
+                            port,
+                        },
+                        Ok(Startup::Spawned) => ServiceStatus {
+                            state: "ready".into(),
+                            origin: "spawned".into(),
+                            message: format!("AURA's local service is ready on port {port}."),
+                            port,
+                        },
+                        Err(message) => ServiceStatus {
+                            state: "failed".into(),
+                            origin: String::new(),
+                            message: message.clone(),
+                            port,
+                        },
+                    };
+                }
+
+                if let Err(message) = &outcome {
+                    // Goes to the launcher's journal, and to the log the
+                    // failure message points the user at.
+                    eprintln!("AURA Hub: {message}");
+                }
+
+                // Shown either way. A failed start still deserves a window
+                // that can explain itself; a permanently invisible app
+                // would be the least honest outcome available.
+                if let Some(window) = handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            });
+
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building AURA Hub");
+
+    app.run(|app_handle, event| {
+        // Quitting AURA must not leave its service running. `shutdown` only
+        // signals a child this process actually spawned, so a developer's
+        // own `npm run ai` survives the app closing.
+        if let RunEvent::Exit = event {
+            app_handle.state::<ServiceState>().handle.shutdown();
+        }
+    });
 }

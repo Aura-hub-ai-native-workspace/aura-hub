@@ -1,7 +1,7 @@
 import { PipelineManager, type IndexStatus, type PipelineOptions } from './pipeline';
-import { ProjectRegistry, type ProjectRecord } from './projects';
+import { ProjectRegistry, slug, type ProjectRecord } from './projects';
 import { getOrBuildProfile, loadProfile, type ProjectProfile } from './profile';
-import { extractArchitectureLayers, layersFromFullstack, type LayerDef } from './architectureExtractor';
+import { extractArchitectureLayers, layersFromFullstack, type LayerStack } from './architectureExtractor';
 import { graphifyJsonPath } from './graphify';
 import { ProjectMemory, type MemoryItem, type MemoryKind } from './memory';
 import { engineeringMemory, decisionMemory, missionMemory, type BaseMemoryRecord, type DecisionAlternative } from '@aura/engineering-memory';
@@ -10,22 +10,37 @@ import { buildKnowledgeGraph, type KnowledgeGraph } from './knowledgeGraph';
 import { runProjectIntelligence, runWorkspaceIntelligence, type ProjectIntelligenceReport, type WorkspaceIntelligenceReport } from './intelligence';
 import { loadChangeLog, analyzeChangePatterns, getChangeVelocity, detectHotspots, type ChangeEntry, type ChangePattern } from './intelligence/changeIntelligence';
 import { WorkflowStore } from './workflow/store';
-import { runWorkflow, type RunResult } from './workflow/engine';
+import { WorkflowVersionStore } from './workflow/versions';
+import { WorkflowRunStore } from './workflow/run/store';
+import { dryRunWorkflow, type DryRunReport } from './workflow/dryrun';
+import { dryRunRule, type RuleDryRunReport } from './automationDryRun';
+import { describeCron, type AutomationRuleSummary, type AutomationStore } from '@aura/automation';
+import type { RunTrigger, WorkflowRun, WorkflowRunSummary } from './workflow/run/types';
+import { WorkflowRunner, type StartedRun } from './workflow/runner';
+import { computeEnvelope, diffEnvelopes, type AuthorityEnvelope, type EnvelopeDiff } from './workflow/envelope';
+import { RunScopeRegistry } from './fabric/scopes';
 import type { RunEvent, Workflow } from './workflow/types';
 import { createAutomationRuntime, automationEvent, type AutomationRuntime, type AutomationEvent } from './automation';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { DiagnosisStore } from './diagnosis/store';
 import { runDiagnosis } from './diagnosis/orchestrator';
 import { splicePatch } from './diagnosis/patchLimiter';
 import { resolveInsideProject } from './diagnosis/repoScan';
 import type { DiagnosisEvent, DiagnosisRecord, DiagnosisRequest, DiagnosisSummary, PatchCandidate } from './diagnosis/types';
 import { MissionStore } from './mission/store';
+import {
+  composeContextView, renderContextContract,
+  type ComposeOptions, type ContextResult, type EnvironmentSnapshot,
+} from './context';
 import { runMissionCreation } from './mission/orchestrator';
 import { generateTaskProposal } from './mission/taskGen';
+import { planTaskInvocation, type CapabilityFabric } from '@aura/capability-fabric';
 import { MissionExecutionEngine } from './mission/execution/engine';
-import type { RunReadyOptions } from './mission/execution/engine';
+import type { RunReadyOptions, RunTaskResult } from './mission/execution/engine';
 import type { ExecutionEvent } from './mission/execution/types';
-import type { MissionEvent, MissionRecord, MissionSummary } from './mission/types';
+import type { MissionEvent, MissionRecord, MissionSummary, MissionTask } from './mission/types';
 import { getAdapter, getAllAdapters, ENV_VAR_BY_PROVIDER } from './provider/registry';
 import { storeKey, removeKey, getKey, getActive, getAllProviderStores, storeModels, storeHealth } from './provider/credentialStore';
 import { detectProvider } from './provider/detector';
@@ -77,6 +92,31 @@ export class WorkspaceManager {
       icon: input.icon ?? record.icon,
     });
     return { project, profile };
+  }
+
+  /**
+   * Create a brand-new project folder on disk (as opposed to `addProject`,
+   * which only ever imports a folder that already exists). Scaffolds a
+   * minimal real directory, then hands off to the exact same
+   * `registry.add()` + profiling path `addProject` uses — a new project is
+   * never a separate concept from an added one, just a folder that didn't
+   * exist a moment ago.
+   */
+  createProject(input: { name: string; parentPath?: string }): { project: ProjectRecord; profile: ProjectProfile } {
+    const name = input.name.trim().slice(0, 80);
+    if (!name) throw new Error('Project name is required');
+    if (/[/\\]|^\.\.?$/.test(name)) throw new Error('Project name cannot contain path separators');
+
+    const parent = input.parentPath?.trim() || path.join(os.homedir(), 'AuraProjects');
+    const dirName = slug(name);
+    const target = path.resolve(parent, dirName);
+
+    if (fs.existsSync(target)) throw new Error(`A folder already exists at ${target}`);
+
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, 'README.md'), `# ${name}\n`);
+
+    return this.addProject({ name, path: target });
   }
 
   renameProject(id: string, name: string): ProjectRecord {
@@ -312,16 +352,16 @@ export class WorkspaceManager {
     return runProjectIntelligence(id, project.path);
   }
 
-  /** Real architecture layers — prefers the rich graphify graph, falls back to the FullStack graph for the mounted project. */
-  resolveArchitectureLayers(id: string): LayerDef[] {
+  /** Real architecture layers (+ the real inter-layer dependency edges the extractor computes alongside them) — prefers the rich graphify graph, falls back to the FullStack graph for the mounted project. */
+  resolveArchitectureLayers(id: string): LayerStack {
     const name = this.registry.get(id)?.name;
     const jp = graphifyJsonPath(id);
-    let layers = jp ? extractArchitectureLayers(jp, name) : [];
-    if (layers.length <= 1 && this.pipeline.currentProjectId === id) {
+    let stack = jp ? extractArchitectureLayers(jp, name) : { layers: [], edges: [] };
+    if (stack.layers.length <= 1 && this.pipeline.currentProjectId === id) {
       const g = this.pipeline.graphView() as { entities?: { id: string; name: string; relPath: string }[]; relations?: { from: string; to: string }[] };
-      if (g.entities?.length) layers = layersFromFullstack(g.entities, g.relations ?? [], name);
+      if (g.entities?.length) stack = layersFromFullstack(g.entities, g.relations ?? [], name);
     }
-    return layers;
+    return stack;
   }
 
   /**
@@ -353,22 +393,296 @@ export class WorkspaceManager {
     return runWorkspaceIntelligence(this.registry.list().map((p) => ({ id: p.id, root: p.path })));
   }
 
+  /* ── context fabric ─────────────────────────────────────────────── */
+
+  /**
+   * Compose one project's `ContextView` — AURA's shared understanding,
+   * in the shape every downstream surface consumes.
+   *
+   * This is a read. It resolves the project through the registry (the
+   * single project authority) and never mounts, indexes or scans: the
+   * environment must be supplied by the caller from the scan it already
+   * performed, and every other section is loaded from an artifact an
+   * authority already wrote. Composing context cannot change what the
+   * context describes.
+   *
+   * An unknown project id yields an explicit `unavailable` result rather
+   * than an empty view, so no caller can read "no such project" as "a
+   * project with nothing in it".
+   */
+  async contextView(
+    projectId: string,
+    options: ComposeOptions & { environment?: EnvironmentSnapshot | null } = {},
+  ): Promise<ContextResult> {
+    return composeContextView(
+      projectId,
+      {
+        registry: this.registry,
+        missions: this.missions,
+        mountedProjectId: this.pipeline.currentProjectId,
+        fabric: this.fabric,
+        environment: options.environment ?? null,
+      },
+      options,
+    );
+  }
+
+  /**
+   * The same view, rendered as the stable text contract an agent reads.
+   * Returns null when the project cannot be resolved — callers must not
+   * hand an agent a contract for a project that does not exist.
+   */
+  async contextContract(
+    projectId: string,
+    options: ComposeOptions & { environment?: EnvironmentSnapshot | null } = {},
+  ): Promise<string | null> {
+    const view = await this.contextView(projectId, options);
+    return 'status' in view ? null : renderContextContract(view);
+  }
+
   /* ── workflows ──────────────────────────────────────────────────── */
 
   readonly workflows = new WorkflowStore();
+  readonly workflowVersions = new WorkflowVersionStore();
+  readonly workflowRuns = new WorkflowRunStore();
+  /** Per-run least privilege, read by the Fabric host. Never persisted. */
+  readonly runScopes = new RunScopeRegistry();
 
-  async runWorkflow(wf: Workflow, inputs: Record<string, string>, emit: (e: RunEvent) => void, signal?: AbortSignal): Promise<RunResult> {
-    const project = this.currentProject();
-    if (!project) throw new Error('open a project before running a workflow');
-    await this.pipeline.whenIndexed();
-    return runWorkflow(wf, {
+  /**
+   * In-flight runs, so a run can be cancelled from another request.
+   * Deliberately in memory: a controller for a run this process is not
+   * executing would be a lie, and `reconcileWorkflowRuns()` is what makes
+   * runs from a previous process honest instead.
+   */
+  private readonly liveRuns = new Map<string, AbortController>();
+
+  private get runner(): WorkflowRunner {
+    return new WorkflowRunner({
+      pipeline: this.pipeline,
+      fabric: this.fabric,
+      runScopes: this.runScopes,
+      versions: this.workflowVersions,
+      runs: this.workflowRuns,
+    });
+  }
+
+  /**
+   * What WOULD happen, computed without anything happening.
+   *
+   * Delegates to `dryRunWorkflow`, which never invokes a capability. The
+   * project is resolved the same way a real run resolves it, so the plan
+   * is about the project the run would actually target.
+   */
+  dryRunWorkflow(wf: Workflow, opts: { projectId?: string; inputs?: Record<string, string>; versionId?: string } = {}): DryRunReport {
+    const project = opts.projectId ? this.registry.get(opts.projectId) : this.currentProject();
+    if (!project) throw new Error('open a project before simulating a workflow');
+    // A dry run of a specific VERSION is what the Runs view needs when
+    // explaining a past run; the draft is what the editor needs.
+    const version = opts.versionId ? this.workflowVersions.get(wf.id, opts.versionId) : null;
+    if (opts.versionId && !version) throw new Error('no such version');
+    return dryRunWorkflow({
+      workflowId: wf.id,
+      workflowName: version?.name ?? wf.name,
+      nodes: version?.nodes ?? wf.nodes,
+      edges: version?.edges ?? wf.edges,
       projectId: project.id,
       projectPath: project.path,
       projectName: project.name,
-      pipeline: this.pipeline,
-      inputs,
-      signal,
-    }, emit);
+      fabric: this.fabric,
+      inputs: opts.inputs,
+    });
+  }
+
+  /**
+   * What an automation rule WOULD do. Executes nothing.
+   *
+   * Composed from the pieces that already exist: the engine's condition
+   * evaluator, the scheduler's arithmetic and the workflow dry run — which
+   * itself only calls the Fabric's read-only pre-flight.
+   */
+  dryRunAutomationRule(ruleId: string, opts: { sampleEvent?: AutomationEvent; projectId?: string } = {}): RuleDryRunReport | { error: string } {
+    const rule = this.automation.store.getRule(ruleId);
+    if (!rule) return { error: 'no such rule' };
+    return dryRunRule({
+      rule,
+      sampleEvent: opts.sampleEvent,
+      projectId: opts.projectId,
+      resolveWorkflow: (id) => this.workflows.get(id),
+      dryRunWorkflow: (wf, projectId) => this.dryRunWorkflow(wf, { projectId: projectId || undefined }),
+    });
+  }
+
+  /** The cross-rule automation run index, filtered and paged server-side. */
+  automationRunIndex(query: Parameters<AutomationStore['indexRuns']>[0] = {}) {
+    return this.automation.store.indexRuns(query);
+  }
+
+  /**
+   * Rule summaries with their schedule state folded in.
+   *
+   * The store stays the authority on rules and the scheduler stays the
+   * authority on clocks; this joins them at read time rather than copying
+   * clock state into the rule file, where it would go stale the moment the
+   * scheduler recomputed.
+   */
+  listAutomationRules(): (AutomationRuleSummary & {
+    cron?: string;
+    scheduleProjectId?: string;
+    schedule?: { nextFireAt?: string; missedCount: number; lastFiredAt?: string; error?: string; description?: string; timezone: 'local' };
+  })[] {
+    const state = this.automation.scheduler.status();
+    return this.automation.store.listRules().map((summary) => {
+      const rule = this.automation.store.getRule(summary.id);
+      if (rule?.trigger.type !== 'schedule') return summary;
+      const s = state[summary.id];
+      return {
+        ...summary,
+        cron: rule.trigger.cron,
+        scheduleProjectId: rule.trigger.projectId,
+        schedule: {
+          nextFireAt: s?.nextFireAt,
+          missedCount: s?.missedCount ?? 0,
+          lastFiredAt: s?.lastFiredAt,
+          error: s?.error,
+          description: rule.trigger.cron ? describeCron(rule.trigger.cron) : undefined,
+          // A fact about the scheduler, not an option. It has no timezone
+          // database, so anything other than 'local' would be a lie.
+          timezone: 'local' as const,
+        },
+      };
+    });
+  }
+
+  /** The cross-workflow run index, filtered and paged server-side. */
+  runIndex(query: Parameters<WorkflowRunStore['index']>[0] = {}) {
+    return this.workflowRuns.index(query);
+  }
+
+  /** What a workflow would be permitted to do, without running it. */
+  workflowEnvelope(wf: Workflow): AuthorityEnvelope {
+    return computeEnvelope(wf.nodes);
+  }
+
+  /**
+   * How this draft's authority differs from the last published version.
+   * Null when there is no earlier version to compare against.
+   */
+  workflowEnvelopeDiff(wf: Workflow): EnvelopeDiff | null {
+    const latest = this.workflowVersions.latest(wf.id);
+    if (!latest) return null;
+    return diffEnvelopes(computeEnvelope(latest.nodes), computeEnvelope(wf.nodes));
+  }
+
+  /**
+   * Execute a workflow. The ONE entry point — the Run button, a webhook,
+   * the Automation Engine and `workflow.run` all arrive here.
+   */
+  async startWorkflowRun(
+    wf: Workflow,
+    opts: {
+      inputs?: Record<string, string>;
+      trigger?: RunTrigger;
+      approvedCapabilities?: string[];
+      actor?: { kind: 'human' | 'agent' | 'system'; id: string };
+      signal?: AbortSignal;
+      projectId?: string;
+      timeoutMs?: number;
+    },
+    emit: (e: RunEvent) => void,
+  ): Promise<StartedRun> {
+    // A run is bound to ONE project, named at start. A workflow triggered
+    // from outside must not silently execute against whatever happens to
+    // be mounted when it lands.
+    const project = opts.projectId ? this.registry.get(opts.projectId) : this.currentProject();
+    if (!project) throw new Error('open a project before running a workflow');
+    await this.pipeline.whenIndexed();
+
+    const controller = new AbortController();
+    const external = opts.signal;
+    if (external) {
+      if (external.aborted) controller.abort();
+      else external.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+
+    let runId: string | null = null;
+    try {
+      return await this.runner.start({
+        workflow: wf,
+        projectId: project.id,
+        projectPath: project.path,
+        projectName: project.name,
+        trigger: opts.trigger ?? { kind: 'manual', by: opts.actor?.id ?? 'user' },
+        inputs: opts.inputs,
+        approvedCapabilities: opts.approvedCapabilities,
+        actor: opts.actor,
+        signal: controller.signal,
+        timeoutMs: opts.timeoutMs,
+        onRunCreated: (run) => { runId = run.id; this.liveRuns.set(run.id, controller); },
+      }, emit);
+    } finally {
+      if (runId) this.liveRuns.delete(runId);
+    }
+  }
+
+  /** Resume a parked or interrupted run from its checkpoint. */
+  async resumeWorkflowRun(
+    workflowId: string,
+    runId: string,
+    emit: (e: RunEvent) => void,
+    opts: { approvedCapabilities?: string[]; signal?: AbortSignal; actor?: { kind: 'human' | 'agent' | 'system'; id: string } } = {},
+  ): Promise<StartedRun | { error: string }> {
+    const wf = this.workflows.get(workflowId);
+    if (!wf) return { error: 'no such workflow' };
+    await this.pipeline.whenIndexed();
+    const controller = new AbortController();
+    if (opts.signal) opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    let created: string | null = null;
+    try {
+      return await this.runner.resume(wf, runId, emit, {
+        ...opts,
+        signal: controller.signal,
+        onRunCreated: (run) => { created = run.id; this.liveRuns.set(run.id, controller); },
+      });
+    } finally {
+      if (created) this.liveRuns.delete(created);
+    }
+  }
+
+  /**
+   * Stop an in-flight run.
+   *
+   * Only ever affects a run THIS process is executing. Reporting success
+   * for a run started by a process that has since died would be a lie the
+   * Runs view would then display.
+   */
+  cancelWorkflowRun(runId: string): boolean {
+    const controller = this.liveRuns.get(runId);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  }
+
+  listWorkflowRuns(workflowId?: string): WorkflowRunSummary[] {
+    return this.workflowRuns.list(workflowId);
+  }
+
+  getWorkflowRun(workflowId: string, runId: string): WorkflowRun | null {
+    return this.workflowRuns.get(workflowId, runId);
+  }
+
+  /** Every leg of one logical execution, oldest first. */
+  workflowRunChain(workflowId: string, runId: string): WorkflowRun[] {
+    return this.workflowRuns.resumeChain(workflowId, runId);
+  }
+
+  /**
+   * Mark runs orphaned by a crash. Called once at startup.
+   *
+   * A record still saying `running` after the process that was running it
+   * is gone asserts something false, and the Runs view would display it.
+   */
+  reconcileWorkflowRuns(): WorkflowRunSummary[] {
+    return this.workflowRuns.reconcileInterrupted();
   }
 
   /* ── Automation Engine ─────────────────────────────────────────────
@@ -394,6 +708,25 @@ export class WorkspaceManager {
       pipelineFor: () => this.pipeline,
       memoryFor: (projectId) => this.memoryOf(projectId),
       diagnoses: this.diagnoses,
+      // The bridge. An automation rule reaches the ONE workflow engine
+      // through the ONE runner — it does not gain an executor of its own.
+      runWorkflow: async ({ workflowId, projectId, ruleId, automationRunId, event, signal }) => {
+        const wf = this.workflows.get(workflowId);
+        if (!wf) return { ok: false as const, error: `no such workflow: ${workflowId}` };
+        try {
+          const started = await this.startWorkflowRun(wf, {
+            projectId,
+            trigger: { kind: 'automation', ruleId, runId: automationRunId, event },
+            // No grant. An automation fires with nobody watching, so
+            // anything above auto-execute parks and waits for a person.
+            actor: { kind: 'system', id: `automation:${ruleId}` },
+            signal,
+          }, () => {});
+          return { ok: true as const, runId: started.run.id, runState: started.result.runState };
+        } catch (e) {
+          return { ok: false as const, error: (e as Error).message };
+        }
+      },
     });
   }
 
@@ -522,13 +855,119 @@ export class WorkspaceManager {
 
   readonly missions = new MissionStore();
 
-  private missionEngine(id: string, signal?: AbortSignal, emit?: (e: ExecutionEvent) => void): MissionExecutionEngine {
+  /**
+   * The Capability Fabric, attached after construction because
+   * `createFabric()` needs this manager — the cycle is broken by wiring
+   * rather than by giving the manager a second execution path. Missions
+   * fall back to the proposal path when it is absent, so the service is
+   * never left unable to run a task.
+   */
+  private fabric: CapabilityFabric | null = null;
+
+  attachFabric(fabric: CapabilityFabric): void {
+    this.fabric = fabric;
+  }
+
+  /**
+   * Route one mission task through the Fabric.
+   *
+   * This is the whole mission→Fabric integration. It runs *inside* the
+   * engine's own `runTask` hook, which means ordering, the DAG, the state
+   * machine, the timeline, metrics and replay all remain exactly where
+   * they were — this only decides what a single task's execution *is*, and
+   * translates one `InvocationResult` into one existing `TaskStatus`.
+   *
+   * Returns null when the task is not Fabric-executable, so the caller
+   * falls through to the untouched proposal path.
+   */
+  private async runTaskThroughFabric(
+    id: string,
+    record: MissionRecord,
+    task: MissionTask,
+    approvedCapabilities?: string[],
+  ): Promise<RunTaskResult | null> {
+    const fabric = this.fabric;
+    if (!fabric) return null;
+    const plan = planTaskInvocation(task, id);
+    if (plan.kind === 'unbound') return null;
+
+    const project = this.registry.get(id);
+    const result = await fabric.invoke(plan.capabilityId, plan.input, {
+      actor: { kind: 'agent', id: `mission:${record.id}` },
+      projectId: id,
+      cwd: project?.path,
+      // Correlation keys into the authoritative MissionRecord. The Fabric
+      // stores no mission state of its own; these are what let its audit
+      // trail and this task's timeline be reconciled afterwards.
+      missionId: record.id,
+      taskId: task.id,
+      approvedCapabilities,
+    });
+
+    // The node that did the work, as the executor itself reported it.
+    // Read only from the executor's output — never inferred from the
+    // capability, which several nodes can provide.
+    const reported = (result.output as { nodeId?: unknown } | undefined)?.nodeId;
+    const nodeId = typeof reported === 'string' && reported ? reported : undefined;
+
+    const attempted = result.attempts > 1 ? ` after ${result.attempts} attempts` : '';
+    const verified = result.verification.passed === true ? ' Verified.'
+      : result.verification.passed === null ? ` Not independently verifiable (${result.verification.detail}).`
+      : '';
+
+    switch (result.outcome) {
+      case 'succeeded':
+        return { ok: true, status: 'done', detail: `${result.detail}${verified}${attempted}`, nodeId };
+
+      // Ran but could not be shown to have done what it claimed. Treated as
+      // a failure on purpose — an unverified effect the operator believes
+      // succeeded is worse than one they know to re-check.
+      case 'unverified':
+        return { ok: false, status: 'error', detail: result.detail, nodeId };
+
+      case 'awaiting-approval':
+        // `pending` keeps the task queued and still runnable, so granting
+        // approval resumes THIS task rather than starting a new one.
+        return { ok: false, pending: true, status: 'pending', detail: result.detail };
+
+      case 'denied':
+        return { ok: false, status: 'rejected', detail: `${result.detail} (policy: ${result.policy.rule})` };
+
+      case 'unsupported':
+        return { ok: false, status: 'error', detail: result.detail };
+
+      case 'failed':
+        // A failed run is still attributable — the operator needs to know
+        // WHICH node failed, not merely that something did.
+        return { ok: false, status: 'error', detail: `${result.detail}${attempted}`, nodeId };
+    }
+  }
+
+  private missionEngine(
+    id: string,
+    signal?: AbortSignal,
+    emit?: (e: ExecutionEvent) => void,
+    approvedCapabilities?: string[],
+  ): MissionExecutionEngine {
     return new MissionExecutionEngine({
       runTask: async ({ record, task }) => {
         const project = this.registry.get(id);
         const goal = record.goalGraph?.goals.find((g) => g.id === task.goalId);
         if (!project || !goal) return { ok: false, error: 'invalid mission state' };
-        if (task.kind !== 'file-operation' || !task.targetFile) return { ok: false, error: 'This task has no single target file — complete it manually instead of running it.' };
+
+        // Fabric first: a task it can execute is executed under policy,
+        // approval, verification, recovery and audit. Nothing bypasses it
+        // for convenience — the proposal path below is reached only for
+        // tasks the Fabric genuinely cannot express as a call.
+        const viaFabric = await this.runTaskThroughFabric(id, record, task, approvedCapabilities);
+        if (viaFabric) return viaFabric;
+
+        if (task.kind !== 'file-operation' || !task.targetFile) {
+          // The planner's own words for why this is not a capability call —
+          // a specific next step instead of a generic refusal.
+          const plan = planTaskInvocation(task, id);
+          return { ok: false, error: plan.kind === 'unbound' ? plan.reason : 'This task has no single target file — complete it manually instead of running it.' };
+        }
         const result = await generateTaskProposal(this.pipeline, project.path, task, goal, record.text, signal);
         return {
           ok: result.ok,
@@ -581,22 +1020,46 @@ export class WorkspaceManager {
     return result;
   }
 
-  /** v2-compatible single-task run — now engine-backed (auto-starts execution when approved). */
-  async runMissionTask(id: string, mid: string, taskId: string, signal?: AbortSignal): Promise<{ ok: boolean; error?: string; mission?: MissionRecord }> {
+  /**
+   * v2-compatible single-task run — now engine-backed (auto-starts execution when approved).
+   *
+   * `approvedCapabilities` is the operator's per-call authorization, passed
+   * straight through to the Fabric. Re-running the same `taskId` with a
+   * grant is how an approval-gated task resumes: the task never left the
+   * queue, so this continues it rather than starting anything new.
+   */
+  async runMissionTask(id: string, mid: string, taskId: string, signal?: AbortSignal, approvedCapabilities?: string[]): Promise<{ ok: boolean; error?: string; awaitingApproval?: boolean; mission?: MissionRecord }> {
     const mission = this.missions.get(id, mid);
     if (!mission) return { ok: false, error: 'no such mission' };
     if (mission.approval.status !== 'approved') return { ok: false, error: 'This mission plan has not been approved yet — approve it before running any task.' };
-    const engine = this.missionEngine(id, signal);
+    const engine = this.missionEngine(id, signal, undefined, approvedCapabilities);
     if (!mission.execution || mission.execution.status === 'approved') engine.startExecution(mission);
     const result = await engine.runTask(mission, taskId);
     if (result.record && result.ok) {
       this.recordMissionMemory(id, result.record, 'created', taskId);
     }
-    return { ok: result.ok, error: result.error, mission: result.record };
+    // `awaitingApproval` distinguishes "parked at a gate, nothing ran" from
+    // "failed" — the desktop needs that to offer Approve rather than Retry.
+    return { ok: result.ok, error: result.error, awaitingApproval: result.awaitingApproval, mission: result.record };
   }
 
-  /** The only place a mission task's proposal is ever written to disk — requires an explicit human Accept. */
-  acceptMissionTask(id: string, mid: string, taskId: string): { ok: boolean; error?: string; mission?: MissionRecord } {
+  /**
+   * The only place a mission task's proposal is ever written to disk —
+   * requires an explicit human Accept.
+   *
+   * The write itself goes through the Capability Fabric's
+   * `filesystem.write`, not a direct `fs` call. That is what subjects the
+   * single most consequential action in the mission system to policy, to
+   * read-back verification, to bounded recovery and to the audit trail.
+   *
+   * The operator's Accept **is** the authorization, so it is passed as the
+   * per-invocation grant. That is not a bypass: policy still evaluates,
+   * the hard floors still apply, the path is still resolved inside the
+   * project by the executor, and the write is still verified afterwards.
+   * Without the grant the Fabric parks the write at `awaiting-approval`
+   * and nothing reaches disk.
+   */
+  async acceptMissionTask(id: string, mid: string, taskId: string, approvedCapabilities: string[] = ['filesystem.write']): Promise<{ ok: boolean; error?: string; mission?: MissionRecord }> {
     const mission = this.missions.get(id, mid);
     if (!mission) return { ok: false, error: 'no such mission' };
     const task = mission.goalGraph?.tasks.find((t) => t.id === taskId);
@@ -605,13 +1068,37 @@ export class WorkspaceManager {
     const project = this.registry.get(id);
     if (!project) return { ok: false, error: 'no such project' };
 
-    let abs: string;
-    try {
-      abs = resolveInsideProject(project.path, task.targetFile as string);
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
+    if (this.fabric) {
+      const result = await this.fabric.invoke(
+        'filesystem.write',
+        { path: task.targetFile as string, content: run.proposal.newCode },
+        {
+          actor: { kind: 'human', id: 'user' },
+          projectId: id,
+          cwd: project.path,
+          missionId: mission.id,
+          taskId,
+          approvedCapabilities,
+        },
+      );
+      if (result.outcome !== 'succeeded') {
+        // Nothing was written, or it was written and failed its read-back.
+        // Either way the task must not be marked accepted. `result.detail`
+        // already carries the verification reason — appending it again
+        // would print the same sentence twice to the operator.
+        return { ok: false, error: result.detail, mission };
+      }
+    } else {
+      // No Fabric attached (library use without a host) — the original
+      // direct write, kept so the manager is never left unable to accept.
+      let abs: string;
+      try {
+        abs = resolveInsideProject(project.path, task.targetFile as string);
+      } catch (e) {
+        return { ok: false, error: (e as Error).message };
+      }
+      fs.writeFileSync(abs, run.proposal.newCode);
     }
-    fs.writeFileSync(abs, run.proposal.newCode);
 
     const updated = this.missionEngine(id).acceptTask(mission, taskId);
     if (this.pipeline.currentProjectId === id) void this.pipeline.reindex();
@@ -641,17 +1128,17 @@ export class WorkspaceManager {
     return { ok: true, mission: updated };
   }
 
-  rejectMissionTask(id: string, mid: string, taskId: string): { ok: boolean; error?: string; mission?: MissionRecord } {
+  rejectMissionTask(id: string, mid: string, taskId: string, reason?: string): { ok: boolean; error?: string; mission?: MissionRecord } {
     const mission = this.missions.get(id, mid);
     if (!mission) return { ok: false, error: 'no such mission' };
     const task = mission.goalGraph?.tasks.find((t) => t.id === taskId);
-    const updated = this.missionEngine(id).rejectTask(mission, taskId);
+    const updated = this.missionEngine(id).rejectTask(mission, taskId, reason);
     if (updated && task) {
       this.recordMissionMemory(id, updated, 'failed', taskId);
       this.recordDecisionMemory(id, {
         problem: `Mission task rejected: ${task.title}`,
         decision: 'reject',
-        rationale: `Task ${taskId} rejected`,
+        rationale: reason ?? `Task ${taskId} rejected`,
         relatedMissionId: mission.id,
         affectedComponents: task.targetFile ? [task.targetFile] : [],
       });

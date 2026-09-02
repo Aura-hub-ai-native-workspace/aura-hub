@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AURA Hub — Workflow Automation Research</title>
+<style>
+:root{--bg:#0a0e17;--bg2:#111827;--bg3:#0d1321;--bgh:#1a2332;--bd:#1e2d3d;--tx:#e2e8f0;--tm:#94a3b8;--td:#64748b;--ac:#3b82f6;--gn:#22c55e;--yl:#eab308;--rd:#ef4444;--or:#f97316;--pu:#a855f7;--cy:#06b6d4;--pk:#ec4899;--r:10px;--rs:6px}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:var(--bg);color:var(--tx);line-height:1.65;font-size:15px}a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}
+.sb{position:fixed;top:0;left:0;width:260px;height:100vh;background:var(--bg3);border-right:1px solid var(--bd);overflow-y:auto;z-index:100;padding:20px 0}.sb h1{font-size:17px;font-weight:700;padding:0 16px 12px;border-bottom:1px solid var(--bd)}.sb .tg{display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;padding:2px 7px;border-radius:20px;background:var(--ac);color:#fff;margin:6px 16px 0}.sb nav{padding:12px 0}.sb nav a{display:block;padding:5px 16px;font-size:12px;color:var(--tm);border-left:2px solid transparent}.sb nav a:hover{background:var(--bgh);color:var(--tx);text-decoration:none}.sb .sl{display:block;padding:10px 16px 4px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--td)}
+.mn{margin-left:260px;padding:36px 44px 80px;max-width:1060px}.mn h1{font-size:34px;font-weight:800;letter-spacing:-.03em;margin:0 0 6px;background:linear-gradient(135deg,var(--ac),var(--pu));-webkit-background-clip:text;-webkit-text-fill-color:transparent}.mn h2{font-size:24px;font-weight:700;margin:48px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--bd)}.mn h3{font-size:18px;font-weight:600;margin:28px 0 10px}.mn h4{font-size:15px;font-weight:600;margin:20px 0 6px;color:var(--tm)}.mn p{margin:0 0 12px}.sub{color:var(--tm);font-size:15px;margin-bottom:28px}
+.cd{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:18px 20px;margin:14px 0}.ct{font-weight:600;margin-bottom:6px;font-size:14px}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}th{text-align:left;padding:8px 12px;background:var(--bg3);border:1px solid var(--bd);font-weight:600;color:var(--tm);font-size:11px;text-transform:uppercase;letter-spacing:.05em}td{padding:8px 12px;border:1px solid var(--bd);vertical-align:top}tr:hover td{background:var(--bgh)}
+.b{display:inline-block;padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600}.bg{background:#22c55e20;color:var(--gn)}.by{background:#eab30820;color:var(--yl)}.br{background:#ef444420;color:var(--rd)}.bb{background:#3b82f620;color:var(--ac)}.bp{background:#a855f720;color:var(--pu)}.bo{background:#f9731620;color:var(--or)}
+.rg{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin:14px 0}.ri{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--rs);padding:12px 14px}.ri .rl{font-size:12px;font-weight:600;margin-bottom:3px}.ri .rx{font-size:11px;color:var(--tm)}
+details{margin:10px 0}details summary{cursor:pointer;font-weight:600;font-size:14px;padding:8px 14px;background:var(--bg2);border:1px solid var(--bd);border-radius:var(--rs);list-style:none;display:flex;align-items:center;gap:6px}details summary::-webkit-details-marker{display:none}details summary::before{content:'▸';font-size:11px;color:var(--td);transition:transform .2s}details[open] summary::before{transform:rotate(90deg)}details .dc{padding:14px;border:1px solid var(--bd);border-top:0;border-radius:0 0 var(--rs) var(--rs);background:var(--bg2)}
+.dg{background:var(--bg2);border:1px solid var(--bd);border-radius:var(--r);padding:20px;margin:18px 0;font-family:'JetBrains Mono','Fira Code',monospace;font-size:12px;line-height:1.8;overflow-x:auto;white-space:pre;color:var(--tm)}
+.co{border-left:3px solid var(--ac);padding:12px 16px;margin:14px 0;background:var(--bg2);border-radius:0 var(--rs) var(--rs) 0;font-size:13px}.co-w{border-left-color:var(--yl)}.co-d{border-left-color:var(--rd)}.co-s{border-left-color:var(--gn)}.co strong{display:block;margin-bottom:3px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:14px 0}.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin:14px 0}
+ul,ol{padding-left:18px;margin:6px 0 12px}li{margin:3px 0}code{background:var(--bg3);padding:1px 5px;border-radius:3px;font-size:12px;font-family:'JetBrains Mono',monospace}
+.tl{position:relative;margin:20px 0;padding-left:28px}.tl::before{content:'';position:absolute;left:9px;top:0;bottom:0;width:2px;background:var(--bd)}.ti{position:relative;margin-bottom:20px}.ti::before{content:'';position:absolute;left:-22px;top:5px;width:10px;height:10px;border-radius:50%;background:var(--ac);border:2px solid var(--bg)}.ti.cur::before{background:var(--yl);box-shadow:0 0 8px var(--yl)}.ti .tt{font-weight:600;font-size:14px}.ti .tx{font-size:11px;color:var(--td);margin:3px 0}
+@media(max-width:900px){.sb{transform:translateX(-100%)}.mn{margin-left:0;padding:20px 16px 60px}.g2,.g3{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="sb">
+<h1>AURA Hub</h1><div class="tg">Workflow Automation Research</div>
+<nav>
+<span class="sl">Overview</span><a href="#exec">Executive Summary</a><a href="#meth">Methodology</a>
+<span class="sl">Workflow Model</span><a href="#model">Complete Workflow Model</a><a href="#nodes">Node Taxonomy</a><a href="#triggers">Trigger Systems</a>
+<span class="sl">Agentic AI</span><a href="#agent">Agentic AI Node</a><a href="#agent-arch">Agent Architecture</a><a href="#agent-safety">Agent Safety</a>
+<span class="sl">Capabilities</span><a href="#web">Web</a><a href="#desktop">Desktop</a><a href="#sys">System</a><a href="#api">API</a><a href="#ai">AI</a><a href="#anything">Anything a Human Can Do</a>
+<span class="sl">Architecture</span><a href="#engine">Engine Architecture</a><a href="#compare">Engine Comparison</a><a href="#durable">Durability</a><a href="#hitl">Human-in-the-Loop</a>
+<span class="sl">Infrastructure</span><a href="#security">Security Model</a><a href="#ctx">Context &amp; Memory</a><a href="#obs">Observability</a><a href="#offline">Offline-First</a>
+<span class="sl">AI Features</span><a href="#designer">Workflow Designer</a><a href="#genwf">AI-Generated Workflows</a><a href="#test">Workflow Testing</a>
+<span class="sl">Strategy</span><a href="#diff">Competitive Differentiation</a><a href="#proposal">Architecture Proposal</a><a href="#roadmap">Development Roadmap</a><a href="#rec">Final Recommendations</a><a href="#sources">Sources</a>
+</nav></div>
+
+<div class="mn">
+<h1>Workflow Automation Research</h1>
+<p class="sub">Deep technical and product research for AURA Hub's AI-native workflow automation system. August 2026.</p>
+
+<!-- ═══ EXECUTIVE SUMMARY ═══ -->
+<h2 id="exec">Executive Summary</h2>
+<div class="co"><strong>Verdict: The vision is realistic — with the right architecture.</strong>AURA Hub can build a workflow system approaching "anything a human can do through a computer," but it must combine three execution models: deterministic DAGs, agentic AI nodes, and durable event-driven rules.</div>
+<div class="g3">
+<div class="cd"><div class="ct" style="color:var(--gn)">Possible Today</div><ul><li>Sequential DAG workflows (30+ node types)</li><li>Event-driven automation rules</li><li>Browser automation (Playwright)</li><li>CLI/shell execution</li><li>REST/GraphQL API integration</li><li>Git operations</li><li>AI reasoning via LLMs</li><li>Human approval gates</li></ul></div>
+<div class="cd"><div class="ct" style="color:var(--yl)">Difficult</div><ul><li>Desktop GUI automation</li><li>CAPTCHA solving</li><li>Multi-step authentication</li><li>Deterministic AI execution</li><li>Long-running durable workflows</li><li>Workflow versioning &amp; rollback</li></ul></div>
+<div class="cd"><div class="ct" style="color:var(--rd)">Creates Risk</div><ul><li>Arbitrary code execution</li><li>Prompt injection via tool outputs</li><li>Credential leakage in logs</li><li>Infinite agent loops</li><li>Supply-chain attacks</li><li>SSRF via HTTP nodes</li></ul></div>
+</div>
+<div class="co co-s"><strong>Strongest Recommendation</strong>Every workflow action flows through AURA's Capability Fabric. Single permission model, single audit trail, single policy engine. The workflow engine orchestrates; the Fabric governs.</div>
+
+<h3>Top Risks</h3>
+<ol><li><strong>Scope creep:</strong> "Anything a human can do" could consume years. Prioritize ruthlessly.</li><li><strong>Security surface:</strong> Browser + agent + shell = massive attack surface.</li><li><strong>Reliability gap:</strong> Non-deterministic AI makes testing fundamentally harder.</li><li><strong>Durability complexity:</strong> Desktop apps need lightweight checkpointing, not distributed infrastructure.</li></ol>
+
+<!-- ═══ METHODOLOGY ═══ -->
+<h2 id="meth">Methodology</h2>
+<p>Analyzed: AURA's Workflow Engine, Automation Engine, and Capability Fabric (~4,000 lines). Compared: Temporal, n8n, Zapier, Make, Airflow, Prefect. Researched: Playwright, accessibility APIs, ReAct patterns, prompt injection, sandboxing, event sourcing.</p>
+<div class="co co-w"><strong>Evidence Standard</strong> Every conclusion classified as FACT (verified), EVIDENCE (observed), INFERENCE (deduction), or RECOMMENDATION (explicitly marked).</div>
+
+<!-- ═══ COMPLETE WORKFLOW MODEL ═══ -->
+<h2 id="model">Complete Workflow Model</h2>
+<p>35 concepts required for a modern AI-native workflow, classified as <strong>fundamental</strong> (v1) or <strong>optional</strong> (future).</p>
+
+<h3>Core Concepts (Fundamental)</h3>
+<table>
+<tr><th>#</th><th>Concept</th><th>Description</th><th>AURA Status</th></tr>
+<tr><td>1</td><td><strong>Workflow</strong></td><td>Named graph of nodes and edges</td><td>✅ Exists</td></tr>
+<tr><td>2</td><td><strong>Node</strong></td><td>Atomic unit of work with typed I/O</td><td>✅ 30+ types</td></tr>
+<tr><td>3</td><td><strong>Trigger</strong></td><td>What starts a workflow</td><td>✅ 8 types</td></tr>
+<tr><td>4</td><td><strong>Action</strong></td><td>Node producing a side effect</td><td>✅ Exists</td></tr>
+<tr><td>5</td><td><strong>Condition</strong></td><td>Boolean routing on data</td><td>✅ Exists</td></tr>
+<tr><td>6</td><td><strong>Loop</strong></td><td>Repeat subtree over items</td><td>✅ Exists</td></tr>
+<tr><td>7</td><td><strong>Variable</strong></td><td>Scoped state between nodes</td><td>✅ Exists</td></tr>
+<tr><td>8</td><td><strong>Error Handler</strong></td><td>Catch/retry/compensate on failure</td><td>⚠️ Partial</td></tr>
+<tr><td>9</td><td><strong>Human Approval</strong></td><td>Pause for human decision</td><td>✅ Via Fabric</td></tr>
+<tr><td>10</td><td><strong>Retry</strong></td><td>Auto re-attempt with backoff</td><td>✅ Automation Engine</td></tr>
+<tr><td>11</td><td><strong>Timeout</strong></td><td>Abort if exceeds limit</td><td>✅ AbortSignal</td></tr>
+<tr><td>12</td><td><strong>Cancellation</strong></td><td>User-initiated abort</td><td>✅ AbortController</td></tr>
+<tr><td>13</td><td><strong>State</strong></td><td>Persisted execution state</td><td>✅ In-memory</td></tr>
+<tr><td>14</td><td><strong>Event</strong></td><td>Something that may trigger work</td><td>✅ Exists</td></tr>
+<tr><td>15</td><td><strong>Context</strong></td><td>Project/workspace data for nodes</td><td>✅ RunCtx</td></tr>
+<tr><td>16</td><td><strong>Execution History</strong></td><td>Record of every run</td><td>✅ Automation Engine</td></tr>
+<tr><td>17</td><td><strong>Audit Record</strong></td><td>Immutable governed action record</td><td>✅ Capability Fabric</td></tr>
+<tr><td>18</td><td><strong>Tool</strong></td><td>External capability to invoke</td><td>✅ Via Fabric</td></tr>
+<tr><td>19</td><td><strong>Secret/Credential</strong></td><td>Secure key/token storage</td><td>⚠️ Partial</td></tr>
+<tr><td>20</td><td><strong>Agent</strong></td><td>AI reasoning node with tools</td><td>❌ Critical gap</td></tr>
+</table>
+
+<h3>Advanced Concepts (Optional/Future)</h3>
+<table>
+<tr><th>#</th><th>Concept</th><th>Description</th><th>Priority</th></tr>
+<tr><td>21</td><td><strong>Parallel Execution</strong></td><td>Independent nodes run concurrently</td><td><span class="b by">P1</span></td></tr>
+<tr><td>22</td><td><strong>Subworkflow</strong></td><td>Embed workflow as a node</td><td><span class="b by">P1</span></td></tr>
+<tr><td>23</td><td><strong>Checkpoint</strong></td><td>Persist state for crash recovery</td><td><span class="b by">P1</span></td></tr>
+<tr><td>24</td><td><strong>Resume</strong></td><td>Restart from checkpoint</td><td><span class="b by">P1</span></td></tr>
+<tr><td>25</td><td><strong>Schedule</strong></td><td>Cron-like time triggers</td><td><span class="b by">P1</span></td></tr>
+<tr><td>26</td><td><strong>Memory</strong></td><td>Persistent learning from runs</td><td><span class="b by">P1</span></td></tr>
+<tr><td>27</td><td><strong>Artifact</strong></td><td>Generated outputs (files, reports)</td><td><span class="b by">P1</span></td></tr>
+<tr><td>28</td><td><strong>Queue</strong></td><td>Pending work for deferred execution</td><td><span class="b by">P1</span></td></tr>
+<tr><td>29</td><td><strong>External Event</strong></td><td>Events from outside systems</td><td><span class="b by">P1</span></td></tr>
+<tr><td>30</td><td><strong>Version</strong></td><td>Version control for definitions</td><td><span class="b bo">P2</span></td></tr>
+<tr><td>31</td><td><strong>Compensation</strong></td><td>Undo on downstream failure (saga)</td><td><span class="b bo">P2</span></td></tr>
+<tr><td>32</td><td><strong>Branch (parallel)</strong></td><td>Fork into concurrent paths</td><td><span class="b by">P1</span></td></tr>
+</table>
+
+<!-- ═══ NODE TAXONOMY ═══ -->
+<h2 id="nodes">Node Taxonomy</h2>
+<div class="g2">
+<div class="cd"><div class="ct"><span class="b bb">Source</span> Data Input</div><ul><li><code>current-project</code> — Profile</li><li><code>selected-files</code> — Named files</li><li><code>changed-files</code> — Git changes</li><li><code>current-conversation</code> — Chat history</li><li><code>project-memory</code> — Memory recall</li><li><code>engineering-memory</code> — Engineering records</li></ul></div>
+<div class="cd"><div class="ct"><span class="b bp">Intelligence</span> AI Engines</div><ul><li><code>coding-engine</code> — Code context</li><li><code>fullstack-engine</code> — Architecture</li><li><code>intent-classifier</code> — Intent</li><li><code>prompt-enhancer</code> — Enhancement</li></ul></div>
+<div class="cd"><div class="ct"><span class="b bo">Generate</span> Content</div><ul><li><code>prompt</code> — Template</li><li><code>groq</code> — LLM call</li><li><code>generate-markdown</code> — Docs</li><li><code>generate-code</code> — Code</li><li><code>generate-json</code> — JSON</li></ul></div>
+<div class="cd"><div class="ct"><span class="b by">Logic</span> Control Flow</div><ul><li><code>condition</code> — Boolean route</li><li><code>loop</code> — Repeat/for-each</li><li><code>delay</code> — Wait</li><li><code>variables</code> — Set KEY=VALUE</li><li><code>user-input</code> — Collect value</li></ul></div>
+<div class="cd"><div class="ct"><span class="b br">Action</span> Side Effects</div><ul><li><code>save-memory</code> — Persist</li><li><code>create-note</code> — Write note</li><li><code>export-file</code> — Write file</li><li><code>shell-command</code> — Run command</li><li><code>git-*</code> — Git operations</li><li><code>http-request</code> — HTTP call</li><li><code>slack-notify</code> — Slack</li></ul></div>
+<div class="cd"><div class="ct"><span class="b bg">Future</span> Planned Nodes</div><ul><li><code>agent</code> — AI reasoning (critical)</li><li><code>browser.navigate</code> — Open page</li><li><code>browser.read</code> — Extract text</li><li><code>browser.click</code> — Click element</li><li><code>browser.type</code> — Fill field</li><li><code>browser.screenshot</code> — Capture</li></ul></div>
+</div>
+
+<!-- ═══ TRIGGER SYSTEMS ═══ -->
+<h2 id="triggers">Trigger Systems</h2>
+<table>
+<tr><th>Trigger</th><th>Current</th><th>Priority</th><th>Notes</th></tr>
+<tr><td>Mission completed</td><td>✅</td><td><span class="b bg">P0</span></td><td>Existing</td></tr>
+<tr><td>File changed</td><td>✅</td><td><span class="b bg">P0</span></td><td>Existing</td></tr>
+<tr><td>PR merged</td><td>✅</td><td><span class="b bg">P0</span></td><td>Existing</td></tr>
+<tr><td>Dependency changed</td><td>✅</td><td><span class="b bg">P0</span></td><td>Existing</td></tr>
+<tr><td>Cron schedule</td><td>❌</td><td><span class="b bg">P0</span></td><td>Essential for recurring workflows</td></tr>
+<tr><td>Webhook received</td><td>✅</td><td><span class="b bg">P0</span></td><td>Workflow-level webhook tokens</td></tr>
+<tr><td>Manual trigger</td><td>✅</td><td><span class="b bg">P0</span></td><td>Button / command</td></tr>
+<tr><td>Email received</td><td>❌</td><td><span class="b by">P1</span></td><td>IMAP polling</td></tr>
+<tr><td>API call</td><td>❌</td><td><span class="b by">P1</span></td><td>REST endpoint</td></tr>
+<tr><td>Chat message</td><td>❌</td><td><span class="b by">P1</span></td><td>Ask AURA / workspace</td></tr>
+</table>
+
+<!-- ═══ AGENTIC AI NODE ═══ -->
+<h2 id="agent">The Agentic AI Node</h2>
+<div class="co co-w"><strong>Core Question</strong>Should the Agentic AI Node be (A) a normal node, (B) a workflow-within-a-node, (C) an autonomous environment, or (D) a combination?</div>
+
+<h3 id="agent-arch">Agent Architecture Patterns</h3>
+<details><summary>Pattern A: Normal Workflow Node</summary><div class="dc"><p>One LLM call with tools, one tool execution, return. Simple request-response.</p><p><span class="b bg">Pro</span> Simple, predictable, testable.</p><p><span class="b br">Con</span> Cannot handle multi-step reasoning.</p><p><strong>Verdict:</strong> <span class="b by">Insufficient alone</span></p></div></details>
+<details><summary>Pattern B: Workflow-Within-a-Node</summary><div class="dc"><p>Internal mini-workflow: plan → execute steps → return result. Outer workflow sees one node.</p><p><span class="b bg">Pro</span> Multi-step capable. Outer workflow stays simple.</p><p><span class="b br">Con</span> Internal execution is opaque. May duplicate engine logic.</p><p><strong>Verdict:</strong> <span class="b by">Promising for v1</span></p></div></details>
+<details><summary>Pattern C: Autonomous Environment</summary><div class="dc"><p>Fully autonomous loop: plan → execute → observe → re-plan → ... with arbitrary tool use.</p><p><span class="b bg">Pro</span> Maximum flexibility for open-ended tasks.</p><p><span class="b br">Con</span> Non-deterministic, unbounded cost, enormous security surface.</p><p><strong>Verdict:</strong> <span class="b br">Too risky for v1</span></p></div></details>
+<details><summary>Pattern D: Bounded Agent (RECOMMENDED)</summary><div class="dc"><p>Internal agent loop with strict boundaries: max iterations, timeout, tool allowlist, token budget, structured output, observability, approval gates.</p><p><span class="b bg">Pro</span> Powerful yet controlled. Uses existing infrastructure.</p><p><span class="b by">Con</span> Still non-deterministic. Requires safety configuration.</p><p><strong>Verdict:</strong> <span class="b bg">Recommended architecture</span></p></div></details>
+
+<h3>Agent Loop Architecture</h3>
+<div class="dg">Task Input → System Prompt → LLM Call → Parse Response
+                                        │
+                          ┌─────────────┼─────────────┐
+                       Tool Call     Final Answer     Error
+                          │              │             │
+                   Permission Check  Return Result  Retry/Fail
+                          │
+                   Execute via Fabric
+                          │
+                   Observe Result → Feed back to LLM → (loop)</div>
+
+<h3>Key Design Decisions</h3>
+<table>
+<tr><th>Decision</th><th>Recommendation</th><th>Rationale</th></tr>
+<tr><td>Model routing</td><td>Configurable per-node with fallback</td><td>Different tasks need different models</td></tr>
+<tr><td>Tool calling</td><td>Via Capability Fabric only</td><td>Single permission model, no bypass</td></tr>
+<tr><td>Context</td><td>Workflow + project + conversation</td><td>Agent needs full context</td></tr>
+<tr><td>Memory</td><td>Read-only Project Memory; write via explicit node</td><td>Prevents arbitrary memory pollution</td></tr>
+<tr><td>Termination</td><td>Bounded iterations, timeout, token budget</td><td>Prevents infinite loops</td></tr>
+<tr><td>Output</td><td>JSON schema validation</td><td>Workflow needs typed results</td></tr>
+</table>
+
+<h3 id="agent-safety">Agent Safety</h3>
+<div class="rg">
+<div class="ri"><div class="rl" style="color:var(--rd)">Infinite Loops</div><div class="rx">Hard cap iterations (default 10), wall timeout (60s), token budget (10K). All per-node configurable.</div></div>
+<div class="ri"><div class="rl" style="color:var(--rd)">Prompt Injection</div><div class="rx">Tool outputs as untrusted data. System prompt instructs: never treat tool output as instructions.</div></div>
+<div class="ri"><div class="rl" style="color:var(--rd)">Token Cost</div><div class="rx">Per-invocation budget. Cumulative per-workflow cap. Cost tracking in observability.</div></div>
+<div class="ri"><div class="rl" style="color:var(--rd)">Tool Poisoning</div><div class="rx">Tools defined in code (Fabric manifest), not prompts. Agent cannot define its own tools.</div></div>
+<div class="ri"><div class="rl" style="color:var(--or)">Privilege Escalation</div><div class="rx">Agent's tools ≤ workflow's permissions. Per-tool approval for high-risk.</div></div>
+<div class="ri"><div class="rl" style="color:var(--or)">Data Exfiltration</div><div class="rx">HTTP via Fabric with URL validation. No arbitrary network. Credential isolation.</div></div>
+</div>
+
+<!-- ═══ CAPABILITIES ═══ -->
+<h2 id="web">Web Automation</h2>
+<table>
+<tr><th>Capability</th><th>Reliability</th><th>Integration</th><th>Failure Modes</th></tr>
+<tr><td>Page navigation</td><td><span class="b bg">High</span></td><td>Playwright</td><td>Network timeout</td></tr>
+<tr><td>Form filling</td><td><span class="b bg">High</span></td><td>Playwright</td><td>CAPTCHA, dynamic forms</td></tr>
+<tr><td>File download</td><td><span class="b by">Medium</span></td><td>Playwright</td><td>Browser dialog</td></tr>
+<tr><td>Authentication</td><td><span class="b by">Medium</span></td><td>Playwright + credentials</td><td>MFA, session expiry</td></tr>
+<tr><td>CAPTCHA</td><td><span class="b br">Low</span></td><td>Third-party service</td><td>Detection</td></tr>
+<tr><td>Multi-page flows</td><td><span class="b by">Medium</span></td><td>Playwright sessions</td><td>Session timeout</td></tr>
+<tr><td>JavaScript-heavy sites</td><td><span class="b by">Medium</span></td><td>Playwright (full browser)</td><td>Dynamic content</td></tr>
+</table>
+<div class="co co-w"><strong>FACT:</strong> AURA already declares browser.navigate, browser.read, browser.click, browser.type, and browser.screenshot as extension-point capabilities. None has an executor yet. Implementation requires Playwright.</div>
+
+<h2 id="desktop">Desktop Automation</h2>
+<table>
+<tr><th>Capability</th><th>Reliability</th><th>Integration</th><th>Failure Modes</th></tr>
+<tr><td>Screen reading (a11y)</td><td><span class="b by">Platform-dependent</span></td><td>ATK/NSAccessibility/UIA</td><td>App not accessible</td></tr>
+<tr><td>Keyboard input</td><td><span class="b bg">High</span></td><td>xdotool/AppleScript/PowerShell</td><td>Wrong window focused</td></tr>
+<tr><td>Mouse control</td><td><span class="b bg">High</span></td><td>xdotool/AppleScript/PowerShell</td><td>DPI scaling</td></tr>
+<tr><td>Screenshot</td><td><span class="b bg">High</span></td><td>Screencapture/scrot</td><td>macOS permissions</td></tr>
+<tr><td>Clipboard</td><td><span class="b bg">High</span></td><td>pbcopy/xclip/PowerShell</td><td>Other app overwrites</td></tr>
+<tr><td>Application launch</td><td><span class="b bg">High</span></td><td>OS process spawn</td><td>App not installed</td></tr>
+</table>
+<div class="co co-w"><strong>CRITICAL:</strong> Desktop automation requires platform-specific code per OS. One of the hardest automation problems. Treat as P2 — not required for core workflow system.</div>
+
+<h2 id="sys">System Automation</h2>
+<table>
+<tr><th>Capability</th><th>Reliability</th><th>Integration</th><th>Failure Modes</th></tr>
+<tr><td>Shell commands</td><td><span class="b bg">High</span></td><td>Allow-listed binaries</td><td>Injection, privilege escalation</td></tr>
+<tr><td>File operations</td><td><span class="b bg">High</span></td><td>Node.js fs</td><td>Path traversal</td></tr>
+<tr><td>Package managers</td><td><span class="b bg">High</span></td><td>npm/pnpm/yarn/cargo</td><td>Supply-chain attacks</td></tr>
+<tr><td>Process management</td><td><span class="b by">Medium</span></td><td>child_process</td><td>Orphan processes</td></tr>
+</table>
+
+<h2 id="api">API Automation</h2>
+<table>
+<tr><th>Capability</th><th>Reliability</th><th>Integration</th><th>Failure Modes</th></tr>
+<tr><td>REST API calls</td><td><span class="b bg">High</span></td><td>fetch/axios</td><td>Rate limiting, auth expiry</td></tr>
+<tr><td>GraphQL</td><td><span class="b bg">High</span></td><td>HTTP with query</td><td>Complexity attacks</td></tr>
+<tr><td>OAuth flows</td><td><span class="b by">Medium</span></td><td>Browser + token store</td><td>Token refresh</td></tr>
+<tr><td>Webhook handling</td><td><span class="b bg">High</span></td><td>HTTP server + sig verification</td><td>Replay attacks</td></tr>
+<tr><td>Streaming (SSE/WS)</td><td><span class="b by">Medium</span></td><td>EventSource/WebSocket</td><td>Connection drops</td></tr>
+</table>
+
+<h2 id="ai">AI Integration</h2>
+<table>
+<tr><th>Capability</th><th>Reliability</th><th>Integration</th><th>Failure Modes</th></tr>
+<tr><td>Cloud LLM calls</td><td><span class="b by">Variable</span></td><td>Provider adapter (existing)</td><td>Rate limiting, hallucination</td></tr>
+<tr><td>Local models</td><td><span class="b by">Medium</span></td><td>Ollama/llama.cpp</td><td>Hardware limits</td></tr>
+<tr><td>RAG / embeddings</td><td><span class="b bg">High</span></td><td>Knowledge engines (existing)</td><td>Stale index</td></tr>
+<tr><td>Multimodal (vision)</td><td><span class="b by">Medium</span></td><td>GPT-4V/Claude Vision</td><td>Hallucination</td></tr>
+<tr><td>Structured output</td><td><span class="b bg">High</span></td><td>JSON mode + validation</td><td>Malformed output</td></tr>
+</table>
+
+<h2 id="anything">"Anything a Human Can Do" — Honest Assessment</h2>
+<div class="co co-w"><strong>Reality Check:</strong> Partially achievable today, mostly achievable in 2-3 years. Certain categories remain fundamentally difficult.</div>
+<table>
+<tr><th>Category</th><th>Achievable Today</th><th>Requires Work</th><th>Cannot Reliably Automate</th></tr>
+<tr><td><strong>Web</strong></td><td>Navigation, reading, forms, clicks</td><td>Auth, multi-step flows</td><td>CAPTCHAs, biometric verification</td></tr>
+<tr><td><strong>Desktop</strong></td><td>Launch apps, screenshots, clipboard</td><td>GUI interaction via a11y APIs</td><td>Anti-automation apps, complex UIs</td></tr>
+<tr><td><strong>System</strong></td><td>Shell, files, git, packages</td><td>Service management</td><td>Hardware, BIOS-level</td></tr>
+<tr><td><strong>APIs</strong></td><td>REST, GraphQL, webhooks</td><td>Complex auth, streaming</td><td>Human-required KYC</td></tr>
+<tr><td><strong>Dev Tools</strong></td><td>Git, GitHub CLI, builds</td><td>IDE integration</td><td>Interactive debugging</td></tr>
+<tr><td><strong>AI</strong></td><td>LLM calls, RAG, generation</td><td>Multi-agent coordination</td><td>Full autonomous decisions</td></tr>
+</table>
+
+<!-- ═══ ENGINE ARCHITECTURE ═══ -->
+<h2 id="engine">Workflow Engine Architecture</h2>
+<table>
+<tr><th>Pattern</th><th>Pros</th><th>Cons</th><th>AURA Fit</th></tr>
+<tr><td>Sequential DAG</td><td>Simple, predictable</td><td>No parallelism</td><td><span class="b bg">Current — keep</span></td></tr>
+<tr><td>Parallel DAG</td><td>Concurrent branches</td><td>Coordination complexity</td><td><span class="b by">Add v2</span></td></tr>
+<tr><td>Event-Driven</td><td>Reactive, loosely coupled</td><td>Harder to reason about</td><td><span class="b bg">Exists (Automation Engine)</span></td></tr>
+<tr><td>Actor Model</td><td>Natural concurrency</td><td>Complex message passing</td><td><span class="b bo">Future multi-agent</span></td></tr>
+<tr><td>Durable Execution</td><td>Crash recovery</td><td>Event store complexity</td><td><span class="b by">Add checkpointing v3</span></td></tr>
+<tr><td>State Machine</td><td>Clear transitions</td><td>Rigid for complex flows</td><td><span class="b bg">Used in Automation Engine</span></td></tr>
+<tr><td>Agent Loop</td><td>Adaptive, handles ambiguity</td><td>Non-deterministic</td><td><span class="b by">Agentic AI Node v4</span></td></tr>
+</table>
+
+<h2 id="compare">Engine Comparison</h2>
+<table>
+<tr><th>System</th><th>Pattern</th><th>Durability</th><th>Key Lesson for AURA</th></tr>
+<tr><td><strong>Temporal</strong></td><td>Durable replay</td><td>Event-sourced, full replay</td><td>Recovery through deterministic replay is powerful but complex. Desktop apps need lighter approach.</td></tr>
+<tr><td><strong>n8n</strong></td><td>Visual DAG + triggers</td><td>Database-backed</td><td>Visual editor + 400+ integrations is the UX gold standard. AURA should match this accessibility.</td></tr>
+<tr><td><strong>Zapier</strong></td><td>Trigger → Action chains</td><td>Cloud-managed</td><td>Simple mental model: trigger + action + filter. AURA's Automation Engine already follows this pattern.</td></tr>
+<tr><td><strong>Make</strong></td><td>Visual scenario builder</td><td>Cloud-managed</td><td>Data mapping between nodes is critical UX. AURA needs clear data flow visualization.</td></tr>
+<tr><td><strong>Airflow</strong></td><td>Python DAGs</td><td>Database-backed</td><td>Rich ecosystem of operators. AURA should have rich node library.</td></tr>
+<tr><td><strong>Prefect</strong></td><td>Dynamic flows</td><td>Hybrid</td><td>Dynamic workflow creation (add tasks at runtime). AURA's AI generation is similar.</td></tr>
+</table>
+
+<div class="co"><strong>Architectural Lessons to Borrow:</strong><ul><li><strong>From n8n:</strong> Visual node editor, data mapping between nodes, trigger/action/filter mental model</li><li><strong>From Temporal:</strong> Deterministic execution, event logging, recovery semantics</li><li><strong>From Zapier:</strong> Simple trigger→action chains for non-technical users</li><li><strong>From Airflow:</strong> Rich operator ecosystem, dependency management</li><li><strong>From AURA (existing):</strong> Capability Fabric as governance layer — none of these have an equivalent</li></ul></div>
+
+<div class="co co-w"><strong>What to Avoid:</strong><ul><li><strong>Temporal's complexity:</strong> Event sourcing + replay is overkill for a desktop app</li><li><strong>Airflow's weight:</strong> Scheduler + metadata DB + webserver is too heavy</li><li><strong>Zapier's cloud dependency:</strong> AURA must work offline</li><li><strong>Make's visual complexity:</strong> Too many nesting levels confuse users</li></ul></div>
+
+<!-- ═══ DURABILITY ═══ -->
+<h2 id="durable">Durability</h2>
+<p>AURA is primarily a desktop product. The durability architecture must be proportionate.</p>
+
+<h3>Durability Requirements by Scenario</h3>
+<table>
+<tr><th>Scenario</th><th>Requirement</th><th>Recommended Approach</th></tr>
+<tr><td>Local execution</td><td>Workflow state survives function return</td><td>In-memory (sufficient for v1)</td></tr>
+<tr><td>Application restart</td><td>Resume from last completed node</td><td>Per-node checkpoint to JSON file</td></tr>
+<tr><td>System restart</td><td>Resume long-running workflows</td><td>Checkpoint store with resume metadata</td></tr>
+<tr><td>Network failure</td><td>Retry network actions when reconnected</td><td>Queue with retry policy</td></tr>
+<tr><td>Crash mid-action</td><td>Detect incomplete action, offer retry</td><td>Transaction log with idempotency keys</td></tr>
+</table>
+
+<div class="co co-s"><strong>Recommendation:</strong> Use lightweight JSON-file checkpointing, not event sourcing. After each node completes, persist: workflow ID, completed node IDs, variable state, and any artifacts. On restart, replay from last checkpoint. This gives 90% of Temporal's recovery benefit at 10% of the complexity.</div>
+
+<h3>Idempotency &amp; Exactly-Once</h3>
+<ul>
+<li><strong>Exactly-once</strong> is impossible in distributed systems and unnecessary for single-user desktop.</li>
+<li><strong>At-least-once with idempotency</strong> is the right model: retry failed actions, use idempotency keys for non-idempotent operations (API calls, file writes).</li>
+<li><strong>Workflow versioning:</strong> Store workflow definition version at checkpoint. If definition changes, warn user that resume may produce different results.</li>
+</ul>
+
+<!-- ═══ HUMAN-IN-THE-LOOP ═══ -->
+<h2 id="hitl">Human-in-the-Loop</h2>
+
+<h3>HITL Patterns</h3>
+<table>
+<tr><th>Pattern</th><th>Use Case</th><th>Implementation</th></tr>
+<tr><td><strong>Approval Gate</strong></td><td>High-risk action before execution</td><td>Capability Fabric's require-approval (existing)</td></tr>
+<tr><td><strong>Clarification</strong></td><td>Ambiguous AI decision</td><td>Pause workflow, present options, resume on choice</td></tr>
+<tr><td><strong>Credential Request</strong></td><td>API key / OAuth needed</td><td>Pause, show credential form, resume with stored secret</td></tr>
+<tr><td><strong>CAPTCHA</strong></td><td>Bot detection during web automation</td><td>Pause, show screenshot, user solves manually</td></tr>
+<tr><td><strong>Input Collection</strong></td><td>Workflow needs user data</td><td>user-input node (existing)</td></tr>
+<tr><td><strong>Review Gate</strong></td><td>AI-generated content before publishing</td><td>Pause with preview, approve/edit/reject</td></tr>
+</table>
+
+<h3>Escalation &amp; Timeouts</h3>
+<ul>
+<li><strong>Timeout:</strong> If human doesn't respond within configurable time (default: 5 minutes), workflow pauses or fails based on configuration.</li>
+<li><strong>Delegation:</strong> Human can delegate approval to an agent role (e.g., "auto-approve low-risk actions for this workflow").</li>
+<li><strong>Batching:</strong> Multiple approvals at the same moment become ONE request (existing in Capability Fabric).</li>
+<li><strong>Auditability:</strong> Every human decision recorded: who, when, what was decided, and why (existing).</li>
+</ul>
+
+<!-- ═══ SECURITY MODEL ═══ -->
+<h2 id="security">Security Model</h2>
+
+<div class="co co-d"><strong>CRITICAL SECTION</strong>Workflow automation dramatically increases AURA's security surface. Every new node type, every browser action, every agent tool call is a potential attack vector.</div>
+
+<h3>Threat Matrix</h3>
+<table>
+<tr><th>Threat</th><th>Severity</th><th>Likelihood</th><th>Mitigation</th></tr>
+<tr><td><strong>Prompt Injection</strong> via tool output</td><td><span class="b br">Critical</span></td><td><span class="b by">Medium</span></td><td>Tool outputs treated as untrusted data. Agent system prompt includes injection defenses. Capability Fabric approval for high-risk.</td></tr>
+<tr><td><strong>Tool Poisoning</strong> — malicious tool definitions</td><td><span class="b br">Critical</span></td><td><span class="b bg">Low</span></td><td>Tools defined in code (Fabric manifest), not user data. No dynamic tool registration from untrusted sources.</td></tr>
+<tr><td><strong>SSRF</strong> via HTTP request node</td><td><span class="b br">High</span></td><td><span class="b by">Medium</span></td><td>URL validation in Fabric. Block internal IPs (127.0.0.1, 169.254.x.x, 10.x.x.x). Timeout and response size limits.</td></tr>
+<tr><td><strong>Credential Theft</strong> from workflow state</td><td><span class="b br">Critical</span></td><td><span class="b by">Medium</span></td><td>Secrets never stored in workflow definitions. Encrypted credential store. Secrets redacted from logs and audit trails.</td></tr>
+<tr><td><strong>Arbitrary Code Execution</strong> via shell node</td><td><span class="b br">Critical</span></td><td><span class="b by">Medium</span></td><td>Allow-listed binaries only (existing). No shell interpretation. Path restrictions. Risk: high → require-approval.</td></tr>
+<tr><td><strong>Supply-Chain Attack</strong> via workflow templates</td><td><span class="b br">High</span></td><td><span class="b by">Medium</span></td><td>Templates reviewed before inclusion. User-created templates sandboxed. No auto-execution of template side effects.</td></tr>
+<tr><td><strong>Agent Overreach</strong> — agent exceeds intended scope</td><td><span class="b br">High</span></td><td><span class="b by">Medium</span></td><td>Agent's tool access ≤ workflow's permissions. Per-tool approval for high-risk. Bounded iterations and token budget.</td></tr>
+<tr><td><strong>Confused Deputy</strong> — agent tricked into misusing authority</td><td><span class="b br">High</span></td><td><span class="b by">Medium</span></td><td>Each tool call goes through Fabric policy evaluation. Agent cannot bypass permission checks.</td></tr>
+<tr><td><strong>Destructive Automation</strong> — workflow deletes data</td><td><span class="b br">Critical</span></td><td><span class="b bg">Low</span></td><td>resource.destroy scope requires human authorization. Irreversible actions always gated. File writes restricted to project root.</td></tr>
+<tr><td><strong>Malicious Websites</strong> during browser automation</td><td><span class="b by">High</span></td><td><span class="b by">Medium</span></td><td>Browser runs in sandboxed profile. No saved credentials in automated browser. Network requests through Fabric.</td></tr>
+</table>
+
+<h3>Permission Model</h3>
+<p>AURA's existing Capability Fabric provides the right security architecture. Workflow automation should integrate with it, not create a parallel system.</p>
+<div class="dg"><span class="label">Workflow Node</span> → <span class="node">Capability Fabric</span> → <span class="node">Policy Engine</span>
+                                    │
+                            ┌───────┼───────┐
+                            │       │       │
+                       <span class="label">Permission</span>  <span class="label">Risk Level</span>  <span class="label">Approval</span>
+                       <span class="label">Check</span>      <span class="label">Evaluate</span>    <span class="label">Gate</span>
+                            │       │       │
+                            └───────┼───────┘
+                                    │
+                            <span class="node">Executor</span> → <span class="label">Run</span> → <span class="node">Verify</span> → <span class="node">Audit</span></div>
+
+<div class="co co-s"><strong>Key Principle:</strong> The Capability Fabric is the SINGLE governed path for all side effects. Workflow nodes never bypass it. This means: one permission model, one audit trail, one policy engine. No exceptions.</div>
+
+<h3>Credential Handling</h3>
+<ul>
+<li><strong>Storage:</strong> Secrets stored in OS keychain (macOS Keychain, Windows Credential Locker, Linux Secret Service), not in files.</li>
+<li><strong>Access:</strong> Workflow nodes reference secrets by name, never see raw values. Fabric injects them at execution time.</li>
+<li><strong>Logging:</strong> Secrets automatically redacted from all logs, audit trails, and error messages.</li>
+<li><strong>Agent access:</strong> Agents never see raw API keys. They request capability access, Fabric provides it transparently.</li>
+</ul>
+
+<!-- ═══ CONTEXT & MEMORY ═══ -->
+<h2 id="ctx">Context &amp; Memory</h2>
+
+<h3>Context Layers</h3>
+<table>
+<tr><th>Layer</th><th>Scope</th><th>Contents</th><th>Persistence</th></tr>
+<tr><td><strong>Workflow Context</strong></td><td>Single run</td><td>Variables, input values, node outputs</td><td>Per-run (lost on restart unless checkpointed)</td></tr>
+<tr><td><strong>Execution Context</strong></td><td>Node invocation</td><td>Actor, project, capabilities, timeout</td><td>Per-invocation</td></tr>
+<tr><td><strong>Workspace Context</strong></td><td>AURA installation</td><td>Settings, providers, connected nodes</td><td>Persistent</td></tr>
+<tr><td><strong>Project Context</strong></td><td>Open project</td><td>Profile, graph, memory, conversations</td><td>Persistent</td></tr>
+<tr><td><strong>Agent Context</strong></td><td>Agent invocation</td><td>System prompt, tools, conversation history</td><td>Per-invocation</td></tr>
+</table>
+
+<h3>Memory Architecture</h3>
+<ul>
+<li><strong>Project Memory:</strong> Keyword-indexed, per-project. Already exists. Workflows write via <code>save-memory</code> node.</li>
+<li><strong>Engineering Memory:</strong> Richer records (missions, diagnoses, decisions). Already exists.</li>
+<li><strong>Workflow Memory:</strong> (NEW) Records of workflow executions, successes, failures, patterns. "This workflow failed 3 times on this API call" → auto-adjust retry policy.</li>
+<li><strong>Agent Memory:</strong> (NEW) Short-term context for agent reasoning within a single invocation. Discarded after completion.</li>
+</ul>
+
+<h3>Context Pollution Risks</h3>
+<div class="rg">
+<div class="ri"><div class="rl">Stale Information</div><div class="rx">Context from 10 minutes ago may not reflect current state. Mitigation: freshness timestamps on all context sections.</div></div>
+<div class="ri"><div class="rl">Token Growth</div><div class="rx">Unbounded context growth hits LLM limits. Mitigation: context budgets per node, compression for large inputs.</div></div>
+<div class="ri"><div class="rl">Conflicting State</div><div class="rx">Two workflows modifying same files. Mitigation: Project-level locking, conflict detection.</div></div>
+<div class="ri"><div class="rl">Privacy Boundaries</div><div class="rx">Agent in Project A shouldn't see Project B data. Mitigation: Strict project scoping on all context.</div></div>
+</div>
+
+<!-- ═══ OBSERVABILITY ═══ -->
+<h2 id="obs">Observability</h2>
+
+<h3>Observability Stack</h3>
+<table>
+<tr><th>Layer</th><th>What</th><th>Implementation</th></tr>
+<tr><td><strong>Execution Timeline</strong></td><td>Visual timeline of node execution</td><td>RunEvent stream (existing) → timeline UI</td></tr>
+<tr><td><strong>Node Status</strong></td><td>Per-node status, timing, logs</td><td>RunEvent.node events (existing)</td></tr>
+<tr><td><strong>Structured Logs</strong></td><td>Machine-readable event log</td><td>RunEvent.log events (existing)</td></tr>
+<tr><td><strong>Metrics</strong></td><td>Success rate, duration, cost</td><td>Aggregated from execution history</td></tr>
+<tr><td><strong>Traces</strong></td><td>Cross-node causation chain</td><td>Span-based tracing (new)</td></tr>
+<tr><td><strong>Cost Tracking</strong></td><td>LLM tokens, API calls, compute</td><td>Per-node cost accumulation (new)</td></tr>
+<tr><td><strong>Agent Traces</strong></td><td>Agent reasoning steps, tool calls</td><td>Agent loop trace log (new)</td></tr>
+</table>
+
+<h3>Excellent Debugging Experience</h3>
+<ul>
+<li><strong>Step-through execution:</strong> Pause before each node, show inputs, allow manual inspection.</li>
+<li><strong>Replay:</strong> Re-run a workflow from any point with same inputs.</li>
+<li><strong>Diff view:</strong> Compare two runs to see where they diverged.</li>
+<li><strong>Filter:</strong> Show only failed nodes, only slow nodes, only network calls.</li>
+<li><strong>Search:</strong> Full-text search across all execution logs.</li>
+</ul>
+
+<!-- ═══ OFFLINE-FIRST ═══ -->
+<h2 id="offline">Offline-First</h2>
+
+<table>
+<tr><th>Workflow Type</th><th>Offline Capability</th><th>Notes</th></tr>
+<tr><td>File operations</td><td><span class="b bg">Fully offline</span></td><td>Local filesystem, no network needed</td></tr>
+<tr><td>Shell commands</td><td><span class="b bg">Fully offline</span></td><td>Local process execution</td></tr>
+<tr><td>Git operations</td><td><span class="b bg">Fully offline</span></td><td>Local git, push/fetch need network</td></tr>
+<tr><td>Local LLM</td><td><span class="b bg">Fully offline</span></td><td>Ollama/llama.cpp on local hardware</td></tr>
+<tr><td>File reading/writing</td><td><span class="b bg">Fully offline</span></td><td>All file nodes</td></tr>
+<tr><td>Cloud LLM</td><td><span class="b by">Network required</span></td><td>Queue requests, execute when connected</td></tr>
+<tr><td>API calls</td><td><span class="b by">Network required</span></td><td>Queue with retry, execute when connected</td></tr>
+<tr><td>Browser automation</td><td><span class="b by">Network required</span></td><td>Web pages need internet (usually)</td></tr>
+<tr><td>GitHub/GitLab</td><td><span class="b by">Network required</span></td><td>Queue PR creation, push, etc.</td></tr>
+</table>
+
+<div class="co co-s"><strong>Recommendation:</strong> Design workflows to be network-aware. Nodes should declare whether they need network. The runtime should detect connectivity and either execute, queue, or fail gracefully. Offline-capable workflows (file, shell, git, local AI) should be the first-class citizen.</div>
+
+<!-- ═══ WORKFLOW DESIGNER ═══ -->
+<h2 id="designer">Workflow Designer</h2>
+
+<h3>Feature Priority Matrix</h3>
+<table>
+<tr><th>Feature</th><th>Priority</th><th>Complexity</th><th>Notes</th></tr>
+<tr><td>Drag/drop nodes</td><td><span class="b bg">P0</span></td><td>Medium</td><td>Core UX. Use existing visual editor.</td></tr>
+<tr><td>Connections (edges)</td><td><span class="b bg">P0</span></td><td>Medium</td><td>Click output port → click input port.</td></tr>
+<tr><td>Node configuration panel</td><td><span class="b bg">P0</span></td><td>Medium</td><td>Inspector panel with typed fields.</td></tr>
+<tr><td>Conditions/branches</td><td><span class="b bg">P0</span></td><td>Low</td><td>Condition node with true/false ports.</td></tr>
+<tr><td>Loops</td><td><span class="b bg">P0</span></td><td>Low</td><td>Loop node with each/done ports.</td></tr>
+<tr><td>Variables</td><td><span class="b bg">P0</span></td><td>Low</td><td>Variables node + {{KEY}} interpolation.</td></tr>
+<tr><td>Data mapping</td><td><span class="b by">P1</span></td><td>High</td><td>Visual data flow between nodes.</td></tr>
+<tr><td>Execution preview</td><td><span class="b by">P1</span></td><td>High</td><td>Show what would happen without running.</td></tr>
+<tr><td>Dry run</td><td><span class="b by">P1</span></td><td>High</td><td>Execute with mocked side effects.</td></tr>
+<tr><td>Step execution</td><td><span class="b by">P1</span></td><td>Medium</td><td>Run one node at a time.</td></tr>
+<tr><td>Breakpoints</td><td><span class="b bo">P2</span></td><td>Medium</td><td>Pause at specific nodes.</td></tr>
+<tr><td>Version history</td><td><span class="b bo">P2</span></td><td>Medium</td><td>Undo/redo workflow changes.</td></tr>
+<tr><td>Replay</td><td><span class="b bo">P2</span></td><td>High</td><td>Re-run with same inputs.</td></tr>
+</table>
+
+<!-- ═══ AI-GENERATED WORKFLOWS ═══ -->
+<h2 id="genwf">AI-Generated Workflows</h2>
+
+<h3>Generation Pipeline</h3>
+<div class="dg">User: "Every morning check GitHub issues, summarize, send report"
+        │
+<span class="label">Step 1: NL → Intent</span>    Intent: scheduled + github + summarize + notify
+        │
+<span class="label">Step 2: Intent → Graph</span>  Trigger: cron(0 9 * * *)
+        │                   Nodes: github.issues → filter → agent → markdown → slack
+        │
+<span class="label">Step 3: Validate</span>        Schema check ✓  Policy check ✓  Graph check ✓
+        │
+<span class="label">Step 4: Simulate</span>        Dry run with mocked GitHub data
+        │
+<span class="label">Step 5: Present</span>         Show workflow to user for review
+        │
+<span class="label">Step 6: Activate</span>        User approves → schedule created</div>
+
+<h3>Safety Requirements</h3>
+<div class="co co-d"><strong>CRITICAL RULE:</strong> The AI must NEVER silently create an unsafe workflow. Every AI-generated workflow must: (1) show the user what it created, (2) explain what each node does, (3) highlight any high-risk actions, (4) require explicit approval before activation.</div>
+
+<h3>Validation Layers</h3>
+<ul>
+<li><strong>Schema validation:</strong> All node configs match their field specs.</li>
+<li><strong>Graph validation:</strong> No cycles (except via loop nodes), no unreachable nodes, all inputs connected.</li>
+<li><strong>Policy validation:</strong> Every action node has required permissions. High-risk actions flagged.</li>
+<li><strong>Simulation:</strong> Dry run with mocked data to catch logic errors before activation.</li>
+</ul>
+
+<!-- ═══ WORKFLOW TESTING ═══ -->
+<h2 id="test">Workflow Testing</h2>
+
+<table>
+<tr><th>Test Type</th><th>What</th><th>How</th><th>Priority</th></tr>
+<tr><td><strong>Node Unit Test</strong></td><td>Single node with known input</td><td>Provide input → assert output</td><td><span class="b bg">P0</span></td></tr>
+<tr><td><strong>Workflow Simulation</strong></td><td>Full workflow with mocked nodes</td><td>Replace side effects with mocks</td><td><span class="b bg">P0</span></td></tr>
+<tr><td><strong>Dry Run</strong></td><td>Execute without side effects</td><td>Run nodes, skip actions</td><td><span class="b by">P1</span></td></tr>
+<tr><td><strong>Failure Injection</strong></td><td>Test error handling paths</td><td>Force node failures, verify recovery</td><td><span class="b by">P1</span></td></tr>
+<tr><td><strong>Regression Test</strong></td><td>Previously passing workflow still passes</td><td>Record outputs, compare on re-run</td><td><span class="b by">P1</span></td></tr>
+<tr><td><strong>Security Test</strong></td><td>Workflow doesn't exceed permissions</td><td>Run with restricted policy, verify denials</td><td><span class="b by">P1</span></td></tr>
+<tr><td><strong>Performance Test</strong></td><td>Workflow completes within time/cost budget</td><td>Measure duration and token usage</td><td><span class="b bo">P2</span></td></tr>
+</table>
+
+<div class="co"><strong>Trust Model:</strong> Workflows should display a trust score: ✓ All nodes tested, ✓ No policy violations, ✓ Dry run passed, ✓ Performance within budget. Users activate workflows they trust.</div>
+
+<!-- ═══ COMPETITIVE DIFFERENTIATION ═══ -->
+<h2 id="diff">Competitive Differentiation</h2>
+
+<table>
+<tr><th>Aspect</th><th>n8n/Zapier/Make</th><th>Temporal/Airflow</th><th>Claude/Gemini Agents</th><th>AURA Opportunity</th></tr>
+<tr><td><strong>Target User</strong></td><td>Non-technical</td><td>Engineers</td><td>Developers</td><td><strong>Developers + power users</strong></td></tr>
+<tr><td><strong>AI Integration</strong></td><td>As a node</td><td>None</td><td>Core</td><td><strong>AI-native throughout</strong></td></tr>
+<tr><td><strong>Project Grounding</strong></td><td>None</td><td>None</td><td>Conversation</td><td><strong>Deep codebase understanding</strong></td></tr>
+<tr><td><strong>Security Model</strong></td><td>API keys</td><td>RBAC</td><td>None</td><td><strong>Capability Fabric (unique)</strong></td></tr>
+<tr><td><strong>Offline</strong></td><td>No</td><td>No</td><td>No</td><td><strong>Yes (desktop app)</strong></td></tr>
+<tr><td><strong>Local AI</strong></td><td>No</td><td>No</td><td>No</td><td><strong>Ollama/local models</strong></td></tr>
+<tr><td><strong>Visual + Code</strong></td><td>Visual only</td><td>Code only</td><td>Code only</td><td><strong>Both (visual editor + AI generation)</strong></td></tr>
+<tr><td><strong>Audit Trail</strong></td><td>Basic logs</td><td>Full history</td><td>None</td><td><strong>Governed audit (Capability Fabric)</strong></td></tr>
+</table>
+
+<div class="co co-s"><strong>Unique AURA Differentiators (Evidence-Backed):</strong><ol><li><strong>Capability Fabric:</strong> No other workflow system has a governed permission model with risk-based policy evaluation. This is genuinely unique.</li><li><strong>AI-Native Intelligence Nodes:</strong> Coding KE, FullStack KE, Intent Classifier — workflow nodes that understand your codebase. No competitor has this.</li><li><strong>Offline-First:</strong> Desktop app with local AI. Workflows run without internet. No cloud dependency.</li><li><strong>Visual + Code + AI:</strong> Three ways to create workflows. No competitor offers all three.</li></ol></div>
+
+<!-- ═══ ARCHITECTURE PROPOSAL ═══ -->
+<h2 id="proposal">Architecture Proposal</h2>
+
+<div class="dg"><span class="node">User</span>
+  ↓
+<span class="node">Workflow Designer</span>  ←→  <span class="label">AI Workflow Generator</span>
+  ↓
+<span class="node">Workflow Definition</span>  (JSON graph of nodes + edges)
+  ↓
+<span class="node">Validator</span>  (schema + graph + policy)
+  ↓
+<span class="node">Capability Fabric</span>  (permissions + risk + approval)
+  ↓
+<span class="node">Workflow Runtime</span>
+  ↓
+<span class="node">Execution Scheduler</span>
+  ├── <span class="label">Sequential Executor</span>  (current engine, enhanced)
+  ├── <span class="label">Parallel Executor</span>  (future: independent branches)
+  └── <span class="label">Agent Executor</span>  (agentic AI nodes)
+  ↓
+<span class="node">Nodes</span>
+  ├── <span class="label">Source</span>  (project, files, memory)
+  ├── <span class="label">Intelligence</span>  (KE, classifier)
+  ├── <span class="label">Generate</span>  (LLM, markdown, code, JSON)
+  ├── <span class="label">Logic</span>  (condition, loop, delay)
+  ├── <span class="label">Action</span>  (file, shell, git, HTTP)
+  ├── <span class="label">AI Agent</span>  (reasoning + tools)
+  ├── <span class="label">Browser</span>  (Playwright)
+  ├── <span class="label">Desktop</span>  (accessibility APIs)
+  └── <span class="label">Human</span>  (approval, input)
+  ↓
+<span class="node">State / Checkpoint Store</span>  (JSON files, lightweight)
+  ↓
+<span class="node">Audit / Observability</span>  (Capability Fabric audit trail + run history)</div>
+
+<h3>Key Architectural Decisions</h3>
+<ol>
+<li><strong>Capability Fabric as the security boundary:</strong> Every node action goes through the Fabric. No bypass paths.</li>
+<li><strong>Three executor types:</strong> Sequential (current), Parallel (future), Agent (future). All share the same node interface.</li>
+<li><strong>Lightweight checkpointing:</strong> JSON file per workflow run. No database, no event store. Sufficient for desktop.</li>
+<li><strong>Event-driven triggers separate from workflow execution:</strong> Automation Engine handles triggers; Workflow Engine handles execution. Clean separation.</li>
+<li><strong>Agent nodes as bounded loops:</strong> Not fully autonomous. Max iterations, timeout, tool allowlist. Fabric-governed.</li>
+</ol>
+
+<!-- ═══ DEVELOPMENT ROADMAP ═══ -->
+<h2 id="roadmap">Development Roadmap</h2>
+
+<div class="tl">
+<div class="ti cur"><div class="tt">Stage 0 — Foundation (Current)</div><div class="tx">Objective: Solidify existing systems</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> Workflow Engine, Automation Engine, Capability Fabric (all exist)</li>
+<li><strong>Exit Criteria:</strong> All existing workflows pass tests, Fabric governs all side effects</li>
+<li><strong>Risks:</strong> Pre-existing technical debt in workflow engine</li>
+</ul></div></div>
+
+<div class="ti"><div class="tt">Stage 1 — Reliable Runtime</div><div class="tx">Objective: Error handling, retries, cancellation for all nodes</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> Try/catch/finally in workflows, per-node retry policies, graceful cancellation, proper error propagation</li>
+<li><strong>Dependencies:</strong> Stage 0</li>
+<li><strong>Exit Criteria:</strong> Every node type handles errors gracefully; workflows don't crash on node failure</li>
+<li><strong>Risks:</strong> Error semantics for different node types vary</li>
+</ul></div></div>
+
+<div class="ti"><div class="tt">Stage 2 — Visual Workflow Editor (Enhanced)</div><div class="tx">Objective: Professional-grade visual workflow design</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> Data mapping between nodes, visual data flow, node palette search, minimap, undo/redo, auto-layout</li>
+<li><strong>Dependencies:</strong> Stage 1</li>
+<li><strong>Exit Criteria:</strong> Users can design complex workflows visually without touching JSON</li>
+<li><strong>Risks:</strong> UI complexity can overwhelm users</li>
+</ul></div></div>
+
+<div class="ti"><div class="tt">Stage 3 — Trigger Expansion</div><div class="tx">Objective: Cron, webhook improvements, external events</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> Cron schedule triggers, improved webhook handling, GitHub/GitLab event triggers, email triggers</li>
+<li><strong>Dependencies:</strong> Stage 1</li>
+<li><strong>Exit Criteria:</strong> Workflows can be triggered by 10+ event types</li>
+<li><strong>Risks:</strong> Each new trigger type needs security review</li>
+</ul></div></div>
+
+<div class="ti"><div class="tt">Stage 4 — Browser Integration</div><div class="tx">Objective: Playwright-based web automation nodes</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> browser.navigate, browser.read, browser.click, browser.type, browser.screenshot, browser.session, browser.download</li>
+<li><strong>Dependencies:</strong> Stage 1, Playwright installation</li>
+<li><strong>Exit Criteria:</strong> Users can automate 5+ common web tasks (form filling, data extraction, file download)</li>
+<li><strong>Risks:</strong> Anti-bot detection, session management, credential security</li>
+</ul></div></div>
+
+<div class="ti"><div class="tt">Stage 5 — Human-in-the-Loop</div><div class="tx">Objective: First-class pause/resume for human intervention</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> Pause nodes, approval workflow UI, credential collection, CAPTCHA solving (manual), timeout handling, escalation</li>
+<li><strong>Dependencies:</strong> Stage 1, Capability Fabric approval system</li>
+<li><strong>Exit Criteria:</strong> Workflows can pause for human input and resume cleanly</li>
+<li><strong>Risks:</strong> UX complexity of pause/resume flow</li>
+</ul></div></div>
+
+<div class="ti"><div class="tt">Stage 6 — Durability</div><div class="tx">Objective: Checkpoint and resume for crash recovery</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> Per-node checkpointing, resume from failure, execution history persistence, workflow versioning</li>
+<li><strong>Dependencies:</strong> Stage 1</li>
+<li><strong>Exit Criteria:</strong> Workflows survive application restart; users can resume from last completed node</li>
+<li><strong>Risks:</strong> Checkpoint format must be versioned for forward compatibility</li>
+</ul></div></div>
+
+<div class="ti"><div class="tt">Stage 7 — Agentic AI Node</div><div class="tx">Objective: AI reasoning with bounded tool access</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> Agent node with internal loop, tool calling via Fabric, bounded iterations, token budget, structured output, agent trace logging</li>
+<li><strong>Dependencies:</strong> Stage 1, Stage 5 (approval for high-risk tools)</li>
+<li><strong>Exit Criteria:</strong> Agent node can complete multi-step tasks; safety limits prevent abuse</li>
+<li><strong>Risks:</strong> Non-determinism makes testing harder; prompt injection surface increases</li>
+</ul></div></div>
+
+<div class="ti"><div class="tt">Stage 8 — AI-Generated Workflows</div><div class="tx">Objective: Natural language → validated workflow</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> NL → workflow generation, schema/graph/policy validation, dry run simulation, user review before activation</li>
+<li><strong>Dependencies:</strong> Stage 2, Stage 7</li>
+<li><strong>Exit Criteria:</strong> Users can describe a workflow in English and get a working, validated, safe workflow</li>
+<li><strong>Risks:</strong> Generated workflows may be subtly wrong; validation must be thorough</li>
+</ul></div></div>
+
+<div class="ti"><div class="tt">Stage 9 — Desktop Automation</div><div class="tx">Objective: Cross-platform GUI automation</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> desktop.read (a11y), desktop.type, desktop.click, desktop.screenshot, desktop.launch, desktop.clipboard</li>
+<li><strong>Dependencies:</strong> Stage 1, OS-specific implementations</li>
+<li><strong>Exit Criteria:</strong> Basic GUI automation works on macOS, Linux, Windows</li>
+<li><strong>Risks:</strong> Cross-platform compatibility is extremely hard; a11y APIs vary wildly</li>
+</ul></div></div>
+
+<div class="ti"><div class="tt">Stage 10 — Universal Automation</div><div class="tx">Objective: "Anything a human can do" — full vision</div>
+<div class="cd"><ul>
+<li><strong>Capabilities:</strong> All node types, all triggers, all integrations, parallel execution, subworkflows, multi-agent coordination</li>
+<li><strong>Dependencies:</strong> All previous stages</li>
+<li><strong>Exit Criteria:</strong> Users can automate complex multi-system workflows end-to-end</li>
+<li><strong>Risks:</strong> Scope creep, maintenance burden, security surface</li>
+</ul></div></div>
+</div>
+
+<!-- ═══ FINAL RECOMMENDATIONS ═══ -->
+<h2 id="rec">Final Recommendations</h2>
+
+<div class="co co-s"><strong>1. The Capability Fabric Is Non-Negotiable</strong>Every workflow action must go through the Fabric. This is the single most important architectural decision. It provides security, auditability, and governance without the workflow engine needing to implement any of it.</div>
+
+<div class="co co-s"><strong>2. Build Bounded Agents, Not Autonomous Ones</strong>The Agentic AI Node should be a workflow node with an internal loop — not a fully autonomous agent. Bounded iterations, tool allowlist, token budget, timeout. Power with control.</div>
+
+<div class="co co-s"><strong>3. Start with Sequential, Add Parallelism Later</strong>The current sequential DAG engine is sufficient for v1-v5. Parallel execution is a P1 feature but not blocking. Get the fundamentals right first.</div>
+
+<div class="co co-s"><strong>4. Offline-First Is a Genuine Differentiator</strong>No competitor offers workflow automation that works without internet. Lean into this. Local AI (Ollama), local file operations, local git — these should be the showcase capabilities.</div>
+
+<div class="co co-w"><strong>5. Don't Clone n8n or Zapier</strong>AURA's opportunity is not to be "n8n but local." It's to be the first workflow system where AI deeply understands your codebase and can reason about your project. The intelligence nodes (Coding KE, FullStack KE) are the differentiator, not the visual editor.</div>
+
+<div class="co co-w"><strong>6. Security Must Be Proactive, Not Reactive</strong>The browser + agent + shell combination creates an enormous attack surface. Build security into the architecture from Stage 1, not as an afterthought. The Fabric is the foundation; extend it carefully.</div>
+
+<div class="co co-w"><strong>7. Durability Should Be Lightweight</strong>JSON-file checkpointing, not event sourcing. Desktop apps crash and restart — that's the scenario to optimize for. Don't build distributed-system infrastructure for a single-user application.</div>
+
+<!-- ═══ SOURCES ═══ -->
+<h2 id="sources">Sources &amp; References</h2>
+<h3>Codebase Analysis</h3>
+<ul>
+<li><code>packages/ai-service/src/workflow/engine.ts</code> — Current workflow execution engine</li>
+<li><code>packages/ai-service/src/workflow/types.ts</code> — Workflow type definitions (35+ node types)</li>
+<li><code>packages/ai-service/src/workflow/nodes.ts</code> — Node implementations (source, intelligence, generate, logic, action, I/O)</li>
+<li><code>packages/ai-service/src/workflow/templates.ts</code> — 10 built-in workflow templates</li>
+<li><code>packages/automation/src/engine.ts</code> — Event-driven automation engine</li>
+<li><code>packages/automation/src/types.ts</code> — Automation types (8 trigger types, conditions, retry)</li>
+<li><code>packages/capability-fabric/src/types.ts</code> — Capability Fabric domain types</li>
+<li><code>packages/capability-fabric/src/fabric.ts</code> — Governed execution layer</li>
+<li><code>packages/capability-fabric/src/policy.ts</code> — Policy engine (risk-based decisions)</li>
+<li><code>packages/capability-fabric/src/manifest.ts</code> — 30+ capability descriptors including browser extension points</li>
+</ul>
+
+<h3>External Research</h3>
+<ul>
+<li>Temporal.io — Durable execution patterns, event sourcing, workflow replay</li>
+<li>n8n — Visual workflow editor, 400+ integrations, trigger/action/filter model</li>
+<li>Zapier — Simple automation UX, trigger→action chains</li>
+<li>Make (Integromat) — Visual scenario builder, data mapping</li>
+<li>Apache Airflow — DAG orchestration, operator ecosystem</li>
+<li>Prefect — Dynamic workflows, hybrid execution</li>
+<li>Playwright — Browser automation framework (Microsoft)</li>
+<li>React/ReAct pattern — Reasoning + Acting in LLMs (Yao et al., 2022)</li>
+<li>Toolformer — Language models as tool users (Schick et al., 2023)</li>
+<li>Event Sourcing pattern — Martin Fowler, Greg Young</li>
+<li>Saga pattern — Garcia-Molina &amp; Salem (1987)</li>
+<li>Capability-based security — Mark Miller, object-capability model</li>
+<li>Prompt injection research — Simon Willon, greshake et al.</li>
+</ul>
+
+<div class="co"><strong>Research Completed:</strong> August 2026. This is a living document. Update as architecture decisions are made and implementation proceeds.</div>
+
+</div><!-- end .mn -->
+</body>
+</html>

@@ -16,9 +16,11 @@ import { DiffEditor } from '@monaco-editor/react';
 import { Badge, Button, Icon } from '@aura/ui';
 import { useAppStore } from '@aura/core';
 import type { DagNode, MissionGoal, MissionTask, MissionTaskRun } from '../../ai/missionClient';
+import type { ApprovalRequest } from '../../ai/fabricClient';
+import { ApprovalGate } from './ApprovalGate';
 import { fsReadFile } from '../../editor/fsClient';
 import {
-  KIND_ICON, KIND_LABEL, PRIORITY_TONE, RISK_TONE,
+  KIND_ICON, KIND_LABEL, NODE_LABEL, PRIORITY_TONE, RISK_TONE,
   RUNTIME_STATUS_LABEL, TASK_STATUS_TONE, fmtDur,
 } from './missionMeta';
 import { runtimeFill } from './WorkflowCanvas';
@@ -37,6 +39,10 @@ export interface TaskListProps {
   goals?: MissionGoal[];
   approved: boolean;
   busyTaskId: string | null;
+  /** Service-side authorization requests. The gate's only source of truth. */
+  approvals?: ApprovalRequest[];
+  approvalBusyId?: string | null;
+  onDecideApproval?: (id: string, granted: boolean, reason?: string) => void;
   onRun: (taskId: string) => void;
   onAccept: (taskId: string) => void;
   onReject: (taskId: string) => void;
@@ -76,14 +82,15 @@ export function TaskList(props: TaskListProps) {
 }
 
 function TaskRow({
-  task, projectPath, nodes, runs, approved, busyTaskId, onRun, onAccept, onReject, onRetry, onComplete,
+  task, projectPath, nodes, runs, approved, busyTaskId, approvals, approvalBusyId, onDecideApproval,
+  onRun, onAccept, onReject, onRetry, onComplete,
 }: TaskListProps & { task: MissionTask }) {
   const theme = useAppStore((s) => s.theme);
   const node = nodes.find((n) => n.id === task.id);
   const run = runs.find((r) => r.taskId === task.id);
   const runtime = node?.status ?? 'waiting';
   const depsMet = (node?.blockedBy.length ?? 0) === 0;
-  const isManualKind = task.kind === 'manual-operation';
+  const isManualKind = ['manual-operation', 'review', 'approval', 'documentation', 'research'].includes(task.kind);
   const [original, setOriginal] = useState<string>('');
   const busy = busyTaskId === task.id;
 
@@ -97,6 +104,9 @@ function TaskRow({
   const fill = runtimeFill(runtime);
   const IconCmp = KIND_ICON[task.kind] ?? 'doc';
   const showProposal = run?.status === 'proposed' && run.proposal;
+  // A gated task sits in `queued` like any other — the gate itself is the
+  // only thing that distinguishes it, and it comes from the service.
+  const gate = approvals?.find((a) => a.taskId === task.id && a.state === 'pending');
 
   return (
     <div className="rounded-lg border border-line bg-surface px-3 py-2.5 transition-colors hover:bg-surface-hover">
@@ -109,6 +119,16 @@ function TaskRow({
         <Icon name={IconCmp} size={13} className="text-text-muted" />
         <span className="text-[12.5px] font-medium text-text">{task.title}</span>
         {task.targetFile && <span className="text-[11px] text-text-subtle">{task.targetFile}</span>}
+        {(task.resolvedNode || task.requestedNode) && (
+          <span className="rounded bg-surface-active px-1.5 py-0.5 text-[10px] font-medium text-text-muted" title={`Requested: ${task.requestedNode ?? 'auto'} · Resolved: ${task.resolvedNode ?? 'pending'}`}>
+            {NODE_LABEL[task.resolvedNode ?? task.requestedNode ?? ''] ?? task.resolvedNode ?? task.requestedNode}
+          </span>
+        )}
+        {run?.executedNode && (
+          <span className="rounded bg-surface-active px-1.5 py-0.5 text-[10px] font-medium" style={{ color: 'var(--positive)' }} title="Executed node (Recorded)">
+            {NODE_LABEL[run.executedNode] ?? run.executedNode}
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-1.5 text-[10.5px] text-text-subtle">
           <Badge tone={PRIORITY_TONE[task.priority]}>{task.priority}</Badge>
           <Badge tone={RISK_TONE[task.risk]}>{task.risk} risk</Badge>
@@ -125,8 +145,17 @@ function TaskRow({
         </p>
       )}
 
+      {gate && onDecideApproval && (
+        <ApprovalGate request={gate} busy={approvalBusyId === gate.id} onDecide={onDecideApproval} />
+      )}
+
       {showProposal && run?.proposal && (
         <div className="mt-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {run.proposal.operation?.type === 'git' && (
+              <Badge tone="info">git · {run.proposal.operation.operation}{run.proposal.operation.message ? ` — "${run.proposal.operation.message}"` : ''}</Badge>
+            )}
+          </div>
           <p className="text-[11.5px] text-text-muted">{run.proposal.explanation}</p>
           {run.proposal.newCode != null && task.targetFile && (
             <div className="overflow-hidden rounded-lg border border-line">
@@ -145,10 +174,13 @@ function TaskRow({
 
       <div className="mt-2 flex items-center justify-end gap-2">
         <span className="mr-auto text-[10.5px] text-text-subtle">{KIND_LABEL[task.kind]}{task.mode === 'new-file' ? ' · new file' : task.mode === 'diff' ? ' · edits existing' : ''}</span>
-        {isManualKind && runtime === 'waiting' && (
+        {isManualKind && (runtime === 'waiting' || runtime === 'queued') && (
           <Button size="sm" variant="secondary" disabled={!approved || !depsMet} loading={busy} onClick={() => onComplete(task.id)}>Mark Done</Button>
         )}
-        {runtime === 'queued' && !isManualKind && (
+        {/* While a gate is open the answer is Approve/Decline on the gate
+            itself — offering Run as well would present two ways to say yes,
+            only one of which is authorized. */}
+        {runtime === 'queued' && !isManualKind && !gate && (
           <Button size="sm" variant="primary" disabled={!approved || !depsMet} loading={busy} onClick={() => onRun(task.id)}>
             {depsMet ? 'Run Task' : 'Waiting on deps'}
           </Button>

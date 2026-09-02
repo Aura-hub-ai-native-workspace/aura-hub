@@ -1,0 +1,806 @@
+{
+  "generatedFrom": "packages/capability-fabric/src/manifest.ts",
+  "revision": "141d101",
+  "capabilities": [
+    {
+      "id": "project.list",
+      "name": "List projects",
+      "category": "project",
+      "surface": "aura-internal",
+      "description": "Every project registered in this AURA installation.",
+      "risk": "low",
+      "permissions": [
+        "aura.read"
+      ],
+      "output": "ProjectRecord[]",
+      "verify": null,
+      "input": []
+    },
+    {
+      "id": "project.create",
+      "name": "Create project",
+      "category": "project",
+      "surface": "aura-internal",
+      "description": "Creates a project directory and registers it. Reuses the existing project service — there is no second implementation.",
+      "risk": "medium",
+      "permissions": [
+        "aura.write",
+        "project.write"
+      ],
+      "input": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "Project name"
+        },
+        {
+          "name": "parentPath",
+          "type": "string",
+          "required": false,
+          "description": "Directory to create it in"
+        }
+      ],
+      "output": "ProjectRecord",
+      "verify": "read-back"
+    },
+    {
+      "id": "project.open",
+      "name": "Open project",
+      "category": "project",
+      "surface": "aura-internal",
+      "description": "Makes a project the active workspace context.",
+      "risk": "low",
+      "permissions": [
+        "aura.write"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        }
+      ],
+      "output": "ProjectRecord",
+      "verify": "read-back"
+    },
+    {
+      "id": "project.inspect",
+      "name": "Inspect project",
+      "category": "project",
+      "surface": "aura-internal",
+      "description": "The generated profile: languages, frameworks, structure, entry points.",
+      "risk": "low",
+      "permissions": [
+        "aura.read",
+        "project.read"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        }
+      ],
+      "output": "ProjectProfile",
+      "verify": null
+    },
+    {
+      "id": "mission.create",
+      "name": "Create mission",
+      "category": "mission",
+      "surface": "aura-internal",
+      "description": "Runs Mission Control v3 planning on a free-text objective. The ONLY way the Fabric creates missions — it owns no mission model of its own.",
+      "risk": "low",
+      "permissions": [
+        "aura.write"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": true,
+          "description": "What the mission should achieve"
+        }
+      ],
+      "output": "MissionRecord",
+      "verify": "read-back"
+    },
+    {
+      "id": "mission.approve",
+      "name": "Approve mission plan",
+      "category": "mission",
+      "surface": "aura-internal",
+      "description": "Passes the planning checkpoint. A human gate by design — never auto-executed.",
+      "risk": "medium",
+      "permissions": [
+        "aura.write"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        },
+        {
+          "name": "missionId",
+          "type": "string",
+          "required": true,
+          "description": "Mission id"
+        }
+      ],
+      "output": "MissionRecord",
+      "verify": "read-back"
+    },
+    {
+      "id": "mission.start",
+      "name": "Start mission execution",
+      "category": "mission",
+      "surface": "aura-internal",
+      "description": "Begins the approved plan. Per-task human accept still applies inside the engine.",
+      "risk": "medium",
+      "permissions": [
+        "aura.write"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        },
+        {
+          "name": "missionId",
+          "type": "string",
+          "required": true,
+          "description": "Mission id"
+        }
+      ],
+      "output": "MissionExecution",
+      "verify": "read-back"
+    },
+    {
+      "id": "mission.inspect",
+      "name": "Inspect mission",
+      "category": "mission",
+      "surface": "aura-internal",
+      "description": "The authoritative MissionRecord: plan, DAG, checkpoints, timeline, metrics.",
+      "risk": "low",
+      "permissions": [
+        "aura.read"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        },
+        {
+          "name": "missionId",
+          "type": "string",
+          "required": true,
+          "description": "Mission id"
+        }
+      ],
+      "output": "MissionRecord",
+      "verify": null
+    },
+    {
+      "id": "knowledge.graph",
+      "name": "Read knowledge graph",
+      "category": "knowledge",
+      "surface": "aura-internal",
+      "description": "Structural graph of the open project.",
+      "risk": "low",
+      "permissions": [
+        "aura.read",
+        "project.read"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        }
+      ],
+      "output": "KnowledgeGraph",
+      "verify": null
+    },
+    {
+      "id": "memory.search",
+      "name": "Search engineering memory",
+      "category": "memory",
+      "surface": "aura-internal",
+      "description": "Why past decisions were made, and what came of them.",
+      "risk": "low",
+      "permissions": [
+        "aura.read"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        },
+        {
+          "name": "query",
+          "type": "string",
+          "required": false,
+          "description": "Free-text query"
+        }
+      ],
+      "output": "MemoryRecord[]",
+      "verify": null
+    },
+    {
+      "id": "diagnosis.run",
+      "name": "Run diagnosis",
+      "category": "quality",
+      "surface": "aura-internal",
+      "description": "Finds and explains defects. Patches remain human-gated inside the engine.",
+      "risk": "low",
+      "permissions": [
+        "aura.write",
+        "project.read"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        }
+      ],
+      "output": "DiagnosisRecord",
+      "verify": null
+    },
+    {
+      "id": "governance.audit",
+      "name": "Run governance audit",
+      "category": "quality",
+      "surface": "aura-internal",
+      "description": "Health scorecard, risk, release readiness.",
+      "risk": "low",
+      "permissions": [
+        "aura.read",
+        "project.read"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        }
+      ],
+      "output": "Scorecard",
+      "verify": null
+    },
+    {
+      "id": "workflow.run",
+      "name": "Run workflow",
+      "category": "automation",
+      "surface": "aura-internal",
+      "description": "Executes an existing workflow through the Workflow Engine. The Fabric delegates — it does not re-implement workflow execution.",
+      "risk": "medium",
+      "permissions": [
+        "aura.write",
+        "process.execute"
+      ],
+      "input": [
+        {
+          "name": "projectId",
+          "type": "string",
+          "required": true,
+          "description": "Project id"
+        },
+        {
+          "name": "workflowId",
+          "type": "string",
+          "required": true,
+          "description": "Workflow id"
+        }
+      ],
+      "output": "Run result",
+      "verify": "read-back"
+    },
+    {
+      "id": "provider.connect",
+      "name": "Connect AI provider",
+      "category": "settings",
+      "surface": "aura-internal",
+      "description": "Registers a model provider key. Touches credentials, so it is always an explicit human authorization.",
+      "risk": "high",
+      "permissions": [
+        "account.authorize"
+      ],
+      "input": [
+        {
+          "name": "providerId",
+          "type": "string",
+          "required": true,
+          "description": "Provider id"
+        },
+        {
+          "name": "apiKey",
+          "type": "string",
+          "required": true,
+          "description": "API key"
+        }
+      ],
+      "output": "Connection status",
+      "verify": "read-back",
+      "irreversible": false
+    },
+    {
+      "id": "filesystem.list",
+      "name": "List files",
+      "category": "filesystem",
+      "surface": "local-process",
+      "description": "Directory listing inside the project root.",
+      "risk": "low",
+      "permissions": [
+        "project.read"
+      ],
+      "input": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": false,
+          "description": "Relative path, defaults to project root"
+        }
+      ],
+      "output": "Entry names",
+      "verify": null
+    },
+    {
+      "id": "filesystem.read",
+      "name": "Read file",
+      "category": "filesystem",
+      "surface": "local-process",
+      "description": "Reads a UTF-8 file inside the project root.",
+      "risk": "low",
+      "permissions": [
+        "project.read"
+      ],
+      "input": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description": "Relative path inside the project"
+        }
+      ],
+      "output": "File contents",
+      "verify": null
+    },
+    {
+      "id": "filesystem.write",
+      "name": "Write file",
+      "category": "filesystem",
+      "surface": "local-process",
+      "description": "Creates or replaces a file inside the project root.",
+      "risk": "medium",
+      "permissions": [
+        "project.write"
+      ],
+      "input": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description": "Relative path inside the project"
+        },
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description": "Full file contents"
+        }
+      ],
+      "output": "Bytes written",
+      "verify": "read-back"
+    },
+    {
+      "id": "terminal.execute",
+      "name": "Run command",
+      "category": "terminal",
+      "surface": "local-process",
+      "description": "Runs an allow-listed binary with plain arguments in the project root. No shell, no operators.",
+      "risk": "medium",
+      "permissions": [
+        "process.execute",
+        "project.read"
+      ],
+      "input": [
+        {
+          "name": "command",
+          "type": "string",
+          "required": true,
+          "description": "Command line, e.g. \"npm test\""
+        }
+      ],
+      "output": "stdout + stderr, exit code",
+      "verify": "exit-code",
+      "requiresNodeCapability": "terminal"
+    },
+    {
+      "id": "agent.delegate",
+      "name": "Delegate to coding agent",
+      "category": "agent",
+      "surface": "local-process",
+      "description": "Hands a task to a coding agent installed on this machine, which reads and edits files in the project root on its own. Broad by nature: the agent decides which files to touch, so this is never auto-executed.",
+      "risk": "high",
+      "permissions": [
+        "project.read",
+        "project.write",
+        "process.execute",
+        "network.outbound"
+      ],
+      "input": [
+        {
+          "name": "task",
+          "type": "string",
+          "required": true,
+          "description": "What the agent should do, in plain language"
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "required": false,
+          "description": "Optional provider/model override, e.g. \"anthropic/claude-sonnet-4\""
+        },
+        {
+          "name": "context",
+          "type": "string",
+          "required": false,
+          "description": "AURA context contract to orient the agent, composed by the caller"
+        }
+      ],
+      "output": "stdout + stderr, exit code",
+      "verify": "exit-code",
+      "requiresNodeCapability": "coding-agent",
+      "irreversible": true
+    },
+    {
+      "id": "system.install",
+      "name": "Install a tool",
+      "category": "system",
+      "surface": "local-process",
+      "description": "Installs a catalogued tool that is missing from this machine, using the package manager that tool declares. The caller names a NODE, never a command: the package and arguments come from the catalogue, so this can never be turned into \"run anything\". Installs that need administrator rights are not performed — AURA hands you the exact verified command instead.",
+      "risk": "high",
+      "permissions": [
+        "process.execute",
+        "system.modify"
+      ],
+      "input": [
+        {
+          "name": "nodeId",
+          "type": "string",
+          "required": true,
+          "description": "Catalogue id of the node to install, e.g. \"pnpm\""
+        }
+      ],
+      "output": "InstallResult — installOutcome, privilege, command, probe",
+      "verify": "read-back",
+      "irreversible": false
+    },
+    {
+      "id": "git.status",
+      "name": "Git status",
+      "category": "git",
+      "surface": "local-process",
+      "description": "Working tree status of the project.",
+      "risk": "low",
+      "permissions": [
+        "project.read"
+      ],
+      "output": "Porcelain status",
+      "verify": null,
+      "requiresNodeCapability": "source-control",
+      "input": []
+    },
+    {
+      "id": "git.diff",
+      "name": "Git diff",
+      "category": "git",
+      "surface": "local-process",
+      "description": "Uncommitted changes.",
+      "risk": "low",
+      "permissions": [
+        "project.read"
+      ],
+      "input": [
+        {
+          "name": "staged",
+          "type": "boolean",
+          "required": false,
+          "description": "Staged changes only"
+        }
+      ],
+      "output": "Unified diff",
+      "verify": null,
+      "requiresNodeCapability": "source-control"
+    },
+    {
+      "id": "git.branch",
+      "name": "Create or switch branch",
+      "category": "git",
+      "surface": "local-process",
+      "description": "Shows the current branch, or creates/switches when a name is given.",
+      "risk": "medium",
+      "permissions": [
+        "project.write"
+      ],
+      "input": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": false,
+          "description": "Branch to create or switch to"
+        }
+      ],
+      "output": "Branch name",
+      "verify": "read-back",
+      "requiresNodeCapability": "source-control"
+    },
+    {
+      "id": "git.commit",
+      "name": "Commit changes",
+      "category": "git",
+      "surface": "local-process",
+      "description": "Stages everything and commits with the given message.",
+      "risk": "medium",
+      "permissions": [
+        "project.write"
+      ],
+      "input": [
+        {
+          "name": "message",
+          "type": "string",
+          "required": true,
+          "description": "Commit message"
+        }
+      ],
+      "output": "Commit summary",
+      "verify": "read-back",
+      "requiresNodeCapability": "source-control"
+    },
+    {
+      "id": "git.push",
+      "name": "Push to remote",
+      "category": "git",
+      "surface": "local-process",
+      "description": "Publishes commits to the remote. Visible to other people and not undoable by the Fabric.",
+      "risk": "high",
+      "permissions": [
+        "project.write",
+        "network.outbound"
+      ],
+      "input": [
+        {
+          "name": "remote",
+          "type": "string",
+          "required": false,
+          "description": "Remote name, defaults to origin"
+        },
+        {
+          "name": "branch",
+          "type": "string",
+          "required": false,
+          "description": "Branch, defaults to current"
+        }
+      ],
+      "output": "Push summary",
+      "verify": "exit-code",
+      "irreversible": true,
+      "requiresNodeCapability": "source-control"
+    },
+    {
+      "id": "http.request",
+      "name": "Call an HTTP API",
+      "category": "network",
+      "surface": "http",
+      "description": "Bounded outbound request. Used for deployment checks and API calls.",
+      "risk": "medium",
+      "permissions": [
+        "network.outbound"
+      ],
+      "input": [
+        {
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "description": "Absolute http(s) URL"
+        },
+        {
+          "name": "method",
+          "type": "string",
+          "required": false,
+          "description": "HTTP method, defaults to GET"
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "required": false,
+          "description": "Request body"
+        }
+      ],
+      "output": "Status and bounded response text",
+      "verify": "http-status",
+      "requiresNodeCapability": "http-client"
+    },
+    {
+      "id": "github.create_repository",
+      "name": "Create GitHub repository",
+      "category": "code-hosting",
+      "surface": "local-process",
+      "description": "Creates a remote repository. Implementation path: `gh repo create` through the existing allow-listed spawn primitive.",
+      "risk": "medium",
+      "permissions": [
+        "network.outbound",
+        "account.authorize"
+      ],
+      "input": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "Repository name"
+        },
+        {
+          "name": "private",
+          "type": "boolean",
+          "required": false,
+          "description": "Create it private"
+        }
+      ],
+      "output": "Repository URL",
+      "verify": "read-back",
+      "requiresNodeCapability": "code-hosting"
+    },
+    {
+      "id": "github.create_pr",
+      "name": "Open a pull request",
+      "category": "code-hosting",
+      "surface": "local-process",
+      "description": "Opens a PR for the current branch. Implementation path: `gh pr create`.",
+      "risk": "medium",
+      "permissions": [
+        "network.outbound",
+        "account.authorize"
+      ],
+      "input": [
+        {
+          "name": "title",
+          "type": "string",
+          "required": true,
+          "description": "PR title"
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "required": false,
+          "description": "PR description"
+        }
+      ],
+      "output": "Pull request URL",
+      "verify": "read-back",
+      "requiresNodeCapability": "code-hosting"
+    },
+    {
+      "id": "browser.navigate",
+      "name": "Open a page",
+      "category": "browser",
+      "surface": "browser",
+      "description": "Loads a URL in a driven browser session. Implementation path: Playwright, per §9.",
+      "risk": "low",
+      "permissions": [
+        "network.outbound"
+      ],
+      "input": [
+        {
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "description": "Absolute URL"
+        }
+      ],
+      "output": "Page title and final URL",
+      "verify": "read-back",
+      "requiresNodeCapability": "browser-automation"
+    },
+    {
+      "id": "browser.read",
+      "name": "Read the page",
+      "category": "browser",
+      "surface": "browser",
+      "description": "Extracts visible text and console errors from the current page.",
+      "risk": "low",
+      "permissions": [
+        "network.outbound"
+      ],
+      "output": "Text content and console errors",
+      "verify": null,
+      "requiresNodeCapability": "browser-automation",
+      "input": []
+    },
+    {
+      "id": "browser.click",
+      "name": "Click an element",
+      "category": "browser",
+      "surface": "browser",
+      "description": "Clicks the element matching a selector.",
+      "risk": "medium",
+      "permissions": [
+        "network.outbound"
+      ],
+      "input": [
+        {
+          "name": "selector",
+          "type": "string",
+          "required": true,
+          "description": "CSS or text selector"
+        }
+      ],
+      "output": "Resulting URL",
+      "verify": null,
+      "requiresNodeCapability": "browser-automation"
+    },
+    {
+      "id": "browser.type",
+      "name": "Fill a field",
+      "category": "browser",
+      "surface": "browser",
+      "description": "Types into the element matching a selector.",
+      "risk": "medium",
+      "permissions": [
+        "network.outbound"
+      ],
+      "input": [
+        {
+          "name": "selector",
+          "type": "string",
+          "required": true,
+          "description": "CSS selector"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": true,
+          "description": "Text to enter"
+        }
+      ],
+      "output": "Field value",
+      "verify": null,
+      "requiresNodeCapability": "browser-automation"
+    },
+    {
+      "id": "browser.screenshot",
+      "name": "Capture the page",
+      "category": "browser",
+      "surface": "browser",
+      "description": "Screenshots the current page for visual verification.",
+      "risk": "low",
+      "permissions": [
+        "network.outbound"
+      ],
+      "output": "Image path",
+      "verify": null,
+      "requiresNodeCapability": "browser-automation",
+      "input": []
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "credentials": {
+    "demo-provider": {
+      "encryptedKey": "deadbeefdeadbeefdeadbeefdeadbeef",
+      "iv": "000102030405060708090a0b0c0d0e0f",
+      "tag": "0102030405060708090a0b0c0d0e0f10",
+      "fingerprint": "DEMO:FAKE"
+    }
+  },
+  "models": {},
+  "health": {},
+  "active": "demo-provider",
+  "activeModel": "demo-model-1",
+  "secret": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}

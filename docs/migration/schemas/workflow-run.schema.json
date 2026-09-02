@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aura:migration/workflow-run.schema.json",
+  "title": "WorkflowRun (~/.aura/workflow-runs/<wfId>/<runId>.json)",
+  "description": "Source: packages/ai-service/src/workflow/run/types.ts (authoritative), agent/types.ts for AgentTrace. States never collapse; evidence is a reference into the audit trail, never a copy.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["id", "workflowId", "versionId", "workflowName", "projectId", "projectPath", "state", "trigger", "createdAt", "ms", "nodes", "vars", "inputs", "outputs", "evidence", "resumable", "log"],
+  "properties": {
+    "id": { "type": "string" },
+    "workflowId": { "type": "string" },
+    "versionId": { "type": "string" },
+    "workflowName": { "type": "string" },
+    "projectId": { "type": "string" },
+    "projectPath": { "type": "string" },
+    "state": { "$ref": "#/$defs/runState" },
+    "trigger": {
+      "oneOf": [
+        { "type": "object", "required": ["kind", "by"], "properties": { "kind": { "const": "manual" }, "by": { "type": "string" } } },
+        { "type": "object", "required": ["kind", "tokenId"], "properties": { "kind": { "const": "webhook" }, "tokenId": { "type": "string" } } },
+        { "type": "object", "required": ["kind", "ruleId", "runId", "event"], "properties": { "kind": { "const": "automation" }, "ruleId": { "type": "string" }, "runId": { "type": "string" }, "event": { "type": "string" } } },
+        { "type": "object", "required": ["kind", "missionId", "taskId"], "properties": { "kind": { "const": "mission" }, "missionId": { "type": "string" }, "taskId": { "type": "string" } } },
+        { "type": "object", "required": ["kind", "of"], "properties": { "kind": { "const": "resume" }, "of": { "type": "string" } } }
+      ]
+    },
+    "createdAt": { "type": "string" },
+    "startedAt": { "type": "string" },
+    "finishedAt": { "type": "string" },
+    "ms": { "type": "number" },
+    "error": { "type": "string" },
+    "nodes": {
+      "type": "object",
+      "description": "nodeId -> NodeRunRecord; every node in the version appears once started.",
+      "additionalProperties": { "$ref": "#/$defs/nodeRunRecord" }
+    },
+    "vars": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Variables at last checkpoint, for resume." },
+    "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["nodeId", "title", "text"],
+        "properties": {
+          "nodeId": { "type": "string" },
+          "title": { "type": "string" },
+          "text": { "type": "string" }
+        }
+      }
+    },
+    "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } },
+    "resumable": { "type": "boolean", "description": "STATED on the record, not derived at read time." },
+    "notResumableReason": { "type": "string" },
+    "supersededBy": { "type": "string", "description": "Forward link of a resume chain; presence drops the run from pending/resumable sets." },
+    "supersededAt": { "type": "string" },
+    "log": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "required": ["at", "nodeId", "level", "text"],
+        "properties": {
+          "at": { "type": "string" },
+          "nodeId": { "type": ["string", "null"] },
+          "level": { "enum": ["info", "warn", "error"] },
+          "text": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "runState": { "enum": ["queued", "running", "awaiting-approval", "succeeded", "failed", "cancelled", "timed-out"] },
+    "nodeState": { "enum": ["queued", "running", "awaiting-approval", "succeeded", "failed", "denied", "skipped", "cancelled", "timed-out"] },
+    "stateTransition": {
+      "type": "object",
+      "required": ["at", "from", "to"],
+      "properties": {
+        "at": { "type": "string" },
+        "from": { "$ref": "#/$defs/nodeState" },
+        "to": { "$ref": "#/$defs/nodeState" },
+        "note": { "type": "string" }
+      }
+    },
+    "evidenceRef": {
+      "type": "object",
+      "required": ["invocationId", "capabilityId", "outcome", "decision", "decisionRule", "risk", "verified", "at", "durationMs"],
+      "properties": {
+        "invocationId": { "type": "string" },
+        "capabilityId": { "type": "string" },
+        "outcome": { "type": "string" },
+        "decision": { "type": "string" },
+        "decisionRule": { "type": "string" },
+        "risk": { "type": "string" },
+        "verified": { "type": ["boolean", "null"] },
+        "approvalId": { "type": "string" },
+        "nodeId": { "type": "string" },
+        "at": { "type": "string" },
+        "durationMs": { "type": "number" }
+      }
+    },
+    "agentBounds": {
+      "type": "object",
+      "required": ["maxIterations", "timeoutMs", "maxTokens", "maxConsecutiveFailures", "tools"],
+      "properties": {
+        "maxIterations": { "type": "number" },
+        "timeoutMs": { "type": "number" },
+        "maxTokens": { "type": "number" },
+        "maxConsecutiveFailures": { "type": "number" },
+        "tools": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "agentBeat": {
+      "type": "object",
+      "required": ["seq", "iteration", "at", "kind", "actor", "text"],
+      "properties": {
+        "seq": { "type": "integer" },
+        "iteration": { "type": "integer" },
+        "at": { "type": "string" },
+        "kind": { "enum": ["intent", "plan", "proposal", "permission", "execution", "observation", "decision", "intervention", "result"] },
+        "actor": { "enum": ["ai", "fabric", "human", "system"] },
+        "text": { "type": "string", "description": "Redacted+bounded (MAX_BEAT_TEXT=4000)." },
+        "untrusted": { "type": "boolean", "description": "True when text came from outside AURA — prompt-injection control, property of the record." },
+        "capabilityId": { "type": "string" },
+        "evidence": { "$ref": "#/$defs/evidenceRef" },
+        "rule": { "type": "string" },
+        "decision": { "type": "string" },
+        "tokens": { "type": "integer" }
+      }
+    },
+    "agentTrace": {
+      "type": "object",
+      "description": "Partial snapshots carry ONLY beats + partial:true.",
+      "oneOf": [
+        {
+          "required": ["beats", "partial"],
+          "properties": {
+            "beats": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/agentBeat" } },
+            "partial": { "const": true }
+          }
+        },
+        {
+          "required": ["beats", "iterations", "tokensUsed", "ms", "stopReason", "port", "output", "evidence", "refusedTools", "effectiveBounds", "tokenSource"],
+          "properties": {
+            "beats": { "type": "array", "maxItems": 500, "items": { "$ref": "#/$defs/agentBeat" } },
+            "partial": { "const": false },
+            "iterations": { "type": "integer" },
+            "tokensUsed": { "type": "integer" },
+            "ms": { "type": "number" },
+            "stopReason": { "enum": ["completed", "max-iterations", "timeout", "token-budget", "consecutive-failures", "awaiting-approval", "denied", "cancelled", "failed"] },
+            "port": { "enum": ["done", "needs-human", "failed"] },
+            "output": { "type": "string" },
+            "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } },
+            "refusedTools": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["capabilityId", "reason"],
+                "properties": { "capabilityId": { "type": "string" }, "reason": { "type": "string" } }
+              }
+            },
+            "approval": {
+              "type": "object",
+              "properties": { "requestId": { "type": "string" }, "capabilityId": { "type": "string" } }
+            },
+            "effectiveBounds": { "$ref": "#/$defs/agentBounds" },
+            "tokenSource": { "enum": ["provider", "estimated", "mixed"] },
+            "resume": {
+              "description": "Present only when stopReason==='awaiting-approval'.",
+              "type": "object",
+              "required": ["transcript", "pendingCall", "iteration", "tokensUsed", "elapsedMs"],
+              "properties": {
+                "transcript": {
+                  "type": "array",
+                  "maxItems": 40,
+                  "items": {
+                    "type": "object",
+                    "required": ["role", "text"],
+                    "properties": { "role": { "enum": ["user", "assistant"] }, "text": { "type": "string" } }
+                  }
+                },
+                "pendingCall": {
+                  "type": "object",
+                  "required": ["capabilityId", "input"],
+                  "properties": { "capabilityId": { "type": "string" }, "input": { "type": "object" } }
+                },
+                "iteration": { "type": "integer" },
+                "tokensUsed": { "type": "integer" },
+                "elapsedMs": { "type": "number" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "nodeRunRecord": {
+      "type": "object",
+      "required": ["nodeId", "type", "state", "transitions", "iteration", "ms", "attempts", "evidence"],
+      "properties": {
+        "nodeId": { "type": "string" },
+        "type": { "type": "string" },
+        "state": { "$ref": "#/$defs/nodeState" },
+        "transitions": { "type": "array", "maxItems": 60, "items": { "$ref": "#/$defs/stateTransition" } },
+        "input": {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string" },
+            "files": { "type": "array", "items": { "type": "string" } },
+            "truncated": { "type": "boolean" },
+            "fromNodeIds": { "type": "array", "items": { "type": "string" } },
+            "provenance": { "type": "string" }
+          }
+        },
+        "iteration": { "type": "integer" },
+        "startedAt": { "type": "string" },
+        "finishedAt": { "type": "string" },
+        "ms": { "type": "number" },
+        "summary": { "type": "string" },
+        "error": { "type": "string" },
+        "output": {
+          "type": "object",
+          "description": "Bounded+redacted checkpoint payload (MAX_CHECKPOINT_TEXT=64KiB).",
+          "properties": {
+            "text": { "type": "string" },
+            "data": {},
+            "files": { "type": "array", "items": { "type": "string" } },
+            "port": { "type": "string" },
+            "truncated": { "type": "boolean" },
+            "provenance": { "enum": ["external", "tool", "system", "authored"] }
+          }
+        },
+        "attempts": { "type": "integer", "minimum": 1 },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } },
+        "approval": {
+          "type": "object",
+          "required": ["requestId", "capabilityId", "requestedAt", "summary"],
+          "properties": {
+            "requestId": { "type": "string" },
+            "capabilityId": { "type": "string" },
+            "requestedAt": { "type": "string" },
+            "summary": { "type": "string" }
+          }
+        },
+        "agentTrace": { "$ref": "#/$defs/agentTrace" }
+      }
+    }
+  }
+}
