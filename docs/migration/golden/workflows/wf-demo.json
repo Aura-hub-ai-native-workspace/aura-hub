@@ -1,0 +1,57 @@
+{
+  "id": "wf-mt6p764n-yeej95",
+  "name": "Demo summarize",
+  "description": "Synthetic golden fixture — mirrors the real store shape; no live data.",
+  "category": "engineering",
+  "favorite": false,
+  "createdAt": "2026-08-24T09:00:00.000Z",
+  "updatedAt": "2026-08-24T09:30:00.000Z",
+  "nodes": [
+    {
+      "id": "n-src",
+      "type": "current-project",
+      "x": 80.0,
+      "y": 120.0,
+      "config": {
+        "includePatterns": "**/*.ts"
+      }
+    },
+    {
+      "id": "n-ag",
+      "type": "agent",
+      "x": 360.0,
+      "y": 120.0,
+      "config": {
+        "task": "Summarize",
+        "maxIterations": 10,
+        "tools": [
+          "filesystem.read",
+          "filesystem.write"
+        ]
+      }
+    },
+    {
+      "id": "n-out",
+      "type": "output",
+      "x": 640.0,
+      "y": 120.0,
+      "config": {
+        "title": "Result"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "from": "n-src",
+      "fromPort": "out",
+      "to": "n-ag"
+    },
+    {
+      "id": "e2",
+      "from": "n-ag",
+      "fromPort": "done",
+      "to": "n-out"
+    }
+  ]
+}

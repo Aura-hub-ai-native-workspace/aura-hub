@@ -17,7 +17,8 @@ export type IconName =
   | 'sun' | 'moon' | 'cpu' | 'activity' | 'pin' | 'link' | 'note' | 'arrow-right'
   | 'more' | 'folder' | 'sidebar' | 'panel' | 'chevron-right' | 'chevron-down' | 'close'
   | 'code' | 'terminal' | 'git-branch' | 'bookmark' | 'file' | 'refresh'
-  | 'eye' | 'eye-off' | 'clipboard' | 'bug' | 'shield' | 'flask';
+  | 'eye' | 'eye-off' | 'clipboard' | 'bug' | 'shield' | 'flask'
+  | 'minimize' | 'maximize' | 'restore';
 
 /** Path data (stroke-based, 24×24). Keep every glyph optically balanced. */
 const PATHS: Record<IconName, string> = {
@@ -70,6 +71,9 @@ const PATHS: Record<IconName, string> = {
   bug: 'M9 8.5a3 3 0 0 1 6 0v5a3 3 0 0 1-6 0ZM10.5 5.5 9 4M13.5 5.5 15 4M6 10h3M15 10h3M6 13.5h3M15 13.5h3M7.5 17l2-1.5M16.5 17l-2-1.5',
   shield: 'M12 4 5.5 6.5v4.5c0 5 2.8 7.8 6.5 8.5 3.7-.7 6.5-3.5 6.5-8.5V6.5ZM9.5 12l2 2 3.5-4',
   flask: 'M10 4.5h4M10.5 4.5v4.2l-4.7 8.6a1.4 1.4 0 0 0 1.2 2.2h10a1.4 1.4 0 0 0 1.2-2.2l-4.7-8.6V4.5M8 15.5h8',
+  minimize: 'M6 18.5h12',
+  maximize: 'M5.5 5.5h13v13h-13Z',
+  restore: 'M8.5 8.5h10v10h-10ZM5.5 5.5h10v3M5.5 5.5v10h3',
 };
 
 /** Glyphs that read better filled than stroked. */

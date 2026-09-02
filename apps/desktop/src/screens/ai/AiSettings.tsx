@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { cn } from '@aura/core';
 import { Badge, Button, Card, CardHeader, Dialog, Dropdown, Icon, Input } from '@aura/ui';
 import { PageContainer, PageBlock } from '../PageContainer';
+import { UpdatePanel } from '../../updater/UpdatePanel';
+import { AppImageInstallPanel } from '../../components/AppImageInstallPanel';
 import { aiClient, type AiSettings as Settings, type ProviderInfo, type ConnectedProvider, type ProviderStatus } from '../../ai/aiClient';
 
 interface DialogState {
@@ -20,7 +22,7 @@ function providerIcon(id: string): 'spark' | 'cpu' {
   const icons: Record<string, 'spark' | 'cpu'> = {
     openai: 'spark', anthropic: 'spark', groq: 'cpu', gemini: 'spark',
     mistral: 'spark', kimi: 'spark', openrouter: 'cpu', nvidia: 'cpu', cerebras: 'cpu',
-    novita: 'cpu', qwen: 'spark',
+    novita: 'cpu', qwen: 'spark', kage7: 'cpu',
   };
   return icons[id] ?? 'cpu';
 }
@@ -287,6 +289,20 @@ export function AiSettings() {
               {reindexMsg && <div className="mt-2 text-[11.5px] text-text-subtle">{reindexMsg}</div>}
             </Card>
           </div>
+        </PageBlock>
+
+        {/* Application updates. Its own block rather than a nested card:
+            upgrading the app is not an AI-provider setting. */}
+        <PageBlock className="col-span-12 lg:col-span-7">
+          <UpdatePanel />
+        </PageBlock>
+
+        {/* The installation itself, for the same reason — and beside Updates
+            because both answer "what copy of AURA Hub am I running, and what
+            can I do about it?". Renders nothing unless there is an AppImage
+            installation to act on. */}
+        <PageBlock className="col-span-12 lg:col-span-5">
+          <AppImageInstallPanel />
         </PageBlock>
       </div>
 

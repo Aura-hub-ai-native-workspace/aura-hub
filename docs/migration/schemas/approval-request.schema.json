@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "aura:migration/approval-request.schema.json",
+  "title": "ApprovalRequest (~/.aura/fabric-approvals.json holds an array of PENDING requests only)",
+  "description": "Source: packages/capability-fabric/src/types.ts:356-425. Store semantics: approvalStore.ts:24-43 — only state==='pending' is persisted or restored.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["id", "state", "requestedAt", "summary", "items"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^apr-" },
+    "state": { "enum": ["pending", "granted", "denied", "expired"] },
+    "requestedAt": { "type": "string" },
+    "decidedAt": { "type": "string" },
+    "summary": { "type": "string" },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["invocationId", "capabilityId", "title", "detail", "risk", "irreversible"],
+        "properties": {
+          "invocationId": { "type": "string" },
+          "capabilityId": { "type": "string" },
+          "title": { "type": "string" },
+          "detail": { "type": "string" },
+          "risk": { "$ref": "#/$defs/risk" },
+          "irreversible": { "type": "boolean" },
+          "fingerprint": { "type": "string", "description": "32 lowercase hex chars — see canonicalization-spec.md §1." }
+        }
+      }
+    },
+    "projectId": { "type": ["string", "null"] },
+    "missionId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "workflowId": { "type": "string" },
+    "runId": { "type": "string" },
+    "workflowNodeId": { "type": "string" },
+    "rule": { "type": "string" },
+    "onAccept": { "type": "string" },
+    "onDecline": { "type": "string" },
+    "target": { "type": "string" },
+    "decidedBy": { "type": "string" },
+    "consumedAt": { "type": "string", "description": "Single-use marker; a second spend is refused." }
+  },
+  "$defs": {
+    "risk": { "enum": ["low", "medium", "high"] }
+  }
+}

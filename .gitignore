@@ -16,6 +16,11 @@ Thumbs.db
 # Tauri / Rust
 apps/desktop/src-tauri/target
 apps/desktop/src-tauri/gen
+# The packaged service is an esbuild output of packages/ai-service plus a staged
+# copy of the TypeScript runtime, rebuilt by `npm run service:bundle` on every
+# desktop build. Committing it would ship a second, silently-stale copy of the
+# backend alongside its own source.
+apps/desktop/src-tauri/resources/
 
 # Editor
 .vscode/*
@@ -43,3 +48,13 @@ coverage
 # (a new ~2-5MB folder every day the tool runs) — never commit them.
 graphify-out/cache/
 graphify-out/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
+
+# UI approval-test screenshots (local evidence only)
+scripts/.ui-*.png
+# Hub verification screenshot (local evidence only)
+scripts/.hub-*.png
+
+# Release installers, renamed out of target/ by scripts/stage-release-artifacts.mjs.
+# Build output — reproducible from a tagged commit, ~100 MB per platform, and
+# distributed through CI artifacts and GitHub Releases rather than through git.
+dist-release/

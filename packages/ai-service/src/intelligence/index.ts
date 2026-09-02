@@ -74,6 +74,7 @@ export type {
   ValidationResult, ValidationRule, AgentContext, FileContent, SearchResult, ProjectInfo,
 };
 export type { RepositoryIntentType };
+export type { IndexResult } from './performance';
 export {
   detectChanges, updateIndexState, hasChanges, LazyFileLoader,
   generateVerificationReport, loadVerificationReport,
@@ -107,8 +108,13 @@ export interface IntelligenceEngineResult {
 /**
  * Check if cached data is stale by comparing generation time against
  * repository file modification times. Returns true if regeneration needed.
+ *
+ * Exported because the Context Fabric reports freshness to downstream
+ * agents and must apply the SAME rule this engine uses to decide whether
+ * to regenerate. Two staleness rules would let the Fabric report "fresh"
+ * for an artifact the engine considers expired.
  */
-function isCacheStale(generatedAt: string, projectRoot: string, maxAgeMs: number = 3600000): boolean {
+export function isCacheStale(generatedAt: string, projectRoot: string, maxAgeMs: number = 3600000): boolean {
   const genTime = new Date(generatedAt).getTime();
   if (Date.now() - genTime > maxAgeMs) return true;
 
@@ -276,8 +282,8 @@ export function runProjectIntelligence(projectId: string, root: string): Project
 
   const agent = { info: getProjectInfo({ projectId, root, identity, summary, profile, glossary }), tree: getDirectoryTree(root) };
 
-  const p = detectChanges(root);
-  const performance = { hasChanges: hasChanges(root), changed: p.changed.length, added: p.added.length, removed: p.removed.length, totalIndexed: p.totalIndexed };
+  const p = detectChanges(projectId, root);
+  const performance = { hasChanges: hasChanges(projectId, root), changed: p.changed.length, added: p.added.length, removed: p.removed.length, totalIndexed: p.totalIndexed };
 
   return { verification, architecture, personality, validation, change, versions, agent, performance };
 }

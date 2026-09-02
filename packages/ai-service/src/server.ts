@@ -8,11 +8,22 @@ import type { ConfidenceLevel, ImportanceLevel, MemoryCategory } from '@aura/eng
 import { nodeSpecInfos } from './workflow/nodes';
 import { TEMPLATES, instantiateTemplate } from './workflow/templates';
 import { generateWorkflow } from './workflow/generate';
+import { validateWorkflow } from './workflow/validate';
+import { summarizeRun } from './workflow/run/types';
+import { classifyAllTools, describeTools, resolveTools } from './workflow/agent/bounds';
+import { AGENT_CEILINGS, AGENT_DEFAULTS } from './workflow/agent/types';
 import type { RunEvent, Workflow } from './workflow/types';
 import { setupProviders } from './provider';
 import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
 import { handleCodeAction, type CodeActionRequest } from './codeAction';
-import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate } from '@aura/automation';
+import { CATALOG } from '@aura/connected-environment';
+import { probeNode, scanEnvironment } from './environment';
+import { CAPABILITY_MANIFEST, annotateMissionCapabilities, type InvocationContext, type NodeRef } from '@aura/capability-fabric';
+import { isUnavailable, type ContextSurface, type EnvironmentSnapshot } from './context';
+import { createFabric } from './fabric';
+import { secrets } from './secrets';
+import { savePolicy, policyFilePath } from './fabric/policyStore';
+import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate, validateRule } from '@aura/automation';
 import type { AutomationEvent, AutomationRule } from '@aura/automation';
 import { automationEvent } from './automation';
 import type { DiagnosisEvent, DiagnosisRequest } from './diagnosis/types';
@@ -89,15 +100,132 @@ export interface ServiceHandle {
   close: () => Promise<void>;
 }
 
-export async function startService(opts: PipelineOptions & { port?: number; openPath?: string } = {}): Promise<ServiceHandle> {
+export async function startService(opts: PipelineOptions & { port?: number; openPath?: string; onShutdownRequest?: () => void } = {}): Promise<ServiceHandle> {
   setupProviders();
   const manager = new WorkspaceManager(opts);
+
+  /**
+   * One Fabric for the process lifetime, so the audit trail is continuous.
+   * Node availability is read at decision time from the last environment
+   * scan, so connecting a tool takes effect without a restart.
+   */
+  let providedNodeCapabilities = new Set<string>();
+  /**
+   * Nodes that answered a probe, in catalogue order — the routing view of
+   * the same scan that produces `providedNodeCapabilities`. Built here,
+   * beside it, so the two can never describe different machines.
+   */
+  let presentNodes: NodeRef[] = [];
+  /**
+   * The same scan, in the shape the Context Fabric consumes. Built in the
+   * one loop below beside `presentNodes` and `providedNodeCapabilities`,
+   * for the same reason those two are: three projections of one scan must
+   * never be able to describe different machines.
+   *
+   * Held so that composing a ContextView reads an already-observed
+   * environment instead of triggering a second scan.
+   */
+  let environmentSnapshot: EnvironmentSnapshot | null = null;
+  const fabric = createFabric({
+    manager,
+    providedNodeCapabilities: () => providedNodeCapabilities,
+    presentNodes: () => presentNodes,
+    // Per-run least privilege. Owned by the manager because the manager
+    // owns runs; the Fabric only asks it what an in-flight run may do.
+    runScopes: manager.runScopes,
+  });
+  // Closes the loop: mission tasks now execute THROUGH this same Fabric
+  // instance, so a task inherits the identical policy, approval,
+  // verification, recovery and audit path as a direct /fabric/invoke.
+  manager.attachFabric(fabric);
+
+  /**
+   * A record still saying "running" after the process running it is gone
+   * asserts something false. Reconciling once at boot turns those orphans
+   * into honestly-failed runs that say why, and marks the ones that
+   * checkpointed far enough to be resumable.
+   */
+  const recovered = manager.reconcileWorkflowRuns();
+  if (recovered.length) {
+    console.log(`[workflow] recovered ${recovered.length} interrupted run${recovered.length === 1 ? '' : 's'} from a previous session`);
+  }
+
+  /**
+   * Start the clock.
+   *
+   * `start()` reconciles BEFORE arming the timer, so schedules that came
+   * due while AURA was closed are counted as missed and never executed —
+   * launching the app must not silently perform a backlog of work.
+   */
+  const schedules = manager.automation.scheduler.start();
+  if (schedules.scheduled || schedules.missed) {
+    console.log(`[schedule] ${schedules.scheduled} rule(s) armed`
+      + (schedules.missed ? ` · ${schedules.missed} fire(s) missed while AURA was closed (not run)` : ''));
+  }
+
+  /**
+   * Scan the machine and publish what is genuinely reachable.
+   *
+   * Shared by boot and by `POST /environment/scan` so there is exactly one
+   * place that decides what "available" means — a node counts only when it
+   * actually answered a probe. Nothing is assumed present.
+   */
+  const refreshNodeAvailability = async (ids?: string[], refresh = false) => {
+    const scan = await scanEnvironment(ids, refresh);
+    const provided = new Set<string>();
+    const nodes: NodeRef[] = [];
+    const tools: NonNullable<EnvironmentSnapshot['nodes']> = [];
+    // CATALOG order is the tie-break when several nodes provide the same
+    // capability and the caller named none (§22.4 rule 4), so this is
+    // walked in catalogue order rather than scan-result order.
+    for (const entry of CATALOG) {
+      const result = scan.results[entry.id];
+      if (!result?.present) continue;
+      for (const capability of entry.capabilities) provided.add(capability);
+      nodes.push({
+        id: entry.id,
+        name: entry.name,
+        capabilities: [...entry.capabilities],
+        binary: entry.probe?.command,
+      });
+      // Version comes from the probe's own output — never from a
+      // credential, an env var or a config file.
+      tools.push({
+        id: entry.id,
+        name: entry.name,
+        capabilities: [...entry.capabilities],
+        version: result.version,
+        // The catalogue already knows which entries are AURA's own
+        // subsystems rather than programs on the machine. Carrying that
+        // distinction keeps an agent from reading "Mission Control" as a
+        // binary it could run.
+        internal: entry.transport === 'internal',
+      });
+    }
+    providedNodeCapabilities = provided;
+    presentNodes = nodes;
+    environmentSnapshot = {
+      scannedAt: scan.scannedAt,
+      nodes: tools,
+      providedCapabilities: [...provided],
+    };
+    return scan;
+  };
 
   // Auto-connect providers configured through environment variables
   // (e.g. MISTRAL_API_KEY) so an env-configured key is active on startup.
   await manager.connectEnvProviders().catch((e) => {
     console.warn('[providers] env auto-connect failed:', (e as Error).message);
   });
+
+  // Discover the environment before serving. Without this a restart left
+  // every node-backed capability denied as `no-provider` until someone
+  // happened to trigger a scan — git would be installed and working, and
+  // the Fabric would still refuse `git.diff`.
+  await refreshNodeAvailability().then(
+    (scan) => console.log(`[environment] ${scan.found ?? providedNodeCapabilities.size} node(s) present · ${providedNodeCapabilities.size} capabilities available`),
+    (e) => console.warn('[environment] boot scan failed:', (e as Error).message),
+  );
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -111,6 +239,25 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     try {
       /* ── health / settings / key ──────────────────────────────── */
       if (method === 'GET' && seg[0] === 'health') return json(res, 200, { health: await p.health(), key: p.keyStatus(), index: manager.indexStatus(), project: manager.currentProject() });
+
+      /**
+       * Graceful shutdown over the loopback port — the desktop shell's
+       * Windows lifecycle path. Unix has SIGTERM (start.ts handles it);
+       * Windows has no SIGTERM, so the supervisor asks the service to
+       * close itself and only force-terminates a process that ignores it.
+       * The `x-aura-shutdown` header is required: a cross-origin webpage
+       * cannot send it (the CORS preflight this server does not allow
+       * would block it), so this stays no more reachable to other local
+       * processes than a signal is on Unix.
+       */
+      if (method === 'POST' && seg[0] === 'shutdown') {
+        if (req.headers['x-aura-shutdown'] !== '1') {
+          return json(res, 403, { error: 'shutdown requires the x-aura-shutdown header' });
+        }
+        json(res, 200, { ok: true, shuttingDown: true });
+        opts.onShutdownRequest?.();
+        return;
+      }
       if (method === 'GET' && (seg.length === 0 || seg[0] === 'settings')) return json(res, 200, { settings: p.getSettings(), defaults: DEFAULT_SETTINGS, key: p.keyStatus() });
       if (method === 'POST' && seg[0] === 'settings' && seg[1] === 'key') { const b = await readJson(req); return json(res, 200, p.setKey(String(b.apiKey ?? ''), Boolean(b.persist))); }
       if (method === 'DELETE' && seg[0] === 'settings' && seg[1] === 'key') { p.clearKey(); return json(res, 200, { ok: true }); }
@@ -158,6 +305,206 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       if (method === 'GET' && seg[0] === 'index') return json(res, 200, manager.indexStatus());
       if (method === 'POST' && seg[0] === 'reindex') return json(res, 200, await p.reindex());
 
+      /* ── connected environment ────────────────────────────────
+         Real capability detection. The command a probe runs always
+         comes from the catalog entry looked up by id — never from the
+         request — so no request can reach arbitrary execution. See
+         environment.ts for the full boundary. */
+      if (seg[0] === 'environment') {
+        if (method === 'GET' && seg[1] === 'catalog') return json(res, 200, { catalog: CATALOG });
+        if (method === 'POST' && seg[1] === 'scan') {
+          const b = await readJson(req);
+          const ids = Array.isArray(b.ids) ? b.ids.filter((x): x is string => typeof x === 'string') : undefined;
+          // A scan is also the Fabric's view of what is reachable: every
+          // capability of every node that answered becomes available for
+          // policy evaluation, with no separate connect step to drift from.
+          const scan = await refreshNodeAvailability(ids, Boolean(b.refresh));
+          return json(res, 200, { ...scan, providedCapabilities: [...providedNodeCapabilities].sort() });
+        }
+        if (method === 'POST' && seg[1] === 'probe') {
+          const b = await readJson(req);
+          const id = String(b.id ?? '');
+          if (!id) return json(res, 400, { error: 'a node id is required' });
+          return json(res, 200, { id, result: await probeNode(id, Boolean(b.refresh)) });
+        }
+      }
+
+      /* ── capability fabric ─────────────────────────────────────
+         The single governed path to a side effect. `invoke` runs the
+         full chain: policy → approval → execute → verify → audit.
+         Approval is per-call (`approvedCapabilities`); this service has
+         no UI and therefore never grants one implicitly. */
+      if (seg[0] === 'fabric') {
+        if (method === 'GET' && seg[1] === 'capabilities') {
+          const supported = new Set(fabric.supported());
+          return json(res, 200, {
+            capabilities: CAPABILITY_MANIFEST.map((c) => ({ ...c, supported: supported.has(c.id) })),
+            supportedCount: supported.size,
+            providedNodeCapabilities: [...providedNodeCapabilities].sort(),
+            policy: fabric.getPolicy(),
+          });
+        }
+        if (method === 'GET' && seg[1] === 'audit') {
+          return json(res, 200, { audit: fabric.audit() });
+        }
+        /* POST /fabric/policy — the operator's caution settings. Held
+           service-side so the desktop can display them but never be the
+           authority on them. Sanitized, then persisted to ~/.aura so it
+           survives a restart. */
+        if (method === 'POST' && seg[1] === 'policy') {
+          const b = await readJson(req);
+          const current = fabric.getPolicy();
+          // Field-by-field on purpose: this merge is an allow-list, so an
+          // unknown key in the request body can never reach the policy.
+          // Anything genuinely new must be added here deliberately.
+          const merged = {
+            byRisk: (b.byRisk as typeof current.byRisk) ?? current.byRisk,
+            overrides: (b.overrides as typeof current.overrides) ?? current.overrides,
+            nodeOverrides: (b.nodeOverrides as typeof current.nodeOverrides) ?? current.nodeOverrides,
+            nodeAllowlists: (b.nodeAllowlists as typeof current.nodeAllowlists) ?? current.nodeAllowlists,
+            allowAutonomous: typeof b.allowAutonomous === 'boolean' ? b.allowAutonomous : current.allowAutonomous,
+          };
+          const saved = savePolicy(merged);
+          fabric.setPolicy(saved);
+          return json(res, 200, { policy: saved, file: policyFilePath() });
+        }
+
+        /* ── approval gate ─────────────────────────────────────────
+           The authoritative approval surface. The desktop reads pending
+           requests here and answers them here; it never names a
+           capability itself. */
+        if (method === 'GET' && seg[1] === 'approvals') {
+          return json(res, 200, { approvals: fabric.pendingApprovals() });
+        }
+
+        if (method === 'POST' && seg[1] === 'approvals' && seg[2] && seg[3] === 'decide') {
+          const b = await readJson(req);
+          const granted = b.granted === true;
+          const reason = typeof b.reason === 'string' ? b.reason : undefined;
+
+          const request = fabric.approvalById(seg[2]);
+          if (!request) return json(res, 404, { error: 'no such approval request' });
+          // Already decided — a replayed request, a second tab, or a
+          // double-click. Report the existing decision rather than
+          // authorizing anything a second time.
+          if (request.state !== 'pending') {
+            return json(res, 409, { error: `This request was already ${request.state}.`, approval: request });
+          }
+
+          const decided = fabric.decideApproval(seg[2], granted, 'user', reason);
+          if (!decided) return json(res, 409, { error: 'This request is no longer pending.' });
+
+          // The grant is derived from the STORED request, never from the
+          // client. A caller can say "I approve request X"; it can never
+          // say "I approve filesystem.write".
+          const capabilities = decided.items.map((i) => i.capabilityId);
+          const pid = decided.projectId;
+          const mid = decided.missionId;
+          const tid = decided.taskId;
+
+          if (!pid || !mid || !tid) {
+            return json(res, 200, { approval: decided, resumed: false, detail: 'Recorded. This request is not attached to a mission task.' });
+          }
+
+          if (!granted) {
+            // Nothing executes. The task is left declined with the reason
+            // on Mission Control's timeline, which stays the authority on
+            // mission history.
+            const r = manager.rejectMissionTask(pid, mid, tid, reason ?? 'Approval declined by operator');
+            return json(res, 200, { approval: decided, resumed: false, declined: true, mission: r.mission });
+          }
+
+          // Resume the SAME task with the server-derived grant.
+          const ac = new AbortController();
+          res.on('close', () => ac.abort());
+          const result = await manager.runMissionTask(pid, mid, tid, ac.signal, capabilities);
+          return json(res, 200, { approval: decided, resumed: true, ...result });
+        }
+        /* GET /fabric/mission/:projectId/:missionId — the additive
+           annotation over a finished plan (assumptions, open questions,
+           per-task capability bindings, gaps). Read-only and derived on
+           demand: nothing here is persisted onto the MissionRecord, and
+           nothing here re-plans. See CONSOLIDATION_MAP.md §2.1/§2.2. */
+        if (method === 'GET' && seg[1] === 'mission' && seg[2] && seg[3]) {
+          const mission = manager.getMission(seg[2], seg[3]);
+          if (!mission) return json(res, 404, { error: 'mission not found' });
+          return json(
+            res,
+            200,
+            annotateMissionCapabilities(
+              mission.intent,
+              mission.signals,
+              mission.goalGraph?.tasks ?? [],
+              fabric.supported(),
+            ),
+          );
+        }
+        if (method === 'POST' && seg[1] === 'invoke') {
+          const b = await readJson(req);
+          const capabilityId = String(b.capabilityId ?? '');
+          if (!capabilityId) return json(res, 400, { error: 'capabilityId is required' });
+          const raw = (b.context ?? {}) as Record<string, unknown>;
+          const projectId = typeof raw.projectId === 'string' ? raw.projectId : null;
+          // The working directory is resolved from the registry, never
+          // taken from the request — a caller cannot point execution at an
+          // arbitrary directory on the machine.
+          const project = projectId
+            ? (manager.listProjects() as { id: string; path: string }[]).find((p) => p.id === projectId)
+            : undefined;
+          const context: InvocationContext = {
+            actor: {
+              kind: (raw.actorKind as 'agent' | 'human' | 'system') ?? 'human',
+              id: typeof raw.actorId === 'string' ? raw.actorId : 'user',
+            },
+            projectId,
+            cwd: project?.path,
+            missionId: typeof raw.missionId === 'string' ? raw.missionId : undefined,
+            taskId: typeof raw.taskId === 'string' ? raw.taskId : undefined,
+            timeoutMs: typeof raw.timeoutMs === 'number' ? raw.timeoutMs : undefined,
+            approvedCapabilities: Array.isArray(b.approvedCapabilities)
+              ? b.approvedCapabilities.filter((x): x is string => typeof x === 'string')
+              : undefined,
+            // Routing intent. Only an id — never a path or a binary — so a
+            // caller can narrow which connected node runs the action but
+            // can never point execution at something off the catalogue.
+            //
+            // Also accepted in the INPUT position, where `agent.delegate`
+            // used to declare it. Honouring the alias matters: dropping it
+            // would mean a caller who named a node got a different one
+            // without being told, which is precisely the silent
+            // substitution routing exists to prevent.
+            nodeId: typeof raw.nodeId === 'string'
+              ? raw.nodeId
+              : typeof (b.input as Record<string, unknown> | undefined)?.nodeId === 'string'
+                ? ((b.input as Record<string, unknown>).nodeId as string)
+                : undefined,
+          };
+          const input = (b.input ?? {}) as Record<string, unknown>;
+
+          /* ── the agent context seam ───────────────────────────────
+             Delegating to a coding agent without AURA's context is the
+             thing the Context Fabric exists to fix: the agent would
+             re-derive the project the service already understands.
+
+             So when a caller delegates within a resolved project and
+             says nothing about context, AURA supplies it. The executor
+             only consumes it — composition stays here, on the caller
+             side, with the one Context Fabric.
+
+             Passing `context: ''` explicitly opts out; the executor
+             treats empty as "no context" and sends the bare task. */
+          if (capabilityId === 'agent.delegate' && projectId && input.context === undefined) {
+            const contract = await manager.contextContract(projectId, {
+              surface: 'coding',
+              environment: environmentSnapshot,
+            });
+            if (contract) input.context = contract;
+          }
+
+          return json(res, 200, await fabric.invoke(capabilityId, input, context));
+        }
+      }
+
       /* ── global engineering dashboard (across all projects) ────── */
       if (method === 'GET' && seg[0] === 'missions' && seg[1] === 'dashboard') {
         return json(res, 200, manager.missionDashboard());
@@ -194,6 +541,32 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         }
         if (seg[2] === 'graph' && method === 'GET') { const kg = manager.knowledgeGraph(id); return kg ? json(res, 200, kg) : json(res, 404, { error: 'project not open' }); }
         if (seg[2] === 'intelligence' && method === 'GET') { const r = manager.projectIntelligence(id); return r ? json(res, 200, r) : json(res, 404, { error: 'no such project' }); }
+
+        /* ── context fabric ──────────────────────────────────────
+           Read-only. Explicitly project-scoped: the id in the path is
+           the only project any of this describes. The environment is
+           handed in from the last scan this process performed, so
+           reading context never triggers a new one. */
+        if (seg[2] === 'context') {
+          const surface = (url.searchParams.get('surface') ?? 'general') as ContextSurface;
+          const includeGit = url.searchParams.get('git') !== 'false';
+          const opts = { surface, includeGit, environment: environmentSnapshot };
+
+          // The agent-facing text contract.
+          if (seg[3] === 'contract' && method === 'GET') {
+            const contract = await manager.contextContract(id, opts);
+            if (contract === null) return json(res, 404, { error: `no project is registered with id "${id}"` });
+            return json(res, 200, { projectId: id, surface, contract });
+          }
+
+          if (seg.length === 3 && method === 'GET') {
+            const view = await manager.contextView(id, opts);
+            // An unresolvable project is 404, never an empty view — a
+            // caller must not be able to read "no such project" as "a
+            // project AURA knows nothing about".
+            return isUnavailable(view) ? json(res, 404, view) : json(res, 200, view);
+          }
+        }
         if (seg[2] === 'graphify' && seg[3] === 'status' && method === 'GET') {
           return json(res, 200, graphifyStatus(id));
         }
@@ -212,7 +585,8 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           return;
         }
         if (seg[2] === 'architecture-layers' && method === 'GET') {
-          return json(res, 200, { layers: manager.resolveArchitectureLayers(id) });
+          const stack = manager.resolveArchitectureLayers(id);
+          return json(res, 200, { layers: stack.layers, edges: stack.edges });
         }
         if (seg[2] === 'changes' && method === 'GET') {
           const log = manager.changeLog(id);
@@ -377,12 +751,29 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             if (seg[6] === 'run') {
               const ac = new AbortController();
               res.on('close', () => ac.abort());
+              // No grant is accepted from the caller. A gated task is
+              // resumed only through POST /fabric/approvals/:id/decide,
+              // which derives the capability from the stored request — so
+              // a crafted body can never authorize an action.
               const result = await manager.runMissionTask(id, mid, taskId, ac.signal);
-              return json(res, result.ok ? 200 : 400, result);
+              // 202 for an approval gate: the request was understood and the
+              // task is parked, which is not the same as a bad request.
+              return json(res, result.ok ? 200 : result.awaitingApproval ? 202 : 400, result);
             }
-            if (seg[6] === 'accept') return json(res, 200, manager.acceptMissionTask(id, mid, taskId));
+            if (seg[6] === 'accept') {
+              // Accept IS the operator's authorization for the write, so the
+              // grant is derived from the act of accepting — server-side,
+              // with no capability list crossing the wire.
+              const r = await manager.acceptMissionTask(id, mid, taskId);
+              return json(res, r.ok ? 200 : 400, r);
+            }
             if (seg[6] === 'reject') {
-              const r = manager.rejectMissionTask(id, mid, taskId);
+              // Also the decline path for a task parked at a Fabric approval
+              // gate: the reason is recorded on the mission timeline, and the
+              // Fabric already holds its own audit record of the gate.
+              const rb = await readJson(req).catch(() => ({}) as Record<string, unknown>);
+              const reason = typeof rb.reason === 'string' ? rb.reason : undefined;
+              const r = manager.rejectMissionTask(id, mid, taskId, reason);
               return json(res, r.ok ? 200 : 400, r);
             }
             if (seg[6] === 'complete') return json(res, 200, manager.completeManualTask(id, mid, taskId));
@@ -407,19 +798,116 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         }
       }
 
+      /* ── agent contract vocabulary ────────────────────────────────
+       * The bounds a UI must render, and the tools a given workflow could
+       * actually offer an agent. Both are computed server-side on purpose:
+       * a client that decided either for itself would be deciding
+       * authority, and the answer would stop matching what the runtime
+       * enforces. */
+      if (seg[0] === 'agent') {
+        if (seg[1] === 'bounds' && method === 'GET') {
+          return json(res, 200, { defaults: AGENT_DEFAULTS, ceilings: AGENT_CEILINGS });
+        }
+        if (seg[1] === 'tools' && method === 'GET') {
+          const workflowId = url.searchParams.get('workflowId') ?? '';
+          const wf = manager.workflows.get(workflowId);
+          if (!wf) return json(res, 404, { error: 'no such workflow' });
+          const envelope = manager.workflowEnvelope(wf);
+          const requested = (url.searchParams.get('requested') ?? '')
+            .split(',').map((t) => t.trim()).filter(Boolean);
+          // With nothing requested, report what the envelope COULD offer —
+          // that is the selectable set the inspector draws, and anything
+          // outside it is struck through with the stated reason.
+          const supported = (id: string) => fabric.isSupported(id);
+          const resolved = requested.length
+            ? resolveTools(requested, envelope, supported)
+            // With nothing named, classify the WHOLE manifest so the picker
+            // can render every option with the reason it is or is not
+            // selectable — rather than silently listing only what works.
+            : classifyAllTools(envelope, supported);
+          return json(res, 200, { ...resolved, envelope, describe: describeTools(resolved.allowed) });
+        }
+      }
+
+      /* ── workflow runs (across every workflow) ────────────────── */
+      if (seg[0] === 'workflow-runs') {
+        if (seg.length === 1 && method === 'GET') {
+          // Filtered and paged HERE. The client never merges per-workflow
+          // histories — a merge it would get wrong as soon as retention
+          // pruned one workflow's runs and not another's.
+          const q = url.searchParams;
+          const num = (k: string) => (q.get(k) === null ? undefined : Number(q.get(k)));
+          return json(res, 200, manager.runIndex({
+            workflowId: q.get('workflowId') ?? undefined,
+            projectId: q.get('projectId') ?? undefined,
+            state: (q.get('state') ?? undefined) as never,
+            trigger: q.get('trigger') ?? undefined,
+            q: q.get('q') ?? undefined,
+            since: q.get('since') ?? undefined,
+            limit: num('limit'),
+            offset: num('offset'),
+          }));
+        }
+        if (seg[1] === 'stats' && method === 'GET') {
+          return json(res, 200, { stats: manager.workflowRuns.stats(url.searchParams.get('projectId') ?? undefined) });
+        }
+        if (seg[1] === 'reindex' && method === 'POST') {
+          // The index is a cache over the run files. This rebuilds it from
+          // them, and reports the count rather than repairing silently.
+          return json(res, 200, { indexed: manager.workflowRuns.rebuildIndex() });
+        }
+        if (seg[1] === 'awaiting' && method === 'GET') {
+          return json(res, 200, { runs: manager.workflowRuns.listAwaitingApproval() });
+        }
+        if (seg.length === 2 && method === 'GET') {
+          const run = manager.workflowRuns.find(seg[1]);
+          return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
+        }
+      }
+
+      /* ── secrets ──────────────────────────────────────────────────
+       * Names and metadata only. There is deliberately NO route that
+       * returns a value: a secret that can be read back over HTTP is a
+       * secret the whole design has stopped protecting. Values leave the
+       * store exactly once, inside `governor.ts`, on their way into a
+       * Fabric invocation. */
+      if (seg[0] === 'secrets') {
+        if (seg.length === 1 && method === 'GET') return json(res, 200, { secrets: secrets.list() });
+        if (seg.length === 1 && method === 'POST') {
+          const b = await readJson(req);
+          try {
+            return json(res, 200, secrets.set(String(b.name ?? ''), String(b.value ?? ''), typeof b.note === 'string' ? b.note : undefined));
+          } catch (e) {
+            return json(res, 400, { error: (e as Error).message });
+          }
+        }
+        if (seg.length === 2 && method === 'DELETE') return json(res, 200, { ok: secrets.remove(seg[1]) });
+      }
+
       /* ── workflows ────────────────────────────────────────────── */
       if (seg[0] === 'workflows') {
         const wfs = manager.workflows;
         if (seg[1] === 'specs' && method === 'GET') return json(res, 200, { specs: nodeSpecInfos() });
         if (seg[1] === 'templates' && method === 'GET') return json(res, 200, { templates: TEMPLATES.map((t) => ({ id: t.id, name: t.name, description: t.description, category: t.category, nodeCount: t.nodes.length })) });
-        if (seg[1] === 'import' && method === 'POST') { const b = await readJson(req); return json(res, 200, wfs.import((b.def ?? b) as Partial<Workflow>)); }
+        if (seg[1] === 'import' && method === 'POST') {
+          const b = await readJson(req);
+          const wf = wfs.import((b.def ?? b) as Partial<Workflow>);
+          // An imported workflow is untrusted content with a friendly name.
+          // It is stored, and the caller is handed everything needed to
+          // review it before the first run.
+          return json(res, 200, { ...wf, validation: validateWorkflow(wf.nodes, wf.edges) });
+        }
         if (seg[1] === 'generate' && method === 'POST') {
           const b = await readJson(req);
           const result = await generateWorkflow(p, String(b.text ?? ''));
           if (!result.ok) return json(res, 400, { error: result.error });
           const { ok: _ok, ...graph } = result;
           const wf = wfs.create({ name: graph.name, description: graph.description, category: 'AI Generated', nodes: graph.nodes, edges: graph.edges });
-          return json(res, 200, wf);
+          // A generated workflow is returned WITH its validation report and
+          // authority envelope. "The AI must never silently create an unsafe
+          // workflow" is only true if the thing that created it hands over
+          // what it would be allowed to do, in the same response.
+          return json(res, 200, { ...wf, validation: validateWorkflow(wf.nodes, wf.edges) });
         }
         if (seg.length === 1) {
           if (method === 'GET') return json(res, 200, { workflows: wfs.list() });
@@ -441,6 +929,86 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           const { webhookToken: _drop, ...portable } = wf;
           return json(res, 200, portable);
         }
+        if (seg[2] === 'dry-run' && (method === 'POST' || method === 'GET')) {
+          const wf = wfs.get(id);
+          if (!wf) return json(res, 404, { error: 'no such workflow' });
+          const b = method === 'POST' ? await readJson(req) : {};
+          try {
+            return json(res, 200, manager.dryRunWorkflow(wf, {
+              projectId: typeof b.projectId === 'string' ? b.projectId : (url.searchParams.get('projectId') ?? undefined),
+              inputs: (b.inputs ?? {}) as Record<string, string>,
+              versionId: typeof b.versionId === 'string' ? b.versionId : (url.searchParams.get('versionId') ?? undefined),
+            }));
+          } catch (e) {
+            return json(res, 400, { error: (e as Error).message });
+          }
+        }
+        if (seg[2] === 'validate' && method === 'GET') {
+          const wf = wfs.get(id);
+          if (!wf) return json(res, 404, { error: 'no such workflow' });
+          return json(res, 200, validateWorkflow(wf.nodes, wf.edges));
+        }
+        if (seg[2] === 'envelope' && method === 'GET') {
+          const wf = wfs.get(id);
+          if (!wf) return json(res, 404, { error: 'no such workflow' });
+          return json(res, 200, { envelope: manager.workflowEnvelope(wf), diff: manager.workflowEnvelopeDiff(wf) });
+        }
+        if (seg[2] === 'versions') {
+          if (seg.length === 3 && method === 'GET') return json(res, 200, { versions: manager.workflowVersions.list(id) });
+          if (seg.length === 3 && method === 'POST') {
+            const wf = wfs.get(id);
+            if (!wf) return json(res, 404, { error: 'no such workflow' });
+            const b = await readJson(req);
+            return json(res, 200, manager.workflowVersions.publish(wf, 'user', typeof b.note === 'string' ? b.note : undefined));
+          }
+          if (seg.length === 4 && method === 'GET') {
+            const v = manager.workflowVersions.get(id, seg[3]);
+            return v ? json(res, 200, v) : json(res, 404, { error: 'no such version' });
+          }
+          if (seg[4] === 'restore' && method === 'POST') {
+            const wf = wfs.get(id);
+            if (!wf) return json(res, 404, { error: 'no such workflow' });
+            const v = manager.workflowVersions.restore(wf, seg[3]);
+            if (!v) return json(res, 404, { error: 'no such version' });
+            // Restoring publishes a NEW version and makes it the draft, so
+            // history stays append-only and the editor shows what will run.
+            wfs.save(id, { ...wf, nodes: v.nodes, edges: v.edges });
+            return json(res, 200, v);
+          }
+        }
+        if (seg[2] === 'runs') {
+          if (seg.length === 3 && method === 'GET') return json(res, 200, { runs: manager.listWorkflowRuns(id) });
+          if (seg.length === 4 && method === 'GET') {
+            const run = manager.getWorkflowRun(id, seg[3]);
+            return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
+          }
+          if (seg[4] === 'chain' && method === 'GET') {
+            // One logical execution across however many resume legs it took.
+            const chain = manager.workflowRunChain(id, seg[3]);
+            return chain.length ? json(res, 200, { chain: chain.map(summarizeRun) }) : json(res, 404, { error: 'no such run' });
+          }
+          if (seg[4] === 'cancel' && method === 'POST') {
+            return json(res, 200, { cancelled: manager.cancelWorkflowRun(seg[3]) });
+          }
+          if (seg[4] === 'resume' && method === 'POST') {
+            const b = await readJson(req);
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
+            const ac = new AbortController();
+            res.on('close', () => ac.abort());
+            const emit = (e: RunEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
+            try {
+              const out = await manager.resumeWorkflowRun(id, seg[3], emit, {
+                approvedCapabilities: Array.isArray(b.approvedCapabilities) ? (b.approvedCapabilities as string[]) : undefined,
+                signal: ac.signal,
+              });
+              if ('error' in out) emit({ type: 'done', status: 'failed', ms: 0, error: out.error, runState: 'failed' });
+            } catch (e) {
+              emit({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message, runState: 'failed' });
+            }
+            if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+            return;
+          }
+        }
         if (seg[2] === 'run' && method === 'POST') {
           const wf = wfs.get(id);
           if (!wf) return json(res, 404, { error: 'no such workflow' });
@@ -450,9 +1018,17 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           res.on('close', () => ac.abort());
           const emit = (e: RunEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
           try {
-            await manager.runWorkflow(wf, (b.inputs ?? {}) as Record<string, string>, emit, ac.signal);
+            await manager.startWorkflowRun(wf, {
+              inputs: (b.inputs ?? {}) as Record<string, string>,
+              // A crafted body can widen nothing: this is a per-invocation
+              // grant the Fabric spends once, and every hard floor still
+              // applies above it. See fabric.ts step 4.
+              approvedCapabilities: Array.isArray(b.approvedCapabilities) ? (b.approvedCapabilities as string[]) : undefined,
+              projectId: typeof b.projectId === 'string' ? b.projectId : undefined,
+              signal: ac.signal,
+            }, emit);
           } catch (e) {
-            emit({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message });
+            emit({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message, runState: 'failed' });
           }
           if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
           return;
@@ -477,7 +1053,16 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           const payload = await readJson(req);
           const inputs: Record<string, string> = {};
           for (const n of wf.nodes) if (n.type === 'user-input') inputs[n.id] = JSON.stringify(payload);
-          void manager.runWorkflow(wf, inputs, () => {}).catch((e) => {
+          // An externally-triggered run has no human present, so it gets no
+          // per-invocation grant at all. Anything its policy rates above
+          // auto-execute parks at `awaiting-approval` and waits in the
+          // approvals inbox — it is never quietly performed on the strength
+          // of an inbound HTTP request.
+          void manager.startWorkflowRun(wf, {
+            inputs,
+            trigger: { kind: 'webhook', tokenId: `${id}` },
+            actor: { kind: 'system', id: `webhook:${id}` },
+          }, () => {}).catch((e) => {
             console.error(`[workflow trigger] run failed for ${id}:`, (e as Error).message);
           });
           return json(res, 202, { accepted: true });
@@ -513,17 +1098,79 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           res.on('close', () => { unsub(); });
           return;
         }
+        /* Cross-rule run index. The backend is authoritative for this
+           view — a client never fetches every rule and merges. */
+        if (seg[1] === 'runs') {
+          if (seg.length === 2 && method === 'GET') {
+            const q = url.searchParams;
+            const num = (k: string) => (q.get(k) === null ? undefined : Number(q.get(k)));
+            return json(res, 200, manager.automationRunIndex({
+              ruleId: q.get('ruleId') ?? undefined,
+              projectId: q.get('projectId') ?? undefined,
+              status: (q.get('status') ?? undefined) as never,
+              trigger: (q.get('trigger') ?? undefined) as never,
+              workflowId: q.get('workflowId') ?? undefined,
+              q: q.get('q') ?? undefined,
+              since: q.get('since') ?? undefined,
+              until: q.get('until') ?? undefined,
+              limit: num('limit'),
+              offset: num('offset'),
+            }));
+          }
+          if (seg[2] === 'stats' && method === 'GET') {
+            return json(res, 200, {
+              stats: auto.store.runStats({
+                projectId: url.searchParams.get('projectId') ?? undefined,
+                ruleId: url.searchParams.get('ruleId') ?? undefined,
+              }),
+            });
+          }
+          if (seg[2] === 'reindex' && method === 'POST') {
+            // The index is a cache over the run files. Rebuilt from them,
+            // and the count reported rather than repaired silently.
+            return json(res, 200, { indexed: auto.store.rebuildRunIndex() });
+          }
+        }
+        if (seg[1] === 'schedules' && method === 'GET') {
+          // Next/last fire and the missed count, per rule. The scheduler is
+          // the authority; this only reads it.
+          return json(res, 200, { schedules: auto.scheduler.status() });
+        }
+        if (seg[1] === 'validate' && method === 'POST') {
+          const b = await readJson(req);
+          return json(res, 200, { issues: validateRule(b as Parameters<typeof validateRule>[0]) });
+        }
         if (seg[1] === 'rules') {
           if (seg.length === 2) {
-            if (method === 'GET') return json(res, 200, { rules: auto.store.listRules() });
+            // Summaries carry their schedule state, so a rule list can show
+            // "next 09:00 · 3 missed" without a second round trip.
+            if (method === 'GET') return json(res, 200, { rules: manager.listAutomationRules() });
             if (method === 'POST') {
               const b = await readJson(req);
               const fromTemplate = typeof b.template === 'string' ? instantiateAutomationTemplate(b.template) : null;
               if (typeof b.template === 'string' && !fromTemplate) return json(res, 404, { error: 'no such template' });
-              return json(res, 200, auto.store.createRule(fromTemplate ?? (b as Record<string, unknown>)));
+              const draft = (fromTemplate ?? b) as Parameters<typeof validateRule>[0];
+              // Refused at the edge, not coerced in the store. A schedule
+              // with a cron that cannot parse, or a run-workflow action with
+              // no workflow, would be a rule that looks armed and can never
+              // fire — the worst state an automation list can display.
+              const issues = validateRule(draft);
+              if (issues.length) return json(res, 400, { error: issues[0].message, issues });
+              const created = auto.store.createRule(draft as Record<string, unknown>);
+              auto.scheduler.refresh(created.id);
+              return json(res, 200, created);
             }
           }
           const ruleId = seg[2];
+          if (seg[3] === 'dry-run' && (method === 'POST' || method === 'GET')) {
+            const b = method === 'POST' ? await readJson(req) : {};
+            const sample = b.sampleEvent as AutomationEvent | undefined;
+            const out = manager.dryRunAutomationRule(ruleId, {
+              sampleEvent: sample && typeof sample === 'object' ? sample : undefined,
+              projectId: typeof b.projectId === 'string' ? b.projectId : (url.searchParams.get('projectId') ?? undefined),
+            });
+            return 'error' in out ? json(res, 404, out) : json(res, 200, out);
+          }
           if (seg[3] === 'run' && method === 'POST') {
             const b = await readJson(req);
             const rule = auto.store.getRule(ruleId);
@@ -559,9 +1206,28 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           }
           if (seg.length === 3) {
             if (method === 'GET') { const r = auto.store.getRule(ruleId); return r ? json(res, 200, r) : json(res, 404, { error: 'no such rule' }); }
-            if (method === 'PUT') { const b = await readJson(req); const r = auto.store.saveRule(ruleId, b as Partial<AutomationRule>); return r ? json(res, 200, r) : json(res, 404, { error: 'no such rule' }); }
-            if (method === 'PATCH') { const b = await readJson(req); const r = auto.store.saveRule(ruleId, b as Partial<AutomationRule>); return r ? json(res, 200, r) : json(res, 404, { error: 'no such rule' }); }
-            if (method === 'DELETE') return json(res, 200, { ok: auto.store.removeRule(ruleId) });
+            if (method === 'PUT' || method === 'PATCH') {
+              const b = await readJson(req);
+              const existing = auto.store.getRule(ruleId);
+              if (!existing) return json(res, 404, { error: 'no such rule' });
+              // Validate the MERGED rule, not the patch: a PATCH that only
+              // flips `enabled` must still be judged against the trigger it
+              // is enabling, or an invalid schedule could be armed by a
+              // request that never mentions cron.
+              const merged = { ...existing, ...(b as Partial<AutomationRule>), trigger: { ...existing.trigger, ...(b as Partial<AutomationRule>).trigger } };
+              const issues = validateRule(merged as Parameters<typeof validateRule>[0]);
+              if (issues.length) return json(res, 400, { error: issues[0].message, issues });
+              const r = auto.store.saveRule(ruleId, b as Partial<AutomationRule>);
+              if (r) auto.scheduler.refresh(ruleId);
+              return r ? json(res, 200, r) : json(res, 404, { error: 'no such rule' });
+            }
+            if (method === 'DELETE') {
+              const ok = auto.store.removeRule(ruleId);
+              // Drops the schedule state too, so a deleted rule cannot leave
+              // an armed entry behind.
+              auto.scheduler.refresh(ruleId);
+              return json(res, 200, { ok });
+            }
           }
         }
       }

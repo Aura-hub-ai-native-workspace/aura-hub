@@ -39,6 +39,7 @@ export type MemorySource =
   | 'ai-action'
   | 'mission'
   | 'diagnosis'
+  | 'bug-bot'
   | 'conversation'
   | 'memory-item'
   | 'provider'

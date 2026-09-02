@@ -45,12 +45,46 @@ import {
 } from './types';
 import { genId } from '../../workflow/types';
 import type { MissionRecord, MissionTask, TaskMode, TaskProposal, TaskStatus } from '../types';
+import type { TaskNode } from './nodes';
 
 export interface RunTaskResult {
   ok: boolean;
   error?: string;
   proposal?: TaskProposal;
   mode?: TaskMode;
+  /** The execution node that actually produced this result. */
+  executedNode?: TaskNode;
+  /**
+   * Terminal planning status the hook resolved the task to, overriding the
+   * default `ok ? 'proposed' : 'error'`.
+   *
+   * This exists because the proposal path is no longer the only way a task
+   * can resolve: a task executed through the Capability Fabric can succeed
+   * outright (`done`), be refused by policy (`rejected`), or be parked at
+   * an approval gate having run nothing (`pending`). All three are members
+   * of the **existing** `TaskStatus` union — the engine gains no new states
+   * and remains the only thing that writes them.
+   */
+  status?: TaskStatus;
+  /** Human-readable outcome for the timeline, when richer than `error`. */
+  detail?: string;
+  /**
+   * True when the hook resolved without performing the task and without
+   * failing — today, an approval gate. Keeps the task's timeline entry
+   * from being phrased as either success or failure, because it is
+   * neither.
+   */
+  pending?: boolean;
+  /**
+   * The environment node that actually performed the work, when the
+   * executor could name one (e.g. `opencode`).
+   *
+   * Carried so activity can be attributed to the exact node rather than
+   * inferred from the capability. A capability like `agent.delegate` has
+   * six possible providers; without this the Workspace could only light
+   * all of them. Absent means "not attributable" — never a guess.
+   */
+  nodeId?: string;
 }
 
 export interface EngineHooks {
@@ -150,7 +184,7 @@ export class MissionExecutionEngine {
       const run = record.taskRuns.find((r) => r.taskId === taskId);
       record.taskRuns = [
         ...record.taskRuns.filter((r) => r.taskId !== taskId),
-        { taskId, status, proposal: run?.proposal ?? null, updatedAt: new Date().toISOString() },
+        { taskId, status, proposal: run?.proposal ?? null, executedNode: run?.executedNode, updatedAt: new Date().toISOString() },
       ];
       statuses[taskId] = this.statusForTask(record, taskId);
     }
@@ -198,7 +232,11 @@ export class MissionExecutionEngine {
 
   /** Ensure a v3 execution block exists (idempotent — call on every read). */
   hydrate(record: MissionRecord): MissionRecord {
-    if (record.execution) return record;
+    // A partial v3 block (e.g. `{ status: 'idle' }` written before
+    // checkpoints existed) is repaired exactly like a missing one — it is
+    // not a usable v3 execution block, and every read path must survive
+    // it rather than crash on missing checkpoints.
+    if (record.execution?.checkpoints) return record;
     if (!record.goalGraph?.tasks?.length) return record;
     const approved = record.approval.status === 'approved';
     const checkpoints = emptyCheckpoints();
@@ -322,89 +360,184 @@ export class MissionExecutionEngine {
 
   /**
    * Run the current ready wave — every task whose dependencies are all
-   * completed, bounded by `maxParallel`. Proposals only: nothing is
-   * written until each task is Accepted, which then unlocks the next
-   * wave. This is what makes ordering automated while the two human
-   * gates (plan approval, per-task Accept) stay intact.
+   * completed, bounded by `maxParallel`. The wave's hooks (LLM
+   * proposal generation, git preflight) run CONCURRENTLY, bounded by
+   * `maxParallel`; per-task bookkeeping commits and the result
+   * application stay serial, and the wave commits once. Proposals only:
+   * nothing is written until each task is Accepted, which then unlocks
+   * the next wave. This is what makes ordering automated while the two
+   * human gates (plan approval, per-task Accept) stay intact.
    */
+  /**
+   * Task kinds that resolve to the MANUAL node — no governed executor, no
+   * proposal generation. They can only be resolved by a human via
+   * `completeManualTask`, and must never be auto-run by a wave (auto-running
+   * them would fabricate a failure). Matches the fabric's capability map:
+   * every one of these kinds resolves to `manual`.
+   */
+  static MANUAL_KINDS: ReadonlySet<MissionTask['kind']> = new Set(['manual-operation', 'approval', 'review', 'documentation', 'research']);
+
   async runReadyTasks(record: MissionRecord, opts: RunReadyOptions = {}): Promise<MissionRecord> {
     if (!record.execution) return record;
     if (record.execution.status !== 'running') return record;
     const { dag, statuses } = this.build(record);
-    const ready = runnableTaskIds(dag, (id) => statuses[id]);
+    let ready = runnableTaskIds(dag, (id) => statuses[id]);
+    // Manual-node tasks stay queued until a human resolves them — they are
+    // left out of the auto-run wave entirely.
+    ready = ready.filter((id) => {
+      const task = record.goalGraph?.tasks.find((t) => t.id === id);
+      return task ? !MissionExecutionEngine.MANUAL_KINDS.has(task.kind) : false;
+    });
     if (ready.length === 0) return record;
     const maxParallel = opts.maxParallel ?? 2;
-    for (const id of ready.slice(0, maxParallel)) {
+    const wave = ready.slice(0, maxParallel).flatMap((id) => {
       const task = record.goalGraph?.tasks.find((t) => t.id === id);
-      if (!task) continue;
-      await this.runOne(record, task);
+      return task ? [task] : [];
+    });
+    // Serial bookkeeping first: each task gets its own 'task-started'
+    // commit so the audit trail stays per-task and commits never interleave.
+    for (const task of wave) this.beginTask(record, task);
+    // The expensive part — hook invocations (LLM calls, git preflights) —
+    // runs concurrently. Hooks only read shared state and write their own
+    // task's resolvedNode index, so parallel invocation is safe.
+    const settled = await Promise.allSettled(wave.map((task) => this.invokeTask(record, task)));
+    for (let i = 0; i < wave.length; i++) {
+      const s = settled[i];
+      const result =
+        s.status === 'fulfilled'
+          ? s.value
+          : { ok: false, error: (s.reason as Error).message || 'Task execution failed unexpectedly' };
+      this.finishTask(record, wave[i], result);
     }
     this.commit(record);
     return record;
   }
 
-  /** Run a single task through proposal generation. */
-  async runTask(record: MissionRecord, taskId: string): Promise<{ ok: boolean; error?: string; record: MissionRecord }> {
+  /** Run a single task — through the Fabric where it can be, else proposal generation. */
+  async runTask(record: MissionRecord, taskId: string): Promise<{ ok: boolean; error?: string; awaitingApproval?: boolean; record: MissionRecord }> {
     if (!record.execution) return { ok: false, error: 'no execution state', record };
     const task = record.goalGraph?.tasks.find((t) => t.id === taskId);
     if (!task) return { ok: false, error: 'no such task', record };
     if (record.execution.status !== 'running') return { ok: false, error: 'execution is not running', record };
-    await this.runOne(record, task);
+if (MissionExecutionEngine.MANUAL_KINDS.has(task.kind)) {
+      return { ok: false, error: 'This task resolves to the manual node — complete it manually (Mark Done) instead of running it.', record };
+    }
+    await this.beginTask(record, task);
+    const result = await this.invokeTask(record, task);
+    this.finishTask(record, task, result);
+
+    // Success is read from what the task actually resolved to, not from
+    // whether a proposal exists: a Fabric-executed task completes outright
+    // and never produces one, and reporting that as a failure would make a
+    // completed task look broken to every caller.
     const run = record.taskRuns.find((r) => r.taskId === taskId);
-    const ok = !!run?.proposal && !run.proposal.error;
+    const status = record.goalGraph?.tasks.find((t) => t.id === taskId)?.status;
+    const ok = status === 'done' || (status === 'proposed' && !!run?.proposal && !run.proposal.error);
     this.commit(record);
-    return { ok, error: ok ? undefined : run?.proposal?.error?.message, record };
+    return {
+      ok,
+      error: ok ? undefined : result.detail ?? result.error ?? run?.proposal?.error?.message,
+      awaitingApproval: result.pending || undefined,
+      record,
+    };
   }
 
-  private async runOne(record: MissionRecord, task: MissionTask): Promise<void> {
+private beginTask(record: MissionRecord, task: MissionTask): void {
     const ex = record.execution!;
     ex.timeline.push(timeline('task-started', 'ai', `Running: ${task.title}`, { taskId: task.id }));
     ex.activity.push(activity('ai', 'task-started', `Started task: ${task.title}`, { taskId: task.id }));
     this.apply(record, () => undefined, 'state', new Map([[task.id, { status: 'pending' as TaskStatus }]]));
     this.commit(record);
+  }
 
+  private async invokeTask(record: MissionRecord, task: MissionTask): Promise<RunTaskResult> {
     // The hook is documented to resolve with a RunTaskResult, never reject —
     // but its real implementation (workspace.ts) calls through to fs reads
     // and resolveInsideProject(), which throw on an escaping/unreadable
-    // path. Without this guard, that throw would abort runOne() right after
-    // the 'task-started' commit above, leaving the task stuck mid-flight on
-    // disk forever instead of resolving to a terminal 'failed' state.
-    let result: RunTaskResult;
+    // path. Without this guard, that throw would abort right after the
+    // 'task-started' commit, leaving the task stuck mid-flight on disk
+    // forever instead of resolving to a terminal 'failed' state.
     try {
-      result = await this.hooks.runTask({ record, task });
+      return await this.hooks.runTask({ record, task });
     } catch (e) {
-      result = { ok: false, error: (e as Error).message || 'Task execution failed unexpectedly' };
+      return { ok: false, error: (e as Error).message || 'Task execution failed unexpectedly' };
     }
-
-    const toPlan = new Map<string, { status: TaskStatus; mode?: TaskMode }>();
-    toPlan.set(task.id, { status: result.ok ? 'proposed' : 'error', mode: result.mode });
-    if (result.proposal) {
-      record.taskRuns = [
-        ...record.taskRuns.filter((r) => r.taskId !== task.id),
-        { taskId: task.id, status: result.ok ? 'proposed' : 'error', proposal: result.proposal, updatedAt: new Date().toISOString() },
-      ];
-    }
-    ex.timeline.push(
-      result.ok
-        ? timeline('task-proposed', 'ai', `Proposal ready: ${task.title}`, { taskId: task.id, detail: result.proposal?.explanation })
-        : timeline('task-failed', 'ai', `Failed: ${task.title}`, { taskId: task.id, detail: result.error }),
-    );
-    ex.activity.push(
-      result.ok
-        ? activity('ai', 'task-proposed', `Proposal generated for: ${task.title} — awaiting accept`, { taskId: task.id })
-        : activity('ai', 'task-failed', `Task failed: ${task.title} — ${result.error ?? 'unknown error'}`, { taskId: task.id }),
-    );
-    this.apply(record, () => undefined, result.ok ? 'task' : 'state', toPlan);
   }
 
-  /** Human Accept — the ONLY path that allows a write to disk. */
+private finishTask(record: MissionRecord, task: MissionTask, result: RunTaskResult): void {
+    const ex = record.execution!;
+    const status: TaskStatus = result.status ?? (result.ok ? 'proposed' : 'error');
+    const toPlan = new Map<string, { status: TaskStatus; mode?: TaskMode }>();
+    toPlan.set(task.id, { status, mode: result.mode });
+    // A run record is written for a proposal OR for a task a node performed
+    // outright. Fabric-executed tasks produce no proposal, so keying this on
+    // `result.proposal` alone would silently discard the only record of
+    // which node did the work.
+    if (result.proposal || result.nodeId) {
+      record.taskRuns = [
+        ...record.taskRuns.filter((r) => r.taskId !== task.id),
+{
+          taskId: task.id,
+          status,
+          proposal: result.proposal ?? null,
+          executedNode: result.executedNode,
+          updatedAt: new Date().toISOString(),
+          ...(result.nodeId ? { nodeId: result.nodeId } : {}),
+        },
+      ];
+    }
+
+    // Three shapes of outcome, not two. A task parked at an approval gate
+    // has neither succeeded nor failed, and saying either would be a lie
+    // in the one place the operator looks to find out what happened.
+    if (result.pending) {
+      ex.timeline.push(timeline('checkpoint', 'system', `Waiting on your go-ahead: ${task.title}`, { taskId: task.id, detail: result.detail }));
+      ex.activity.push(activity('system', 'checkpoint', `${task.title} — ${result.detail ?? 'awaiting approval'}`, { taskId: task.id }));
+    } else if (result.ok) {
+      const done = status === 'done';
+      ex.timeline.push(
+        done
+          ? timeline('task-completed', 'ai', `Completed: ${task.title}`, { taskId: task.id, detail: result.detail })
+          : timeline('task-proposed', 'ai', `Proposal ready: ${task.title}`, { taskId: task.id, detail: result.proposal?.explanation }),
+      );
+      ex.activity.push(
+        done
+          ? activity('ai', 'task-completed', `Completed: ${task.title}${result.detail ? ` — ${result.detail}` : ''}`, { taskId: task.id })
+          : activity('ai', 'task-proposed', `Proposal generated for: ${task.title} — awaiting accept`, { taskId: task.id }),
+      );
+    } else {
+      const refused = status === 'rejected';
+      ex.timeline.push(
+        refused
+          ? timeline('task-rejected', 'system', `Refused: ${task.title}`, { taskId: task.id, detail: result.detail ?? result.error })
+          : timeline('task-failed', 'ai', `Failed: ${task.title}`, { taskId: task.id, detail: result.detail ?? result.error }),
+      );
+      ex.activity.push(
+        activity(refused ? 'system' : 'ai', refused ? 'task-rejected' : 'task-failed',
+          `${refused ? 'Refused' : 'Task failed'}: ${task.title} — ${result.detail ?? result.error ?? 'unknown error'}`,
+          { taskId: task.id }),
+      );
+    }
+
+    this.apply(record, () => undefined, result.ok || result.pending ? 'task' : 'state', toPlan);
+    // A Fabric-executed task can reach a terminal state without passing
+    // through acceptTask/rejectTask, so the mission-level completion check
+    // has to run here too or the review checkpoint would never open.
+    if (status === 'done' || status === 'accepted' || status === 'rejected') this.maybeComplete(record);
+  }
+
+  /** Human Accept — the ONLY path that allows a side effect (file write or governed git mutation). */
   acceptTask(record: MissionRecord, taskId: string): MissionRecord {
     if (!record.execution) return record;
     const run = record.taskRuns.find((r) => r.taskId === taskId);
-    if (!run || run.status !== 'proposed' || !run.proposal?.newCode) return record;
+    if (!run || run.status !== 'proposed' || !run.proposal) return record;
+    // A proposal is acceptable when it carries a diff to write (aura-ai node)
+    // OR a governed git operation to execute (git node). Everything else must
+    // be resolved another way — never accepted silently.
+    if (!run.proposal.newCode && !run.proposal.operation) return record;
     const task = record.goalGraph?.tasks.find((t) => t.id === taskId);
     record.execution.timeline.push(timeline('task-accepted', 'human', `Accepted: ${task?.title ?? taskId}`, { taskId }));
-    record.execution.activity.push(activity('human', 'task-accepted', 'Proposal accepted and written to disk', { taskId }));
+    record.execution.activity.push(activity('human', 'task-accepted', run.proposal.operation ? 'Proposal accepted and executed by the governed node' : 'Proposal accepted and written to disk', { taskId }));
     this.apply(record, () => undefined, 'task', new Map([[taskId, { status: 'accepted' as TaskStatus }]]));
     this.maybeComplete(record);
     this.commit(record);
@@ -427,6 +560,12 @@ export class MissionExecutionEngine {
   retryTask(record: MissionRecord, taskId: string): MissionRecord {
     if (!record.execution) return record;
     const task = record.goalGraph?.tasks.find((t) => t.id === taskId);
+    // Drop the errored proposal: `statusForTask` reads `proposal.error` as
+    // 'failed', so a retried task would otherwise stay un-runnable forever.
+    const run = record.taskRuns.find((r) => r.taskId === taskId);
+    if (run?.proposal?.error) {
+      record.taskRuns = record.taskRuns.map((r) => (r.taskId === taskId ? { ...r, proposal: null } : r));
+    }
     record.execution.timeline.push(timeline('task-retried', 'human', `Retrying: ${task?.title ?? taskId}`, { taskId }));
     record.execution.activity.push(activity('human', 'task-retried', `Retrying task: ${task?.title ?? taskId}`, { taskId }));
     this.apply(record, () => undefined, 'state', new Map([[taskId, { status: 'pending' as TaskStatus }]]));
@@ -438,7 +577,7 @@ export class MissionExecutionEngine {
   completeManualTask(record: MissionRecord, taskId: string): MissionRecord {
     if (!record.execution) return record;
     const task = record.goalGraph?.tasks.find((t) => t.id === taskId);
-    if (!task || task.kind === 'file-operation') return record;
+    if (!task || task.kind === 'file-operation' || task.kind === 'git-operation') return record;
     record.execution.timeline.push(timeline('task-completed', 'human', `Completed manually: ${task.title}`, { taskId }));
     record.execution.activity.push(activity('human', 'task-completed', `Completed manual task: ${task.title}`, { taskId }));
     this.apply(record, () => undefined, 'task', new Map([[taskId, { status: 'done' as TaskStatus }]]));

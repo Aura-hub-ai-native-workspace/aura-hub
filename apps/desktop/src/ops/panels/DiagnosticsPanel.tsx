@@ -7,12 +7,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { Badge, Icon } from '@aura/ui';
 import { diagnosisClient, type DiagnosisSummary } from '../../ai/diagnosisClient';
 import { useWorkspace } from '../../data/useWorkspace';
+import { useLayoutStore } from '../layoutStore';
 import { useEditorStore } from '../../editor/editorStore';
 import { useAppStore } from '@aura/core';
 import { EmptyState } from '../../components/EmptyState';
 import { VirtualList } from '../../editor/VirtualList';
 import { PanelBody, PanelHeader } from '../panelFrame';
-import { useLayoutStore } from '../layoutStore';
 
 const DECISION_TONE: Record<string, 'positive' | 'attention' | 'critical' | 'info' | 'neutral'> = {
   pending: 'attention',
@@ -21,9 +21,14 @@ const DECISION_TONE: Record<string, 'positive' | 'attention' | 'critical' | 'inf
 };
 
 export default function DiagnosticsPanel() {
-  const focused = useLayoutStore((s) => s.focused);
   const openId = useWorkspace((s) => s.openId);
-  const projectId = focused.projectId ?? openId;
+  /* The focused diagnosis, when a notification, memory record or search hit
+     named one. It was written by three callers and read by none, so opening
+     a diagnosis notification landed the user on an unsorted list with no
+     indication of which entry they had clicked. */
+  const focusedDiagnosisId = useLayoutStore((s) => s.focused.diagnosisId);
+  // The open project, always. A detail focus names an entity, never a project.
+  const projectId = openId;
   const projects = useWorkspace((s) => s.projects);
   const project = projects.find((p) => p.id === projectId);
   const [items, setItems] = useState<DiagnosisSummary[]>([]);
@@ -54,8 +59,15 @@ export default function DiagnosticsPanel() {
   }, [projectId]);
 
   const rows = useMemo(
-    () => [...items].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-    [items],
+    () => {
+      const sorted = [...items].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      // The focused one leads, so the entry the user clicked is the entry
+      // they see. Ordering only — nothing is hidden.
+      const idx = sorted.findIndex((d) => d.id === focusedDiagnosisId);
+      if (idx > 0) sorted.unshift(...sorted.splice(idx, 1));
+      return sorted;
+    },
+    [items, focusedDiagnosisId],
   );
 
   const openFile = (path: string) => {

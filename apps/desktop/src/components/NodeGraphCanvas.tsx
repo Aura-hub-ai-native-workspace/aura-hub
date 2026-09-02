@@ -1,19 +1,20 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ease } from '@aura/core';
 import { Icon, Input } from '@aura/ui';
 
 /**
- * NodeGraphCanvas — a node-editor-style dependency diagram.
+ * NodeGraphCanvas — the Knowledge Graph's engine.
  * ==================================================================
- * Real nodes rendered as draggable-feeling cards (title bar + a few
- * key/value rows), connected by colored bezier wires — the same visual
- * language as node-based tools like ComfyUI, applied to AURA's own
- * architecture/knowledge data. No WebGL, no external graph library:
- * plain SVG wires underneath, absolutely-positioned HTML cards on top,
- * both living in one shared pan/zoom transform. This keeps it robust
- * across every WebView engine AURA runs in (unlike a 3D/WebGL canvas,
- * which can silently fail to render in some embedded webviews).
+ * A real, continuous force-directed simulation (Fruchterman-Reingold-style
+ * repulsion/attraction, d3-force-style velocity + decaying alpha), not a
+ * one-shot layout — nodes keep settling live, a dragged node pins under
+ * the pointer and its neighbors resettle around it. Rendered as SVG wires
+ * + absolutely-positioned HTML cards sharing one pan/zoom transform. No
+ * WebGL, no external graph/physics library: this keeps it robust across
+ * every WebView engine AURA runs in, and (now that Architecture has its
+ * own blueprint engine) this component exists for exactly one purpose —
+ * being the Knowledge Graph, not a generic "boxes and lines" primitive.
  */
 
 export interface NodeCardRow {
@@ -39,11 +40,25 @@ export interface NodeCardEdge {
 }
 
 interface Pos { x: number; y: number }
+type Vec = Pos;
 
 const CARD_W = 220;
 const ROW_H = 20;
 const HEADER_H = 34;
 const PADDING_Y = 14;
+
+// Continuous simulation tuning — d3-force-style decaying alpha, velocity
+// damping, and a defensive max-speed clamp (can't visually tune these by
+// eye in this environment, so these are conservative, standard-practice
+// values rather than anything picked to look right on screen).
+const SPRING_K = 170;
+const FORCE_SCALE = 0.02;
+const VELOCITY_DECAY = 0.72;
+const ALPHA_DECAY = 0.02;
+const ALPHA_MIN = 0.001;
+const MAX_SPEED = 40;
+const REHEAT_ON_CHANGE = 0.45;
+const REHEAT_ON_DRAG = 0.5;
 
 function cardHeight(node: NodeCardData): number {
   const rows = Math.min(node.rows.length, 6);
@@ -51,78 +66,83 @@ function cardHeight(node: NodeCardData): number {
   return HEADER_H + PADDING_Y + rows * ROW_H + noteH + 10;
 }
 
-/** Deterministic force-directed layout, sized for rectangular cards rather than points. */
-function layoutCards(nodes: NodeCardData[], edges: NodeCardEdge[]): Map<string, Pos> {
-  const n = nodes.length;
-  const pos = new Map<string, Pos>();
-  const idx = new Map<string, number>();
-  const spread = 84 * Math.sqrt(Math.max(1, n));
-  nodes.forEach((node, i) => {
-    idx.set(node.id, i);
-    const a = (i / Math.max(1, n)) * Math.PI * 2;
-    let h = 0;
-    for (let k = 0; k < node.id.length; k++) h = (h * 31 + node.id.charCodeAt(k)) >>> 0;
-    pos.set(node.id, { x: Math.cos(a) * spread + ((h % 61) - 30), y: Math.sin(a) * spread * 0.7 + (((h >> 4) % 61) - 30) });
-  });
-  const links = edges.filter((e) => pos.has(e.from) && pos.has(e.to));
-  const iterations = n > 80 ? 110 : 160;
-  const k = 170; // ideal spacing — resolveOverlaps() below is the hard guarantee against collisions
-  for (let it = 0; it < iterations; it++) {
-    const disp = nodes.map(() => ({ x: 0, y: 0 }));
-    for (let i = 0; i < n; i++) {
-      const pi = pos.get(nodes[i].id) as Pos;
-      for (let j = i + 1; j < n; j++) {
-        const pj = pos.get(nodes[j].id) as Pos;
-        const dx = pi.x - pj.x, dy = pi.y - pj.y;
-        const d2 = dx * dx + dy * dy || 0.01;
-        const f = (k * k) / d2;
-        const d = Math.sqrt(d2);
-        const ux = dx / d, uy = dy / d;
-        disp[i].x += ux * f; disp[i].y += uy * f;
-        disp[j].x -= ux * f; disp[j].y -= uy * f;
-      }
-    }
-    for (const e of links) {
-      const a = idx.get(e.from) as number, b = idx.get(e.to) as number;
-      const pa = pos.get(e.from) as Pos, pb = pos.get(e.to) as Pos;
-      const dx = pa.x - pb.x, dy = pa.y - pb.y;
-      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-      const f = (d * d) / (k * 2.2);
+/** Deterministic seed for a brand-new node — a hint (e.g. a cluster's last known position, so an expanding cluster's members visibly bloom outward from it) takes priority over the hash+circle fallback. */
+function seedNodePosition(id: string, index: number, total: number, hint?: Pos): Pos {
+  if (hint) return { x: hint.x, y: hint.y };
+  const spread = 84 * Math.sqrt(Math.max(1, total));
+  const a = (index / Math.max(1, total)) * Math.PI * 2;
+  let h = 0;
+  for (let k = 0; k < id.length; k++) h = (h * 31 + id.charCodeAt(k)) >>> 0;
+  return { x: Math.cos(a) * spread + ((h % 61) - 30), y: Math.sin(a) * spread * 0.7 + (((h >> 4) % 61) - 30) };
+}
+
+/** One tick's worth of repulsion + spring attraction, added to `vel` (not applied to `pos` directly — see integrate()). Scaled by `alpha` so movement naturally tapers as the simulation settles. */
+function applyForces(ids: string[], pos: Map<string, Pos>, vel: Map<string, Vec>, links: { from: string; to: string }[], alpha: number) {
+  const n = ids.length;
+  for (let i = 0; i < n; i++) {
+    const pi = pos.get(ids[i]);
+    if (!pi) continue;
+    for (let j = i + 1; j < n; j++) {
+      const pj = pos.get(ids[j]);
+      if (!pj) continue;
+      const dx = pi.x - pj.x, dy = pi.y - pj.y;
+      const d2 = dx * dx + dy * dy || 0.01;
+      const d = Math.sqrt(d2);
+      const f = ((SPRING_K * SPRING_K) / d2) * alpha * FORCE_SCALE;
       const ux = dx / d, uy = dy / d;
-      disp[a].x -= ux * f; disp[a].y -= uy * f;
-      disp[b].x += ux * f; disp[b].y += uy * f;
-    }
-    const cool = 1 - it / iterations;
-    const maxStep = 22 * cool + 1;
-    for (let i = 0; i < n; i++) {
-      const p = pos.get(nodes[i].id) as Pos;
-      const dl = Math.sqrt(disp[i].x * disp[i].x + disp[i].y * disp[i].y) || 0.01;
-      p.x += (disp[i].x / dl) * Math.min(dl, maxStep);
-      p.y += (disp[i].y / dl) * Math.min(dl, maxStep);
+      const vi = vel.get(ids[i]), vj = vel.get(ids[j]);
+      if (vi) { vi.x += ux * f; vi.y += uy * f; }
+      if (vj) { vj.x -= ux * f; vj.y -= uy * f; }
     }
   }
-  resolveOverlaps(nodes, pos);
-  return pos;
+  for (const e of links) {
+    const pa = pos.get(e.from), pb = pos.get(e.to);
+    if (!pa || !pb) continue;
+    const dx = pa.x - pb.x, dy = pa.y - pb.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+    const f = (d * d / (SPRING_K * 2.2)) * alpha * FORCE_SCALE;
+    const ux = dx / d, uy = dy / d;
+    const va = vel.get(e.from), vb = vel.get(e.to);
+    if (va) { va.x -= ux * f; va.y -= uy * f; }
+    if (vb) { vb.x += ux * f; vb.y += uy * f; }
+  }
+}
+
+/** Applies velocity to position with damping. A fixed (dragged) node snaps straight to its pinned position each frame instead — it still repels/attracts everything else via applyForces above, it just doesn't accumulate its own displacement. */
+function integrate(ids: string[], pos: Map<string, Pos>, vel: Map<string, Vec>, fixed: Map<string, Pos>) {
+  for (const id of ids) {
+    const f = fixed.get(id);
+    if (f) { pos.set(id, { x: f.x, y: f.y }); vel.set(id, { x: 0, y: 0 }); continue; }
+    const v = vel.get(id), p = pos.get(id);
+    if (!v || !p) continue;
+    v.x *= VELOCITY_DECAY; v.y *= VELOCITY_DECAY;
+    const speed = Math.hypot(v.x, v.y);
+    if (speed > MAX_SPEED) { const s = MAX_SPEED / speed; v.x *= s; v.y *= s; }
+    p.x += v.x; p.y += v.y;
+  }
 }
 
 /**
- * The force simulation above treats cards as points, so two nodes can
- * still end up with overlapping rectangles (cards vary in height, and
- * point-repulsion doesn't know that). This is a deterministic guarantee
- * on top of it: while any two card rectangles overlap, push them apart
- * along whichever axis needs less movement. Caps at a fixed number of
- * passes — with real project sizes this always converges in a handful.
+ * The force simulation treats cards as points, so two nodes can still end
+ * up with overlapping rectangles (cards vary in height, and point-
+ * repulsion doesn't know that). This is a deterministic guarantee on top
+ * of it: while any two card rectangles overlap, push them apart along
+ * whichever axis needs less movement. Called with a small `maxPasses`
+ * each animation frame (steady, cheap progress every tick) rather than
+ * fully converging in one shot.
  */
-function resolveOverlaps(nodes: NodeCardData[], pos: Map<string, Pos>) {
+function resolveOverlaps(nodes: NodeCardData[], pos: Map<string, Pos>, maxPasses: number) {
   const heights = new Map(nodes.map((n) => [n.id, cardHeight(n)]));
   const pad = 24;
-  for (let pass = 0; pass < 80; pass++) {
+  for (let pass = 0; pass < maxPasses; pass++) {
     let moved = false;
     for (let i = 0; i < nodes.length; i++) {
-      const a = pos.get(nodes[i].id) as Pos;
+      const a = pos.get(nodes[i].id);
+      if (!a) continue;
       const ah = heights.get(nodes[i].id) as number;
       for (let j = i + 1; j < nodes.length; j++) {
-        const b = pos.get(nodes[j].id) as Pos;
+        const b = pos.get(nodes[j].id);
+        if (!b) continue;
         const bh = heights.get(nodes[j].id) as number;
         const overlapX = Math.min(a.x + CARD_W, b.x + CARD_W) - Math.max(a.x, b.x);
         const overlapY = Math.min(a.y + ah, b.y + bh) - Math.max(a.y, b.y);
@@ -169,6 +189,9 @@ export function NodeGraphCanvas({
   height = 560,
   onSelect,
   selectedId,
+  seedHints,
+  onSearchMiss,
+  focusRequestId,
 }: {
   nodes: NodeCardData[];
   edges: NodeCardEdge[];
@@ -176,6 +199,24 @@ export function NodeGraphCanvas({
   height?: number;
   onSelect?: (id: string | null) => void;
   selectedId?: string | null;
+  /**
+   * Maps a brand-new node id to another id it should spawn near (that
+   * other id's current or just-vacated position). Used by callers like
+   * Knowledge.tsx so a newly-expanded cluster's members bloom outward
+   * from where the cluster card was, instead of popping in at a fresh
+   * hash-seeded spot. Consulted once, the first time an id appears.
+   */
+  seedHints?: Map<string, string>;
+  /**
+   * Called when the built-in search box finds no match among currently-
+   * rendered nodes — e.g. because it's inside a still-collapsed cluster
+   * this component doesn't know about. The caller can expand whatever
+   * container holds it and then drive `focusRequestId` once the node
+   * actually exists.
+   */
+  onSearchMiss?: (query: string) => void;
+  /** Controlled: once this id appears among the (filtered) nodes, selects and centers on it. */
+  focusRequestId?: string | null;
 }) {
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(new Set());
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set());
@@ -186,38 +227,90 @@ export function NodeGraphCanvas({
   const allKinds = useMemo(() => [...new Set(allEdges.map((e) => e.kind).filter((k): k is string => Boolean(k)))].sort(), [allEdges]);
 
   // Layer-visibility (group) and relationship-type (kind) filters — applied
-  // before layout, so hidden groups/kinds never affect the force simulation.
+  // before layout, so hidden groups/kinds never affect the simulation.
   const nodes = useMemo(() => allNodes.filter((n) => !hiddenGroups.has(n.group)), [allNodes, hiddenGroups]);
   const edges = useMemo(() => {
     const visible = new Set(nodes.map((n) => n.id));
     return allEdges.filter((e) => visible.has(e.from) && visible.has(e.to) && (!e.kind || !hiddenKinds.has(e.kind)));
   }, [allEdges, nodes, hiddenKinds]);
 
-  const pos = useMemo(() => layoutCards(nodes, edges), [nodes, edges]);
-  const base = useMemo(() => bounds(nodes, pos), [nodes, pos]);
-  const [view, setViewState] = useState(base);
+  // ---- persistent simulation state — survives across renders and data
+  // changes (a ref, not React state, because it's mutated every frame). ----
+  const posRef = useRef<Map<string, Pos>>(new Map());
+  const velRef = useRef<Map<string, Vec>>(new Map());
+  const fixedRef = useRef<Map<string, Pos>>(new Map()); // pinned = currently being dragged
+  const alphaRef = useRef(1);
+  const nodeIdsRef = useRef<string[]>([]);
+  const linksRef = useRef<{ from: string; to: string }[]>([]);
+  const cardListRef = useRef<NodeCardData[]>([]);
+  const baseRef = useRef(bounds([], new Map()));
+  const [, forceRender] = useReducer((x: number) => x + 1, 0);
+
+  const pos = posRef.current;
+  const [view, setViewState] = useState(baseRef.current);
   const [hover, setHover] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ w: 800, h: height });
   const drag = useRef<{ x: number; y: number } | null>(null);
 
-  // A real layout change (expand/collapse, filter toggle — anything that
-  // changes which nodes/edges exist) briefly enables a position transition
-  // so cards visibly glide to their new spot. Pan/zoom never touches this:
-  // those only change `view`/`viewport`, not `nodes`/`edges`, so dragging
-  // or scrolling stays perfectly 1:1 with the pointer — animating position
-  // during an active drag would make panning feel laggy and rubber-banded.
-  const [justRelaidOut, setJustRelaidOut] = useState(false);
-  const firstLayout = useRef(true);
+  // Reconcile the simulation's node set with the current filtered `nodes`
+  // list whenever it actually changes (expand/collapse, filter toggle):
+  // seed brand-new ids (via seedHints when available), drop ids that
+  // disappeared, reheat alpha so the graph resettles around the change
+  // instead of snapping, and refit the view to the new bounds.
   useEffect(() => {
-    if (firstLayout.current) { firstLayout.current = false; return; }
-    setJustRelaidOut(true);
-    const t = setTimeout(() => setJustRelaidOut(false), 260);
-    return () => clearTimeout(t);
-  }, [nodes, edges]);
+    const pos = posRef.current, vel = velRef.current;
+    const liveIds = new Set(nodes.map((n) => n.id));
+    const removedPositions = new Map<string, Pos>();
+    let changed = false;
+    for (const id of [...pos.keys()]) {
+      if (!liveIds.has(id)) {
+        const p = pos.get(id);
+        if (p) removedPositions.set(id, p);
+        pos.delete(id);
+        vel.delete(id);
+        changed = true;
+      }
+    }
+    nodes.forEach((node, i) => {
+      if (!pos.has(node.id)) {
+        const parentId = seedHints?.get(node.id);
+        const hint = parentId ? removedPositions.get(parentId) ?? pos.get(parentId) : undefined;
+        pos.set(node.id, seedNodePosition(node.id, i, nodes.length, hint));
+        vel.set(node.id, { x: 0, y: 0 });
+        changed = true;
+      }
+    });
+    nodeIdsRef.current = nodes.map((n) => n.id);
+    linksRef.current = edges.map((e) => ({ from: e.from, to: e.to }));
+    cardListRef.current = nodes;
+    if (changed) alphaRef.current = Math.max(alphaRef.current, REHEAT_ON_CHANGE);
+    const fitted = bounds(nodes, pos);
+    baseRef.current = fitted;
+    setViewState(fitted);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, edges, seedHints]);
 
-  useEffect(() => setViewState(base), [base]);
+  // The continuous tick loop — runs for the component's whole lifetime,
+  // reading live refs each frame so it never needs to restart. Skips the
+  // actual physics work once alpha has settled near zero (cheap to keep
+  // polling; reheats — from a data change above, or a drag below — pick
+  // back up on the very next frame with no separate "wake up" plumbing).
+  useEffect(() => {
+    let raf = requestAnimationFrame(function step() {
+      if (alphaRef.current > ALPHA_MIN) {
+        const ids = nodeIdsRef.current;
+        applyForces(ids, posRef.current, velRef.current, linksRef.current, alphaRef.current);
+        integrate(ids, posRef.current, velRef.current, fixedRef.current);
+        resolveOverlaps(cardListRef.current, posRef.current, 3);
+        alphaRef.current += (0 - alphaRef.current) * ALPHA_DECAY;
+        forceRender();
+      }
+      raf = requestAnimationFrame(step);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -238,7 +331,7 @@ export function NodeGraphCanvas({
     e.preventDefault();
     const factor = e.deltaY > 0 ? 1.12 : 0.89;
     setViewState((cur) => {
-      const nw = Math.max(240, Math.min(cur.w * factor, base.w * 5));
+      const nw = Math.max(240, Math.min(cur.w * factor, baseRef.current.w * 5));
       const nh = nw * (viewport.h / Math.max(1, viewport.w));
       return { x: cur.x + (cur.w - nw) / 2, y: cur.y + (cur.h - nh) / 2, w: nw, h: nh };
     });
@@ -272,6 +365,51 @@ export function NodeGraphCanvas({
     if (!q) return;
     const hit = nodes.find((nd) => nd.title.toLowerCase().includes(q));
     if (hit) { onSelect?.(hit.id); centerOn(hit.id); }
+    else onSearchMiss?.(query.trim());
+  };
+
+  // Controlled focus request: once the requested id actually exists among
+  // the currently-rendered nodes (e.g. after a caller expands the cluster
+  // that was hiding it), select and center on it.
+  useEffect(() => {
+    if (!focusRequestId) return;
+    if (!nodes.some((n) => n.id === focusRequestId)) return;
+    onSelect?.(focusRequestId);
+    centerOn(focusRequestId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusRequestId, nodes]);
+
+  // Dragging a card pins it at the pointer (fed into the live simulation
+  // via `fixedRef`, so everything else keeps resettling around it), and
+  // releases it back into free motion on pointer-up. A press that never
+  // moves past a small threshold is a click, not a drag — click-to-select
+  // still works exactly as before.
+  const onCardPointerDown = (node: NodeCardData) => (e: ReactPointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const startClientX = e.clientX, startClientY = e.clientY;
+    const startWorld = pos.get(node.id) ?? { x: 0, y: 0 };
+    let dragging = false;
+
+    const onCardMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startClientX, dy = ev.clientY - startClientY;
+      if (!dragging && Math.hypot(dx, dy) > 4) {
+        dragging = true;
+        alphaRef.current = Math.max(alphaRef.current, REHEAT_ON_DRAG);
+      }
+      if (dragging) fixedRef.current.set(node.id, { x: startWorld.x + dx / scale, y: startWorld.y + dy / scale });
+    };
+    const onCardUp = () => {
+      window.removeEventListener('pointermove', onCardMove);
+      window.removeEventListener('pointerup', onCardUp);
+      if (dragging) {
+        fixedRef.current.delete(node.id);
+        alphaRef.current = Math.max(alphaRef.current, REHEAT_ON_CHANGE);
+      } else {
+        onSelect?.(node.id);
+      }
+    };
+    window.addEventListener('pointermove', onCardMove);
+    window.addEventListener('pointerup', onCardUp);
   };
 
   const neighbors = useMemo(() => {
@@ -313,7 +451,7 @@ export function NodeGraphCanvas({
       </div>
       <div className="absolute right-3 top-3 z-10 flex flex-col gap-1">
         <ZoomBtn icon="plus" onClick={() => setViewState((c) => ({ x: c.x + c.w * 0.06, y: c.y + c.h * 0.06, w: c.w * 0.88, h: c.h * 0.88 }))} />
-        <ZoomBtn icon="dot" onClick={() => setViewState(base)} />
+        <ZoomBtn icon="dot" onClick={() => setViewState(baseRef.current)} />
       </div>
 
       {/* wires */}
@@ -351,23 +489,10 @@ export function NodeGraphCanvas({
         const h = cardHeight(node);
         // Culling uses screen-space size (CARD_W/h * scale); the box itself
         // stays at its natural (unscaled) size and gets a single CSS
-        // `transform: scale()` below — that's what keeps every internal
-        // measurement (fonts, padding, row height) in exact proportion to
-        // the box's on-screen footprint. Manually re-deriving each of those
-        // per `scale` (an earlier version of this component did) is how a
-        // subtle mismatch crept in: fixed-px Tailwind padding doesn't scale
-        // the way a hand-rolled `fontSize: N * scale` does, so the box's
-        // *real* rendered height silently drifted from what the layout and
-        // overlap-resolution math above assumed — nodes would overlap on
-        // screen even though the solver reported a clean, gap-padded layout.
-        //
-        // Off-screen nodes are hidden via `display: none`, not omitted from
-        // the tree — omitting them (returning null) would remove their key
-        // from AnimatePresence's view every time they pan out of frame,
-        // which reads to Framer as a genuine removal and replays the exit/
-        // enter fade on every ordinary pan. `display: none` keeps the exit
-        // animation reserved for real removals (expand/collapse, filtering)
-        // while still fully skipping layout/paint cost for hidden cards.
+        // `transform: scale()` below. Off-screen nodes are hidden via
+        // `display: none`, not omitted from the tree, so AnimatePresence
+        // doesn't replay enter/exit on ordinary panning — only on a real
+        // removal (filter/expand-collapse).
         const offscreen = s.x + CARD_W * scale < -40 || s.x > viewport.w + 40 || s.y + h * scale < -40 || s.y > viewport.h + 40;
         const isFocus = focus === node.id;
         const isNeighbor = neighbors.has(node.id);
@@ -380,7 +505,7 @@ export function NodeGraphCanvas({
             animate={{ opacity: dim ? 0.32 : 1 }}
             exit={{ opacity: 0 }}
             transition={ease.out}
-            className="absolute cursor-pointer overflow-hidden rounded-lg border text-[11px] shadow-lg"
+            className="absolute cursor-grab overflow-hidden rounded-lg border text-[11px] shadow-lg active:cursor-grabbing"
             style={{
               display: offscreen ? 'none' : undefined,
               left: s.x,
@@ -389,7 +514,9 @@ export function NodeGraphCanvas({
               height: h,
               transform: `scale(${scale})`,
               transformOrigin: 'top left',
-              transition: justRelaidOut ? 'left 0.22s ease-out, top 0.22s ease-out' : 'none',
+              // No CSS position transition: the continuous simulation
+              // itself supplies smooth per-frame motion, so a left/top
+              // transition here would just fight the live position feed.
               background: '#1c1f26',
               borderColor: isFocus ? color : 'rgba(255,255,255,0.08)',
               borderWidth: isFocus ? 1.5 : 1,
@@ -397,7 +524,7 @@ export function NodeGraphCanvas({
             title={node.fullTitle ?? node.title}
             onMouseEnter={() => setHover(node.id)}
             onMouseLeave={() => setHover(null)}
-            onClick={(e) => { e.stopPropagation(); onSelect?.(node.id); }}
+            onPointerDown={onCardPointerDown(node)}
           >
             {/* corner tag */}
             <span className="absolute right-0 top-0 h-2.5 w-2.5 rounded-bl" style={{ background: color }} />
@@ -425,7 +552,7 @@ export function NodeGraphCanvas({
       </AnimatePresence>
 
       <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-white/40">
-        <span>{nodes.length} nodes · {edges.length} connections · scroll to zoom · drag to pan</span>
+        <span>{nodes.length} nodes · {edges.length} connections · scroll to zoom · drag canvas to pan · drag a card to reposition</span>
       </div>
       <div className="pointer-events-none absolute bottom-3 right-3 max-w-[55%]">
         {allKinds.length > 1 && (

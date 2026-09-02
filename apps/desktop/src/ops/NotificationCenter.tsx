@@ -10,7 +10,7 @@
 import { Icon } from '@aura/ui';
 import type { IconName } from '@aura/ui';
 import { useAppStore } from '@aura/core';
-import { useLayoutStore } from './layoutStore';
+import { openProjectDetail } from './openDetail';
 import { NOTIFICATION_KIND_META, unreadCount, useNotificationsStore, type AuraNotification } from './notificationsStore';
 import { relTime } from '../screens/missions/missionMeta';
 import { VirtualList } from '../editor/VirtualList';
@@ -43,7 +43,10 @@ export function NotificationCenter({ embedded = false, onNavigate }: { embedded?
 
   return (
     <PanelBody padded={false} className="flex flex-col">
-      <div className="px-3 pt-3">
+      {/* `shrink-0` keeps the bulk actions pinned: without it the flex
+          column compresses the header first when the list is long, and the
+          actions scroll away with the rows. */}
+      <div className="shrink-0 px-3 pt-3">
         <PanelHeader title="Notifications" hint={unread > 0 ? `${unread} unread` : 'all read'} />
         <div className="mb-2 flex items-center gap-1.5">
           <ActionChip icon="check" label="Mark all read" onClick={markAllRead} disabled={unread === 0} />
@@ -51,10 +54,15 @@ export function NotificationCenter({ embedded = false, onNavigate }: { embedded?
           <ActionChip icon="close" label="Clear all" onClick={clearAll} tone="danger" />
         </div>
       </div>
+      {/* VirtualList scrolls itself — it owns the `onScroll` that drives
+          windowing, but takes its overflow from the caller (see FileTree).
+          Without `overflow-y-auto` here the rows spilled into PanelBody's
+          scroller, which scrolled the header along with them and left the
+          windowing inert. */}
       <VirtualList
         items={items}
         itemHeight={58}
-        className="min-h-0 flex-1"
+        className="min-h-0 flex-1 overflow-y-auto"
         renderItem={(n) => <NotificationRow n={n} onNavigate={onNavigate} />}
       />
     </PanelBody>
@@ -63,23 +71,33 @@ export function NotificationCenter({ embedded = false, onNavigate }: { embedded?
 
 function NotificationRow({ n, onNavigate }: { n: AuraNotification; onNavigate?: () => void }) {
   const markRead = useNotificationsStore((s) => s.markRead);
-  const openPanel = useLayoutStore((s) => s.openPanel);
-  const setFocused = useLayoutStore((s) => s.setFocused);
   const setNav = useAppStore((s) => s.setNav);
   const meta = NOTIFICATION_KIND_META[n.kind];
 
+  /* A notification can reference an entity in a project other than the
+     active one. It used to open the panel scoped to that other project
+     WITHOUT switching, so the shell showed A while the panel showed B.
+     Opening it now switches the active project first — visibly, through
+     the one authority — and does nothing at all if that is declined.
+
+     `setNav('workspace')` runs as the `onOpened` step so the user lands on
+     the Workspace only once the panel is genuinely open. */
   const open = () => {
     if (!n.read) markRead(n.id);
     if (n.missionId) {
-      setFocused({ projectId: n.projectId ?? null, missionId: n.missionId });
-      setNav('workspace');
-      openPanel('mission-detail');
-      onNavigate?.();
+      openProjectDetail({
+        projectId: n.projectId ?? null,
+        focus: { missionId: n.missionId },
+        panel: 'mission-detail',
+        onOpened: () => { setNav('workspace'); onNavigate?.(); },
+      });
     } else if (n.diagnosisId) {
-      setFocused({ projectId: n.projectId ?? null, diagnosisId: n.diagnosisId });
-      setNav('workspace');
-      openPanel('diagnostics');
-      onNavigate?.();
+      openProjectDetail({
+        projectId: n.projectId ?? null,
+        focus: { diagnosisId: n.diagnosisId },
+        panel: 'diagnostics',
+        onOpened: () => { setNav('workspace'); onNavigate?.(); },
+      });
     }
   };
 

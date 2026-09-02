@@ -1,11 +1,22 @@
-import { useEffect } from 'react';
+import { Suspense, lazy } from 'react';
 import { motion } from 'framer-motion';
 import { PROJECT_TABS, pageVariants, spring, useAppStore, cn } from '@aura/core';
 import { Badge, Button, Icon } from '@aura/ui';
 import { ProjectSection } from './sections';
 import { EmptyState } from '../../components/EmptyState';
 import { useWorkspace } from '../../data/useWorkspace';
-import { useLayoutStore } from '../../ops/layoutStore';
+
+/**
+ * Ask AURA is the project's own conversation surface, shown full-screen
+ * inside the project rather than as a floating workspace panel. Lazily
+ * loaded so a project that is never asked anything doesn't pay for it.
+ *
+ * It replaces the old header action that called `openPanel('ai-chat')`.
+ * That route was dead: `openPanel` writes to `layoutStore`, and the
+ * component that renders those windows (`ops/WorkspaceCanvas.tsx`) is not
+ * mounted by any screen, so the button changed a store nothing read.
+ */
+const AiWorkspace = lazy(() => import('../ai/AiWorkspace').then((m) => ({ default: m.AiWorkspace })));
 
 /**
  * ProjectWorkspace — a real project rendered as its own operating
@@ -19,15 +30,17 @@ export function ProjectWorkspace() {
   const setTab = useAppStore((s) => s.setProjectTab);
   const closeProject = useAppStore((s) => s.closeProject);
   const setNav = useAppStore((s) => s.setNav);
-  const openPanel = useLayoutStore((s) => s.openPanel);
-  const { projects, openId, status, open } = useWorkspace();
+  const askAuraOpen = useAppStore((s) => s.askAuraOpen);
+  const setAskAuraOpen = useAppStore((s) => s.setAskAuraOpen);
+  const { projects, openId, status } = useWorkspace();
 
   const project = projects.find((p) => p.id === activeProjectId) ?? null;
 
-  // Ensure the active project is actually mounted + indexing in the backend.
-  useEffect(() => {
-    if (activeProjectId && openId !== activeProjectId) void open(activeProjectId);
-  }, [activeProjectId, openId, open]);
+  /* Mounting the project in the backend used to happen here. It now happens
+     in `useActiveProjectSync` (AppShell), because the project must be
+     mounted whenever it is ACTIVE — not only while this screen is on
+     display. Doing it here meant the Hub could be working against a project
+     the service had not mounted. */
 
   if (!project) {
     return (
@@ -38,6 +51,43 @@ export function ProjectWorkspace() {
           description="It may have been removed. Return to Home to pick another."
           action={<Button icon="home" onClick={() => setNav('home')}>Back to Home</Button>}
         />
+      </div>
+    );
+  }
+
+  // Ask AURA takes over the whole project view — full-screen *within* the
+  // project, not a floating panel in the Workspace. The project header and
+  // tabs step aside; one control brings them back.
+  //
+  // `openId` gates the chat because AiWorkspace reads the MOUNTED project.
+  // Mounting is driven by `useActiveProjectSync` in AppShell now, so by the
+  // time this screen is reachable the mount is normally already in flight —
+  // this gate just avoids rendering the chat against the previous project.
+  if (askAuraOpen) {
+    return (
+      <div className="flex h-full min-h-full flex-col">
+        <div className="flex shrink-0 items-center justify-between gap-4 border-b border-line bg-surface/40 px-8 py-2.5 backdrop-blur-sm sm:px-10 lg:px-12">
+          <button
+            onClick={() => setAskAuraOpen(false)}
+            className="inline-flex items-center gap-1.5 text-[12px] font-medium text-text-muted transition-colors hover:text-text"
+          >
+            <Icon name="chevron-right" size={14} className="rotate-180" />
+            Back to {project.name}
+          </button>
+          <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-text-muted">
+            <Icon name="spark" size={14} className="text-accent" />
+            Ask AURA
+          </span>
+        </div>
+        <div className="min-h-0 flex-1">
+          {openId === project.id ? (
+            <Suspense fallback={<AskAuraLoading />}>
+              <AiWorkspace />
+            </Suspense>
+          ) : (
+            <AskAuraLoading />
+          )}
+        </div>
       </div>
     );
   }
@@ -76,7 +126,7 @@ export function ProjectWorkspace() {
             </div>
           </div>
           <div className="flex gap-2.5">
-            <Button variant="secondary" icon="spark" onClick={() => { setNav('workspace'); openPanel('ai-chat'); }}>Ask AURA</Button>
+            <Button variant="secondary" icon="spark" onClick={() => setAskAuraOpen(true)}>Ask AURA</Button>
           </div>
         </div>
 
@@ -97,6 +147,24 @@ export function ProjectWorkspace() {
             <ProjectSection tab={tab} projectId={project.id} />
           </motion.div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Shown while the chat bundle streams in, or while the project is still
+ * being mounted in the backend. Mirrors the chat's real chrome so the
+ * swap-in never causes a layout jump.
+ */
+function AskAuraLoading() {
+  return (
+    <div className="flex h-full w-full flex-col">
+      <div className="h-[68px] shrink-0 animate-pulse border-b border-line bg-surface/60" />
+      <div className="flex min-h-0 flex-1">
+        <div className="hidden w-[248px] shrink-0 animate-pulse bg-surface/40 lg:block" />
+        <div className="flex-1 animate-pulse bg-canvas" />
+        <div className="hidden w-[340px] shrink-0 animate-pulse bg-surface/40 xl:block" />
       </div>
     </div>
   );

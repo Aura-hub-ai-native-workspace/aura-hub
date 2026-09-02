@@ -29,8 +29,8 @@ export function emptyCheckpoints(): CheckpointState[] {
 }
 
 /** The index of the first checkpoint that is not `passed`. */
-export function nextCheckpoint(checkpoints: CheckpointState[]): CheckpointState | null {
-  return checkpoints.find((c) => c.status !== 'passed') ?? null;
+export function nextCheckpoint(checkpoints: CheckpointState[] | undefined): CheckpointState | null {
+  return (checkpoints ?? []).find((c) => c.status !== 'passed') ?? null;
 }
 
 export function setCheckpoint(
@@ -40,11 +40,11 @@ export function setCheckpoint(
   note?: string,
 ): CheckpointState[] {
   const at = new Date().toISOString();
-  return checkpoints.map((c) => (c.key === key ? { ...c, status, note: note ?? c.note, at: status === 'not-started' ? undefined : at } : c));
+  return (checkpoints ?? []).map((c) => (c.key === key ? { ...c, status, note: note ?? c.note, at: status === 'not-started' ? undefined : at } : c));
 }
 
-export function checkpointStatus(checkpoints: CheckpointState[], key: CheckpointKey): CheckpointStatus {
-  return checkpoints.find((c) => c.key === key)?.status ?? 'not-started';
+export function checkpointStatus(checkpoints: CheckpointState[] | undefined, key: CheckpointKey): CheckpointStatus {
+  return (checkpoints ?? []).find((c) => c.key === key)?.status ?? 'not-started';
 }
 
 /** Execution status implied by the checkpoint lifecycle. */
