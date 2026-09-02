@@ -25,6 +25,7 @@ include = ["aura*"]
 testpaths = ["tests"]
 addopts = "-q"
 asyncio_mode = "auto"
+norecursedirs = ["target", "node_modules", ".git", "__pycache__"]
 
 [tool.ruff]
 line-length = 110
