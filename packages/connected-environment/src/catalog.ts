@@ -138,6 +138,7 @@ const DEVELOPMENT: CatalogEntry[] = [
   make('development', { id: 'gemini-cli', name: 'Gemini CLI', caps: ['coding-agent'], probe: 'gemini', install: npmGlobal('@google/gemini-cli'), license: 'free-tier', auth: 'cli-session', summary: 'Terminal coding agent.', homepage: 'https://github.com/google-gemini/gemini-cli' }),
   make('development', { id: 'qwen-cli', name: 'Qwen Code', caps: ['coding-agent'], probe: 'qwen', install: npmGlobal('@qwen-code/qwen-code'), auth: 'cli-session', summary: 'Terminal coding agent.', homepage: 'https://github.com/QwenLM/qwen-code' }),
   make('development', { id: 'opencode', name: 'OpenCode', caps: ['coding-agent', 'terminal'], probe: 'opencode', install: npmGlobal('opencode-ai'), auth: 'cli-session', summary: 'Open-source terminal coding agent.', homepage: 'https://opencode.ai' }),
+  make('development', { id: 'kilo-code', name: 'Kilo Code', caps: ['coding-agent', 'terminal'], probe: 'kilo', install: npmGlobal('@kilocode/cli'), auth: 'cli-session', summary: 'Open-source terminal coding agent (Kilo).', homepage: 'https://github.com/Kilo-Org/kilocode' }),
 
   make('development', { id: 'bash', name: 'Bash', caps: ['terminal'], probe: 'bash', summary: 'POSIX shell.', homepage: 'https://www.gnu.org/software/bash' }),
   make('development', { id: 'zsh', name: 'Zsh', caps: ['terminal'], probe: 'zsh', summary: 'Z shell.', homepage: 'https://zsh.sourceforge.io' }),

@@ -195,13 +195,18 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
   const missing = node.health.status === 'not-installed';
   const installing = node.health.status === 'installing';
 
-  // Nothing to offer: AURA has no verified way to install it, or it is
-  // already here and there is no active result to show. Both are honest
-  // silences rather than a dead button. Keep the panel visible while an
-  // install is in flight or a result/gate/error is being shown, even if
-  // the node has just transitioned to available after a successful install.
-  if (!spec) return null;
-  if (!missing && !installing && !result && !gate && !error) return null;
+  // Direct human install: explicit Install with immediate live progress, no approval gate.
+  // If genuinely not installable, show honest unavailable + reason (do not silently hide).
+  // Keep panel visible while installing or result/gate/error showing, even after probe flips to available.
+  const showUnavailable = !spec && (missing || installing || result || gate || error);
+  const showPanel = Boolean(spec) || showUnavailable;
+  if (!showPanel) {
+    if (!missing && !installing && !result && !gate && !error) return null;
+  }
+  // If no spec and not in any active/missing state, hide (already installed and idle)
+  if (!spec && !showUnavailable) {
+    if (!missing && !installing && !result && !gate && !error) return null;
+  }
 
   const install = async () => {
     if (busy || installing) return;
@@ -236,6 +241,23 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
     }
   };
 
+  if (!spec) {
+    return (
+      <section data-testid="node-install" className="rounded-xl border border-line bg-surface-active p-2.5">
+        <p className="text-[11.5px] font-medium text-text">Install unavailable</p>
+        <p className="mt-1 text-[11.5px] leading-relaxed text-text-muted" data-testid="node-install-unavailable">
+          AURA has no verified way to install {node.entry.name} — it will not guess. See the project's site for instructions.
+        </p>
+        {error && (
+          <p data-testid="node-install-error" className="mt-1 text-[11.5px] leading-relaxed text-attention">{error}</p>
+        )}
+        <a href={node.entry.homepage} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[11px] font-medium text-text-muted">
+          Open site
+        </a>
+      </section>
+    );
+  }
+
   return (
     <section data-testid="node-install" className="rounded-xl border border-line bg-surface-active p-2.5">
       {!result && !gate && (
@@ -250,11 +272,17 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
           </button>
           <span className="text-[10.5px] text-text-subtle">
             {installing
-              ? 'Installation is running — AURA will check again when it finishes.'
+              ? 'Installing… Verifying when finished.'
               : spec.privilege === 'root'
                 ? 'Needs administrator rights — AURA will show you the command.'
-                : 'AURA will ask before it runs anything.'}
+                : 'Installation will begin immediately.'}
           </span>
+        </div>
+      )}
+      {installing && !result && !gate && (
+        <div className="mt-2 flex items-center gap-1 text-[10px] text-text-subtle" data-testid="node-install-live">
+          <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
+          <span>Preparing → Downloading → Installing → Verifying</span>
         </div>
       )}
 

@@ -1468,6 +1468,8 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/events/workflow", sse_workflow_events, methods=["GET"]),
         Route("/environment/scan", environment_scan, methods=["POST"]),
         Route("/environment/probe", environment_probe, methods=["POST"]),
+        Route("/environment/install", environment_install, methods=["POST"]),
+        Route("/environment/connect", environment_connect, methods=["POST"]),
     ]
 
     app = Starlette(
@@ -1549,3 +1551,228 @@ async def environment_probe(request: Request):
     refresh = bool(body.get("refresh", False))
     result = probe_node(node_id, refresh=refresh)
     return JSONResponse({"result": probe_result_to_dict(result)})
+
+
+async def environment_install(request: Request):
+    """Direct human installation — bypasses Fabric approval gate.
+
+    POST /environment/install
+    Body: { id: string }
+    Returns: InstallResult-like payload with installOutcome, privilege,
+             requiresUserAction, command, why, probe, detail, exitCode.
+
+    Security: catalog-only, validated InstallSpec, allow-listed bin,
+              argv-only, no shell, frontend sends id only.
+    """
+    import asyncio
+    import os
+
+    from ..environment import catalog_entry, is_plan, plan_install, probe_node, probe_result_to_dict
+    from ..exec_ import INSTALL_TIMEOUT_MS, resolve_installer_binary
+
+    body = await request.json()
+    node_id = str(body.get("id") or body.get("nodeId") or "").strip()
+    if not node_id:
+        return JSONResponse({"error": "No node id was provided.", "installOutcome": "failed", "detail": "No node id was provided."}, status_code=400)
+
+    entry = catalog_entry(node_id)
+    if entry is None:
+        return JSONResponse({"error": f"'{node_id}' is not in the catalog.", "installOutcome": "failed", "detail": f"'{node_id}' is not in the catalog."}, status_code=400)
+
+    plan = plan_install(entry)
+    if not is_plan(plan):
+        return JSONResponse({
+            "installOutcome": "unavailable",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "detail": plan.reason,
+            "why": plan.reason,
+        }, status_code=400)
+
+    if plan.privilege == "root":
+        return JSONResponse({
+            "installOutcome": "guided",
+            "nodeId": node_id,
+            "privilege": "root",
+            "requiresUserAction": True,
+            "command": plan.command,
+            "why": plan.why,
+            "detail": f"{entry.name} needs administrator rights to install, so AURA did not run anything. Run this yourself, then re-scan: {plan.command}",
+        })
+
+    resolved = resolve_installer_binary(plan.bin)
+    if not resolved.ok:
+        return JSONResponse({
+            "installOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": resolved.reason,
+            "detail": f"{entry.name} could not be installed: {resolved.reason}",
+        }, status_code=400)
+
+    # Execute allow-listed installer argv-only, bounded timeout
+    timeout_ms = INSTALL_TIMEOUT_MS
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            plan.bin,
+            *plan.args,
+            cwd=os.environ.get("HOME", "/"),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout_ms / 1000)
+            exit_code = proc.returncode
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+            return JSONResponse({
+                "installOutcome": "failed",
+                "nodeId": node_id,
+                "privilege": "user",
+                "requiresUserAction": False,
+                "command": plan.command,
+                "why": "The installer ran out of time and was stopped.",
+                "timedOut": True,
+                "exitCode": -1,
+                "detail": f"{entry.name} was not installed. The installer ran out of time and was stopped.",
+            })
+    except FileNotFoundError:
+        return JSONResponse({
+            "installOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": f"{plan.bin} is not installed",
+            "detail": f"{entry.name} could not be installed: {plan.bin} is not installed",
+        }, status_code=400)
+    except Exception as e:
+        return JSONResponse({
+            "installOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": str(e),
+            "detail": f"{entry.name} could not be installed: {e}",
+        }, status_code=400)
+
+    stdout = stdout_bytes.decode("utf-8", errors="replace")[:4000] if stdout_bytes else ""
+
+    if exit_code != 0:
+        why = f"The installer exited {exit_code}."
+        return JSONResponse({
+            "installOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": why,
+            "exitCode": exit_code,
+            "stdout": stdout,
+            "detail": f"{entry.name} was not installed. {why} {stdout[:300]}".strip(),
+        })
+
+    # Post-install verification — exit 0 is claim, probe is evidence
+    probe_result = probe_node(node_id, refresh=True)
+    if not probe_result.present:
+        return JSONResponse({
+            "installOutcome": "unverified",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": True,
+            "command": plan.command,
+            "why": f"The installer finished without an error, but {entry.name} still cannot be found on this machine.",
+            "exitCode": 0,
+            "stdout": stdout,
+            "probe": probe_result_to_dict(probe_result),
+            "detail": f"{entry.name} reported a successful install, but AURA still cannot find it, so it is NOT being reported as installed. {probe_result.detail}",
+        })
+
+    return JSONResponse({
+        "installOutcome": "installed",
+        "nodeId": node_id,
+        "privilege": "user",
+        "requiresUserAction": False,
+        "command": plan.command,
+        "why": f"{entry.name} is now installed and available.",
+        "exitCode": 0,
+        "stdout": stdout,
+        "probe": probe_result_to_dict(probe_result),
+        "detail": f"{entry.name} was successfully installed and verified.",
+    })
+
+
+async def environment_connect(request: Request):
+    """Direct human connect — verifies usability, persists via ConnectedNodeStore.
+
+    POST /environment/connect
+    Body: { id: string }
+    Returns: { connected: bool, result: ProbeResult, detail: string }
+    """
+    from ..environment import catalog_entry, probe_node, probe_result_to_dict
+
+    body = await request.json()
+    node_id = str(body.get("id") or body.get("nodeId") or "").strip()
+    if not node_id:
+        return JSONResponse({"error": "No node id was provided.", "connected": False}, status_code=400)
+
+    entry = catalog_entry(node_id)
+    if entry is None:
+        return JSONResponse({"error": f"'{node_id}' is not in the catalog.", "connected": False}, status_code=400)
+
+    # Internal nodes always connected
+    if entry.transport == "internal":
+        result = probe_node(node_id, refresh=True)
+        return JSONResponse({
+            "connected": True,
+            "result": probe_result_to_dict(result),
+            "detail": "Built into AURA Hub — always available.",
+        })
+
+    # Real verification: probe with refresh
+    result = probe_node(node_id, refresh=True)
+    if not result.present:
+        return JSONResponse({
+            "connected": False,
+            "result": probe_result_to_dict(result),
+            "detail": result.detail,
+        })
+
+    # Verify integration: for local-process, probe success means executable + version;
+    # for http, probe already verified endpoint liveness. If present, consider drivable
+    # unless we have explicit evidence otherwise. Persist verified connection.
+    try:
+        from ..persistence.nodes import ConnectedNodeStore
+
+        nodes = ConnectedNodeStore()
+        # Persist verified connection — register as connected node
+        nodes.register(
+            node_id,
+            entry.name,
+            list(entry.capabilities),
+            internal=False,
+            version=result.version or "",
+        )
+    except Exception as e:
+        return JSONResponse({
+            "connected": False,
+            "result": probe_result_to_dict(result),
+            "detail": f"Installed and found, but AURA could not persist the connection: {e}.",
+        })
+
+    return JSONResponse({
+        "connected": True,
+        "result": probe_result_to_dict(result),
+        "detail": f"{entry.name} is connected and usable. {result.detail}",
+    })

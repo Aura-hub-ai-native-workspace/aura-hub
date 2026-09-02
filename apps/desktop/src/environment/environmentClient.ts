@@ -22,6 +22,28 @@ export interface ScanResponse {
   found: number;
 }
 
+export type InstallOutcome = 'installed' | 'guided' | 'failed' | 'unverified' | 'unavailable';
+
+export interface InstallResponse {
+  installOutcome: InstallOutcome;
+  nodeId: string;
+  privilege: 'user' | 'root';
+  requiresUserAction: boolean;
+  command?: string;
+  why?: string;
+  detail?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  stdout?: string;
+  probe?: ProbeResult;
+}
+
+export interface ConnectResponse {
+  connected: boolean;
+  result: ProbeResult;
+  detail: string;
+}
+
 const UNREACHABLE: ProbeResult = {
   present: false,
   detail: 'The local AURA service is not answering, so nothing could be measured. Start it with `npm run ai` and scan again.',
@@ -61,4 +83,33 @@ async function probe(id: string, refresh = true): Promise<ProbeResult> {
   }
 }
 
-export const environmentClient = { scan, probe };
+async function install(id: string): Promise<InstallResponse> {
+  const res = await fetch(`${BASE}/environment/install`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  const body = (await res.json()) as InstallResponse & { error?: string };
+  if (!res.ok) {
+    // Guided/unavailable still come with 400 but carry payload
+    if (body.installOutcome) return body;
+    throw new Error(body.error || body.detail || `Install failed (${res.status})`);
+  }
+  return body;
+}
+
+async function connectDirect(id: string): Promise<ConnectResponse> {
+  const res = await fetch(`${BASE}/environment/connect`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  const body = (await res.json()) as ConnectResponse & { error?: string };
+  if (!res.ok) {
+    if (body.result) return body as ConnectResponse;
+    throw new Error(body.error || `Connect failed (${res.status})`);
+  }
+  return body as ConnectResponse;
+}
+
+export const environmentClient = { scan, probe, install, connectDirect };

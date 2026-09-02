@@ -75,14 +75,30 @@ def _writable_with_ancestors(target: str) -> bool:
 
 def _npm_global_root() -> str | None:
     try:
+        import shutil
+        npm_bin = shutil.which("npm")
+        if npm_bin is None:
+            # Fallback to common locations
+            for cand in [
+                os.path.join(os.path.expanduser("~"), ".npm-global/bin/npm"),
+                "/usr/local/bin/npm",
+                "/usr/bin/npm",
+            ]:
+                if os.path.exists(cand):
+                    npm_bin = cand
+                    break
+        if npm_bin is None:
+            npm_bin = "npm"
         result = subprocess.run(
-            ["npm", "config", "get", "prefix"],
+            [npm_bin, "config", "get", "prefix"],
             capture_output=True,
             text=True,
             timeout=10,
         )
         prefix = result.stdout.strip()
         if prefix and prefix != "undefined":
+            if platform.system() == "Windows":
+                return os.path.join(prefix, "node_modules")
             return os.path.join(prefix, "lib", "node_modules")
         return None
     except Exception:

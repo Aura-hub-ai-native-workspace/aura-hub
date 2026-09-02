@@ -33,9 +33,8 @@ import {
   type EnvironmentNode,
   type NodePermissions,
 } from '@aura/connected-environment';
-import { environmentClient } from './environmentClient';
-import { transportFor } from './transports';
-import { fabricClient, type InvocationResultView } from '../ai/fabricClient';
+import { environmentClient, type InstallResponse } from './environmentClient';
+import type { InvocationResultView } from '../ai/fabricClient';
 
 interface EnvironmentState {
   nodes: EnvironmentNode[];
@@ -49,8 +48,10 @@ interface EnvironmentState {
   connect: (id: string) => Promise<void>;
   disconnect: (id: string) => void;
   setNodePermissions: (id: string, partial: Partial<NodePermissions>) => void;
-  /** Governed install via the existing system.install capability. */
+  /** Direct human install — bypasses Fabric approval gate. AI path remains via fabricClient.invoke('system.install'). */
   install: (id: string) => Promise<InvocationResultView>;
+  /** Governed AI install (kept for model-initiated). */
+  installGoverned?: (id: string) => Promise<InvocationResultView>;
 }
 
 export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
@@ -78,12 +79,29 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
     if (!node || get().busy.includes(id)) return;
     set((s) => ({ busy: [...s.busy, id] }));
 
-    const result = await transportFor(node.entry).connect(node.entry);
-
-    set((s) => ({
-      nodes: s.nodes.map((n) => (n.id === id ? applyConnect(n, result) : n)),
-      busy: s.busy.filter((b) => b !== id),
-    }));
+    try {
+      const response = await environmentClient.connectDirect(id);
+      const probeResult = response.result;
+      set((s) => ({
+        nodes: s.nodes.map((n) => (n.id === id ? applyConnect(n, probeResult) : n)),
+        busy: s.busy.filter((b) => b !== id),
+      }));
+    } catch {
+      // Fallback to probe-only if direct endpoint unavailable
+      try {
+        const { transportFor } = await import('./transports');
+        const n = get().nodes.find((x) => x.id === id);
+        if (n) {
+          const result = await transportFor(n.entry).connect(n.entry);
+          set((s) => ({
+            nodes: s.nodes.map((x) => (x.id === id ? applyConnect(x, result) : x)),
+            busy: s.busy.filter((b) => b !== id),
+          }));
+          return;
+        }
+      } catch {}
+      set((s) => ({ busy: s.busy.filter((b) => b !== id) }));
+    }
   },
 
   disconnect: (id) => {
@@ -129,11 +147,12 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
       ),
     }));
 
-    let result: InvocationResultView;
+    let direct: InstallResponse | null = null;
+    let detailForFailure = '';
     try {
-      result = await fabricClient.invoke('system.install', { nodeId: id });
+      direct = await environmentClient.install(id);
     } catch (e) {
-      const detail = (e as Error).message || 'The install request did not complete.';
+      detailForFailure = (e as Error).message || 'The install request did not complete.';
       // Re-probe honestly before reporting the transport failure.
       try {
         const probeResult = await environmentClient.probe(id, true);
@@ -144,44 +163,85 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
             n.id === id
               ? {
                   ...n,
-                  health: { status: 'not-installed', detail, checkedAt: new Date().toISOString() },
-                  log: appendLog(n.log, 'error', detail),
+                  health: { status: 'not-installed', detail: detailForFailure, checkedAt: new Date().toISOString() },
+                  log: appendLog(n.log, 'error', detailForFailure),
                 }
               : n,
           ),
         }));
       }
       set((s) => ({ busy: s.busy.filter((b) => b !== id) }));
-      return { invocationId: '', outcome: 'failed', detail };
+      return { invocationId: '', outcome: 'failed', detail: detailForFailure };
     }
 
-    // Successful installation triggers real re-probing with refresh: true.
-    // The verdict comes from the machine, not from the install result text.
-    try {
-      const probeResult = await environmentClient.probe(id, true);
+    // Direct human install succeeded in reaching the service — now apply verification.
+    // The service already probed, but we do a second honest re-probe for UI consistency
+    // (service probe is evidence; this second probe confirms registry update).
+    if (direct && direct.probe) {
+      // Use service-provided probe evidence
+      const probeResult = {
+        present: direct.probe.present,
+        detail: direct.probe.detail,
+        version: direct.probe.version,
+        latencyMs: direct.probe.latencyMs,
+      };
       set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? applyProbe(n, probeResult) : n)) }));
-    } catch {
-      // Probe transport failed — leave the installing marker to be resolved by
-      // the next scan rather than guessing at a status.
-      set((s) => ({
-        nodes: s.nodes.map((n) =>
-          n.id === id
-            ? {
-                ...n,
-                health: {
-                  status: 'not-installed',
-                  detail: result.detail || 'Installation finished, but the follow-up check did not complete. Scan again.',
-                  checkedAt: new Date().toISOString(),
-                  version: n.health.version,
-                },
-              }
-            : n,
-        ),
-      }));
+    } else {
+      try {
+        const probeResult = await environmentClient.probe(id, true);
+        set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? applyProbe(n, probeResult) : n)) }));
+      } catch {
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  health: {
+                    status: 'not-installed',
+                    detail: direct?.detail || 'Installation finished, but the follow-up check did not complete. Scan again.',
+                    checkedAt: new Date().toISOString(),
+                    version: n.health.version,
+                  },
+                }
+              : n,
+          ),
+        }));
+      }
     }
 
     set((s) => ({ busy: s.busy.filter((b) => b !== id) }));
-    return result;
+
+    // Map direct installOutcome to InvocationResultView for existing UI branches
+    // NodeCard branches on output.installOutcome, never on ok/outcome alone.
+    if (!direct) {
+      return { invocationId: '', outcome: 'failed', detail: detailForFailure || 'Install did not complete.' };
+    }
+    if (direct.installOutcome === 'unavailable') {
+      return { invocationId: '', outcome: 'unsupported', detail: direct.detail || direct.why || 'Install unavailable.' };
+    }
+    if (direct.installOutcome === 'guided') {
+      return {
+        invocationId: '',
+        outcome: 'succeeded',
+        detail: direct.detail || direct.why || '',
+        output: direct as unknown as Record<string, unknown>,
+      };
+    }
+    if (direct.installOutcome === 'installed') {
+      return {
+        invocationId: '',
+        outcome: 'succeeded',
+        detail: direct.detail || '',
+        output: direct as unknown as Record<string, unknown>,
+      };
+    }
+    // failed / unverified
+    return {
+      invocationId: '',
+      outcome: 'failed',
+      detail: direct.detail || direct.why || 'Install failed.',
+      output: direct as unknown as Record<string, unknown>,
+    };
   },
 }));
 

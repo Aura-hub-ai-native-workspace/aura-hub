@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .catalog import CatalogEntry, catalog_entry, entries_for_scan
@@ -23,6 +26,14 @@ from .catalog import CatalogEntry, catalog_entry, entries_for_scan
 PROBE_TIMEOUT_MS = 4000
 HTTP_TIMEOUT_MS = 2500
 CACHE_TTL_MS = 30_000
+SCAN_CONCURRENCY = 8
+
+# In-memory cache for probe results (mirrors TS environment.ts cache)
+_probe_cache: dict[str, tuple[float, "ProbeResult"]] = {}
+
+# Cached npm global bin (computed once per process)
+_npm_global_bin: str | None = None
+_npm_global_bin_resolved: bool = False
 
 
 def _now() -> str:
@@ -55,6 +66,184 @@ def _extract_version(output: str) -> str | None:
     return None
 
 
+def _get_cached(node_id: str) -> ProbeResult | None:
+    entry = _probe_cache.get(node_id)
+    if entry is None:
+        return None
+    at, result = entry
+    if (time.time() - at) * 1000 < CACHE_TTL_MS:
+        return result
+    _probe_cache.pop(node_id, None)
+    return None
+
+
+def _set_cache(node_id: str, result: ProbeResult) -> None:
+    _probe_cache[node_id] = (time.time(), result)
+
+
+def _clear_cache() -> None:
+    _probe_cache.clear()
+
+
+def _home_dir() -> Path:
+    return Path(os.path.expanduser("~"))
+
+
+def _npm_global_bin_cached() -> str | None:
+    """Resolve npm global bin directory once, handling custom prefix."""
+    global _npm_global_bin, _npm_global_bin_resolved
+    if _npm_global_bin_resolved:
+        return _npm_global_bin
+    _npm_global_bin_resolved = True
+    try:
+        # Use shutil.which to find npm without shell
+        npm_bin = shutil.which("npm")
+        if npm_bin is None:
+            # Try common locations if not on PATH
+            for cand in [
+                _home_dir() / ".npm-global/bin/npm",
+                _home_dir() / ".local/bin/npm",
+                Path("/usr/local/bin/npm"),
+                Path("/usr/bin/npm"),
+            ]:
+                if cand.exists():
+                    npm_bin = str(cand)
+                    break
+        if npm_bin is None:
+            return None
+        result = subprocess.run(
+            [npm_bin, "config", "get", "prefix"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=str(_home_dir()),
+        )
+        prefix = result.stdout.strip()
+        if prefix and prefix != "undefined":
+            # On Windows, npm bin is <prefix> directly; on Unix <prefix>/bin
+            # We handle both by checking platform
+            import platform
+            if platform.system() == "Windows":
+                bin_dir = prefix
+            else:
+                bin_dir = os.path.join(prefix, "bin")
+            # Validate it looks like a bin dir (contains npm or previous)
+            _npm_global_bin = bin_dir
+            return bin_dir
+        return None
+    except Exception:
+        return None
+
+
+def _effective_path() -> str:
+    """Build augmented PATH: inherited + known user/system locations + npm global bin."""
+    home = _home_dir()
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    # Start with inherited PATH
+    existing = os.environ.get("PATH", "")
+    if existing:
+        for p in existing.split(os.pathsep):
+            if p and p not in seen:
+                parts.append(p)
+                seen.add(p)
+
+    # Known user-level locations (deterministic, no shell sourcing)
+    candidates: list[Path] = []
+    # npm global bin (dynamic, covers custom prefix like ~/.npm-global/bin)
+    npm_bin = _npm_global_bin_cached()
+    if npm_bin and npm_bin not in seen:
+        candidates.append(Path(npm_bin))
+
+    # Standard user locations
+    candidates.extend([
+        home / ".local/bin",
+        home / "bin",
+        home / ".opencode/bin",
+        home / ".cargo/bin",
+        home / ".bun/bin",
+        home / "go/bin",
+        home / ".deno/bin",
+        home / ".npm-global/bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+        Path("/usr/bin"),
+        Path("/bin"),
+        Path("/usr/local/sbin"),
+        Path("/usr/sbin"),
+        Path("/sbin"),
+    ])
+
+    # Windows-specific already handled via npm_bin above, but add others
+    import platform
+    if platform.system() == "Windows":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            candidates.append(Path(appdata) / "npm")
+        program_data = os.environ.get("ProgramData")
+        if program_data:
+            candidates.append(Path(program_data) / "chocolatey/bin")
+        candidates.extend([
+            home / "scoop/shims",
+            home / "AppData/Roaming/npm",
+        ])
+
+    for c in candidates:
+        s = str(c)
+        if s and s not in seen:
+            # Only add if directory exists or is npm_bin (already checked)
+            # We add regardless to allow which to find it if later created
+            parts.append(s)
+            seen.add(s)
+
+    return os.pathsep.join(parts)
+
+
+def _resolve_executable(command: str) -> str | None:
+    """Resolve executable via augmented PATH, respecting PATHEXT on Windows."""
+    # Use augmented PATH for robust discovery
+    path = _effective_path()
+    # shutil.which respects PATHEXT on Windows and X_OK on POSIX
+    resolved = shutil.which(command, path=path)
+    if resolved:
+        return resolved
+    # Fallback: direct check for known locations if which fails
+    home = _home_dir()
+    import platform
+    # Check explicit candidate files
+    for base in [
+        home / ".local/bin" / command,
+        home / ".npm-global/bin" / command,
+        home / ".opencode/bin" / command,
+        home / ".cargo/bin" / command,
+        home / ".bun/bin" / command,
+        Path("/opt/homebrew/bin") / command,
+        Path("/usr/local/bin") / command,
+        Path("/usr/bin") / command,
+    ]:
+        # On Windows, also try with PATHEXT extensions
+        if platform.system() == "Windows":
+            pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";")
+            for ext in pathext:
+                ext = ext.strip()
+                if not ext:
+                    continue
+                cand = Path(str(base) + ext.lower())
+                if cand.exists() and cand.is_file():
+                    return str(cand)
+                cand2 = Path(str(base) + ext)
+                if cand2.exists() and cand2.is_file():
+                    return str(cand2)
+        else:
+            if base.exists() and base.is_file():
+                # Check executable
+                if os.access(str(base), os.X_OK):
+                    return str(base)
+                return str(base)
+    return None
+
+
 def _run_probe(entry: CatalogEntry) -> ProbeResult:
     if entry.probe is None:
         return ProbeResult(
@@ -64,12 +253,16 @@ def _run_probe(entry: CatalogEntry) -> ProbeResult:
 
     started = time.time()
     try:
+        # argv-only, no shell — command from catalog only
+        # Use _resolve_executable to give better error if not found, but still attempt direct run
+        # for OS resolver fallback
         proc = subprocess.run(
             [entry.probe.command] + entry.probe.args,
             capture_output=True,
             text=True,
             timeout=PROBE_TIMEOUT_MS / 1000,
             cwd=os.path.expanduser("~"),
+            env={**os.environ, "PATH": _effective_path()},
         )
         latency_ms = int((time.time() - started) * 1000)
 
@@ -100,6 +293,14 @@ def _run_probe(entry: CatalogEntry) -> ProbeResult:
 
     except FileNotFoundError:
         latency_ms = int((time.time() - started) * 1000)
+        # Provide augmented PATH evidence
+        resolved = _resolve_executable(entry.probe.command)
+        if resolved:
+            return ProbeResult(
+                present=False,
+                latency_ms=latency_ms,
+                detail=f"{entry.probe.command} was found at {resolved} but did not execute.",
+            )
         return ProbeResult(
             present=False,
             latency_ms=latency_ms,
@@ -156,28 +357,47 @@ def _run_http_probe(entry: CatalogEntry) -> ProbeResult:
 
 
 def probe_node(node_id: str, refresh: bool = False) -> ProbeResult:
+    if not refresh:
+        cached = _get_cached(node_id)
+        if cached is not None:
+            return cached
+
     entry = catalog_entry(node_id)
     if entry is None:
-        return ProbeResult(present=False, detail="That node is not in the catalog.")
+        result = ProbeResult(present=False, detail="That node is not in the catalog.")
+        _set_cache(node_id, result)
+        return result
 
     if entry.transport == "internal":
-        return ProbeResult(present=True, detail="Built into AURA Hub.")
+        result = ProbeResult(present=True, detail="Built into AURA Hub.")
+        _set_cache(node_id, result)
+        return result
     elif entry.transport == "local-process":
-        return _run_probe(entry)
+        result = _run_probe(entry)
+        _set_cache(node_id, result)
+        return result
     elif entry.transport == "http":
-        return _run_http_probe(entry)
+        result = _run_http_probe(entry)
+        _set_cache(node_id, result)
+        return result
     elif entry.transport == "api-key":
-        return ProbeResult(
+        result = ProbeResult(
             present=False,
             detail="Connect this provider in AI Settings — the Hub reuses that key rather than asking for a second one.",
         )
+        _set_cache(node_id, result)
+        return result
     elif entry.transport == "oauth":
-        return ProbeResult(
+        result = ProbeResult(
             present=False,
             detail="Catalogued for planning. No connector has been built for this service yet.",
         )
+        _set_cache(node_id, result)
+        return result
     else:
-        return ProbeResult(present=False, detail=f"Unknown transport type: {entry.transport}")
+        result = ProbeResult(present=False, detail=f"Unknown transport type: {entry.transport}")
+        _set_cache(node_id, result)
+        return result
 
 
 def scan_environment(node_ids: list[str] | None = None, refresh: bool = False) -> ScanResult:
@@ -188,11 +408,38 @@ def scan_environment(node_ids: list[str] | None = None, refresh: bool = False) -
     results: dict[str, ProbeResult] = {}
     found = 0
 
-    for entry in entries:
-        result = probe_node(entry.id, refresh=refresh)
-        results[entry.id] = result
-        if result.present:
-            found += 1
+    if refresh:
+        # Bypass cache for explicit refresh
+        _clear_cache()
+
+    # Bounded concurrency: 6-8 workers, failure-isolated per probe
+    if len(entries) <= 1:
+        for entry in entries:
+            try:
+                result = probe_node(entry.id, refresh=refresh)
+            except Exception as e:
+                result = ProbeResult(present=False, detail=f"Probe for {entry.id} failed: {e}")
+            results[entry.id] = result
+            if result.present:
+                found += 1
+    else:
+        max_workers = min(SCAN_CONCURRENCY, len(entries))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_id = {}
+            for entry in entries:
+                # Each probe isolated; refresh flag controls cache
+                fut = executor.submit(probe_node, entry.id, refresh)
+                future_to_id[fut] = entry.id
+            for fut in as_completed(future_to_id):
+                nid = future_to_id[fut]
+                try:
+                    # Per-probe timeout slightly above probe timeout to avoid hanging scan
+                    result = fut.result(timeout=(PROBE_TIMEOUT_MS + 1000) / 1000)
+                except Exception as e:
+                    result = ProbeResult(present=False, detail=f"Probe for {nid} failed: {e}")
+                results[nid] = result
+                if result.present:
+                    found += 1
 
     return ScanResult(
         results=results,

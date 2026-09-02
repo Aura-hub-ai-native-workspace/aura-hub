@@ -153,15 +153,20 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
               {busy || installBusy ? 'Installing…' : 'Install'}
             </button>
           ) : (
-            <a
-              href={node.entry.homepage}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[10.5px] font-medium text-text-muted transition-colors hover:border-line-strong hover:text-text"
-            >
-              <Icon name="link" size={10} />
-              Open site
-            </a>
+            <span className="flex items-center gap-1.5">
+              <span className="rounded-lg border border-line bg-surface-active px-2 py-1 text-[10.5px] font-medium text-text-subtle" data-testid="node-card-install-unavailable">
+                Install unavailable
+              </span>
+              <a
+                href={node.entry.homepage}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[10.5px] font-medium text-text-muted transition-colors hover:border-line-strong hover:text-text"
+              >
+                <Icon name="link" size={10} />
+                Open site
+              </a>
+            </span>
           )
         ) : connectable ? (
           <button
@@ -192,13 +197,27 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
           <Icon name="maximize" size={11} />
         </button>
       </div>
+      {isMissing && !hasInstallSpec && (
+        <p data-testid="node-card-unavailable-reason" className="mt-1.5 text-[10.5px] leading-relaxed text-text-subtle">
+          AURA has no verified way to install {node.entry.name} — it will not guess. See the project's site for instructions.
+        </p>
+      )}
+      {isInstalling && (
+        <div className="mt-1.5 space-y-1" data-testid="node-card-live-install">
+          <p className="text-[10.5px] leading-relaxed text-text-subtle">Installing…</p>
+          <div className="flex items-center gap-1 text-[10px] text-text-subtle">
+            <span className="h-1.5 w-1.5 rounded-full bg-accent animate-pulse" />
+            <span>Preparing → Downloading → Installing → Verifying</span>
+          </div>
+        </div>
+      )}
       {isMissing && hasInstallSpec && gate && (
         <p data-testid="node-card-gate" className="mt-1.5 text-[10.5px] leading-relaxed text-accent">{gate}</p>
       )}
-      {isMissing && hasInstallSpec && error && (
+      {(isMissing || isInstalling) && hasInstallSpec && error && (
         <p data-testid="node-card-error" className="mt-1.5 text-[10.5px] leading-relaxed text-attention">{error}</p>
       )}
-      {isMissing && hasInstallSpec && result && (
+      {hasInstallSpec && result && (
         <div className="mt-1.5 space-y-1">
           {result.installOutcome === 'guided' && (
             <div data-testid="node-card-guided" data-install-outcome="guided" className="rounded-lg border border-line bg-surface-active p-1.5">
