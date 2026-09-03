@@ -167,6 +167,18 @@ export interface NodeHealth {
   /** Probe round-trip in ms, when measured. */
   latencyMs?: number;
   checkedAt: string;
+  /**
+   * Evidence from the last probe. `status` keeps the distinctions
+   * `NodeStatus` collapses (a timeout is not an absence), and the remaining
+   * fields say *what* was measured — the file that answered and the package
+   * that installed it — so the UI can show provenance instead of asserting
+   * a version from nowhere.
+   */
+  probeStatus?: ProbeStatus;
+  executable?: string;
+  origin?: string;
+  package?: string;
+  manager?: string;
 }
 
 export type ActivityState = 'queued' | 'running' | 'succeeded' | 'blocked' | 'idle';
@@ -228,12 +240,37 @@ export interface EnvironmentNode {
    2. Transports — the only place side effects enter the domain
    ══════════════════════════════════════════════════════════════════ */
 
+/**
+ * The distinct conclusions a probe can reach. `present` alone cannot carry
+ * them: a tool that timed out and a tool that is genuinely absent are both
+ * "not present", and only one of them should be reported as not installed.
+ */
+export type ProbeStatus =
+  | 'verified'
+  | 'unverified'
+  | 'not-found'
+  | 'failed'
+  | 'timeout'
+  | 'blocked'
+  | 'internal'
+  | 'needs-auth'
+  | 'unsupported';
+
 export interface ProbeResult {
   present: boolean;
   version?: string;
   latencyMs?: number;
   /** Why the probe concluded what it concluded. Shown verbatim to users. */
   detail: string;
+  /** Present on results from the Python backend; absent from older fakes. */
+  status?: ProbeStatus;
+  /** The file that was actually run, so a PATH surprise is visible. */
+  executable?: string;
+  exitCode?: number;
+  /** Which package installed that file, when one can be named. */
+  origin?: string;
+  package?: string;
+  manager?: string;
 }
 
 /**

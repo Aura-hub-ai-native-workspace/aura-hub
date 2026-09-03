@@ -1519,20 +1519,54 @@ async def automation_validate_route(request: Request):
     return JSONResponse({"issues": validate_rule(body)})
 
 
+async def _environment_body(request: Request) -> dict:
+    """Parse an /environment request body defensively.
+
+    A malformed payload is a client mistake, not a server fault: it must not
+    surface as an unhandled JSONDecodeError and a 500.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _environment_ids(raw: object) -> list[str] | None:
+    """Validate the optional `ids` filter.
+
+    Anything that is not a list of non-empty strings is treated as "no
+    filter" rather than being passed through to a membership test that would
+    do substring matching on a bare string, or raise on an int.
+    """
+    if not isinstance(raw, list):
+        return None
+    ids = [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    return ids or None
+
+
 async def environment_scan(request: Request):
     """Scan the machine for known catalog nodes.
 
     POST /environment/scan
     Body: { ids?: string[], refresh?: boolean }
-    Returns: { results: Record<string, ProbeResult>, scannedAt: string, found: number }
+    Returns: { results, scannedAt, found, discovered, packages, osPackages, ... }
+
+    The scan runs subprocesses for many seconds. It is handed to a worker
+    thread so the event loop keeps serving every other route while it does;
+    `scan_environment` itself collapses concurrent identical scans into one.
     """
+    import anyio.to_thread
+
     from ..environment import scan_environment, scan_result_to_dict
 
-    body = await request.json()
-    node_ids = body.get("ids")
+    body = await _environment_body(request)
+    node_ids = _environment_ids(body.get("ids"))
     refresh = bool(body.get("refresh", False))
-    result = scan_environment(node_ids=node_ids if node_ids else None, refresh=refresh)
-    return JSONResponse(scan_result_to_dict(result))
+    result = await anyio.to_thread.run_sync(
+        lambda: scan_result_to_dict(scan_environment(node_ids=node_ids, refresh=refresh))
+    )
+    return JSONResponse(result)
 
 
 async def environment_probe(request: Request):
@@ -1542,14 +1576,16 @@ async def environment_probe(request: Request):
     Body: { id: string, refresh?: boolean }
     Returns: { result?: ProbeResult }
     """
+    import anyio.to_thread
+
     from ..environment import probe_node, probe_result_to_dict
 
-    body = await request.json()
+    body = await _environment_body(request)
     node_id = str(body.get("id") or "").strip()
     if not node_id:
-        return JSONResponse({"result": {"present": False, "detail": "No node id was provided."}})
+        return JSONResponse({"result": {"present": False, "status": "unsupported", "detail": "No node id was provided."}})
     refresh = bool(body.get("refresh", False))
-    result = probe_node(node_id, refresh=refresh)
+    result = await anyio.to_thread.run_sync(lambda: probe_node(node_id, refresh=refresh))
     return JSONResponse({"result": probe_result_to_dict(result)})
 
 
@@ -1570,7 +1606,7 @@ async def environment_install(request: Request):
     from ..environment import catalog_entry, is_plan, plan_install, probe_node, probe_result_to_dict
     from ..exec_ import INSTALL_TIMEOUT_MS, resolve_installer_binary
 
-    body = await request.json()
+    body = await _environment_body(request)
     node_id = str(body.get("id") or body.get("nodeId") or "").strip()
     if not node_id:
         return JSONResponse({"error": "No node id was provided.", "installOutcome": "failed", "detail": "No node id was provided."}, status_code=400)
@@ -1722,7 +1758,7 @@ async def environment_connect(request: Request):
     """
     from ..environment import catalog_entry, probe_node, probe_result_to_dict
 
-    body = await request.json()
+    body = await _environment_body(request)
     node_id = str(body.get("id") or body.get("nodeId") or "").strip()
     if not node_id:
         return JSONResponse({"error": "No node id was provided.", "connected": False}, status_code=400)

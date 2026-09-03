@@ -16,8 +16,27 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class ProbeSpec:
+    """How to ask one tool for its version.
+
+    ``fallbacks`` are alternative names or absolute paths tried, in order,
+    when ``command`` does not resolve. A single name cannot describe a tool
+    across three operating systems: Chrome is ``google-chrome`` on Linux, an
+    app bundle on macOS and an ``.exe`` under Program Files on Windows, and
+    claiming otherwise produced a guaranteed false negative on two platforms
+    out of three. Resolution stops at the first candidate that exists, so the
+    ordering is Linux-first, then macOS bundles, then Windows paths.
+
+    Environment variables in a fallback are expanded, so ``%ProgramFiles%``
+    and ``$HOME`` both work.
+    """
+
     command: str
     args: list[str]
+    fallbacks: tuple[str, ...] = ()
+
+    @property
+    def candidates(self) -> tuple[str, ...]:
+        return (self.command, *self.fallbacks)
 
 
 @dataclass(frozen=True)
@@ -170,7 +189,10 @@ DEVELOPMENT: list[CatalogEntry] = [
         maintained=True,
         summary="Opens files, folders and diffs in the editor.",
         homepage="https://code.visualstudio.com",
-        probe=ProbeSpec("code", ["--version"]),
+        probe=ProbeSpec("code", ["--version"], fallbacks=(
+            "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
+            "%LOCALAPPDATA%/Programs/Microsoft VS Code/bin/code.cmd",
+        )),
     ),
     CatalogEntry(
         id="cursor",
@@ -184,7 +206,10 @@ DEVELOPMENT: list[CatalogEntry] = [
         maintained=True,
         summary="AI-native editor with in-repo code generation.",
         homepage="https://cursor.com",
-        probe=ProbeSpec("cursor", ["--version"]),
+        probe=ProbeSpec("cursor", ["--version"], fallbacks=(
+            "/Applications/Cursor.app/Contents/Resources/app/bin/cursor",
+            "%LOCALAPPDATA%/Programs/cursor/resources/app/bin/cursor.cmd",
+        )),
     ),
     CatalogEntry(
         id="claude-code",
@@ -314,7 +339,7 @@ DEVELOPMENT: list[CatalogEntry] = [
         maintained=True,
         summary="Cross-platform object shell.",
         homepage="https://microsoft.com/powershell",
-        probe=ProbeSpec("pwsh", ["--version"]),
+        probe=ProbeSpec("pwsh", ["--version"], fallbacks=("powershell",)),
     ),
     CatalogEntry(
         id="node",
@@ -342,7 +367,9 @@ DEVELOPMENT: list[CatalogEntry] = [
         maintained=True,
         summary="Python interpreter.",
         homepage="https://python.org",
-        probe=ProbeSpec("python3", ["--version"]),
+        # `python3` on Windows is often the Store stub, which opens a GUI
+        # instead of printing a version; `python` is the real interpreter.
+        probe=ProbeSpec("python3", ["--version"], fallbacks=("python",)),
     ),
     CatalogEntry(
         id="go",
@@ -427,7 +454,10 @@ DEVELOPMENT: list[CatalogEntry] = [
         maintained=True,
         summary="Builds and runs containers locally.",
         homepage="https://docker.com",
-        probe=ProbeSpec("docker", ["--version"]),
+        probe=ProbeSpec("docker", ["--version"], fallbacks=(
+            "/usr/local/bin/docker",
+            "/Applications/Docker.app/Contents/Resources/bin/docker",
+        )),
         install=InstallSpec("system-package", "docker.io", "root", distro={"debian": "docker.io", "ubuntu": "docker.io", "fedora": "docker", "arch": "docker"}),
     ),
     CatalogEntry(
@@ -474,6 +504,34 @@ DEVELOPMENT: list[CatalogEntry] = [
         probe=ProbeSpec("terraform", ["--version"]),
         install=InstallSpec("system-package", "terraform", "root"),
     ),
+    CatalogEntry(
+        id="flutter",
+        name="Flutter",
+        category="development",
+        capabilities=["mobile-build", "language-runtime"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Cross-platform application toolkit.",
+        homepage="https://flutter.dev",
+        probe=ProbeSpec("flutter", ["--version"]),
+    ),
+    CatalogEntry(
+        id="xcode",
+        name="Xcode",
+        category="development",
+        capabilities=["mobile-build"],
+        transport="local-process",
+        auth="none",
+        license="free-tier",
+        cross_platform=False,
+        maintained=True,
+        summary="Apple platform build toolchain.",
+        homepage="https://developer.apple.com/xcode",
+        probe=ProbeSpec("xcodebuild", ["-version"]),
+    ),
 ]
 
 CLOUD: list[CatalogEntry] = [
@@ -504,6 +562,12 @@ CLOUD: list[CatalogEntry] = [
         maintained=True,
         summary="Static and edge-function hosting.",
         homepage="https://netlify.com",
+        # ENV-008: Netlify had no ProbeSpec at all, so it was excluded from
+        # entries_for_scan() *and* from the not-installed view — a supported
+        # capability that existed nowhere in the API response. The CLI
+        # installs both `netlify` and the `ntl` alias.
+        probe=ProbeSpec("netlify", ["--version"], fallbacks=("ntl",)),
+        install=InstallSpec("npm-global", "netlify-cli", "user"),
     ),
     CatalogEntry(
         id="cloudflare",
@@ -618,6 +682,120 @@ CLOUD: list[CatalogEntry] = [
         homepage="https://redis.io",
         probe=ProbeSpec("redis-cli", ["--version"]),
     ),
+    CatalogEntry(
+        id="fly",
+        name="Fly.io",
+        category="cloud",
+        capabilities=["app-hosting", "virtual-machine"],
+        transport="local-process",
+        auth="cli-session",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Runs containers close to users.",
+        homepage="https://fly.io",
+        probe=ProbeSpec("flyctl", ["version"], fallbacks=("fly",)),
+    ),
+    CatalogEntry(
+        id="railway",
+        name="Railway",
+        category="cloud",
+        capabilities=["app-hosting", "sql-database"],
+        transport="local-process",
+        auth="cli-session",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Deploys apps and managed databases from a repository.",
+        homepage="https://railway.app",
+        probe=ProbeSpec("railway", ["--version"]),
+        install=InstallSpec("npm-global", "@railway/cli", "user"),
+    ),
+    CatalogEntry(
+        id="digitalocean",
+        name="DigitalOcean",
+        category="cloud",
+        capabilities=["virtual-machine", "app-hosting", "object-storage"],
+        transport="local-process",
+        auth="cli-session",
+        license="commercial",
+        cross_platform=True,
+        maintained=True,
+        summary="Droplets, App Platform and Spaces.",
+        homepage="https://digitalocean.com",
+        probe=ProbeSpec("doctl", ["version"]),
+    ),
+    CatalogEntry(
+        id="heroku",
+        name="Heroku",
+        category="cloud",
+        capabilities=["app-hosting", "sql-database"],
+        transport="local-process",
+        auth="cli-session",
+        license="commercial",
+        cross_platform=True,
+        maintained=True,
+        summary="Git-push application hosting.",
+        homepage="https://heroku.com",
+        probe=ProbeSpec("heroku", ["--version"]),
+    ),
+    CatalogEntry(
+        id="planetscale",
+        name="PlanetScale",
+        category="cloud",
+        capabilities=["sql-database"],
+        transport="local-process",
+        auth="cli-session",
+        license="commercial",
+        cross_platform=True,
+        maintained=True,
+        summary="Managed MySQL with branching.",
+        homepage="https://planetscale.com",
+        probe=ProbeSpec("pscale", ["--version"]),
+    ),
+    CatalogEntry(
+        id="neon",
+        name="Neon",
+        category="cloud",
+        capabilities=["sql-database"],
+        transport="local-process",
+        auth="cli-session",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Serverless Postgres with branching.",
+        homepage="https://neon.tech",
+        probe=ProbeSpec("neonctl", ["--version"]),
+        install=InstallSpec("npm-global", "neonctl", "user"),
+    ),
+    CatalogEntry(
+        id="mongodb-atlas",
+        name="MongoDB Atlas",
+        category="cloud",
+        capabilities=["nosql-database"],
+        transport="local-process",
+        auth="cli-session",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Managed MongoDB clusters.",
+        homepage="https://mongodb.com/atlas",
+        probe=ProbeSpec("atlas", ["version"]),
+    ),
+    CatalogEntry(
+        id="mongodb-shell",
+        name="MongoDB Shell",
+        category="cloud",
+        capabilities=["nosql-database"],
+        transport="local-process",
+        auth="none",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Queries and administers MongoDB deployments.",
+        homepage="https://mongodb.com/docs/mongodb-shell",
+        probe=ProbeSpec("mongosh", ["--version"]),
+    ),
 ]
 
 BROWSER: list[CatalogEntry] = [
@@ -647,7 +825,11 @@ BROWSER: list[CatalogEntry] = [
         maintained=True,
         summary="Open-source browser core.",
         homepage="https://chromium.org",
-        probe=ProbeSpec("chromium", ["--version"]),
+        probe=ProbeSpec("chromium", ["--version"], fallbacks=(
+            "chromium-browser",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "%ProgramFiles%/Chromium/Application/chrome.exe",
+        )),
     ),
     CatalogEntry(
         id="chrome",
@@ -661,7 +843,12 @@ BROWSER: list[CatalogEntry] = [
         maintained=True,
         summary="Opens URLs and developer tooling.",
         homepage="https://google.com/chrome",
-        probe=ProbeSpec("google-chrome", ["--version"]),
+        probe=ProbeSpec("google-chrome", ["--version"], fallbacks=(
+            "google-chrome-stable",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "%ProgramFiles%/Google/Chrome/Application/chrome.exe",
+            "%ProgramFiles(x86)%/Google/Chrome/Application/chrome.exe",
+        )),
     ),
     CatalogEntry(
         id="firefox",
@@ -675,7 +862,10 @@ BROWSER: list[CatalogEntry] = [
         maintained=True,
         summary="Open-source browser.",
         homepage="https://mozilla.org/firefox",
-        probe=ProbeSpec("firefox", ["--version"]),
+        probe=ProbeSpec("firefox", ["--version"], fallbacks=(
+            "/Applications/Firefox.app/Contents/MacOS/firefox",
+            "%ProgramFiles%/Mozilla Firefox/firefox.exe",
+        )),
     ),
     CatalogEntry(
         id="sqlite",
@@ -719,9 +909,109 @@ BROWSER: list[CatalogEntry] = [
         homepage="https://openjdk.org",
         probe=ProbeSpec("java", ["-version"]),
     ),
+    CatalogEntry(
+        id="brave",
+        name="Brave",
+        category="browser",
+        capabilities=["browser"],
+        transport="local-process",
+        auth="none",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Privacy-focused browser.",
+        homepage="https://brave.com",
+        probe=ProbeSpec("brave-browser", ["--version"], fallbacks=(
+            "brave",
+            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+            "%ProgramFiles%/BraveSoftware/Brave-Browser/Application/brave.exe",
+        )),
+    ),
+    CatalogEntry(
+        id="edge",
+        name="Microsoft Edge",
+        category="browser",
+        capabilities=["browser"],
+        transport="local-process",
+        auth="none",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Chromium-based browser.",
+        homepage="https://microsoft.com/edge",
+        probe=ProbeSpec("microsoft-edge", ["--version"], fallbacks=(
+            "msedge",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "%ProgramFiles(x86)%/Microsoft/Edge/Application/msedge.exe",
+        )),
+    ),
+    CatalogEntry(
+        id="playwright",
+        name="Playwright",
+        category="browser",
+        capabilities=["browser-automation", "testing-framework"],
+        transport="local-process",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Cross-browser automation and end-to-end testing.",
+        homepage="https://playwright.dev",
+        probe=ProbeSpec("playwright", ["--version"]),
+        install=InstallSpec("npm-global", "playwright", "user"),
+    ),
 ]
 
-ALL: list[CatalogEntry] = HUB + DEVELOPMENT + CLOUD + BROWSER
+
+# Locally hosted model servers. These are HTTP nodes: the only dependable
+# way to know whether one is usable is to ask it, and the endpoint is always
+# loopback so a scan never becomes an outbound request.
+AI: list[CatalogEntry] = [
+    CatalogEntry(
+        id="ollama",
+        name="Ollama",
+        category="ai",
+        capabilities=["local-llm", "embeddings"],
+        transport="http",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Runs open models on this machine.",
+        homepage="https://ollama.com",
+        endpoint="http://127.0.0.1:11434/api/version",
+    ),
+    CatalogEntry(
+        id="lm-studio",
+        name="LM Studio",
+        category="ai",
+        capabilities=["local-llm"],
+        transport="http",
+        auth="none",
+        license="free-tier",
+        cross_platform=True,
+        maintained=True,
+        summary="Local model server with an OpenAI-compatible API.",
+        homepage="https://lmstudio.ai",
+        endpoint="http://127.0.0.1:1234/v1/models",
+    ),
+    CatalogEntry(
+        id="anythingllm",
+        name="AnythingLLM",
+        category="ai",
+        capabilities=["local-llm", "vector-store"],
+        transport="http",
+        auth="none",
+        license="open-source",
+        cross_platform=True,
+        maintained=True,
+        summary="Local retrieval-augmented workspace.",
+        homepage="https://anythingllm.com",
+        endpoint="http://127.0.0.1:3001/api/ping",
+    ),
+]
+
+ALL: list[CatalogEntry] = HUB + DEVELOPMENT + CLOUD + AI + BROWSER
 
 BY_ID: dict[str, CatalogEntry] = {e.id: e for e in ALL}
 

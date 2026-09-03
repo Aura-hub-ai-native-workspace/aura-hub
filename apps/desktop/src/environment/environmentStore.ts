@@ -33,7 +33,16 @@ import {
   type EnvironmentNode,
   type NodePermissions,
 } from '@aura/connected-environment';
-import { environmentClient, type InstallResponse } from './environmentClient';
+import {
+  environmentClient,
+  type DiscoveredTool,
+  type DiscoveryMeta,
+  type InstallResponse,
+  type InventoryMeta,
+  type NotInstalledNode,
+  type OsPackage,
+  type PackageEvidence,
+} from './environmentClient';
 import type { InvocationResultView } from '../ai/fabricClient';
 
 interface EnvironmentState {
@@ -43,6 +52,17 @@ interface EnvironmentState {
   lastScanAt: string | null;
   /** Node ids with a connect/disconnect/install in flight. */
   busy: string[];
+  /** Discovered unknown tools (PATH-based, honest) */
+  discovered: DiscoveredTool[];
+  packages: PackageEvidence[];
+  osPackages: OsPackage[];
+  notInstalled: NotInstalledNode[];
+  /** How complete each layer is, so the UI can say so out loud. */
+  discoveryMeta: DiscoveryMeta | null;
+  packageSources: InventoryMeta[];
+  osInventory: InventoryMeta | null;
+  /** Set when the last scan could not measure anything. */
+  scanError: string | null;
 
   scan: (refresh?: boolean) => Promise<void>;
   connect: (id: string) => Promise<void>;
@@ -59,18 +79,44 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   scanning: false,
   lastScanAt: null,
   busy: [],
+  discovered: [],
+  packages: [],
+  osPackages: [],
+  notInstalled: [],
+  discoveryMeta: null,
+  packageSources: [],
+  osInventory: null,
+  scanError: null,
 
   scan: async (refresh = false) => {
     if (get().scanning) return;
-    set({ scanning: true });
-    const response = await environmentClient.scan(undefined, refresh);
+    set({ scanning: true, scanError: null });
+    const outcome = await environmentClient.scan(undefined, refresh);
+
+    if (!outcome.ok) {
+      // Nothing was measured. Whatever is on screen stays — it is the last
+      // thing we actually knew — but `lastScanAt` must not advance, because
+      // moving it would date stale readings to this moment.
+      set({ scanning: false, scanError: outcome.reason });
+      return;
+    }
+
+    const response = outcome.response;
     set((s) => ({
       nodes: s.nodes.map((node) => {
         const result = response.results[node.id];
         return result ? applyProbe(node, result) : node;
       }),
       scanning: false,
+      scanError: null,
       lastScanAt: response.scannedAt,
+      discovered: response.discovered ?? [],
+      packages: response.packages ?? [],
+      osPackages: response.osPackages ?? [],
+      notInstalled: response.notInstalled ?? [],
+      discoveryMeta: response.discovery ?? null,
+      packageSources: response.packageSources ?? [],
+      osInventory: response.osInventory ?? null,
     }));
   },
 
@@ -269,4 +315,307 @@ export function useCapabilityGaps(required: CapabilityRequirement[]): Capability
   // `key` collapses the requirement list to a primitive so a caller passing
   // a freshly-built array each render does not re-run the scan.
   return useMemo(() => findGaps(required, nodes), [key, nodes]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
+export type InventoryStatus = 'verified' | 'unverified' | 'degraded';
+
+export interface InventoryItem {
+  id: string;
+  logicalId: string;
+  name: string;
+  version: string | null;
+  category: string;
+  status: InventoryStatus;
+  verified: boolean;
+  present: boolean;
+  executable: string | null;
+  realPath: string | null;
+  /** How it got here: npm-global, pipx, cargo, venv, os-package, unknown. */
+  origin: string | null;
+  packageId: string | null;
+  manager: string | null;
+  /** Other command names for the same tool. */
+  aliases: string[];
+  sources: string[];
+  detail: string;
+  /** True when AURA deliberately did not run it (no provenance, or unsafe). */
+  unexecuted: boolean;
+  homepage?: string;
+  catalogId?: string;
+  connected?: boolean;
+  packageEvidence?: PackageEvidence | null;
+}
+
+export interface NormalizedInventory {
+  /** PRIMARY: every usable tool — one card per logical tool. */
+  verified: InventoryItem[];
+  /** Present on disk, but AURA cannot vouch for it. */
+  unverified: InventoryItem[];
+  /** Catalogued, measured, genuinely absent. */
+  knownNotInstalled: NotInstalledNode[];
+  /** A package with no executable AURA could match. Evidence, not inventory. */
+  packageOnly: InventoryItem[];
+  osEvidence: OsPackage[];
+  counts: {
+    verified: number;
+    unverified: number;
+    knownNotInstalled: number;
+    packageOnly: number;
+    os: number;
+    totalReal: number;
+  };
+  /** How complete this picture is. Never implied — always stated. */
+  meta: {
+    discovery: DiscoveryMeta | null;
+    packageSources: InventoryMeta[];
+    osInventory: InventoryMeta | null;
+  };
+}
+
+/**
+ * Identity keys for one tool, strongest first.
+ *
+ * Deduplication used to be a lowercase-name match, which both split one tool
+ * across several cards (`wrangler`/`wrangler2`/`cf-wrangler`) and risked
+ * merging two unrelated tools that happened to share a name. The backend now
+ * reports the resolved file and the owning package, so identity is a fact
+ * rather than a guess: the same file, or the same package, is the same tool —
+ * and nothing else is.
+ */
+function identityKeys(item: {
+  realPath?: string | null;
+  manager?: string | null;
+  packageId?: string | null;
+}): string[] {
+  const keys: string[] = [];
+  if (item.realPath) keys.push(`path:${item.realPath}`);
+  if (item.manager && item.packageId) keys.push(`pkg:${item.manager}/${item.packageId}`);
+  return keys;
+}
+
+/** Register every identity an item answers to, without clobbering earlier claims. */
+function claim(index: Map<string, InventoryItem>, item: InventoryItem): void {
+  for (const key of identityKeys(item)) {
+    if (!index.has(key)) index.set(key, item);
+  }
+}
+
+function findExisting(
+  index: Map<string, InventoryItem>,
+  candidate: { realPath?: string | null; manager?: string | null; packageId?: string | null },
+): InventoryItem | undefined {
+  for (const key of identityKeys(candidate)) {
+    const hit = index.get(key);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+function mergeAliases(target: InventoryItem, names: string[]): void {
+  for (const name of names) {
+    if (name && name !== target.name && !target.aliases.includes(name)) target.aliases.push(name);
+  }
+}
+
+export interface InventoryInputs {
+  nodes: EnvironmentNode[];
+  discovered: DiscoveredTool[];
+  packages: PackageEvidence[];
+  notInstalled: NotInstalledNode[];
+  osPackages: OsPackage[];
+  discoveryMeta: DiscoveryMeta | null;
+  packageSources: InventoryMeta[];
+  osInventory: InventoryMeta | null;
+}
+
+/**
+ * Normalized machine inventory — THE primary view model.
+ *
+ * Merges the catalog results, PATH discovery, package inventories and the
+ * not-installed view into one deduplicated list: one real tool, one card.
+ *
+ * Pure, and exported separately from the hook so the merge can be exercised
+ * directly against real backend payloads rather than only through React.
+ */
+export function normalizeInventory(input: InventoryInputs): NormalizedInventory {
+  const {
+    nodes,
+    discovered,
+    packages,
+    notInstalled,
+    osPackages,
+    discoveryMeta,
+    packageSources,
+    osInventory,
+  } = input;
+  {
+    const index = new Map<string, InventoryItem>();
+    const verified: InventoryItem[] = [];
+    const unverified: InventoryItem[] = [];
+
+    // 1. Catalog nodes AURA measured. Hub subsystems are AURA's own
+    //    capabilities, not machine inventory, and are shown separately.
+    for (const node of nodes) {
+      if (node.entry.category === 'hub') continue;
+      const usable = node.health.status === 'available' || node.health.status === 'connected';
+      const degraded = node.health.status === 'degraded';
+      if (!usable && !degraded) continue;
+
+      const item: InventoryItem = {
+        id: node.id,
+        logicalId: node.id,
+        name: node.entry.name,
+        version: node.health.version ?? null,
+        category: node.entry.category,
+        status: usable ? 'verified' : 'degraded',
+        verified: usable,
+        present: usable,
+        executable: node.health.executable ?? null,
+        realPath: node.health.executable ?? null,
+        origin: node.health.origin ?? null,
+        packageId: node.health.package ?? null,
+        manager: node.health.manager ?? null,
+        aliases: [],
+        sources: ['catalog'],
+        detail: node.health.detail,
+        unexecuted: false,
+        homepage: node.entry.homepage,
+        catalogId: node.id,
+        connected: node.connected,
+        packageEvidence: null,
+      };
+      (usable ? verified : unverified).push(item);
+      claim(index, item);
+    }
+
+    // 2. Tools found on PATH that the catalog does not describe.
+    for (const tool of discovered) {
+      const existing = findExisting(index, {
+        realPath: tool.realPath,
+        manager: tool.manager,
+        packageId: tool.package,
+      });
+      if (existing) {
+        mergeAliases(existing, [tool.name, ...tool.aliases]);
+        if (!existing.executable) existing.executable = tool.executable;
+        if (!existing.version && tool.version) existing.version = tool.version;
+        if (!existing.sources.includes('PATH')) existing.sources.push('PATH');
+        continue;
+      }
+
+      const isVerified = tool.status === 'verified';
+      const item: InventoryItem = {
+        id: tool.id,
+        logicalId: tool.realPath || tool.id,
+        name: tool.name,
+        version: tool.version ?? null,
+        category: tool.category,
+        status: isVerified ? 'verified' : tool.status === 'timeout' || tool.status === 'failed' ? 'degraded' : 'unverified',
+        verified: isVerified,
+        present: isVerified,
+        executable: tool.executable,
+        realPath: tool.realPath,
+        origin: tool.origin,
+        packageId: tool.package ?? null,
+        manager: tool.manager ?? null,
+        aliases: [...tool.aliases],
+        sources: tool.manager ? ['PATH', tool.manager] : ['PATH'],
+        detail: tool.detail,
+        unexecuted: !tool.executed,
+        connected: false,
+        packageEvidence: null,
+      };
+      (isVerified ? verified : unverified).push(item);
+      claim(index, item);
+    }
+
+    // 3. Attach package evidence by exact identity.
+    const claimedPackages = new Set<string>();
+    for (const pkg of packages) {
+      const match = findExisting(index, { manager: pkg.manager, packageId: pkg.package });
+      if (!match) continue;
+      claimedPackages.add(`${pkg.manager}/${pkg.package}`);
+      if (!match.packageEvidence) match.packageEvidence = pkg;
+      if (!match.sources.includes(pkg.manager)) match.sources.push(pkg.manager);
+      if (!match.version && pkg.version) match.version = pkg.version;
+    }
+
+    // 4. Packages whose executable AURA never matched. Evidence, not inventory.
+    const packageOnly: InventoryItem[] = packages
+      .filter((p) => !claimedPackages.has(`${p.manager}/${p.package}`))
+      .map((p) => ({
+        id: `pkg:${p.manager}:${p.package}`,
+        logicalId: `pkg:${p.manager}:${p.package}`,
+        name: p.package,
+        version: p.version ?? null,
+        category: 'package',
+        status: 'unverified' as const,
+        verified: false,
+        present: false,
+        executable: p.executable ?? null,
+        realPath: null,
+        origin: p.manager,
+        packageId: p.package,
+        manager: p.manager,
+        aliases: [],
+        sources: [p.manager],
+        detail: `Installed by ${p.manager}, but AURA did not match it to a command on PATH.`,
+        unexecuted: true,
+        connected: false,
+        packageEvidence: p,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const byName = (a: InventoryItem, b: InventoryItem) => a.name.localeCompare(b.name);
+    verified.sort(byName);
+    unverified.sort(byName);
+
+    return {
+      verified,
+      unverified,
+      knownNotInstalled: notInstalled,
+      packageOnly,
+      osEvidence: osPackages,
+      counts: {
+        verified: verified.length,
+        unverified: unverified.length,
+        knownNotInstalled: notInstalled.length,
+        packageOnly: packageOnly.length,
+        os: osPackages.length,
+        totalReal: verified.length + unverified.length,
+      },
+      meta: { discovery: discoveryMeta, packageSources, osInventory },
+    };
+  }
+}
+
+export function useNormalizedInventory(): NormalizedInventory {
+  const nodes = useEnvironmentStore((s) => s.nodes);
+  const discovered = useEnvironmentStore((s) => s.discovered);
+  const packages = useEnvironmentStore((s) => s.packages);
+  const notInstalled = useEnvironmentStore((s) => s.notInstalled);
+  const osPackages = useEnvironmentStore((s) => s.osPackages);
+  const discoveryMeta = useEnvironmentStore((s) => s.discoveryMeta);
+  const packageSources = useEnvironmentStore((s) => s.packageSources);
+  const osInventory = useEnvironmentStore((s) => s.osInventory);
+
+  return useMemo(
+    () =>
+      normalizeInventory({
+        nodes,
+        discovered,
+        packages,
+        notInstalled,
+        osPackages,
+        discoveryMeta,
+        packageSources,
+        osInventory,
+      }),
+    [nodes, discovered, packages, notInstalled, osPackages, discoveryMeta, packageSources, osInventory],
+  );
+}
+
+// Back-compat: verified list alone (used by older UI if any)
+export function useMachineInventory(): InventoryItem[] {
+  return useNormalizedInventory().verified;
 }

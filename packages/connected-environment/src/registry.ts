@@ -100,6 +100,14 @@ export function createEnvironment(): EnvironmentNode[] {
  */
 export function statusFromProbe(entry: CatalogEntry, result: ProbeResult): NodeStatus {
   if (!result.present) {
+    // A probe that timed out, was refused, or failed to run says nothing
+    // about whether the tool is installed. Reporting those as
+    // `not-installed` is a confident wrong answer; `degraded` keeps the
+    // node visible and honest about what was actually observed.
+    if (result.status === 'timeout' || result.status === 'failed' || result.status === 'blocked') {
+      return 'degraded';
+    }
+    if (result.status === 'needs-auth') return 'needs-auth';
     if (entry.transport === 'http') return 'not-installed';
     if (entry.auth === 'oauth' || entry.auth === 'api-key') return 'needs-auth';
     return 'not-installed';
@@ -121,6 +129,11 @@ export function applyProbe(node: EnvironmentNode, result: ProbeResult): Environm
     version: result.version ?? node.health.version,
     latencyMs: result.latencyMs,
     checkedAt: new Date().toISOString(),
+    probeStatus: result.status,
+    executable: result.executable,
+    origin: result.origin,
+    package: result.package,
+    manager: result.manager,
   };
   return {
     ...node,
@@ -207,20 +220,33 @@ export function connectedProviders(nodes: EnvironmentNode[], capability: Capabil
   return nodes.filter((n) => n.connected && n.entry.capabilities.includes(capability));
 }
 
-/** A one-line summary for the environment header. */
+/**
+ * A one-line summary for the environment header.
+ *
+ * AURA's own subsystems are always connected and always present, so folding
+ * them into `connected` reported five nodes on a machine with nothing
+ * attached. They are counted as `internal` instead, and the machine numbers
+ * describe the machine.
+ */
 export function environmentSummary(nodes: EnvironmentNode[]): {
   connected: number;
   available: number;
   catalogued: number;
   running: number;
+  internal: number;
 } {
   let connected = 0;
   let available = 0;
   let running = 0;
+  let internal = 0;
   for (const n of nodes) {
+    running += n.activity.filter((a) => a.state === 'running').length;
+    if (n.entry.category === 'hub' || n.entry.transport === 'internal') {
+      internal += 1;
+      continue;
+    }
     if (n.connected) connected += 1;
     else if (n.health.status === 'available') available += 1;
-    running += n.activity.filter((a) => a.state === 'running').length;
   }
-  return { connected, available, catalogued: nodes.length, running };
+  return { connected, available, catalogued: nodes.length - internal, running, internal };
 }

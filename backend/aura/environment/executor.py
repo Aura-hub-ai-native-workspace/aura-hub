@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
+import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +25,32 @@ from ..exec_ import INSTALL_TIMEOUT_MS, resolve_installer_binary
 from .catalog import catalog_entry
 from .install import is_plan, plan_install
 from .probe import probe_node
+
+
+def _process_group_kwargs() -> dict[str, Any]:
+    """Put the installer in its own group so the whole tree can be stopped."""
+    if sys.platform == "win32":  # pragma: no cover - Windows only
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _terminate_tree(proc: "asyncio.subprocess.Process") -> None:
+    """Stop the installer and everything it spawned."""
+    if proc.returncode is not None:
+        return
+    if sys.platform == "win32":  # pragma: no cover - Windows only
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except Exception:
+            pass
 
 
 @dataclass
@@ -82,8 +111,13 @@ async def system_install_executor(invocation: dict) -> dict:
             plan.bin,
             *plan.args,
             cwd=os.environ.get("HOME", "/"),
+            # An installer must never block waiting for a confirmation
+            # nobody is there to give, and must never reach the operator's
+            # terminal to ask for one.
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **_process_group_kwargs(),
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -91,7 +125,9 @@ async def system_install_executor(invocation: dict) -> dict:
             )
             exit_code = proc.returncode
         except asyncio.TimeoutError:
-            proc.kill()
+            # Package managers fan out into child processes; killing only the
+            # one we launched leaves those running against the same prefix.
+            _terminate_tree(proc)
             await proc.wait()
             result = InstallResult(
                 install_outcome="failed",

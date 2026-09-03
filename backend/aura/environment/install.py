@@ -21,14 +21,10 @@ from __future__ import annotations
 
 import os
 import platform
-import subprocess
 from dataclasses import dataclass
 from typing import Any
 
 from .catalog import CatalogEntry, InstallSpec
-
-INSTALLER_BINARIES = frozenset(["npm", "pipx", "cargo", "gh"])
-
 
 INSTALLER_BINARIES = frozenset(["npm", "pipx", "cargo", "gh"])
 
@@ -74,33 +70,22 @@ def _writable_with_ancestors(target: str) -> bool:
 
 
 def _npm_global_root() -> str | None:
+    """Where ``npm -g`` installs packages.
+
+    Delegated to :func:`aura.environment.provenance.npm_global_prefix`, which reads
+    npm's config precedence properly. Resolving this from where the ``npm``
+    binary happens to live indexes the wrong tree whenever a user npmrc
+    redirects the prefix, which is the common case for a per-user setup.
+    """
     try:
-        import shutil
-        npm_bin = shutil.which("npm")
-        if npm_bin is None:
-            # Fallback to common locations
-            for cand in [
-                os.path.join(os.path.expanduser("~"), ".npm-global/bin/npm"),
-                "/usr/local/bin/npm",
-                "/usr/bin/npm",
-            ]:
-                if os.path.exists(cand):
-                    npm_bin = cand
-                    break
-        if npm_bin is None:
-            npm_bin = "npm"
-        result = subprocess.run(
-            [npm_bin, "config", "get", "prefix"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        prefix = result.stdout.strip()
-        if prefix and prefix != "undefined":
-            if platform.system() == "Windows":
-                return os.path.join(prefix, "node_modules")
-            return os.path.join(prefix, "lib", "node_modules")
-        return None
+        from .provenance import npm_global_prefix
+
+        prefix = npm_global_prefix()
+        if prefix is None:
+            return None
+        if platform.system() == "Windows":
+            return os.path.join(str(prefix), "node_modules")
+        return os.path.join(str(prefix), "lib", "node_modules")
     except Exception:
         return None
 
