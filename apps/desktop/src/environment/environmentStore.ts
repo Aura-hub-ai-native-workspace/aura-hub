@@ -334,8 +334,13 @@ export interface InventoryItem {
   origin: string | null;
   packageId: string | null;
   manager: string | null;
+  /** What the package manager claims, when it differs from the executable. */
+  packageVersion: string | null;
+  versionConflict: boolean;
   /** Other command names for the same tool. */
   aliases: string[];
+  /** Same-named files further along PATH that this one shadows. */
+  shadowed: string[];
   sources: string[];
   detail: string;
   /** True when AURA deliberately did not run it (no provenance, or unsafe). */
@@ -475,7 +480,10 @@ export function normalizeInventory(input: InventoryInputs): NormalizedInventory 
         origin: node.health.origin ?? null,
         packageId: node.health.package ?? null,
         manager: node.health.manager ?? null,
+        packageVersion: node.health.packageVersion ?? null,
+        versionConflict: Boolean(node.health.versionConflict),
         aliases: [],
+        shadowed: [],
         sources: ['catalog'],
         detail: node.health.detail,
         unexecuted: false,
@@ -510,7 +518,11 @@ export function normalizeInventory(input: InventoryInputs): NormalizedInventory 
         name: tool.name,
         version: tool.version ?? null,
         category: tool.category,
-        status: isVerified ? 'verified' : tool.status === 'timeout' || tool.status === 'failed' ? 'degraded' : 'unverified',
+        status: isVerified
+          ? 'verified'
+          : tool.status === 'timeout' || tool.status === 'failed' || tool.status === 'tampered'
+            ? 'degraded'
+            : 'unverified',
         verified: isVerified,
         present: isVerified,
         executable: tool.executable,
@@ -518,7 +530,10 @@ export function normalizeInventory(input: InventoryInputs): NormalizedInventory 
         origin: tool.origin,
         packageId: tool.package ?? null,
         manager: tool.manager ?? null,
+        packageVersion: tool.packageVersion ?? null,
+        versionConflict: Boolean(tool.versionConflict),
         aliases: [...tool.aliases],
+        shadowed: [...(tool.shadowed ?? [])],
         sources: tool.manager ? ['PATH', tool.manager] : ['PATH'],
         detail: tool.detail,
         unexecuted: !tool.executed,
@@ -557,7 +572,10 @@ export function normalizeInventory(input: InventoryInputs): NormalizedInventory 
         origin: p.manager,
         packageId: p.package,
         manager: p.manager,
+        packageVersion: p.version ?? null,
+        versionConflict: false,
         aliases: [],
+        shadowed: [],
         sources: [p.manager],
         detail: `Installed by ${p.manager}, but AURA did not match it to a command on PATH.`,
         unexecuted: true,

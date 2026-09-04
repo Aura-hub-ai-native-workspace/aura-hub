@@ -13,6 +13,7 @@ Resources and prompts are not claimed and not implemented.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 from pathlib import Path
@@ -31,12 +32,25 @@ class StdioMcpClient:
     """One MCP server process; one client. Not thread-safe across calls."""
 
     def __init__(self, command: list[str], cwd: str | None = None,
-                 timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
+                 timeout_s: float = DEFAULT_TIMEOUT_S,
+                 env: dict[str, str] | None = None) -> None:
+        """Start one MCP server.
+
+        This transport cannot use the shared execution boundary because the
+        MCP protocol needs a live stdin pipe, which the boundary deliberately
+        refuses to provide. The other guarantees still apply: the server gets
+        a minimal environment rather than every secret in this process, and
+        anything it genuinely needs is passed explicitly by the caller.
+        """
         if not command or any(not isinstance(c, str) for c in command):
             raise McpTransportError("command must be a non-empty string list")
+        from ..environment.procexec import sanitized_env
+
         self._proc = subprocess.Popen(
             command, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, bufsize=1,
+            env=sanitized_env(extra=env),
+            start_new_session=(os.name != "nt"),
         )
         self._lock = threading.Lock()
         self._timeout = timeout_s

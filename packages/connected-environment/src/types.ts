@@ -179,6 +179,8 @@ export interface NodeHealth {
   origin?: string;
   package?: string;
   manager?: string;
+  packageVersion?: string;
+  versionConflict?: boolean;
 }
 
 export type ActivityState = 'queued' | 'running' | 'succeeded' | 'blocked' | 'idle';
@@ -252,6 +254,8 @@ export type ProbeStatus =
   | 'failed'
   | 'timeout'
   | 'blocked'
+  /** The file changed between being vetted and being run; nothing ran. */
+  | 'tampered'
   | 'internal'
   | 'needs-auth'
   | 'unsupported';
@@ -271,6 +275,10 @@ export interface ProbeResult {
   origin?: string;
   package?: string;
   manager?: string;
+  /** What the package manager claims, kept beside what the tool reported. */
+  packageVersion?: string;
+  /** The two disagree. Shown rather than silently resolved. */
+  versionConflict?: boolean;
 }
 
 /**

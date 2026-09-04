@@ -276,6 +276,12 @@ function MachineInventoryPrimary() {
             {counts.verified} verified · {counts.unverified} detected · {counts.knownNotInstalled} known not installed
             {scanning ? ' · Scanning…' : ''}
           </p>
+          {meta.discovery?.degraded && (
+            <p className="mt-1 text-[10.5px] text-attention">
+              Discovery could not run this time, so the tools below are from an earlier
+              measurement. The catalog results above are current.
+            </p>
+          )}
           {meta.discovery && (
             <p className="mt-1 text-[10.5px] text-text-subtle">
               {meta.discovery.totalCandidates} programs found across {meta.discovery.directoriesScanned} PATH
@@ -486,6 +492,22 @@ function InventoryCard({ item, compact }: { item: InventoryItem; compact?: boole
             )}
             <span className="text-[10px] text-text-subtle">{item.category}</span>
           </span>
+          {item.versionConflict && item.packageVersion && (
+            <span
+              className="mt-0.5 block text-[10px] text-attention"
+              title="The tool and its package report different versions — often a stale shim, or a second copy earlier on PATH."
+            >
+              {item.manager ?? 'package'} says {item.packageVersion}
+            </span>
+          )}
+          {item.shadowed.length > 0 && (
+            <span
+              className="mt-0.5 block truncate text-[10px] text-text-subtle"
+              title={`Also present, but shadowed on PATH: ${item.shadowed.join(', ')}`}
+            >
+              Shadows {item.shadowed.length} other cop{item.shadowed.length === 1 ? 'y' : 'ies'}
+            </span>
+          )}
           {item.aliases.length > 0 && (
             <span className="mt-0.5 block truncate text-[10px] text-text-subtle" title={item.aliases.join(', ')}>
               Also: {item.aliases.join(', ')}

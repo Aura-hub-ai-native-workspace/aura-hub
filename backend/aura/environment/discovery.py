@@ -26,24 +26,24 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .hostplatform import is_windows, path_sep
+from .observability import log_refusal, redact
 from .pathsec import (
+    FileIdentity,
     LocationTrust,
     effective_path,
     location_trust,
     real_target,
     self_runtime_dirs,
 )
-from .procexec import ExecStatus, run_argv
+from .procexec import ExecOutcome, ExecStatus, run_argv
 from .provenance import Origin, Provenance, ProvenanceIndex, build_index
-
-IS_WINDOWS = sys.platform == "win32"
 
 #: How many trusted candidates may be executed in one scan.
 MAX_UNKNOWN_PROBE = 60
@@ -128,6 +128,9 @@ class ToolStatus(str, Enum):
     BLOCKED = "blocked"
     """Deliberately not executed. ``detail`` says why."""
 
+    TAMPERED = "tampered"
+    """The file changed between being vetted and being run. Nothing ran."""
+
 
 @dataclass
 class DiscoveredTool:
@@ -145,9 +148,26 @@ class DiscoveredTool:
     origin: str
     package: str | None = None
     manager: str | None = None
+    #: The package manager's own claim, kept beside the executable's.
+    package_version: str | None = None
     probe_command: str | None = None
     aliases: list[str] = field(default_factory=list)
+    #: Same-named files further along PATH that this one takes precedence
+    #: over. Reported rather than listed separately: they are one command,
+    #: and only one of them can ever run.
+    shadowed: list[str] = field(default_factory=list)
     executed: bool = False
+
+    @property
+    def version_conflict(self) -> bool:
+        """The executable and its package disagree about what is installed.
+
+        Usually a stale shim, or a second copy earlier on PATH. Reporting it
+        is more useful than quietly preferring one number.
+        """
+        if not self.version or not self.package_version:
+            return False
+        return self.version.strip().lstrip("vV") != self.package_version.strip().lstrip("vV")
 
 
 @dataclass
@@ -174,7 +194,14 @@ class _Candidate:
     provenance: Provenance
     trust: LocationTrust
     trust_reason: str
+    #: The exact file the trust decision was made about (see procexec pinning).
+    identity: FileIdentity | None = None
+    #: The version the owning package claims, read without running anything.
+    package_version: str | None = None
     aliases: set[str] = field(default_factory=set)
+    #: Other files with the same command name, further along PATH. They
+    #: exist, but this is the one the shell would actually run.
+    shadowed: list[str] = field(default_factory=list)
 
 
 _CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -230,7 +257,7 @@ def _looks_like_program(entry: Path) -> bool:
             return False
     except OSError:
         return False
-    if IS_WINDOWS:
+    if is_windows():
         return True
     try:
         return os.access(str(entry), os.X_OK)
@@ -259,7 +286,7 @@ def _list_programs(directory: Path, limit: int = MAX_PER_DIR) -> tuple[list[Path
 
 
 def _strip_windows_ext(name: str) -> str:
-    if not IS_WINDOWS:
+    if not is_windows():
         return name
     stem, ext = os.path.splitext(name)
     if ext.lower() in (".exe", ".cmd", ".bat", ".com", ".ps1"):
@@ -285,11 +312,18 @@ _PRINTABLE = re.compile(r"[\x20-\x7e]")
 _MAX_VERSION_LEN = 64
 
 
+#: Enough of a line to judge it by. A banner is obvious from its opening,
+#: and sampling avoids building a per-character match list for a line that
+#: may be the full 64 KB output cap.
+_BANNER_SAMPLE = 200
+
+
 def _is_banner(line: str) -> bool:
     if len(line) < 8:
         return False
-    printable = len(_PRINTABLE.findall(line))
-    return printable / len(line) < 0.7
+    sample = line[:_BANNER_SAMPLE]
+    printable = sum(1 for char in sample if "\x20" <= char <= "\x7e")
+    return printable / len(sample) < 0.7
 
 
 def extract_version(output: str) -> str | None:
@@ -324,16 +358,31 @@ def extract_version(output: str) -> str | None:
 
 def _probe_tool(candidate: _Candidate, path: str, cwd: str) -> DiscoveredTool:
     """Run one trusted candidate's version check and interpret the result."""
-    outcome = run_argv(
-        [candidate.path, "--version"],
-        timeout_ms=UNKNOWN_TIMEOUT_MS,
-        cwd=cwd,
-        path=path,
-    )
+    def attempt() -> ExecOutcome:
+        return run_argv(
+            [candidate.path, "--version"],
+            timeout_ms=UNKNOWN_TIMEOUT_MS,
+            cwd=cwd,
+            path=path,
+            # Run the file the trust decision was actually made about.
+            pin=candidate.identity,
+        )
+
+    outcome = attempt()
+    if outcome.status is ExecStatus.FAILED:
+        # See the matching note in probe._run_probe: one cheap retry, so a
+        # tool that loses a race with itself does not flap between runs.
+        outcome = attempt()
     version = extract_version(outcome.output) if outcome.status is ExecStatus.OK else None
     name = _strip_windows_ext(candidate.name)
 
-    if outcome.status is ExecStatus.OK and version:
+    if outcome.status is ExecStatus.TAMPERED:
+        status = ToolStatus.TAMPERED
+        detail = (
+            f"{name} changed between being checked and being run, so AURA stopped "
+            "rather than trust what it printed."
+        )
+    elif outcome.status is ExecStatus.OK and version:
         status, detail = ToolStatus.VERIFIED, f"{name} {version} — {candidate.provenance.detail}."
     elif outcome.status is ExecStatus.OK:
         status = ToolStatus.UNVERIFIED
@@ -366,7 +415,9 @@ def _probe_tool(candidate: _Candidate, path: str, cwd: str) -> DiscoveredTool:
         origin=candidate.provenance.origin.value,
         package=candidate.provenance.package,
         manager=candidate.provenance.manager,
+        package_version=candidate.package_version,
         probe_command=f"{name} --version",
+        shadowed=list(candidate.shadowed),
         aliases=sorted(candidate.aliases),
         executed=True,
     )
@@ -390,7 +441,9 @@ def _unexecuted_tool(candidate: _Candidate, detail: str) -> DiscoveredTool:
         origin=candidate.provenance.origin.value,
         package=candidate.provenance.package,
         manager=candidate.provenance.manager,
+        package_version=candidate.package_version,
         probe_command=None,
+        shadowed=list(candidate.shadowed),
         aliases=sorted(candidate.aliases),
         executed=False,
     )
@@ -408,7 +461,7 @@ def _collect_candidates(
     seen_dirs: set[str] = set()
     scanned_dirs = 0
 
-    for raw in path.split(os.pathsep):
+    for raw in path.split(path_sep()):
         if not raw:
             continue
         directory = os.path.normpath(os.path.expanduser(raw))
@@ -447,13 +500,20 @@ def _collect_candidates(
                 existing.aliases.add(bare)
                 continue
             verdict = location_trust(entry)
+            provenance = index.classify(entry)
             by_real[target] = _Candidate(
                 name=bare,
                 path=str(entry),
                 real_path=target,
-                provenance=index.classify(entry),
+                provenance=provenance,
                 trust=verdict.trust,
                 trust_reason=verdict.reason,
+                identity=verdict.identity,
+                package_version=(
+                    index.package_version(provenance.manager, provenance.package)
+                    if provenance.manager and provenance.package
+                    else None
+                ),
             )
 
     return list(by_real.values()), skipped, scanned_dirs
@@ -487,6 +547,33 @@ def _primary_rank(name: str, package: str) -> tuple[int, int, str]:
         # A longer shared prefix is a closer match.
         return (2, -len(lower), lower)
     return (3, len(lower), lower)
+
+
+def _resolve_shadowing(candidates: list[_Candidate]) -> list[_Candidate]:
+    """Collapse same-named commands to the one PATH actually reaches.
+
+    Two different files can both be called ``npx``. Only the first on PATH
+    ever runs; listing the other as a second tool implies a choice the user
+    does not have. The loser is recorded on the winner as evidence, which is
+    also the fastest way to explain a surprising version.
+
+    ``candidates`` is in PATH order, so the first occurrence wins — the same
+    rule the shell applies.
+    """
+    primary: dict[str, _Candidate] = {}
+    ordered: list[_Candidate] = []
+    for candidate in candidates:
+        key = candidate.name.lower() if is_windows() else candidate.name
+        winner = primary.get(key)
+        if winner is None:
+            primary[key] = candidate
+            ordered.append(candidate)
+            continue
+        if candidate.real_path != winner.real_path:
+            winner.shadowed.append(candidate.path)
+        else:
+            winner.aliases.add(candidate.name)
+    return ordered
 
 
 def _merge_by_package(candidates: list[_Candidate]) -> list[_Candidate]:
@@ -523,6 +610,7 @@ def _merge_by_package(candidates: list[_Candidate]) -> list[_Candidate]:
 #: What survives the reporting cap first: things AURA actually established.
 _REPORT_RANK = {
     ToolStatus.VERIFIED: 0,
+    ToolStatus.TAMPERED: 0,
     ToolStatus.FAILED: 1,
     ToolStatus.TIMEOUT: 1,
     ToolStatus.BLOCKED: 2,
@@ -560,6 +648,7 @@ def discover_tools(
         {n.lower() for n in (exclude_names or set())},
         search_path,
     )
+    candidates = _resolve_shadowing(candidates)
     candidates = _merge_by_package(candidates)
 
     # A package the catalog already reports is not also an unknown tool,
@@ -579,6 +668,11 @@ def discover_tools(
     blocked: list[DiscoveredTool] = []
     for candidate in candidates:
         if candidate.trust is not LocationTrust.TRUSTED:
+            log_refusal(
+                name=candidate.name,
+                executable=candidate.path,
+                reason=candidate.trust_reason,
+            )
             blocked.append(
                 _unexecuted_tool(
                     candidate,
@@ -644,19 +738,22 @@ def discovered_to_dict(tool: DiscoveredTool) -> dict[str, Any]:
     return {
         "id": tool.id,
         "name": tool.name,
-        "executable": tool.executable,
-        "realPath": tool.real_path,
+        "executable": redact(tool.executable),
+        "realPath": redact(tool.real_path),
         "source": tool.source,
         "status": tool.status.value,
         "present": tool.present,
         "version": tool.version,
-        "detail": tool.detail,
+        "detail": redact(tool.detail),
         "latencyMs": tool.latency_ms,
         "category": tool.category,
         "origin": tool.origin,
         "package": tool.package,
         "manager": tool.manager,
+        "packageVersion": tool.package_version,
+        "versionConflict": tool.version_conflict,
         "probeCommand": tool.probe_command,
         "aliases": tool.aliases,
+        "shadowed": [redact(path) for path in tool.shadowed],
         "executed": tool.executed,
     }

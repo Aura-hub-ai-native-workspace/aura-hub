@@ -147,6 +147,214 @@ class TestExecutionCannotBeTricked:
         assert any(r.package == "broken" for r in layer.records)
 
 
+class TestTimeOfCheckTimeOfUse:
+    """Replacing the file between the trust check and the run."""
+
+    @POSIX_ONLY
+    def test_a_swapped_script_is_refused(self, tmp_path):
+        from aura.environment.pathsec import file_identity
+        from aura.environment.procexec import run_argv
+
+        script = write_script(tmp_path, "tool", 'echo "tool 1.0.0"\n')
+        pin = file_identity(script)
+
+        script.unlink()
+        write_script(tmp_path, "tool", 'echo "PWNED 9.9.9"\n')
+
+        outcome = run_argv([str(script)], timeout_ms=5000, pin=pin)
+
+        assert outcome.status is ExecStatus.TAMPERED
+        assert "PWNED" not in outcome.output
+
+    @POSIX_ONLY
+    def test_a_swapped_binary_is_refused(self, tmp_path):
+        import shutil
+
+        from aura.environment.pathsec import file_identity
+        from aura.environment.procexec import run_argv
+
+        target = tmp_path / "prog"
+        shutil.copy("/bin/echo", target)
+        pin = file_identity(target)
+
+        target.unlink()
+        shutil.copy("/bin/false", target)
+
+        outcome = run_argv([str(target), "hello"], timeout_ms=5000, pin=pin)
+        assert outcome.status is ExecStatus.TAMPERED
+
+    @POSIX_ONLY
+    def test_a_real_binary_is_pinned_not_merely_watched(self, tmp_path):
+        """On Linux a binary runs through the vetted inode itself.
+
+        `pinned` means the swap cannot take effect at all, rather than being
+        noticed afterwards. The distinction is reported so nothing overclaims.
+        """
+        import os as _os
+        import shutil
+
+        from aura.environment.pathsec import file_identity
+        from aura.environment.procexec import run_argv
+
+        if not _os.path.isdir("/proc/self/fd"):
+            pytest.skip("no /proc on this kernel")
+
+        target = tmp_path / "prog"
+        shutil.copy("/bin/echo", target)
+        outcome = run_argv([str(target), "hi"], timeout_ms=5000, pin=file_identity(target))
+
+        assert outcome.status is ExecStatus.OK
+        assert outcome.pin_mode == "pinned"
+        assert outcome.stdout.strip() == "hi"
+
+    @POSIX_ONLY
+    def test_a_script_keeps_its_own_path_so_interpreters_still_work(self, tmp_path):
+        """Pinning a `#!` script would break the interpreter that reads it.
+
+        Node resolves its modules from the path it was handed; giving it
+        `/proc/self/fd/<n>` makes it fail outright. Scripts therefore use
+        before-and-after verification, and that is what `pin_mode` says.
+        """
+        from aura.environment.pathsec import file_identity
+        from aura.environment.procexec import run_argv
+
+        script = write_script(tmp_path, "script", 'echo "$0" | grep -q proc && exit 7\necho "1.0.0"\n')
+        outcome = run_argv([str(script)], timeout_ms=5000, pin=file_identity(script))
+
+        assert outcome.status is ExecStatus.OK
+        assert outcome.pin_mode == "verified"
+        assert outcome.stdout.strip() == "1.0.0"
+
+    @POSIX_ONLY
+    def test_a_hard_link_to_a_different_file_is_still_a_different_file(self, tmp_path):
+        """A hard link shares an inode; a *new* file does not, whatever its name."""
+        from aura.environment.pathsec import file_identity
+        from aura.environment.procexec import run_argv
+
+        original = write_script(tmp_path, "orig", 'echo "1.0.0"\n')
+        pin = file_identity(original)
+
+        evil = write_script(tmp_path, "evil", 'echo "9.9.9"\n')
+        original.unlink()
+        os.link(evil, original)
+
+        assert run_argv([str(original)], timeout_ms=5000, pin=pin).status is ExecStatus.TAMPERED
+
+    @POSIX_ONLY
+    def test_the_probe_path_refuses_a_swapped_tool(self, tmp_path, monkeypatch):
+        """End to end, not just at the boundary."""
+        from aura.environment.probe import ProbeStatus
+
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        write_script(bindir, "swapme", 'echo "1.0.0"\n')
+        monkeypatch.setenv("PATH", str(bindir))
+
+        import aura.environment.probe as probe_module
+
+        real_trust = probe_module.location_trust
+
+        def trust_then_swap(path):
+            verdict = real_trust(path)
+            # Stand in for an attacker winning the race.
+            target = pathlib_Path(str(path))
+            target.unlink()
+            write_script(target.parent, target.name, 'echo "9.9.9"\n')
+            return verdict
+
+        from pathlib import Path as pathlib_Path
+
+        monkeypatch.setattr(probe_module, "location_trust", trust_then_swap)
+        result = probe_module._run_probe(entry_for("swapme"))
+
+        assert result.status is ProbeStatus.TAMPERED
+        assert result.version is None
+
+
+class TestPathPrecedence:
+    """`PATH=A:B:C` must resolve exactly the way the platform would."""
+
+    @POSIX_ONLY
+    def test_the_first_directory_wins(self, tmp_path):
+        from aura.environment.pathsec import resolve_executable
+
+        dirs = []
+        for name in ("a", "b", "c"):
+            d = tmp_path / name
+            write_script(d, "same", f'echo "{name} 1.0.0"\n')
+            dirs.append(str(d))
+
+        for index in range(3):
+            order = dirs[index:] + dirs[:index]
+            assert resolve_executable("same", os.pathsep.join(order)) == os.path.join(
+                order[0], "same"
+            )
+
+    @POSIX_ONLY
+    def test_empty_and_missing_entries_are_skipped_not_fatal(self, tmp_path):
+        from aura.environment.pathsec import resolve_executable
+
+        real = tmp_path / "real"
+        write_script(real, "here", 'echo "1.0.0"\n')
+        path = os.pathsep.join(["", str(tmp_path / "nope"), "", str(real)])
+        assert resolve_executable("here", path) == str(real / "here")
+
+    @POSIX_ONLY
+    def test_duplicate_entries_do_not_change_the_answer(self, tmp_path, monkeypatch):
+        from aura.environment.pathsec import effective_path, resolve_executable
+
+        d = tmp_path / "bin"
+        write_script(d, "dup", 'echo "1.0.0"\n')
+        monkeypatch.setenv("PATH", os.pathsep.join([str(d)] * 5))
+        assert effective_path().split(os.pathsep).count(str(d)) == 1
+        assert resolve_executable("dup") == str(d / "dup")
+
+    @POSIX_ONLY
+    def test_a_relative_path_entry_is_not_searched(self, tmp_path, monkeypatch):
+        """A relative PATH entry resolves against the working directory,
+        which is attacker-influenceable; it must not silently win."""
+        from aura.environment.pathsec import resolve_executable
+
+        monkeypatch.chdir(tmp_path)
+        write_script(tmp_path / "rel", "sneaky", 'echo "9.9.9"\n')
+        resolved = resolve_executable("sneaky", "rel")
+        # Either not found, or found at an absolute path we can reason about.
+        assert resolved is None or os.path.isabs(resolved)
+
+
+class TestVersionDisagreement:
+    """Package metadata and the executable are separate claims."""
+
+    @POSIX_ONLY
+    def test_a_mismatch_is_reported_not_silently_resolved(self, tmp_path, monkeypatch):
+        prefix = npm_prefix(tmp_path, "demo", {"demo": 'echo "demo 2.0.0"\n'}, version="1.0.0")
+        monkeypatch.setenv("npm_config_prefix", str(prefix))
+
+        report = discover_tools(build_index(), path=str(prefix / "bin"))
+        tool = next(t for t in report.tools if t.name == "demo")
+
+        assert tool.version == "2.0.0"
+        assert tool.package_version == "1.0.0"
+        assert tool.version_conflict is True
+
+    @POSIX_ONLY
+    def test_agreement_is_not_reported_as_a_conflict(self, tmp_path, monkeypatch):
+        prefix = npm_prefix(tmp_path, "demo", {"demo": 'echo "demo 1.0.0"\n'}, version="1.0.0")
+        monkeypatch.setenv("npm_config_prefix", str(prefix))
+        report = discover_tools(build_index(), path=str(prefix / "bin"))
+        tool = next(t for t in report.tools if t.name == "demo")
+        assert tool.version_conflict is False
+
+    @POSIX_ONLY
+    def test_a_v_prefix_is_not_a_conflict(self, tmp_path, monkeypatch):
+        prefix = npm_prefix(tmp_path, "demo", {"demo": 'echo "demo v1.0.0"\n'}, version="1.0.0")
+        monkeypatch.setenv("npm_config_prefix", str(prefix))
+        report = discover_tools(build_index(), path=str(prefix / "bin"))
+        tool = next(t for t in report.tools if t.name == "demo")
+        assert tool.version == "1.0.0"
+        assert tool.version_conflict is False
+
+
 class TestFilesystemHostility:
     @POSIX_ONLY
     def test_a_symlink_loop_does_not_hang_or_raise(self, tmp_path):

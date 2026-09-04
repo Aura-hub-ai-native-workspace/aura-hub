@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-IS_WINDOWS = sys.platform == "win32"
+from .hostplatform import is_macos, is_windows, path_sep
 
 #: Directories AURA appends to the inherited PATH so that tools installed by
 #: common per-user installers are still found when the backend was launched
@@ -82,13 +82,54 @@ class LocationTrust(str, Enum):
 
 
 @dataclass(frozen=True)
+class FileIdentity:
+    """Which file, exactly, a trust decision was made about.
+
+    A path is not an identity: between deciding that ``/usr/bin/foo`` is safe
+    and running it, the name can be made to point somewhere else. Carrying
+    the device and inode lets the execution boundary confirm it is running
+    the file that was actually vetted (see `procexec.run_argv(pin=...)`).
+    """
+
+    device: int
+    inode: int
+    mode: int
+    size: int
+    mtime_ns: int
+
+    @classmethod
+    def of(cls, st: os.stat_result) -> FileIdentity:
+        return cls(
+            device=st.st_dev,
+            inode=st.st_ino,
+            mode=stat.S_IMODE(st.st_mode) | stat.S_IFMT(st.st_mode),
+            size=st.st_size,
+            mtime_ns=st.st_mtime_ns,
+        )
+
+    def matches(self, other: FileIdentity | None) -> bool:
+        return other is not None and (self.device, self.inode) == (other.device, other.inode)
+
+
+@dataclass(frozen=True)
 class TrustVerdict:
     trust: LocationTrust
     reason: str = ""
+    #: The exact file this verdict describes, when one could be stat'ed.
+    identity: FileIdentity | None = None
+    #: The resolved path the verdict was reached about.
+    resolved: str | None = None
 
     @property
     def executable(self) -> bool:
         return self.trust is LocationTrust.TRUSTED
+
+
+def file_identity(path: str | os.PathLike[str]) -> FileIdentity | None:
+    try:
+        return FileIdentity.of(os.stat(path))
+    except OSError:
+        return None
 
 
 def home_dir() -> Path:
@@ -113,7 +154,7 @@ def self_runtime_dirs() -> set[str]:
     add(os.path.dirname(sys.executable))
     venv = os.environ.get("VIRTUAL_ENV")
     if venv:
-        add(os.path.join(venv, "Scripts" if IS_WINDOWS else "bin"))
+        add(os.path.join(venv, "Scripts" if is_windows() else "bin"))
     return dirs
 
 
@@ -148,7 +189,7 @@ def effective_path(*, include_extras: bool = True) -> str:
         parts.append(value)
 
     mine = self_runtime_dirs()
-    for entry in os.environ.get("PATH", "").split(os.pathsep):
+    for entry in os.environ.get("PATH", "").split(path_sep()):
         if entry and os.path.normcase(os.path.normpath(_expand(entry))) in mine:
             continue
         # Inherited entries are kept even if absent: the user put them there,
@@ -156,7 +197,7 @@ def effective_path(*, include_extras: bool = True) -> str:
         add(entry, must_exist=False)
 
     if include_extras:
-        if IS_WINDOWS:
+        if is_windows():
             for var, suffix in _EXTRA_WINDOWS_ENV:
                 base = os.environ.get(var)
                 if base:
@@ -166,11 +207,11 @@ def effective_path(*, include_extras: bool = True) -> str:
         else:
             for entry in _EXTRA_POSIX:
                 add(entry, must_exist=True)
-            if sys.platform == "darwin":
+            if is_macos():
                 for entry in _EXTRA_MACOS:
                     add(entry, must_exist=True)
 
-    return os.pathsep.join(parts)
+    return path_sep().join(parts)
 
 
 def _pathext() -> list[str]:
@@ -196,15 +237,15 @@ def resolve_executable(command: str, path: str | None = None) -> str | None:
         candidate = os.path.abspath(_expand(command))
         return candidate if _is_runnable_file(candidate) else None
 
-    exts = [""] + _pathext() if IS_WINDOWS else [""]
-    for directory in search.split(os.pathsep):
+    exts = [""] + _pathext() if is_windows() else [""]
+    for directory in search.split(path_sep()):
         if not directory:
             continue
         for ext in exts:
             candidate = os.path.join(_expand(directory), command + ext)
             if _is_runnable_file(candidate):
                 return os.path.abspath(candidate)
-            if IS_WINDOWS and ext:
+            if is_windows() and ext:
                 # PATHEXT is conventionally upper case; the file may not be.
                 lower = os.path.join(_expand(directory), command + ext.lower())
                 if _is_runnable_file(lower):
@@ -222,7 +263,7 @@ def _is_runnable_file(candidate: str) -> bool:
             return False
     except OSError:
         return False
-    if IS_WINDOWS:
+    if is_windows():
         return True
     return os.access(candidate, os.X_OK)
 
@@ -258,25 +299,37 @@ def location_trust(executable: str | os.PathLike[str]) -> TrustVerdict:
     try:
         st = resolved.stat()
     except OSError:
-        return TrustVerdict(LocationTrust.MISSING, "file does not exist")
+        return TrustVerdict(LocationTrust.MISSING, "file does not exist", resolved=str(resolved))
 
-    if IS_WINDOWS:
-        return TrustVerdict(LocationTrust.TRUSTED)
+    identity = FileIdentity.of(st)
+    here = str(resolved)
+
+    def verdict(trust: LocationTrust, reason: str = "") -> TrustVerdict:
+        return TrustVerdict(trust, reason, identity=identity, resolved=here)
+
+    if not stat.S_ISREG(st.st_mode):
+        return verdict(LocationTrust.MISSING, "not a regular file")
+
+    if is_windows():
+        # POSIX mode bits do not describe Windows ACLs, so they are not
+        # applied there rather than being applied wrongly. Windows relies on
+        # identity pinning at the execution boundary instead.
+        return verdict(LocationTrust.TRUSTED)
 
     if st.st_mode & (stat.S_ISUID | stat.S_ISGID):
-        return TrustVerdict(
+        return verdict(
             LocationTrust.SETUID,
             "the file is setuid or setgid, so running it would change privileges",
         )
     if st.st_mode & stat.S_IWOTH:
-        return TrustVerdict(
+        return verdict(
             LocationTrust.WORLD_WRITABLE,
             f"{resolved} can be rewritten by any user on this machine",
         )
 
     uid = os.getuid()
     if st.st_uid not in (0, uid):
-        return TrustVerdict(
+        return verdict(
             LocationTrust.FOREIGN_OWNER,
             f"{resolved} belongs to another user (uid {st.st_uid})",
         )
@@ -287,17 +340,17 @@ def location_trust(executable: str | os.PathLike[str]) -> TrustVerdict:
         except OSError:
             break
         if _dir_is_open_to_all(ast):
-            return TrustVerdict(
+            return verdict(
                 LocationTrust.WORLD_WRITABLE,
                 f"{ancestor} is writable by any user on this machine",
             )
         if ast.st_uid not in (0, uid):
-            return TrustVerdict(
+            return verdict(
                 LocationTrust.FOREIGN_OWNER,
                 f"{ancestor} belongs to another user (uid {ast.st_uid})",
             )
 
-    return TrustVerdict(LocationTrust.TRUSTED)
+    return verdict(LocationTrust.TRUSTED)
 
 
 def real_target(executable: str | os.PathLike[str]) -> str:

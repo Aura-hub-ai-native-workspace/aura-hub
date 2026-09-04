@@ -351,6 +351,52 @@ class TestEnumeration:
         assert "gamma" in names
 
     @POSIX_ONLY
+    def test_a_shadowed_command_is_evidence_not_a_second_tool(self, machine, tmp_path):
+        """Two files, one name: only the first on PATH can ever run.
+
+        Listing both implies a choice the user does not have, and picking
+        the wrong one reports a version from a program the shell would
+        never reach.
+        """
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        script(first / "dup", 'echo "dup 1.0.0"\n')
+        script(second / "dup", 'echo "dup 2.0.0"\n')
+
+        report = discover_tools(
+            path=os.pathsep.join([str(first), str(second), machine.path])
+        )
+
+        entries = [t for t in report.tools if t.name == "dup"]
+        assert len(entries) == 1, "a shadowed command became a second card"
+        assert entries[0].executable == str(first / "dup")
+        assert entries[0].shadowed == [str(second / "dup")]
+
+    @POSIX_ONLY
+    def test_shadowing_follows_path_order_not_directory_preference(self, machine, tmp_path):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        script(first / "dup", 'echo "1.0.0"\n')
+        script(second / "dup", 'echo "2.0.0"\n')
+
+        report = discover_tools(
+            path=os.pathsep.join([str(second), str(first), machine.path])
+        )
+        entry = next(t for t in report.tools if t.name == "dup")
+        assert entry.executable == str(second / "dup")
+
+    @POSIX_ONLY
+    def test_the_same_file_under_two_names_is_an_alias_not_a_shadow(self, machine, tmp_path):
+        bindir = tmp_path / "bin"
+        target = script(bindir / "real", 'echo "1.0.0"\n')
+        (bindir / "alias").symlink_to(target)
+
+        report = discover_tools(path=os.pathsep.join([str(bindir), machine.path]))
+        entry = next(t for t in report.tools if t.name in ("real", "alias"))
+        assert entry.shadowed == []
+        assert set(entry.aliases) | {entry.name} == {"real", "alias"}
+
+    @POSIX_ONLY
     def test_broken_symlinks_are_skipped(self, machine):
         (machine.local_bin / "ghost").symlink_to(machine.local_bin / "does-not-exist")
         report = discover_tools(path=machine.path)
@@ -600,7 +646,8 @@ class TestSerialisation:
         assert set(payload) == {
             "id", "name", "executable", "realPath", "source", "status", "present",
             "version", "detail", "latencyMs", "category", "origin", "package",
-            "manager", "probeCommand", "aliases", "executed",
+            "manager", "packageVersion", "versionConflict", "probeCommand",
+            "aliases", "shadowed", "executed",
         }
         json.dumps(payload)
 
@@ -608,6 +655,7 @@ class TestSerialisation:
         payload = scan_result_to_dict(scan_environment(refresh=True))
         assert "discovery" in payload
         assert set(payload["discovery"]) == {
+            "degraded",
             "totalCandidates",
             "scannedCandidates",
             "reportedCandidates",
@@ -615,6 +663,7 @@ class TestSerialisation:
             "directoriesScanned",
             "skippedDirectories",
         }
+        assert payload["discovery"]["degraded"] is False
         # The counts must describe each other honestly.
         meta = payload["discovery"]
         assert meta["reportedCandidates"] == len(payload["discovered"])

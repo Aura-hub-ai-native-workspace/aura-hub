@@ -109,16 +109,17 @@ class TestSafetyOnTheRealMachine:
         assert violations == [], f"executed binaries with no provenance: {violations}"
 
     def test_every_executed_tool_had_a_package_behind_it(self, scan):
+        """Asserted against the production trust set, not a copy of it.
+
+        Duplicating the list here would let the two drift apart, and the
+        test would then be checking last month's policy.
+        """
+        from aura.environment.provenance import TRUSTED_ORIGINS
+
+        trusted = {origin.value for origin in TRUSTED_ORIGINS}
         for tool in scan.discovery.tools:
             if tool.executed:
-                assert tool.origin in {
-                    "npm-global",
-                    "pipx",
-                    "cargo",
-                    "venv",
-                    "os-package",
-                    "catalog",
-                }, f"{tool.name} ran with origin {tool.origin}"
+                assert tool.origin in trusted, f"{tool.name} ran with origin {tool.origin}"
 
     def test_no_probe_left_a_stray_process(self, scan):
         """Nothing AURA started should still be running afterwards."""
@@ -169,6 +170,38 @@ class TestInventoryQuality:
             1 for t in payload["discovered"] if t["status"] == "verified"
         )
         assert payload["notInstalledCount"] >= len(payload["notInstalled"])
+
+
+class TestRealMachineDeterminism:
+    """The same machine, measured twice, must give the same answer.
+
+    Exact equality, no tolerance. A disagreement here is a real finding —
+    it is how a Node CLI that intermittently exited 1 on `--version` was
+    caught, which now gets one bounded retry rather than a flapping card.
+    """
+
+    def test_repeated_scans_agree_exactly(self):
+        _clear_cache()
+        first = scan_environment(refresh=True)
+        second = scan_environment(refresh=True)
+
+        assert set(first.results) == set(second.results)
+        drift = {
+            node_id
+            for node_id in first.results
+            if first.results[node_id].present != second.results[node_id].present
+        }
+        assert drift == set(), f"probes disagreed between identical scans: {drift}"
+        assert first.found == second.found
+
+    def test_scan_and_single_probe_agree_exactly(self):
+        _clear_cache()
+        scan = scan_environment(refresh=True)
+        for node_id, from_scan in scan.results.items():
+            single = probe_node(node_id, refresh=True)
+            assert from_scan.present == single.present, (
+                f"{node_id}: scan said {from_scan.present}, probe said {single.present}"
+            )
 
 
 class TestRealMachinePerformance:

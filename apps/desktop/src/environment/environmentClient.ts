@@ -16,7 +16,14 @@ import { aiClient } from '../ai/aiClient';
 
 const BASE = aiClient.base;
 
-export type ToolStatus = 'verified' | 'unverified' | 'failed' | 'timeout' | 'blocked';
+export type ToolStatus =
+  | 'verified'
+  | 'unverified'
+  | 'failed'
+  | 'timeout'
+  | 'blocked'
+  /** The file changed between being vetted and being run; nothing ran. */
+  | 'tampered';
 
 export interface DiscoveredTool {
   id: string;
@@ -35,9 +42,15 @@ export interface DiscoveredTool {
   origin: string;
   package?: string | null;
   manager?: string | null;
+  /** The owning package's own claim, kept beside the executable's. */
+  packageVersion?: string | null;
+  /** The two disagree — usually a stale shim or a second copy on PATH. */
+  versionConflict?: boolean;
   probeCommand?: string | null;
   /** Other names for the same tool, already merged into this entry. */
   aliases: string[];
+  /** Same-named files further along PATH that this one takes precedence over. */
+  shadowed: string[];
   /** False when AURA deliberately did not run it. */
   executed: boolean;
 }
@@ -66,6 +79,8 @@ export interface InventoryMeta {
 }
 
 export interface DiscoveryMeta {
+  /** Discovery failed and an older answer is being shown instead. */
+  degraded?: boolean;
   /** Every program found on PATH, whether or not it is listed. */
   totalCandidates: number;
   /** How many were executed to establish a version. */

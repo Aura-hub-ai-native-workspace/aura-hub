@@ -33,6 +33,7 @@ from .discovery import (
     discovered_to_dict,
     extract_version,
 )
+from .observability import log_probe_failure, log_scan, redact, scan_logger
 from .ospackages import (
     OsInventory,
     discover_os_packages,
@@ -40,7 +41,7 @@ from .ospackages import (
     packages_to_list,
 )
 from .pathsec import LocationTrust, effective_path, location_trust, resolve_executable
-from .procexec import ExecStatus, run_argv
+from .procexec import ExecOutcome, ExecStatus, run_argv
 from .provenance import ProvenanceIndex, build_index, layers_to_meta, layers_to_packages
 
 #: Version checks for Node- and JVM-backed CLIs routinely take seconds on a
@@ -78,6 +79,9 @@ class ProbeStatus(str, Enum):
     BLOCKED = "blocked"
     """Found, but in a location AURA will not execute from."""
 
+    TAMPERED = "tampered"
+    """The file changed between being vetted and being run. Nothing ran."""
+
     INTERNAL = "internal"
     """Built into AURA Hub; nothing is executed."""
 
@@ -103,6 +107,23 @@ class ProbeResult:
     origin: str | None = None
     package: str | None = None
     manager: str | None = None
+    #: What the package manager says it installed, when it says anything.
+    #: Kept separate from `version` rather than reconciled: the executable's
+    #: own answer is what will run, the package's is what was installed, and
+    #: a disagreement between them is information, not noise.
+    package_version: str | None = None
+
+    @property
+    def version_conflict(self) -> bool:
+        return bool(
+            self.version
+            and self.package_version
+            and _normalise_version(self.version) != _normalise_version(self.package_version)
+        )
+
+
+def _normalise_version(value: str) -> str:
+    return value.strip().lstrip("vV")
 
 
 @dataclass
@@ -116,6 +137,8 @@ class ScanResult:
     os_inventory: OsInventory | None = None
     not_installed: list[dict[str, Any]] = field(default_factory=list)
     not_installed_total: int = 0
+    #: Discovery failed and an older answer is being shown instead.
+    discovery_degraded: bool = False
 
 
 def _now() -> str:
@@ -145,6 +168,11 @@ class _DiscoveryLayer:
 _cache_lock = threading.RLock()
 _probe_cache: dict[str, tuple[float, ProbeResult]] = {}
 _discovery_cache: tuple[float, _DiscoveryLayer] | None = None
+#: The last discovery that actually succeeded, kept outside the TTL cache.
+#: A refresh that fails must not replace a true answer with an empty one —
+#: reporting "no tools found" because a package manager hung is a fabricated
+#: success. The stale answer is shown instead, and said to be stale.
+_last_good_discovery: _DiscoveryLayer | None = None
 
 
 def _cache_key(node_id: str) -> str:
@@ -170,12 +198,14 @@ def _set_cache(node_id: str, result: ProbeResult) -> None:
         _probe_cache[_cache_key(node_id)] = (time.monotonic(), result)
 
 
-def _clear_cache() -> None:
+def _clear_cache(*, forget_last_good: bool = True) -> None:
     """Drop every cached layer, including memoised package-manager state."""
-    global _discovery_cache
+    global _discovery_cache, _last_good_discovery
     with _cache_lock:
         _probe_cache.clear()
         _discovery_cache = None
+        if forget_last_good:
+            _last_good_discovery = None
 
 
 # ── catalog probes ──────────────────────────────────────────────────────
@@ -217,13 +247,38 @@ def _run_probe(entry: CatalogEntry) -> ProbeResult:
             ),
         )
 
-    outcome = run_argv(
-        [resolved, *entry.probe.args],
-        timeout_ms=PROBE_TIMEOUT_MS,
-        cwd=os.path.expanduser("~"),
-        path=path,
-    )
+    def attempt() -> ExecOutcome:
+        return run_argv(
+            [resolved, *entry.probe.args],
+            timeout_ms=PROBE_TIMEOUT_MS,
+            cwd=os.path.expanduser("~"),
+            path=path,
+            # Run the file the trust decision was actually made about.
+            pin=verdict.identity,
+        )
 
+    outcome = attempt()
+    if outcome.status is ExecStatus.FAILED:
+        # A tool that exited non-zero once may simply have lost a race with
+        # its own update check or config write; several real CLIs do. One
+        # cheap retry is the difference between a card that says "Verified"
+        # and a card that oscillates between "Verified" and "Needs
+        # attention" on an unchanged machine. Definitive outcomes
+        # (NOT_FOUND, BLOCKED, TAMPERED) are never retried, and neither is a
+        # timeout, which has already spent its whole budget.
+        outcome = attempt()
+
+    if outcome.status is ExecStatus.TAMPERED:
+        return ProbeResult(
+            present=False,
+            status=ProbeStatus.TAMPERED,
+            executable=resolved,
+            latency_ms=outcome.duration_ms,
+            detail=(
+                f"{resolved} changed between being checked and being run, so AURA stopped. "
+                "Re-scan; if this repeats, something else is rewriting that file."
+            ),
+        )
     if outcome.status is ExecStatus.TIMEOUT:
         return ProbeResult(
             present=False,
@@ -476,7 +531,7 @@ def _run_discovery(results: dict[str, ProbeResult], max_probe: int) -> _Discover
 def _discovery_layer(
     results: dict[str, ProbeResult], *, refresh: bool, max_probe: int
 ) -> _DiscoveryLayer:
-    global _discovery_cache
+    global _discovery_cache, _last_good_discovery
     if not refresh:
         with _cache_lock:
             cached = _discovery_cache
@@ -488,6 +543,7 @@ def _discovery_layer(
     layer = _run_discovery(results, max_probe)
     with _cache_lock:
         _discovery_cache = (time.monotonic(), layer)
+        _last_good_discovery = layer
     return layer
 
 
@@ -502,6 +558,10 @@ def _annotate_provenance(results: dict[str, ProbeResult], index: ProvenanceIndex
         result.origin = provenance.origin.value
         result.package = provenance.package
         result.manager = provenance.manager
+        if provenance.manager and provenance.package:
+            result.package_version = index.package_version(
+                provenance.manager, provenance.package
+            )
 
 
 # ── scanning ────────────────────────────────────────────────────────────
@@ -614,13 +674,14 @@ def scan_environment(node_ids: list[str] | None = None, refresh: bool = False) -
 
 
 def _scan_uncached(node_ids: list[str] | None, refresh: bool) -> ScanResult:
+    started_at = time.monotonic()
     entries = entries_for_scan()
     if node_ids:
         wanted = set(node_ids)
         entries = [e for e in entries if e.id in wanted]
 
     if refresh:
-        _clear_cache()
+        _clear_cache(forget_last_good=False)
 
     results: dict[str, ProbeResult] = {}
     if entries:
@@ -653,19 +714,55 @@ def _scan_uncached(node_ids: list[str] | None, refresh: bool) -> ScanResult:
     packages: list[dict[str, Any]] = []
     package_sources: list[dict[str, Any]] = []
     os_inventory: OsInventory | None = None
+    degraded_discovery = False
     if node_ids is None:
         try:
             layer = _discovery_layer(results, refresh=refresh, max_probe=_default_max_probe())
-            discovery = layer.report
-            packages = layer.packages
-            package_sources = layer.package_sources
-            os_inventory = layer.os_inventory
-            _annotate_provenance(results, layer.index)
-        except Exception:
-            discovery = DiscoveryReport()
-            packages, package_sources, os_inventory = [], [], OsInventory(available=False)
+        except Exception as exc:
+            # Fall back to the last answer that was actually true rather than
+            # reporting an empty machine. Marked stale so nothing pretends
+            # this scan measured it.
+            scan_logger().warning(
+                "environment discovery failed; reusing the last good result",
+                extra={"aura_event": "environment.discovery_failed", "error": redact(str(exc))},
+            )
+            with _cache_lock:
+                fallback = _last_good_discovery
+            if fallback is not None:
+                layer = fallback
+                degraded_discovery = True
+            else:
+                layer = _DiscoveryLayer(
+                    report=DiscoveryReport(),
+                    packages=[],
+                    package_sources=[],
+                    os_inventory=OsInventory(available=False, error="discovery failed"),
+                )
+                degraded_discovery = True
+        discovery = layer.report
+        packages = layer.packages
+        package_sources = layer.package_sources
+        os_inventory = layer.os_inventory
+        _annotate_provenance(results, layer.index)
+
+    for node_id, result in results.items():
+        if result.status in (ProbeStatus.FAILED, ProbeStatus.TAMPERED, ProbeStatus.BLOCKED):
+            log_probe_failure(node_id=node_id, status=result.status.value, detail=result.detail)
 
     not_installed, not_installed_total = _not_installed_view(results)
+
+    tools = discovery.tools if discovery is not None else []
+    log_scan(
+        duration_ms=int((time.monotonic() - started_at) * 1000),
+        catalog_probed=len(results),
+        found=found,
+        discovered=len(tools),
+        verified=sum(1 for t in tools if t.status is ToolStatus.VERIFIED),
+        executed=sum(1 for t in tools if t.executed),
+        blocked=sum(1 for t in tools if not t.executed),
+        refreshed=refresh,
+        cached=node_ids is None and discovery is not None and not refresh,
+    )
 
     return ScanResult(
         results=results,
@@ -677,6 +774,7 @@ def _scan_uncached(node_ids: list[str] | None, refresh: bool) -> ScanResult:
         os_inventory=os_inventory,
         not_installed=not_installed,
         not_installed_total=not_installed_total,
+        discovery_degraded=degraded_discovery,
     )
 
 
@@ -686,7 +784,10 @@ def _scan_uncached(node_ids: list[str] | None, refresh: bool) -> ScanResult:
 def probe_result_to_dict(result: ProbeResult) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "present": result.present,
-        "detail": result.detail,
+        # Redacted at the boundary rather than at each construction site, so
+        # a future `detail` that happens to embed a path or an error string
+        # cannot carry a credential out with it.
+        "detail": redact(result.detail),
         "status": result.status.value,
     }
     if result.version is not None:
@@ -694,7 +795,7 @@ def probe_result_to_dict(result: ProbeResult) -> dict[str, Any]:
     if result.latency_ms is not None:
         payload["latencyMs"] = result.latency_ms
     if result.executable is not None:
-        payload["executable"] = result.executable
+        payload["executable"] = redact(result.executable)
     if result.exit_code is not None:
         payload["exitCode"] = result.exit_code
     if result.origin is not None:
@@ -703,6 +804,10 @@ def probe_result_to_dict(result: ProbeResult) -> dict[str, Any]:
         payload["package"] = result.package
     if result.manager is not None:
         payload["manager"] = result.manager
+    if result.package_version is not None:
+        payload["packageVersion"] = result.package_version
+    if result.version_conflict:
+        payload["versionConflict"] = True
     return payload
 
 
@@ -719,6 +824,7 @@ def scan_result_to_dict(result: ScanResult) -> dict[str, Any]:
         payload["discoveredCount"] = len(report.tools)
         payload["verifiedCount"] = sum(1 for t in report.tools if t.status is ToolStatus.VERIFIED)
         payload["discovery"] = {
+            "degraded": result.discovery_degraded,
             "totalCandidates": report.total_candidates,
             "scannedCandidates": report.scanned_candidates,
             "reportedCandidates": report.reported_candidates or len(report.tools),

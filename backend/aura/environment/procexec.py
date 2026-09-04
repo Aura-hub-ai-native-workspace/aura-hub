@@ -25,13 +25,13 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
 
-IS_WINDOWS = sys.platform == "win32"
+from .hostplatform import is_windows
+from .pathsec import FileIdentity, file_identity
 
 #: Hard ceiling on captured stdout+stderr per probe.
 MAX_OUTPUT_BYTES = 64 * 1024
@@ -105,6 +105,9 @@ class ExecStatus(str, Enum):
     ERROR = "error"
     """Anything else — recorded rather than raised."""
 
+    TAMPERED = "tampered"
+    """The file changed between being vetted and being run. Nothing ran."""
+
 
 @dataclass(frozen=True)
 class ExecOutcome:
@@ -115,6 +118,11 @@ class ExecOutcome:
     duration_ms: int = 0
     truncated: bool = False
     error: str = ""
+    #: How the executable was bound to the file that was vetted:
+    #: ``pinned`` (ran the exact inode, tampering prevented),
+    #: ``verified`` (identity re-checked either side, tampering detected),
+    #: ``unpinned`` (caller supplied no identity).
+    pin_mode: str = "unpinned"
 
     @property
     def output(self) -> str:
@@ -194,7 +202,7 @@ def _terminate_tree(proc: subprocess.Popen[bytes]) -> None:
     """
     if proc.poll() is not None:
         return
-    if IS_WINDOWS:
+    if is_windows():
         # taskkill is the only reliable way to reach a whole Windows tree.
         try:
             subprocess.run(
@@ -227,6 +235,64 @@ def _terminate_tree(proc: subprocess.Popen[bytes]) -> None:
             continue
 
 
+def _is_shebang_script(path: str) -> bool:
+    """True when the kernel will hand this file to an interpreter."""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(2) == b"#!"
+    except OSError:
+        return False
+
+
+def _pin_executable(argv: list[str], pin: FileIdentity) -> tuple[str | None, int | None, str]:
+    """Bind execution to the file that was actually vetted.
+
+    Returns ``(executable_override, fd_to_keep_open, mode)``.
+
+    ``pinned`` — the strongest guarantee, used for real binaries on Linux.
+    The file is opened once and run through ``/proc/self/fd/<n>``, which
+    names the open file description rather than the path, so replacing the
+    path afterwards cannot change what runs. ``argv[0]`` still carries the
+    real path, because a program that resolves its own resources from
+    ``argv[0]`` must keep working.
+
+    ``verified`` — the file is a ``#!`` script, or there is no ``/proc``
+    (macOS, Windows, hardened containers). The kernel hands a script's *own*
+    path to its interpreter, and an interpreter given ``/proc/self/fd/<n>``
+    resolves its modules from there; Node, for one, then fails outright.
+    Pinning a script would trade a rare attack for a common breakage, so the
+    identity is checked before and after instead. That detects tampering
+    rather than preventing it, and the distinction is reported rather than
+    glossed — see ``ExecOutcome.pin_mode``.
+
+    Either way a mismatch means nothing runs, or nothing is believed.
+    """
+    target = argv[0]
+    if not pin.matches(file_identity(target)):
+        return None, None, "changed"
+
+    if is_windows() or not os.path.isdir("/proc/self/fd"):
+        return None, None, "verified"
+    if _is_shebang_script(target):
+        return None, None, "verified"
+
+    try:
+        fd = os.open(target, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None, None, "verified"
+
+    try:
+        if not pin.matches(FileIdentity.of(os.fstat(fd))):
+            os.close(fd)
+            return None, None, "changed"
+    except OSError:
+        os.close(fd)
+        return None, None, "verified"
+
+    os.set_inheritable(fd, True)
+    return f"/proc/self/fd/{fd}", fd, "pinned"
+
+
 def run_argv(
     argv: list[str],
     *,
@@ -235,8 +301,13 @@ def run_argv(
     path: str | None = None,
     max_output: int = MAX_OUTPUT_BYTES,
     env_extra: dict[str, str] | None = None,
+    pin: FileIdentity | None = None,
 ) -> ExecOutcome:
     """Run ``argv`` under every guarantee described in the module docstring.
+
+    ``pin`` is the identity a caller established the file's trustworthiness
+    against. When supplied, the command either runs that exact file or does
+    not run at all.
 
     Never raises for anything the child does; failure modes come back as an
     :class:`ExecStatus`.
@@ -247,6 +318,21 @@ def run_argv(
     started = time.monotonic()
     env = sanitized_env(path=path, extra=env_extra)
 
+    pinned_fd: int | None = None
+    pin_mode = "unpinned"
+    executable_override: str | None = None
+    if pin is not None:
+        executable_override, pinned_fd, pin_mode = _pin_executable(argv, pin)
+        if pin_mode == "changed":
+            return ExecOutcome(
+                status=ExecStatus.TAMPERED,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error=(
+                    "the file changed between being checked and being run, "
+                    "so AURA did not run it"
+                ),
+            )
+
     popen_kwargs: dict[str, object] = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
@@ -255,7 +341,13 @@ def run_argv(
         "env": env,
         "close_fds": True,
     }
-    if IS_WINDOWS:
+    if pinned_fd is not None:
+        # The child must keep the descriptor, or /proc/self/fd/<n> is not
+        # resolvable at exec time. `executable` runs that inode while argv[0]
+        # keeps naming the real file.
+        popen_kwargs["pass_fds"] = (pinned_fd,)
+        popen_kwargs["executable"] = executable_override
+    if is_windows():
         popen_kwargs["creationflags"] = (
             subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
@@ -263,25 +355,41 @@ def run_argv(
         # Its own session, so killpg reaches every descendant.
         popen_kwargs["start_new_session"] = True
 
+    def _close_pin() -> None:
+        if pinned_fd is not None:
+            try:
+                os.close(pinned_fd)
+            except OSError:
+                pass
+
     try:
         proc = subprocess.Popen(argv, **popen_kwargs)  # type: ignore[arg-type]
     except FileNotFoundError:
+        _close_pin()
         return ExecOutcome(
             status=ExecStatus.NOT_FOUND,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
     except PermissionError:
+        _close_pin()
         return ExecOutcome(
             status=ExecStatus.DENIED,
             duration_ms=int((time.monotonic() - started) * 1000),
         )
     except OSError as exc:
         # Exec-format errors, ENOEXEC on a data file, and similar.
+        _close_pin()
         return ExecOutcome(
             status=ExecStatus.ERROR,
             duration_ms=int((time.monotonic() - started) * 1000),
             error=str(exc),
         )
+
+    # The child holds its own inherited descriptor from here on, so the
+    # parent's copy is no longer needed. Popen has already waited for the
+    # exec to succeed or fail, so this cannot race the resolution of
+    # /proc/self/fd/<n>.
+    _close_pin()
 
     out_reader = _BoundedReader(proc.stdout, max_output)
     err_reader = _BoundedReader(proc.stderr, max_output)
@@ -313,6 +421,20 @@ def run_argv(
     stdout = _decode(bytes(out_reader.buf))
     stderr = _decode(bytes(err_reader.buf))
 
+    if pin is not None and pin_mode == "verified":
+        # No /proc to pin through, so the best available guarantee is to
+        # notice. If the file moved under us, the output describes some other
+        # program and must not be believed.
+        if not pin.matches(file_identity(argv[0])):
+            return ExecOutcome(
+                status=ExecStatus.TAMPERED,
+                duration_ms=duration_ms,
+                error=(
+                    "the file changed while it was running, so its output "
+                    "cannot be attributed to the program that was checked"
+                ),
+            )
+
     if timed_out:
         return ExecOutcome(
             status=ExecStatus.TIMEOUT,
@@ -320,6 +442,7 @@ def run_argv(
             stderr=stderr,
             duration_ms=duration_ms,
             truncated=truncated,
+            pin_mode=pin_mode,
         )
 
     code = proc.returncode
@@ -330,4 +453,5 @@ def run_argv(
         stderr=stderr,
         duration_ms=duration_ms,
         truncated=truncated,
+        pin_mode=pin_mode,
     )

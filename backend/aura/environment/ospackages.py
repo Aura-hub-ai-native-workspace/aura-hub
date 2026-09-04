@@ -10,10 +10,10 @@ alphabet.
 """
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
 from typing import Any
 
+from .hostplatform import is_macos, is_windows
 from .pathsec import effective_path, home_dir, resolve_executable
 from .procexec import ExecStatus, run_argv
 
@@ -94,12 +94,12 @@ def _parse_headered_table(text: str, manager: str) -> list[OsPackage]:
 
 
 def _candidate_managers() -> list[tuple[str, list[str], Any]]:
-    if sys.platform == "darwin":
+    if is_macos():
         return [
             ("brew", ["brew", "list", "--versions"], lambda t: _parse_two_column(t, "brew")),
             ("port", ["port", "installed"], lambda t: _parse_two_column(t, "port")),
         ]
-    if sys.platform == "win32":
+    if is_windows():
         return [
             ("winget", ["winget", "list", "--disable-interactivity"],
              lambda t: _parse_headered_table(t, "winget")),

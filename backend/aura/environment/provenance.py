@@ -22,6 +22,9 @@ Sources, strongest first:
     The target lives under a pipx venv, or pipx's own JSON claims the path.
 ``cargo``
     ``cargo install --list`` names the binaries each crate installed.
+``uv``
+    The target lives under uv's tool or managed-interpreter directory. uv
+    puts both there itself, so the location names the installer exactly.
 ``venv``
     The target sits in the ``bin``/``Scripts`` directory of a Python virtual
     environment (identified by its ``pyvenv.cfg``).
@@ -33,16 +36,14 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .hostplatform import is_macos, is_windows
 from .pathsec import effective_path, home_dir, real_target, resolve_executable
 from .procexec import ExecStatus, run_argv
-
-IS_WINDOWS = sys.platform == "win32"
 
 #: Package-manager inventory commands are bounded like any other probe.
 INVENTORY_TIMEOUT_MS = 8000
@@ -54,6 +55,7 @@ class Origin(str, Enum):
     NPM_GLOBAL = "npm-global"
     PIPX = "pipx"
     CARGO = "cargo"
+    UV = "uv"
     VENV = "venv"
     OS_PACKAGE = "os-package"
     CATALOG = "catalog"
@@ -66,6 +68,7 @@ TRUSTED_ORIGINS = frozenset(
         Origin.NPM_GLOBAL,
         Origin.PIPX,
         Origin.CARGO,
+        Origin.UV,
         Origin.VENV,
         Origin.OS_PACKAGE,
         Origin.CATALOG,
@@ -116,7 +119,7 @@ class InventoryLayer:
 
 def _os_package_prefixes() -> tuple[Path, ...]:
     """Directories whose contents are placed there by the OS package manager."""
-    if IS_WINDOWS:
+    if is_windows():
         prefixes = []
         for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
             base = os.environ.get(var)
@@ -135,7 +138,7 @@ def _os_package_prefixes() -> tuple[Path, ...]:
         Path("/snap"),
         Path("/var/lib/flatpak"),
     ]
-    if sys.platform == "darwin":
+    if is_macos():
         posix.extend(
             [
                 Path("/opt/homebrew/Cellar"),
@@ -154,6 +157,65 @@ def _under(child: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def uv_data_dir() -> Path:
+    """Where uv keeps the tools and interpreters it manages."""
+    override = os.environ.get("UV_DATA_DIR")
+    if override:
+        return Path(override)
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg) if xdg else home_dir() / ".local" / "share"
+    return base / "uv"
+
+
+def uv_tool_dir() -> Path:
+    override = os.environ.get("UV_TOOL_DIR")
+    return Path(override) if override else uv_data_dir() / "tools"
+
+
+def _uv_package_for(target: Path) -> str | None:
+    """The uv tool a path belongs to, or ``None``.
+
+    uv installs each tool into its own directory under the tool root and
+    links the entry points elsewhere, so the first path segment beneath that
+    root is the package. Managed interpreters live under ``python/`` and are
+    equally uv's doing, just not a named tool.
+    """
+    tools = uv_tool_dir()
+    if _under(target, tools):
+        try:
+            rel = target.relative_to(tools)
+        except ValueError:
+            return None
+        return rel.parts[0] if rel.parts else None
+    if _under(target, uv_data_dir() / "python"):
+        return None
+    return None
+
+
+def _is_uv_managed(target: Path) -> bool:
+    return _under(target, uv_tool_dir()) or _under(target, uv_data_dir() / "python")
+
+
+#: Extensions Windows appends to a command name. npm writes `foo.cmd`
+#: shims rather than the symlinks it uses on POSIX, so the command name a
+#: package declares ("foo") never matches the file name on disk unless the
+#: extension is stripped first. Without this, every npm-installed tool on
+#: Windows loses its provenance and is reported as unverified.
+_WINDOWS_EXECUTABLE_SUFFIXES = (".cmd", ".exe", ".bat", ".ps1", ".com")
+
+
+def command_name(path: Path) -> str:
+    """The command a file provides, with any Windows extension removed."""
+    name = path.name
+    if not is_windows():
+        return name
+    lowered = name.lower()
+    for suffix in _WINDOWS_EXECUTABLE_SUFFIXES:
+        if lowered.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 def _is_venv_bin(target: Path) -> bool:
@@ -464,7 +526,7 @@ def _manager_bin_dirs(npm_prefix: Path | None) -> dict[str, set[str]]:
     home = home_dir()
 
     if npm_prefix is not None:
-        dirs["npm"].add(str(npm_prefix if IS_WINDOWS else npm_prefix / "bin"))
+        dirs["npm"].add(str(npm_prefix if is_windows() else npm_prefix / "bin"))
 
     pipx_bin = os.environ.get("PIPX_BIN_DIR")
     dirs["pipx"].add(str(Path(pipx_bin)) if pipx_bin else str(home / ".local" / "bin"))
@@ -553,6 +615,22 @@ class ProvenanceIndex:
                 detail=f"installed by {manager} as {package}",
             )
 
+        # uv manages both its tools and the interpreters it downloads. A uv
+        # tool is also a venv, but naming the actual installer is more use to
+        # the operator than calling everything "venv".
+        if _is_uv_managed(target):
+            package = _uv_package_for(target)
+            return Provenance(
+                origin=Origin.UV,
+                package=package,
+                manager="uv",
+                detail=(
+                    f"installed by uv as {package}"
+                    if package
+                    else "provided by a uv-managed Python installation"
+                ),
+            )
+
         # A pipx venv, or any other Python virtual environment, is something
         # a person built on purpose.
         if _is_venv_bin(target):
@@ -583,7 +661,7 @@ class ProvenanceIndex:
         for manager, bin_dirs in self._bin_dirs.items():
             if holder not in bin_dirs:
                 continue
-            hit = self._by_name[manager].get(source.name.lower())
+            hit = self._by_name[manager].get(command_name(source).lower())
             if not hit:
                 continue
             try:

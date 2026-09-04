@@ -20,11 +20,11 @@ invariant that keeps probing safe, applied to a far more dangerous verb.
 from __future__ import annotations
 
 import os
-import platform
 from dataclasses import dataclass
 from typing import Any
 
 from .catalog import CatalogEntry, InstallSpec
+from .hostplatform import Platform, current, is_windows
 
 INSTALLER_BINARIES = frozenset(["npm", "pipx", "cargo", "gh"])
 
@@ -83,7 +83,7 @@ def _npm_global_root() -> str | None:
         prefix = npm_global_prefix()
         if prefix is None:
             return None
-        if platform.system() == "Windows":
+        if is_windows():
             return os.path.join(str(prefix), "node_modules")
         return os.path.join(str(prefix), "lib", "node_modules")
     except Exception:
@@ -137,8 +137,8 @@ def _resolve_privilege(spec: InstallSpec) -> tuple[str, str]:
 
 
 def _detect_distro() -> dict[str, Any]:
-    system = platform.system()
-    if system == "Linux":
+    system = current()
+    if system is Platform.LINUX:
         try:
             with open("/etc/os-release", "r") as f:
                 content = f.read()
@@ -165,9 +165,9 @@ def _detect_distro() -> dict[str, Any]:
             return distro_map.get(id_value, {"id": id_value or "unknown", "manager": "", "installArgs": []})
         except Exception:
             return {"id": "unknown", "manager": "", "installArgs": []}
-    elif system == "Darwin":
+    elif system is Platform.MACOS:
         return {"id": "macos", "manager": "brew", "installArgs": ["install"]}
-    elif system == "Windows":
+    elif system is Platform.WINDOWS:
         return {"id": "windows", "manager": "choco", "installArgs": ["/i"]}
 
     return {"id": "unknown", "manager": "", "installArgs": []}

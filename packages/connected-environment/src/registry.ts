@@ -104,7 +104,12 @@ export function statusFromProbe(entry: CatalogEntry, result: ProbeResult): NodeS
     // about whether the tool is installed. Reporting those as
     // `not-installed` is a confident wrong answer; `degraded` keeps the
     // node visible and honest about what was actually observed.
-    if (result.status === 'timeout' || result.status === 'failed' || result.status === 'blocked') {
+    if (
+      result.status === 'timeout' ||
+      result.status === 'failed' ||
+      result.status === 'blocked' ||
+      result.status === 'tampered'
+    ) {
       return 'degraded';
     }
     if (result.status === 'needs-auth') return 'needs-auth';
@@ -134,6 +139,8 @@ export function applyProbe(node: EnvironmentNode, result: ProbeResult): Environm
     origin: result.origin,
     package: result.package,
     manager: result.manager,
+    packageVersion: result.packageVersion,
+    versionConflict: result.versionConflict,
   };
   return {
     ...node,

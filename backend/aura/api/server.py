@@ -1600,9 +1600,6 @@ async def environment_install(request: Request):
     Security: catalog-only, validated InstallSpec, allow-listed bin,
               argv-only, no shell, frontend sends id only.
     """
-    import asyncio
-    import os
-
     from ..environment import catalog_entry, is_plan, plan_install, probe_node, probe_result_to_dict
     from ..exec_ import INSTALL_TIMEOUT_MS, resolve_installer_binary
 
@@ -1649,61 +1646,40 @@ async def environment_install(request: Request):
             "detail": f"{entry.name} could not be installed: {resolved.reason}",
         }, status_code=400)
 
-    # Execute allow-listed installer argv-only, bounded timeout
-    timeout_ms = INSTALL_TIMEOUT_MS
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            plan.bin,
-            *plan.args,
-            cwd=os.environ.get("HOME", "/"),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout_ms / 1000)
-            exit_code = proc.returncode
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            try:
-                await proc.wait()
-            except Exception:
-                pass
-            return JSONResponse({
-                "installOutcome": "failed",
-                "nodeId": node_id,
-                "privilege": "user",
-                "requiresUserAction": False,
-                "command": plan.command,
-                "why": "The installer ran out of time and was stopped.",
-                "timedOut": True,
-                "exitCode": -1,
-                "detail": f"{entry.name} was not installed. The installer ran out of time and was stopped.",
-            })
-    except FileNotFoundError:
+    # Execution is delegated to the one hardened install runner, which the
+    # Fabric capability uses too. This route previously spawned the installer
+    # itself and had drifted: stdin was still attached to the operator's
+    # terminal and only the direct child was killed on timeout.
+    from ..environment.executor import run_install_plan
+
+    run = await run_install_plan(plan, timeout_ms=INSTALL_TIMEOUT_MS)
+
+    if run.status in ("missing", "error"):
         return JSONResponse({
             "installOutcome": "failed",
             "nodeId": node_id,
             "privilege": "user",
             "requiresUserAction": False,
             "command": plan.command,
-            "why": f"{plan.bin} is not installed",
-            "detail": f"{entry.name} could not be installed: {plan.bin} is not installed",
-        }, status_code=400)
-    except Exception as e:
-        return JSONResponse({
-            "installOutcome": "failed",
-            "nodeId": node_id,
-            "privilege": "user",
-            "requiresUserAction": False,
-            "command": plan.command,
-            "why": str(e),
-            "detail": f"{entry.name} could not be installed: {e}",
+            "why": run.error,
+            "detail": f"{entry.name} could not be installed: {run.error}",
         }, status_code=400)
 
-    stdout = stdout_bytes.decode("utf-8", errors="replace")[:4000] if stdout_bytes else ""
+    if run.status == "timeout":
+        return JSONResponse({
+            "installOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": "The installer ran out of time and was stopped.",
+            "timedOut": True,
+            "exitCode": -1,
+            "detail": f"{entry.name} was not installed. The installer ran out of time and was stopped.",
+        })
+
+    exit_code = run.exit_code
+    stdout = run.stdout
 
     if exit_code != 0:
         why = f"The installer exited {exit_code}."

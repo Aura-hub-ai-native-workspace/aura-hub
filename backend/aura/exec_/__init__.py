@@ -136,6 +136,27 @@ def settle(out: str, code: int | None, *, killed: bool | None = None,
     return ProcessOutput(out or (err_message or "failed"), 1)
 
 
+def _signal_tree(proc, which: str) -> None:
+    """Signal the whole process group, falling back to the direct child.
+
+    A build or test command routinely forks workers. Signalling only the
+    process we launched leaves those behind holding ports and file locks.
+    """
+    import signal as _signal
+
+    sig = _signal.SIGKILL if which == "KILL" else _signal.SIGTERM
+    if os.name != "nt":
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill() if which == "KILL" else proc.terminate()
+    except Exception:
+        pass
+
+
 async def run_file(argv: list[str], cwd: str, timeout_ms: int,
                    cancel: asyncio.Event | None = None) -> ProcessOutput:
     """execFile-equivalent: argv array, bounded, stdin closed, truthful settle."""
@@ -147,24 +168,27 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
         path, *argv[1:], cwd=cwd,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.DEVNULL,
+        # Its own session, so a build tool that forks workers can be stopped
+        # as a group rather than leaving them running after a timeout.
+        **({"start_new_session": True} if os.name != "nt" else {}),
     )
     waiter = asyncio.ensure_future(proc.communicate())
     cancel_task = asyncio.ensure_future(cancel.wait()) if cancel else None
     tasks = [waiter] + ([cancel_task] if cancel_task else [])
     done, pending = await asyncio.wait(tasks, timeout=timeout_ms / 1000)
     if cancel_task and cancel_task in done and not waiter.done():
-        proc.terminate()
+        _signal_tree(proc, "TERM")
         try:
             out_b, err_b = await asyncio.wait_for(waiter, 5)
         except TimeoutError:
-            proc.kill(); out_b, err_b = await waiter
+            _signal_tree(proc, "KILL"); out_b, err_b = await waiter
         out = (out_b or b"").decode(errors="replace")
         err = (err_b or b"").decode(errors="replace")
         combined = f"{out}\n{err}" if err else out
         return ProcessOutput(f"{combined.strip()}[terminated by SIGTERM]".strip(),
                              SIGNAL_EXIT_BASE + 15, True, "SIGTERM", None)
     if not waiter.done():
-        proc.kill()
+        _signal_tree(proc, "KILL")
         out_b, err_b = await waiter
         out = (out_b or b"").decode(errors="replace")
         err = (err_b or b"").decode(errors="replace")

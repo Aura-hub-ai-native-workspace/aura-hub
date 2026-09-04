@@ -136,15 +136,38 @@ def _confine(root: Path, relative: str) -> Path:
 
 
 def _run_argv(argv: list[str], cwd: Path) -> tuple[int, str]:
-    import subprocess
+    """Run a fixed argument vector through the one execution boundary.
 
-    proc = subprocess.run(
-        argv, cwd=str(cwd), capture_output=True, text=True,
-        timeout=PROCESS_TIMEOUT_S, check=False,
+    This used to call ``subprocess.run`` directly, which meant a Fabric
+    capability ran with the whole parent environment (API keys included),
+    with stdin still attached to the operator's terminal, and with no way to
+    reach a process the child had spawned. Routing it through
+    :func:`aura.environment.procexec.run_argv` gives it the same guarantees
+    the environment scan relies on; see the architecture test that keeps it
+    that way.
+    """
+    from ..environment.pathsec import effective_path
+    from ..environment.procexec import ExecStatus, run_argv
+
+    outcome = run_argv(
+        argv,
+        timeout_ms=int(PROCESS_TIMEOUT_S * 1000),
+        cwd=str(cwd),
+        # The sanitized environment carries no PATH of its own, and the
+        # default (`/bin:/usr/bin`) would miss a git installed anywhere else
+        # — Homebrew, ~/.local/bin, a distribution that prefers /usr/local.
+        path=effective_path(),
+        max_output=MAX_FILE_BYTES,
     )
-    out = (proc.stdout or "")[: MAX_FILE_BYTES]
-    err = (proc.stderr or "")[:2000]
-    return proc.returncode, out + (f"\n{err}" if proc.returncode else "")
+    if outcome.status is ExecStatus.TIMEOUT:
+        raise TimeoutError(f"{argv[0]} exceeded {PROCESS_TIMEOUT_S}s")
+    if outcome.status in (ExecStatus.NOT_FOUND, ExecStatus.DENIED):
+        raise FileNotFoundError(f"{argv[0]} is not available")
+
+    code = outcome.exit_code if outcome.exit_code is not None else 1
+    out = outcome.stdout[:MAX_FILE_BYTES]
+    err = outcome.stderr[:2000]
+    return code, out + (f"\n{err}" if code else "")
 
 
 class GitStatusExecutor:

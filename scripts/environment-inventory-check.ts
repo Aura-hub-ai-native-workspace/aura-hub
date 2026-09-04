@@ -73,6 +73,29 @@ noPath.length ? fail(`catalog tools with no path evidence: ${noPath.map((n) => n
 const ranWithoutProvenance = inv.unverified.filter((i) => !i.unexecuted && i.origin === 'unknown');
 ranWithoutProvenance.length ? fail(`ran without provenance: ${ranWithoutProvenance.map((i) => i.name)}`) : ok('nothing unowned was executed');
 
+// A package/executable disagreement must reach the card, not be resolved away.
+const conflicts = [...inv.verified, ...inv.unverified].filter((i) => i.versionConflict);
+for (const item of conflicts) {
+  if (!item.packageVersion) fail(`${item.name} claims a version conflict with nothing to compare`);
+  if (item.packageVersion === item.version) fail(`${item.name} flags a conflict with identical versions`);
+}
+ok(`version disagreements surfaced (${conflicts.length}: ${conflicts.map((c) => c.name).join(', ') || 'none'})`);
+
+// One command name, one card: a shadowed copy is evidence, never a rival.
+const byName = new Map<string, string>();
+for (const item of [...inv.verified, ...inv.unverified]) {
+  const seen = byName.get(item.name);
+  if (seen) fail(`two cards share the command name ${item.name} (${seen}, ${item.executable})`);
+  byName.set(item.name, item.executable ?? '(no path)');
+}
+ok(`no two cards share a command name (${byName.size} names)`);
+
+// Nothing the backend refused to run may look usable.
+const wronglyVerified = inv.verified.filter((i) => i.unexecuted && i.origin === 'unknown');
+wronglyVerified.length
+  ? fail(`unexecuted tools shown as verified: ${wronglyVerified.map((i) => i.name)}`)
+  : ok('nothing unrun is presented as verified');
+
 // ---- a failed scan must not restamp the clock (ENV-022) ----
 const store = useEnvironmentStore;
 store.setState({ lastScanAt: '2020-01-01T00:00:00.000Z', discovered: payload.discovered ?? [] });

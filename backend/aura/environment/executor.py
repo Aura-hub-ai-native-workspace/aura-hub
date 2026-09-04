@@ -17,19 +17,22 @@ import asyncio
 import os
 import signal
 import subprocess
-import sys
 from dataclasses import dataclass
 from typing import Any
 
 from ..exec_ import INSTALL_TIMEOUT_MS, resolve_installer_binary
 from .catalog import catalog_entry
+from .hostplatform import is_windows
+
+#: Installer chatter is kept for diagnosis, but bounded like any other output.
+MAX_INSTALL_OUTPUT = 4000
 from .install import is_plan, plan_install
 from .probe import probe_node
 
 
 def _process_group_kwargs() -> dict[str, Any]:
     """Put the installer in its own group so the whole tree can be stopped."""
-    if sys.platform == "win32":  # pragma: no cover - Windows only
+    if is_windows():  # pragma: no cover - exercised via simulate()
         return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     return {"start_new_session": True}
 
@@ -38,7 +41,7 @@ def _terminate_tree(proc: "asyncio.subprocess.Process") -> None:
     """Stop the installer and everything it spawned."""
     if proc.returncode is not None:
         return
-    if sys.platform == "win32":  # pragma: no cover - Windows only
+    if is_windows():  # pragma: no cover - exercised via simulate()
         try:
             proc.kill()
         except Exception:
@@ -51,6 +54,64 @@ def _terminate_tree(proc: "asyncio.subprocess.Process") -> None:
             proc.kill()
         except Exception:
             pass
+
+
+@dataclass
+class InstallRun:
+    """What happened when an installer actually ran."""
+
+    status: str  # ok | failed | timeout | missing | error
+    exit_code: int | None = None
+    stdout: str = ""
+    error: str = ""
+
+
+async def run_install_plan(plan: Any, *, timeout_ms: int) -> InstallRun:
+    """Run one validated install plan under the install-side guarantees.
+
+    The HTTP route and the Fabric capability both install software, and both
+    used to spawn the installer themselves. The HTTP copy had drifted: it
+    left stdin attached to the operator's terminal and killed only the
+    process it started. One implementation means one set of guarantees —
+    stdin closed, own process group, whole tree terminated on timeout,
+    bounded output — rather than two that agree until someone edits one.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            plan.bin,
+            *plan.args,
+            cwd=os.environ.get("HOME", "/"),
+            # An installer must never block waiting for a confirmation
+            # nobody is there to give, and must never reach the operator's
+            # terminal to ask for one.
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **_process_group_kwargs(),
+        )
+    except FileNotFoundError:
+        return InstallRun(status="missing", error=f"{plan.bin} is not installed")
+    except Exception as exc:
+        return InstallRun(status="error", error=str(exc))
+
+    try:
+        stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_ms / 1000)
+    except asyncio.TimeoutError:
+        # Package managers fan out into child processes; killing only the
+        # one we launched leaves those running against the same prefix.
+        _terminate_tree(proc)
+        try:
+            await proc.wait()
+        except Exception:
+            pass
+        return InstallRun(status="timeout", exit_code=-1)
+    except Exception as exc:
+        _terminate_tree(proc)
+        return InstallRun(status="error", error=str(exc))
+
+    stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")[:MAX_INSTALL_OUTPUT]
+    code = proc.returncode
+    return InstallRun(status="ok" if code == 0 else "failed", exit_code=code, stdout=stdout)
 
 
 @dataclass
@@ -106,51 +167,32 @@ async def system_install_executor(invocation: dict) -> dict:
 
     timeout_ms = invocation.get("context", {}).get("timeoutMs", INSTALL_TIMEOUT_MS)
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            plan.bin,
-            *plan.args,
-            cwd=os.environ.get("HOME", "/"),
-            # An installer must never block waiting for a confirmation
-            # nobody is there to give, and must never reach the operator's
-            # terminal to ask for one.
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **_process_group_kwargs(),
-        )
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_ms / 1000
-            )
-            exit_code = proc.returncode
-        except asyncio.TimeoutError:
-            # Package managers fan out into child processes; killing only the
-            # one we launched leaves those running against the same prefix.
-            _terminate_tree(proc)
-            await proc.wait()
-            result = InstallResult(
-                install_outcome="failed",
-                node_id=node_id,
-                privilege="user",
-                requires_user_action=False,
-                command=plan.command,
-                why="The installer ran out of time and was stopped.",
-                exit_code=-1,
-                timed_out=True,
-                stdout="",
-            )
-            return {
-                "ok": False,
-                "detail": f"{entry.name} was not installed. The installer ran out of time and was stopped.",
-                "output": _install_result_to_dict(result),
-            }
-    except FileNotFoundError:
-        return _no(f"{entry.name} could not be installed: {plan.bin} is not installed")
-    except Exception as e:
-        return _no(f"{entry.name} could not be installed: {e}")
+    run = await run_install_plan(plan, timeout_ms=timeout_ms)
 
-    stdout = stdout_bytes.decode("utf-8", errors="replace")[:4000] if stdout_bytes else ""
+    if run.status == "missing":
+        return _no(f"{entry.name} could not be installed: {run.error}")
+    if run.status == "error":
+        return _no(f"{entry.name} could not be installed: {run.error}")
+    if run.status == "timeout":
+        result = InstallResult(
+            install_outcome="failed",
+            node_id=node_id,
+            privilege="user",
+            requires_user_action=False,
+            command=plan.command,
+            why="The installer ran out of time and was stopped.",
+            exit_code=-1,
+            timed_out=True,
+            stdout="",
+        )
+        return {
+            "ok": False,
+            "detail": f"{entry.name} was not installed. The installer ran out of time and was stopped.",
+            "output": _install_result_to_dict(result),
+        }
+
+    exit_code = run.exit_code
+    stdout = run.stdout
 
     if exit_code != 0:
         why = f"The installer exited {exit_code}."

@@ -58,6 +58,7 @@ POSIX_ONLY = pytest.mark.skipif(
 
 def write_script(directory: Path, name: str, body: str) -> Path:
     """A runnable fixture program. POSIX shell; see POSIX_ONLY."""
+    directory.mkdir(parents=True, exist_ok=True)
     path = directory / name
     path.write_text("#!/bin/sh\n" + body)
     path.chmod(0o755)
@@ -341,6 +342,55 @@ class TestProbeSemantics:
         assert result.present is False
         assert result.executable is not None
 
+    @POSIX_ONLY
+    def test_a_transient_failure_does_not_decide_the_answer(self, bindir, monkeypatch):
+        """A tool that fails once and succeeds on retry is not "failed".
+
+        Observed for real: a Node CLI exited 1 on one run of `--version` and
+        0 on the next, which made its card oscillate between Verified and
+        Needs attention on a machine nobody had touched.
+        """
+        marker = bindir / "attempts"
+        write_script(
+            bindir,
+            "flaky",
+            f'n=$(cat "{marker}" 2>/dev/null || echo 0)\n'
+            f'echo $((n+1)) > "{marker}"\n'
+            'if [ "$n" = "0" ]; then echo "transient" >&2; exit 1; fi\n'
+            'echo "flaky 2.0.0"\n',
+        )
+        monkeypatch.setenv("PATH", str(bindir))
+
+        result = _run_probe(entry_for("flaky"))
+
+        assert result.status is ProbeStatus.VERIFIED
+        assert result.version == "2.0.0"
+        assert marker.read_text().strip() == "2", "expected exactly one retry"
+
+    @POSIX_ONLY
+    def test_a_persistent_failure_is_still_a_failure(self, bindir, monkeypatch):
+        """The retry must not turn a genuinely broken tool into a working one."""
+        marker = bindir / "calls"
+        write_script(
+            bindir,
+            "broken",
+            f'echo x >> "{marker}"\necho "nope" >&2\nexit 3\n',
+        )
+        monkeypatch.setenv("PATH", str(bindir))
+
+        result = _run_probe(entry_for("broken"))
+
+        assert result.status is ProbeStatus.FAILED
+        assert result.exit_code == 3
+        assert len(marker.read_text().split()) == 2, "expected exactly two attempts"
+
+    @POSIX_ONLY
+    def test_a_definitive_outcome_is_not_retried(self, bindir, monkeypatch):
+        """Absence is certain; there is nothing to retry."""
+        monkeypatch.setenv("PATH", str(bindir))
+        result = _run_probe(entry_for("not-here-at-all"))
+        assert result.status is ProbeStatus.NOT_FOUND
+
     def test_absent_tool_is_not_found(self, bindir, monkeypatch):
         monkeypatch.setenv("PATH", str(bindir))
         result = _run_probe(entry_for("nothing-is-called-this-xyz"))
@@ -493,73 +543,9 @@ class TestPathSecurity:
         assert payload["executable"] == str(bindir / "pathful")
 
 
-class TestWindowsResolution:
-    """Windows behaviour, verified by mocking the platform.
-
-    This is deterministic, and it is *not* native verification — no Windows
-    machine ran these. It covers the resolution logic that a POSIX CI can
-    reach: PATHEXT ordering and per-directory precedence.
-    """
-
-    def test_pathext_is_tried_per_directory_not_per_extension(
-        self, tmp_path, monkeypatch
-    ):
-        near = tmp_path / "near"
-        far = tmp_path / "far"
-        near.mkdir()
-        far.mkdir()
-        (near / "tool.cmd").write_text("@echo 1.0.0")
-        (far / "tool.exe").write_text("binary")
-
-        monkeypatch.setattr("aura.environment.pathsec.IS_WINDOWS", True)
-        monkeypatch.setenv("PATHEXT", ".EXE;.CMD;.BAT")
-
-        resolved = resolve_executable("tool", os.pathsep.join([str(near), str(far)]))
-
-        # The near .cmd wins over the far .exe, as the OS itself would decide.
-        assert resolved == str(near / "tool.cmd")
-
-    def test_effective_path_includes_windows_installer_directories(
-        self, tmp_path, monkeypatch
-    ):
-        appdata = tmp_path / "AppData" / "Roaming"
-        (appdata / "npm").mkdir(parents=True)
-        monkeypatch.setattr("aura.environment.pathsec.IS_WINDOWS", True)
-        monkeypatch.setenv("APPDATA", str(appdata))
-        monkeypatch.setenv("PATH", str(tmp_path))
-
-        assert str(appdata / "npm") in effective_path()
-
-    def test_location_trust_is_permissive_on_windows(self, tmp_path, monkeypatch):
-        target = tmp_path / "tool.exe"
-        target.write_text("binary")
-        monkeypatch.setattr("aura.environment.pathsec.IS_WINDOWS", True)
-        # POSIX mode bits do not describe Windows ACLs, so the POSIX checks
-        # are not applied there rather than being applied wrongly.
-        assert location_trust(target).trust is LocationTrust.TRUSTED
-
-
-class TestMacosCandidates:
-    """macOS app-bundle fallbacks, verified structurally (not natively)."""
-
-    def test_browsers_offer_application_bundle_candidates(self):
-        for node_id in ("chrome", "chromium", "firefox", "brave", "edge"):
-            entry = catalog_entry(node_id)
-            assert entry is not None and entry.probe is not None
-            assert any(
-                "/Applications/" in candidate for candidate in entry.probe.candidates
-            ), f"{node_id} has no macOS candidate"
-
-    def test_browsers_offer_windows_candidates(self):
-        for node_id in ("chrome", "chromium", "firefox", "brave", "edge"):
-            entry = catalog_entry(node_id)
-            assert any(
-                ".exe" in candidate for candidate in entry.probe.candidates
-            ), f"{node_id} has no Windows candidate"
-
-    def test_powershell_and_python_have_platform_fallbacks(self):
-        assert "powershell" in catalog_entry("powershell").probe.candidates
-        assert "python" in catalog_entry("python").probe.candidates
+# Windows and macOS behaviour now has a suite of its own
+# (test_cross_platform.py), which drives the whole subsystem through
+# `hostplatform.simulate()` instead of patching one module's constant.
 
 
 # ── ENV-007 / ENV-008: catalog integrity ────────────────────────────────
@@ -634,6 +620,60 @@ class TestCatalogIntegrity:
 
         missing = sorted(scannable_ts - set(BY_ID))
         assert missing == [], f"detectable in the TS catalog but not in Python: {missing}"
+
+    def test_every_entry_has_a_deliberate_detection_strategy(self):
+        """No entry may exist without a decided way of detecting it.
+
+        The catalog is what the desktop renders. An entry with no detection
+        story is a node that sits at "not checked yet" forever, which is how
+        Netlify disappeared from both the scan and the not-installed view.
+        """
+        for entry in ALL:
+            if entry.transport == "internal":
+                assert entry.probe is None and entry.endpoint is None
+            elif entry.transport == "local-process":
+                assert entry.probe is not None, f"{entry.id} has no probe"
+                assert entry.probe.args, f"{entry.id} probes with no arguments"
+            elif entry.transport == "http":
+                assert entry.endpoint is not None, f"{entry.id} has no endpoint"
+                assert entry.probe is None
+            else:
+                pytest.fail(f"{entry.id} has an undecided transport {entry.transport!r}")
+
+    def test_gui_applications_declare_platform_specific_candidates(self):
+        """A single command name cannot describe a browser or an editor.
+
+        These are the entries where one name is wrong on two platforms out
+        of three, so they must carry per-platform candidates or admit they
+        are not cross-platform.
+        """
+        gui = {"chrome", "chromium", "firefox", "brave", "edge", "vscode", "cursor"}
+        for node_id in gui:
+            entry = catalog_entry(node_id)
+            assert entry is not None
+            candidates = entry.probe.candidates
+            if entry.cross_platform:
+                assert any("/Applications/" in c for c in candidates), f"{node_id}: no macOS path"
+                assert any(
+                    c.lower().endswith((".exe", ".cmd")) for c in candidates
+                ), f"{node_id}: no Windows path"
+
+    def test_platform_specific_tools_say_so(self):
+        assert catalog_entry("xcode").cross_platform is False
+
+    def test_no_entry_probes_with_a_destructive_verb(self):
+        """Probe arguments are read-only by construction, not by hope."""
+        forbidden = {
+            "install", "uninstall", "remove", "delete", "update", "upgrade",
+            "publish", "deploy", "push", "login", "logout", "init", "start",
+            "stop", "restart", "run", "exec", "clean", "prune", "reset",
+        }
+        for entry in ALL:
+            if entry.probe is None:
+                continue
+            verbs = {arg.lower().lstrip("-") for arg in entry.probe.args}
+            overlap = verbs & forbidden
+            assert not overlap, f"{entry.id} probes with {overlap}"
 
     def test_install_specs_name_only_allow_listed_managers(self):
         from aura.environment import INSTALLER_BINARIES
@@ -740,26 +780,56 @@ class TestCounts:
 
 
 class TestDeterminism:
-    def test_repeated_scans_agree_exactly(self):
-        first = scan_environment(refresh=True)
-        second = scan_environment(refresh=True)
+    """Determinism, asserted against fixtures rather than the host.
 
-        assert set(first.results) == set(second.results)
-        drift = {
-            node_id
-            for node_id in first.results
-            if first.results[node_id].present != second.results[node_id].present
+    The equivalent checks against the real machine live in the opt-in
+    integration suite: a portable test must not depend on which tools a
+    contributor happens to have, nor fail because one of them lost a race
+    with its own update check.
+    """
+
+    @POSIX_ONLY
+    def test_repeated_probes_of_a_fixture_agree_exactly(self, bindir, monkeypatch):
+        write_script(bindir, "steady", 'echo "steady 1.2.3"\n')
+        monkeypatch.setenv("PATH", str(bindir))
+
+        results = [_run_probe(entry_for("steady")) for _ in range(5)]
+
+        assert {(r.status, r.version, r.executable) for r in results} == {
+            (ProbeStatus.VERIFIED, "1.2.3", str(bindir / "steady"))
         }
-        assert drift == set(), f"probes disagreed between identical scans: {drift}"
-        assert first.found == second.found
 
-    def test_scan_and_single_probe_agree_exactly(self):
-        scan = scan_environment(refresh=True)
-        for node_id, from_scan in scan.results.items():
-            single = probe_node(node_id, refresh=True)
-            assert from_scan.present == single.present, (
-                f"{node_id}: scan said {from_scan.present}, probe said {single.present}"
+    @POSIX_ONLY
+    def test_repeated_discovery_of_a_fixture_agrees_exactly(self, tmp_path, monkeypatch):
+        from aura.environment.discovery import discover_tools
+
+        bindir = tmp_path / "bin"
+        for name in ("alpha", "beta", "gamma"):
+            write_script(bindir, name, f'echo "{name} 1.0.0"\n')
+
+        signatures = set()
+        for _ in range(4):
+            report = discover_tools(path=str(bindir))
+            signatures.add(
+                tuple(
+                    (t.name, t.status, t.version, t.executed, tuple(t.aliases))
+                    for t in report.tools
+                )
             )
+
+        assert len(signatures) == 1, "discovery disagreed with itself on identical input"
+
+    @POSIX_ONLY
+    def test_concurrent_probes_of_a_fixture_agree_exactly(self, bindir, monkeypatch):
+        from concurrent.futures import ThreadPoolExecutor
+
+        write_script(bindir, "steady", 'echo "steady 1.2.3"\n')
+        monkeypatch.setenv("PATH", str(bindir))
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            results = list(pool.map(lambda _: _run_probe(entry_for("steady")), range(32)))
+
+        assert {(r.status, r.version) for r in results} == {(ProbeStatus.VERIFIED, "1.2.3")}
 
     def test_concurrent_scans_return_one_consistent_answer(self):
         """ENV-005: identical scans must not disagree under load."""
