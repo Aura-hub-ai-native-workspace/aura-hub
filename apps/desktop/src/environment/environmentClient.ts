@@ -129,6 +129,112 @@ export type ScanOutcome =
   | { ok: true; response: ScanResponse }
   | { ok: false; reason: string };
 
+/* ── complete machine inventory ─────────────────────────────────── */
+
+export type ItemKind =
+  | 'application'
+  | 'cli'
+  | 'runtime'
+  | 'sdk'
+  | 'library'
+  | 'package'
+  | 'unknown';
+
+export type TrustLevel = 'trusted' | 'untrusted' | 'blocked' | 'unknown';
+
+export interface InventoryEvidence {
+  source: string;
+  kind: string;
+  package?: string | null;
+  version?: string | null;
+  location?: string | null;
+  detail: string;
+}
+
+/**
+ * One installed thing, however many sources reported it. The five states are
+ * deliberately separate: a package database establishes `installed` without
+ * anything being executed, and only a safe probe establishes `verified`.
+ */
+export interface InventoryEntry {
+  id: string;
+  name: string;
+  displayName: string;
+  kind: ItemKind;
+  category: string;
+  version: string | null;
+  versions: string[];
+  versionConflict: boolean;
+  installLocation: string | null;
+  executablePath: string | null;
+  command: string | null;
+  packageManager: string | null;
+  packageName: string | null;
+  packageVersion: string | null;
+  publisher: string | null;
+  description: string | null;
+  installed: boolean;
+  detected: boolean;
+  verified: boolean;
+  usable: boolean;
+  connected: boolean;
+  executionAllowed: boolean;
+  executionPerformed: boolean;
+  trustLevel: TrustLevel;
+  trustReason: string;
+  aliases: string[];
+  shadowed: string[];
+  sources: string[];
+  evidence: InventoryEvidence[];
+  catalogId: string | null;
+  lastSeen: string;
+}
+
+/** How completely one source was able to answer. */
+export interface InventorySource {
+  name: string;
+  kind: string;
+  available: boolean;
+  items: number;
+  total: number;
+  truncated: boolean;
+  durationMs: number;
+  error?: string | null;
+  detail?: string | null;
+}
+
+export interface InventoryCounts {
+  total: number;
+  installed: number;
+  detected: number;
+  verified: number;
+  usable: number;
+  connected: number;
+  applications: number;
+  cli: number;
+  runtimes: number;
+  libraries: number;
+  packages: number;
+}
+
+export interface InventoryResponse {
+  items: InventoryEntry[];
+  /** How many matched, not how many were returned. */
+  total: number;
+  returned: number;
+  offset: number;
+  truncated: boolean;
+  counts: InventoryCounts;
+  sources: InventorySource[];
+  collectedAt: string;
+  durationMs: number;
+  degraded: boolean;
+}
+
+export type InventoryOutcome =
+  | { ok: true; response: InventoryResponse }
+  | { ok: false; reason: string };
+
 export type InstallOutcome = 'installed' | 'guided' | 'failed' | 'unverified' | 'unavailable';
 
 export interface InstallResponse {
@@ -154,6 +260,8 @@ export interface ConnectResponse {
 /** Generous: the backend's own probe budget is 12s per tool. */
 const SCAN_TIMEOUT_MS = 90_000;
 const PROBE_TIMEOUT_MS = 30_000;
+/** A cold inventory reads every package database on the machine. */
+const INVENTORY_TIMEOUT_MS = 120_000;
 
 const UNREACHABLE: ProbeResult = {
   present: false,
@@ -233,4 +341,33 @@ async function connectDirect(id: string): Promise<ConnectResponse> {
   return body as ConnectResponse;
 }
 
-export const environmentClient = { scan, probe, install, connectDirect };
+/** A page of the complete machine inventory. */
+async function inventory(options: {
+  refresh?: boolean;
+  offset?: number;
+  limit?: number;
+  kinds?: ItemKind[];
+  query?: string;
+  verify?: boolean;
+} = {}): Promise<InventoryOutcome> {
+  try {
+    const res = await fetch(`${BASE}/environment/inventory`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(options),
+      signal: AbortSignal.timeout(INVENTORY_TIMEOUT_MS),
+    });
+    if (!res.ok) return { ok: false, reason: `The local AURA service answered ${res.status}.` };
+    return { ok: true, response: (await res.json()) as InventoryResponse };
+  } catch (e) {
+    const aborted = e instanceof DOMException && e.name === 'TimeoutError';
+    return {
+      ok: false,
+      reason: aborted
+        ? 'Reading the machine inventory did not finish in time.'
+        : UNREACHABLE.detail,
+    };
+  }
+}
+
+export const environmentClient = { scan, probe, install, connectDirect, inventory };

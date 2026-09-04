@@ -118,5 +118,37 @@ after.discovered.length === discoveredBefore
   ? ok('the last known inventory is kept rather than blanked')
   : fail('a failed scan discarded the last known inventory');
 
+// ---- the complete machine inventory ----
+const invPath = process.env.MACHINE_INVENTORY_JSON;
+if (invPath) {
+  const machine = JSON.parse(readFileSync(invPath, 'utf8'));
+  console.log(`\nMACHINE INVENTORY: ${machine.total} installed, ${machine.returned} on this page`);
+  console.log(`  counts: ${JSON.stringify(machine.counts)}`);
+
+  machine.total >= machine.returned
+    ? ok('total is the whole inventory, returned is the page')
+    : fail(`returned ${machine.returned} exceeds total ${machine.total}`);
+
+  const ids = new Set<string>();
+  for (const item of machine.items) {
+    if (ids.has(item.id)) fail(`duplicate inventory id ${item.id}`);
+    ids.add(item.id);
+    if (!item.installed) fail(`${item.name} is listed but not installed`);
+    if (!item.evidence?.length) fail(`${item.name} has no evidence`);
+    if (item.verified && !item.executionPerformed) {
+      fail(`${item.name} is verified without having been run`);
+    }
+    if (item.executionPerformed && !item.executionAllowed) {
+      fail(`${item.name} was run without being allowed`);
+    }
+  }
+  if (!bad) ok(`every item is installed, evidenced and honestly stated (${ids.size} shown)`);
+
+  const unavailable = machine.sources.filter((s: any) => !s.available);
+  unavailable.every((s: any) => s.detail || s.error)
+    ? ok(`every unavailable source explains itself (${unavailable.length} of ${machine.sources.length})`)
+    : fail('an unavailable source gave no reason');
+}
+
 console.log(bad ? `\n${bad} FAILURES` : '\nall frontend inventory assertions passed');
 process.exit(bad ? 1 : 0);

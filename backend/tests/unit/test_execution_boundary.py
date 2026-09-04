@@ -146,13 +146,27 @@ class TestOneExecutionBoundary:
         assert offenders == [], "\n  ".join(offenders)
 
     def test_nothing_anywhere_uses_a_shell(self):
+        """No shell invocation, in code.
+
+        Checked against the parsed source rather than the raw text: a
+        comment explaining *why* `/bin/sh -c` is dangerous is documentation,
+        not an invocation, and a check that cannot tell them apart pushes
+        people to delete the explanation.
+        """
+        shell_invocations = ("/bin/sh -c", "/bin/bash -c", "bash -c", "sh -c", "cmd /c", "cmd.exe /c")
         offenders: list[str] = []
         for source in _python_sources():
-            text = source.read_text()
-            for needle in ("shell=True", "/bin/sh -c", "bash -c", "cmd /c", "powershell -Command"):
-                if needle in text:
-                    offenders.append(f"{_relative(source)} contains {needle!r}")
-        assert offenders == []
+            tree = ast.parse(source.read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.keyword) and node.arg == "shell":
+                    value = node.value
+                    if not (isinstance(value, ast.Constant) and value.value is False):
+                        offenders.append(f"{_relative(source)} passes shell=")
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    for needle in shell_invocations:
+                        if needle in node.value:
+                            offenders.append(f"{_relative(source)} builds {needle!r}")
+        assert offenders == [], "\n  ".join(offenders)
 
     def test_every_exemption_still_exists_and_is_justified(self):
         """An exemption for a deleted or reformed module must not linger."""

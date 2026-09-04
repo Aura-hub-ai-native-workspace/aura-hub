@@ -377,6 +377,67 @@ class TestApiResilience:
             thread.join(timeout=90)
         assert results.count(200) == 12
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"limit": -5},
+            {"offset": "x"},
+            {"limit": 10**9},
+            {"offset": -1},
+            {"offset": 10**12},
+            # `value or []` leaves a non-list in place, and iterating it
+            # turned a malformed request into a 500.
+            {"kinds": 5},
+            {"kinds": "application"},
+            {"kinds": [1, 2]},
+            {"kinds": {"a": 1}},
+            {"query": 123},
+            {"query": ["x"]},
+            {"limit": None},
+            {"refresh": "yes"},
+            {"verify": 0},
+            {},
+        ],
+    )
+    def test_inventory_answers_every_shape_of_request(self, client, body):
+        response = client.post("/environment/inventory", json={**body, "verify": False})
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["returned"] <= payload["total"]
+
+    @pytest.mark.parametrize(
+        "raw", [b"", b"not json", b"[]", b"null", b"123", b'{"kinds":{"x":1}}', b"\x00\x01"]
+    )
+    def test_inventory_survives_malformed_bodies(self, client, raw):
+        response = client.post(
+            "/environment/inventory", content=raw, headers={"content-type": "application/json"}
+        )
+        assert response.status_code == 200
+
+    def test_inventory_pagination_is_lossless_over_the_api(self, client):
+        """Paging must reach every item exactly once."""
+        seen: list[str] = []
+        offset = 0
+        while True:
+            payload = client.post(
+                "/environment/inventory",
+                json={"offset": offset, "limit": 500, "verify": False},
+            ).json()
+            seen.extend(item["id"] for item in payload["items"])
+            if not payload["truncated"]:
+                assert len(seen) == payload["total"]
+                break
+            offset += payload["returned"]
+        assert len(seen) == len(set(seen)), "an item was returned on two pages"
+
+    def test_inventory_never_reports_something_it_did_not_run_as_verified(self, client):
+        payload = client.post("/environment/inventory", json={"limit": 1000}).json()
+        for entry in payload["items"]:
+            assert entry["installed"] is True
+            if entry["verified"]:
+                assert entry["executionPerformed"] is True
+                assert entry["executionAllowed"] is True
+
     def test_install_never_builds_a_command_from_the_request(self, client):
         """The body carries an id; the command comes from the catalog."""
         for hostile in ("git; rm -rf /", "$(whoami)", "../../bin/sh", "`id`"):

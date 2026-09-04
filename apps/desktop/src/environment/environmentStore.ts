@@ -36,6 +36,10 @@ import {
 import {
   environmentClient,
   type DiscoveredTool,
+  type InventoryCounts,
+  type InventoryEntry,
+  type InventorySource,
+  type ItemKind,
   type DiscoveryMeta,
   type InstallResponse,
   type InventoryMeta,
@@ -64,6 +68,21 @@ interface EnvironmentState {
   /** Set when the last scan could not measure anything. */
   scanError: string | null;
 
+  /* ── complete machine inventory ─────────────────────────────── */
+  /** Every installed thing the machine can authoritatively identify. */
+  inventory: InventoryEntry[];
+  inventoryCounts: InventoryCounts | null;
+  inventorySources: InventorySource[];
+  /** How many matched — `inventory` holds the pages loaded so far. */
+  inventoryTotal: number;
+  inventoryCollectedAt: string | null;
+  inventoryLoading: boolean;
+  inventoryError: string | null;
+  /** Discovery ran but could not be refreshed; this is an older answer. */
+  inventoryDegraded: boolean;
+  loadInventory: (refresh?: boolean) => Promise<void>;
+  loadMoreInventory: () => Promise<void>;
+
   scan: (refresh?: boolean) => Promise<void>;
   connect: (id: string) => Promise<void>;
   disconnect: (id: string) => void;
@@ -73,6 +92,10 @@ interface EnvironmentState {
   /** Governed AI install (kept for model-initiated). */
   installGoverned?: (id: string) => Promise<InvocationResultView>;
 }
+
+/** Items fetched per page. Large enough to fill a screen, small enough
+ *  that a machine with thousands of packages still answers immediately. */
+const INVENTORY_PAGE = 400;
 
 export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   nodes: createEnvironment(),
@@ -87,6 +110,61 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
   packageSources: [],
   osInventory: null,
   scanError: null,
+
+  inventory: [],
+  inventoryCounts: null,
+  inventorySources: [],
+  inventoryTotal: 0,
+  inventoryCollectedAt: null,
+  inventoryLoading: false,
+  inventoryError: null,
+  inventoryDegraded: false,
+
+  loadInventory: async (refresh = false) => {
+    if (get().inventoryLoading) return;
+    set({ inventoryLoading: true, inventoryError: null });
+    const outcome = await environmentClient.inventory({ refresh, limit: INVENTORY_PAGE });
+
+    if (!outcome.ok) {
+      // Keep whatever is on screen; it is the last thing actually measured.
+      set({ inventoryLoading: false, inventoryError: outcome.reason });
+      return;
+    }
+    const { response } = outcome;
+    set({
+      inventory: response.items,
+      inventoryCounts: response.counts,
+      inventorySources: response.sources,
+      inventoryTotal: response.total,
+      inventoryCollectedAt: response.collectedAt,
+      inventoryDegraded: response.degraded,
+      inventoryLoading: false,
+      inventoryError: null,
+    });
+  },
+
+  loadMoreInventory: async () => {
+    const { inventory, inventoryTotal, inventoryLoading } = get();
+    if (inventoryLoading || inventory.length >= inventoryTotal) return;
+    set({ inventoryLoading: true });
+    const outcome = await environmentClient.inventory({
+      offset: inventory.length,
+      limit: INVENTORY_PAGE,
+    });
+    if (!outcome.ok) {
+      set({ inventoryLoading: false, inventoryError: outcome.reason });
+      return;
+    }
+    set((s) => ({
+      // Paging must never duplicate an item already on screen.
+      inventory: [
+        ...s.inventory,
+        ...outcome.response.items.filter((item) => !s.inventory.some((seen) => seen.id === item.id)),
+      ],
+      inventoryTotal: outcome.response.total,
+      inventoryLoading: false,
+    }));
+  },
 
   scan: async (refresh = false) => {
     if (get().scanning) return;
@@ -631,6 +709,63 @@ export function useNormalizedInventory(): NormalizedInventory {
       }),
     [nodes, discovered, packages, notInstalled, osPackages, discoveryMeta, packageSources, osInventory],
   );
+}
+
+/** The machine inventory grouped the way the screen presents it. */
+export interface GroupedInventory {
+  groups: { id: ItemKind | 'other'; label: string; items: InventoryEntry[] }[];
+  counts: InventoryCounts | null;
+  sources: InventorySource[];
+  total: number;
+  loaded: number;
+  collectedAt: string | null;
+  degraded: boolean;
+}
+
+const KIND_ORDER: { id: ItemKind; label: string }[] = [
+  { id: 'application', label: 'Applications' },
+  { id: 'cli', label: 'CLI Tools' },
+  { id: 'runtime', label: 'Runtimes' },
+  { id: 'sdk', label: 'SDKs' },
+  { id: 'package', label: 'Packages' },
+  { id: 'library', label: 'Libraries' },
+];
+
+export function useMachineInventoryGroups(): GroupedInventory {
+  const inventory = useEnvironmentStore((s) => s.inventory);
+  const counts = useEnvironmentStore((s) => s.inventoryCounts);
+  const sources = useEnvironmentStore((s) => s.inventorySources);
+  const total = useEnvironmentStore((s) => s.inventoryTotal);
+  const collectedAt = useEnvironmentStore((s) => s.inventoryCollectedAt);
+  const degraded = useEnvironmentStore((s) => s.inventoryDegraded);
+
+  return useMemo(() => {
+    const buckets = new Map<string, InventoryEntry[]>();
+    for (const item of inventory) {
+      const key = KIND_ORDER.some((k) => k.id === item.kind) ? item.kind : 'other';
+      const bucket = buckets.get(key);
+      if (bucket) bucket.push(item);
+      else buckets.set(key, [item]);
+    }
+    const groups = [
+      ...KIND_ORDER.map((kind) => ({
+        id: kind.id as ItemKind | 'other',
+        label: kind.label,
+        items: buckets.get(kind.id) ?? [],
+      })),
+      { id: 'other' as const, label: 'Other Installed Software', items: buckets.get('other') ?? [] },
+    ].filter((group) => group.items.length > 0);
+
+    return {
+      groups,
+      counts,
+      sources,
+      total,
+      loaded: inventory.length,
+      collectedAt,
+      degraded,
+    };
+  }, [inventory, counts, sources, total, collectedAt, degraded]);
 }
 
 // Back-compat: verified list alone (used by older UI if any)

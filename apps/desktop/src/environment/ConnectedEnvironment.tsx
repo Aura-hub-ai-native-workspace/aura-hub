@@ -30,7 +30,15 @@ import {
   type EnvironmentNode,
   type NodeCategory,
 } from '@aura/connected-environment';
-import { useCapabilityGaps, useEnvironmentStore, useEnvironmentSummary, useNormalizedInventory, type InventoryItem } from './environmentStore';
+import {
+  useCapabilityGaps,
+  useEnvironmentStore,
+  useEnvironmentSummary,
+  useMachineInventoryGroups,
+  useNormalizedInventory,
+  type InventoryItem,
+} from './environmentStore';
+import type { InventoryEntry } from './environmentClient';
 import { FABRIC_CORE_REQUIREMENTS } from './fabricRequirements';
 import { GapPanel } from './GapPanel';
 import { NodeCard } from './NodeCard';
@@ -72,6 +80,11 @@ export function ConnectedEnvironment() {
   // launch by design — a remembered "Docker is connected" that is no
   // longer true is worse than not knowing.
   useEffect(() => { void scan(); }, [scan]);
+
+  // The machine inventory is read from authoritative sources and is the
+  // primary view; the catalog scan above enriches it and drives Connect.
+  const loadInventory = useEnvironmentStore((s) => s.loadInventory);
+  useEffect(() => { void loadInventory(); }, [loadInventory]);
 
   useEffect(() => {
     const el = canvasRef.current;
@@ -119,6 +132,7 @@ export function ConnectedEnvironment() {
           </div>
 
           <div className="min-w-0 space-y-4 lg:order-1">
+            <MachineInventoryComplete />
             <MachineInventoryPrimary />
             <MachineInventorySecondary />
             <section className="rounded-xl border border-dashed border-line bg-surface/50 p-3">
@@ -234,7 +248,188 @@ function Header({
   );
 }
 
-/* ── PRIMARY: normalized machine inventory ────────────────────── */
+/* ── PRIMARY: the complete machine inventory ──────────────────── */
+
+const STATE_BADGES: { key: keyof InventoryEntry; label: string; tone: string }[] = [
+  { key: 'connected', label: 'Connected', tone: 'bg-positive text-white' },
+  { key: 'verified', label: 'Verified', tone: 'bg-positive/15 text-positive' },
+  { key: 'installed', label: 'Installed', tone: 'bg-surface-active text-text-muted' },
+];
+
+function MachineInventoryComplete() {
+  const { groups, counts, sources, total, loaded, collectedAt, degraded } =
+    useMachineInventoryGroups();
+  const loading = useEnvironmentStore((s) => s.inventoryLoading);
+  const error = useEnvironmentStore((s) => s.inventoryError);
+  const loadInventory = useEnvironmentStore((s) => s.loadInventory);
+  const loadMore = useEnvironmentStore((s) => s.loadMoreInventory);
+  const [open, setOpen] = useState<Record<string, boolean>>({ application: true, cli: true, runtime: true });
+  const [showSources, setShowSources] = useState(false);
+
+  if (!loaded && !loading && !error) return null;
+
+  return (
+    <section className="rounded-2xl border border-line bg-surface p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <Icon name="research" size={14} className="text-text-subtle" />
+            <h2 className="text-[13px] font-semibold text-text">Machine Inventory</h2>
+            <span className="rounded-full bg-surface-active px-1.5 py-0.5 text-[10px] font-medium text-text-muted">
+              {total} installed
+            </span>
+          </div>
+          <p className="mt-1 max-w-2xl text-[11.5px] leading-relaxed text-text-muted">
+            Everything this machine can authoritatively identify as installed — read from package
+            databases, application manifests and PATH. Nothing here was executed to be listed;
+            a few were run afterwards to confirm a version.
+          </p>
+          {counts && (
+            <p className="mt-1 text-[10.5px] text-text-subtle">
+              {counts.installed} installed · {counts.verified} verified · {counts.applications} applications ·{' '}
+              {counts.cli} CLI · {counts.runtimes} runtimes · {counts.libraries} libraries
+              {collectedAt && ` · read ${new Date(collectedAt).toLocaleTimeString()}`}
+            </p>
+          )}
+          {degraded && (
+            <p className="mt-1 text-[10.5px] text-attention">
+              A source could not be read this time, so this is an earlier inventory.
+            </p>
+          )}
+          {error && <p className="mt-1 text-[10.5px] text-attention">{error}</p>}
+        </div>
+        <button
+          onClick={() => void loadInventory(true)}
+          disabled={loading}
+          className="flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 text-[11px] font-medium text-text-muted transition-colors hover:border-line-strong hover:text-text disabled:opacity-60"
+        >
+          <Icon name="refresh" size={11} className={loading ? 'animate-spin' : undefined} />
+          {loading ? 'Reading…' : 'Re-read machine'}
+        </button>
+      </div>
+
+      {groups.map((group) => (
+        <div key={group.id} className="mt-3">
+          <button
+            onClick={() => setOpen((o) => ({ ...o, [group.id]: !o[group.id] }))}
+            className="flex w-full items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-text"
+          >
+            <Icon name={open[group.id] ? 'chevron-down' : 'chevron-right'} size={10} />
+            {group.label}
+            <span className="font-normal text-text-subtle">({group.items.length})</span>
+          </button>
+          {open[group.id] && (
+            <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+              {group.items.map((item) => (
+                <InventoryEntryCard key={item.id} item={item} />
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
+
+      {loaded < total && (
+        <button
+          onClick={() => void loadMore()}
+          disabled={loading}
+          className="mt-3 w-full rounded-lg border border-dashed border-line py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:border-line-strong hover:text-text disabled:opacity-60"
+        >
+          {loading ? 'Loading…' : `Show more — ${loaded} of ${total} loaded`}
+        </button>
+      )}
+
+      {sources.length > 0 && (
+        <div className="mt-4 border-t border-line pt-2.5">
+          <button
+            onClick={() => setShowSources((v) => !v)}
+            className="flex items-center gap-1.5 text-[10.5px] font-medium text-text-muted hover:text-text"
+          >
+            <Icon name={showSources ? 'chevron-down' : 'chevron-right'} size={10} />
+            Inventory sources
+            <span className="font-normal text-text-subtle">
+              ({sources.filter((s) => s.available).length} of {sources.length} available)
+            </span>
+          </button>
+          {showSources && (
+            <div className="mt-2 space-y-1">
+              {sources.map((source) => (
+                <div key={source.name} className="flex flex-wrap items-baseline gap-x-2 text-[10.5px]">
+                  <span className={cn('font-medium', source.available ? 'text-text' : 'text-text-subtle')}>
+                    {source.name}
+                  </span>
+                  {source.available ? (
+                    <span className="text-text-subtle">
+                      {source.items} of {source.total} item{source.total === 1 ? '' : 's'}
+                      {source.truncated ? ' (truncated)' : ''} · {source.durationMs}ms
+                    </span>
+                  ) : (
+                    // Not installed is not the same as "nothing of this kind
+                    // exists", and the difference has to survive to here.
+                    <span className="text-text-subtle">not available — {source.detail || source.error}</span>
+                  )}
+                  {source.available && source.detail && (
+                    <span className="text-text-subtle">· {source.detail}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function InventoryEntryCard({ item }: { item: InventoryEntry }) {
+  const badge = STATE_BADGES.find((b) => item[b.key] === true);
+  return (
+    <div className="flex flex-col rounded-lg border border-line bg-surface-active/30 p-2">
+      <div className="flex items-start gap-1.5">
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-1">
+            <span className="truncate text-[12px] font-medium text-text">{item.displayName}</span>
+            {item.version && (
+              <span className="shrink-0 text-[10px] tabular-nums text-text-subtle">· {item.version}</span>
+            )}
+            {badge && (
+              <span className={cn('shrink-0 rounded px-1 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider', badge.tone)}>
+                {badge.label}
+              </span>
+            )}
+            {/* Deliberately not run: said out loud, never dressed up. */}
+            {!item.executionPerformed && item.trustLevel === 'untrusted' && (
+              <span
+                className="shrink-0 rounded bg-surface-active px-1 py-0.5 text-[8.5px] font-semibold uppercase tracking-wider text-text-muted"
+                title={item.trustReason}
+              >
+                Not run
+              </span>
+            )}
+          </span>
+          {item.versionConflict && item.versions.length > 1 && (
+            <span className="mt-0.5 block text-[10px] text-attention" title={item.versions.join(' · ')}>
+              sources disagree: {item.versions.join(' · ')}
+            </span>
+          )}
+          <span className="mt-0.5 block truncate text-[10px] text-text-subtle">
+            {item.sources.join(' + ')}
+            {item.packageName && item.packageName !== item.name ? ` · ${item.packageName}` : ''}
+          </span>
+          {(item.executablePath || item.installLocation) && (
+            <span
+              className="mt-0.5 block truncate font-mono text-[9.5px] text-text-subtle"
+              title={item.executablePath || item.installLocation || ''}
+            >
+              {item.executablePath || item.installLocation}
+            </span>
+          )}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* ── normalized catalog view ──────────────────────────────────── */
 
 function MachineInventoryPrimary() {
   const { verified, unverified, knownNotInstalled, counts, meta } = useNormalizedInventory();

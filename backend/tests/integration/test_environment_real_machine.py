@@ -204,6 +204,160 @@ class TestRealMachineDeterminism:
             )
 
 
+class TestRealMachineInventory:
+    """The inventory against this machine's own authoritative sources.
+
+    Reconciliation, not a percentage: every source is compared to what the
+    tool itself reports, and any gap has to be explainable.
+    """
+
+    @pytest.fixture(scope="class")
+    def inventory(self):
+        from aura.environment.inventory import clear_cache, collect_inventory
+
+        clear_cache()
+        return collect_inventory(verify=True)
+
+    def _report(self, inventory, name):
+        return next((r for r in inventory.sources if r.name == name), None)
+
+    def test_os_package_count_matches_the_package_manager_exactly(self, inventory):
+        """Whatever the distribution reports, AURA reports the same number."""
+        import subprocess
+
+        for manager, argv in (
+            ("pacman", ["pacman", "-Q"]),
+            ("dpkg", ["dpkg-query", "-W", "-f=${Package}\n"]),
+            ("rpm", ["rpm", "-qa"]),
+        ):
+            report = self._report(inventory, manager)
+            if report is None or not report.available:
+                continue
+            binary = shutil.which(argv[0])
+            if binary is None:
+                continue
+            truth = len(
+                [
+                    line
+                    for line in subprocess.run(
+                        [binary, *argv[1:]], capture_output=True, text=True
+                    ).stdout.splitlines()
+                    if line.strip()
+                ]
+            )
+            assert report.total == truth, (
+                f"{manager}: the machine reports {truth} packages, AURA {report.total}"
+            )
+
+    def test_npm_global_count_matches_the_directory(self, inventory):
+        report = self._report(inventory, "npm")
+        if report is None or not report.available:
+            pytest.skip("npm is not installed")
+
+        from aura.environment.provenance import npm_global_prefix
+
+        prefix = npm_global_prefix()
+        assert prefix is not None
+        root = prefix / "lib" / "node_modules"
+        if not root.is_dir():
+            root = prefix / "node_modules"
+        truth = 0
+        for entry in root.iterdir():
+            if entry.name.startswith(".") or not entry.is_dir():
+                continue
+            truth += len(list(entry.iterdir())) if entry.name.startswith("@") else 1
+        assert report.total == truth
+
+    def test_pip_count_matches_pip(self, inventory):
+        import json as _json
+        import subprocess
+
+        report = self._report(inventory, "pip")
+        if report is None or not report.available:
+            pytest.skip("pip is not installed")
+        binary = shutil.which("pip3") or shutil.which("pip")
+        if binary is None:
+            pytest.skip("pip is not on PATH")
+        raw = subprocess.run(
+            [binary, "list", "--format=json", "--disable-pip-version-check"],
+            capture_output=True,
+            text=True,
+        ).stdout
+        truth = len(_json.loads(raw or "[]"))
+        assert report.total == truth
+
+    def test_every_source_is_either_used_or_explains_itself(self, inventory):
+        """No silent unknowns: a source is available, or says why not."""
+        for report in inventory.sources:
+            if report.available:
+                assert report.items >= 0
+            else:
+                assert report.detail or report.error, f"{report.name} gave no reason"
+
+    def test_nothing_was_executed_merely_to_be_inventoried(self, inventory):
+        for entry in inventory.items:
+            if entry.execution_performed:
+                # Anything run had to satisfy the execution policy first.
+                assert entry.execution_allowed is True, entry.name
+            else:
+                # And anything not run is still fully inventoried.
+                assert entry.installed is True
+
+    def test_untrusted_software_is_inventoried_without_being_run(self, inventory):
+        untrusted = [i for i in inventory.items if i.trust_level.value in ("untrusted", "blocked")]
+        for entry in untrusted:
+            assert entry.installed is True
+            assert entry.detected is True
+            assert entry.verified is False
+            assert entry.trust_reason or entry.execution_allowed is False
+
+    def test_no_two_items_claim_the_same_identity(self, inventory):
+        seen: dict[str, str] = {}
+        for entry in inventory.items:
+            for key in entry.keys:
+                assert key not in seen, f"{key}: {seen.get(key)} and {entry.name}"
+                seen[key] = entry.name
+
+    def test_the_inventory_covers_the_development_environment(self, inventory):
+        """Whatever is genuinely installed here must be in the inventory.
+
+        Driven from the machine, not from a wish list: every command that
+        resolves on PATH has to appear somewhere in the inventory.
+        """
+        names: set[str] = set()
+        for entry in inventory.items:
+            names.add(entry.name.lower())
+            names.update(a.lower() for a in entry.aliases)
+            names.update(c.lower() for c in entry.provides)
+            if entry.command:
+                names.add(entry.command.lower())
+
+        missing = []
+        for command in ("git", "curl", "bash", "python3", "npm", "node"):
+            if shutil.which(command) and command not in names:
+                missing.append(command)
+        assert missing == [], f"installed but absent from the inventory: {missing}"
+
+    def test_a_cached_inventory_is_immediate(self):
+        import time as _time
+
+        from aura.environment.inventory import clear_cache, get_inventory
+
+        clear_cache()
+        get_inventory(refresh=True, verify=False)
+        started = _time.monotonic()
+        get_inventory(refresh=False, verify=False)
+        assert (_time.monotonic() - started) < 0.5
+
+    def test_installing_something_new_invalidates_the_cache(self, tmp_path, monkeypatch):
+        """The fingerprint moves when the machine does."""
+        from aura.environment.inventory.service import _machine_fingerprint
+
+        before = _machine_fingerprint()
+        monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+        assert _machine_fingerprint() != before
+
+
 class TestRealMachinePerformance:
     def test_cold_refresh_scan_is_bounded(self):
         _clear_cache()

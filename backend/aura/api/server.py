@@ -1467,6 +1467,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/automation/events/stream", automation_events_stream, methods=["GET"]),
         Route("/events/workflow", sse_workflow_events, methods=["GET"]),
         Route("/environment/scan", environment_scan, methods=["POST"]),
+        Route("/environment/inventory", environment_inventory, methods=["POST"]),
         Route("/environment/probe", environment_probe, methods=["POST"]),
         Route("/environment/install", environment_install, methods=["POST"]),
         Route("/environment/connect", environment_connect, methods=["POST"]),
@@ -1567,6 +1568,65 @@ async def environment_scan(request: Request):
         lambda: scan_result_to_dict(scan_environment(node_ids=node_ids, refresh=refresh))
     )
     return JSONResponse(result)
+
+
+async def environment_inventory(request: Request):
+    """The complete machine inventory, paginated.
+
+    POST /environment/inventory
+    Body: { refresh?, offset?, limit?, kinds?: string[], query?, verify? }
+    Returns: { items, total, returned, offset, truncated, counts, sources, ... }
+
+    `total` is how many items matched, not how many were returned: a caller
+    that wants everything pages through it, and one that wants a screenful
+    is told how much more there is. Collection runs on a worker thread and
+    is shared between concurrent callers.
+    """
+    import anyio.to_thread
+
+    from ..environment.inventory import get_inventory, inventory_to_dict
+
+    body = await _environment_body(request)
+    refresh = bool(body.get("refresh", False))
+    verify = bool(body.get("verify", True))
+    offset = _positive_int(body.get("offset"), 0)
+    raw_limit = body.get("limit", 200)
+    limit = None if raw_limit is None else min(_positive_int(raw_limit, 200), 5000)
+    kinds = _string_set(body.get("kinds"))
+    raw_query = body.get("query")
+    query = raw_query if isinstance(raw_query, str) else None
+
+    inventory = await anyio.to_thread.run_sync(
+        lambda: get_inventory(refresh=refresh, verify=verify)
+    )
+    payload = await anyio.to_thread.run_sync(
+        lambda: inventory_to_dict(inventory, offset=offset, limit=limit, kinds=kinds, query=query)
+    )
+    return JSONResponse(payload)
+
+
+def _string_set(value: object) -> set[str] | None:
+    """A set of strings from an untrusted body, or no filter at all.
+
+    `value or []` is not enough: a body of `{"kinds": 5}` leaves the 5 in
+    place and iterating it raises, which reaches the client as a 500 for
+    what is only a malformed request.
+    """
+    if not isinstance(value, (list, tuple, set)):
+        return None
+    names = {item for item in value if isinstance(item, str) and item.strip()}
+    return names or None
+
+
+def _positive_int(value: object, fallback: int) -> int:
+    """A bounded integer from an untrusted body, never an exception."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return fallback
+    try:
+        number = int(value)
+    except (ValueError, OverflowError):
+        return fallback
+    return max(0, min(number, 1_000_000))
 
 
 async def environment_probe(request: Request):
