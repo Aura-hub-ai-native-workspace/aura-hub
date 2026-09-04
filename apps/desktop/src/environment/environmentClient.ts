@@ -182,6 +182,8 @@ export interface InventoryEntry {
   executionPerformed: boolean;
   trustLevel: TrustLevel;
   trustReason: string;
+  origin: string | null;
+  detail: string | null;
   aliases: string[];
   shadowed: string[];
   sources: string[];

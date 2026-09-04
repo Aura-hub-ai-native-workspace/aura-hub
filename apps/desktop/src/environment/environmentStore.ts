@@ -695,7 +695,7 @@ export function useNormalizedInventory(): NormalizedInventory {
   const packageSources = useEnvironmentStore((s) => s.packageSources);
   const osInventory = useEnvironmentStore((s) => s.osInventory);
 
-  return useMemo(
+  const normalized = useMemo(
     () =>
       normalizeInventory({
         nodes,
@@ -709,6 +709,38 @@ export function useNormalizedInventory(): NormalizedInventory {
       }),
     [nodes, discovered, packages, notInstalled, osPackages, discoveryMeta, packageSources, osInventory],
   );
+
+  // Append inventory items (e.g. npm global packages) to unverified so they appear
+  // in the Machine Environment even when not in the catalog.
+  const inventory = useEnvironmentStore((s) => s.inventory);
+  const inventoryItems: InventoryItem[] = inventory.map((entry) => ({
+    id: entry.id,
+    logicalId: entry.id,
+    name: entry.name,
+    version: entry.version ?? null,
+    category: entry.category ?? 'unknown',
+    status: entry.verified && entry.executablePath != null ? 'verified' : 'unverified',
+    verified: entry.verified && entry.executablePath != null,
+    present: entry.verified && entry.executablePath != null,
+    executable: entry.executablePath ?? null,
+    realPath: entry.executablePath ?? null,
+    origin: entry.origin ?? null,
+    packageId: entry.packageName ?? null,
+    manager: entry.packageManager ?? null,
+    packageVersion: entry.packageVersion ?? null,
+    versionConflict: entry.versionConflict,
+    aliases: entry.aliases ?? [],
+    shadowed: entry.shadowed ?? [],
+    sources: entry.sources ?? [],
+    detail: entry.detail ?? '',
+    unexecuted: !entry.verified,
+    connected: entry.connected ?? false,
+  }));
+
+  return {
+    ...normalized,
+    unverified: [...normalized.unverified, ...inventoryItems.filter((item) => !item.verified)],
+  };
 }
 
 /** The machine inventory grouped the way the screen presents it. */
