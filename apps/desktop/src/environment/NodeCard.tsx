@@ -12,12 +12,14 @@
  * who delegated the work actually wants to see.
  */
 
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { cn, spring } from '@aura/core';
 import { Icon } from '@aura/ui';
 import { describeNode, isConnectable, type EnvironmentNode } from '@aura/connected-environment';
+import { fabricClient, type InstallResultView } from '../ai/fabricClient';
 import { CATEGORY_ICON, STATUS_LABEL, STATUS_TONE, TONE_DOT, TONE_TEXT } from './presentation';
+import { useEnvironmentStore } from './environmentStore';
 
 interface NodeCardProps {
   node: EnvironmentNode;
@@ -33,6 +35,28 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
   const running = node.activity.filter((a) => a.state === 'running');
   const connectable = isConnectable(node.entry);
   const isInternal = node.entry.transport === 'internal';
+  const canInstall = node.health.status === 'not-installed' && !!node.entry.install;
+  const rescan = useEnvironmentStore((s) => s.scan);
+  const [installing, setInstalling] = useState(false);
+
+  const handleInstall = async () => {
+    if (installing || busy) return;
+    setInstalling(true);
+    try {
+      const res = await fabricClient.invokeAsUser('system.install', { nodeId: node.id });
+      if (res.outcome === 'awaiting-approval' || res.outcome === 'denied' || res.outcome === 'unsupported') {
+        return;
+      }
+      const output = res.output as InstallResultView | undefined;
+      if (output?.installOutcome === 'installed') {
+        await rescan(true);
+      }
+    } catch {
+      /* remain honest — a throw keeps the node not-installed */
+    } finally {
+      setInstalling(false);
+    }
+  };
 
   return (
     <motion.div
@@ -100,6 +124,37 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
           >
             Disconnect
           </button>
+        ) : node.health.status === 'installing' || installing ? (
+          <button
+            disabled
+            data-testid="node-card-installing"
+            data-install-state="installing"
+            className="rounded-lg bg-accent px-2.5 py-1 text-[10.5px] font-medium text-white opacity-60"
+          >
+            Installing…
+          </button>
+        ) : canInstall ? (
+          <button
+            onClick={handleInstall}
+            disabled={busy || installing}
+            data-testid="node-card-install"
+            data-install-state={installing ? 'installing' : 'idle'}
+            className="rounded-lg bg-accent px-2.5 py-1 text-[10.5px] font-medium text-white transition-colors hover:bg-accent-600 disabled:opacity-60"
+          >
+            {installing ? 'Installing…' : 'Install'}
+          </button>
+        ) : node.health.status === 'not-installed' ? (
+          // Not installed and no verified install path — do not offer a
+          // misleading Connect. The honest fallbacks are Details and Open site.
+          <a
+            href={node.entry.homepage}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[10.5px] font-medium text-text-muted transition-colors hover:border-line-strong hover:text-text"
+          >
+            <Icon name="link" size={10} />
+            Open site
+          </a>
         ) : connectable ? (
           <button
             onClick={onConnect}

@@ -46,6 +46,8 @@ export function NodeInspector({
   const phrase = describeNode(node);
   const tone = STATUS_TONE[node.health.status];
   const connectable = isConnectable(node.entry);
+  const canInstall = node.health.status === 'not-installed' && !!node.entry.install;
+  const isInstalling = node.health.status === 'installing';
 
   return (
     <div className="space-y-3 p-3">
@@ -66,14 +68,21 @@ export function NodeInspector({
       </section>
 
       <div className="flex flex-wrap items-center gap-1.5">
-        {!connectable ? null : node.connected ? (
+        {node.connected ? (
           <button
             onClick={onDisconnect}
             className="rounded-lg border border-line px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-line-strong hover:text-text"
           >
             Disconnect
           </button>
-        ) : (
+        ) : isInstalling ? (
+          <span
+            data-testid="node-inspector-installing"
+            className="rounded-lg bg-accent px-2.5 py-1 text-[11px] font-medium text-white opacity-60"
+          >
+            Installing…
+          </span>
+        ) : canInstall ? null : node.health.status === 'not-installed' ? null : !connectable ? null : (
           <button
             onClick={onConnect}
             disabled={busy}
