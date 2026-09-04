@@ -3,13 +3,9 @@ import { NAV_ITEMS, spring, useAppStore, cn } from '@aura/core';
 import { Icon, IconButton, Tooltip } from '@aura/ui';
 import { AuraTile } from '../brand/AuraLogo';
 
-const EXPANDED = 244;
-const RAIL = 76;
+const EXPANDED = 260;
+const RAIL = 52;
 
-/**
- * Permanent left navigation. Collapses to an icon rail or expands to
- * show labels — a spring-driven width animation, never a jump.
- */
 export function LeftNav() {
   const expanded = useAppStore((s) => s.sidebarExpanded);
   const nav = useAppStore((s) => s.nav);
@@ -23,22 +19,22 @@ export function LeftNav() {
     <motion.nav
       animate={{ width: expanded ? EXPANDED : RAIL }}
       transition={spring.fluid}
-      className="relative z-10 flex shrink-0 flex-col border-r border-line bg-surface/60 backdrop-blur-xl"
+      className="relative z-10 flex shrink-0 flex-col border-r border-border bg-sidebar expanded-shadow"
     >
       {/* Brand */}
-      <div className={cn('flex h-16 items-center gap-3 px-5', !expanded && 'justify-center px-0')}>
-        <AuraTile size={34} />
+      <div className={cn('flex h-14 items-center gap-3 px-4', !expanded && 'justify-center px-0')}>
+        <AuraTile size={36} />
         <AnimatePresence>
           {expanded && (
             <motion.div
-              initial={{ opacity: 0, x: -6 }}
+              initial={{ opacity: 0, x: -8 }}
               animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -6 }}
+              exit={{ opacity: 0, x: -8 }}
               transition={spring.snappy}
               className="min-w-0"
             >
-              <div className="text-[14px] font-semibold leading-tight text-text">AURA Hub</div>
-              <div className="text-[10.5px] uppercase tracking-widest text-text-subtle">Environment</div>
+              <div className="text-[13px] font-semibold leading-tight text-sidebarTitle">AURA Hub</div>
+              <div className="text-xs uppercase tracking-widest text-sidebarSubtitle">One Prompt. Multiple Minds.</div>
             </motion.div>
           )}
         </AnimatePresence>
@@ -47,27 +43,29 @@ export function LeftNav() {
       {/* Primary destinations */}
       <div className="flex flex-1 flex-col space-y-1 overflow-y-auto px-3 py-2">
         {primary.map((item) => (
-          <NavButton
+          <NavItem
             key={item.key}
             icon={item.icon}
             label={item.label}
             expanded={expanded}
             active={nav === item.key}
             onClick={() => setNav(item.key)}
+            item={item}
           />
         ))}
       </div>
 
       {/* System + collapse control */}
-      <div className="flex flex-col space-y-1 border-t border-line px-3 py-3">
+      <div className="flex flex-col space-y-1 border-t border-border px-3 py-3">
         {system.map((item) => (
-          <NavButton
+          <NavItem
             key={item.key}
             icon={item.icon}
             label={item.label}
             expanded={expanded}
             active={nav === item.key}
             onClick={() => setNav(item.key)}
+            item={item}
           />
         ))}
         <div className={cn('flex pt-1', expanded ? 'justify-end' : 'justify-center')}>
@@ -83,23 +81,27 @@ export function LeftNav() {
   );
 }
 
-function NavButton({
+function NavItem({
   icon,
   label,
   expanded,
   active,
   onClick,
+  item,
 }: {
   icon: string;
   label: string;
   expanded: boolean;
   active: boolean;
   onClick: () => void;
+  item: { key: string; label: string; icon: string; group: string };
 }) {
+  const isSystem = item.group === 'system';
+
   const body = (
     <motion.button
       onClick={onClick}
-      whileTap={{ scale: 0.97 }}
+      whileTap={{ scale: 0.95 }}
       transition={spring.snappy}
       // Collapsed, this button is an icon with no text, and the Tooltip is
       // a visual affordance a screen reader never sees. The label is always
@@ -107,20 +109,24 @@ function NavButton({
       aria-label={label}
       aria-current={active ? 'page' : undefined}
       className={cn(
-        'relative flex w-full items-center gap-3 rounded-xl py-2.5 text-[13px] font-medium outline-none transition-colors',
+        'relative flex w-full items-center gap-2.5 rounded-lg py-2 text-[12px] font-medium outline-none transition-colors',
         expanded ? 'px-3' : 'justify-center px-0',
-        active ? 'text-accent-700 dark:text-accent-200' : 'text-text-muted hover:text-text hover:bg-surface-hover',
+        active
+          ? 'sidebar-active bg-sidebar-active text-sidebarActive'
+          : isSystem
+            ? 'text-sidebarInactive hover:text-sidebarHover hover:bg-sidebarHover'
+            : 'text-sidebarInactive hover:text-sidebarHover hover:bg-sidebarHover',
       )}
     >
       {active && (
         <motion.span
           layoutId="nav-active"
           transition={spring.smooth}
-          className="absolute inset-0 rounded-xl bg-accent-50 dark:bg-accent/15"
+          className="absolute left-0 inset-y-0 rounded-lg bg-sidebar-active-subtle"
         />
       )}
       <span className="relative z-10">
-        <Icon name={icon as never} size={19} />
+        <Icon name={icon as never} size={18} />
       </span>
       <AnimatePresence>
         {expanded && (
@@ -137,5 +143,9 @@ function NavButton({
     </motion.button>
   );
 
-  return expanded ? body : <Tooltip content={label} side="right">{body}</Tooltip>;
+  return expanded ? (
+    <div className="relative group-hover:bg-sidebarHover/70 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-0">{body}</div>
+  ) : (
+    <Tooltip content={label} side="right" className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2">{body}</Tooltip>
+  );
 }

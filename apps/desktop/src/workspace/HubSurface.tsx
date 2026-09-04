@@ -1,6 +1,6 @@
 /**
- * HubSurface — the one object the user talks to.
- * ==================================================================
+ * HubSurface — the AURA Agent Workspace control center.
+ * =================================================================
  * The Hub is a *surface*, not a node, not a window and not an engine. It
  * owns no mission state: the composer calls the existing
  * `missionClient.create()` → `runMissionCreation()` pipeline, and every
@@ -25,6 +25,7 @@ import type { EnvironmentNode } from '@aura/connected-environment';
 import type { ProjectRecord } from '../ai/aiClient';
 import type { MissionRecord } from '../ai/missionClient';
 import type { HubPhase, HubProgress, UnattributedWork } from './hubPhase';
+import { useEnvironmentSummary } from '../environment/environmentStore';
 
 export interface HubReadiness {
   connected: number;
@@ -67,6 +68,12 @@ const PHASE_TONE: Record<HubPhase, string> = {
   failed: 'bg-danger',
 };
 
+/** Prompt placeholder text. */
+const PLACEHOLDERS = {
+  hasProject: 'Describe the outcome you want…',
+  noProject: 'Choose a project first…',
+};
+
 export function HubSurface({
   readiness,
   scanning,
@@ -83,6 +90,7 @@ export function HubSurface({
   onSubmit,
   onApprove,
   onStart,
+  viewMode,
 }: {
   readiness: HubReadiness;
   scanning: boolean;
@@ -90,7 +98,7 @@ export function HubSurface({
   onScan: () => void;
   projects: ProjectRecord[];
   projectId: string | null;
-  onSelectProject: (id: string) => void;
+  onSelectProject: (id: string | null) => void;
   progress: HubProgress;
   mission: MissionRecord | null;
   /** Placed nodes a planned mission needs but cannot use, from real gaps. */
@@ -101,6 +109,7 @@ export function HubSurface({
   onSubmit: (text: string) => void;
   onApprove: () => void;
   onStart: () => void;
+  viewMode: 'grid' | 'list';
 }) {
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -130,7 +139,7 @@ export function HubSurface({
       transition={spring.gentle}
       data-testid="hub-surface"
       data-phase={progress.phase}
-      className="pointer-events-auto w-[380px] rounded-3xl border border-line bg-surface/95 p-5 shadow-lg backdrop-blur-xl"
+      className="pointer-events-auto w-full max-w-[420px] rounded-2xl border border-line bg-surface/95 p-5 shadow-md backdrop-blur-xl"
     >
       <div className="flex items-center gap-2.5">
         <span className="relative grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-accent text-white">
@@ -141,11 +150,9 @@ export function HubSurface({
         </span>
         <div className="min-w-0 flex-1">
           <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-text">
-            {progress.phase === 'idle' ? 'Hub' : progress.label}
+            {progress.phase === 'idle' ? 'AURA Agent Workspace' : progress.label}
           </h2>
           <p className="truncate text-[11.5px] text-text-muted" data-testid="hub-detail">
-            {/* When the banner below already carries this exact text, the
-                header steps out of the way rather than repeating it. */}
             {scanning && progress.phase === 'idle'
               ? 'Reading your environment…'
               : error === progress.detail
@@ -158,8 +165,7 @@ export function HubSurface({
         )}
       </div>
 
-      {/* Which project this mission plans against. Missions read real files,
-          so there is no sensible default and none is invented. */}
+      {/* Which project this mission plans against. */}
       <div className="mt-3.5 flex items-center gap-2">
         <Icon name="folder" size={13} className="shrink-0 text-text-subtle" />
         <select
@@ -189,15 +195,13 @@ export function HubSurface({
           disabled={progress.busy}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            // Enter submits; Shift+Enter is a newline. Matches the rest of
-            // AURA's composers.
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
               submit();
             }
           }}
           data-testid="hub-composer"
-          placeholder={hasProject ? 'Describe the outcome you want…' : 'Choose a project first…'}
+          placeholder={hasProject ? PLACEHOLDERS.hasProject : PLACEHOLDERS.noProject}
           className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-text outline-none placeholder:text-text-subtle disabled:cursor-not-allowed"
         />
         <div className="mt-1 flex items-center justify-between gap-2">
@@ -252,8 +256,7 @@ export function HubSurface({
         </div>
       )}
 
-      {/* Work in flight that no executor claimed. Shown as unknown rather
-          than lighting every candidate node, which would be a guess. */}
+      {/* Work in flight that no executor claimed. */}
       {unattributed.length > 0 && (
         <div
           data-testid="hub-unattributed"
@@ -268,15 +271,28 @@ export function HubSurface({
         </div>
       )}
 
-      {/* The mission's own gates. These call the existing endpoints; the
-          Hub decides nothing on the user's behalf. */}
+      {/* The mission's own gates. */}
       {mission?.goalGraph && (
         <div className="mt-2.5 flex items-center gap-1.5">
           {mission.approval.status === 'pending' && (
-            <GateButton label="Approve plan" icon="check" onClick={onApprove} testId="hub-approve" primary />
+            <button
+              onClick={onApprove}
+              data-testid="hub-approve"
+              className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium text-accent text-white transition-colors hover:opacity-90"
+            >
+              <Icon name="check" size={12} />
+              Approve plan
+            </button>
           )}
           {mission.approval.status === 'approved' && mission.execution?.status === 'approved' && (
-            <GateButton label="Start execution" icon="deploy" onClick={onStart} testId="hub-start" primary />
+            <button
+              onClick={onStart}
+              data-testid="hub-start"
+              className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium text-accent text-white transition-colors hover:opacity-90"
+            >
+              <Icon name="deploy" size={12} />
+              Start execution
+            </button>
           )}
           <span className="truncate text-[10.5px] text-text-subtle">
             {mission.goalGraph.goals.length} goals · {mission.goalGraph.tasks.length} tasks
@@ -307,36 +323,6 @@ export function HubSurface({
         </button>
       </div>
     </motion.div>
-  );
-}
-
-function GateButton({
-  label,
-  icon,
-  onClick,
-  testId,
-  primary,
-}: {
-  label: string;
-  icon: 'check' | 'deploy';
-  onClick: () => void;
-  testId: string;
-  primary?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      data-testid={testId}
-      className={cn(
-        'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors',
-        primary
-          ? 'bg-accent text-white hover:opacity-90'
-          : 'border border-line bg-surface text-text-muted hover:bg-surface-hover hover:text-text',
-      )}
-    >
-      <Icon name={icon} size={12} />
-      {label}
-    </button>
   );
 }
 

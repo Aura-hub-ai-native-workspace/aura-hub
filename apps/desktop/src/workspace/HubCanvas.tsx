@@ -19,12 +19,25 @@ import { motion } from 'framer-motion';
 import { cn } from '@aura/core';
 import { Icon } from '@aura/ui';
 import type { EnvironmentNode } from '@aura/connected-environment';
-import { CATEGORY_ICON, STATUS_LABEL, STATUS_TONE, TONE_DOT, TONE_TEXT } from '../environment/presentation';
-import { ACTIVITY_LABEL, type NodeActivityPhase } from './hubPhase';
+import { ACTIVITY_LABEL, NodeActivityPhase } from '../workspace/hubPhase';
+import { STATUS_LABEL, STATUS_TONE, TONE_DOT, TONE_TEXT, CATEGORY_ICON } from '../environment/presentation';
 import { useHubStore, type PlacedNode } from './hubStore';
+import { NodeStatus } from '@aura/connected-environment';
 
 /** Nodes whose capability is genuinely present get a solid edge. */
 const LIVE_STATUSES = new Set(['connected', 'available']);
+
+/** Maps node health status to status colors. */
+const STATUS_COLOR_MAP: Record<NodeStatus, string> = {
+  connected: '#22c55e',
+  available: '#3b82f6',
+  'not-installed': '#f87171',
+  installing: '#f59e0b',
+  degraded: '#f59e0b',
+  'needs-auth': '#8b5cf6',
+  'no-connector': '#6b7280',
+  unknown: '#6b7280',
+};
 
 export function HubCanvas({
   nodes,
@@ -96,7 +109,11 @@ function EdgeLayer({
             x2={`${placed.x * 100}%`}
             y2={`${placed.y * 100}%`}
             stroke="currentColor"
-            className={busy ? 'text-accent' : live ? 'text-accent/35' : 'text-line'}
+            className={cn(
+              'group/data-[busy=true]:opacity-100',
+              'group/data-[busy=false]:opacity-40',
+              busy ? 'text-accent' : live ? 'text-accent/35' : 'text-line',
+            )}
             strokeWidth={busy ? 2 : live ? 1.5 : 1}
             // A capability that isn't actually there gets a broken line —
             // the connection is catalogued, not established.
@@ -169,17 +186,16 @@ function NodeChip({
       style={{
         left: `${placed.x * 100}%`,
         top: `${placed.y * 100}%`,
-        // The centring has to live in framer-motion's own transform (x/y),
-        // not Tailwind's -translate-* classes: the animated `scale` on this
-        // element overwrites the CSS transform, which left chips anchored
-        // at their top-left corner and pushed the top node's click point
-        // underneath the Hub card.
         x: '-50%',
         y: '-50%',
       }}
-      initial={{ opacity: 0, scale: 0.85 }}
+      initial={{ opacity: 0, scale: 0.9 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.2 }}
+      role="button"
+      tabIndex={0}
+      onFocus={() => onInspect()}
+      onBlur={() => {}}
     >
       <button
         data-testid="hub-node"
@@ -191,11 +207,13 @@ function NodeChip({
         onPointerUp={onPointerUp}
         title={`${name} — ${STATUS_LABEL[status]}${activity === 'idle' ? '' : ` · ${ACTIVITY_LABEL[activity]}`}`}
         className={cn(
-          'group flex w-[132px] cursor-grab flex-col items-center gap-1.5 rounded-2xl border bg-surface/95 px-3 py-2.5 shadow-sm backdrop-blur-sm transition-colors hover:border-line-strong active:cursor-grabbing',
+          'group flex w-[140px] cursor-grab flex-col items-center gap-1.5 rounded-2xl border bg-surface/95 px-3 py-2.5 shadow-sm backdrop-blur-sm transition-colors hover:border-line-strong active:cursor-grabbing',
           activity === 'idle' ? 'border-line' : 'border-accent',
+          // Hover styles for when keyboard-focused
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-surface-active',
         )}
       >
-        <span className="relative grid h-9 w-9 place-items-center rounded-xl bg-surface-active text-text-muted">
+        <span className="relative grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-surface-active text-text-muted">
           <Icon name={node ? CATEGORY_ICON[node.entry.category] : 'dot'} size={17} />
           {/* Pulses only while a real task is in flight on this node. */}
           {activity === 'running' && (
@@ -217,6 +235,15 @@ function NodeChip({
         {node?.health.version && (
           <span className="w-full truncate text-center font-mono text-[9.5px] text-text-subtle">
             {node.health.version}
+          </span>
+        )}
+        {/* Connection indicator dot */}
+        {node && (
+          <span className="absolute -bottom-0.5 -left-0.5 h-3 w-3 rounded-full" style={{ background: STATUS_COLOR_MAP[node?.health.status as NodeStatus] }}>
+            {/* Pulsing when task is running on this node */}
+            {activity === 'running' && (
+              <span className="aura-live" />
+            )}
           </span>
         )}
       </button>
