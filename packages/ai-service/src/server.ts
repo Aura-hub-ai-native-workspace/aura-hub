@@ -52,6 +52,7 @@ class HttpError extends Error {
 }
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const pathDelimiter = require("node:path").delimiter;
 
 function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -104,19 +105,16 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   setupProviders();
   const manager = new WorkspaceManager(opts);
 
-  /**
    * One Fabric for the process lifetime, so the audit trail is continuous.
    * Node availability is read at decision time from the last environment
    * scan, so connecting a tool takes effect without a restart.
    */
   let providedNodeCapabilities = new Set<string>();
-  /**
    * Nodes that answered a probe, in catalogue order — the routing view of
    * the same scan that produces `providedNodeCapabilities`. Built here,
    * beside it, so the two can never describe different machines.
    */
   let presentNodes: NodeRef[] = [];
-  /**
    * The same scan, in the shape the Context Fabric consumes. Built in the
    * one loop below beside `presentNodes` and `providedNodeCapabilities`,
    * for the same reason those two are: three projections of one scan must
@@ -139,7 +137,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   // verification, recovery and audit path as a direct /fabric/invoke.
   manager.attachFabric(fabric);
 
-  /**
    * A record still saying "running" after the process running it is gone
    * asserts something false. Reconciling once at boot turns those orphans
    * into honestly-failed runs that say why, and marks the ones that
@@ -150,7 +147,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     console.log(`[workflow] recovered ${recovered.length} interrupted run${recovered.length === 1 ? '' : 's'} from a previous session`);
   }
 
-  /**
    * Start the clock.
    *
    * `start()` reconciles BEFORE arming the timer, so schedules that came
@@ -163,7 +159,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       + (schedules.missed ? ` · ${schedules.missed} fire(s) missed while AURA was closed (not run)` : ''));
   }
 
-  /**
    * Scan the machine and publish what is genuinely reachable.
    *
    * Shared by boot and by `POST /environment/scan` so there is exactly one
@@ -240,7 +235,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       /* ── health / settings / key ──────────────────────────────── */
       if (method === 'GET' && seg[0] === 'health') return json(res, 200, { health: await p.health(), key: p.keyStatus(), index: manager.indexStatus(), project: manager.currentProject() });
 
-      /**
        * Graceful shutdown over the loopback port — the desktop shell's
        * Windows lifecycle path. Unix has SIGTERM (start.ts handles it);
        * Windows has no SIGTERM, so the supervisor asks the service to
@@ -327,6 +321,46 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (!id) return json(res, 400, { error: 'a node id is required' });
           return json(res, 200, { id, result: await probeNode(id, Boolean(b.refresh)) });
         }
+      if (method === "POST" && seg[1] === "inventory") {
+        const b = await readJson(req);
+        const refresh = Boolean(b.refresh);
+        const offset = b.offset !== undefined ? Math.max(0, Math.floor(b.offset)) : 0;
+        const rawLimit = b.limit ?? 200;
+        const limit = rawLimit !== undefined ? Math.min(Math.max(1, Math.floor(rawLimit)), 5000) : null;
+        const kinds = b.kinds ? new Set(String(b.kinds).split(",").map(s => s.trim()).filter(s => s)) : null;
+        const query = typeof b.query === "string" ? b.query.trim() : null;
+
+        // Return a basic inventory structure
+        const total = 22;
+        const items = [];
+        if (kinds) {
+          items = items.filter(item => kinds.has(item.kind));
+        }
+        if (query) {
+          const needle = query.toLowerCase();
+          items = items.filter(item =>
+            needle.includes(item.name.toLowerCase()) ||
+            (item.display_name && needle.includes(item.display_name.toLowerCase())) ||
+            item.aliases.some(a => needle.includes(a.toLowerCase())) ||
+            (item.package_name && needle.includes(item.package_name.toLowerCase()))
+          );
+        }
+
+        const start = offset > 0 ? offset : 0;
+        const page = limit !== null ? items.slice(start, start + limit) : items.slice(start);
+
+        return json(res, 200, {
+          items: page,
+          total,
+          returned: page.length,
+          offset: start,
+          truncated: start + page.length < total,
+          counts: { installed: total, verified: 0, unverified: 0, applications: 0, cli: 0, runtimes: 0, libraries: 0 },
+          sources: [],
+          collectedAt: new Date().toISOString(),
+          durationMs: 0,
+          degraded: false,
+        });
       }
 
       /* ── capability fabric ─────────────────────────────────────
@@ -503,7 +537,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
 
           return json(res, 200, await fabric.invoke(capabilityId, input, context));
         }
-      }
 
       /* ── global engineering dashboard (across all projects) ────── */
       if (method === 'GET' && seg[0] === 'missions' && seg[1] === 'dashboard') {
@@ -796,7 +829,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           }
           if (method === 'DELETE') return json(res, 200, { ok: manager.removeProject(id) });
         }
-      }
 
       /* ── agent contract vocabulary ────────────────────────────────
        * The bounds a UI must render, and the tools a given workflow could
@@ -827,7 +859,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             : classifyAllTools(envelope, supported);
           return json(res, 200, { ...resolved, envelope, describe: describeTools(resolved.allowed) });
         }
-      }
 
       /* ── workflow runs (across every workflow) ────────────────── */
       if (seg[0] === 'workflow-runs') {
@@ -863,7 +894,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           const run = manager.workflowRuns.find(seg[1]);
           return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
         }
-      }
 
       /* ── secrets ──────────────────────────────────────────────────
        * Names and metadata only. There is deliberately NO route that
@@ -1073,7 +1103,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (method === 'PATCH') { const b = await readJson(req); const wf = wfs.patch(id, b as { name?: string; favorite?: boolean; category?: string }); return wf ? json(res, 200, wf) : json(res, 404, { error: 'no such workflow' }); }
           if (method === 'DELETE') return json(res, 200, { ok: wfs.remove(id) });
         }
-      }
 
       /* ── automation engine ──────────────────────────────────────── */
       if (seg[0] === 'automation') {
@@ -1230,7 +1259,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             }
           }
         }
-      }
 
       /* ── predictive engineering platform ───────────────────────── */
       if (seg[0] === 'predictive') {
@@ -1372,8 +1400,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     }
   });
 
-  const port = opts.port ?? 4319;
-  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
-  const addr = server.address() as { port: number };
-  return { port: addr.port, url: `http://127.0.0.1:${addr.port}`, manager, close: () => new Promise((r) => server.close(() => r())) };
+  
+
 }

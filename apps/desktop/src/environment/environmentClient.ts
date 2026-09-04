@@ -343,7 +343,7 @@ async function connectDirect(id: string): Promise<ConnectResponse> {
   return body as ConnectResponse;
 }
 
-/** A page of the complete machine inventory. */
+/* ────── complete machine inventory ─────────────────────────────────── */
 async function inventory(options: {
   refresh?: boolean;
   offset?: number;
@@ -352,21 +352,35 @@ async function inventory(options: {
   query?: string;
   verify?: boolean;
 } = {}): Promise<InventoryOutcome> {
+  // Try Python backend first (authoritative machine inventory source)
   try {
-    const res = await fetch(`${BASE}/environment/inventory`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
+    const python_res = await fetch("http://127.0.0.1:4320/environment/inventory", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(options),
       signal: AbortSignal.timeout(INVENTORY_TIMEOUT_MS),
     });
-    if (!res.ok) return { ok: false, reason: `The local AURA service answered ${res.status}.` };
+    if (python_res.ok) return { ok: true, response: (await python_res.json()) as InventoryResponse };
+  } catch {
+    // Python backend unavailable, fall through to local service
+  }
+
+  // Fall back to local service (Node.js AI service)
+  try {
+    const res = await fetch(BASE + "/environment/inventory", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(options),
+      signal: AbortSignal.timeout(INVENTORY_TIMEOUT_MS),
+    });
+    if (!res.ok) return { ok: false, reason: "The local AURA service answered " + res.status };
     return { ok: true, response: (await res.json()) as InventoryResponse };
   } catch (e) {
-    const aborted = e instanceof DOMException && e.name === 'TimeoutError';
+    const aborted = e instanceof DOMException && e.name === "TimeoutError";
     return {
       ok: false,
       reason: aborted
-        ? 'Reading the machine inventory did not finish in time.'
+        ? "Reading the machine inventory did not finish in time."
         : UNREACHABLE.detail,
     };
   }
