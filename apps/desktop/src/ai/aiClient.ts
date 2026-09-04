@@ -1,5 +1,19 @@
+/**
+ * Type-only, and deliberately so.
+ *
+ * The agent contract mirror lives beside the agent UI because that is the
+ * only place that renders it; this file needs the beat shape purely to
+ * type one member of the run-event union. `import type` is erased at
+ * compile time, so the two modules referring to each other's types costs
+ * nothing at runtime and duplicating the shape here would be worse — two
+ * declarations of one wire format is exactly the drift this codebase
+ * avoids elsewhere.
+ */
+import type { AgentBeat } from '../screens/workflows/agent/types';
+
 const ENV = import.meta.env as unknown as Record<string, string | undefined>;
 const BASE = ENV.VITE_AI_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:4319';
+
 
 export interface ProjectRecord {
   id: string;
@@ -55,64 +69,6 @@ export interface VerificationSection { name: string; score: number; status: 'pas
    package — the same convention every other type in this file follows.
    The service remains the authority for the SHAPE; this is the wire
    contract as the UI reads it. */
-
-export type FreshnessState = 'fresh' | 'stale' | 'unknown';
-
-export interface ContextView {
-  contextVersion: number;
-  generatedAt: string;
-  freshness: {
-    state: FreshnessState;
-    generatedAt: string | null;
-    reason: string | null;
-    changedFiles: number;
-    addedFiles: number;
-    removedFiles: number;
-    truncated: boolean;
-  };
-  project: { id: string; name: string; root: string; type: string; language: string; mounted: boolean };
-  repository: {
-    purpose: string | null;
-    repositoryType: string | null;
-    architectureStyle: string | null;
-    primaryLanguage: string | null;
-    secondaryLanguages: string[];
-    frameworks: string[];
-    buildSystem: string | null;
-    packageManager: string | null;
-    mainModules: string[];
-    entryPoints: string[];
-    fileCount: number | null;
-    modules: { name: string; path: string; description: string }[];
-    intelligence: 'ready' | 'partial' | 'absent';
-  };
-  git: {
-    available: boolean;
-    branch: string | null;
-    dirty: boolean | null;
-    changedFiles: number | null;
-    recentCommits: { hash: string; subject: string; date: string }[];
-    reason: string | null;
-  };
-  environment: {
-    os: string; platform: string; arch: string; nodeVersion: string; shell: string | null;
-    presentNodes: { id: string; name: string; version: string | null }[];
-    presentCount: number; catalogueCount: number; scannedAt: string | null;
-  };
-  tools: { available: string[]; missing: string[] };
-  agents: {
-    codingAgents: { id: string; name: string; version: string | null; drivable: boolean }[];
-    provider: { id: string | null; connected: boolean; model: string | null };
-  };
-  mission: {
-    active: { id: string; text: string; status: string; createdAt: string } | null;
-    total: number;
-    pendingApprovals: number;
-  };
-  activity: { events: { at: string; kind: string; summary: string }[] };
-  constraints: { id: string; text: string }[];
-  buildMs: number;
-}
 
 export interface ProjectIntelligence {
   verification: { overallScore: number; summary: string; sections: VerificationSection[]; recommendations: string[] };
@@ -287,18 +243,476 @@ export interface NodeSpecInfo {
   type: WfNodeType; label: string; category: 'source' | 'intelligence' | 'generate' | 'logic' | 'action' | 'io';
   description: string; inputs: 0 | 1 | 'many'; outputs: string[]; disabled?: boolean; fields: FieldSpec[];
 }
-export type NodeRunState = 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'skipped';
+/**
+ * Per-node status on the live event stream. Extended additively by the
+ * service: a node the policy engine refused, a node a human stopped and a
+ * node that ran out of time need three different responses from an
+ * operator, so they are three states rather than one `failed`.
+ */
+export type NodeRunState =
+  | 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'skipped'
+  | 'awaiting-approval' | 'denied' | 'cancelled' | 'timed-out';
+
 export type WfRunEvent =
-  | { type: 'start'; workflowId: string; at: string }
+  | { type: 'start'; workflowId: string; at: string; runId?: string; versionId?: string }
   | { type: 'node'; nodeId: string; status: NodeRunState; ms?: number; summary?: string; error?: string }
   | { type: 'log'; nodeId: string | null; level: 'info' | 'warn' | 'error'; text: string; at: string }
   | { type: 'output'; nodeId: string; title: string; text: string }
-  | { type: 'done'; status: 'completed' | 'failed'; ms: number; error?: string };
+  /**
+   * One agent beat, live, as it happens.
+   *
+   * The payload IS the beat that lands in the persisted `AgentTrace` — same
+   * object, same `seq`, same redaction, same `untrusted` flag. There is no
+   * second trace format, which is what lets a reader reconcile the stream
+   * against the final trace by `(runId, nodeId, seq)`.
+   *
+   * **The persisted trace stays authoritative.** These events are a
+   * courtesy for someone watching a long agent: they can be missed
+   * entirely (nobody was connected), duplicated (a reconnect replays), or
+   * arrive out of order. So the UI treats them as an early view and the
+   * run record as truth — never the other way round.
+   */
+  | { type: 'agent'; nodeId: string; runId?: string; beat: AgentBeat }
+  /** `runState` is the honest, unflattened outcome; `status` stays two-valued
+   *  for the consumers that already switch on it. Read `runState`. */
+  | { type: 'done'; status: 'completed' | 'failed'; ms: number; error?: string; runState?: RunState; runId?: string };
+
+
+/* ── authority envelope (GET /workflows/:id/envelope) ─────────────
+   Computed by the service from the graph and its own capability manifest.
+   The renderer never derives risk: it reads it. */
+
+/** The Capability Fabric's risk scale. Distinct from this file's
+ *  `RiskLevel`, which is the code-action scale ('safe'|'medium'|'high'). */
+export type CapabilityRisk = 'low' | 'medium' | 'high';
+
+export type PermissionScope =
+  | 'project.read' | 'project.write' | 'process.execute' | 'network.outbound'
+  | 'account.authorize' | 'resource.destroy' | 'system.modify' | 'aura.read' | 'aura.write';
+
+export interface EnvelopeCapability {
+  capabilityId: string;
+  name: string;
+  risk: CapabilityRisk;
+  irreversible: boolean;
+  permissions: PermissionScope[];
+  nodeIds: string[];
+}
+
+export interface EnvelopeScope {
+  scope: PermissionScope;
+  label: string;
+  capabilityIds: string[];
+  nodeIds: string[];
+  risk: CapabilityRisk;
+}
+
+export interface AuthorityEnvelope {
+  capabilities: EnvelopeCapability[];
+  scopes: EnvelopeScope[];
+  /** Scopes NOT requested. The load-bearing half of the envelope. */
+  notRequested: PermissionScope[];
+  /** Plain sentence naming what this workflow can never do. */
+  cannot: string;
+  hasIrreversible: boolean;
+  highestRisk: CapabilityRisk | null;
+  hosts: { known: string[]; dynamic: boolean };
+  offlineCapable: boolean;
+  auraInternalEffects: { nodeId: string; type: string }[];
+  unknownNodes: string[];
+}
+
+export interface EnvelopeDiff {
+  widened: boolean;
+  addedScopes: PermissionScope[];
+  removedScopes: PermissionScope[];
+  addedCapabilities: string[];
+  removedCapabilities: string[];
+  newlyIrreversible: boolean;
+  summary: string | null;
+}
+
+/* ── dry run (POST /workflows/:id/dry-run) ────────────────────────
+   A plan, not a prediction. The service evaluates policy and invokes
+   nothing; `sideEffects` on the report is its own proof of that, and the
+   UI shows the service's words rather than a promise of its own. */
+
+/** Whether a step is certain to run, or depends on run-time data. */
+export type Reachability = 'certain' | 'conditional' | 'unreachable';
+
+/** What kind of effect a node has, as the service classifies it. */
+export type NodeClass = 'pure' | 'control' | 'intelligence' | 'aura-internal' | 'governed';
+
+export interface PolicyEvaluation {
+  decision: 'auto-execute' | 'ask-user' | 'require-approval' | 'deny';
+  /** Why, in plain language. */
+  reason: string;
+  /** Which rule produced it: `risk-default:low`, `override`, … */
+  rule: string;
+  risk: CapabilityRisk;
+}
+
+export interface PlannedStep {
+  order: number;
+  nodeId: string;
+  type: string;
+  label: string;
+  nodeClass: NodeClass;
+  reachability: Reachability;
+  depth: number;
+  capabilityId?: string;
+  capabilityName?: string;
+  risk?: string;
+  irreversible?: boolean;
+  /** The Fabric's pre-flight answer. Absent when the node causes no effect. */
+  policy?: PolicyEvaluation;
+  wouldAskHuman?: boolean;
+  wouldBeDenied?: boolean;
+  /** Human phrase for the action, built from unresolved config. */
+  describes?: string;
+  /** Why the arguments could not be planned, when they could not. */
+  planError?: string;
+  maxIterations?: number;
+  needsNetwork?: boolean;
+  secretsUsed?: string[];
+}
+
+export interface ValidationFinding {
+  level: 'error' | 'warning' | 'advice';
+  layer: 'schema' | 'graph' | 'policy' | 'secrets';
+  message: string;
+  nodeId?: string;
+}
+
+export interface WorkflowValidationReport {
+  valid: boolean;
+  findings: ValidationFinding[];
+  envelope: AuthorityEnvelope;
+  secretsReferenced: string[];
+  secretsMissing: string[];
+  requiresReview: boolean;
+}
+
+export interface DryRunReport {
+  workflowId: string;
+  workflowName: string;
+  projectId: string;
+  at: string;
+  validation: WorkflowValidationReport;
+  envelope: AuthorityEnvelope;
+  plan: PlannedStep[];
+  approvalsRequired: { nodeId: string; capabilityId: string; reason: string; rule: string }[];
+  /** Non-empty means this run cannot finish as written. */
+  denials: { nodeId: string; capabilityId: string; reason: string; rule: string }[];
+  wouldRunUnattended: boolean;
+  offlineCapable: boolean;
+  secretsRequired: string[];
+  secretsMissing: string[];
+  grants: { read: boolean; write: boolean; execute: boolean; autonomous: boolean };
+  /**
+   * The service's own proof of inertness. Displayed verbatim — the UI
+   * never asserts "nothing happened" on its own authority.
+   */
+  sideEffects: { invocations: 0; policyEvaluations: number; note: string };
+}
+
+/* ── agent contract (GET /agent/bounds · GET /agent/tools) ────────
+   Both computed server-side on purpose: a client that decided either for
+   itself would be deciding authority, and its answer would stop matching
+   what the runtime enforces. */
+
+export interface AgentBoundsContract {
+  maxIterations: number;
+  timeoutMs: number;
+  maxTokens: number;
+  tools: string[];
+  maxConsecutiveFailures: number;
+}
+
+export interface AgentToolsResult {
+  /** Capability ids an agent in this workflow may actually request. */
+  allowed: string[];
+  /** Everything refused, with the service's own reason. Never swallowed. */
+  refused: { capabilityId: string; reason: string }[];
+  envelope: AuthorityEnvelope;
+  /** The tool descriptions the model would be given. */
+  describe: { name: string; description: string; input: { name: string; type: string; required: boolean; description: string }[] }[];
+}
+
+/* ── versions (GET/POST /workflows/:id/versions) ──────────────────── */
+
+export interface WorkflowVersionSummary {
+  id: string;
+  workflowId: string;
+  number: number;
+  name: string;
+  createdAt: string;
+  createdBy: string;
+  note?: string;
+  graphHash: string;
+  nodeCount: number;
+  restoredFrom?: string;
+}
+
+export interface WorkflowVersion extends WorkflowVersionSummary {
+  description: string;
+  nodes: WfNode[];
+  edges: WfEdge[];
+}
+
+/* ── runs (GET /workflows/:id/runs) ───────────────────────────────── */
+
+export type RunState =
+  | 'queued' | 'running' | 'awaiting-approval'
+  | 'succeeded' | 'failed' | 'cancelled' | 'timed-out';
+
+export type NodeState =
+  | 'queued' | 'running' | 'awaiting-approval' | 'succeeded'
+  | 'failed' | 'denied' | 'skipped' | 'cancelled' | 'timed-out';
+
+/**
+ * A pointer from a run into the Capability Fabric's audit trail. A
+ * reference on purpose — the audit trail stays the single authority on
+ * what an invocation was and whether it worked.
+ */
+export interface EvidenceRef {
+  invocationId: string;
+  capabilityId: string;
+  outcome: string;
+  decision: string;
+  decisionRule: string;
+  risk: string;
+  /** Null when the capability has no mechanical check. */
+  verified: boolean | null;
+  approvalId?: string;
+  nodeId?: string;
+  at: string;
+  durationMs: number;
+}
+
+export interface NodeRunRecord {
+  nodeId: string;
+  type: string;
+  state: NodeState;
+  iteration: number;
+  startedAt?: string;
+  finishedAt?: string;
+  ms: number;
+  summary?: string;
+  error?: string;
+  output?: { text: string; data?: unknown; files?: string[]; port?: string; truncated?: boolean };
+  attempts: number;
+  evidence: EvidenceRef[];
+  approval?: { requestId: string; capabilityId: string; requestedAt: string; summary: string };
+  /**
+   * The agent ledger, for an agent node.
+   *
+   * Persisted on the run because a trace is meaningless outside the run
+   * that produced it. The service types it `unknown` so its run module
+   * need not depend on the agent module; the shape is `AgentTrace` from
+   * `screens/workflows/agent/types`, narrowed at the one place it is read.
+   */
+  agentTrace?: unknown;
+}
+
+export type RunTriggerKind = 'manual' | 'webhook' | 'automation' | 'mission' | 'resume';
+
+export interface WorkflowRun {
+  id: string;
+  workflowId: string;
+  versionId: string;
+  workflowName: string;
+  projectId: string;
+  projectPath: string;
+  state: RunState;
+  trigger: { kind: RunTriggerKind } & Record<string, unknown>;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  ms: number;
+  error?: string;
+  nodes: Record<string, NodeRunRecord>;
+  vars: Record<string, string>;
+  inputs: Record<string, string>;
+  outputs: { nodeId: string; title: string; text: string }[];
+  evidence: EvidenceRef[];
+  resumable: boolean;
+  notResumableReason?: string;
+  /**
+   * The run that picked this one up — the back link of a resume chain.
+   *
+   * A resume is a NEW run, deliberately: a run executes one version, has
+   * one wall clock, and owns one partition of the audit trail. So one
+   * logical execution is one or more records, chained.
+   *
+   * Its presence is what makes a parked run stop being *pending*. The
+   * `state` is left at `awaiting-approval` because that is still the
+   * honest description of how this leg ended — so any list of "waiting for
+   * you" work must exclude superseded runs by this field rather than by
+   * state. See `docs/AGENT_RESUME_SEMANTICS.md`.
+   */
+  supersededBy?: string;
+  supersededAt?: string;
+  log: { at: string; nodeId: string | null; level: 'info' | 'warn' | 'error'; text: string }[];
+}
+
+
+export interface WorkflowRunSummary {
+  id: string;
+  workflowId: string;
+  versionId: string;
+  workflowName: string;
+  projectId: string;
+  state: RunState;
+  trigger: RunTriggerKind;
+  createdAt: string;
+  finishedAt?: string;
+  ms: number;
+  nodeCount: number;
+  succeededCount: number;
+  failedCount: number;
+  evidenceCount: number;
+  approvalCount: number;
+  resumable: boolean;
+  error?: string;
+  /** Set when another run continued this one. See `WorkflowRun.supersededBy`. */
+  supersededBy?: string;
+}
+
+
+/* ── Context Fabric ───────────────────────────────────────────────
+   Mirrors `@aura/ai-service`'s context contract. Declared here, like
+   every other service shape in this file, because the renderer is a
+   separate compilation unit from the node service and does not import
+   it. The service remains the authority; this is its wire shape. */
+
+/** fresh = current · stale = the repo moved · unknown = never established. */
+export type ContextFreshness = 'fresh' | 'stale' | 'unknown';
+
+export interface ContextSection<T> {
+  value: T | null;
+  freshness: ContextFreshness;
+  generatedAt: string | null;
+  reason?: string;
+}
+
+export type ContextSurface =
+  | 'general' | 'coding' | 'debugging' | 'architecture'
+  | 'git' | 'testing' | 'mission' | 'planning' | 'review';
+
+export type CapabilityAvailability = 'available' | 'approval' | 'not-drivable' | 'unavailable';
+
+export interface ContextView {
+  contractVersion: 1;
+  contextVersion: number | null;
+  composedAt: string;
+  surface: ContextSurface;
+  freshness: ContextFreshness;
+  project: {
+    id: string; name: string; root: string; type: string;
+    language: string; mounted: boolean; lastOpenedAt: string | null;
+  };
+  repository: ContextSection<{
+    identity: { name: string; purpose: string; repositoryType: string; primaryLanguage: string; architectureStyle: string; frameworks: string[]; entryPoints: string[] } | null;
+    modules: { name: string; path: string; fileCount: number; description: string }[];
+    totalFiles: number | null;
+    entryPoints: string[];
+    profile: { architectureStyle: string; designPatterns: string[]; keyDecisions: string[] } | null;
+    health: { score: { overall: number } } | null;
+  }>;
+  changes: ContextSection<{ velocity: number; hotspots: { file: string; score: number; reason: string }[]; patterns: string[] }>;
+  git: ContextSection<{ branch: string; dirty: boolean; changedFiles: number; recentCommits: { hash: string; date: string; subject: string }[] }>;
+  environment: ContextSection<{ os: string; arch: string; tools: { id: string; name: string; capabilities: string[]; version: string | null; internal: boolean }[]; providedCapabilities: string[] }>;
+  capabilities: ContextSection<{ id: string; name: string; risk: string; availability: CapabilityAvailability; rule?: string; reason?: string }[]>;
+  missions: ContextSection<{ id: string; text: string; createdAt: string; category: string; status: string | null; taskCount: number; completedTasks: number; approved: boolean }[]>;
+  activity: ContextSection<{ at: string; capabilityId: string; actor: string; nodeId?: string; outcome: string; decision: string }[]>;
+  constraints: { id: string; text: string }[];
+}
+
+export interface ContextUnavailable {
+  contractVersion: 1;
+  status: 'unavailable';
+  projectId: string;
+  reason: string;
+}
+
+export const contextUnavailable = (r: ContextView | ContextUnavailable): r is ContextUnavailable =>
+  (r as ContextUnavailable).status === 'unavailable';
+
+/* ── Evidence and Node Records ─────────────────────────────────────── */
+export interface EvidenceRef {
+  invocationId: string;
+  capabilityId: string;
+  outcome: string;
+  decision: string;
+  decisionRule: string;
+  risk: string;
+  verified: boolean | null;
+  approvalId?: string;
+  nodeId?: string;
+  at: string;
+  durationMs: number;
+}
+export interface StateTransition {
+  at: string;
+  from: NodeState;
+  to: NodeState;
+  note?: string;
+}
 
 const jget = <T>(p: string): Promise<T> => fetch(BASE + p).then((r) => r.json() as Promise<T>);
 const jsend = <T>(method: string, p: string, body?: unknown): Promise<T> =>
   fetch(BASE + p, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as Promise<T>);
 const jpost = <T>(p: string, body: unknown): Promise<T> => jsend<T>('POST', p, body);
+
+/**
+ * Read one workflow run's SSE stream.
+ *
+ * Shared by `runWorkflow` and `resumeWorkflowRun` because a resume emits
+ * exactly the same events a run does — the whole point of the service's
+ * design is that a resumed run is not a different kind of thing.
+ *
+ * Never throws: a transport failure is delivered as a terminal `done`
+ * event, so a caller that only handles events cannot be left hanging.
+ */
+async function streamRun(
+  url: string,
+  body: unknown,
+  onEvent: (e: WfRunEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
+  } catch (e) {
+    onEvent({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message || 'Service unreachable' });
+    return;
+  }
+  if (!res.body) { onEvent({ type: 'done', status: 'failed', ms: 0, error: 'No stream body' }); return; }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const d = line.slice(5).trim();
+        if (d === '[DONE]') return;
+        onEvent(JSON.parse(d) as WfRunEvent);
+      }
+    }
+  } catch (e) {
+    if ((e as Error).name !== 'AbortError') onEvent({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message });
+  } finally {
+    try { reader.releaseLock(); } catch { /* noop */ }
+  }
+}
 
 export const aiClient = {
   base: BASE,
@@ -318,6 +732,14 @@ export const aiClient = {
    */
   reindexProject: (id: string) => jpost<IndexStatus | { error: string; requested: string; mounted: string | null }>(`/projects/${id}/reindex`, {}),
   codeAction: (req: CodeActionRequest) => jpost<CodeActionResponse>('/code/action', req),
+
+  /* Context Fabric */
+  contextView: (id: string, surface: ContextSurface = 'general') =>
+    jget<ContextView | ContextUnavailable>(`/projects/${id}/context?surface=${surface}`),
+  contextContract: (id: string, surface: ContextSurface = 'general') =>
+    jget<{ projectId: string; surface: ContextSurface; contract: string } | { error: string }>(
+      `/projects/${id}/context/contract?surface=${surface}`,
+    ),
 
   /* BYOAK providers */
   getProviders: () => jget<ProvidersResult>('/providers'),
@@ -400,41 +822,95 @@ export const aiClient = {
   importWorkflow: (def: unknown) => jpost<Workflow>('/workflows/import', { def }),
   /** The AI Workflow Builder — natural language to a real, saved, validated workflow graph. */
   generateWorkflow: (text: string) => jpost<Workflow | { error: string }>('/workflows/generate', { text }),
+  /** What this workflow is permitted to do, computed by the service from
+   *  its own capability manifest. The renderer never derives risk. */
+  workflowEnvelope: (id: string) =>
+    jget<{ envelope: AuthorityEnvelope; diff: EnvelopeDiff | null }>(`/workflows/${id}/envelope`),
+
+  /**
+   * What this workflow would do, without doing any of it.
+   *
+   * The service plans the graph, asks the policy engine about every
+   * governed step and invokes nothing. Throws nothing on a bad request —
+   * the caller checks for `error` in the body.
+   */
+  dryRunWorkflow: (id: string, input: { projectId?: string; inputs?: Record<string, string>; versionId?: string } = {}) =>
+    jpost<DryRunReport | { error: string }>(`/workflows/${id}/dry-run`, input),
+
+  /** Schema, graph, policy and secret findings for the saved definition. */
+  validateWorkflow: (id: string) => jget<WorkflowValidationReport | { error: string }>(`/workflows/${id}/validate`),
+
+  /** The defaults a new agent node starts from, and the ceilings the
+   *  runtime clamps every configuration to. */
+  agentBounds: () => jget<{ defaults: AgentBoundsContract; ceilings: AgentBoundsContract }>('/agent/bounds'),
+
+  /**
+   * Which tools an agent inside this workflow could actually be given.
+   *
+   * With nothing requested the service reports what the workflow's own
+   * envelope could offer — the selectable set. With a request list it
+   * reports which survive and why the rest do not.
+   */
+  agentTools: (workflowId: string, requested?: string[]) => {
+    const q = new URLSearchParams({ workflowId });
+    if (requested?.length) q.set('requested', requested.join(','));
+    return jget<AgentToolsResult | { error: string }>(`/agent/tools?${q.toString()}`);
+  },
+
+  /* versions — history is append-only; restoring publishes a new one */
+  workflowVersions: (id: string) => jget<{ versions: WorkflowVersionSummary[] }>(`/workflows/${id}/versions`),
+  workflowVersion: (id: string, versionId: string) => jget<WorkflowVersion>(`/workflows/${id}/versions/${versionId}`),
+  publishWorkflowVersion: (id: string, note?: string) => jpost<WorkflowVersion>(`/workflows/${id}/versions`, { note }),
+  restoreWorkflowVersion: (id: string, versionId: string) =>
+    jpost<WorkflowVersion | { error: string }>(`/workflows/${id}/versions/${versionId}/restore`, {}),
+
+  /* runs — persisted by the service, so history survives this window */
+  workflowRuns: (id: string) => jget<{ runs: WorkflowRunSummary[] }>(`/workflows/${id}/runs`),
+  workflowRun: (id: string, runId: string) => jget<WorkflowRun>(`/workflows/${id}/runs/${runId}`),
+  /**
+   * Cross-workflow run index, filtered and paged server-side.
+   */
+  runIndex: (query?: { workflowId?: string; projectId?: string; state?: string; trigger?: string; q?: string; since?: string; limit?: number; offset?: number }) => {
+    const q = new URLSearchParams();
+    if (query?.workflowId) q.set('workflowId', query.workflowId);
+    if (query?.projectId) q.set('projectId', query.projectId);
+    if (query?.state) q.set('state', query.state);
+    if (query?.trigger) q.set('trigger', query.trigger);
+    if (query?.q) q.set('q', query.q);
+    if (query?.since) q.set('since', query.since);
+    if (query?.limit) q.set('limit', String(query.limit));
+    if (query?.offset) q.set('offset', String(query.offset));
+    return jget<{ runs: WorkflowRunSummary[]; total: number; offset: number; limit: number }>(`/workflow-runs?${q.toString()}`);
+  },
+  /**
+   * Every leg of one logical execution, oldest first.
+   *
+   * Navigable from either end — hand it any leg and it walks back to the
+   * head and forward to the tail. This is how a UI renders one execution
+   * from several records without stitching ids together itself.
+   */
+  workflowRunChain: (id: string, runId: string) =>
+    jget<{ chain: WorkflowRunSummary[] }>(`/workflows/${id}/runs/${runId}/chain`),
+
+  cancelWorkflowRun: (id: string, runId: string) =>
+    jpost<{ cancelled: boolean }>(`/workflows/${id}/runs/${runId}/cancel`, {}),
+
   ensureWorkflowWebhook: (id: string) => jpost<{ token: string; path: string } | { error: string }>(`/workflows/${id}/webhook-token`, {}),
   rotateWorkflowWebhook: (id: string) => jpost<{ token: string; path: string } | { error: string }>(`/workflows/${id}/webhook-token`, { rotate: true }),
 
+  /** Pick a stopped run up where it left off. Same event shape as a run. */
+  async resumeWorkflowRun(
+    id: string,
+    runId: string,
+    onEvent: (e: WfRunEvent) => void,
+    signal?: AbortSignal,
+    approvedCapabilities?: string[],
+  ): Promise<void> {
+    return streamRun(`${BASE}/workflows/${id}/runs/${runId}/resume`, { approvedCapabilities }, onEvent, signal);
+  },
+
   async runWorkflow(id: string, inputs: Record<string, string>, onEvent: (e: WfRunEvent) => void, signal?: AbortSignal): Promise<void> {
-    let res: Response;
-    try {
-      res = await fetch(`${BASE}/workflows/${id}/run`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ inputs }), signal });
-    } catch (e) {
-      onEvent({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message || 'Service unreachable' });
-      return;
-    }
-    if (!res.body) { onEvent({ type: 'done', status: 'failed', ms: 0, error: 'No stream body' }); return; }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line.startsWith('data:')) continue;
-          const d = line.slice(5).trim();
-          if (d === '[DONE]') return;
-          onEvent(JSON.parse(d) as WfRunEvent);
-        }
-      }
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') onEvent({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message });
-    } finally {
-      try { reader.releaseLock(); } catch { /* noop */ }
-    }
+    return streamRun(`${BASE}/workflows/${id}/run`, { inputs }, onEvent, signal);
   },
 
   async stream(

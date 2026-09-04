@@ -103,6 +103,11 @@ function NavItem({
       onClick={onClick}
       whileTap={{ scale: 0.95 }}
       transition={spring.snappy}
+      // Collapsed, this button is an icon with no text, and the Tooltip is
+      // a visual affordance a screen reader never sees. The label is always
+      // present so the rail is navigable in either state.
+      aria-label={label}
+      aria-current={active ? 'page' : undefined}
       className={cn(
         'relative flex w-full items-center gap-2.5 rounded-lg py-2 text-[12px] font-medium outline-none transition-colors',
         expanded ? 'px-3' : 'justify-center px-0',

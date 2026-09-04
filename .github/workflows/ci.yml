@@ -86,9 +86,30 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Linux apt has stalled for up to 6 hours in CI (observed 21s … 85m39s
+      # across 18 runs, plus a 360m job timeout in PR #11 that occurred
+      # *after* apt had already failed over from azure.archive.ubuntu.com to
+      # archive.ubuntu.com). The mirror is not the root cause:
+      # archive.ubuntu.com is already configured as the fallback in
+      # /etc/apt/apt-mirrors.txt, and the stall happened on it.
+      #
+      # The real defects are:
+      #   1. apt has no effective ceiling — it waits indefinitely rather than
+      #      timing out and retrying (Acquire::http::Timeout / Retries).
+      #   2. the step has no budget — no timeout-minutes, so GitHub's 6h
+      #      default is the only bound and a stall burns a whole runner.
+      #
+      # Fix both. Bound apt at the transport layer and bound the step at the
+      # workflow layer. No mirror rewrite is needed.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
+          echo 'Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
+          echo 'Acquire::https::Timeout "30";' | sudo tee -a /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
+          echo 'Acquire::Retries "3";' | sudo tee -a /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
+          echo '--- apt timeout config ---'
+          cat /etc/apt/apt.conf.d/99-ci-timeout
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
@@ -158,6 +179,7 @@ jobs:
       # cheap, so it is provided and the phase genuinely runs.
       - name: Install a virtual display (Linux)
         if: runner.os == 'Linux'
+        timeout-minutes: 5
         run: sudo apt-get install -y xvfb
 
       - name: Runtime verification (Linux)

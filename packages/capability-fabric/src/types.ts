@@ -185,36 +185,27 @@ export type NodeResolution =
   | { ok: true; node?: NodeRef }
   | { ok: false; code: NodeResolutionFailure; reason: string };
 
-/**
- * How this invocation reached the Fabric.
- *
- * `user-direct` means the request arrived on the channel that only
- * AURA's own window can use, carrying the token the service minted this
- * boot. It is an attested statement about the *channel*, never a claim
- * the caller makes about itself — which is precisely how it differs from
- * `actor.kind`, and why policy may rely on it.
- *
- * Absent means `request`: everything else, including every model- and
- * mission-initiated action, which is governed exactly as before.
- */
-export type Initiator = 'user-direct' | 'request';
-
 export interface InvocationContext {
   actor: InvocationActor;
-  /**
-   * Set by the transport, never by the caller. See `Initiator`.
-   *
-   * A direct user action carries its own consent: the person clicked a
-   * labelled control in the trusted UI. That satisfies gates whose whole
-   * purpose is to obtain consent — it does NOT satisfy gates that exist
-   * because an action cannot be undone.
-   */
-  initiator?: Initiator;
   projectId: string | null;
   /** Absolute path the action operates in, when it operates on a project. */
   cwd?: string;
   missionId?: string;
   taskId?: string;
+  /**
+   * Correlation keys into the authoritative workflow run record, exactly
+   * as `missionId`/`taskId` correlate into the `MissionRecord`. The Fabric
+   * owns no workflow state; these travel onto the audit record so a run
+   * and its governed actions can be reconciled afterwards.
+   *
+   * `workflowNodeId` is a node in a workflow GRAPH. It is deliberately not
+   * called `nodeId` — that name is already taken by the connected
+   * environment node that performs work, and collapsing the two would make
+   * the audit trail ambiguous about which "node" it means.
+   */
+  workflowId?: string;
+  runId?: string;
+  workflowNodeId?: string;
   /** Milliseconds. The executor must abort past this. */
   timeoutMs?: number;
   /**
@@ -225,6 +216,23 @@ export interface InvocationContext {
    */
   approvedCapabilities?: string[];
   /**
+   * "I am spending THIS approval, and only for THIS exact call."
+   *
+   * `approvedCapabilities` is capability-scoped: it says a capability was
+   * authorized, not which invocation of it. That is adequate where the
+   * arguments come from an immutable source, and inadequate where they do
+   * not — an agent's parked call is chosen by a model and persisted to a
+   * run checkpoint, so a hostile edit to that file could keep the
+   * capability id and change the path being written.
+   *
+   * Naming the approval closes that. The Fabric looks the request up in
+   * its OWN store, recomputes the fingerprint from the arguments actually
+   * presented, and refuses when the two differ. The checkpoint therefore
+   * carries only a pointer; the authority on what was approved stays with
+   * the approval.
+   */
+  approvalId?: string;
+  /**
    * The node the caller wants this to run on — routing **intent**, not a
    * report of what ran.
    *
@@ -234,24 +242,6 @@ export interface InvocationContext {
    * quietly replaced with a working one.
    */
   nodeId?: string;
-  /**
-   * Resume a specific approval the human has already answered.
-   *
-   * A gated invocation parks and the Fabric keys its question by
-   * `approvalKey()`. For a mission task that key is stable
-   * (`mission:task:capability`), so retrying the same task finds the
-   * grant. For a standalone invocation it is `inv:<invocationId>` — and a
-   * retry is a *new* invocation with a new id, so it could never find the
-   * grant its user had just given. The approval sat granted and unspent
-   * while the caller was told to ask again.
-   *
-   * Naming the approval closes that. It grants nothing on its own: the
-   * request must already be `granted` (which only `decideApproval` can
-   * do, from a human answer), must not already be consumed, and must be
-   * for this same capability. It is then spent exactly once, through the
-   * same `consumeApproval` path every other grant uses.
-   */
-  resumeApprovalId?: string;
 }
 
 export interface Invocation {
@@ -300,37 +290,32 @@ export interface InvocationResult {
   output?: unknown;
   verification: VerificationReport;
   policy: PolicyEvaluation;
+  /**
+   * The authorization request this invocation is waiting on, present only
+   * when `outcome === 'awaiting-approval'`.
+   *
+   * Without it a caller that gets parked has no handle on the question it
+   * is parked behind — it can see that approval is needed but not which
+   * request answers it, which makes "resume this run when the user
+   * decides" unimplementable. The id was already written to the audit
+   * record; this simply stops it being the only place it appears.
+   */
+  approvalId?: string;
   startedAt: string;
   endedAt: string;
   durationMs: number;
   /** How many attempts the recovery loop made, including the first. */
   attempts: number;
   /**
-   * The approval this invocation is parked on, when `outcome` is
-   * `awaiting-approval`.
-   *
-   * Without it a caller is told to wait for a question it cannot name.
-   * A mission task did not need one — its approval key is derived from
-   * the mission and task, so a retry finds the grant — but a standalone
-   * invocation is keyed by its own id, and a retry is a new invocation.
-   * This is the handle that lets such a caller answer the question and
-   * come back (`InvocationContext.resumeApprovalId`).
-   */
-  approvalId?: string;
-  /**
-   * Execution-state attestation of the final attempt, with the same
-   * semantics as `ExecutorResult.effectStarted`: `false` = proven not
-   * started, `true` = may have started, absent = unknown. Never inferred
-   * from a missing success response.
-   */
-  effectStarted?: boolean;
-  /**
-   * True when the executed capability's descriptor declares it
-   * irreversible. Carried so callers (the workflow runtime) can apply the
-   * same no-auto-retry invariant without re-deriving it from the
-   * manifest — the Fabric remains the single authority on both facts.
+   * Attestation from the executor that the effect may already exist in the world.
+   * Used by the workflow runtime to prevent automatic retries of irreversible effects.
    */
   irreversible?: boolean;
+  /**
+   * Whether the effect has definitely started (false =还没开始, true = started).
+   * When irreversible is true and effectStarted is not false, automatic retry is blocked.
+   */
+  effectStarted?: boolean;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -400,12 +385,32 @@ export interface ApprovalRequest {
     detail: string;
     risk: RiskLevel;
     irreversible: boolean;
+    /**
+     * Identity of the EXACT call this item authorizes.
+     *
+     * A hash over the capability, the arguments, and the execution context
+     * that decides where the effect lands (project and working directory).
+     * Recomputed at spend time and compared: an approval is a decision
+     * about one specific action, and a decision that survived a change to
+     * that action would not be the decision the person made.
+     */
+    fingerprint?: string;
   }[];
 
   /* ── correlation into the authoritative MissionRecord ──────────── */
   projectId?: string;
   missionId?: string;
   taskId?: string;
+
+  /* ── correlation into the authoritative WorkflowRun ────────────── */
+  /**
+   * Present when a workflow node opened this gate. Carried so a request
+   * that outlives a restart can still be matched back to the run it
+   * parked, and so an approvals inbox can say which workflow is waiting.
+   */
+  workflowId?: string;
+  runId?: string;
+  workflowNodeId?: string;
 
   /* ── why the gate opened, and what the user is choosing between ── */
   /** The policy rule that demanded this. Recorded for audit. */
@@ -440,6 +445,22 @@ export interface ApprovalPersistence {
   save(requests: ApprovalRequest[]): void;
 }
 
+/**
+ * Durable storage for the audit trail, supplied by the host.
+ *
+ * Narrower than `ApprovalPersistence` on purpose: an audit record is
+ * **append-only and immutable**, so this port has no `save(all)` — a host
+ * that could rewrite the whole trail could also quietly erase part of it.
+ * `append` is called once per settled invocation and once per human
+ * approval decision; `load` restores the tail at startup so a restart does
+ * not make the system forget what it did.
+ */
+export interface AuditPersistence {
+  /** The most recent records, oldest first. Bounded by the host. */
+  load(): AuditRecord[];
+  append(record: AuditRecord): void;
+}
+
 /* ══════════════════════════════════════════════════════════════════
    Executors — the only place side effects happen
    ══════════════════════════════════════════════════════════════════ */
@@ -448,28 +469,6 @@ export interface ExecutorResult {
   ok: boolean;
   detail: string;
   output?: unknown;
-  /**
-   * Execution-state attestation. Every executor for an **irreversible**
-   * capability must report it honestly; the Fabric refuses to auto-retry
-   * an irreversible action unless this is `false`.
-   *
-   *   false     — execution is PROVEN not to have started. Nothing about
-   *               the outside world was touched (a refused binary, a
-   *               missing node, a validation exit). Retrying repeats
-   *               nothing.
-   *   true      — execution may have started / the effect may have
-   *               happened. A retry would repeat it.
-   *   undefined — unknown, and treated as `true` for an irreversible
-   *               capability.
-   *
-   * Unknown must never be interpreted as safe. Undefined is the default
-   * on purpose: a transient error does not prove that nothing happened —
-   * a timeout is the case where something most likely DID happen and
-   * simply never reported back. An executor must claim `false`
-   * deliberately; silence is never taken as safety, and an executor that
-   * simply never received a success response must not claim `false`.
-   */
-  effectStarted?: boolean;
 }
 
 /**
@@ -536,6 +535,10 @@ export interface AuditRecord {
   projectId: string | null;
   missionId?: string;
   taskId?: string;
+  /** Workflow-run correlation, mirroring `missionId`/`taskId`. */
+  workflowId?: string;
+  runId?: string;
+  workflowNodeId?: string;
   risk: RiskLevel;
   decision: PolicyDecision;
   decisionRule: string;
@@ -555,20 +558,6 @@ export interface AuditRecord {
    * asked for, so a routing decision is never hidden by collapsing the two.
    */
   nodeId?: string;
-  /**
-   * Whether a canonical AURA context prompt reached the executor.
-   *
-   * Written ONLY from the executor's own report, exactly like
-   * `executedNodeId` — the Fabric cannot see the injected prompt, because
-   * the host wiring adds it to a copy of the invocation. Absent means
-   * nothing executed, which is distinct from `false` (it ran, with no
-   * context).
-   *
-   * The flag only. The prompt itself is never persisted here: an audit log
-   * is a trace of what ran, not a transcript of what was said, and a
-   * multi-kilobyte prompt in every record would make it neither.
-   */
-  contextInjected?: boolean;
   /** The node the caller asked for, when they named one. */
   requestedNodeId?: string;
   /** The node the Fabric resolved and handed to the executor. */
@@ -584,17 +573,4 @@ export interface AuditRecord {
    */
   approvalDecision?: 'granted' | 'denied';
   decidedBy?: string;
-  /**
-   * Present when the recovery loop made a governance decision about an
-   * otherwise-permitted automatic retry. Today that is exactly one case:
-   * an irreversible capability failed transiently while its effect may
-   * already exist, so the retry was withheld and the invocation parked
-   * on the Fabric's approval mechanism until a human decides
-   * (`rule: 'irreversible-retry'`).
-   */
-  retry?: {
-    withheld: true;
-    rule: string;
-    effectStarted?: boolean;
-  };
 }

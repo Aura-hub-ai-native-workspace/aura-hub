@@ -32,6 +32,7 @@ import type {
   RunStatus,
   RunTimelineEntry,
   ActionHandler,
+  ProducedRef,
 } from './types';
 import { genId } from './types';
 import { AutomationStore } from './store';
@@ -136,6 +137,13 @@ export function evaluateConditions(payload: Record<string, unknown>, conditions:
     const passed = evaluateCondition(payload, cond);
     return { index, field: cond.field, op: cond.op, passed, note: passed ? undefined : `condition failed on "${cond.field}"` };
   });
+}
+
+/** Identity of a produced thing, for the run-level rollup's de-duplication. */
+function samePrduced(a: ProducedRef, b: ProducedRef): boolean {
+  return a.kind === b.kind && a.kind === 'workflow-run' && b.kind === 'workflow-run'
+    ? a.runId === b.runId
+    : false;
 }
 
 const retryDelay = (policy: RetryPolicy, attempt: number) =>
@@ -337,6 +345,8 @@ export class AutomationEngine {
           {
             projectId: run.event.projectId,
             projectPath: run.event.projectPath,
+            ruleId: rule.id,
+            runId: run.id,
             event: run.event,
             log: (level, text) => this.appendTimeline(run, 'log', text, level, state.actionId),
             signal,
@@ -348,6 +358,18 @@ export class AutomationEngine {
       }
 
       state.ms = Date.now() - t;
+      // Recorded on BOTH outcomes: a workflow run that failed or parked is
+      // exactly the one an operator most needs a link to. The deprecated
+      // flat fields are written from the SAME value, in one place, so the
+      // structured reference and its compatibility mirror cannot diverge.
+      if (result.produced) {
+        state.produced = result.produced;
+        if (result.produced.kind === 'workflow-run') {
+          state.workflowRunId = result.produced.runId;
+          state.workflowRunState = result.produced.state;
+        }
+        run.produced = [...(run.produced ?? []).filter((p) => !samePrduced(p, result.produced!)), result.produced];
+      }
       if (result.ok) {
         state.status = 'completed';
         state.summary = result.summary;

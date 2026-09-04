@@ -778,7 +778,7 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * actually finish a check — 0.1.2 shipped without the OS plugin, so
    * `platform()` threw and the state machine parked in `checking`.
    */
-  const RELEASE_CANDIDATE = '0.1.4';
+   const RELEASE_CANDIDATE = '0.1.5';
   check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);
 }
 

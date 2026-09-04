@@ -290,6 +290,24 @@ export function isArtifactStale(generatedAt: string | undefined | null, changes:
 }
 
 /**
+ * Check if any source files have changed since last index.
+ * Quick check without full diff.
+ */
+export function hasChanges(projectId: string, root: string): boolean {
+  const storedState = loadIndexState(projectId);
+  const { files: currentState } = scanFilesWithMtime(root);
+  // Quick size check
+  if (Object.keys(storedState).length !== currentState.size) return true;
+  // Check a sample of files
+  let checked = 0;
+  for (const [file, mtime] of currentState) {
+    if (checked++ > 100) break; // Only check first 100 files
+    if (storedState[file] !== mtime) return true;
+  }
+  return false;
+}
+
+/**
  * Lazy loader for large repositories.
  * Only loads files on demand, caching results.
  */
