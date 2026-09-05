@@ -1,20 +1,50 @@
 /**
  * environmentClient — the desktop's window onto real machine state.
  * ==================================================================
- * Thin fetch wrappers over the local service's `/environment` routes,
- * matching `missionClient.ts` in style (reuse `aiClient.base` rather than
- * re-deriving the URL, resolve rather than throw on transport failure).
+ * Thin fetch wrappers over the `/environment` routes of the canonical
+ * Python backend, resolving rather than throwing on transport failure.
  *
- * A failed request here is not an error condition — the service may
+ * ONE origin, deliberately. The Python backend is the sole authority on
+ * what is installed on this machine: it owns discovery, the inventory,
+ * the safe-probe boundary and install/connect. The Node AI service keeps
+ * its own `/environment/scan` and `/environment/probe` for the Fabric's
+ * internal view of node availability, and it has no `/environment/install`,
+ * no `/environment/connect` and no inventory at all — so a client that
+ * split these calls across the two origins would silently 404 half of
+ * them and read machine state from a backend that does not collect it.
+ * Every route below therefore goes to `ENVIRONMENT_BASE`, and the desktop
+ * shell is what makes that origin exist (src-tauri/src/service.rs).
+ *
+ * The Node scan was not merely a second opinion, it was an incomplete one:
+ * it returns `results` and nothing else, while this screen also renders
+ * discovery evidence, package sources, OS packages and known-but-absent
+ * nodes — fields only the Python scan produces. Those panels were reading
+ * a payload that never carried them.
+ *
+ * One consequence, recorded rather than hidden: the Node service refreshed
+ * its Fabric's node-availability set whenever the desktop asked it to
+ * scan. It no longer receives that request, so that set is now as fresh as
+ * its own start-up scan. Restoring the refresh would mean scanning the
+ * machine twice, from two backends, to keep a cache in one of them
+ * current — which is the coupling this file exists to remove.
+ *
+ * A failed request here is not an error condition — the backend may
  * simply not be running. Every call resolves to an honest "could not
  * measure" result so the environment degrades to "unknown", never to a
  * broken screen or a fabricated status.
  */
 
 import type { ProbeResult } from '@aura/connected-environment';
-import { aiClient } from '../ai/aiClient';
 
-const BASE = aiClient.base;
+const ENV = import.meta.env as unknown as Record<string, string | undefined>;
+
+/**
+ * The canonical Python backend. `VITE_ENVIRONMENT_URL` overrides it for a
+ * developer running the backend somewhere else; the default is the port
+ * the desktop shell supervises (`service::PYTHON_PORT`).
+ */
+export const ENVIRONMENT_BASE =
+  ENV.VITE_ENVIRONMENT_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:4320';
 
 export type ToolStatus =
   | 'verified'
@@ -265,9 +295,21 @@ const PROBE_TIMEOUT_MS = 30_000;
 /** A cold inventory reads every package database on the machine. */
 const INVENTORY_TIMEOUT_MS = 120_000;
 
+/**
+ * One sentence, used everywhere the backend does not answer.
+ *
+ * It names the backend that is actually missing and the command that
+ * starts it. The previous text pointed at `npm run ai` — the Node AI
+ * service — which is the wrong instruction: that service does not collect
+ * machine state, so following it changed nothing while looking like a fix.
+ */
+const UNREACHABLE_DETAIL =
+  `The Python environment backend is not answering on ${ENVIRONMENT_BASE}, so nothing `
+  + 'could be measured. Start it with `npm run environment:api` and scan again.';
+
 const UNREACHABLE: ProbeResult = {
   present: false,
-  detail: 'The local AURA service is not answering, so nothing could be measured. Start it with `npm run ai` and scan again.',
+  detail: UNREACHABLE_DETAIL,
 };
 
 /**
@@ -276,7 +318,7 @@ const UNREACHABLE: ProbeResult = {
  */
 async function scan(ids?: string[], refresh = false): Promise<ScanOutcome> {
   try {
-    const res = await fetch(`${BASE}/environment/scan`, {
+    const res = await fetch(`${ENVIRONMENT_BASE}/environment/scan`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ ids, refresh }),
@@ -284,7 +326,7 @@ async function scan(ids?: string[], refresh = false): Promise<ScanOutcome> {
       // backend leaves the UI saying "Scanning…" for the rest of the session.
       signal: AbortSignal.timeout(SCAN_TIMEOUT_MS),
     });
-    if (!res.ok) return { ok: false, reason: `The local AURA service answered ${res.status}.` };
+    if (!res.ok) return { ok: false, reason: `The Python environment backend answered ${res.status}.` };
     return { ok: true, response: (await res.json()) as ScanResponse };
   } catch (e) {
     const aborted = e instanceof DOMException && e.name === 'TimeoutError';
@@ -292,7 +334,7 @@ async function scan(ids?: string[], refresh = false): Promise<ScanOutcome> {
       ok: false,
       reason: aborted
         ? 'The scan did not finish in time, so nothing was measured.'
-        : UNREACHABLE.detail,
+        : UNREACHABLE_DETAIL,
     };
   }
 }
@@ -300,7 +342,7 @@ async function scan(ids?: string[], refresh = false): Promise<ScanOutcome> {
 /** Probe one node. Used by Connect, where the user is waiting on a result. */
 async function probe(id: string, refresh = true): Promise<ProbeResult> {
   try {
-    const res = await fetch(`${BASE}/environment/probe`, {
+    const res = await fetch(`${ENVIRONMENT_BASE}/environment/probe`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id, refresh }),
@@ -315,7 +357,7 @@ async function probe(id: string, refresh = true): Promise<ProbeResult> {
 }
 
 async function install(id: string): Promise<InstallResponse> {
-  const res = await fetch(`${BASE}/environment/install`, {
+  const res = await fetch(`${ENVIRONMENT_BASE}/environment/install`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id }),
@@ -330,7 +372,7 @@ async function install(id: string): Promise<InstallResponse> {
 }
 
 async function connectDirect(id: string): Promise<ConnectResponse> {
-  const res = await fetch(`${BASE}/environment/connect`, {
+  const res = await fetch(`${ENVIRONMENT_BASE}/environment/connect`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id }),
@@ -353,13 +395,13 @@ async function inventory(options: {
   verify?: boolean;
 } = {}): Promise<InventoryOutcome> {
   try {
-    const res = await fetch("http://127.0.0.1:4320/environment/inventory", {
+    const res = await fetch(`${ENVIRONMENT_BASE}/environment/inventory`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(options),
       signal: AbortSignal.timeout(INVENTORY_TIMEOUT_MS),
     });
-    if (!res.ok) return { ok: false, reason: "The local AURA service answered " + res.status };
+    if (!res.ok) return { ok: false, reason: "The Python environment backend answered " + res.status };
     return { ok: true, response: (await res.json()) as InventoryResponse };
   } catch (e) {
     const aborted = e instanceof DOMException && e.name === "TimeoutError";
@@ -367,7 +409,7 @@ async function inventory(options: {
       ok: false,
       reason: aborted
         ? "Reading the machine inventory did not finish in time."
-        : UNREACHABLE.detail,
+        : UNREACHABLE_DETAIL,
     };
   }
 }

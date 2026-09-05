@@ -38,8 +38,20 @@ from ..persistence.workflows import WorkflowStore
 from ..secrets import SecretStore as AuraSecrets
 from ..workflow.runner import WorkflowRunner
 
-ALLOWED_ORIGIN = re.compile(
-    r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost|https?://tauri\.localhost)$"
+#: Every origin the desktop can legitimately call this backend from.
+#:
+#: One pattern, used as the CORS middleware's `allow_origin_regex`, because
+#: two lists drift: the middleware used to carry its own shorter copy that
+#: omitted ``http://tauri.localhost`` — the origin a Tauri v2 window has on
+#: WINDOWS — so every request the desktop made there failed preflight while
+#: Linux and macOS (``tauri://localhost``) worked.
+#:
+#: Loopback keeps an optional port for the Vite dev server (:1420) and for
+#: `npm run preview`; the tauri origins have none.
+ALLOWED_ORIGIN = (
+    r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?"
+    r"|tauri://localhost"
+    r"|https?://tauri\.localhost)$"
 )
 
 MSGS = {
@@ -1476,8 +1488,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     app = Starlette(
         routes=routes,
         middleware=[Middleware(CORSMiddleware,
-                               allow_origins=["tauri://localhost", "https://tauri.localhost"],
-                               allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+                               allow_origin_regex=ALLOWED_ORIGIN,
                                allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                                allow_headers=["Content-Type", "x-aura-shutdown",
                                               "Last-Event-ID"])])

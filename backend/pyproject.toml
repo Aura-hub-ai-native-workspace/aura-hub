@@ -5,6 +5,16 @@ description = "AURA Hub canonical Python backend (migration target)"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.13",
+    # The canonical API IS a Starlette app served by uvicorn (aura/api/server.py).
+    # Declared as runtime dependencies, not test extras: the desktop shell starts
+    # this backend, so an installation without them is a backend that cannot run.
+    #
+    # Capped below Starlette 1.0: the suite runs against 0.37, and 1.x moves
+    # TestClient onto a different HTTP client (`httpx2`), so resolving into it
+    # would ship a lock nothing here has been run against. Lifting the cap is a
+    # deliberate upgrade with its own test run, not a resolver's decision.
+    "starlette>=0.37,<1",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -12,6 +22,10 @@ test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "jsonschema>=4.26",
+    # `starlette.testclient` refuses to import without it, and the API suites
+    # are built on TestClient — so a venv created from this extra alone could
+    # not collect them. Declared here rather than assumed present.
+    "httpx>=0.27",
 ]
 
 [build-system]

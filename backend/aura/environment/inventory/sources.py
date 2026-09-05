@@ -581,25 +581,75 @@ def _uv(started: float) -> SourceResult:
             pass
 
     if python_dir.is_dir():
+        # uv keeps its own bookkeeping in this directory beside the
+        # interpreters, and points short names at full ones:
+        #
+        #   cpython-3.14.5-linux-x86_64-gnu      a real interpreter
+        #   cpython-3.14-linux-x86_64-gnu   ->   the same one, by symlink
+        #   .temp/  .lock  .gitignore            uv's own state
+        #
+        # Listing the directory verbatim reported `.temp` as an installed
+        # Python runtime with no version, and counted every interpreter
+        # twice — once under its full version and once under the short
+        # name linked to it. Neither is true of the machine, and an
+        # inventory that invents entries is worse than one that misses them.
+        #
+        # Two passes, because a symlink can be listed before its target:
+        # real directories become items, then link names become aliases on
+        # the item they resolve to.
+        by_real: dict[str, InventoryItem] = {}
+        links: list[tuple[str, str]] = []
         try:
-            for entry in sorted(python_dir.iterdir()):
-                if not entry.is_dir():
-                    continue
-                # cpython-3.14.5-linux-x86_64-gnu
-                parts = entry.name.split("-")
-                version = parts[1] if len(parts) > 1 else None
+            entries = sorted(python_dir.iterdir())
+        except OSError:
+            entries = []
+        for entry in entries:
+            if entry.name.startswith(".") or not entry.is_dir():
+                continue
+            # cpython-3.14.5-linux-x86_64-gnu
+            parts = entry.name.split("-")
+            if len(parts) < 2 or not parts[1][:1].isdigit():
+                continue  # uv's own state, not an interpreter
+            try:
+                real = str(entry.resolve())
+            except OSError:
+                real = str(entry)
+            if entry.is_symlink():
+                links.append((entry.name, real))
+                continue
+            item = _language_item(
+                "uv",
+                f"python {parts[1]}",
+                parts[1],
+                kind=ItemKind.RUNTIME,
+                category="development",
+                location=real,
+            )
+            item.display_name = f"Python {parts[1]}"
+            by_real[real] = item
+            items.append(item)
+
+        for name, real in links:
+            target = by_real.get(real)
+            if target is not None:
+                if name not in target.aliases:
+                    target.aliases.append(name)
+            else:
+                # A link with no target in this directory — a partial
+                # uninstall. It is still machine evidence, so it is
+                # reported rather than dropped.
+                parts = name.split("-")
                 item = _language_item(
                     "uv",
-                    f"python {version}" if version else entry.name,
-                    version,
+                    f"python {parts[1]}",
+                    parts[1],
                     kind=ItemKind.RUNTIME,
                     category="development",
-                    location=str(entry),
+                    location=real,
                 )
-                item.display_name = f"Python {version}" if version else entry.name
+                item.display_name = f"Python {parts[1]}"
+                by_real[real] = item
                 items.append(item)
-        except OSError:
-            pass
 
     total = len(items)
     items, truncated = _bounded(items, total)
@@ -1318,6 +1368,25 @@ def _skip_reason(directory: str) -> str | None:
     return None
 
 
+def _add_alias(item: InventoryItem, name: str) -> None:
+    """Record another name for the same item, once."""
+    if name and name != item.name and name != item.command and name not in item.aliases:
+        item.aliases.append(name)
+
+
+def _is_canonical_command(item: InventoryItem, command: str) -> bool:
+    """Is this the command a person would call the item by?
+
+    The package's own name, with any npm scope removed — `@railway/cli`
+    installs `railway`, `vercel` installs `vercel` and `vc`. When the
+    machine has that command, it is the one to lead with; anything else is
+    whichever name the directory listing reached first.
+    """
+    name = item.package_name or item.name or ""
+    basename = name.rsplit("/", 1)[-1]
+    return bool(basename) and command == basename
+
+
 def enumerate_path(index: InventoryIndex, path: str | None = None) -> SourceResult:
     """Every command the machine can actually run, attributed where possible.
 
@@ -1383,9 +1452,28 @@ def enumerate_path(index: InventoryIndex, path: str | None = None) -> SourceResu
             if owner is not None:
                 # A package already claims this command; record where it is.
                 owner.detected = True
-                if not owner.executable_path:
+                # A package often installs several commands (`vercel` also
+                # installs `vc`; `wrangler` also installs `cf-wrangler` and
+                # `wrangler2`). They are one installed thing, so they stay
+                # one item — but WHICH of them the card leads with is not
+                # arbitrary, and the others are not noise to be dropped.
+                #
+                # Lead with the command that matches the package's own name
+                # when the machine has it, because that is the one a person
+                # would type; keep every other name as an alias, because an
+                # engineer searching the inventory for `wrangler` has to
+                # find the item whose command happens to sort first.
+                if _is_canonical_command(owner, command) or not owner.executable_path:
+                    displaced = owner.command
                     owner.executable_path = entry.path
-                owner.command = owner.command or command
+                    owner.command = command
+                    # Alias the name it used to lead with — after the swap,
+                    # or `_add_alias` would see it as the current command
+                    # and drop it.
+                    if displaced:
+                        _add_alias(owner, displaced)
+                else:
+                    _add_alias(owner, command)
                 owner.keys.add(path_key(target))
                 # The package told us it exists; PATH tells us whether it is
                 # safe to run. Without this the item stays trust-unknown and

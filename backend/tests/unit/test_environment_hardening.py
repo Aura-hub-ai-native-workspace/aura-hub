@@ -949,6 +949,50 @@ class TestEnvironmentApi:
         if latencies:
             assert max(latencies) < 5.0, f"event loop stalled: {latencies}"
 
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "tauri://localhost",       # Linux and macOS
+            "http://tauri.localhost",  # Windows
+            "https://tauri.localhost",
+            "http://localhost:1420",   # the Vite dev server
+            "http://127.0.0.1:1420",
+        ],
+    )
+    def test_every_desktop_origin_passes_preflight(self, client, origin):
+        """The desktop cannot read the machine inventory it cannot request.
+
+        `http://tauri.localhost` is a Tauri v2 window's origin on Windows,
+        and it was missing from the middleware's own origin list while being
+        present in the module-level pattern beside it — so the Environment
+        screen worked on Linux and failed preflight on Windows.
+        """
+        response = client.options(
+            "/environment/inventory",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.headers["access-control-allow-origin"] == origin
+
+    @pytest.mark.parametrize(
+        "origin",
+        ["http://evil.example", "https://tauri.localhost.evil.example", "null"],
+    )
+    def test_foreign_origins_are_refused(self, client, origin):
+        response = client.options(
+            "/environment/inventory",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        assert "access-control-allow-origin" not in response.headers
+
     def test_install_rejects_an_id_outside_the_catalog(self, client):
         response = client.post("/environment/install", json={"id": "../../evil"})
         assert response.status_code == 400

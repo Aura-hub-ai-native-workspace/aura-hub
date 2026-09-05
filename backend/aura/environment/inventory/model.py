@@ -174,6 +174,7 @@ class InventoryItem:
             "installLocation": self.install_location,
             "executablePath": self.executable_path,
             "command": self.command,
+            "origin": self.package_manager,
             "packageManager": self.package_manager,
             "packageName": self.package_name,
             "packageVersion": self.package_version,

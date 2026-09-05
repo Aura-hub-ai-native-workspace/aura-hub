@@ -338,6 +338,72 @@ class TestLanguageSources:
         assert len(entry.provides) <= 64
         assert len(entry.description or "") <= 300
 
+    @POSIX_ONLY
+    def test_uv_reports_interpreters_not_its_own_bookkeeping(self, tmp_path, monkeypatch):
+        """uv's data directory is not a list of installed Pythons.
+
+        It also holds `.temp`, `.lock` and short names symlinked to full
+        ones. Listing it verbatim reported `.temp` as an installed runtime
+        with no version, and counted every interpreter twice.
+        """
+        data = tmp_path / "uv"
+        python_dir = data / "python"
+        python_dir.mkdir(parents=True)
+        real = python_dir / "cpython-3.14.5-linux-x86_64-gnu"
+        real.mkdir()
+        (python_dir / "cpython-3.14-linux-x86_64-gnu").symlink_to(real)
+        (python_dir / "cpython-3.11.15-linux-x86_64-gnu").mkdir()
+        (python_dir / ".temp").mkdir()
+        (python_dir / ".lock").write_text("")
+        monkeypatch.setenv("UV_DATA_DIR", str(data))
+        monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "no-tools"))
+
+        items = inventory_sources._uv(0.0).items
+
+        assert {i.package_version for i in items} == {"3.14.5", "3.11.15"}
+        assert not any(i.name.startswith("python .") for i in items)
+        assert all(i.kind is ItemKind.RUNTIME for i in items)
+
+        linked = next(i for i in items if i.package_version == "3.14.5")
+        assert "cpython-3.14-linux-x86_64-gnu" in linked.aliases, (
+            "the short name is the same interpreter, so it is an alias, not a second item"
+        )
+        assert linked.install_location == str(real.resolve())
+
+    @POSIX_ONLY
+    def test_uv_reports_a_link_that_leaves_its_own_directory(self, tmp_path, monkeypatch):
+        """An interpreter uv links to from elsewhere is still installed."""
+        data = tmp_path / "uv"
+        python_dir = data / "python"
+        python_dir.mkdir(parents=True)
+        elsewhere = tmp_path / "system-python"
+        elsewhere.mkdir()
+        (python_dir / "cpython-3.13.1-linux-x86_64-gnu").symlink_to(elsewhere)
+        monkeypatch.setenv("UV_DATA_DIR", str(data))
+        monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "no-tools"))
+
+        items = inventory_sources._uv(0.0).items
+
+        assert [i.package_version for i in items] == ["3.13.1"]
+        assert items[0].install_location == str(elsewhere.resolve())
+
+    @POSIX_ONLY
+    def test_uv_does_not_report_an_interpreter_that_is_gone(self, tmp_path, monkeypatch):
+        """A dangling link is not an installation.
+
+        The directory it names does not exist, so nothing is installed
+        there — and an inventory that says otherwise is exactly the
+        fabricated evidence this subsystem must never produce.
+        """
+        data = tmp_path / "uv"
+        python_dir = data / "python"
+        python_dir.mkdir(parents=True)
+        (python_dir / "cpython-3.13.1-linux-x86_64-gnu").symlink_to(tmp_path / "gone")
+        monkeypatch.setenv("UV_DATA_DIR", str(data))
+        monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "no-tools"))
+
+        assert inventory_sources._uv(0.0).items == []
+
     def test_pip_json_is_inventoried(self, monkeypatch):
         monkeypatch.setattr(inventory_sources, "resolve_executable", lambda c: f"/fake/{c}")
         monkeypatch.setattr(
@@ -556,6 +622,64 @@ class TestPathEnumeration:
         assert len(index.items) == 1
         assert index.items[0].executable_path == str(script)
         assert "path" in index.items[0].sources
+
+    @POSIX_ONLY
+    def test_a_package_leads_with_its_own_command_and_keeps_the_rest(self, tmp_path):
+        """`vercel` installs `vc` and `vercel`; one item, one obvious name.
+
+        Directory order used to decide which command the card led with, so
+        the vercel package was shown as `vc` and the wrangler package as
+        `cf-wrangler` — and the names it did not pick were dropped, leaving
+        an engineer searching the inventory for `wrangler` with no result.
+        """
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        for name in ("vc", "vercel"):  # `vc` sorts first, deliberately
+            script = bindir / name
+            script.write_text("#!/bin/sh\nexit 0\n")
+            script.chmod(0o755)
+
+        index = InventoryIndex()
+        package = item("vercel", manager="npm", version="59.1.3", provides={"vc", "vercel"})
+        index.add(package)
+        for command in ("vc", "vercel"):
+            index.link_command(package, command)
+
+        inventory_sources.enumerate_path(index, path=str(bindir))
+
+        assert len(index.items) == 1, "two commands of one package are not two installations"
+        entry = index.items[0]
+        assert entry.command == "vercel"
+        assert entry.executable_path == str(bindir / "vercel")
+        assert "vc" in entry.aliases
+
+    @POSIX_ONLY
+    def test_a_package_whose_name_is_no_command_keeps_every_name(self, tmp_path):
+        """`@kilocode/cli` installs `kilo` and `kilocode` and neither matches.
+
+        There is no canonical name to prefer, so the first one found leads —
+        but the other is still a name this item answers to.
+        """
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        for name in ("kilo", "kilocode"):
+            script = bindir / name
+            script.write_text("#!/bin/sh\nexit 0\n")
+            script.chmod(0o755)
+
+        index = InventoryIndex()
+        package = item("@kilocode/cli", manager="npm", version="7.5.13",
+                       provides={"kilo", "kilocode"})
+        index.add(package)
+        for command in ("kilo", "kilocode"):
+            index.link_command(package, command)
+
+        inventory_sources.enumerate_path(index, path=str(bindir))
+
+        assert len(index.items) == 1
+        entry = index.items[0]
+        assert entry.command == "kilo"
+        assert entry.aliases == ["kilocode"]
 
     @POSIX_ONLY
     def test_a_shadowed_command_is_evidence_not_a_second_item(self, tmp_path):
