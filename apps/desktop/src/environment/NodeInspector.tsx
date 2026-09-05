@@ -215,6 +215,11 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
   // way to install it. Both are honest silences rather than a dead button.
   if (!missing || !spec) return null;
 
+  /**
+   * Initiates installation of a missing node.
+   * Uses invokeAsUser to present the click itself as user authorization.
+   * On success, automatically rescans the environment to update node status.
+   */
   const install = async () => {
     setBusy(true);
     setError(null);

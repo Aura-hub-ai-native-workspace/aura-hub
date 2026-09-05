@@ -22,6 +22,14 @@ interface QuickInsight {
   action?: () => void;
 }
 
+/**
+ * Bottom information panel displaying environment metrics, recent activity,
+ * system health, and quick insights for the workspace.
+ * @param envSummary Environment scan summary with node counts
+ * @param onScanEnvironment Callback to trigger environment scan
+ * @param activeProjectId Currently selected project ID
+ * @param projects List of available projects
+ */
 export function BottomInfoPanel({
   envSummary,
   onScanEnvironment,

@@ -99,9 +99,13 @@ export function WorkspaceScreen() {
      registry, and doing it here as well would be a second authority for the
      same decision. */
 
-const selectProject = useCallback((id: string | null) => {
+  /**
+   * Selects the active project for mission planning.
+   * @param id Project ID or null to deselect
+   */
+  const selectProject = useCallback((id: string | null) => {
     setActiveProject(id || null);
-}, [setActiveProject]);
+  }, [setActiveProject]);
 
   /* What the plan actually needs, read from the Fabric's existing
      annotation route. Re-read whenever the plan changes. */

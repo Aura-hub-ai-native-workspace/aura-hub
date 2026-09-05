@@ -21,6 +21,17 @@ export interface WorkspaceToolbarProps {
   setViewMode: (mode: 'grid' | 'list') => void;
 }
 
+/**
+ * Top toolbar for the workspace screen providing project selection,
+ * view mode controls, and workspace actions like auto-arrange and add node.
+ * @param onRelayout Callback to trigger canvas relayout
+ * @param onAddNode Callback to open add node dialog
+ * @param onSelectProject Callback when project is selected
+ * @param projects List of available projects
+ * @param projectId Currently selected project ID
+ * @param viewMode Current view mode (grid or list)
+ * @param setViewMode Callback to change view mode
+ */
 export function WorkspaceToolbar({
   onRelayout,
   onAddNode,
@@ -110,6 +121,13 @@ export function WorkspaceToolbar({
   );
 }
 
+/**
+ * Toolbar button with icon and label.
+ * @param icon Icon name to display
+ * @param label Button label text
+ * @param onClick Click handler
+ * @param testId Optional test ID for testing
+ */
 function HeaderButton({
   icon,
   label,

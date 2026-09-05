@@ -74,6 +74,28 @@ const PLACEHOLDERS = {
   noProject: 'Choose a project first…',
 };
 
+/**
+ * The AURA Agent Workspace control center. A composer for creating missions against
+ * selected projects, showing environment readiness, live mission progress, capability
+ * gaps, and mission approval gates. Displays real-time execution status and coordinates
+ * with the Hub's spatial canvas.
+ * @param readiness Environment scan summary (connected, available, missing, unscanned)
+ * @param scanning Whether an environment scan is in progress
+ * @param lastScanAt Timestamp of last completed scan
+ * @param onScan Callback to trigger environment scan
+ * @param projects Available project records
+ * @param projectId Currently selected project ID
+ * @param onSelectProject Callback when project selection changes
+ * @param progress Current hub execution progress and phase
+ * @param mission Active mission record or null
+ * @param missing Capability nodes needed by mission but unavailable
+ * @param unattributed Work in flight not attributed to a specific node
+ * @param error Current error message if any
+ * @param onSubmit Callback when user submits mission prompt
+ * @param onApprove Callback when user approves mission plan
+ * @param onStart Callback when user starts mission execution
+ * @param viewMode Current workspace view mode (grid or list)
+ */
 export function HubSurface({
   readiness,
   scanning,

@@ -45,6 +45,12 @@ const STATUS_LABELS: Record<AgentStatus, string> = {
   failed: 'Failed',
 };
 
+/**
+ * Displays a visual timeline of workflow execution showing agent activities,
+ * task plans, and provider operations. Updates in real-time as missions progress.
+ * @param active Active mission record
+ * @param progress Current hub progress state
+ */
 export function WorkflowTimeline({
   active,
   progress,
@@ -118,6 +124,11 @@ export function WorkflowTimeline({
     return items;
   }, [active, progress]);
 
+  /**
+   * Maps hub phase to agent status for timeline visualization.
+   * @param phase Current hub phase string
+   * @returns Corresponding agent status for display
+   */
   const getStatusFromPhase = (phase: string): AgentStatus => {
     const mapping: Record<string, AgentStatus> = {
       idle: 'idle',

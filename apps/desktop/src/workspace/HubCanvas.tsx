@@ -39,6 +39,16 @@ const STATUS_COLOR_MAP: Record<NodeStatus, string> = {
   unknown: '#6b7280',
 };
 
+/**
+ * The Workspace's spatial execution surface showing the Hub at center surrounded by
+ * capability nodes with connecting edges. Renders live execution status and supports
+ * drag-to-reposition and keyboard navigation.
+ * @param nodes Placed nodes paired with their live measured state
+ * @param canvasRef Container ref for drag calculations
+ * @param onInspect Callback when a node is clicked or focused
+ * @param hub The Hub surface component to render at center
+ * @param activity Live execution phase per node from the running mission
+ */
 export function HubCanvas({
   nodes,
   canvasRef,
@@ -125,6 +135,16 @@ function EdgeLayer({
   );
 }
 
+/**
+ * Individual capability node chip with drag-to-reposition, status indicators,
+ * and keyboard/pointer interaction. Shows connection status dot, version info,
+ * and live execution activity.
+ * @param placed Node placement data (position and ID)
+ * @param node Live measured node state or null if catalog entry missing
+ * @param canvasRef Container ref for drag position calculations
+ * @param activity Current execution phase for this node
+ * @param onInspect Callback when node is clicked or focused
+ */
 function NodeChip({
   placed,
   node,

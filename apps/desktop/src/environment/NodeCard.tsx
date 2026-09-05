@@ -39,6 +39,11 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
   const rescan = useEnvironmentStore((s) => s.scan);
   const [installing, setInstalling] = useState(false);
 
+  /**
+   * Installs a missing node using the Fabric's system.install capability.
+   * Invokes as user to present the window's own token as authorization.
+   * On successful installation, triggers an environment rescan.
+   */
   const handleInstall = async () => {
     if (installing || busy) return;
     setInstalling(true);
