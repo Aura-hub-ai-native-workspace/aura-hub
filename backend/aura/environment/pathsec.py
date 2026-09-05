@@ -279,6 +279,28 @@ def _dir_is_open_to_all(st: os.stat_result) -> bool:
     return bool(st.st_mode & stat.S_IWOTH) and not bool(st.st_mode & stat.S_ISVTX)
 
 
+def _system_owner_uids() -> set[int]:
+    """UIDs that identify the platform's trusted system owner.
+
+    POSIX normally reports the filesystem root as UID 0.  Rootless
+    containers and id-mapped mounts can instead expose that same immutable
+    host-owned tree as an overflow UID (commonly 65534).  Treating every
+    file below such a root as foreign makes ordinary system executables
+    permanently unprobeable, even though the calling user cannot alter the
+    tree.  The owner of ``/`` is therefore the system-owner identity too.
+
+    This does *not* trust arbitrary foreign users: a file or directory owned
+    by any UID other than the process user, UID 0, or the root-filesystem
+    owner remains blocked.
+    """
+    owners = {0}
+    try:
+        owners.add(os.stat(os.path.sep).st_uid)
+    except OSError:
+        pass
+    return owners
+
+
 def location_trust(executable: str | os.PathLike[str]) -> TrustVerdict:
     """Decide whether it is safe to execute what is at ``executable``.
 
@@ -328,7 +350,8 @@ def location_trust(executable: str | os.PathLike[str]) -> TrustVerdict:
         )
 
     uid = os.getuid()
-    if st.st_uid not in (0, uid):
+    trusted_owners = _system_owner_uids() | {uid}
+    if st.st_uid not in trusted_owners:
         return verdict(
             LocationTrust.FOREIGN_OWNER,
             f"{resolved} belongs to another user (uid {st.st_uid})",
@@ -344,7 +367,7 @@ def location_trust(executable: str | os.PathLike[str]) -> TrustVerdict:
                 LocationTrust.WORLD_WRITABLE,
                 f"{ancestor} is writable by any user on this machine",
             )
-        if ast.st_uid not in (0, uid):
+        if ast.st_uid not in trusted_owners:
             return verdict(
                 LocationTrust.FOREIGN_OWNER,
                 f"{ancestor} belongs to another user (uid {ast.st_uid})",

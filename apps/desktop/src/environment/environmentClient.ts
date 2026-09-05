@@ -352,22 +352,8 @@ async function inventory(options: {
   query?: string;
   verify?: boolean;
 } = {}): Promise<InventoryOutcome> {
-  // Try Python backend first (authoritative machine inventory source)
   try {
-    const python_res = await fetch("http://127.0.0.1:4320/environment/inventory", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(options),
-      signal: AbortSignal.timeout(INVENTORY_TIMEOUT_MS),
-    });
-    if (python_res.ok) return { ok: true, response: (await python_res.json()) as InventoryResponse };
-  } catch {
-    // Python backend unavailable, fall through to local service
-  }
-
-  // Fall back to local service (Node.js AI service)
-  try {
-    const res = await fetch(BASE + "/environment/inventory", {
+    const res = await fetch("http://127.0.0.1:4320/environment/inventory", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(options),
