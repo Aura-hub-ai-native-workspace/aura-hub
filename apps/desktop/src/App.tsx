@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { CommandPalette, useHotkey, useMediaQuery } from '@aura/ui';
 import { useAppStore } from '@aura/core';
 import { AppShell } from './shell/AppShell';
@@ -37,6 +37,7 @@ export function App() {
   const recentCommandIds = useAppStore((s) => s.recentCommandIds);
   const pushRecentCommand = useAppStore((s) => s.pushRecentCommand);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const completeBoot = useCallback(() => setBooted(true), [setBooted]);
 
   // The notification feed: polls real engine state, derives persisted,
   // deduplicated notifications (Part 2).
@@ -124,7 +125,7 @@ export function App() {
       {!onboarded ? (
         <OnboardingFlow onComplete={completeOnboarding} />
       ) : (
-        !booted && <BootSequence onComplete={() => setBooted(true)} />
+        !booted && <BootSequence onComplete={completeBoot} />
       )}
     </>
   );
