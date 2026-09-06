@@ -9,6 +9,14 @@ from .authority import AuthorityChecker
 from .discovery import CapabilityDiscovery
 from .events import EventBus
 from .execution import ExecutionController, ExecutionOutcome
+from .handoff import (
+    MAX_ENVELOPE_CHARS,
+    MAX_SOURCE_CHARS,
+    HandoffRefusal,
+    UpstreamEvidence,
+    build_envelope,
+    resolve_task_input,
+)
 from .intent import (
     IntentCompilationError,
     IntentCompiler,
@@ -43,8 +51,11 @@ __all__ = [
     "EventBus",
     "ExecutionController",
     "ExecutionOutcome",
+    "HandoffRefusal",
     "IntentCompilationError",
     "IntentCompiler",
+    "MAX_ENVELOPE_CHARS",
+    "MAX_SOURCE_CHARS",
     "McpGateway",
     "McpRegistrationError",
     "ModelPort",
@@ -55,13 +66,16 @@ __all__ = [
     "ScriptedModelPort",
     "TaskPlanner",
     "TaskVerdict",
+    "UpstreamEvidence",
     "build_correction",
+    "build_envelope",
     "decide_run",
     "decide_task",
     "validate_correction_scope",
     "VerificationEngine",
     "WorkflowCompiler",
     "heuristic_interpret",
+    "resolve_task_input",
     "sanitize_external_tool",
     "topo_order",
 ]

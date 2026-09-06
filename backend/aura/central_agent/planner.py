@@ -259,6 +259,11 @@ class TaskPlanner:
             unknown = [d for d in t.dependsOn if d not in known]
             if unknown:
                 raise PlanningError(f"task {t.id} depends on unknown {unknown}")
+            if t.inputFrom == "upstream-output" and not t.dependsOn:
+                raise PlanningError(
+                    f"task {t.id} declares inputFrom 'upstream-output' but "
+                    "names no dependencies; declare dependsOn or use a "
+                    "literal input.")
         # cycle check (small n — iterative DFS is plenty)
         state: dict[str, int] = {}
 

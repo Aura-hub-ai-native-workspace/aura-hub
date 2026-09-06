@@ -102,8 +102,13 @@ class TaskSpecification(ContractModel):
     route: ExecutionRoute = "single-invocation"
     input: dict = Field(default_factory=dict)
     """Where the task's invocation arguments come from: a literal dict now,
-    or the workflow the compiler produces for this plan (inputFrom)."""
-    inputFrom: Literal["literal", "compiled-workflow"] = "literal"
+    the workflow the compiler produces for this plan (inputFrom), or the
+    verified outputs of dependency tasks resolved by the execution
+    controller at dispatch time ("upstream-output"). Upstream resolution
+    only ever ADDS an AURA-owned evidence block to the task text and
+    records provenance in TaskOutcome.consumedFrom; it never alters scope,
+    capabilities, cwd, or any other input field."""
+    inputFrom: Literal["literal", "compiled-workflow", "upstream-output"] = "literal"
     dependsOn: list[str] = Field(default_factory=list)
     risk: RiskLevel = "low"
     reversible: bool = True
@@ -213,6 +218,12 @@ class TaskOutcome(ContractModel):
     invocationIds: list[str] = Field(default_factory=list)
     approvalId: str | None = None
     detail: str = ""
+    consumedFrom: list[str] = Field(default_factory=list)
+    """Invocation ids of verified upstream tasks whose results were
+    resolved into this task's input by the execution controller. Empty
+    unless inputFrom == "upstream-output". This is the durable handoff
+    lineage: session files and run records persist it, so a restart can
+    reconstruct which verified evidence fed which task."""
 
 
 class AgentVerificationReport(ContractModel):

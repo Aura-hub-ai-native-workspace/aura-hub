@@ -34,6 +34,10 @@ class ExecutionOutcome:
     run_id: str | None = None
     resumed_run_id: str | None = None
     parked_runs: dict[str, str] = field(default_factory=dict)  # taskId → rid
+    # Verified upstream evidence, keyed by task id, for inputFrom ==
+    # "upstream-output" resolution. Populated ONLY from done outcomes
+    # whose verification passed; never from failed/parked/unverified work.
+    verified_outputs: dict[str, dict] = field(default_factory=dict)
 
 
 class ExecutionController:
@@ -53,8 +57,16 @@ class ExecutionController:
         cancel_check: Any | None = None,
         resume_grants: dict[str, str] | None = None,
         project_cwd: str | None = None,
+        prior_verified: dict[str, dict] | None = None,
     ) -> ExecutionOutcome:
+        """Run one plan leg. `prior_verified` seeds handoff evidence from an
+        earlier leg of the same workflow (verified task_id → evidence
+        record, as filed by _note_task_closed): a resumed leg must not
+        re-prove what a previous leg already verified, and a parked
+        upstream must never silently become verified by re-running."""
         result = ExecutionOutcome()
+        if prior_verified:
+            result.verified_outputs.update(prior_verified)
         resume_grants = resume_grants or {}
         for task in topo_order(plan.tasks):
             if cancel_check and cancel_check():
@@ -62,6 +74,34 @@ class ExecutionController:
                 result.stopped = True
                 result.stop_reason = "cancelled before " + task.id
                 break
+
+            # Resume without re-execution: a task whose verification is
+            # already seeded (prior leg of the same workflow) is recorded
+            # as skipped — never re-dispatched, so settled side effects
+            # are not repeated. Its evidence stays available downstream.
+            if task.id in result.verified_outputs:
+                seed = result.verified_outputs[task.id]
+                result.outcomes.append(TaskOutcome(
+                    taskId=task.id, state="skipped", performed=False,
+                    verified=True,
+                    invocationIds=list(seed.get("invocation_ids") or []),
+                    approvalId=(seed.get("approval_ids") or [None])[0],
+                    detail=("Already verified in a prior leg; not "
+                            "re-executed."),
+                ))
+                continue
+
+            # Governed handoff gate: a task declaring inputFrom ==
+            # "upstream-output" may only run when EVERY dependency has
+            # verified evidence in THIS run. Anything else blocks it here —
+            # unverified results never reach downstream execution.
+            if task.inputFrom == "upstream-output":
+                gate = self._gate_handoff(task, result)
+                if gate is not None:
+                    result.outcomes.append(gate)
+                    result.stopped = True
+                    result.stop_reason = gate.detail
+                    break
 
             if task.route == "workflow-run":
                 grant_for_task = resume_grants.get(task.id)
@@ -103,6 +143,60 @@ class ExecutionController:
                 break
         return result
 
+    # ── governed handoff ───────────────────────────────────────────────
+    def _gate_handoff(self, task: Any, result: ExecutionOutcome,
+                      ) -> TaskOutcome | None:
+        """Block tasks whose upstream results are not verified.
+
+        Returns a terminal TaskOutcome to append (and stop on), or None
+        when every dependency has verified evidence in THIS run and the
+        task may proceed to input resolution. Pure gate — no I/O, never
+        executes anything.
+        """
+        if task.route == "workflow-run":
+            return TaskOutcome(
+                taskId=task.id, state="failed", performed=False,
+                detail=("inputFrom 'upstream-output' is only supported on "
+                        "the single-invocation route; refusing rather than "
+                        "running with unresolved input."))
+        deps = list(task.dependsOn or [])
+        if not deps:
+            return TaskOutcome(
+                taskId=task.id, state="failed", performed=False,
+                detail=("inputFrom 'upstream-output' names no dependencies; "
+                        "declare dependsOn or use a literal input."))
+        missing = [d for d in deps if d not in result.verified_outputs]
+        if missing:
+            return TaskOutcome(
+                taskId=task.id, state="blocked", performed=False,
+                detail=("blocked: upstream task(s) have no verified result "
+                        f"in this run: {', '.join(missing)}."))
+        return None
+
+    def _record_verified(self, task: Any, outcome: TaskOutcome,
+                         output: dict[str, Any] | None,
+                         result: ExecutionOutcome) -> None:
+        """File verified evidence for later dependent tasks to consume.
+
+        Only done+verified outcomes are recorded, and only the allowlisted
+        handoff fields — never raw executor output.
+        """
+        if outcome.state != "done" or outcome.verified is not True:
+            return
+        output = output or {}
+        scope_check = output.get("scopeCheck") or {}
+        result.verified_outputs[task.id] = {
+            "task_id": task.id,
+            "node_id": str(output.get("nodeId") or ""),
+            "agent": str(output.get("agent") or ""),
+            "stdout": str(output.get("stdout") or ""),
+            "scope_paths": list(output.get("scopePaths") or []),
+            "changed_paths": list(scope_check.get("changed") or []),
+            "invocation_ids": list(outcome.invocationIds),
+            "approval_ids": ([outcome.approvalId] if outcome.approvalId
+                             else []),
+        }
+
     # ── single-invocation route ──────────────────────────────────────────
     def _invoke_single(
         self,
@@ -120,6 +214,44 @@ class ExecutionController:
             return
 
         payload = dict(task.input)
+        handoff_consumed: list[str] = []
+        if task.inputFrom == "upstream-output":
+            # The gate in execute() already ensured every dependency has
+            # verified evidence; resolution here is pure assembly. Any
+            # refusal fails closed without dispatching.
+            from .handoff import (
+                UpstreamEvidence,
+                build_envelope,
+                resolve_task_input,
+            )
+
+            sources = []
+            for dep_id in list(task.dependsOn or []):
+                ev = result.verified_outputs.get(dep_id)
+                if ev is None:  # pragma: no cover — gate guarantees presence
+                    result.outcomes.append(TaskOutcome(
+                        taskId=task.id, state="blocked", performed=False,
+                        detail=(f"blocked: verified evidence for {dep_id} "
+                                "vanished before dispatch.")))
+                    return
+                sources.append(UpstreamEvidence(
+                    task_id=str(ev.get("task_id") or dep_id),
+                    node_id=str(ev.get("node_id") or ""),
+                    agent=str(ev.get("agent") or ""),
+                    stdout=str(ev.get("stdout") or ""),
+                    scope_paths=list(ev.get("scope_paths") or []),
+                    changed_paths=list(ev.get("changed_paths") or []),
+                    invocation_ids=list(ev.get("invocation_ids") or []),
+                    approval_ids=list(ev.get("approval_ids") or [])))
+            try:
+                envelope = build_envelope(sources)
+                payload = resolve_task_input(payload, envelope["text"])
+            except Exception as exc:
+                result.outcomes.append(TaskOutcome(
+                    taskId=task.id, state="failed", performed=False,
+                    detail=f"handoff resolution refused: {exc}"))
+                return
+            handoff_consumed = list(envelope["consumed_ids"])
         if task.inputFrom == "compiled-workflow":
             if compiled_workflow is None:
                 result.outcomes.append(TaskOutcome(
@@ -174,6 +306,7 @@ class ExecutionController:
                 result.run_id = run["id"]
             if outcome_state == "awaiting-approval" and result.run_id:
                 result.parked_runs[task.id] = result.run_id
+            self._note_task_closed(task, result, None, handoff_consumed)
             return
         invocation = invoke_fabric(
             task.capabilityId, payload, context, self._cfg,
@@ -197,6 +330,42 @@ class ExecutionController:
             approvalId=invocation.get("approvalId"),
             detail=invocation["detail"],
         ))
+        self._note_task_closed(
+            task, result, invocation.get("output"), handoff_consumed)
+
+    def _note_task_closed(self, task: Any, result: ExecutionOutcome,
+                            output: dict[str, Any] | None,
+                            handoff_consumed: list[str]) -> None:
+        """Attach handoff lineage and file verified evidence, if any.
+
+        Called once per dispatched task, at every exit of _invoke_single.
+        Lineage (consumedFrom) is recorded whenever this task consumed
+        upstream evidence; verified evidence is filed only for done tasks
+        whose verification passed. Both ride the outcome into session and
+        run persistence, so restarts can reconstruct the handoff chain.
+        """
+        if not result.outcomes:
+            return
+        outcome = result.outcomes[-1]
+        if outcome.taskId != task.id:
+            return  # defensive: only annotate this task's own outcome
+        if handoff_consumed:
+            outcome.consumedFrom = list(handoff_consumed)
+        if outcome.state != "done" or outcome.verified is not True:
+            return
+        output = output or {}
+        scope = output.get("scopeCheck") or {}
+        result.verified_outputs[task.id] = {
+            "task_id": task.id,
+            "node_id": str(output.get("nodeId") or ""),
+            "agent": str(output.get("agent") or ""),
+            "stdout": str(output.get("stdout") or ""),
+            "scope_paths": list(output.get("scopePaths") or []),
+            "changed_paths": list(scope.get("changed") or []),
+            "invocation_ids": list(outcome.invocationIds),
+            "approval_ids": ([outcome.approvalId] if outcome.approvalId
+                             else []),
+        }
 
     # ── workflow-run route ───────────────────────────────────────────────
     def _run_workflow(
