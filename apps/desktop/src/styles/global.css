@@ -32,6 +32,24 @@
   --danger: #f04438;
   --scrim: rgba(17, 20, 28, 0.32);
 
+  /* Neon workspace accents (additive — dark cyber-glass theme). */
+  --neon-blue: #4d7cff;
+  --neon-violet: #7a5cff;
+  --neon-cyan: #20d3ff;
+  --neon-success: #1fd38a;
+  --neon-warning: #ffb547;
+  --neon-danger: #ff5d7a;
+  --neon-base: #070b14;
+  --neon-elev1: #0b1120;
+  --neon-elev2: #10182b;
+  --border-soft: rgba(125, 146, 255, 0.25);
+  --border-strong: rgba(109, 92, 255, 0.55);
+
+  --sidebar-main: #f8fafc;
+  --sidebar-secondary: #f1f5f9;
+  --sidebar-border: rgba(0,0,0,0.06);
+  --sidebar-active: rgba(70,100,255,0.08);
+
   /* The canvas has a faint cool wash — the "desk" the surfaces sit on. */
   --canvas-wash: radial-gradient(120% 120% at 100% 0%, #f5f8ff 0%, #f7f8fa 40%, #f4f5f8 100%);
 }
@@ -54,10 +72,28 @@
   --accent-600: #6f95ff;
   --accent-700: #93b0ff;
 
-  --positive: #34d187;
-  --attention: #ffbf4d;
-  --danger: #ff6a5e;
-  --scrim: rgba(0, 0, 0, 0.55);
+  --positive: #22c55e;
+  --attention: #f59e0b;
+  --danger: #f87171;
+  --scrim: rgba(0, 0, 0, 0.4);
+
+  /* Neon workspace accents (additive — dark cyber-glass theme). */
+  --neon-blue: #4d7cff;
+  --neon-violet: #7a5cff;
+  --neon-cyan: #20d3ff;
+  --neon-success: #1fd38a;
+  --neon-warning: #ffb547;
+  --neon-danger: #ff5d7a;
+  --neon-base: #070b14;
+  --neon-elev1: #0b1120;
+  --neon-elev2: #10182b;
+  --border-soft: rgba(125, 146, 255, 0.25);
+  --border-strong: rgba(109, 92, 255, 0.55);
+
+  --sidebar-main: #080B16;
+  --sidebar-secondary: #0D1222;
+  --sidebar-border: rgba(255,255,255,0.08);
+  --sidebar-active: rgba(70,100,255,0.14);
 
   --canvas-wash: radial-gradient(120% 120% at 100% 0%, #10141d 0%, #0d1015 45%, #0b0d11 100%);
 }
@@ -135,10 +171,75 @@ textarea,
 /* Focus visibility that matches the accent, never the browser default. */
 :focus-visible {
   outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-50);
 }
 
-/* ── Living environment ─────────────────────────────────────────────
-   Subtle signs of life. Calm, slow, never distracting. */
+/* Focus-visible ring that respects theme */
+:focus-visible * {
+  caret-color: var(--accent);
+}
+
+/* Enhanced hover states (scoped — never override primary/glow buttons) */
+.neon-hover:hover {
+  background: var(--surface-hover);
+  border-color: var(--line-strong);
+}
+
+/* Sidebar item hover */
+.sidebar-nav button:hover {
+  background: var(--sidebar-secondary);
+}
+
+/* Card hover effect (opt-in only) */
+.card-hover:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* ── Neon workspace helpers ───────────────────────────────────────
+   Layered gradients + box-shadows (GPU-cheap). No backdrop-blur here;
+   cards opt into blur locally on small surfaces only. */
+.neon-shell {
+  background:
+    radial-gradient(900px 480px at 12% -8%, rgba(77, 124, 255, 0.14), transparent 60%),
+    radial-gradient(820px 520px at 88% 4%, rgba(122, 92, 255, 0.13), transparent 62%),
+    radial-gradient(700px 500px at 50% 110%, rgba(32, 211, 255, 0.06), transparent 60%),
+    var(--neon-base);
+}
+.neon-grid {
+  background-image:
+    linear-gradient(rgba(125, 146, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 146, 255, 0.07) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(80% 70% at 50% 30%, black 30%, transparent 100%);
+}
+.neon-focus:focus-visible {
+  outline: 2px solid var(--neon-blue);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .neon-shell *, .neon-grid { animation: none !important; }
+}
+
+/* Subtle transition for interactive elements */
+.interactive-element {
+  transition: all 0.2s ease-in-out;
+}
+
+/* Reduced motion fallback */
+@media (prefers-reduced-motion: reduce) {
+  .interactive-element {
+    transition: none;
+  }
+  .aura-breathe,
+  .aura-live-ring,
+  .aura-drift,
+  .edge-flow {
+    animation: none;
+    stroke-dasharray: none;
+  }
+}
 
 /* A status dot that quietly breathes. */
 .aura-breathe {
@@ -177,6 +278,36 @@ textarea,
   50% { transform: translate3d(2%, -3%, 0) scale(1.08); opacity: 1; }
 }
 
+/* ── Status badge appearances ───────────────────────────────────────── */
+.status-badge-connected {
+  background: var(--positive) !important;
+  color: white;
+}
+.status-badge-available {
+  background: var(--accent) !important;
+  color: white;
+}
+.status-badge-notinstalled {
+  background: var(--danger) !important;
+  color: white;
+}
+.status-badge-installing {
+  background: var(--attention) !important;
+  color: #1e293b;
+}
+.status-badge-degraded {
+  background: var(--attention) !important;
+  color: #1e293b;
+}
+.status-badge-needsauth {
+  background: var(--accent) !important;
+  color: white;
+}
+.status-badge-unknown {
+  background: var(--muted) !important;
+  color: var(--text-muted);
+}
+
 /* ── Workflow canvas ──────────────────────────────────────────────────
    Dependency edges stream forward along the path while execution runs. */
 .edge-flow {
@@ -200,6 +331,40 @@ textarea,
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+.sidebar {
+  background: var(--sidebar-main);
+  border-right: 1px solid var(--sidebar-border);
+}
+
+.sidebar-secondary {
+  background: var(--sidebar-secondary);
+}
+
+.sidebar-active {
+  background: var(--sidebar-active) !important;
+}
+
+.sidebar-title {
+  color: var(--text);
+}
+
+.sidebar-subtitle {
+  color: var(--text-subtle);
+}
+
+.sidebar-inactive {
+  color: var(--text-subtle);
+}
+
+.sidebar-hover:hover {
+  background: var(--sidebar-hover);
+}
+
+.sidebar-border {
+  border-right: 1px solid var(--sidebar-border);
 }
 
 /* ── AuraBug ──────────────────────────────────────────────────────────
