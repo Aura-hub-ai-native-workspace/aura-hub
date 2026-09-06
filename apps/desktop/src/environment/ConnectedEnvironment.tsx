@@ -431,10 +431,16 @@ function InventoryEntryCard({ item }: { item: InventoryEntry }) {
 
 /* ── normalized catalog view ──────────────────────────────────── */
 
+type EnvSection = 'verified' | 'unverified' | 'notInstalled';
+
 function MachineInventoryPrimary() {
   const { verified, unverified, knownNotInstalled, counts, meta } = useNormalizedInventory();
   const scanning = useEnvironmentStore((s) => s.scanning);
   const lastScanAt = useEnvironmentStore((s) => s.lastScanAt);
+  // Single-open accordion, all collapsed by default: the page stays a
+  // compact list of drawer rows no matter how many tools are on screen.
+  const [openSection, setOpenSection] = useState<EnvSection | null>(null);
+  const toggle = (id: EnvSection) => setOpenSection((o) => (o === id ? null : id));
 
   if (!verified.length && !unverified.length && !knownNotInstalled.length) {
     return (
@@ -490,63 +496,96 @@ function MachineInventoryPrimary() {
         <span className="hidden sm:block text-[10.5px] text-text-subtle">Discovery via PATH + package managers (bounded, no shell)</span>
       </div>
 
-      {/* Verified & Usable — THE primary grid */}
+      {/* Verified & Usable — drawer row, collapsed by default */}
       {verified.length > 0 && (
         <div className="mt-4">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-text">
+          <button
+            onClick={() => toggle('verified')}
+            aria-expanded={openSection === 'verified'}
+            aria-controls="env-section-verified"
+            data-testid="env-section-verified"
+            className="flex w-full items-center gap-1.5 rounded-lg px-1 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-text outline-none transition-colors hover:bg-surface-active/50 focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            <Icon name={openSection === 'verified' ? 'chevron-down' : 'chevron-right'} size={10} />
             Verified &amp; Usable <span className="font-normal text-text-subtle">({verified.length})</span>
-          </h3>
-          <p className="mt-1 text-[11px] leading-relaxed text-text-subtle">
-            One card per logical tool: aliases and package evidence are merged by resolved path and package
-            identity, so the same program never appears twice.
-          </p>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {verified.map((item) => (
-              <InventoryCard key={item.logicalId} item={item} />
-            ))}
-          </div>
+          </button>
+          {openSection === 'verified' && (
+            <div id="env-section-verified" className="mt-1 max-h-[60vh] overflow-y-auto pr-1">
+              <p className="text-[11px] leading-relaxed text-text-subtle">
+                One card per logical tool: aliases and package evidence are merged by resolved path and package
+                identity, so the same program never appears twice.
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {verified.map((item) => (
+                  <InventoryCard key={item.logicalId} item={item} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {unverified.length > 0 && (
-        <div className="mt-5">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-text">
+        <div className="mt-2">
+          <button
+            onClick={() => toggle('unverified')}
+            aria-expanded={openSection === 'unverified'}
+            aria-controls="env-section-unverified"
+            data-testid="env-section-unverified"
+            className="flex w-full items-center gap-1.5 rounded-lg px-1 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-text outline-none transition-colors hover:bg-surface-active/50 focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            <Icon name={openSection === 'unverified' ? 'chevron-down' : 'chevron-right'} size={10} />
             Detected but Unverified <span className="font-normal text-text-subtle">({unverified.length})</span>
-          </h3>
-          <p className="mt-1 text-[11px] leading-relaxed text-text-subtle">
-            Present on this machine, but not vouched for. Most were never run: AURA only executes a discovered
-            program when a package manager says a person installed it. Nothing is hidden — only unverified.
-          </p>
-          <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
-            {unverified.map((item) => (
-              <InventoryCard key={item.logicalId} item={item} compact />
-            ))}
-          </div>
+          </button>
+          {openSection === 'unverified' && (
+            <div id="env-section-unverified" className="mt-1 max-h-[60vh] overflow-y-auto pr-1">
+              <p className="text-[11px] leading-relaxed text-text-subtle">
+                Present on this machine, but not vouched for. Most were never run: AURA only executes a discovered
+                program when a package manager says a person installed it. Nothing is hidden — only unverified.
+              </p>
+              <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+                {unverified.map((item) => (
+                  <InventoryCard key={item.logicalId} item={item} compact />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {knownNotInstalled.length > 0 && (
-        <div className="mt-5">
-          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-text">
+        <div className="mt-2">
+          <button
+            onClick={() => toggle('notInstalled')}
+            aria-expanded={openSection === 'notInstalled'}
+            aria-controls="env-section-not-installed"
+            data-testid="env-section-not-installed"
+            className="flex w-full items-center gap-1.5 rounded-lg px-1 py-1.5 text-left text-[11px] font-semibold uppercase tracking-wider text-text outline-none transition-colors hover:bg-surface-active/50 focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            <Icon name={openSection === 'notInstalled' ? 'chevron-down' : 'chevron-right'} size={10} />
             Known but Not Installed <span className="font-normal text-text-subtle">({knownNotInstalled.length})</span>
-          </h3>
-          <p className="mt-1 text-[11px] leading-relaxed text-text-subtle">
-            Catalog tools AURA understands and measured for, but did not find here.
-          </p>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {knownNotInstalled.map((n) => (
-              <a
-                key={n.id}
-                href={n.homepage}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-full border border-dashed border-line bg-surface px-2.5 py-1 text-[10.5px] text-text-muted transition-colors hover:border-line-strong hover:text-text"
-                title={`${n.detail} — ${n.homepage}`}
-              >
-                {n.name}
-              </a>
-            ))}
-          </div>
+          </button>
+          {openSection === 'notInstalled' && (
+            <div id="env-section-not-installed" className="mt-1 max-h-[40vh] overflow-y-auto pr-1">
+              <p className="text-[11px] leading-relaxed text-text-subtle">
+                Catalog tools AURA understands and measured for, but did not find here.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {knownNotInstalled.map((n) => (
+                  <a
+                    key={n.id}
+                    href={n.homepage}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full border border-dashed border-line bg-surface px-2.5 py-1 text-[10.5px] text-text-muted transition-colors hover:border-line-strong hover:text-text"
+                    title={`${n.detail} — ${n.homepage}`}
+                  >
+                    {n.name}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </section>
