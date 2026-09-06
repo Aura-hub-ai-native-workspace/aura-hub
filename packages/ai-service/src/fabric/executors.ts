@@ -20,6 +20,14 @@ import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
 import { git, parseCommand, resolveAgentBinary, runAgent, safeShellWithCode } from '../exec/process';
+import {
+  checkScopePaths,
+  deltaSince,
+  hashPaths,
+  parsePorcelainStatus,
+  snapshotWorktree,
+  validateScopePaths,
+} from './supervision';
 import { catalogEntry } from '@aura/connected-environment';
 import type { WorkspaceManager } from '../workspace';
 
@@ -162,6 +170,21 @@ const AGENT_INVOCATIONS: Record<string, AgentInvocation> = {
     args: (task, cwd, model) => ['run', '--dir', cwd, ...(model ? ['--model', model] : []), task],
     verifiedAgainst: 'OpenCode 1.18.16',
   },
+  // `claude -p` is the documented non-interactive mode: it prints the
+  // result and exits. Verified live (exact-output reply, exit 0; file
+  // creation with --allowedTools Edit Write, exit 0). Least-privilege:
+  // no Bash, no bypass flags.
+  claude: {
+    args: (_task, _cwd, _model) => ['-p', _task, '--allowedTools', 'Edit Write'],
+    verifiedAgainst: 'Claude Code (print mode)',
+  },
+  // `kilo run --dir` mirrors opencode (same engine lineage). Verified live
+  // (exact-output reply AND in-repo file creation, exit 0). --dir is
+  // LOAD-BEARING: bare `kilo run` escapes cwd — never drop it.
+  kilo: {
+    args: (_task, cwd, _model) => ['run', '--dir', cwd, _task],
+    verifiedAgainst: 'kilo 7.5.14 (run --dir)',
+  },
 };
 
 /**
@@ -212,6 +235,17 @@ const agentDelegate: Executor = {
     const cwd = cwdOf(inv);
     const task = s(inv.input.task).trim();
     if (!task) return no('No task was given for the agent to carry out.');
+    // Optional task contract: deterministic scope boundaries. Validated
+    // BEFORE anything spawns; malformed scope is a refusal, and the
+    // accepted scope travels in the output so evidence shows what held.
+    const scopeCheck = validateScopePaths((inv.input as { scopePaths?: unknown }).scopePaths);
+    if (!scopeCheck.ok) {
+      return no(`The task contract was refused: ${scopeCheck.reason} Nothing has run.`);
+    }
+    const scopePaths = scopeCheck.paths;
+    // Snapshot the tree BEFORE spawning so multi-leg workflows do not bill
+    // earlier legs' uncommitted work to this run's scope contract.
+    const scopeSnapshot = scopePaths.length > 0 ? await snapshotWorktree(cwd) : null;
     const model = s(inv.input.model).trim() || undefined;
     // Context is CONSUMED, never composed here. The caller supplies an
     // already-rendered AURA context contract; this executor only decides
@@ -258,7 +292,7 @@ const agentDelegate: Executor = {
 
     // `nodeId` travels with the result so the work is attributable to the
     // agent that did it rather than to "some coding agent".
-    const output = {
+    const output: Record<string, unknown> = {
       stdout: res.out,
       exitCode: res.code,
       nodeId: target.nodeId,
@@ -267,6 +301,51 @@ const agentDelegate: Executor = {
       timedOut: res.timedOut ?? false,
       signal: res.signal,
     };
+    if (scopePaths.length > 0) output.scopePaths = [...scopePaths];
+    if (res.code === 0 && scopePaths.length > 0) {
+      // Post-execution scope verification over the DELTA since task start:
+      // only files this run dirtied are judged. A deviation stops here —
+      // parked for a decision, never silently accepted, never reverted.
+      if (scopeSnapshot === null) {
+        output.scopeCheck = { supported: false, allowed: true, changed: [], outside: [], detail: 'Scope could not be evidenced here: not a git working tree.' };
+      } else {
+        let deltaNote = '';
+        let delta: string[] | null = null;
+        try {
+          const status = await git(['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd, timeoutMs: 30_000 });
+          if (status.code !== 0) {
+            deltaNote = 'Scope could not be evidenced here: git status failed after the run.';
+          } else {
+            const afterChanged = parsePorcelainStatus(status.out);
+            const afterHashes = await hashPaths(cwd, afterChanged);
+            delta = deltaSince(scopeSnapshot, afterChanged, afterHashes);
+          }
+        } catch {
+          deltaNote = 'Scope could not be evidenced here: git status failed after the run.';
+        }
+        if (delta === null) {
+          output.scopeCheck = { supported: false, allowed: true, changed: [], outside: [], detail: deltaNote || 'Scope could not be evidenced here.' };
+        } else {
+          const check = checkScopePaths(delta, scopePaths);
+          if (scopeSnapshot.capped) {
+            deltaNote = 'Tree was dirtier than the snapshot cap at task start; pre-existing paths grandfathered.';
+          }
+          output.scopeCheck = {
+            supported: true, allowed: check.allowed, changed: delta, outside: check.outside,
+            detail: (deltaNote ? `${deltaNote} ` : '') + check.detail,
+          };
+          if (!check.allowed) {
+            return {
+              ok: false,
+              detail:
+                `${target.name} finished, but ${check.detail} `
+                + 'The run is parked for a decision: nothing was reverted, and the changes are evidence, not an accepted result.',
+              output: { ...output, scopeDeviation: true },
+            };
+          }
+        }
+      }
+    }
     if (res.code === 0) return ok(`${target.name} completed the task. Exit code 0.`, output);
     // A run that was cut short is reported as cut short, not as a
     // generic failure — the operator needs to know it may be half-done.
@@ -278,7 +357,12 @@ const agentDelegate: Executor = {
     return { ok: false, detail: `${why} ${res.out.slice(0, 400)}`.trim(), output };
   },
   async verify(_inv, result) {
-    const exit = (result.output as { exitCode?: number } | undefined)?.exitCode;
+    const out = result.output as { exitCode?: number; scopeDeviation?: boolean; scopeCheck?: { outside?: string[] } } | undefined;
+    if (out?.scopeDeviation) {
+      const outside = (out.scopeCheck?.outside ?? []).slice(0, 5).join(', ');
+      return fail('read-back', `Worker files fell outside the declared scope: ${outside}. Parked for a decision; nothing was reverted.`);
+    }
+    const exit = out?.exitCode;
     return exit === 0
       ? pass('exit-code', 'The agent exited 0.')
       : fail('exit-code', `The agent exited ${exit ?? 'unknown'}.`);

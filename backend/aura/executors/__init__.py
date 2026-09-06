@@ -185,6 +185,28 @@ AGENT_INVOCATIONS = {
             ["run", "--dir", cwd, *(["--model", model] if model else []), task]),
         "verifiedAgainst": "OpenCode 1.18.16",
     },
+    # `claude -p` is the documented non-interactive mode: it prints the
+    # result and exits. Verified live (exact-output reply, exit 0; file
+    # creation with --allowedTools Edit Write, exit 0). The tool allow-list
+    # is least-privilege by construction: no Bash, no bypass flags — the
+    # worker can edit files but cannot execute commands. No model flag:
+    # model selection stays an operator concern, and the Fabric timeout
+    # bounds the run.
+    "claude": {
+        "args": lambda task, cwd, model=None: [
+            "-p", task, "--allowedTools", "Edit Write"],
+        "verifiedAgainst": "Claude Code (print mode)",
+    },
+    # `kilo run --dir` mirrors opencode's verified shape (same engine
+    # lineage). Verified live (exact-output reply AND in-repo file
+    # creation, exit 0). --dir is LOAD-BEARING: bare `kilo run` writes to
+    # the parent directory instead of cwd, escaping confinement — never
+    # drop it.
+    "kilo": {
+        "args": lambda task, cwd, model=None: (
+            ["run", "--dir", cwd, task]),
+        "verifiedAgainst": "kilo 7.5.14 (run --dir)",
+    },
 }
 MAX_CONTEXT_CHARS = 12_000
 
@@ -212,6 +234,33 @@ async def agent_delegate_run(inv: dict) -> dict:
     model = _s(inv["input"].get("model")).strip() or None
     brief = with_context(task, _s(inv["input"].get("context")))
 
+    # Optional task contract: deterministic scope boundaries for the run.
+    # Validated BEFORE anything spawns; malformed scope is a refusal, and
+    # the accepted scope travels in the output so evidence shows what was
+    # enforced. Scope never widens an approval: it is part of the approved
+    # input fingerprint via the manifest's scopePaths field.
+    from ..fabric.supervision import (
+        check_scope_paths,
+        delta_since,
+        hash_paths,
+        parse_porcelain_status,
+        snapshot_worktree,
+        validate_scope_paths,
+    )
+
+    scope_raw = inv["input"].get("scopePaths")
+    scope_paths: list[str] = []
+    if scope_raw is not None:
+        scope_ok, scope_paths, scope_reason = validate_scope_paths(scope_raw)
+        if not scope_ok:
+            return _no(f"The task contract was refused: {scope_reason} Nothing has run.")
+
+    # Snapshot the tree BEFORE spawning so multi-leg workflows do not bill
+    # earlier legs' uncommitted work to this run's scope contract.
+    scope_snapshot = None
+    if scope_paths:
+        scope_snapshot = await snapshot_worktree(cwd)
+
     node = inv.get("node")
     if not node:
         return _no("No coding-agent node was resolved for this call, so nothing was run.")
@@ -237,6 +286,67 @@ async def agent_delegate_run(inv: dict) -> dict:
         "agent": node["name"], "args": args,
         "timedOut": bool(res.timedOut), "signal": res.signal,
     }
+    if scope_paths:
+        output["scopePaths"] = list(scope_paths)
+    if res.code == 0 and scope_paths:
+        # Post-execution scope verification over the DELTA since task
+        # start: only files this run dirtied are judged. A deviation stops
+        # here — parked for a decision, never silently accepted, never
+        # reverted.
+        from ..exec_ import git as run_git
+
+        delta: list[str] | None = None
+        delta_note = ""
+        if scope_snapshot is None:
+            delta_note = "Scope could not be evidenced here: not a git working tree."
+        else:
+            try:
+                post = await run_git(
+                    ["status", "--porcelain=v1", "-z",
+                     "--untracked-files=all"], cwd, None)
+            except Exception:  # noqa: BLE001
+                post = None
+            if post is None or post.code != 0:
+                delta_note = "Scope could not be evidenced here: git status failed after the run."
+            else:
+                after_changed = parse_porcelain_status(post.out)
+                after_hashes = await hash_paths(cwd, after_changed)
+                worker_files = delta_since(scope_snapshot, after_changed,
+                                           after_hashes)
+                check = check_scope_paths(worker_files, scope_paths)
+                if scope_snapshot.capped:
+                    delta_note = ("Tree was dirtier than the snapshot cap at "
+                                  "task start; pre-existing paths grandfathered.")
+                output["scopeCheck"] = {
+                    "supported": True,
+                    "allowed": check.allowed,
+                    "changed": worker_files,
+                    "outside": check.outside,
+                    "detail": ((delta_note + " " if delta_note else "")
+                               + check.detail),
+                }
+                if not check.allowed:
+                    return {
+                        "ok": False,
+                        "detail": (
+                            f"{node['name']} finished, but {check.detail} "
+                            "The run is parked for a decision: nothing was "
+                            "reverted, and the changes are evidence, not an "
+                            "accepted result."
+                        ),
+                        "output": {**output, "scopeDeviation": True},
+                    }
+                delta = worker_files
+        if delta is None:
+            # No git evidence available: record the limitation honestly
+            # instead of claiming verification.
+            output["scopeCheck"] = {
+                "supported": False,
+                "allowed": True,
+                "changed": [],
+                "outside": [],
+                "detail": delta_note or "Scope could not be evidenced here.",
+            }
     if res.code == 0:
         return _ok(f"{node['name']} completed the task. Exit code 0.", output)
     why = (f"{node['name']} ran out of time and was stopped. Its changes, if any, are partial."
@@ -247,7 +357,14 @@ async def agent_delegate_run(inv: dict) -> dict:
 
 
 async def agent_delegate_verify(_inv: dict, result: dict) -> dict:
-    exit_code = (result.get("output") or {}).get("exitCode")
+    output = result.get("output") or {}
+    if output.get("scopeDeviation"):
+        outside = ((output.get("scopeCheck") or {}).get("outside")) or []
+        shown = ", ".join(outside[:5])
+        return _fail("read-back",
+                     f"Worker files fell outside the declared scope: {shown}."
+                     " Parked for a decision; nothing was reverted.")
+    exit_code = output.get("exitCode")
     return (_pass("exit-code", "The agent exited 0.") if exit_code == 0
             else _fail("exit-code", f"The agent exited {exit_code if exit_code is not None else 'unknown'}."))
 

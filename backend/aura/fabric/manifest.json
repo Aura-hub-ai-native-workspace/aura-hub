@@ -473,6 +473,12 @@
           "type": "string",
           "required": false,
           "description": "AURA context contract to orient the agent, composed by the caller"
+        },
+        {
+          "name": "scopePaths",
+          "type": "string[]",
+          "required": false,
+          "description": "Optional task-contract scope: repo-relative paths the worker may change. Changed files outside the scope park the run for a decision instead of reporting success."
         }
       ],
       "output": "stdout + stderr, exit code",
@@ -500,6 +506,29 @@
         }
       ],
       "output": "InstallResult — installOutcome, privilege, command, probe",
+      "verify": "read-back",
+      "irreversible": false
+    },
+    {
+      "id": "system.uninstall",
+      "name": "Remove a tool",
+      "category": "system",
+      "surface": "local-process",
+      "description": "Removes a catalogued tool from this machine, using the package manager that tool declares. The caller names a NODE, never a command: the package and arguments come from the catalogue, so this can never be turned into \"run anything\". Removals that need administrator rights are not performed — AURA hands you the exact verified command instead.",
+      "risk": "high",
+      "permissions": [
+        "process.execute",
+        "system.modify"
+      ],
+      "input": [
+        {
+          "name": "nodeId",
+          "type": "string",
+          "required": true,
+          "description": "Catalogue id of the node to remove, e.g. \"pnpm\""
+        }
+      ],
+      "output": "UninstallResult — uninstallOutcome, privilege, command, probe",
       "verify": "read-back",
       "irreversible": false
     },

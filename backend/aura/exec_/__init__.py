@@ -28,7 +28,10 @@ INSTALL_TIMEOUT_MS = 5 * 60_000
 
 SAFE_BINARIES = {"git", "ls", "pwd", "node", "npm", "npx", "wc", "du", "grep",
                  "find", "cargo", "python3", "go"}
-AGENT_BINARIES = {"opencode", "claude", "codex", "gemini", "qwen", "cursor-agent"}
+# kilo allowed 2026-09-06: opencode-family engine, `kilo run --dir` verified
+# live to confine writes to cwd (bare `kilo run` escapes to the parent
+# directory, so the verified entry MUST pin --dir; see AGENT_INVOCATIONS).
+AGENT_BINARIES = {"opencode", "claude", "codex", "gemini", "qwen", "cursor-agent", "kilo"}
 INSTALLER_BINARIES = {"npm", "pipx", "cargo", "gh"}
 
 
@@ -175,7 +178,11 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
     waiter = asyncio.ensure_future(proc.communicate())
     cancel_task = asyncio.ensure_future(cancel.wait()) if cancel else None
     tasks = [waiter] + ([cancel_task] if cancel_task else [])
-    done, pending = await asyncio.wait(tasks, timeout=timeout_ms / 1000)
+    # return_when is explicit: some interpreters do not default to
+    # FIRST_COMPLETED, and without it a cancel waits out the full timeout.
+    done, pending = await asyncio.wait(
+        tasks, timeout=timeout_ms / 1000,
+        return_when=asyncio.FIRST_COMPLETED)
     if cancel_task and cancel_task in done and not waiter.done():
         _signal_tree(proc, "TERM")
         try:

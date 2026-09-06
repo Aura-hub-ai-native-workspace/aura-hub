@@ -194,6 +194,7 @@ const LOCAL: CapabilityDescriptor[] = [
       // Intelligence, and the two would drift. An agent that receives it
       // starts oriented instead of re-scanning the repository.
       f('context', 'string', false, 'AURA context contract to orient the agent, composed by the caller'),
+      f('scopePaths', 'string[]', false, 'Optional task-contract scope: repo-relative paths the worker may change. Changed files outside the scope park the run for a decision instead of reporting success.'),
       // `nodeId` is deliberately NOT an input any more. Which node runs an
       // action is routing, not an argument, and it now lives on
       // `InvocationContext.nodeId` (§22.2). The transport still accepts it

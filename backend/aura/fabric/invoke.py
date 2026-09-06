@@ -101,6 +101,8 @@ def validate_input(capability: dict, input: dict[str, Any]) -> str | None:
             ok = isinstance(value, bool)
         elif f.get("type") == "array":
             ok = isinstance(value, list)
+        elif f.get("type") == "string[]":
+            ok = isinstance(value, list) and all(isinstance(v, str) for v in value)
         elif f.get("type") == "object":
             ok = isinstance(value, dict)
         else:

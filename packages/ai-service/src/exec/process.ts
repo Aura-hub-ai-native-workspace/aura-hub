@@ -80,7 +80,10 @@ export const SAFE_BINARIES = new Set([
  * arbitrary executable.
  */
 export const AGENT_BINARIES = new Set([
-  'opencode', 'claude', 'codex', 'gemini', 'qwen', 'cursor-agent',
+  // kilo allowed 2026-09-06: opencode-family engine; `kilo run --dir`
+  // verified live to confine writes (bare `kilo run` escapes cwd, so the
+  // verified AGENT_INVOCATIONS entry must pin --dir).
+  'opencode', 'claude', 'codex', 'gemini', 'qwen', 'cursor-agent', 'kilo',
 ]);
 
 /**
