@@ -283,6 +283,22 @@ export interface InstallResponse {
   probe?: ProbeResult;
 }
 
+export type UninstallOutcome = 'uninstalled' | 'guided' | 'failed' | 'unverified' | 'unavailable';
+
+export interface UninstallResponse {
+  uninstallOutcome: UninstallOutcome;
+  nodeId: string;
+  privilege: 'user' | 'root';
+  requiresUserAction: boolean;
+  command?: string;
+  why?: string;
+  detail?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  stdout?: string;
+  probe?: ProbeResult;
+}
+
 export interface ConnectResponse {
   connected: boolean;
   result: ProbeResult;
@@ -371,6 +387,21 @@ async function install(id: string): Promise<InstallResponse> {
   return body;
 }
 
+async function uninstall(id: string): Promise<UninstallResponse> {
+  const res = await fetch(`${ENVIRONMENT_BASE}/environment/uninstall`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  const body = (await res.json()) as UninstallResponse & { error?: string };
+  if (!res.ok) {
+    // Guided/unavailable still come with 400 but carry payload
+    if (body.uninstallOutcome) return body;
+    throw new Error(body.error || body.detail || `Uninstall failed (${res.status})`);
+  }
+  return body;
+}
+
 async function connectDirect(id: string): Promise<ConnectResponse> {
   const res = await fetch(`${ENVIRONMENT_BASE}/environment/connect`, {
     method: 'POST',
@@ -414,4 +445,4 @@ async function inventory(options: {
   }
 }
 
-export const environmentClient = { scan, probe, install, connectDirect, inventory };
+export const environmentClient = { scan, probe, install, uninstall, connectDirect, inventory };

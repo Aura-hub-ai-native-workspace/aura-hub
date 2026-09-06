@@ -182,6 +182,21 @@ export interface InstallResultView {
   probe?: { present: boolean; version?: string; detail: string };
 }
 
+export type UninstallOutcome = 'uninstalled' | 'guided' | 'failed' | 'unverified';
+
+export interface UninstallResultView {
+  uninstallOutcome: UninstallOutcome;
+  nodeId: string;
+  privilege: 'user' | 'root';
+  requiresUserAction: boolean;
+  command?: string;
+  why?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  stdout?: string;
+  probe?: { present: boolean; version?: string; detail: string };
+}
+
 /** What `/fabric/invoke` returns. Only the fields this app reads. */
 export interface InvocationResultView {
   invocationId: string;

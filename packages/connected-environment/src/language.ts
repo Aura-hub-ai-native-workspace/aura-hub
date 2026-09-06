@@ -54,6 +54,11 @@ const NODE_PHRASES: Record<NodeStatus, (node: EnvironmentNode) => Phrase> = {
     nextStep: 'The Hub will look for it again when this finishes, and only then call it available.',
     tone: 'progress',
   }),
+  uninstalling: (n) => ({
+    headline: `${n.entry.name} is being removed`,
+    nextStep: 'The Hub will look for it again when this finishes, and only then call it gone.',
+    tone: 'progress',
+  }),
   degraded: (n) => ({
     headline: `${n.entry.name} answered, but not healthily`,
     nextStep: n.health.detail,

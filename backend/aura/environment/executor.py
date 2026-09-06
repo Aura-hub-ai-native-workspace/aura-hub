@@ -26,7 +26,7 @@ from .hostplatform import is_windows
 
 #: Installer chatter is kept for diagnosis, but bounded like any other output.
 MAX_INSTALL_OUTPUT = 4000
-from .install import is_plan, plan_install
+from .install import is_plan, is_uninstall_plan, plan_install, plan_uninstall
 from .probe import probe_node
 
 
@@ -254,6 +254,173 @@ async def system_install_executor(invocation: dict) -> dict:
 def _install_result_to_dict(result: InstallResult) -> dict[str, Any]:
     d: dict[str, Any] = {
         "installOutcome": result.install_outcome,
+        "nodeId": result.node_id,
+        "privilege": result.privilege,
+        "requiresUserAction": result.requires_user_action,
+        "command": result.command,
+        "why": result.why,
+    }
+    if result.exit_code is not None:
+        d["exitCode"] = result.exit_code
+    if result.timed_out:
+        d["timedOut"] = True
+    if result.stdout:
+        d["stdout"] = result.stdout
+    if result.detail:
+        d["detail"] = result.detail
+    return d
+
+
+@dataclass
+class UninstallResult:
+    uninstall_outcome: str
+    node_id: str
+    privilege: str
+    requires_user_action: bool
+    command: str
+    why: str
+    exit_code: int | None = None
+    timed_out: bool = False
+    stdout: str = ""
+    detail: str = ""
+
+
+async def run_uninstall_plan(plan: Any, *, timeout_ms: int) -> InstallRun:
+    """Run one validated uninstall plan under the same guarantees as install.
+
+    Reuses run_install_plan so stdin stays closed, the whole process tree is
+    terminated on timeout, and output stays bounded. A removal is not a
+    separate execution primitive — only the argv differ.
+    """
+    return await run_install_plan(plan, timeout_ms=timeout_ms)
+
+
+async def system_uninstall_executor(invocation: dict) -> dict:
+    """Execute system.uninstall capability.
+
+    Input: { nodeId: string }
+    Context: standard Fabric invocation context
+    """
+    node_id = _s(invocation.get("input", {}).get("nodeId", "")).strip()
+    if not node_id:
+        return _no("No node was named, so there is nothing to uninstall.")
+
+    entry = catalog_entry(node_id)
+    if entry is None:
+        return _no(f"'{node_id}' is not a node in AURA's catalogue, so there is nothing to uninstall.")
+
+    plan = plan_uninstall(entry)
+    if not is_uninstall_plan(plan):
+        return _no(plan.reason)
+
+    if plan.privilege == "root":
+        result = UninstallResult(
+            uninstall_outcome="guided",
+            node_id=node_id,
+            privilege="root",
+            requires_user_action=True,
+            command=plan.command,
+            why=plan.why,
+        )
+        return {
+            "ok": False,
+            "detail": f"{entry.name} needs administrator rights to remove, so AURA did not run anything. Run this yourself, then re-scan: {plan.command}",
+            "output": _uninstall_result_to_dict(result),
+        }
+
+    resolved = resolve_installer_binary(plan.bin)
+    if not resolved.ok:
+        return _no(f"{entry.name} could not be uninstalled: {resolved.reason}")
+
+    timeout_ms = invocation.get("context", {}).get("timeoutMs", INSTALL_TIMEOUT_MS)
+
+    run = await run_uninstall_plan(plan, timeout_ms=timeout_ms)
+
+    if run.status == "missing":
+        return _no(f"{entry.name} could not be uninstalled: {run.error}")
+    if run.status == "error":
+        return _no(f"{entry.name} could not be uninstalled: {run.error}")
+    if run.status == "timeout":
+        result = UninstallResult(
+            uninstall_outcome="failed",
+            node_id=node_id,
+            privilege="user",
+            requires_user_action=False,
+            command=plan.command,
+            why="The uninstaller ran out of time and was stopped.",
+            exit_code=-1,
+            timed_out=True,
+            stdout="",
+        )
+        return {
+            "ok": False,
+            "detail": f"{entry.name} was not uninstalled. The uninstaller ran out of time and was stopped.",
+            "output": _uninstall_result_to_dict(result),
+        }
+
+    exit_code = run.exit_code
+    stdout = run.stdout
+
+    if exit_code != 0:
+        why = f"The uninstaller exited {exit_code}."
+        result = UninstallResult(
+            uninstall_outcome="failed",
+            node_id=node_id,
+            privilege="user",
+            requires_user_action=False,
+            command=plan.command,
+            why=why,
+            exit_code=exit_code,
+            timed_out=False,
+            stdout=stdout,
+        )
+        return {
+            "ok": False,
+            "detail": f"{entry.name} was not uninstalled. {why} {stdout[:300]}".strip(),
+            "output": _uninstall_result_to_dict(result),
+        }
+
+    probe_result = probe_node(node_id, refresh=True)
+    if probe_result.present:
+        result = UninstallResult(
+            uninstall_outcome="unverified",
+            node_id=node_id,
+            privilege="user",
+            requires_user_action=True,
+            command=plan.command,
+            why=f"The uninstaller finished without an error, but {entry.name} can still be found on this machine.",
+            exit_code=0,
+            timed_out=False,
+            stdout=stdout,
+            detail=probe_result.detail,
+        )
+        return {
+            "ok": False,
+            "detail": f"{entry.name} reported a successful removal, but AURA can still find it, so it is NOT being reported as removed. {probe_result.detail}",
+            "output": _uninstall_result_to_dict(result),
+        }
+
+    result = UninstallResult(
+        uninstall_outcome="uninstalled",
+        node_id=node_id,
+        privilege="user",
+        requires_user_action=False,
+        command=plan.command,
+        why=f"{entry.name} is now removed.",
+        exit_code=0,
+        timed_out=False,
+        stdout=stdout,
+    )
+    return {
+        "ok": True,
+        "detail": f"{entry.name} was successfully uninstalled and verified as absent.",
+        "output": _uninstall_result_to_dict(result),
+    }
+
+
+def _uninstall_result_to_dict(result: UninstallResult) -> dict[str, Any]:
+    d: dict[str, Any] = {
+        "uninstallOutcome": result.uninstall_outcome,
         "nodeId": result.node_id,
         "privilege": result.privilege,
         "requiresUserAction": result.requires_user_action,

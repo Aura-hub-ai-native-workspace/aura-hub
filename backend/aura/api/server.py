@@ -1482,6 +1482,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/environment/inventory", environment_inventory, methods=["POST"]),
         Route("/environment/probe", environment_probe, methods=["POST"]),
         Route("/environment/install", environment_install, methods=["POST"]),
+        Route("/environment/uninstall", environment_uninstall, methods=["POST"]),
         Route("/environment/connect", environment_connect, methods=["POST"]),
     ]
 
@@ -1793,6 +1794,144 @@ async def environment_install(request: Request):
         "stdout": stdout,
         "probe": probe_result_to_dict(probe_result),
         "detail": f"{entry.name} was successfully installed and verified.",
+    })
+
+
+async def environment_uninstall(request: Request):
+    """Direct human uninstallation — removes software, then verifies absence.
+
+    POST /environment/uninstall
+    Body: { id: string }
+    Returns: UninstallResult-like payload with uninstallOutcome, privilege,
+             requiresUserAction, command, why, probe, detail, exitCode.
+
+    Security: catalog-only, validated UninstallSpec derived from InstallSpec,
+              allow-listed bin, argv-only, no shell, frontend sends id only.
+    """
+    from ..environment import (
+        catalog_entry,
+        is_uninstall_plan,
+        plan_uninstall,
+        probe_node,
+        probe_result_to_dict,
+    )
+    from ..exec_ import INSTALL_TIMEOUT_MS, resolve_installer_binary
+
+    body = await _environment_body(request)
+    node_id = str(body.get("id") or body.get("nodeId") or "").strip()
+    if not node_id:
+        return JSONResponse({"error": "No node id was provided.", "uninstallOutcome": "failed", "detail": "No node id was provided."}, status_code=400)
+
+    entry = catalog_entry(node_id)
+    if entry is None:
+        return JSONResponse({"error": f"'{node_id}' is not in the catalog.", "uninstallOutcome": "failed", "detail": f"'{node_id}' is not in the catalog."}, status_code=400)
+
+    plan = plan_uninstall(entry)
+    if not is_uninstall_plan(plan):
+        return JSONResponse({
+            "uninstallOutcome": "unavailable",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "detail": plan.reason,
+            "why": plan.reason,
+        }, status_code=400)
+
+    if plan.privilege == "root":
+        return JSONResponse({
+            "uninstallOutcome": "guided",
+            "nodeId": node_id,
+            "privilege": "root",
+            "requiresUserAction": True,
+            "command": plan.command,
+            "why": plan.why,
+            "detail": f"{entry.name} needs administrator rights to remove, so AURA did not run anything. Run this yourself, then re-scan: {plan.command}",
+        })
+
+    resolved = resolve_installer_binary(plan.bin)
+    if not resolved.ok:
+        return JSONResponse({
+            "uninstallOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": resolved.reason,
+            "detail": f"{entry.name} could not be uninstalled: {resolved.reason}",
+        }, status_code=400)
+
+    from ..environment.executor import run_uninstall_plan
+
+    run = await run_uninstall_plan(plan, timeout_ms=INSTALL_TIMEOUT_MS)
+
+    if run.status in ("missing", "error"):
+        return JSONResponse({
+            "uninstallOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": run.error,
+            "detail": f"{entry.name} could not be uninstalled: {run.error}",
+        }, status_code=400)
+
+    if run.status == "timeout":
+        return JSONResponse({
+            "uninstallOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": "The uninstaller ran out of time and was stopped.",
+            "timedOut": True,
+            "exitCode": -1,
+            "detail": f"{entry.name} was not uninstalled. The uninstaller ran out of time and was stopped.",
+        })
+
+    exit_code = run.exit_code
+    stdout = run.stdout
+
+    if exit_code != 0:
+        why = f"The uninstaller exited {exit_code}."
+        return JSONResponse({
+            "uninstallOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": why,
+            "exitCode": exit_code,
+            "stdout": stdout,
+            "detail": f"{entry.name} was not uninstalled. {why} {stdout[:300]}".strip(),
+        })
+
+    # Post-uninstall verification — exit 0 is claim, probe absence is evidence
+    probe_result = probe_node(node_id, refresh=True)
+    if probe_result.present:
+        return JSONResponse({
+            "uninstallOutcome": "unverified",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": True,
+            "command": plan.command,
+            "why": f"The uninstaller finished without an error, but {entry.name} can still be found on this machine.",
+            "exitCode": 0,
+            "stdout": stdout,
+            "probe": probe_result_to_dict(probe_result),
+            "detail": f"{entry.name} reported a successful removal, but AURA can still find it, so it is NOT being reported as removed. {probe_result.detail}",
+        })
+
+    return JSONResponse({
+        "uninstallOutcome": "uninstalled",
+        "nodeId": node_id,
+        "privilege": "user",
+        "requiresUserAction": False,
+        "command": plan.command,
+        "why": f"{entry.name} is now removed.",
+        "exitCode": 0,
+        "stdout": stdout,
+        "probe": probe_result_to_dict(probe_result),
+        "detail": f"{entry.name} was successfully uninstalled and verified as absent.",
     })
 
 

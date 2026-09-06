@@ -153,6 +153,14 @@ export type NodeStatus =
    * never be mistaken for "installed".
    */
   | 'installing'
+  /**
+   * A governed uninstall is running right now.
+   *
+   * Transient like `installing`: never persisted, never a resting state.
+   * Only a real post-uninstall probe (absence) moves a node on to
+   * `not-installed`, so this can never be mistaken for "removed".
+   */
+  | 'uninstalling'
   /** Present but needs credentials the Hub does not hold. */
   | 'needs-auth'
   /** Catalogued, but no connector has been built for it yet. */

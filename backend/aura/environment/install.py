@@ -52,6 +52,29 @@ def is_plan(r: PlanResult) -> bool:
     return isinstance(r, InstallPlan)
 
 
+@dataclass
+class UninstallPlan:
+    executable: bool
+    privilege: str
+    bin: str
+    args: list[str]
+    command: str
+    why: str
+
+
+@dataclass
+class NoUninstallPlan:
+    executable: bool = False
+    reason: str = ""
+
+
+UninstallPlanResult = UninstallPlan | NoUninstallPlan
+
+
+def is_uninstall_plan(r: UninstallPlanResult) -> bool:
+    return isinstance(r, UninstallPlan)
+
+
 def _writable_with_ancestors(target: str) -> bool:
     dir_path = os.path.realpath(target)
     while True:
@@ -151,26 +174,26 @@ def _detect_distro() -> dict[str, Any]:
                     id_value = like_match.group(2).split()[0]
 
             distro_map = {
-                "arch": {"id": "arch", "manager": "pacman", "installArgs": ["-S", "--needed"]},
-                "manjaro": {"id": "arch", "manager": "pacman", "installArgs": ["-S", "--needed"]},
-                "endeavouros": {"id": "arch", "manager": "pacman", "installArgs": ["-S", "--needed"]},
-                "debian": {"id": "debian", "manager": "apt", "installArgs": ["install"]},
-                "ubuntu": {"id": "debian", "manager": "apt", "installArgs": ["install"]},
-                "pop": {"id": "debian", "manager": "apt", "installArgs": ["install"]},
-                "linuxmint": {"id": "debian", "manager": "apt", "installArgs": ["install"]},
-                "fedora": {"id": "fedora", "manager": "dnf", "installArgs": ["install"]},
-                "rhel": {"id": "fedora", "manager": "dnf", "installArgs": ["install"]},
-                "centos": {"id": "fedora", "manager": "dnf", "installArgs": ["install"]},
+                "arch": {"id": "arch", "manager": "pacman", "installArgs": ["-S", "--needed"], "uninstallArgs": ["-R"]},
+                "manjaro": {"id": "arch", "manager": "pacman", "installArgs": ["-S", "--needed"], "uninstallArgs": ["-R"]},
+                "endeavouros": {"id": "arch", "manager": "pacman", "installArgs": ["-S", "--needed"], "uninstallArgs": ["-R"]},
+                "debian": {"id": "debian", "manager": "apt", "installArgs": ["install"], "uninstallArgs": ["remove"]},
+                "ubuntu": {"id": "debian", "manager": "apt", "installArgs": ["install"], "uninstallArgs": ["remove"]},
+                "pop": {"id": "debian", "manager": "apt", "installArgs": ["install"], "uninstallArgs": ["remove"]},
+                "linuxmint": {"id": "debian", "manager": "apt", "installArgs": ["install"], "uninstallArgs": ["remove"]},
+                "fedora": {"id": "fedora", "manager": "dnf", "installArgs": ["install"], "uninstallArgs": ["remove"]},
+                "rhel": {"id": "fedora", "manager": "dnf", "installArgs": ["install"], "uninstallArgs": ["remove"]},
+                "centos": {"id": "fedora", "manager": "dnf", "installArgs": ["install"], "uninstallArgs": ["remove"]},
             }
-            return distro_map.get(id_value, {"id": id_value or "unknown", "manager": "", "installArgs": []})
+            return distro_map.get(id_value, {"id": id_value or "unknown", "manager": "", "installArgs": [], "uninstallArgs": []})
         except Exception:
-            return {"id": "unknown", "manager": "", "installArgs": []}
+            return {"id": "unknown", "manager": "", "installArgs": [], "uninstallArgs": []}
     elif system is Platform.MACOS:
-        return {"id": "macos", "manager": "brew", "installArgs": ["install"]}
+        return {"id": "macos", "manager": "brew", "installArgs": ["install"], "uninstallArgs": ["uninstall"]}
     elif system is Platform.WINDOWS:
-        return {"id": "windows", "manager": "choco", "installArgs": ["/i"]}
+        return {"id": "windows", "manager": "choco", "installArgs": ["/i"], "uninstallArgs": ["uninstall"]}
 
-    return {"id": "unknown", "manager": "", "installArgs": []}
+    return {"id": "unknown", "manager": "", "installArgs": [], "uninstallArgs": []}
 
 
 def _show_token(token: str) -> str:
@@ -250,6 +273,99 @@ def plan_install(entry: CatalogEntry) -> PlanResult:
         )
 
     return InstallPlan(
+        executable=True,
+        privilege="user",
+        bin=base["bin"],
+        args=base["args"],
+        command=_line(base["bin"], base["args"]),
+        why=why,
+    )
+
+
+def _userspace_uninstall_command(spec: InstallSpec, pkg: str) -> dict[str, Any] | None:
+    """Trusted uninstall argv derived from the catalog InstallSpec.
+
+    Mirrors _userspace_command: the package name comes from the catalog,
+    never from the caller. Unknown methods return None so the caller
+    reports "no verified way" rather than guessing.
+    """
+    method = spec.method
+    if method == "npm-global":
+        return {"bin": "npm", "args": ["uninstall", "--global", pkg]}
+    elif method == "pipx":
+        return {"bin": "pipx", "args": ["uninstall", pkg]}
+    elif method == "cargo":
+        return {"bin": "cargo", "args": ["uninstall", pkg]}
+    elif method == "gh-extension":
+        return {"bin": "gh", "args": ["extension", "remove", pkg]}
+    elif method == "system-package":
+        return None
+    return None
+
+
+def plan_uninstall(entry: CatalogEntry) -> UninstallPlanResult:
+    """Decide the trusted uninstall command for a catalog node.
+
+    Same security shape as plan_install: the package comes from
+    CatalogEntry.install, the binary must be allow-listed, root-tier
+    work is never executed (guided handoff only), and unknown methods
+    yield NoUninstallPlan rather than a guessed command.
+    """
+    spec = entry.install
+    if spec is None:
+        return NoUninstallPlan(
+            reason=f"AURA has no verified way to uninstall {entry.name}, so it will not guess at one. See {entry.homepage} for the project's own instructions.",
+        )
+
+    privilege, why = _resolve_privilege(spec)
+
+    if privilege == "root":
+        distro = _detect_distro()
+        pkg = spec.distro.get(distro["id"], spec.package) if distro["id"] != "unknown" else spec.package
+
+        if spec.method != "system-package":
+            base = _userspace_uninstall_command(spec, spec.package)
+            if base:
+                cmd = f"sudo {_line(base['bin'], base['args'])}"
+                return UninstallPlan(
+                    executable=False,
+                    privilege="root",
+                    bin=base["bin"],
+                    args=base["args"],
+                    command=cmd,
+                    why=why,
+                )
+            return NoUninstallPlan(
+                reason=f"AURA has no verified way to uninstall {entry.name} on this machine.",
+            )
+
+        if not distro["manager"]:
+            return NoUninstallPlan(
+                reason=f"{entry.name} is a system package, and AURA could not identify this machine's package manager. Remove it the way your distribution recommends: {entry.homepage}",
+            )
+
+        remove_args = distro.get("uninstallArgs") or []
+        if not remove_args:
+            return NoUninstallPlan(
+                reason=f"AURA has no verified removal command for {entry.name} on this machine. Remove it the way your distribution recommends: {entry.homepage}",
+            )
+        cmd = f"sudo {_line(distro['manager'], [*remove_args, pkg])}"
+        return UninstallPlan(
+            executable=False,
+            privilege="root",
+            bin=distro["manager"],
+            args=[*remove_args, pkg],
+            command=cmd,
+            why=why,
+        )
+
+    base = _userspace_uninstall_command(spec, spec.package)
+    if not base:
+        return NoUninstallPlan(
+            reason=f"AURA has no verified way to uninstall {entry.name} on this machine.",
+        )
+
+    return UninstallPlan(
         executable=True,
         privilege="user",
         bin=base["bin"],

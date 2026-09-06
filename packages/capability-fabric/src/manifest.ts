@@ -270,6 +270,22 @@ const LOCAL: CapabilityDescriptor[] = [
   }),
 
   cap({
+    id: 'system.uninstall', name: 'Remove a tool', category: 'system', surface: 'local-process',
+    description:
+      'Removes a catalogued tool from this machine, using the package manager that tool '
+      + 'declares. The caller names a NODE, never a command: the package and arguments come from the '
+      + 'catalogue, so this can never be turned into "run anything". Removals that need administrator '
+      + 'rights are not performed — AURA hands you the exact verified command instead.',
+    risk: 'high', permissions: ['process.execute', 'system.modify'],
+    input: [
+      f('nodeId', 'string', true, 'Catalogue id of the node to remove, e.g. "pnpm"'),
+    ],
+    output: 'UninstallResult — uninstallOutcome, privilege, command, probe',
+    verify: 'read-back',
+    irreversible: false,
+  }),
+
+  cap({
     id: 'git.status', name: 'Git status', category: 'git', surface: 'local-process',
     description: 'Working tree status of the project.',
     risk: 'low', permissions: ['project.read'],

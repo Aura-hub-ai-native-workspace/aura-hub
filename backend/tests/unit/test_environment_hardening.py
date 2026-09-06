@@ -1031,3 +1031,128 @@ class TestInstallSecurity:
         plan = plan_install(entry)
         if is_plan(plan):
             assert plan.privilege == "root"
+
+
+class TestUninstallSecurity:
+    def test_uninstall_command_comes_from_the_catalog_only(self):
+        from aura.environment import is_uninstall_plan, plan_uninstall
+
+        entry = catalog_entry("gemini-cli")
+        plan = plan_uninstall(entry)
+        assert is_uninstall_plan(plan)
+        assert plan.bin == "npm"
+        assert plan.args == ["uninstall", "--global", "@google/gemini-cli"]
+        assert entry.install.package in plan.args
+
+    def test_uninstall_argv_never_uses_shell(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[2]
+        for rel in (
+            "aura/environment/executor.py",
+            "aura/environment/install.py",
+            "aura/api/server.py",
+        ):
+            text = (root / rel).read_text()
+            assert "shell=True" not in text, f"{rel} must never use shell=True"
+            assert "os.system" not in text, f"{rel} must never use os.system"
+
+    def test_uninstall_stdin_is_closed(self):
+        from pathlib import Path
+
+        text = (Path(__file__).resolve().parents[2] / "aura" / "environment" / "executor.py").read_text()
+        assert "stdin=asyncio.subprocess.DEVNULL" in text
+
+    def test_root_uninstalls_are_guided_not_executed(self):
+        from aura.environment import is_uninstall_plan, plan_uninstall
+
+        entry = catalog_entry("docker")
+        plan = plan_uninstall(entry)
+        if is_uninstall_plan(plan):
+            assert plan.privilege == "root"
+            assert plan.executable is False
+
+    def test_uninstall_rejects_an_id_outside_the_catalog(self, client):
+        response = client.post("/environment/uninstall", json={"id": "../../evil"})
+        assert response.status_code == 400
+        body = response.json()
+        assert body.get("uninstallOutcome") in ("failed", "unavailable")
+        assert "catalog" in (body.get("detail") or "").lower()
+
+    def test_uninstall_outcome_is_never_faked(self, client):
+        # Unknown id must not report uninstalled.
+        response = client.post("/environment/uninstall", json={"id": "nope-not-a-node"})
+        assert response.status_code == 400
+        assert response.json().get("uninstallOutcome") != "uninstalled"
+
+    def test_human_uninstall_needs_no_approval_header(self, client):
+        # Direct human path bypasses the Fabric approval gate by design.
+        # The endpoint must answer with an uninstallOutcome, never an approval redirect.
+        response = client.post("/environment/uninstall", json={"id": "gemini-cli"})
+        body = response.json()
+        assert "uninstallOutcome" in body
+        assert "awaiting-approval" not in str(body).lower()
+
+    def test_uninstall_plan_uses_allowlisted_binary_only(self):
+        from aura.environment import is_uninstall_plan, plan_uninstall, validate_installer_binary
+
+        for node_id in ("gemini-cli", "pnpm"):
+            entry = catalog_entry(node_id)
+            if entry is None or entry.install is None:
+                continue
+            plan = plan_uninstall(entry)
+            if is_uninstall_plan(plan) and plan.executable:
+                allowed, _ = validate_installer_binary(plan.bin)
+                assert allowed is True, f"{plan.bin} for {node_id} is not allow-listed"
+
+    def test_system_package_uninstall_is_guided(self):
+        from aura.environment import is_uninstall_plan, plan_uninstall
+
+        entry = catalog_entry("docker")
+        assert entry is not None and entry.install is not None
+        plan = plan_uninstall(entry)
+        # Root-tier removals must never auto-execute.
+        if is_uninstall_plan(plan):
+            assert plan.executable is False
+            assert "sudo" in plan.command or "administrator" in plan.why.lower()
+
+    def test_install_exit0_probe_absent_is_unverified_never_installed(self, client, monkeypatch):
+        import aura.environment as env_mod
+        import aura.environment.executor as executor_mod
+        from aura.environment.probe import ProbeResult, ProbeStatus
+
+        async def fake_run_ok(plan, timeout_ms=None, **kwargs):
+            return executor_mod.InstallRun(status="ok", exit_code=0, stdout="ok")
+
+        def fake_probe(node_id, refresh=False):
+            return ProbeResult(present=False, detail="not found", status=ProbeStatus.NOT_FOUND)
+
+        # Server imports run_install_plan and probe_node inside the handler
+        # from aura.environment.executor and aura.environment, so patch there.
+        monkeypatch.setattr(executor_mod, "run_install_plan", fake_run_ok)
+        monkeypatch.setattr(env_mod, "probe_node", fake_probe)
+
+        # Use a catalog node with a user-space plan so we reach verification.
+        response = client.post("/environment/install", json={"id": "gemini-cli"})
+        body = response.json()
+        assert body.get("installOutcome") == "unverified", body
+        assert body.get("installOutcome") != "installed"
+
+    def test_uninstall_exit0_probe_still_present_is_unverified_never_removed(self, client, monkeypatch):
+        import aura.environment as env_mod
+        import aura.environment.executor as executor_mod
+        from aura.environment.probe import ProbeResult, ProbeStatus
+
+        async def fake_run_ok(plan, timeout_ms=None, **kwargs):
+            return executor_mod.InstallRun(status="ok", exit_code=0, stdout="ok")
+
+        def fake_probe(node_id, refresh=False):
+            return ProbeResult(present=True, detail="still here", version="1.0.0", status=ProbeStatus.VERIFIED)
+
+        monkeypatch.setattr(executor_mod, "run_uninstall_plan", fake_run_ok)
+        monkeypatch.setattr(env_mod, "probe_node", fake_probe)
+
+        response = client.post("/environment/uninstall", json={"id": "gemini-cli"})
+        body = response.json()
+        assert body.get("uninstallOutcome") == "unverified", body
+        assert body.get("uninstallOutcome") != "uninstalled"

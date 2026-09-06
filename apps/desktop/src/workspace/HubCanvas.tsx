@@ -33,6 +33,7 @@ const STATUS_COLOR_MAP: Record<NodeStatus, string> = {
   available: '#3b82f6',
   'not-installed': '#f87171',
   installing: '#f59e0b',
+  uninstalling: '#f59e0b',
   degraded: '#f59e0b',
   'needs-auth': '#8b5cf6',
   'no-connector': '#6b7280',

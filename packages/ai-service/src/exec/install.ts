@@ -312,3 +312,74 @@ function userspaceCommand(spec: InstallSpec, pkg: string): { bin: string; args: 
       return null;
   }
 }
+
+/** Trusted uninstall argv derived from the catalog InstallSpec. */
+function userspaceUninstallCommand(spec: InstallSpec, pkg: string): { bin: string; args: string[] } | null {
+  switch (spec.method) {
+    case 'npm-global':
+      return { bin: 'npm', args: ['uninstall', '--global', pkg] };
+    case 'pipx':
+      return { bin: 'pipx', args: ['uninstall', pkg] };
+    case 'cargo':
+      return { bin: 'cargo', args: ['uninstall', pkg] };
+    case 'gh-extension':
+      return { bin: 'gh', args: ['extension', 'remove', pkg] };
+    case 'system-package':
+      return null;
+  }
+}
+
+export type UninstallPlanResult = PlanResult;
+
+export function planUninstall(entry: CatalogEntry): PlanResult {
+  const spec = entry.install;
+  if (!spec) {
+    return {
+      executable: false,
+      reason: `AURA has no verified way to uninstall ${entry.name}, so it will not guess at one. See ${entry.homepage} for the project's own instructions.`,
+    };
+  }
+  const { privilege, why } = resolvePrivilege(spec);
+  if (privilege === 'root') {
+    const distro = detectDistro();
+    const pkg = (distro.id && (spec.distro as Record<string, string> | undefined)?.[distro.id]) || spec.package;
+    if (spec.method !== 'system-package') {
+      const base = userspaceUninstallCommand(spec, spec.package);
+      return base
+        ? { executable: false, privilege, bin: base.bin, args: base.args, command: elevated(line(base.bin, base.args)), why }
+        : { executable: false, reason: `AURA has no verified way to uninstall ${entry.name} on this machine.` };
+    }
+    if (!distro.manager) {
+      return {
+        executable: false,
+        reason: `${entry.name} is a system package, and AURA could not identify this machine's package manager. Remove it the way your distribution recommends: ${entry.homepage}`,
+      };
+    }
+    const removeArgs =
+      distro.id === 'arch' ? ['-R']
+      : distro.id === 'debian' ? ['remove']
+      : distro.id === 'fedora' ? ['remove']
+      : distro.id === 'macos' ? ['uninstall']
+      : distro.id === 'windows' ? ['uninstall']
+      : [];
+    if (removeArgs.length === 0) {
+      return {
+        executable: false,
+        reason: `AURA has no verified removal command for ${entry.name} on this machine. Remove it the way your distribution recommends: ${entry.homepage}`,
+      };
+    }
+    return {
+      executable: false,
+      privilege,
+      bin: distro.manager,
+      args: [...removeArgs, pkg],
+      command: elevated(line(distro.manager, [...removeArgs, pkg])),
+      why,
+    };
+  }
+  const base = userspaceUninstallCommand(spec, spec.package);
+  if (!base) {
+    return { executable: false, reason: `AURA has no verified way to uninstall ${entry.name} on this machine.` };
+  }
+  return { executable: true, privilege: 'user', bin: base.bin, args: base.args, command: line(base.bin, base.args), why };
+}

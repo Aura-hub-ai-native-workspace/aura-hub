@@ -21,7 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
 import { git, parseCommand, resolveAgentBinary, runAgent, runInstaller, safeShellWithCode } from '../exec/process';
-import { isPlan, planInstall } from '../exec/install';
+import { isPlan, planInstall, planUninstall } from '../exec/install';
 import { catalogEntry } from '@aura/connected-environment';
 import { probeNode } from '../environment';
 import type { WorkspaceManager } from '../workspace';
@@ -457,6 +457,120 @@ const systemInstall: Executor = {
   },
 };
 
+type UninstallOutcome = 'uninstalled' | 'guided' | 'failed' | 'unverified';
+
+interface UninstallResult {
+  uninstallOutcome: UninstallOutcome;
+  nodeId: string;
+  privilege: 'user' | 'root';
+  requiresUserAction: boolean;
+  command?: string;
+  why?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  stdout?: string;
+  probe?: { present: boolean; version?: string; detail: string };
+}
+
+const systemUninstall: Executor = {
+  capabilityId: 'system.uninstall',
+
+  async run(inv) {
+    const nodeId = s(inv.input.nodeId).trim();
+    if (!nodeId) return no('No node was named, so there is nothing to uninstall.');
+    const entry = catalogEntry(nodeId);
+    if (!entry) {
+      return no(`'${nodeId}' is not a node in AURA's catalogue, so there is nothing to uninstall.`);
+    }
+    const plan = planUninstall(entry);
+    if (!isPlan(plan)) {
+      return no(plan.reason);
+    }
+    if (plan.privilege === 'root') {
+      const result: UninstallResult = {
+        uninstallOutcome: 'guided',
+        nodeId,
+        privilege: 'root',
+        requiresUserAction: true,
+        command: plan.command,
+        why: plan.why,
+      };
+      return {
+        ok: false,
+        detail:
+          `${entry.name} needs administrator rights to remove, so AURA did not run anything. `
+          + `Run this yourself, then re-scan: ${plan.command}`,
+        output: result,
+      };
+    }
+    let res: Awaited<ReturnType<typeof runInstaller>>;
+    try {
+      res = await runInstaller(plan.bin, plan.args, {
+        cwd: process.env.HOME || os.homedir(),
+        timeoutMs: inv.context.timeoutMs,
+      });
+    } catch (e) {
+      return no(`${entry.name} could not be uninstalled: ${(e as Error).message}`);
+    }
+    const base = {
+      nodeId,
+      privilege: 'user' as const,
+      command: plan.command,
+      exitCode: res.code,
+      timedOut: res.timedOut ?? false,
+      stdout: res.out.slice(0, 4000),
+    };
+    if (res.code !== 0) {
+      const why = res.timedOut
+        ? `The uninstaller ran out of time and was stopped.`
+        : res.signal
+          ? `The uninstaller was terminated by ${res.signal}.`
+          : `The uninstaller exited ${res.code}.`;
+      const result: UninstallResult = { ...base, uninstallOutcome: 'failed', requiresUserAction: false, why };
+      return { ok: false, detail: `${entry.name} was not uninstalled. ${why} ${res.out.slice(0, 300)}`.trim(), output: result };
+    }
+    const probe = await probeAfterInstall(nodeId);
+    if (probe.present) {
+      const result: UninstallResult = {
+        ...base,
+        uninstallOutcome: 'unverified',
+        requiresUserAction: true,
+        why: `The uninstaller finished without an error, but ${entry.name} can still be found on this machine.`,
+        probe: { present: true, detail: probe.detail },
+      };
+      return {
+        ok: false,
+        detail:
+          `${entry.name} reported a successful removal, but AURA can still find it, so it is NOT `
+          + `being reported as removed. ${probe.detail}`,
+        output: result,
+      };
+    }
+    const result: UninstallResult = {
+      ...base,
+      uninstallOutcome: 'uninstalled',
+      requiresUserAction: false,
+      probe: { present: false, detail: probe.detail },
+    };
+    return ok(`${entry.name} is removed and verified as absent.`, result);
+  },
+
+  async verify(_inv, result) {
+    const out = result.output as UninstallResult | undefined;
+    if (!out) return fail('read-back', 'The uninstaller returned no result to verify.');
+    switch (out.uninstallOutcome) {
+      case 'uninstalled':
+        return pass('read-back', `A fresh probe no longer finds ${out.nodeId}.`);
+      case 'guided':
+        return fail('read-back', 'Nothing was removed — this needs administrator rights and is waiting on you.');
+      case 'unverified':
+        return fail('read-back', `The uninstaller exited 0 but a fresh probe still finds ${out.nodeId}.`);
+      case 'failed':
+        return fail('read-back', out.why ?? 'The uninstaller did not succeed.');
+    }
+  },
+};
+
 /* ══════════════════════════════════════════════════════════════════
    Git — all through the shared primitive
    ══════════════════════════════════════════════════════════════════ */
@@ -771,6 +885,7 @@ export function allExecutors(manager: WorkspaceManager): Executor[] {
     terminalExecute,
     agentDelegate,
     systemInstall,
+    systemUninstall,
     gitStatus, gitDiff, gitBranch, gitCommit, gitPush,
     httpRequest,
     ...internalExecutors(manager),

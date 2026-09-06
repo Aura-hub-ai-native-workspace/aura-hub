@@ -18,7 +18,7 @@ import {
   type EnvironmentNode,
   type NodePermissions,
 } from '@aura/connected-environment';
-import { fabricClient, type InstallResultView } from '../ai/fabricClient';
+import type { InstallResultView } from '../ai/fabricClient';
 import { STATUS_LABEL, STATUS_TONE, TONE_DOT, TONE_TEXT } from './presentation';
 import { useEnvironmentStore } from './environmentStore';
 
@@ -52,6 +52,7 @@ export function NodeInspector({
   return (
     <div className="space-y-3 p-3">
       <InstallPanel node={node} />
+      <UninstallPanel node={node} />
 
       {/* identity + health */}
       <section>
@@ -202,11 +203,11 @@ export function NodeInspector({
 function InstallPanel({ node }: { node: EnvironmentNode }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<InstallResultView | null>(null);
-  const [gate, setGate] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const rescan = useEnvironmentStore((s) => s.scan);
+  const installDirect = useEnvironmentStore((s) => s.install);
 
   const spec = node.entry.install;
   const missing = node.health.status === 'not-installed';
@@ -218,19 +219,14 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
   const install = async () => {
     setBusy(true);
     setError(null);
-    setGate(null);
     setResult(null);
     setAttempted(true);
     try {
-      const res = await fabricClient.invokeAsUser('system.install', { nodeId: node.id });
-      if (res.outcome === 'awaiting-approval') {
-        // Reachable, but no longer the ordinary path: browser preview has
-        // no shell to mint a token, and an operator may have raised
-        // `system.install` in workspace policy. Both are legitimate
-        // reasons to still need an answer, so say so plainly rather than
-        // pretending the click was enough.
-        setGate('Your workspace policy asks for this to be approved separately. Open the approval gate to allow it.');
-      } else if (res.outcome === 'denied' || res.outcome === 'unsupported') {
+      // Direct human path — the click itself is the authorization.
+      // No AI approval gate is shown here. Security (allow-list, argv-only,
+      // probe verification) still runs in the Python backend.
+      const res = await installDirect(node.id);
+      if (res.outcome === 'denied' || res.outcome === 'unsupported') {
         setError(res.detail);
       } else {
         const output = (res.output as InstallResultView) ?? null;
@@ -266,7 +262,7 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
 
   return (
     <section data-testid="node-install" className="rounded-xl border border-line bg-surface-active p-2.5">
-      {!result && !gate && (
+      {!result && (
         <div className="flex items-center gap-2">
           <button
             onClick={install}
@@ -285,10 +281,6 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
                 : 'Starts as soon as you click.'}
           </span>
         </div>
-      )}
-
-      {gate && (
-        <p data-testid="node-install-gate" className="text-[11.5px] leading-relaxed text-accent">{gate}</p>
       )}
 
       {error && (
@@ -355,6 +347,89 @@ function InstallPanel({ node }: { node: EnvironmentNode }) {
           Try again
         </button>
       )}
+    </section>
+  );
+}
+
+function UninstallPanel({ node }: { node: EnvironmentNode }) {
+  const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const rescan = useEnvironmentStore((s) => s.scan);
+  const uninstallDirect = useEnvironmentStore((s) => s.uninstall);
+
+  const isInstalled = node.health.status !== 'not-installed' && node.health.status !== 'installing' && node.health.status !== 'uninstalling';
+  if (!isInstalled || !node.entry.install || node.entry.transport === 'internal') return null;
+  if (node.health.status === 'uninstalling') {
+    return (
+      <section data-testid="node-uninstall" className="rounded-xl border border-line bg-surface-active p-2.5">
+        <p className="text-[11.5px] text-text-muted">Uninstalling… Verifying removal…</p>
+      </section>
+    );
+  }
+
+  const uninstall = async () => {
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await uninstallDirect(node.id);
+      const output = res.output as { uninstallOutcome?: string } | undefined;
+      if (output?.uninstallOutcome === 'uninstalled') {
+        setResult(`${node.entry.name} was removed.`);
+        void rescan(true);
+      } else {
+        setError(res.detail || 'Removal could not be verified.');
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <section data-testid="node-uninstall" className="rounded-xl border border-line bg-surface-active p-2.5">
+      {!confirming && !result && !error && (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setConfirming(true)}
+            disabled={busy}
+            data-testid="node-uninstall-start"
+            className="rounded-lg border border-line px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-line-strong hover:text-text disabled:opacity-60"
+          >
+            Uninstall {node.entry.name}
+          </button>
+          <span className="text-[10.5px] text-text-subtle">Removes it from this machine, then verifies.</span>
+        </div>
+      )}
+      {confirming && (
+        <div data-testid="node-uninstall-confirm">
+          <p className="text-[11.5px] font-semibold text-text">Uninstall {node.entry.name}?</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-text-muted">Remove {node.entry.name} from this machine.</p>
+          <div className="mt-2 flex items-center gap-1.5">
+            <button
+              onClick={() => setConfirming(false)}
+              disabled={busy}
+              className="rounded-lg border border-line px-2.5 py-1 text-[11px] font-medium text-text-muted disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={uninstall}
+              disabled={busy}
+              data-testid="node-uninstall-confirm"
+              className="rounded-lg bg-attention px-2.5 py-1 text-[11px] font-medium text-white disabled:opacity-60"
+            >
+              {busy ? 'Uninstalling…' : 'Uninstall'}
+            </button>
+          </div>
+        </div>
+      )}
+      {result && <p className="text-[11.5px] text-positive">{result}</p>}
+      {error && <p className="text-[11.5px] text-attention">{error}</p>}
     </section>
   );
 }

@@ -46,6 +46,7 @@ import {
   type NotInstalledNode,
   type OsPackage,
   type PackageEvidence,
+  type UninstallResponse,
 } from './environmentClient';
 import type { InvocationResultView } from '../ai/fabricClient';
 
@@ -89,6 +90,8 @@ interface EnvironmentState {
   setNodePermissions: (id: string, partial: Partial<NodePermissions>) => void;
   /** Direct human install — bypasses Fabric approval gate. AI path remains via fabricClient.invoke('system.install'). */
   install: (id: string) => Promise<InvocationResultView>;
+  /** Direct human uninstall — bypasses Fabric approval gate. AI path remains via fabricClient.invoke('system.uninstall'). */
+  uninstall: (id: string) => Promise<InvocationResultView>;
   /** Governed AI install (kept for model-initiated). */
   installGoverned?: (id: string) => Promise<InvocationResultView>;
 }
@@ -364,6 +367,122 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
       invocationId: '',
       outcome: 'failed',
       detail: direct.detail || direct.why || 'Install failed.',
+      output: direct as unknown as Record<string, unknown>,
+    };
+  },
+
+  uninstall: async (id) => {
+    const node = get().nodes.find((n) => n.id === id);
+    if (!node) {
+      return { invocationId: '', outcome: 'unsupported', detail: 'That node is not in the catalog.' };
+    }
+    if (get().busy.includes(id) || node.health.status === 'uninstalling') {
+      return { invocationId: '', outcome: 'unsupported', detail: 'An uninstall is already in progress for this node.' };
+    }
+    if (!node.entry.install) {
+      return {
+        invocationId: '',
+        outcome: 'unsupported',
+        detail: `AURA has no verified way to uninstall ${node.entry.name}, so it will not guess at one. See ${node.entry.homepage} for the project's own instructions.`,
+      };
+    }
+
+    // Mark uninstalling and busy before anything leaves the machine.
+    set((s) => ({
+      busy: [...s.busy, id],
+      nodes: s.nodes.map((n) =>
+        n.id === id
+          ? {
+              ...n,
+              health: {
+                status: 'uninstalling',
+                detail: 'Removal is running — AURA will look for it again when this finishes.',
+                checkedAt: new Date().toISOString(),
+                version: n.health.version,
+              },
+              log: appendLog(n.log, 'info', `Uninstall requested for ${n.entry.name}.`),
+            }
+          : n,
+      ),
+    }));
+
+    let direct: UninstallResponse | null = null;
+    let detailForFailure = '';
+    try {
+      direct = await environmentClient.uninstall(id);
+    } catch (e) {
+      detailForFailure = (e as Error).message || 'The uninstall request did not complete.';
+      // Re-probe honestly before reporting the transport failure.
+      try {
+        const probeResult = await environmentClient.probe(id, true);
+        set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? applyProbe(n, probeResult) : n)) }));
+      } catch {
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  health: { status: 'available', detail: detailForFailure, checkedAt: new Date().toISOString() },
+                  log: appendLog(n.log, 'error', detailForFailure),
+                }
+              : n,
+          ),
+        }));
+      }
+      set((s) => ({ busy: s.busy.filter((b) => b !== id) }));
+      return { invocationId: '', outcome: 'failed', detail: detailForFailure };
+    }
+
+    // Direct human uninstall succeeded in reaching the service — now apply verification.
+    // The service already probed for absence, but we do a second honest re-probe
+    // for UI consistency.
+    if (direct && direct.probe) {
+      const probeResult = {
+        present: direct.probe.present,
+        detail: direct.probe.detail,
+        version: direct.probe.version,
+        latencyMs: direct.probe.latencyMs,
+      };
+      set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? applyProbe(n, probeResult) : n)) }));
+    } else {
+      try {
+        const probeResult = await environmentClient.probe(id, true);
+        set((s) => ({ nodes: s.nodes.map((n) => (n.id === id ? applyProbe(n, probeResult) : n)) }));
+      } catch {
+        // Keep the uninstalling state honest — probe failure is not removal.
+      }
+    }
+
+    set((s) => ({ busy: s.busy.filter((b) => b !== id) }));
+
+    // Map direct uninstallOutcome to InvocationResultView for UI branches.
+    if (!direct) {
+      return { invocationId: '', outcome: 'failed', detail: detailForFailure || 'Uninstall did not complete.' };
+    }
+    if (direct.uninstallOutcome === 'unavailable') {
+      return { invocationId: '', outcome: 'unsupported', detail: direct.detail || direct.why || 'Uninstall unavailable.' };
+    }
+    if (direct.uninstallOutcome === 'guided') {
+      return {
+        invocationId: '',
+        outcome: 'succeeded',
+        detail: direct.detail || direct.why || '',
+        output: direct as unknown as Record<string, unknown>,
+      };
+    }
+    if (direct.uninstallOutcome === 'uninstalled') {
+      return {
+        invocationId: '',
+        outcome: 'succeeded',
+        detail: direct.detail || '',
+        output: direct as unknown as Record<string, unknown>,
+      };
+    }
+    // failed / unverified
+    return {
+      invocationId: '',
+      outcome: 'failed',
+      detail: direct.detail || direct.why || 'Uninstall failed.',
       output: direct as unknown as Record<string, unknown>,
     };
   },
