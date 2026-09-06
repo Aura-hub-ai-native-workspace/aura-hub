@@ -180,25 +180,16 @@ export function NodeInspector({
  *
  * 1. Clicking this button IS the authorization.
  *
- *    The install used to travel `fabricClient.invoke`, which made it a
- *    *request* — and `system.modify` floors a request to
- *    `require-approval`, so the person who had just clicked "Install pnpm"
- *    was told to go to Mission Control and approve their own click. The
- *    floor was not wrong; the channel was. `invokeAsUser` presents the
- *    window's own token, policy sees an attested user action, and the
- *    consent the floor exists to obtain is the click that already
- *    happened. Nothing is skipped for a model: an agent asking for the
- *    same capability is gated exactly as before.
- *
- *    The precedent is `acceptMissionTask` — accepting a proposal is
- *    already treated as the operator's authorization for the write,
- *    derived server-side. This applies the same idea to a second button.
+ *    This panel calls the store's direct human path (`environmentClient`
+ *    → Python `/environment/install`), never the Fabric. No AI approval
+ *    gate is shown for a direct click. Agent requests still travel
+ *    `fabricClient.invoke('system.install')` → policy → approval, and a
+ *    human click never grants an agent anything.
  *
  * 2. A `guided` result means AURA ran NOTHING — it is a handoff to the
  *    user, not a failure, and rendering it as an error would misreport
  *    what happened. So every branch below keys off `installOutcome`,
- *    never off the invocation's `ok`/`outcome`, which is `failed` for a
- *    guided result by the compatibility contract in §25.1.
+ *    never off a generic ok/failed flag.
  */
 function InstallPanel({ node }: { node: EnvironmentNode }) {
   const [busy, setBusy] = useState(false);
