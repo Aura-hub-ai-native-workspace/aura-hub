@@ -20,6 +20,16 @@ from .mcp_gateway import McpGateway, McpRegistrationError, sanitize_external_too
 from .planner import MAX_TASKS, PlanningError, TaskPlanner, topo_order
 from .service import CentralAgent
 from .session import AgentSessionStore
+from .supervisor import (
+    MAX_CORRECTION_ATTEMPTS,
+    CorrectionRecord,
+    RunVerdict,
+    TaskVerdict,
+    build_correction,
+    decide_run,
+    decide_task,
+    validate_correction_scope,
+)
 from .verification import VerificationEngine
 from .workflow_compiler import CompilationError, WorkflowCompiler
 
@@ -38,9 +48,17 @@ __all__ = [
     "McpGateway",
     "McpRegistrationError",
     "ModelPort",
+    "CorrectionRecord",
+    "MAX_CORRECTION_ATTEMPTS",
     "PlanningError",
+    "RunVerdict",
     "ScriptedModelPort",
     "TaskPlanner",
+    "TaskVerdict",
+    "build_correction",
+    "decide_run",
+    "decide_task",
+    "validate_correction_scope",
     "VerificationEngine",
     "WorkflowCompiler",
     "heuristic_interpret",
