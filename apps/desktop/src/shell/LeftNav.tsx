@@ -6,6 +6,10 @@ import { AuraTile } from '../brand/AuraLogo';
 const EXPANDED = 260;
 const RAIL = 52;
 
+/**
+ * Left navigation sidebar with expandable rail design.
+ * Displays primary and system navigation items with smooth width animations.
+ */
 export function LeftNav() {
   const expanded = useAppStore((s) => s.sidebarExpanded);
   const nav = useAppStore((s) => s.nav);
@@ -81,6 +85,16 @@ export function LeftNav() {
   );
 }
 
+/**
+ * Individual navigation item with icon and optional label.
+ * Shows tooltip in collapsed state, full label when expanded.
+ * @param icon Icon name to display
+ * @param label Item label text
+ * @param expanded Whether sidebar is expanded
+ * @param active Whether this item is currently active
+ * @param onClick Click handler for navigation
+ * @param item Full navigation item details
+ */
 function NavItem({
   icon,
   label,

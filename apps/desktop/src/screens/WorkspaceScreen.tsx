@@ -16,31 +16,32 @@
  * every status shown comes from `environmentStore`, whose values are real
  * probes of this machine, and nothing here caches them across a restart.
  *
- * Clicking a node opens a floating inspection window. Windows are not
- * nodes: closing one never removes the capability, and the canvas stays
- * visible behind it.
+ * Presentation lives in `screens/workspace/neon/` (WorkspaceShell,
+ * LeftControlPanel, TimelineContainer). Every prop below is the same
+ * authority the legacy Hub/canvas read — only the layout changed.
  */
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { useAppStore } from '@aura/core';
-import { Icon, IconButton, Tooltip } from '@aura/ui';
+import { useEffect, useMemo, useRef, useState, useCallback, type RefObject } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { cn, spring, useAppStore } from '@aura/core';
+import { Icon } from '@aura/ui';
 import { useEnvironmentStore } from '../environment/environmentStore';
-import { useWindowManager } from '../environment/windows/windowManager';
 import { useWorkspace } from '../data/useWorkspace';
 import { useMissions } from './missions/useMissions';
-import { HubCanvas } from '../workspace/HubCanvas';
-import { HubSurface, readinessOf } from '../workspace/HubSurface';
 import { useHubStore } from '../workspace/hubStore';
 import { fabricClient, type MissionCapabilityAnnotation } from '../ai/fabricClient';
-import { WorkspaceToolbar } from '../shell/WorkspaceToolbar';
-import { BottomInfoPanel } from '../shell/BottomInfoPanel';
-import { useEnvironmentSummary } from '../environment/environmentStore';
-import { WorkflowTimeline } from './workflows/WorkflowTimeline';
-import { deriveHubPhase, missingNodesFor, projectNodeActivity } from '../workspace/hubPhase';
+import { AddNodeDialog } from '../workspace/AddNodeDialog';
+import { NodeInspector } from '../environment/NodeInspector';
+import { FloatingSurface } from '../environment/windows/FloatingSurface';
+import { useWindowManager } from '../environment/windows/windowManager';
+import { CATEGORY_ICON, STATUS_TONE, TONE_DOT } from '../environment/presentation';
+import { deriveHubPhase, missingNodesFor, projectNodeActivity, readinessOf } from '../workspace/hubPhase';
+import { WorkspaceShell } from './workspace/neon/WorkspaceShell';
+import { LeftControlPanel } from './workspace/neon/LeftControlPanel';
+import { TimelineContainer } from './workspace/neon/TimelineContainer';
 
 export function WorkspaceScreen() {
+  const [adding, setAdding] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-
   const placed = useHubStore((s) => s.placed);
   const relayout = useHubStore((s) => s.relayout);
 
@@ -99,9 +100,13 @@ export function WorkspaceScreen() {
      registry, and doing it here as well would be a second authority for the
      same decision. */
 
-const selectProject = useCallback((id: string | null) => {
+  /**
+   * Selects the active project for mission planning.
+   * @param id Project ID or null to deselect
+   */
+  const selectProject = useCallback((id: string | null) => {
     setActiveProject(id || null);
-}, [setActiveProject]);
+  }, [setActiveProject]);
 
   /* What the plan actually needs, read from the Fabric's existing
      annotation route. Re-read whenever the plan changes. */
@@ -115,20 +120,15 @@ const selectProject = useCallback((id: string | null) => {
     return () => { cancelled = true; };
   }, [projectId, active?.id, active?.goalGraph]);
 
-  // Once execution is running, keep pulling waves so the canvas reflects
+  // Once execution is running, keep pulling waves so the timeline reflects
   // real progress rather than a single frozen snapshot.
   useEffect(() => {
     if (active?.execution?.status === 'running' && !m.batchBusy) void runBatch();
   }, [active?.execution?.status, active?.execution?.batchIndex, m.batchBusy, runBatch]);
 
-  const canvasNodes = useMemo(
-    () => placed.map((p) => ({ placed: p, node: envNodes.find((n) => n.id === p.nodeId) ?? null })),
-    [placed, envNodes],
-  );
-
   const placedNodes = useMemo(
-    () => canvasNodes.map((c) => c.node).filter((n): n is NonNullable<typeof n> => !!n),
-    [canvasNodes],
+    () => placed.map((p) => envNodes.find((n) => n.id === p.nodeId) ?? null).filter((n): n is NonNullable<typeof n> => !!n),
+    [placed, envNodes],
   );
 
   /* The Fabric's approval queue is global. Only the requests raised by
@@ -167,86 +167,141 @@ const selectProject = useCallback((id: string | null) => {
   // user never asked about.
   const readiness = useMemo(() => readinessOf(placedNodes), [placedNodes]);
 
-  const envSummary = useEnvironmentSummary();
+  return (
+    <div ref={canvasRef} className="relative h-full min-h-0">
+      <WorkspaceShell
+        left={
+          <LeftControlPanel
+            nodes={placedNodes}
+            scanning={scanning}
+            readiness={readiness}
+            lastScanAt={lastScanAt}
+            gaps={missing}
+            projects={projects}
+            projectId={projectId}
+            onSelectProject={selectProject}
+            progress={progress}
+            mission={active}
+            error={errorText}
+            onSubmit={(text) => void createMission(text)}
+            onApprove={() => void approve()}
+            onStart={() => void startExecution()}
+            onScan={() => void scan(true)}
+            onAddNode={() => setAdding(true)}
+            onRelayout={relayout}
+            activity={activity}
+            onInspect={openWindow}
+          />
+        }
+        right={
+          <TimelineContainer
+            active={active}
+            creation={creation}
+            progress={progress}
+            projects={projects}
+            projectId={projectId}
+            onSelectProject={selectProject}
+            busy={progress.busy && !active}
+            error={errorText}
+          />
+        }
+      />
+      {/* Catalogue dialog mounts alongside so placing a node never unmounts the shell. */}
+      <AddNodeDialog open={adding} onClose={() => setAdding(false)} />
+      <NodeWindows canvasRef={canvasRef} />
+      <WindowTray />
+    </div>
+  );
+}
+
+/* ── Floating node inspectors ───────────────────────────────────────
+   Same proven surface as ConnectedEnvironment: clicking a capability
+   opens its live inspector (probe state, connect, permissions) above the
+   shell. Windows are working surfaces — closing one never removes the
+   capability. Copied contract, not a second implementation. */
+
+function NodeWindows({ canvasRef }: { canvasRef: RefObject<HTMLDivElement | null> }) {
+  const windows = useWindowManager((s) => s.windows);
+  const nodes = useEnvironmentStore((s) => s.nodes);
+  const busy = useEnvironmentStore((s) => s.busy);
+  const connect = useEnvironmentStore((s) => s.connect);
+  const disconnect = useEnvironmentStore((s) => s.disconnect);
+  const setNodePermissions = useEnvironmentStore((s) => s.setNodePermissions);
 
   return (
-    <div className="relative flex h-full min-h-full flex-col">
-      {/* ── 1. Workspace Toolbar / Top Header ───────────────────────── */}
-      <WorkspaceToolbar
-        onRelayout={relayout}
-        onAddNode={() => void relayout()}
-        onSelectProject={selectProject}
-        projects={projects}
-        projectId={projectId}
-        viewMode={viewMode}
-        setViewMode={setViewMode}
-      />
-
-      {/* ── 2. Main content area ───────────────────────────────────── */}
-      <div className="flex flex-1 overflow-hidden">
-        <div className="flex flex-1 flex-col">
-          {/* ── A. Central AURA Agent Workspace ───────────────────── */}
-<HubSurface
-              readiness={readiness}
-              scanning={scanning}
-              lastScanAt={lastScanAt}
-              onScan={() => void scan(true)}
-              projects={projects}
-              projectId={projectId}
-              onSelectProject={selectProject}
-              progress={progress}
-              mission={active}
-              missing={missing}
-              unattributed={projection.unattributed}
-              error={errorText}
-              onSubmit={(text) => void createMission(text)}
-              onApprove={() => void approve()}
-              onStart={() => void startExecution()}
-              viewMode={viewMode as 'grid' | 'list'}
-            />
-
-          {/* ── B. Workflow Timeline ───────────────────────────────── */}
-          <WorkflowTimeline
-            active={active}
-            progress={progress}
-          />
-
-          {/* ── C. Capability Nodes Graph ──────────────────────────── */}
-          <HubCanvas
-            nodes={canvasNodes}
+    <AnimatePresence>
+      {windows.map((win) => {
+        const node = nodes.find((n) => n.id === win.contentId);
+        if (!node) return null;
+        const tone = STATUS_TONE[node.health.status];
+        return (
+          <FloatingSurface
+            key={win.id}
+            window={win}
             canvasRef={canvasRef}
-            onInspect={openWindow}
-            activity={activity}
-            hub={
-              <HubSurface
-                readiness={readiness}
-                scanning={scanning}
-                lastScanAt={lastScanAt}
-                onScan={() => void scan(true)}
-                projects={projects}
-                projectId={projectId}
-                onSelectProject={selectProject}
-                progress={progress}
-                mission={active}
-                missing={missing}
-                unattributed={projection.unattributed}
-                error={errorText}
-                onSubmit={(text) => void createMission(text)}
-                onApprove={() => void approve()}
-                onStart={() => void startExecution()}
-              />
-            }
-          />
-        </div>
-      </div>
+            title={node.entry.name}
+            icon={CATEGORY_ICON[node.entry.category]}
+            subtitle={node.health.version}
+            toneClass={TONE_DOT[tone]}
+          >
+            <NodeInspector
+              node={node}
+              busy={busy.includes(node.id)}
+              onConnect={() => void connect(node.id)}
+              onDisconnect={() => disconnect(node.id)}
+              onPermissions={(partial) => setNodePermissions(node.id, partial)}
+            />
+          </FloatingSurface>
+        );
+      })}
+    </AnimatePresence>
+  );
+}
 
-      {/* ── 3. Bottom Information Panel ───────────────────────────── */}
-      <BottomInfoPanel
-        envSummary={envSummary}
-        onScanEnvironment={() => void scan(true)}
-        activeProjectId={projectId}
-        projects={projects}
-      />
-    </div>
+function WindowTray() {
+  const windows = useWindowManager((s) => s.windows);
+  const focusedId = useWindowManager((s) => s.focusedId);
+  const focus = useWindowManager((s) => s.focus);
+  const minimize = useWindowManager((s) => s.minimize);
+  const closeAll = useWindowManager((s) => s.closeAll);
+  const nodes = useEnvironmentStore((s) => s.nodes);
+
+  if (!windows.length) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={spring.smooth}
+      className="pointer-events-none absolute inset-x-0 bottom-3 z-40 flex justify-center"
+    >
+      <div className="pointer-events-auto flex items-center gap-1 rounded-2xl border border-line bg-surface/90 p-1.5 shadow-lg backdrop-blur-xl">
+        {windows.map((win) => {
+          const node = nodes.find((n) => n.id === win.contentId);
+          if (!node) return null;
+          const active = focusedId === win.id && !win.minimized;
+          return (
+            <button
+              key={win.id}
+              onClick={() => (active ? minimize(win.id) : focus(win.id))}
+              title={node.entry.name}
+              className={cn(
+                'grid h-8 w-8 place-items-center rounded-xl transition-all hover:scale-105',
+                active ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-hover hover:text-text',
+              )}
+            >
+              <Icon name={CATEGORY_ICON[node.entry.category]} size={16} />
+            </button>
+          );
+        })}
+        <button
+          onClick={() => closeAll()}
+          title="Close all windows"
+          className="grid h-8 w-8 place-items-center rounded-xl text-text-subtle transition-colors hover:bg-surface-hover hover:text-text"
+        >
+          <Icon name="close" size={14} />
+        </button>
+      </div>
+    </motion.div>
   );
 }

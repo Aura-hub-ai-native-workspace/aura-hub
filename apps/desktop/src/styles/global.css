@@ -32,6 +32,19 @@
   --danger: #f04438;
   --scrim: rgba(17, 20, 28, 0.32);
 
+  /* Neon workspace accents (additive — dark cyber-glass theme). */
+  --neon-blue: #4d7cff;
+  --neon-violet: #7a5cff;
+  --neon-cyan: #20d3ff;
+  --neon-success: #1fd38a;
+  --neon-warning: #ffb547;
+  --neon-danger: #ff5d7a;
+  --neon-base: #070b14;
+  --neon-elev1: #0b1120;
+  --neon-elev2: #10182b;
+  --border-soft: rgba(125, 146, 255, 0.25);
+  --border-strong: rgba(109, 92, 255, 0.55);
+
   --sidebar-main: #f8fafc;
   --sidebar-secondary: #f1f5f9;
   --sidebar-border: rgba(0,0,0,0.06);
@@ -63,6 +76,19 @@
   --attention: #f59e0b;
   --danger: #f87171;
   --scrim: rgba(0, 0, 0, 0.4);
+
+  /* Neon workspace accents (additive — dark cyber-glass theme). */
+  --neon-blue: #4d7cff;
+  --neon-violet: #7a5cff;
+  --neon-cyan: #20d3ff;
+  --neon-success: #1fd38a;
+  --neon-warning: #ffb547;
+  --neon-danger: #ff5d7a;
+  --neon-base: #070b14;
+  --neon-elev1: #0b1120;
+  --neon-elev2: #10182b;
+  --border-soft: rgba(125, 146, 255, 0.25);
+  --border-strong: rgba(109, 92, 255, 0.55);
 
   --sidebar-main: #080B16;
   --sidebar-secondary: #0D1222;
@@ -154,8 +180,8 @@ textarea,
   caret-color: var(--accent);
 }
 
-/* Enhanced hover states */
-button:hover {
+/* Enhanced hover states (scoped — never override primary/glow buttons) */
+.neon-hover:hover {
   background: var(--surface-hover);
   border-color: var(--line-strong);
 }
@@ -165,11 +191,35 @@ button:hover {
   background: var(--sidebar-secondary);
 }
 
-/* Card hover effect */
-.rounded-2xl:hover,
-.rounded-xl:hover {
+/* Card hover effect (opt-in only) */
+.card-hover:hover {
   transform: translateY(-1px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* ── Neon workspace helpers ───────────────────────────────────────
+   Layered gradients + box-shadows (GPU-cheap). No backdrop-blur here;
+   cards opt into blur locally on small surfaces only. */
+.neon-shell {
+  background:
+    radial-gradient(900px 480px at 12% -8%, rgba(77, 124, 255, 0.14), transparent 60%),
+    radial-gradient(820px 520px at 88% 4%, rgba(122, 92, 255, 0.13), transparent 62%),
+    radial-gradient(700px 500px at 50% 110%, rgba(32, 211, 255, 0.06), transparent 60%),
+    var(--neon-base);
+}
+.neon-grid {
+  background-image:
+    linear-gradient(rgba(125, 146, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 146, 255, 0.07) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: radial-gradient(80% 70% at 50% 30%, black 30%, transparent 100%);
+}
+.neon-focus:focus-visible {
+  outline: 2px solid var(--neon-blue);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .neon-shell *, .neon-grid { animation: none !important; }
 }
 
 /* Subtle transition for interactive elements */
