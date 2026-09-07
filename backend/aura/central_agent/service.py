@@ -17,6 +17,7 @@ from ..contracts import (
     AgentIntent,
     AgentResult,
     AgentSession,
+    TaskOutcome,
     TaskPlan,
     TaskSpecification,
 )
@@ -422,6 +423,32 @@ class CentralAgent:
         return {str(tid): dict(rec) for tid, rec in prior.items()
                 if isinstance(rec, dict)}
 
+    @staticmethod
+    def _snapshot_outcomes(snapshot: dict, task_ids: list[str],
+                           ) -> list[TaskOutcome]:
+        """Rebuild outcome records from persisted verified evidence.
+
+        A resumed correction round has no live original outcome; without
+        this, the settled record would silently drop already-verified
+        tasks (and objective acceptance over them would evaluate
+        vacuously). Restored rows are marked as restored, carry their
+        original invocation/approval ids, and never re-execute."""
+        out: list[TaskOutcome] = []
+        for tid in task_ids:
+            rec = (snapshot or {}).get(tid)
+            if not isinstance(rec, dict):
+                continue
+            inv = list(rec.get("invocation_ids") or [])
+            aprs = list(rec.get("approval_ids") or [])
+            out.append(TaskOutcome(
+                taskId=str(tid), state="done",
+                performed=bool(inv), verified=True,
+                invocationIds=inv,
+                approvalId=aprs[0] if aprs else None,
+                detail=("Restored from persisted verified evidence; "
+                        "not re-executed.")))
+        return out
+
     def _synthesize(self, session: AgentSession, plan: TaskPlan,
                     outcome: ExecutionOutcome) -> AgentResult:
         """Steps 7-9: verify + evidence + result synthesis from records."""
@@ -780,10 +807,20 @@ class CentralAgent:
                      if order.index(t.id) > pos
                      and t.id not in merged_verified]
         prior = [o for o in prior_outcomes if o.taskId != task_id]
+        # Phase J: a VERIFIED corrective outcome completes the ORIGINAL
+        # task — alias it onto the original id so verification, objective
+        # acceptance, and synthesis all read one coherent record.
+        # Invocation ids and handoff lineage ride along untouched; nothing
+        # is rewritten when the correction did not verify.
+        plan_ids = {t.id for t in plan.tasks}
+        aliased = [o.model_copy(update={"taskId": task_id})
+                   if (o.taskId != task_id and o.taskId not in plan_ids
+                       and o.verified is True)
+                   else o
+                   for o in corr_outcomes]
         if not remainder:
             combined = ExecutionOutcome(
-                outcomes=prior + [o for o in corr_outcomes
-                                  if o.taskId != task_id],
+                outcomes=prior + list(aliased),
                 stopped=False, stop_reason="")
             return self._synthesize(session, plan, combined)
         rem_plan = TaskPlan(
@@ -821,9 +858,7 @@ class CentralAgent:
                 evidence=bundle, failureReason=None,
                 runId=rem_outcome.run_id)
         combined = ExecutionOutcome(
-            outcomes=(prior
-                      + [o for o in corr_outcomes if o.taskId != task_id]
-                      + list(rem_outcome.outcomes)),
+            outcomes=(prior + list(aliased) + list(rem_outcome.outcomes)),
             stopped=rem_outcome.stopped,
             stop_reason=rem_outcome.stop_reason,
             approval_id=rem_outcome.approval_id,
@@ -910,9 +945,16 @@ class CentralAgent:
                 entry["approvalId"] = approval_id
             self.sessions.save(session)
 
+        # Phase J: the resumed round rebuilds the settled record of
+        # already-verified tasks from the persisted snapshot — the
+        # combined synthesis must see the whole run, not just the leg.
+        restored = self._snapshot_outcomes(
+            prior,
+            [t.id for t in orig_plan.tasks
+             if t.id != str(entry.get("taskId") or "")])
         return self._settle_corrective_outcome(
             session, plan=orig_plan,
-            prior_outcomes=[],
+            prior_outcomes=restored,
             prior_run_id=last.runId,
             snapshot=prior,
             task_id=str(entry.get("taskId") or ""),
@@ -1059,15 +1101,10 @@ class CentralAgent:
                                  performed=[o.taskId for o in outcome.outcomes if o.performed],
                                  evidence=bundle, failureReason=outcome.stop_reason)
         else:
-            result = AgentResult(
-                status="completed" if report.passed else "verifying",
-                outcome="completed",
-                summary=(f"Resumed and completed. "
-                         f"Evidence: {len(bundle.auditRecordIds)} audit record(s)."),
-                performed=[o.taskId for o in outcome.outcomes if o.performed],
-                verified=[o.taskId for o in report.outcomes if o.verified is True],
-                evidence=bundle,
-            )
+            # Phase J coherence: resumed completion synthesizes through
+            # the ONE record-grounded path (objective acceptance included),
+            # never a second hand-rolled vocabulary.
+            result = self._synthesize(session, plan, outcome)
         self._emit("result.ready", session.sessionId, resumed=True,
                    passed=result.outcome == "completed")
         self.sessions.finish(session, result)
