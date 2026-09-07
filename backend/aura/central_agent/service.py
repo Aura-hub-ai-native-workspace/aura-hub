@@ -17,6 +17,8 @@ from ..contracts import (
     AgentIntent,
     AgentResult,
     AgentSession,
+    TaskPlan,
+    TaskSpecification,
 )
 from ..fabric import FabricConfig
 from ..fabric.manifest import all_capabilities
@@ -29,8 +31,14 @@ from .events import EventBus
 from .evidence import EvidenceCollector
 from .execution import ExecutionController, ExecutionOutcome
 from .intent import IntentCompiler
-from .planner import PlanningError, TaskPlanner
+from .planner import PlanningError, TaskPlanner, topo_order
 from .session import AgentSessionStore
+from .supervisor import (
+    MAX_CORRECTION_ATTEMPTS,
+    CorrectionRecord,
+    build_correction,
+    decide_task,
+)
 from .verification import VerificationEngine
 from .workflow_compiler import CompilationError, WorkflowCompiler
 
@@ -292,10 +300,25 @@ class CentralAgent:
             return AgentResult(status="cancelled", outcome="cancelled",
                                summary=outcome.stop_reason)
         if outcome.stopped:
+            corrected = self._maybe_correct(session, plan, outcome)
+            if corrected is not None:
+                return corrected
             return self._fail(session, outcome.stop_reason,
                               outcomes=outcome.outcomes)
 
-        # 7. verify + 8. evidence + 9. result
+        # Deviations that did not stop the run (done-but-unverified) still
+        # go through the correction path before any success is reported.
+        if getattr(outcome, "deviation_evidence", None):
+            corrected = self._maybe_correct(session, plan, outcome)
+            if corrected is not None:
+                return corrected
+
+        return self._synthesize(session, plan, outcome)
+
+    def _synthesize(self, session: AgentSession, plan: TaskPlan,
+                    outcome: ExecutionOutcome) -> AgentResult:
+        """Steps 7-9: verify + evidence + result synthesis from records."""
+        sid = session.sessionId
         report = self.verifier.verify(plan, outcome.outcomes)
         self._emit("verification.completed", sid, passed=report.passed,
                    unverified=report.unverifiedActions)
@@ -334,6 +357,435 @@ class CentralAgent:
             verified=[o.taskId for o in report.outcomes if o.verified is True],
             evidence=bundle,
         )
+
+    # ── supervisor correction loop ─────────────────────────────────────
+    # Wires the supervisor decision library into the live agent path.
+    # Deviation evidence (filed by the execution controller) triggers at
+    # most one bounded correction round per call; every round re-enters
+    # the governed Fabric with a fresh approval. Nothing here spawns,
+    # plans, or decides authority — it only connects existing pieces.
+    def _chain_for(self, session: AgentSession,
+                   contract: str) -> list[dict]:
+        return [e for e in (session.correctionChain or [])
+                if isinstance(e, dict) and e.get("taskContractId") == contract]
+
+    def _maybe_correct(self, session: AgentSession, plan: TaskPlan,
+                       outcome: ExecutionOutcome,
+                       project_cwd: str | None = None,
+                       ) -> AgentResult | None:
+        """Handle one parked deviation, if any. Returns an AgentResult
+        when correction handling takes over, else None (existing paths
+        proceed unchanged)."""
+        sid = session.sessionId
+        deviation = getattr(outcome, "deviation_evidence", None) or {}
+        if not deviation:
+            return None
+        by_task = {t.id: t for t in plan.tasks}
+        target_id = next(
+            (t.id for t in topo_order(plan.tasks) if t.id in deviation),
+            None)
+        if target_id is None or target_id not in by_task:
+            return None
+        task = by_task[target_id]
+        ev = deviation[target_id]
+        verdict = decide_task(
+            "done",
+            {"taskId": task.id, "scopeDeviation": True,
+             "scopeCheck": {"outside": list(ev.get("outside") or []),
+                            "changed": list(ev.get("changed_paths") or [])}},
+            verified=False)
+        if not verdict.correctable:
+            return None
+        contract = f"{sid}:{task.id}"
+        attempt = len(self._chain_for(session, contract)) + 2
+        if attempt > 1 + MAX_CORRECTION_ATTEMPTS:
+            return self._correction_exhausted(
+                session, plan, outcome, contract, task, ev, verdict)
+        try:
+            built = build_correction(
+                task_contract_id=contract, task_id=task.id,
+                capability_id=task.capabilityId or "",
+                base_input=dict(task.input or {}),
+                approved_scope=list((task.input or {}).get("scopePaths") or []),
+                deviation=verdict, attempt=attempt, extra_context="")
+        except ValueError:
+            return None  # defensive: fall through to existing handling
+        corr_id = f"{task.id}-correction-{attempt}"
+        corr_task = TaskSpecification(
+            id=corr_id,
+            description=(f"Correction attempt {attempt} for {task.id}: "
+                         f"{'; '.join(verdict.reasons)[:200]}"),
+            capabilityId=task.capabilityId,
+            input=built["input"],
+            dependsOn=[],
+            risk=task.risk,
+            reversible=task.reversible,
+            verification=task.verification,
+            route="single-invocation",
+        )
+        corr_plan = TaskPlan(
+            planId=f"{plan.planId}-correction-{attempt}",
+            sessionId=sid, intent=plan.intent, tasks=[corr_task],
+            createdAt=_now())
+        self._active_plans[corr_plan.planId] = corr_plan
+        self._emit("execution.started", sid, planId=corr_plan.planId,
+                   correctionFor=task.id, attempt=attempt)
+        corr_outcome = self.controller.execute(
+            corr_plan, session.projectId, project_cwd=project_cwd)
+        for o in corr_outcome.outcomes:
+            self._emit("invocation.observed", sid, taskId=o.taskId,
+                       state=o.state, verified=o.verified,
+                       detail=o.detail[:200])
+        return self._settle_correction(
+            session, plan, outcome, contract, task, ev, verdict,
+            attempt, corr_id, corr_plan, corr_outcome, project_cwd)
+
+    def _correction_exhausted(self, session: AgentSession, plan: TaskPlan,
+                              outcome: ExecutionOutcome, contract: str,
+                              task: Any, ev: dict,
+                              verdict: Any) -> AgentResult:
+        """Budget spent: record the refusal and fail for review."""
+        sid = session.sessionId
+        record = CorrectionRecord(
+            task_contract_id=contract, task_id=task.id,
+            worker_node_id=None, attempt=len(self._chain_for(session, contract)) + 2,
+            parent_attempt=None, verdict="budget-exhausted",
+            reasons=[f"correction budget exhausted ({MAX_CORRECTION_ATTEMPTS} "
+                     "corrections used); parked for review."],
+            evidence={"invocationIds": list(ev.get("invocation_ids") or []),
+                      "outside": list(ev.get("outside") or [])})
+        session.correctionChain.append(record.to_dict())
+        self.sessions.save(session)
+        self._emit("agent.failed", sid, reason="correction-budget-exhausted")
+        bundle = self.evidence.collect(
+            sid, plan.planId, outcome.outcomes,
+            "Correction budget exhausted; all evidence preserved for review.",
+            _now())
+        return AgentResult(
+            status="failed", outcome="failed",
+            summary=("Correction budget exhausted after "
+                     f"{MAX_CORRECTION_ATTEMPTS} attempts. Original deviation "
+                     f"preserved with evidence; nothing was reverted."),
+            performed=[o.taskId for o in outcome.outcomes if o.performed],
+            verified=[o.taskId for o in outcome.outcomes
+                      if o.verified is True],
+            evidence=bundle,
+            failureReason="correction-budget-exhausted")
+
+    def _persist_correction(self, session: AgentSession, *,
+                              contract: str, task_id: str,
+                              worker_node_id: str | None, attempt: int,
+                              parent_attempt: int | None, verdict: str,
+                              reasons: list, evidence: dict,
+                              status: str, approval_id: str | None,
+                              corrective_plan: dict | None,
+                              verified_snapshot: dict,
+                              plan_snapshot: dict | None) -> None:
+        """Append one chain entry and persist the session. The single
+        writer for correction history — both fresh and resumed rounds."""
+        session.correctionChain.append(CorrectionRecord(
+            task_contract_id=contract, task_id=task_id,
+            worker_node_id=worker_node_id, attempt=attempt,
+            parent_attempt=parent_attempt, verdict=verdict,
+            reasons=list(reasons or []),
+            evidence=dict(evidence or {}),
+            corrective_input=None,
+            status=status, approval_id=approval_id,
+            corrective_plan=corrective_plan,
+            verified_snapshot=verified_snapshot,
+            plan_snapshot=plan_snapshot).to_dict())
+        self.sessions.save(session)
+
+    def _settle_correction(self, session: AgentSession, plan: TaskPlan,
+                           outcome: ExecutionOutcome, contract: str,
+                           task: Any, ev: dict, verdict: Any,
+                           attempt: int, corr_id: str, corr_plan: TaskPlan,
+                           corr_outcome: ExecutionOutcome,
+                           project_cwd: str | None) -> AgentResult:
+        """Settle one corrective leg from a fresh (_run) dispatch."""
+        snapshot = {tid: dict(rec) for tid, rec in
+                    outcome.verified_outputs.items()}
+
+        def _persist(status: str, approval_id: str | None,
+                     plan_snapshot: dict | None = None) -> None:
+            self._persist_correction(
+                session, contract=contract, task_id=task.id,
+                worker_node_id=None, attempt=attempt,
+                parent_attempt=(attempt - 1) if attempt > 1 else None,
+                verdict=(verdict.status if hasattr(verdict, "status")
+                         else str(verdict)),
+                reasons=list(getattr(verdict, "reasons", []) or []),
+                evidence={"invocationIds": list(ev.get("invocation_ids") or []),
+                          "approvalIds": list(ev.get("approval_ids") or []),
+                          "outside": list(ev.get("outside") or [])},
+                status=status, approval_id=approval_id,
+                corrective_plan=corr_plan.model_dump(),
+                verified_snapshot=snapshot,
+                plan_snapshot=(plan_snapshot if plan_snapshot is not None
+                               else plan.model_dump()))
+
+        return self._settle_corrective_outcome(
+            session, plan=plan,
+            prior_outcomes=list(outcome.outcomes),
+            prior_run_id=outcome.run_id,
+            snapshot=snapshot, task_id=task.id,
+            attempt=attempt, corr_id=corr_id, corr_plan=corr_plan,
+            corr_outcome=corr_outcome, project_cwd=project_cwd,
+            persist=_persist)
+
+    def _settle_corrective_outcome(
+            self, session: AgentSession, *, plan: TaskPlan,
+            prior_outcomes: list, prior_run_id: str | None,
+            snapshot: dict, task_id: str,
+            attempt: int, corr_id: str,
+            corr_plan: TaskPlan, corr_outcome: ExecutionOutcome,
+            project_cwd: str | None,
+            persist) -> AgentResult:
+        """Shared settlement for one corrective leg, fresh or resumed.
+
+        `persist(status, approval_id)` records the chain entry; callers
+        supply it so fresh dispatches append while resumed rounds update
+        in place. Every branch preserves evidence and never auto-retries.
+        """
+        sid = session.sessionId
+
+        if corr_outcome.approval_id:
+            persist("parked", corr_outcome.approval_id)
+            report = self.verifier.verify(corr_plan, corr_outcome.outcomes)
+            bundle = self.evidence.collect(
+                sid, corr_plan.planId, corr_outcome.outcomes,
+                "Correction dispatched; awaiting human approval.", _now())
+            self._emit("approval.required", sid,
+                       approvalId=corr_outcome.approval_id)
+            return AgentResult(
+                status="awaiting-approval", outcome="awaiting-approval",
+                summary=("Correction ready but parked: a human must decide "
+                         f"{corr_outcome.approval_id}. Nothing unauthorized "
+                         "has run."),
+                performed=[o.taskId for o in corr_outcome.outcomes
+                           if o.performed],
+                evidence=bundle, failureReason=None,
+                runId=corr_outcome.run_id)
+
+        if corr_outcome.denied:
+            persist("failed", None)
+            bundle = self.evidence.collect(
+                sid, corr_plan.planId, corr_outcome.outcomes,
+                f"Correction denied: {corr_outcome.stop_reason}", _now())
+            self._emit("agent.failed", sid, reason="correction denied",
+                       denied=True)
+            return AgentResult(
+                status="failed", outcome="denied",
+                summary=("Correction denied: "
+                         f"{corr_outcome.stop_reason}"),
+                performed=[o.taskId for o in corr_outcome.outcomes
+                           if o.performed],
+                evidence=bundle, failureReason="correction-denied")
+
+        if corr_outcome.timed_out:
+            persist("failed", None)
+            bundle = self.evidence.collect(
+                sid, corr_plan.planId, corr_outcome.outcomes,
+                "Correction timed out.", _now())
+            self._emit("agent.failed", sid, reason="correction timeout")
+            return AgentResult(
+                status="failed", outcome="timeout",
+                summary=("Correction timed out: "
+                         f"{corr_outcome.stop_reason}"),
+                performed=[o.taskId for o in corr_outcome.outcomes
+                           if o.performed],
+                evidence=bundle, failureReason="correction-timeout")
+
+        if corr_outcome.cancelled:
+            persist("failed", None)
+            return AgentResult(status="cancelled", outcome="cancelled",
+                               summary=corr_outcome.stop_reason)
+
+        if corr_outcome.stopped:
+            # The corrective leg itself deviated or failed: extend the
+            # chain and stop here. A later approval round may correct
+            # again while budget remains; this call never loops.
+            persist("parked", corr_outcome.approval_id)
+            return self._fail(
+                session,
+                f"Correction attempt {attempt} did not verify: "
+                f"{corr_outcome.stop_reason}. Evidence preserved; "
+                "a further correction may be requested while budget remains.",
+                outcomes=corr_outcome.outcomes)
+
+        # Corrective leg verified: alias its evidence under the original
+        # task id so dependents resolve, then continue the remainder.
+        corr_ev = dict(corr_outcome.verified_outputs.get(corr_id) or {})
+        merged = dict(snapshot)
+        if corr_ev:
+            merged[task_id] = corr_ev
+            merged[corr_id] = corr_ev
+        persist("resolved", None)
+        return self._continue_after_correction(
+            session, plan, prior_outcomes, prior_run_id, task_id,
+            merged, project_cwd,
+            list(corr_outcome.outcomes))
+
+    def _continue_after_correction(
+            self, session: AgentSession, plan: TaskPlan,
+            prior_outcomes: list, prior_run_id: str | None, task_id: str,
+            merged_verified: dict[str, dict],
+            project_cwd: str | None,
+            corr_outcomes: list) -> AgentResult:
+        """Run the still-unverified remainder, then synthesize combined.
+
+        `corr_outcomes` are this round's corrective-leg outcomes, passed
+        explicitly (never cached on self: restart reconstruction reads
+        them from the persisted chain + audit instead). Prior outcomes
+        and run id arrive as plain data so resumed rounds — which have no
+        live original outcome — can share this exact path.
+        """
+        sid = session.sessionId
+        order = [t.id for t in topo_order(plan.tasks)]
+        try:
+            pos = order.index(task_id)
+        except ValueError:
+            pos = -1
+        remainder = [t for t in topo_order(plan.tasks)
+                     if order.index(t.id) > pos
+                     and t.id not in merged_verified]
+        prior = [o for o in prior_outcomes if o.taskId != task_id]
+        if not remainder:
+            combined = ExecutionOutcome(
+                outcomes=prior + [o for o in corr_outcomes
+                                  if o.taskId != task_id],
+                stopped=False, stop_reason="")
+            return self._synthesize(session, plan, combined)
+        rem_plan = TaskPlan(
+            planId=f"{plan.planId}-continue", sessionId=sid,
+            intent=plan.intent, tasks=remainder, createdAt=_now())
+        self._active_plans[rem_plan.planId] = rem_plan
+        self._emit("execution.started", sid, planId=rem_plan.planId,
+                   continuedFrom=task_id)
+        rem_outcome = self.controller.execute(
+            rem_plan, session.projectId, project_cwd=project_cwd,
+            prior_verified=dict(merged_verified))
+        for o in rem_outcome.outcomes:
+            self._emit("invocation.observed", sid, taskId=o.taskId,
+                       state=o.state, verified=o.verified,
+                       detail=o.detail[:200])
+        if rem_outcome.approval_id:
+            bundle = self.evidence.collect(
+                sid, rem_plan.planId,
+                prior + [o for o in corr_outcomes if o.taskId != task_id]
+                + list(rem_outcome.outcomes),
+                "Continued run parked awaiting human approval.", _now())
+            self._emit("approval.required", sid,
+                       approvalId=rem_outcome.approval_id)
+            return AgentResult(
+                status="awaiting-approval", outcome="awaiting-approval",
+                summary=("Continued run parked: a human must decide "
+                         f"{rem_outcome.approval_id}. Nothing unauthorized "
+                         "has run."),
+                performed=[o.taskId for o in rem_outcome.outcomes
+                           if o.performed],
+                evidence=bundle, failureReason=None,
+                runId=rem_outcome.run_id)
+        combined = ExecutionOutcome(
+            outcomes=(prior
+                      + [o for o in corr_outcomes if o.taskId != task_id]
+                      + list(rem_outcome.outcomes)),
+            stopped=rem_outcome.stopped,
+            stop_reason=rem_outcome.stop_reason,
+            approval_id=rem_outcome.approval_id,
+            cancelled=rem_outcome.cancelled,
+            timed_out=rem_outcome.timed_out,
+            denied=rem_outcome.denied,
+            run_id=rem_outcome.run_id or prior_run_id)
+        # Terminal remainder states flow into the same honest synthesis:
+        # denied/timeout/cancelled outcomes shape the summary exactly as
+        # they would in a fresh run, over the combined record.
+        return self._synthesize(session, plan, combined)
+
+    def _pending_correction(self, session: AgentSession,
+                            approval_ids: list[str]) -> dict | None:
+        """Latest parked chain entry whose approval is now decided."""
+        approved = set(approval_ids or [])
+        for entry in reversed(session.correctionChain or []):
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("status") != "parked":
+                continue
+            if entry.get("approvalId") and entry["approvalId"] in approved:
+                return entry
+        return None
+
+    def _fail_correction_entries(self, session: AgentSession,
+                                 approval_id: str) -> None:
+        """Mark parked chain entries for a denied approval as failed.
+
+        A denial ends that correction round: no retry, no re-dispatch.
+        Later submits start new rounds subject to the same budget.
+        """
+        touched = False
+        for entry in session.correctionChain or []:
+            if (isinstance(entry, dict)
+                    and entry.get("status") == "parked"
+                    and entry.get("approvalId") == approval_id):
+                entry["status"] = "failed"
+                touched = True
+        if touched:
+            self.sessions.save(session)
+
+    def _resume_correction(self, session: AgentSession, entry: dict,
+                           last: AgentResult) -> AgentResult:
+        """Continue a parked correction whose approval was just decided.
+
+        Rebuilds the STORED corrective plan (never re-plans from intent),
+        executes it with the decided grant plus the entry's verified
+        snapshot, then settles through the shared corrective path
+        (park again / mirror terminal / verify + continue remainder).
+        Grants were already validated spendable by resume().
+        """
+        sid = session.sessionId
+        project_cwd = getattr(session, "projectPath", None)
+        try:
+            corr_plan = TaskPlan.model_validate(entry.get("correctivePlan"))
+            orig_plan = TaskPlan.model_validate(entry.get("planSnapshot"))
+        except Exception as exc:
+            raise ValueError(
+                "parked correction lacks a usable plan snapshot; "
+                "cannot resume safely") from exc
+        if len(corr_plan.tasks) != 1:
+            raise ValueError(
+                "parked correction plan is malformed; cannot resume safely")
+        corr_id = corr_plan.tasks[0].id
+        apr = entry.get("approvalId")
+        task_grants = {corr_id: (apr, last.runId)} if apr else {}
+        prior = dict(entry.get("verifiedSnapshot") or {})
+        self._emit("execution.started", sid, planId=corr_plan.planId,
+                   resumed=True, correctionFor=entry.get("taskId"),
+                   attempt=entry.get("attempt"))
+        self._active_plans[corr_plan.planId] = corr_plan
+        outcome = self.controller.execute(
+            corr_plan, session.projectId, resume_grants=task_grants,
+            project_cwd=project_cwd, prior_verified=prior)
+        for o in outcome.outcomes:
+            self._emit("invocation.observed", sid, taskId=o.taskId,
+                       state=o.state, verified=o.verified,
+                       detail=o.detail[:200])
+
+        def _update(status: str, approval_id: str | None) -> None:
+            entry["status"] = status
+            if approval_id:
+                entry["approvalId"] = approval_id
+            self.sessions.save(session)
+
+        return self._settle_corrective_outcome(
+            session, plan=orig_plan,
+            prior_outcomes=[],
+            prior_run_id=last.runId,
+            snapshot=prior,
+            task_id=str(entry.get("taskId") or ""),
+            attempt=int(entry.get("attempt") or 2),
+            corr_id=corr_id, corr_plan=corr_plan,
+            corr_outcome=outcome, project_cwd=project_cwd,
+            persist=_update)
 
     def _fail(self, session: AgentSession, reason: str,
               outcomes=None) -> AgentResult:
@@ -396,6 +848,7 @@ class CentralAgent:
         for apr in approval_ids:
             request = ledger.by_id(apr) if ledger else None
             if request and request.get("state") == "denied":
+                self._fail_correction_entries(session, apr)
                 result = AgentResult(
                     status="failed", outcome="denied",
                     summary=(f"The human declined this request "
@@ -410,6 +863,12 @@ class CentralAgent:
                 raise PermissionError(
                     f"approval {apr} is not spendable; obtain a fresh decision")
             grants["_"] = apr  # task mapping resolved below
+        # A parked supervisor correction resumes from its persisted chain
+        # entry — never by re-planning from intent (which would discard
+        # the correction and re-run the deviated original).
+        pending = self._pending_correction(session, approval_ids)
+        if pending is not None:
+            return self._resume_correction(session, pending, last)
         plan = None
         # Rebuild the plan deterministically from the stored intent message.
         user_messages = [m.content for m in session.messages if m.role == "user"]

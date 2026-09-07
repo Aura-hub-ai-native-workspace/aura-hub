@@ -76,7 +76,15 @@ class RunVerdict:
 
 @dataclass
 class CorrectionRecord:
-    """One attributable correction step. Serializable for audit/persistence."""
+    """One attributable correction step. Serializable for audit/persistence.
+
+    Lifecycle: status "parked" while its corrective invocation awaits (or
+    needs) a decision; "resolved" once the corrective leg verifies;
+    "failed" when it ends without verification (denial, timeout, fresh
+    deviation handed to the next attempt, budget exhaustion). The
+    correctivePlan dump plus verifiedSnapshot let a later resume continue
+    the SAME correction instead of re-planning from intent.
+    """
 
     task_contract_id: str
     task_id: str
@@ -88,6 +96,13 @@ class CorrectionRecord:
     evidence: dict[str, Any] = field(default_factory=dict)
     corrective_input: dict[str, Any] | None = None
     created_at: str = field(default_factory=_now)
+    status: str = "parked"
+    approval_id: str | None = None
+    corrective_plan: dict[str, Any] | None = None
+    verified_snapshot: dict[str, dict[str, Any]] = field(default_factory=dict)
+    plan_snapshot: dict[str, Any] | None = None
+    """Original plan dump, so a later resume can compute the remainder
+    (downstream tasks) without re-planning from intent."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -102,6 +117,14 @@ class CorrectionRecord:
             "correctiveInput": (dict(self.corrective_input)
                                 if self.corrective_input is not None else None),
             "createdAt": self.created_at,
+            "status": self.status,
+            "approvalId": self.approval_id,
+            "correctivePlan": (dict(self.corrective_plan)
+                               if self.corrective_plan is not None else None),
+            "verifiedSnapshot": {k: dict(v)
+                                 for k, v in self.verified_snapshot.items()},
+            "planSnapshot": (dict(self.plan_snapshot)
+                             if self.plan_snapshot is not None else None),
         }
 
     @staticmethod
@@ -118,6 +141,14 @@ class CorrectionRecord:
             corrective_input=(dict(raw["correctiveInput"])
                               if raw.get("correctiveInput") is not None else None),
             created_at=str(raw.get("createdAt", "")),
+            status=str(raw.get("status", "parked")),
+            approval_id=raw.get("approvalId"),
+            corrective_plan=(dict(raw["correctivePlan"])
+                             if raw.get("correctivePlan") is not None else None),
+            verified_snapshot={k: dict(v) for k, v in
+                               (raw.get("verifiedSnapshot") or {}).items()},
+            plan_snapshot=(dict(raw["planSnapshot"])
+                           if raw.get("planSnapshot") is not None else None),
         )
 
 
@@ -158,6 +189,19 @@ def decide_task(outcome_state: str, evidence: dict[str, Any] | None,
     """
     evidence = dict(evidence or {})
     task_id = str(evidence.get("taskId") or "")
+
+    # Scope-deviation evidence dominates the outcome string: a worker that
+    # exited non-zero yet provably left files outside its scope is a
+    # deviation first (park + correct), not a generic failure. The exit
+    # code stays in the evidence either way.
+    if evidence.get("scopeDeviation"):
+        outside = ((evidence.get("scopeCheck") or {}).get("outside")) or []
+        shown = ", ".join(outside[:5])
+        return TaskVerdict(
+            task_id, TASK_PARKED_DEVIATION, True,
+            [f"worker files fell outside the declared scope: {shown}.",
+             "Changes preserved as evidence; nothing reverted."],
+            evidence)
 
     if outcome_state == "denied":
         return TaskVerdict(task_id, TASK_DENIED, False,

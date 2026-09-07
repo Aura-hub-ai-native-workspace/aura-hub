@@ -287,6 +287,12 @@ class AgentSession(ContractModel):
     activePlanId: str | None = None
     lastResult: AgentResult | None = None
     eventCount: int = 0
+    correctionChain: list[dict] = Field(default_factory=list)
+    """Supervisor correction history: one entry per correction dispatch
+    (CorrectionRecord dicts). Append-only. Lets a later resume continue a
+    parked correction instead of re-planning from intent, and lets any
+    reader reconstruct original → correction → verified without touching
+    the audit trail (which stays the immutable record)."""
 
 
 # ── events ───────────────────────────────────────────────────────────────────

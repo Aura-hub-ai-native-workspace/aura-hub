@@ -38,6 +38,12 @@ class ExecutionOutcome:
     # "upstream-output" resolution. Populated ONLY from done outcomes
     # whose verification passed; never from failed/parked/unverified work.
     verified_outputs: dict[str, dict] = field(default_factory=dict)
+    # Deviation evidence, keyed by task id, for the supervisor correction
+    # loop. Filed whenever an outcome carries scopeDeviation in its
+    # executor output, regardless of terminal state — the service layer
+    # needs it to decide, build, and re-dispatch corrections. Same shape
+    # as verified evidence, plus the "outside" list naming the deviation.
+    deviation_evidence: dict[str, dict] = field(default_factory=dict)
 
 
 class ExecutionController:
@@ -351,10 +357,28 @@ class ExecutionController:
             return  # defensive: only annotate this task's own outcome
         if handoff_consumed:
             outcome.consumedFrom = list(handoff_consumed)
+        output = output or {}
+        scope_check = output.get("scopeCheck") or {}
+        if output.get("scopeDeviation"):
+            # Deviation evidence is filed even though (especially because)
+            # the outcome did not verify: this is what the supervisor
+            # correction loop reads. Same shape as verified evidence, plus
+            # the outside list that names the deviation.
+            result.deviation_evidence[task.id] = {
+                "task_id": task.id,
+                "node_id": str(output.get("nodeId") or ""),
+                "agent": str(output.get("agent") or ""),
+                "stdout": str(output.get("stdout") or ""),
+                "scope_paths": list(output.get("scopePaths") or []),
+                "changed_paths": list(scope_check.get("changed") or []),
+                "outside": list(scope_check.get("outside") or []),
+                "invocation_ids": list(outcome.invocationIds),
+                "approval_ids": ([outcome.approvalId] if outcome.approvalId
+                                 else []),
+            }
         if outcome.state != "done" or outcome.verified is not True:
             return
-        output = output or {}
-        scope = output.get("scopeCheck") or {}
+        scope = (output or {}).get("scopeCheck") or {}
         result.verified_outputs[task.id] = {
             "task_id": task.id,
             "node_id": str(output.get("nodeId") or ""),
