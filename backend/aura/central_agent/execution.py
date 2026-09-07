@@ -149,6 +149,43 @@ class ExecutionController:
                 break
         return result
 
+    # ── Phase G worker requirement matching ────────────────────────────
+    def _present_nodes(self) -> list[dict]:
+        try:
+            host = getattr(getattr(self._cfg, "fabric", None), "host", None)
+            present = getattr(host, "present_nodes", None)
+            nodes = present() if callable(present) else []
+            return [n for n in nodes if isinstance(n, dict)]
+        except Exception:
+            return []
+
+    def _role_usable(self, capability_id: str):
+        """Executor usability check, mirroring the Fabric invoke path:
+        the routing executor's supportsNode, or None (match on role
+        provision only; dispatch still enforces usability)."""
+        try:
+            exe = (getattr(self._cfg, "executors", None) or {}).get(
+                capability_id)
+            fn = getattr(exe, "supportsNode", None)
+            return fn if callable(fn) else None
+        except Exception:
+            return None
+
+    def _match_role(self, task: Any, role: str,
+                    pinned_id: str | None) -> str | None:
+        from .worker_match import match_worker, node_satisfies_role
+
+        nodes = self._present_nodes()
+        if pinned_id:
+            pinned = next((n for n in nodes if n.get("id") == pinned_id),
+                          None)
+            if pinned is None or not node_satisfies_role(pinned, role):
+                return None
+            return pinned_id
+        usable = self._role_usable(task.capabilityId)
+        node = match_worker(role, nodes, usable)
+        return node.get("id") if node else None
+
     # ── governed handoff ───────────────────────────────────────────────
     def _gate_handoff(self, task: Any, result: ExecutionOutcome,
                       ) -> TaskOutcome | None:
@@ -281,6 +318,22 @@ class ExecutionController:
         node_id = getattr(task, "nodeId", None)
         if node_id:
             context["nodeId"] = node_id
+        # Phase G requirement matching: "a worker suitable for this
+        # task". A stated role resolves to an eligible node BEFORE
+        # dispatch and travels the same explicit-nodeId path (routing
+        # re-validates, including usability). No eligible worker fails
+        # the task closed — never a silent unsuitable dispatch.
+        role = getattr(task, "workerRole", None)
+        if role:
+            matched = self._match_role(task, role, node_id)
+            if matched is None:
+                result.outcomes.append(TaskOutcome(
+                    taskId=task.id, state="failed", performed=False,
+                    detail=(f"no connected worker satisfies role "
+                            f"'{role}' for this task; refusing rather "
+                            "than dispatching an unsuitable worker.")))
+                return
+            context["nodeId"] = matched
         if project_cwd:
             context["cwd"] = project_cwd
         if approval_id:

@@ -31,8 +31,12 @@ _DELEGATE_INPUT_KEYS = {"task", "model", "context", "scopePaths"}
 _MODEL_TASK_KEYS = {
     "id", "description", "capabilityId", "nodeId", "dependsOn",
     "inputFrom", "input", "scopePaths", "verificationKind",
-    "verification", "risk",
+    "verification", "risk", "workerRole",
 }
+
+#: Closed worker-role vocabulary a model may propose (Phase G).
+#: Anything else is rejected; the role only narrows routing.
+_MODEL_WORKER_ROLES = {"code", "review", "execute"}
 
 #: inputFrom values a model may propose. "compiled-workflow" is
 #: compiler-owned and never model-proposable.
@@ -284,6 +288,11 @@ class TaskPlanner:
                 node = rt.get("nodeId")
                 if node is not None:
                     self._check_node(node, label)
+                role = rt.get("workerRole")
+                if role is not None and role not in _MODEL_WORKER_ROLES:
+                    raise PlanningError(
+                        f"task {label} proposes unknown worker role "
+                        f"'{role}'")
                 staged.append({"index": i, "label": label, "raw": rt,
                                "cap": cap, "from": from_})
             # Pass 2 — dependency resolution to positional form.
@@ -357,6 +366,7 @@ class TaskPlanner:
                     inputFrom=s["from"],  # type: ignore[arg-value]
                     dependsOn=dep_ids,
                     nodeId=rt.get("nodeId"),
+                    workerRole=rt.get("workerRole"),
                     risk=risk,  # type: ignore[arg-value]
                     verification=VerificationRequirement(
                         kind=ver_kind,  # type: ignore[arg-value]

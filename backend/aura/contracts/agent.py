@@ -34,6 +34,9 @@ ExecutionRoute = Literal["single-invocation", "workflow-run", "external-tool"]
 VerificationKind = Literal["read-back", "exit-code", "schema-match", "audit-only"]
 ToolSource = Literal["aura-manifest", "mcp", "plugin"]
 TrustLevel = Literal["verified", "known", "unknown", "untrusted"]
+#: Closed worker-role vocabulary for task requirements (Phase G).
+#: Advisory for routing only — Fabric/policy/allow-list stay authoritative.
+WorkerRole = Literal["code", "review", "execute"]
 
 # Mirrors the RunEvent-adjacent observability surface (mission §21).
 AgentEventType = Literal[
@@ -115,6 +118,11 @@ class TaskSpecification(ContractModel):
     re-validates it at preflight AND dispatch (unknown/unusable nodes
     deny, never substitute). None means deterministic routing."""
     nodeId: str | None = None
+    """Task worker requirement (Phase G): the selected worker must
+    satisfy this role. None keeps existing first-usable routing. A stated
+    role never widens authority — an unsatisfiable role fails the task
+    closed before anything dispatches."""
+    workerRole: WorkerRole | None = None
     risk: RiskLevel = "low"
     reversible: bool = True
     verification: VerificationRequirement = Field(default_factory=VerificationRequirement)

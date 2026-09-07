@@ -63,7 +63,7 @@ def _connected_node_ids(fabric_cfg) -> set[str]:
 
 _PLAN_PROPOSAL_SYSTEM = """You are AURA's task planner. Propose ONLY a JSON object shaped {"tasks": [...]} — a proposal, never authority. AURA validates everything and owns task identity, ordering, workers, and approval.
 One task: {"id": "short-label (optional)", "description": "what must be done", "capabilityId": "one of ALLOWED CAPABILITIES", "nodeId": "one of CONNECTED NODES, or omit for AURA routing", "dependsOn": ["labels of prerequisite tasks"], "inputFrom": "literal" (default) or "upstream-output", "input": {"task": "plain-language brief (agent tasks)"}, "scopePaths": ["repo-relative dirs, same or narrower downstream"], "verificationKind": "read-back" | "exit-code" | "schema-match" | "audit-only", "verification": "how success is confirmed (required for agent tasks)"}.
-Agent work uses capabilityId "agent.delegate". A task with inputFrom "upstream-output" MUST name dependsOn and receives verified upstream evidence as data. Rules, no exceptions: no shell commands, no binaries, no approval/policy/secret/credential fields, no absolute or escaping paths, no invented capabilities or nodes."""
+Agent work uses capabilityId "agent.delegate". A task may state "workerRole": "code" | "review" | "execute" to require a suitable worker (omit for default routing). A task with inputFrom "upstream-output" MUST name dependsOn and receives verified upstream evidence as data. Rules, no exceptions: no shell commands, no binaries, no approval/policy/secret/credential fields, no absolute or escaping paths, no invented capabilities or nodes."""
 
 
 def _engine_config(bus) -> Any:
