@@ -276,6 +276,11 @@ class ExecutionController:
             "projectId": project_id,
             "taskId": task.id,
         }
+        # AURA-validated worker pin (planner-checked, routing-enforced):
+        # the requested node is never substituted, only denied.
+        node_id = getattr(task, "nodeId", None)
+        if node_id:
+            context["nodeId"] = node_id
         if project_cwd:
             context["cwd"] = project_cwd
         if approval_id:

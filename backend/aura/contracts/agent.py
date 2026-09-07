@@ -110,6 +110,11 @@ class TaskSpecification(ContractModel):
     capabilities, cwd, or any other input field."""
     inputFrom: Literal["literal", "compiled-workflow", "upstream-output"] = "literal"
     dependsOn: list[str] = Field(default_factory=list)
+    """AURA-validated worker pin. Never model-authoritative: the planner
+    checks it against the connected-node catalogue, and Fabric routing
+    re-validates it at preflight AND dispatch (unknown/unusable nodes
+    deny, never substitute). None means deterministic routing."""
+    nodeId: str | None = None
     risk: RiskLevel = "low"
     reversible: bool = True
     verification: VerificationRequirement = Field(default_factory=VerificationRequirement)

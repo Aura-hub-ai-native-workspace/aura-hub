@@ -47,6 +47,25 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _connected_node_ids(fabric_cfg) -> set[str]:
+    """Connected-node ids for worker-pin validation. Best-effort READ of
+    the one node catalogue execution resolves against; any failure yields
+    the empty set, which only makes nodeId validation stricter."""
+    try:
+        host = getattr(getattr(fabric_cfg, "fabric", None), "host", None)
+        present = getattr(host, "present_nodes", None)
+        nodes = present() if callable(present) else []
+        return {str(n.get("id")) for n in nodes
+                if isinstance(n, dict) and n.get("id")}
+    except Exception:
+        return set()
+
+
+_PLAN_PROPOSAL_SYSTEM = """You are AURA's task planner. Propose ONLY a JSON object shaped {"tasks": [...]} — a proposal, never authority. AURA validates everything and owns task identity, ordering, workers, and approval.
+One task: {"id": "short-label (optional)", "description": "what must be done", "capabilityId": "one of ALLOWED CAPABILITIES", "nodeId": "one of CONNECTED NODES, or omit for AURA routing", "dependsOn": ["labels of prerequisite tasks"], "inputFrom": "literal" (default) or "upstream-output", "input": {"task": "plain-language brief (agent tasks)"}, "scopePaths": ["repo-relative dirs, same or narrower downstream"], "verificationKind": "read-back" | "exit-code" | "schema-match" | "audit-only", "verification": "how success is confirmed (required for agent tasks)"}.
+Agent work uses capabilityId "agent.delegate". A task with inputFrom "upstream-output" MUST name dependsOn and receives verified upstream evidence as data. Rules, no exceptions: no shell commands, no binaries, no approval/policy/secret/credential fields, no absolute or escaping paths, no invented capabilities or nodes."""
+
+
 def _engine_config(bus) -> Any:
     from ..workflow import EngineConfig
 
@@ -107,7 +126,8 @@ class CentralAgent:
             self.planner = TaskPlanner(
                 workflow_resolver=self._resolve_workflow_ref,
                 known_capabilities=lambda: {
-                    c.id for c in all_capabilities()})
+                    c.id for c in all_capabilities()},
+                known_nodes=lambda: _connected_node_ids(self.fabric_cfg))
         self.discovery = discovery or CapabilityDiscovery()
         self.authority = AuthorityChecker(fabric_cfg)
         self.compiler = compiler or WorkflowCompiler()
@@ -210,8 +230,15 @@ class CentralAgent:
             )
         self._emit("intent.compiled", sid, goal=intent.goal, complexity=intent.complexity)
 
-        # 2. plan
-        plan = self.planner.plan(intent, sid, _now())
+        # 2. plan — deterministic templates first; a validated MODEL
+        # proposal only when no template matches. Without a model port
+        # this path raises exactly what plan() raised: current behavior
+        # is unchanged when model planning is unavailable.
+        try:
+            plan = self.planner.plan(intent, sid, _now())
+        except PlanningError as first_err:
+            plan = self._plan_from_model(intent, session, user_message,
+                                         bundle, first_err)
         session.pendingQuestion = None
         self._active_plans[plan.planId] = plan
         session.activePlanId = plan.planId
@@ -314,6 +341,47 @@ class CentralAgent:
                 return corrected
 
         return self._synthesize(session, plan, outcome)
+
+    def _plan_from_model(self, intent: AgentIntent, session: AgentSession,
+                         user_message: str, bundle: Any,
+                         first_err: PlanningError) -> TaskPlan:
+        """Phase F: model-proposed, AURA-owned planning.
+
+        The model proposes structure over the SAME ModelPort abstraction
+        used for intent (no second model API). The proposal is DATA until
+        TaskPlanner.plan_from_model validates it fail-closed; the
+        resulting TaskPlan then flows through the unchanged pipeline
+        (discovery → authority → approval → execution → supervision →
+        handoff → correction → verification). The model can never skip,
+        approve, or widen any layer.
+        """
+        compiler = self.intents
+        port = getattr(compiler, "model_port", None)
+        if getattr(compiler, "mode", "heuristic") != "model" or port is None:
+            raise first_err
+        caps = sorted(self.planner.known_capability_ids())
+        nodes = sorted(self.planner.known_node_ids())
+        system = (
+            _PLAN_PROPOSAL_SYSTEM
+            + f"\nALLOWED CAPABILITIES: {', '.join(caps) or '(none)'}"
+            + ("\nCONNECTED NODES: " + ", ".join(nodes)
+               if nodes else "\nCONNECTED NODES: none — omit nodeId.")
+        )
+        user = (f"INTENT GOAL:\n{intent.goal}\n\nEXPECTED OUTCOME:\n"
+                f"{intent.expectedOutcome}\n\nUSER REQUEST:\n{user_message}")
+        try:
+            raw = port.complete_json(system, user)
+        except Exception as exc:
+            raise PlanningError(
+                f"model planning failed: {exc}") from exc
+        if raw is None:
+            # Model silent: retain deterministic behavior exactly.
+            raise first_err
+        try:
+            return self.planner.plan_from_model(
+                intent, session.sessionId, _now(), raw)
+        except PlanningError as exc:
+            raise PlanningError(f"model plan rejected: {exc}") from exc
 
     def _synthesize(self, session: AgentSession, plan: TaskPlan,
                     outcome: ExecutionOutcome) -> AgentResult:
