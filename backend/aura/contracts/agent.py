@@ -314,6 +314,15 @@ class AgentSession(ContractModel):
     updatedAt: str
     messages: list[AgentMessage] = Field(default_factory=list)
     activePlanId: str | None = None
+    """The validated TaskPlan body (Phase I): persisted at plan time so a
+    restart resumes the SAME plan instead of re-deriving (or re-proposing)
+    it from intent. AURA-owned data, never model input at read time."""
+    activePlan: dict | None = None
+    """Bounded verified handoff evidence from the latest parked leg
+    (Phase I): task id → evidence record, seeded as prior_verified on
+    resume so verified work is skipped, never re-executed. Cleared when
+    the run reaches a terminal non-parked outcome."""
+    verifiedEvidence: dict[str, dict] = Field(default_factory=dict)
     lastResult: AgentResult | None = None
     eventCount: int = 0
     correctionChain: list[dict] = Field(default_factory=list)

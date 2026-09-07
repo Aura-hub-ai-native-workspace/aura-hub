@@ -201,6 +201,10 @@ class CentralAgent:
             result = self._fail(session, f"Unexpected failure: {exc}")
 
         self.sessions.finish(session, result)
+        # Phase I: parked legs keep their verified evidence for resume;
+        # terminal outcomes drop it (a later resume must not inherit it).
+        if result.outcome != "awaiting-approval":
+            session.verifiedEvidence = {}
         self.sessions.save(session)
         return result
 
@@ -239,6 +243,9 @@ class CentralAgent:
         except PlanningError as first_err:
             plan = self._plan_from_model(intent, session, user_message,
                                          bundle, first_err)
+        # Phase I: persist the validated plan body now — a restart
+        # resumes THIS plan, never a re-derivation.
+        session.activePlan = plan.model_dump()
         session.pendingQuestion = None
         self._active_plans[plan.planId] = plan
         session.activePlanId = plan.planId
@@ -294,6 +301,8 @@ class CentralAgent:
         if outcome.approval_id:
             report = self.verifier.verify(plan, outcome.outcomes)
             self._emit("verification.completed", sid, passed=report.passed)
+            # Phase I: verified work so far persists for the resumed leg.
+            self._stash_verified(session, outcome.verified_outputs)
             bundle = self.evidence.collect(sid, plan.planId, outcome.outcomes,
                                            "Awaiting human approval.", _now())
             self._emit("approval.required", sid, approvalId=outcome.approval_id)
@@ -382,6 +391,36 @@ class CentralAgent:
                 intent, session.sessionId, _now(), raw)
         except PlanningError as exc:
             raise PlanningError(f"model plan rejected: {exc}") from exc
+
+    # ── Phase I persisted recovery ───────────────────────────────────
+    # Verified handoff evidence and the validated plan body ride the
+    # session file (the EXISTING store — no new persistence). A restart
+    # restores both: verified tasks skip via prior_verified, unfinished
+    # work continues, in-flight process handles stay ephemeral (never
+    # persisted, never resumed).
+    @staticmethod
+    def _stash_verified(session: AgentSession,
+                        verified: dict[str, dict]) -> None:
+        from .handoff import MAX_ENVELOPE_CHARS
+
+        bounded: dict[str, dict] = {}
+        for tid, rec in (verified or {}).items():
+            if not isinstance(rec, dict):
+                continue
+            slim = dict(rec)
+            for key in ("stdout", "context"):
+                val = slim.get(key)
+                if isinstance(val, str) and len(val) > MAX_ENVELOPE_CHARS:
+                    slim[key] = (val[:MAX_ENVELOPE_CHARS]
+                                 + "\n[truncated by AURA for persistence]")
+            bounded[str(tid)] = slim
+        session.verifiedEvidence = bounded
+
+    @staticmethod
+    def _restored_verified(session: AgentSession) -> dict[str, dict]:
+        prior = getattr(session, "verifiedEvidence", None) or {}
+        return {str(tid): dict(rec) for tid, rec in prior.items()
+                if isinstance(rec, dict)}
 
     def _synthesize(self, session: AgentSession, plan: TaskPlan,
                     outcome: ExecutionOutcome) -> AgentResult:
@@ -761,6 +800,10 @@ class CentralAgent:
                        state=o.state, verified=o.verified,
                        detail=o.detail[:200])
         if rem_outcome.approval_id:
+            # Phase I: the continued leg's verified work persists too.
+            stashed = dict(merged_verified)
+            stashed.update(rem_outcome.verified_outputs)
+            self._stash_verified(session, stashed)
             bundle = self.evidence.collect(
                 sid, rem_plan.planId,
                 prior + [o for o in corr_outcomes if o.taskId != task_id]
@@ -960,21 +1003,35 @@ class CentralAgent:
         pending = self._pending_correction(session, approval_ids)
         if pending is not None:
             return self._resume_correction(session, pending, last)
+        # Phase I: prefer the persisted validated plan (same plan the
+        # parked leg ran — including model-proposed DAGs); rebuild from
+        # intent only for sessions parked before plan persistence.
         plan = None
-        # Rebuild the plan deterministically from the stored intent message.
-        user_messages = [m.content for m in session.messages if m.role == "user"]
-        if not user_messages:
-            raise ValueError("session has no intent to resume")
-        intent = self.intents.compile(user_messages[0])
-        plan = self.planner.plan(intent, session.sessionId, _now())
+        stored = getattr(session, "activePlan", None)
+        if stored:
+            try:
+                plan = TaskPlan.model_validate(stored)
+            except Exception:
+                plan = None
+        if plan is None:
+            user_messages = [m.content for m in session.messages
+                             if m.role == "user"]
+            if not user_messages:
+                raise ValueError("session has no intent to resume")
+            intent = self.intents.compile(user_messages[0])
+            plan = self.planner.plan(intent, session.sessionId, _now())
         task = plan.tasks[-1]  # parked task is the last planned one
         apr_id = next(iter(grants.values()), None)
         task_grants = {task.id: (apr_id, last.runId)} if apr_id else {}
         self._emit("execution.started", session.sessionId,
                    resumed=True, planId=plan.planId)
+        # Phase I: verified work from the parked leg is restored and
+        # skipped — never re-executed; downstream handoff resolves from
+        # the restored evidence.
         outcome = self.controller.execute(
             plan, session.projectId, resume_grants=task_grants,
-            project_cwd=getattr(session, "projectPath", None))
+            project_cwd=getattr(session, "projectPath", None),
+            prior_verified=self._restored_verified(session))
         for o in outcome.outcomes:
             self._emit("invocation.observed", session.sessionId,
                        taskId=o.taskId, state=o.state,
@@ -1014,6 +1071,8 @@ class CentralAgent:
         self._emit("result.ready", session.sessionId, resumed=True,
                    passed=result.outcome == "completed")
         self.sessions.finish(session, result)
+        if result.outcome != "awaiting-approval":
+            session.verifiedEvidence = {}
         self.sessions.save(session)
         return result
 
