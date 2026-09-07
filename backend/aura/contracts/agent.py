@@ -45,6 +45,7 @@ AgentEventType = Literal[
     "workflow.compiled", "workflow.validated", "execution.started",
     "invocation.observed", "approval.required", "verification.completed",
     "result.ready", "agent.failed", "agent.cancelled",
+    "worker.action",
 ]
 
 

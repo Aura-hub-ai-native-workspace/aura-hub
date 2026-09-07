@@ -44,6 +44,10 @@ class ExecutionOutcome:
     # needs it to decide, build, and re-dispatch corrections. Same shape
     # as verified evidence, plus the "outside" list naming the deviation.
     deviation_evidence: dict[str, dict] = field(default_factory=dict)
+    # Real-time governed worker actions, in observation order, for the
+    # service layer to emit on the event bus. Bounded at the source
+    # (executor caps memory; file log stays complete on disk).
+    governed_actions: list[dict] = field(default_factory=list)
 
 
 class ExecutionController:
@@ -413,6 +417,13 @@ class ExecutionController:
         outcome = result.outcomes[-1]
         if outcome.taskId != task.id:
             return  # defensive: only annotate this task's own outcome
+        output = output or {}
+        governed = output.get("governedActions") or {}
+        events = governed.get("events") or output.get("actionEvents")
+        if isinstance(events, list) and events:
+            for event in events[:500]:
+                if isinstance(event, dict):
+                    result.governed_actions.append(event)
         if handoff_consumed:
             outcome.consumedFrom = list(handoff_consumed)
         output = output or {}

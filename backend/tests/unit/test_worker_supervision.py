@@ -340,7 +340,7 @@ class TestAgentDelegateContract:
     def test_valid_scope_travels_in_output(self, monkeypatch, git_repo):
         import aura.executors as ex
 
-        async def fake_run(bin_name, args, cwd, timeout_ms=None):
+        async def fake_run(bin_name, args, cwd, timeout_ms=None, env=None):
             return FakeOut(out="done", code=0)
 
         monkeypatch.setattr(ex, "run_agent", fake_run)
@@ -354,7 +354,7 @@ class TestAgentDelegateContract:
     def test_scope_deviation_parks_never_succeeds(self, monkeypatch, git_repo):
         import aura.executors as ex
 
-        async def fake_run(bin_name, args, cwd, timeout_ms=None):
+        async def fake_run(bin_name, args, cwd, timeout_ms=None, env=None):
             with open(os.path.join(cwd, "rogue.py"), "w") as fh:
                 fh.write("x = 1\n")
             return FakeOut(out="done", code=0)
@@ -374,7 +374,7 @@ class TestAgentDelegateContract:
         # still pass — only B's own delta is judged.
         import aura.executors as ex
 
-        async def fake_run(bin_name, args, cwd, timeout_ms=None):
+        async def fake_run(bin_name, args, cwd, timeout_ms=None, env=None):
             with open(os.path.join(cwd, "leg-b.txt"), "w") as fh:
                 fh.write("b\n")
             return FakeOut(out="done", code=0)

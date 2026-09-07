@@ -326,8 +326,15 @@ class TestLiveCorrectionLoop:
             "scopeCheck": (out1.get("output") or {}).get("scopeCheck") or {},
         }, verified=None)
         assert v1.status == "parked-deviation"
-        # Nothing reverted by the parking decision.
-        assert os.path.exists(os.path.join(worker_repo, "offscope.txt"))
+        # Real-time governance denied the out-of-scope write BEFORE
+        # execution: the forbidden file was never created (stronger than
+        # the old post-hoc deviation, where it existed as evidence).
+        assert not os.path.exists(os.path.join(worker_repo, "offscope.txt"))
+        governed = (out1.get("output") or {}).get("governedActions") or {}
+        assert governed.get("governed") is True
+        denied = governed.get("denied") or []
+        assert denied, "the denied write must be recorded as evidence"
+        assert any("offscope.txt" in (d.get("target") or "") for d in denied)
 
         run1 = decide_run([("t1", "done", {
             "taskId": "t1", "scopeDeviation": True,

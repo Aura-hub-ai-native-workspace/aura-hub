@@ -294,6 +294,22 @@ class CentralAgent:
         for o in outcome.outcomes:
             self._emit("invocation.observed", sid, taskId=o.taskId,
                        state=o.state, verified=o.verified, detail=o.detail[:200])
+        # Real-time governed actions ride the existing bus (bounded:
+        # first 25 per run + a summary). No second streaming system.
+        for event in list(getattr(outcome, "governed_actions", None) or [])[:25]:
+            if isinstance(event, dict):
+                self._emit("worker.action", sid, **{
+                    k: event.get(k) for k in
+                    ("taskId", "workerNodeId", "invocationId",
+                     "attemptId", "sequence", "actionType", "tool",
+                     "target", "command", "decision", "reason")
+                })
+        if getattr(outcome, "governed_actions", None):
+            denied = sum(1 for e in outcome.governed_actions
+                         if isinstance(e, dict)
+                         and e.get("decision") == "DENY")
+            self._emit("worker.action", sid, summary=True,
+                       actions=len(outcome.governed_actions), denied=denied)
 
         if outcome.cancelled:
             return AgentResult(status="cancelled", outcome="cancelled",

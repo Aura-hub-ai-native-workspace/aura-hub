@@ -161,16 +161,22 @@ def _signal_tree(proc, which: str) -> None:
 
 
 async def run_file(argv: list[str], cwd: str, timeout_ms: int,
-                   cancel: asyncio.Event | None = None) -> ProcessOutput:
+                   cancel: asyncio.Event | None = None,
+                   env: dict[str, str] | None = None) -> ProcessOutput:
     """execFile-equivalent: argv array, bounded, stdin closed, truthful settle."""
     exe = argv[0]
     path = _which(exe)
     if path is None:
         raise RuntimeError(f"{exe} is not installed")   # ENOENT parity
+    merged_env = dict(os.environ)
+    if env:
+        for key, value in env.items():
+            if isinstance(key, str) and isinstance(value, str):
+                merged_env[key] = value
     proc = await asyncio.create_subprocess_exec(
         path, *argv[1:], cwd=cwd,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.DEVNULL, env=merged_env,
         # Its own session, so a build tool that forks workers can be stopped
         # as a group rather than leaving them running after a timeout.
         **({"start_new_session": True} if os.name != "nt" else {}),
@@ -235,11 +241,13 @@ async def safe_shell_with_code(command: str, cwd: str,
 
 
 async def run_agent(bin: str, args: list[str], cwd: str,
-                    timeout_ms: int | None = None) -> ProcessOutput:
+                    timeout_ms: int | None = None,
+                    env: dict[str, str] | None = None) -> ProcessOutput:
     resolved = resolve_agent_binary(bin)
     if not resolved.ok:
         raise RuntimeError(resolved.reason)
-    return await run_file([resolved.bin, *args], cwd, timeout_ms or AGENT_TIMEOUT_MS)
+    return await run_file([resolved.bin, *args], cwd,
+                          timeout_ms or AGENT_TIMEOUT_MS, env=env)
 
 
 # silence linters about intentional parity imports
