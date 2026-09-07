@@ -63,7 +63,7 @@ def _connected_node_ids(fabric_cfg) -> set[str]:
 
 _PLAN_PROPOSAL_SYSTEM = """You are AURA's task planner. Propose ONLY a JSON object shaped {"tasks": [...]} — a proposal, never authority. AURA validates everything and owns task identity, ordering, workers, and approval.
 One task: {"id": "short-label (optional)", "description": "what must be done", "capabilityId": "one of ALLOWED CAPABILITIES", "nodeId": "one of CONNECTED NODES, or omit for AURA routing", "dependsOn": ["labels of prerequisite tasks"], "inputFrom": "literal" (default) or "upstream-output", "input": {"task": "plain-language brief (agent tasks)"}, "scopePaths": ["repo-relative dirs, same or narrower downstream"], "verificationKind": "read-back" | "exit-code" | "schema-match" | "audit-only", "verification": "how success is confirmed (required for agent tasks)"}.
-Agent work uses capabilityId "agent.delegate". A task may state "workerRole": "code" | "review" | "execute" to require a suitable worker (omit for default routing). A task with inputFrom "upstream-output" MUST name dependsOn and receives verified upstream evidence as data. Rules, no exceptions: no shell commands, no binaries, no approval/policy/secret/credential fields, no absolute or escaping paths, no invented capabilities or nodes."""
+Agent work uses capabilityId "agent.delegate". A task may state "workerRole": "code" | "review" | "execute" to require a suitable worker (omit for default routing). A task with inputFrom "upstream-output" MUST name dependsOn and receives verified upstream evidence as data. Optionally add top-level "acceptance": [{"kind": ..., "description": "objective proof required", "tasks": ["labels"]}] — objective criteria beyond per-task success. Rules, no exceptions: no shell commands, no binaries, no approval/policy/secret/credential fields, no absolute or escaping paths, no invented capabilities or nodes."""
 
 
 def _engine_config(bus) -> Any:
@@ -413,6 +413,29 @@ class CentralAgent:
             tail = f" Unverified: {', '.join(report.unverifiedActions)}."
         else:
             tail = ""
+        # Phase H honesty: every task verified but the objective
+        # acceptance unmet is NOT success. Report the objective as
+        # failed with the unmet criteria named — never fabricate it.
+        if (report.objectiveAccepted is False
+                and not report.unverifiedActions
+                and report.outcomes
+                and all(r.state == "done" for r in report.outcomes)):
+            unmet = "; ".join(report.unmetAcceptance)
+            return AgentResult(
+                status="failed", outcome="failed",
+                summary=(
+                    f"{'; '.join(summary_bits)}. "
+                    + ("Verified — " + "; ".join(verified_lines) + ". "
+                       if verified_lines else "")
+                    + f"Objective NOT verified: {unmet}. "
+                    + f"Audit: {audit_ref}.".strip()
+                ),
+                performed=[o.taskId for o in outcome.outcomes if o.performed],
+                verified=[o.taskId for o in report.outcomes
+                          if o.verified is True],
+                evidence=bundle,
+                failureReason="objective-unaccepted",
+            )
         return AgentResult(
             status="completed" if report.passed else "verifying",
             outcome="completed",

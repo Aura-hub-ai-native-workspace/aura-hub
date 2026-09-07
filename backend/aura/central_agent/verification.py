@@ -35,9 +35,61 @@ class VerificationEngine:
         pending_approval = any(r.state == "awaiting-approval" for r in rows)
         passed = bool(rows) and not critical_failure and not pending_approval \
             and all(r.verified is True for r in rows)
-        detail = "All tasks completed with passing verification." if passed else (
-            "Run parked awaiting a human approval decision." if pending_approval
-            else "Not every action could be verified; see per-task outcomes.")
+        # Phase H — objective acceptance: "tasks completed" is not
+        # "objective verified". Each stated criterion must be mechanically
+        # met by the covered task outcomes; otherwise the objective stays
+        # unaccepted even when every task verified.
+        accepted, unmet = self.verify_objective(plan, rows)
+        if passed and not accepted:
+            detail = ("All tasks verified, but the objective acceptance "
+                      f"criteria are unmet: {'; '.join(unmet)}.")
+        else:
+            detail = "All tasks completed with passing verification." if passed else (
+                "Run parked awaiting a human approval decision." if pending_approval
+                else "Not every action could be verified; see per-task outcomes.")
         return AgentVerificationReport(
-            passed=passed, outcomes=rows, unverifiedActions=unverified, detail=detail,
+            passed=passed and accepted, outcomes=rows,
+            unverifiedActions=unverified, detail=detail,
+            objectiveAccepted=accepted, unmetAcceptance=unmet,
         )
+
+    @staticmethod
+    def verify_objective(plan: TaskPlan,
+                         rows: list[TaskOutcome]) -> tuple[bool, list[str]]:
+        """Mechanical objective acceptance. A criterion covers the task
+        ids in expect["tasks"] (or all tasks when unnamed) and is met
+        only when every covered task is done and verified; mechanical
+        kinds additionally need a covered task verified under that same
+        kind, so a plan cannot claim read-back proof from audit-only
+        records. No criteria → accepted (legacy behavior)."""
+        criteria = list(getattr(plan, "acceptance", None) or [])
+        if not criteria:
+            return True, []
+        by_id = {r.taskId: r for r in rows}
+        unmet: list[str] = []
+        for index, criterion in enumerate(criteria):
+            label = criterion.description or f"criterion {index + 1}"
+            wanted = (criterion.expect or {}).get("tasks")
+            covered = [r for tid, r in by_id.items()
+                       if wanted is None or tid in wanted]
+            if wanted is not None and not set(wanted) <= set(by_id):
+                unmet.append(f"{label}: names unknown tasks")
+                continue
+            bad = [r.taskId for r in covered
+                   if r.state != "done" or r.verified is not True]
+            if bad:
+                unmet.append(
+                    f"{label}: unverified tasks: {', '.join(sorted(bad))}")
+                continue
+            if criterion.kind != "audit-only":
+                # Covered tasks' declared kinds come from the plan.
+                planned = {t.id: t for t in plan.tasks}
+                if not any(
+                        (planned.get(r.taskId) is not None
+                         and planned[r.taskId].verification.kind
+                         == criterion.kind)
+                        for r in covered):
+                    unmet.append(
+                        f"{label}: no covered task verified under "
+                        f"'{criterion.kind}'")
+        return (not unmet), unmet

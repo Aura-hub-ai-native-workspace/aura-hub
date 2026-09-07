@@ -118,6 +118,17 @@ def _run_workflow_ref(intent: AgentIntent) -> str | None:
     return ref or None
 
 
+def _accept(kind: str, description: str,
+            tasks: list[str] | None = None) -> VerificationRequirement:
+    """One objective acceptance criterion (Phase H): kind + what it
+    proves, optionally scoped to task ids via expect."""
+    return VerificationRequirement(
+        kind=kind,  # type: ignore[arg-value]
+        description=description,
+        expect={"tasks": list(tasks)} if tasks else {},
+    )
+
+
 def _task(tid: str, description: str, capability_id: str | None = None,
           input: dict | None = None, input_from: str = "literal",
           verification: VerificationRequirement | None = None) -> TaskSpecification:
@@ -150,6 +161,10 @@ def plan_authoring(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
                 ),
             ),
         ],
+        acceptance=[_accept(
+            "read-back",
+            "The requested workflow definition is stored and reads back.",
+            tasks=["t1"])],
         createdAt=now,
     )
 
@@ -171,6 +186,10 @@ def plan_status(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
                 ),
             ),
         ],
+        acceptance=[_accept(
+            "audit-only",
+            "The inventory answer was produced and recorded.",
+            tasks=["t1"])],
         createdAt=now,
     )
 
@@ -199,6 +218,10 @@ def plan_run_workflow(intent: AgentIntent, session_id: str, now: str,
                 ),
             })
         ],
+        acceptance=[_accept(
+            "audit-only",
+            "The stored workflow ran to a terminal state with evidence.",
+            tasks=["t1"])],
         createdAt=now,
     )
 
@@ -243,7 +266,7 @@ class TaskPlanner:
         try:
             if not isinstance(proposal, dict):
                 raise PlanningError("proposal must be an object")
-            extra_top = set(proposal) - {"tasks"}
+            extra_top = set(proposal) - {"tasks", "acceptance"}
             if extra_top:
                 raise PlanningError(
                     f"proposal carries unsupported fields: {sorted(extra_top)}")
@@ -373,14 +396,71 @@ class TaskPlanner:
                         description=ver_desc),
                 ))
             self._check_scope_narrowing(tasks)
+            # Acceptance may name the model's own labels or the canonical
+            # ids; both resolve to AURA-owned identity here.
+            label_map = {canon[pos]: canon[pos] for pos in order}
+            label_map.update(
+                {staged[pos]["label"]: canon[pos] for pos in order})
+            acceptance = self._model_acceptance(
+                proposal.get("acceptance"), label_map)
             plan = TaskPlan(planId=_plan_id(), sessionId=session_id,
-                            intent=intent, tasks=tasks, createdAt=now)
+                            intent=intent, tasks=tasks, createdAt=now,
+                            acceptance=acceptance)
         except PlanningError:
             raise
         except Exception as exc:
             raise PlanningError(f"invalid model plan: {exc}") from exc
         self.validate(plan)
         return plan
+
+    @staticmethod
+    def _model_acceptance(raw: object,
+                          label_map: dict[str, str]) -> list[VerificationRequirement]:
+        """Objective acceptance criteria from a proposal (Phase H). Each
+        entry states kind + what it proves, optionally scoped to task
+        ids. Malformed, unbounded, or dangling criteria fail closed."""
+        if raw is None:
+            return []
+        if not isinstance(raw, list) or not raw or len(raw) > MAX_TASKS:
+            raise PlanningError(
+                "proposal acceptance must be a non-empty bounded list")
+        out: list[VerificationRequirement] = []
+        for i, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                raise PlanningError(
+                    f"proposal acceptance entry {i} is not an object")
+            extra = set(entry) - {"kind", "description", "tasks"}
+            if extra:
+                raise PlanningError(
+                    f"proposal acceptance entry {i} carries unsupported "
+                    f"fields: {sorted(extra)}")
+            desc = str(entry.get("description") or "")
+            if not desc.strip() or len(desc) > 500:
+                raise PlanningError(
+                    f"proposal acceptance entry {i} states no bounded "
+                    "description")
+            wanted = entry.get("tasks")
+            resolved: list[str] = []
+            if wanted is not None:
+                if (not isinstance(wanted, list) or not wanted
+                        or any(not isinstance(t, str) for t in wanted)):
+                    raise PlanningError(
+                        f"proposal acceptance entry {i} names malformed tasks")
+                unknown = [t for t in wanted if t not in label_map]
+                if unknown:
+                    raise PlanningError(
+                        f"proposal acceptance covers unknown tasks {unknown}")
+                resolved = sorted({label_map[t] for t in wanted})
+            try:
+                out.append(VerificationRequirement(
+                    kind=entry.get("kind") or "audit-only",  # type: ignore[arg-value]
+                    description=desc,
+                    expect={"tasks": resolved} if resolved else {}))
+            except Exception as exc:
+                raise PlanningError(
+                    f"proposal acceptance entry {i} is malformed: "
+                    f"{exc}") from exc
+        return out
 
     def _check_node(self, node: object, label: str) -> None:
         if not isinstance(node, str) or not node.strip():
@@ -496,6 +576,10 @@ class TaskPlanner:
                     verification=VerificationRequirement(
                         kind="audit-only",
                         description="git exit-code verification in the Fabric."))],
+                acceptance=[_accept(
+                    "audit-only",
+                    "Accurate repository status reported from real git.",
+                    tasks=["t1"])],
                 createdAt=now)
         elif caps == {"filesystem.write"}:
             write_input = _write_inputs(intent)
@@ -508,6 +592,10 @@ class TaskPlanner:
                     verification=VerificationRequirement(
                         kind="read-back",
                         description="File reads back byte-identical."))],
+                acceptance=[_accept(
+                    "read-back",
+                    "The requested file exists with exactly the requested bytes.",
+                    tasks=["t1"])],
                 createdAt=now)
         elif run_ref is not None:
             resolved = self._resolve_workflow(run_ref)

@@ -88,7 +88,14 @@ class AgentIntent(ContractModel):
 
 
 class VerificationRequirement(ContractModel):
-    """How a task's success will be CONFIRMED, distinct from it having run."""
+    """How a task's success will be CONFIRMED, distinct from it having run.
+
+    Reused at plan level (TaskPlan.acceptance) for OBJECTIVE acceptance:
+    one criterion names, in `expect`, the task ids it covers ({"tasks":
+    [...]}, empty means all tasks) and passes only when every covered
+    task is done and verified — with mechanical kinds additionally
+    requiring a covered task verified under that same kind. An objective
+    is never "verified" merely because tasks ran."""
 
     kind: VerificationKind = "audit-only"
     description: str = ""
@@ -137,6 +144,10 @@ class TaskPlan(ContractModel):
     tasks: list[TaskSpecification] = Field(min_length=1)
     estimatedApprovals: int = 0
     createdAt: str
+    """Objective acceptance criteria (Phase H): what must hold for the
+    USER's objective to count as verified, beyond per-task success.
+    Empty keeps the legacy behavior (per-task verification decides)."""
+    acceptance: list[VerificationRequirement] = Field(default_factory=list)
 
 
 class CapabilityRequirement(ContractModel):
@@ -247,6 +258,11 @@ class AgentVerificationReport(ContractModel):
     outcomes: list[TaskOutcome] = Field(default_factory=list)
     unverifiedActions: list[str] = Field(default_factory=list)
     detail: str = ""
+    """Objective acceptance (Phase H): accepted only when every stated
+    criterion is mechanically met. Defaults True when a plan states no
+    criteria (legacy per-task behavior)."""
+    objectiveAccepted: bool = True
+    unmetAcceptance: list[str] = Field(default_factory=list)
 
 
 class EvidenceBundle(ContractModel):
