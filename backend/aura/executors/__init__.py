@@ -556,6 +556,7 @@ async def agent_delegate_run(inv: dict) -> dict:
     # means the worker is never launched at all.
     cancel_token = inv["context"].get("cancelToken")
     if cancel_token is not None and getattr(cancel_token, "cancelled", False):
+        net.close()
         return {
             "ok": False,
             "detail": (f"{node['name']} was not started: the run was "
@@ -569,14 +570,38 @@ async def agent_delegate_run(inv: dict) -> dict:
             governance, action_events, cancel_token=cancel_token,
             argv_prefix=net.argv_prefix)
     except Exception as e:  # noqa: BLE001 — TS catches all too
+        net.close()
         return _no(f"{node['name']} could not be run: {e}")
+    # The egress door belongs to THIS invocation. Read what it decided
+    # while it is still open, then close it — a gateway that outlived
+    # its worker would be a standing hole in the next task's boundary.
+    network_record = net.to_dict()
+    network_decisions = net.decisions()
+    net.close()
 
     output = {
         "stdout": res.out, "exitCode": res.code, "nodeId": node["id"],
         "agent": node["name"], "args": args,
         "timedOut": bool(res.timedOut), "signal": res.signal,
-        "network": net.to_dict(),
+        "network": network_record,
     }
+    if network_decisions:
+        # Every destination the worker asked for, and what AURA decided.
+        # Evidence of the same kind as the governed file actions: what
+        # was attempted, and what was permitted.
+        output["networkDecisions"] = network_decisions[:200]
+        action_events.extend({
+            "taskId": str((inv.get("context") or {}).get("taskId") or ""),
+            "workerNodeId": node["id"],
+            "invocationId": str(inv.get("id") or ""),
+            "attemptId": str((inv.get("context") or {}).get("attempt") or "1"),
+            "sequence": index + 1,
+            "at": d.get("at"), "actionType": "NETWORK",
+            "tool": d.get("tool") or "proxy",
+            "target": f"{d.get('host')}:{d.get('port')}",
+            "command": "", "decision": d.get("decision"),
+            "reason": d.get("reason"), "destructive": False,
+        } for index, d in enumerate(network_decisions[:200]))
     # Cancellation is a terminal answer, not a failure to be corrected.
     # It is decided from the TOKEN, never from the worker's exit code: a
     # worker that happened to exit 0 as the signal arrived was still

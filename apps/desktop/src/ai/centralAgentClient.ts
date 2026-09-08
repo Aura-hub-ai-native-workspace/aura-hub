@@ -178,13 +178,18 @@ export interface CancellationRecord {
 /**
  * Per-mode enforcement truth for this host. Deliberately not a boolean:
  * "enabled" and "enforced" are different words, and only the backend
- * knows which one applies.
+ * knows which one applies. `modes` is keyed by policy mode
+ * (`deny` / `allowlist` / `unrestricted`) and carries the backend's own
+ * state vocabulary — SUPPORTED_AND_ENFORCED, UNSUPPORTED, and so on —
+ * so the UI can name what is actually true rather than paraphrasing it.
  */
 export interface NetworkCapability {
   platform: string;
   method: string;
   modes: Record<string, string>;
   detail: string;
+  /** Which protocols can pass an allowlist, where one is enforced. */
+  protocols?: Record<string, string>;
 }
 
 export interface SubmitResponse {

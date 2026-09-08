@@ -56,21 +56,40 @@ class TestCapabilityReporting:
         assert set(caps["modes"]) == set(netgov.MODES)
         assert caps["detail"]
 
-    def test_selective_egress_is_never_claimed_here(self):
-        """An allowlist needs a userspace stack for the namespace. AURA
-        does not ship one, so it does not claim one on any platform."""
-        assert netgov.capability()["modes"][netgov.ALLOWLIST] == \
-            netgov.UNSUPPORTED
+    def test_selective_egress_is_claimed_only_where_it_is_enforced(self):
+        """This was UNSUPPORTED while the namespace was all-or-nothing.
+        It is enforced now — by an AURA-owned egress gateway, not by a
+        userspace network stack — so the claim is allowed to change, but
+        only on a host that can actually run the gateway. Enforcement is
+        proven in test_network_allowlist.py; this only checks that the
+        claim tracks the mechanism."""
+        import shutil
+        import sys as _sys
 
-    def test_an_unenforceable_mode_refuses_the_launch(self, tmp_path):
-        """§19: initialization failure never becomes a launch under the
-        claim of governance."""
+        mode = netgov.capability()["modes"][netgov.ALLOWLIST]
+        if _sys.platform.startswith("linux") and shutil.which("bwrap"):
+            assert mode == netgov.SUPPORTED_AND_ENFORCED
+        else:
+            assert mode == netgov.UNSUPPORTED
+
+    def test_an_unenforceable_mode_refuses_the_launch(self, tmp_path,
+                                                      monkeypatch):
+        """§19: a mode the HOST cannot enforce never becomes a launch
+        under the claim of governance. Driven through a host that
+        reports no capability, since this one now enforces both modes."""
+        monkeypatch.setattr(netgov, "capability", lambda: {
+            "platform": "linux", "method": "", "modes": {
+                netgov.DENY: netgov.SUPPORTED_AND_ENFORCED,
+                netgov.ALLOWLIST: netgov.UNSUPPORTED,
+                netgov.UNRESTRICTED: netgov.NOT_CONFIGURED},
+            "detail": "no egress gateway on this host"})
         result = netgov.establish(
             netgov.NetworkPolicy(mode=netgov.ALLOWLIST,
                                  domains=("pypi.org",)), str(tmp_path))
         assert result.ok is False
         assert result.state == netgov.UNSUPPORTED
         assert result.refusal == "network-allowlist-unsupported"
+        assert result.argv_prefix == []
 
     def test_a_failed_self_check_refuses_the_launch(self, tmp_path):
         """If the boundary cannot be proven, the worker does not run."""
@@ -221,6 +240,12 @@ class TestEnforcementThroughTheDispatchPath:
             ex, "run_agent",
             lambda *a, **k: launched.append(a) or (_ for _ in ()).throw(
                 AssertionError("the worker was launched anyway")))
+        # A boundary that cannot be established. The point is what does
+        # NOT happen next: no launch, and no claim of governance.
+        monkeypatch.setattr(
+            netgov, "stage_allowlist",
+            lambda policy, home: (_ for _ in ()).throw(
+                OSError("the gateway could not bind")))
         result = asyncio.run(ex.agent_delegate_run({
             "id": "inv-1",
             "input": {"task": "do it",
@@ -232,8 +257,9 @@ class TestEnforcementThroughTheDispatchPath:
         }))
         assert result["ok"] is False
         assert launched == []
-        assert "allowlist" in result["detail"]
-        assert result["output"]["network"]["state"] == netgov.UNSUPPORTED
+        assert result["output"]["network"]["state"] == \
+            netgov.INITIALIZATION_FAILED
+        assert result["output"]["network"]["verified"] is False
 
     def test_a_malformed_policy_is_refused_before_anything_runs(
             self, tmp_path, monkeypatch):
