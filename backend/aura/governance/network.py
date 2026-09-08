@@ -183,50 +183,46 @@ def _userns_available() -> bool:
         return True
 
 
-def capability() -> dict:
-    """What this host can really enforce, stated per mode.
+def refuse(policy: "NetworkPolicy", *, state: str, method: str,
+           refusal: str, detail: str) -> EnforcementResult:
+    """A launch that must not happen, said once, the same way everywhere.
 
-    Called by the worker matrix and the API, so the UI never has to guess
-    and can never claim more than the kernel gives.
+    Every platform's "I cannot enforce this" goes through here so a
+    refusal can never accidentally be built as an ALLOW with a sad
+    message: `ok` is False whenever `refusal` is set, and the argv prefix
+    stays empty.
     """
-    bwrap = shutil.which("bwrap")
-    if os.name == "nt":
-        return {"platform": "windows", "method": "", "modes": {
-            DENY: UNSUPPORTED, ALLOWLIST: UNSUPPORTED,
-            UNRESTRICTED: NOT_CONFIGURED},
-            "detail": ("No process-scoped network boundary is implemented "
-                       "for Windows. A Job Object bounds processes, not "
-                       "sockets; enforcing egress would need a Windows "
-                       "Filtering Platform provider, which AURA does not "
-                       "ship.")}
-    if os.uname().sysname == "Darwin":
-        return {"platform": "macos", "method": "", "modes": {
-            DENY: UNSUPPORTED, ALLOWLIST: UNSUPPORTED,
-            UNRESTRICTED: NOT_CONFIGURED},
-            "detail": ("macOS has no unprivileged per-process network "
-                       "namespace. sandbox-exec is deprecated and a "
-                       "Network Extension needs a signed system "
-                       "extension, so AURA claims nothing here.")}
-    if not bwrap:
-        return {"platform": "linux", "method": "", "modes": {
-            DENY: UNSUPPORTED, ALLOWLIST: UNSUPPORTED,
-            UNRESTRICTED: NOT_CONFIGURED},
-            "detail": ("bubblewrap (bwrap) is not installed, so AURA "
-                       "cannot place a worker in a network namespace.")}
-    if not _userns_available():
-        return {"platform": "linux", "method": "", "modes": {
-            DENY: UNSUPPORTED, ALLOWLIST: UNSUPPORTED,
-            UNRESTRICTED: NOT_CONFIGURED},
-            "detail": ("Unprivileged user namespaces are disabled on this "
-                       "kernel, so bwrap cannot create a network "
-                       "namespace without privilege AURA does not have.")}
+    return EnforcementResult(state=state, mode=policy.mode, method=method,
+                             refusal=refusal, detail=detail,
+                             domains=list(policy.domains))
+
+
+def linux_modes() -> dict[str, str]:
+    """What THIS Linux host enforces. Computed, never asserted."""
+    if not shutil.which("bwrap") or not _userns_available():
+        return {DENY: UNSUPPORTED, ALLOWLIST: UNSUPPORTED,
+                UNRESTRICTED: NOT_CONFIGURED}
+    return {DENY: SUPPORTED_AND_ENFORCED,
+            ALLOWLIST: SUPPORTED_AND_ENFORCED,
+            UNRESTRICTED: NOT_CONFIGURED}
+
+
+def linux_description() -> dict:
+    modes = linux_modes()
+    if modes[DENY] == UNSUPPORTED:
+        missing = ("bubblewrap (bwrap) is not installed"
+                   if not shutil.which("bwrap") else
+                   "unprivileged user namespaces are disabled on this kernel")
+        return {"platform": "linux", "method": "", "modes": modes,
+                "detail": (f"AURA cannot place a worker in a network "
+                           f"namespace here: {missing}. A task requiring a "
+                           "network policy is refused rather than launched "
+                           "ungoverned."),
+                "blocker": missing}
     return {
         "platform": "linux",
         "method": "bwrap --unshare-net + AURA egress gateway",
-        "modes": {
-            DENY: SUPPORTED_AND_ENFORCED,
-            ALLOWLIST: SUPPORTED_AND_ENFORCED,
-            UNRESTRICTED: NOT_CONFIGURED},
+        "modes": modes,
         "detail": ("An unprivileged network namespace removes every route. "
                    "Denial is that namespace alone. An allowlist is that "
                    "same namespace plus one AURA-owned door: a CONNECT "
@@ -236,6 +232,20 @@ def capability() -> dict:
         "protocols": {"http": "proxied and checked",
                       "https": "tunnelled after a checked CONNECT",
                       "other": "denied — no route exists"}}
+
+
+def capability(platform=None) -> dict:
+    """What this host can really enforce, stated per mode.
+
+    Dispatches to the platform adapter, so the answer comes from the
+    layer that would have to do the enforcing rather than from a table
+    that can drift away from it. Read by the worker matrix and the API,
+    so the UI never has to guess and can never claim more than the
+    platform gives.
+    """
+    from .enforcement import adapter_for
+
+    return adapter_for(platform).describe()
 
 
 # ── the boundary ────────────────────────────────────────────────────────
@@ -490,13 +500,40 @@ def verify_allowlist(home: str, staged,
 
 
 def establish(policy: NetworkPolicy | None, home: str,
-              verify=None, verify_allow=None,
-              stage=None) -> EnforcementResult:
+              verify=None, verify_allow=None, stage=None,
+              platform=None) -> EnforcementResult:
     """Set up the boundary a task's policy requires, or refuse.
 
+    The entry point every caller uses. It answers the two cases that are
+    the same on every platform — no policy at all, and a mode this host
+    cannot enforce — and hands anything real to the platform adapter,
+    which is the only layer that knows how to make an operating system
+    obey.
+
     Returns a result whose `ok` is False when the worker must NOT be
-    launched. §19: initialization failure never becomes a launch under
-    the claim of governance.
+    launched. Initialization failure never becomes a launch under the
+    claim of governance, and it never quietly becomes a weaker or
+    stronger boundary than the one that was asked for.
+    """
+    from .enforcement import adapter_for
+
+    adapter = adapter_for(platform)
+    if policy is None or policy.mode == UNRESTRICTED:
+        # Ungoverned is a legitimate answer for a task that needs the
+        # network (a coding worker reaching its own model provider
+        # cannot run inside a denial). It is reported, not hidden.
+        return EnforcementResult(
+            state=NOT_CONFIGURED, mode=UNRESTRICTED,
+            detail=("No network policy applies to this task, so its "
+                    "network access is ungoverned."))
+    return adapter.prepare(policy, home, verify=verify,
+                           verify_allow=verify_allow, stage=stage)
+
+
+def linux_establish(policy: NetworkPolicy, home: str,
+                    verify=None, verify_allow=None,
+                    stage=None) -> EnforcementResult:
+    """The Linux boundary: namespace, and optionally the one door.
 
     The three seams resolve at CALL time rather than as default
     arguments. Defaults would capture these functions at import, so a
@@ -507,20 +544,10 @@ def establish(policy: NetworkPolicy | None, home: str,
     verify = verify or verify_denial
     verify_allow = verify_allow or verify_allowlist
     stage = stage or stage_allowlist
-    caps = capability()
-    if policy is None or policy.mode == UNRESTRICTED:
-        # Ungoverned is a legitimate answer for a task that needs the
-        # network (a coding worker reaching its own model provider
-        # cannot run inside a denial). It is reported, not hidden.
-        return EnforcementResult(
-            state=NOT_CONFIGURED, mode=UNRESTRICTED,
-            detail=("No network policy applies to this task, so its "
-                    "network access is ungoverned."))
-
-    supported = caps["modes"].get(policy.mode, UNSUPPORTED)
-    if supported == UNSUPPORTED:
-        return EnforcementResult(
-            state=UNSUPPORTED, mode=policy.mode, method=caps["method"],
+    caps = linux_description()
+    if caps["modes"].get(policy.mode, UNSUPPORTED) == UNSUPPORTED:
+        return refuse(
+            policy, state=UNSUPPORTED, method=caps["method"],
             refusal=f"network-{policy.mode}-unsupported",
             detail=(f"This task requires network mode '{policy.mode}', "
                     f"which this host cannot enforce. {caps['detail']}"))

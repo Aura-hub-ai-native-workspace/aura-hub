@@ -72,20 +72,21 @@ class TestCapabilityReporting:
         else:
             assert mode == netgov.UNSUPPORTED
 
-    def test_an_unenforceable_mode_refuses_the_launch(self, tmp_path,
-                                                      monkeypatch):
+    def test_an_unenforceable_mode_refuses_the_launch(self, tmp_path):
         """§19: a mode the HOST cannot enforce never becomes a launch
-        under the claim of governance. Driven through a host that
-        reports no capability, since this one now enforces both modes."""
-        monkeypatch.setattr(netgov, "capability", lambda: {
-            "platform": "linux", "method": "", "modes": {
-                netgov.DENY: netgov.SUPPORTED_AND_ENFORCED,
-                netgov.ALLOWLIST: netgov.UNSUPPORTED,
-                netgov.UNRESTRICTED: netgov.NOT_CONFIGURED},
-            "detail": "no egress gateway on this host"})
-        result = netgov.establish(
-            netgov.NetworkPolicy(mode=netgov.ALLOWLIST,
-                                 domains=("pypi.org",)), str(tmp_path))
+        under the claim of governance.
+
+        Driven through a genuinely unsupported platform rather than a
+        stubbed capability table — the decision now comes from the
+        platform adapter, so putting AURA on Windows is both closer to
+        the real path and a stronger check than patching the answer.
+        """
+        from aura.environment.hostplatform import Platform, simulate
+
+        with simulate(Platform.WINDOWS):
+            result = netgov.establish(
+                netgov.NetworkPolicy(mode=netgov.ALLOWLIST,
+                                     domains=("pypi.org",)), str(tmp_path))
         assert result.ok is False
         assert result.state == netgov.UNSUPPORTED
         assert result.refusal == "network-allowlist-unsupported"
@@ -280,20 +281,18 @@ class TestEnforcementThroughTheDispatchPath:
 
 
 class TestNoFalseClaims:
-    def test_an_unsupported_host_is_reported_not_silently_allowed(self,
-                                                                  tmp_path,
-                                                                  monkeypatch):
-        monkeypatch.setattr(netgov, "capability", lambda: {
-            "platform": "windows", "method": "", "modes": {
-                netgov.DENY: netgov.UNSUPPORTED,
-                netgov.ALLOWLIST: netgov.UNSUPPORTED,
-                netgov.UNRESTRICTED: netgov.NOT_CONFIGURED},
-            "detail": "no boundary here"})
+    def test_a_linux_host_without_the_primitive_refuses(self, tmp_path,
+                                                        monkeypatch):
+        """Not a stubbed table: bwrap is genuinely made unavailable, so
+        linux_modes() computes UNSUPPORTED the way it would on a machine
+        that does not have it."""
+        monkeypatch.setattr(netgov.shutil, "which", lambda _name: None)
         result = netgov.establish(
             netgov.NetworkPolicy(mode=netgov.DENY), str(tmp_path))
         assert result.ok is False
         assert result.state == netgov.UNSUPPORTED
         assert result.verified is False
+        assert result.argv_prefix == []
 
     def test_an_ungoverned_result_never_claims_enforcement(self, tmp_path):
         result = netgov.establish(None, str(tmp_path))
