@@ -48,6 +48,9 @@ class ExecutionOutcome:
     # service layer to emit on the event bus. Bounded at the source
     # (executor caps memory; file log stays complete on disk).
     governed_actions: list[dict] = field(default_factory=list)
+    # Tasks the user's cancellation stopped from ever starting. Kept
+    # apart from failures: nothing here went wrong, it simply never ran.
+    cancelled_before: list[str] = field(default_factory=list)
     # Which worker AURA put on which task, and how that task ended.
     # Recorded at dispatch (so a task that never returned still names its
     # worker) and completed from the executor's own output. This is the
@@ -90,6 +93,7 @@ class ExecutionController:
         project_id: str | None,
         compiled_workflow: dict | None = None,
         cancel_check: Any | None = None,
+        cancel_token: Any | None = None,
         resume_grants: dict[str, str] | None = None,
         project_cwd: str | None = None,
         prior_verified: dict[str, dict] | None = None,
@@ -103,11 +107,22 @@ class ExecutionController:
         if prior_verified:
             result.verified_outputs.update(prior_verified)
         resume_grants = resume_grants or {}
+        # A run cancelled before a task starts never dispatches it. The
+        # token is authoritative; cancel_check stays for callers that
+        # pass only a predicate.
+        def _stop_requested() -> bool:
+            if cancel_token is not None and cancel_token.cancelled:
+                return True
+            return bool(cancel_check and cancel_check())
+
         for task in topo_order(plan.tasks):
-            if cancel_check and cancel_check():
+            if _stop_requested():
                 result.cancelled = True
                 result.stopped = True
-                result.stop_reason = "cancelled before " + task.id
+                result.stop_reason = (
+                    f"cancelled before {task.id} started; no worker was "
+                    "dispatched for it")
+                result.cancelled_before.append(task.id)
                 break
 
             # Resume without re-execution: a task whose verification is
@@ -182,7 +197,8 @@ class ExecutionController:
                 grant_for_task = resume_grants.get(task.id)
                 self._invoke_single(task, project_id, compiled_workflow, result,
                                     approval_id=grant_for_task[0] if grant_for_task else None,
-                                    project_cwd=project_cwd)
+                                    project_cwd=project_cwd,
+                                    cancel_token=cancel_token)
 
             last = result.outcomes[-1] if result.outcomes else None
             if last is None:
@@ -204,7 +220,19 @@ class ExecutionController:
                 result.stopped = True
                 result.stop_reason = last.detail
                 break
+            if last.state == "cancelled":
+                result.cancelled = True
+                result.stopped = True
+                result.stop_reason = f"{task.id}: {last.detail}"
+                break
             if last.state in ("failed", "blocked"):
+                # A stop that landed while the worker was settling reads
+                # as a failure from the executor's side. The token says
+                # what actually happened, and it outranks the exit code.
+                if cancel_token is not None and cancel_token.cancelled:
+                    result.outcomes[-1] = last.model_copy(update={
+                        "state": "cancelled", "verified": None})
+                    result.cancelled = True
                 result.stopped = True
                 result.stop_reason = f"{task.id}: {last.detail}"
                 break
@@ -368,6 +396,7 @@ class ExecutionController:
         result: ExecutionOutcome,
         approval_id: str | None = None,
         project_cwd: str | None = None,
+        cancel_token: Any | None = None,
     ) -> None:
         if not task.capabilityId:
             result.outcomes.append(TaskOutcome(
@@ -465,6 +494,13 @@ class ExecutionController:
             context["cwd"] = project_cwd
         if approval_id:
             context["approvalId"] = approval_id
+        if cancel_token is not None:
+            # The worker's own stop signal. It reaches run_file, which
+            # signals the worker's process GROUP — so STOP terminates
+            # what the worker forked as well as the worker itself.
+            context["cancelToken"] = cancel_token
+            cancel_token.note_dispatch(
+                task.id, worker_node_id=context.get("nodeId") or "")
         result.worker_assignments[task.id] = {
             "taskId": task.id,
             "nodeId": context.get("nodeId") or "",
@@ -519,6 +555,13 @@ class ExecutionController:
             "failed": "failed",
             "unsupported": "blocked",
         }[outcome]
+        # The executor reports a stopped worker as a failed invocation,
+        # because from its side that is what a terminated process looks
+        # like. Only the run knows the difference, and it records the
+        # difference: a cancelled task is never corrected or retried.
+        if (invocation.get("output") or {}).get("cancelled"):
+            state = "cancelled"
+            performed = False
         result.outcomes.append(TaskOutcome(
             taskId=task.id,
             state=state,  # type: ignore[arg-type]

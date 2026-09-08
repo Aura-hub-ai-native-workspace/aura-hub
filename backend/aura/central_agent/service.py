@@ -15,6 +15,7 @@ from ..audit import AuditStore
 from ..contracts import (
     AgentEvent,
     AgentIntent,
+    AgentMessage,
     AgentResult,
     AgentSession,
     TaskOutcome,
@@ -33,6 +34,7 @@ from .evidence import EvidenceCollector
 from .execution import ExecutionController, ExecutionOutcome
 from .intent import IntentCompiler
 from .planner import PlanningError, TaskPlanner, topo_order
+from .runcontrol import RUN_CONTROL
 from .session import AgentSessionStore
 from .supervisor import (
     MAX_CORRECTION_ATTEMPTS,
@@ -86,6 +88,11 @@ def _default_version_store(workflow_store):
 
 
 class CentralAgent:
+    #: The ONE cancellation authority for this process, as a class
+    #: default so every instance has one — including the bare instances
+    #: unit tests build with __new__ to exercise a single method.
+    runs = RUN_CONTROL
+
     def __init__(
         self,
         fabric_cfg: FabricConfig,
@@ -200,28 +207,57 @@ class CentralAgent:
         self.sessions.save(session)
         self._emit("session.started", session.sessionId, projectId=project_id)
 
+        # A session the user already cancelled does not quietly start
+        # working again because another message arrived: recovery is an
+        # explicit act (resume_cancelled), never a side effect.
+        if getattr(session, "cancellation", None) and self.runs.is_cancelled(session.sessionId):
+            return self._cancelled_result(session, resumed=False)
+        token = self.runs.begin(session.sessionId)
         try:
             result = self._run(session, user_message)
         except (PlanningError, CompilationError) as exc:
             result = self._fail(session, f"The request could not be planned: {exc}")
         except Exception as exc:
             result = self._fail(session, f"Unexpected failure: {exc}")
+        if token.cancelled and result.outcome != "cancelled":
+            # A leg that finished as the stop landed is still cancelled.
+            # Explicit user cancellation outranks whatever the run was
+            # about to report (invariant 10).
+            result = self._settle_cancellation(session, result)
+        if result.outcome not in ("cancelled", "awaiting-approval"):
+            # A parked run is not finished. Dropping its token here left
+            # the worker that the resumed leg launches with nothing
+            # watching for STOP — which is every approval-gated run.
+            self.runs.clear(session.sessionId)
 
         self.sessions.finish(session, result)
-        # AURA's own answer joins the conversation. Without it the session
-        # holds only the user's side, so a follow-up ("now add rate
-        # limiting") is interpreted with no memory of what AURA just did
-        # or whether it worked — the continuation reads as a fresh,
-        # contextless request. Bounded, and it is AURA's synthesised
-        # summary, never model reasoning and never worker output.
-        self.sessions.append_message(
-            session, "agent", f"[{result.outcome}] {result.summary}"[:2000])
+        self._record_answer(session, result)
         # Phase I: parked legs keep their verified evidence for resume;
         # terminal outcomes drop it (a later resume must not inherit it).
         if result.outcome != "awaiting-approval":
             session.verifiedEvidence = {}
         self.sessions.save(session)
         return result
+
+    @staticmethod
+    def _record_answer(session: AgentSession, result: AgentResult) -> None:
+        """AURA's own answer joins the conversation, once per objective.
+
+        Without it the session holds only the user's side, so a follow-up
+        ("now add rate limiting") is interpreted with no memory of what
+        AURA just did or whether it worked. Parked legs are deliberately
+        NOT recorded: "waiting on your approval" is run state, it is
+        already on the result and the event bus, and several in a row
+        would push the user's actual objective out of the bounded context
+        the next turn assembles. Always AURA's synthesised summary —
+        never model reasoning, never worker output.
+        """
+        if result.outcome == "awaiting-approval":
+            return
+        session.messages.append(AgentMessage(
+            role="agent", content=f"[{result.outcome}] {result.summary}"[:2000],
+            at=_now()))
+        session.updatedAt = _now()
 
     def _emit_worker_observations(self, sid: str, outcome: Any) -> None:
         """Worker lifecycle + governed actions onto the EXISTING bus.
@@ -352,15 +388,18 @@ class CentralAgent:
         self._emit("execution.started", sid, planId=plan.planId)
         outcome: ExecutionOutcome = self.controller.execute(
             plan, session.projectId, compiled_workflow=compiled,
-            project_cwd=getattr(session, "projectPath", None))
+            project_cwd=getattr(session, "projectPath", None),
+            cancel_token=self.runs.begin(sid))
         for o in outcome.outcomes:
             self._emit("invocation.observed", sid, taskId=o.taskId,
                        state=o.state, verified=o.verified, detail=o.detail[:200])
         self._emit_worker_observations(sid, outcome)
 
         if outcome.cancelled:
-            return AgentResult(status="cancelled", outcome="cancelled",
-                               summary=outcome.stop_reason)
+            return self._settle_cancellation(
+                session, AgentResult(status="cancelled", outcome="cancelled",
+                                     summary=outcome.stop_reason),
+                outcome=outcome, plan=plan)
 
         if outcome.approval_id:
             report = self.verifier.verify(plan, outcome.outcomes)
@@ -401,9 +440,6 @@ class CentralAgent:
                                summary=f"The work exceeded its time budget: {outcome.stop_reason}",
                                performed=[o.taskId for o in outcome.outcomes if o.performed],
                                evidence=bundle, failureReason="timeout")
-        if outcome.cancelled:
-            return AgentResult(status="cancelled", outcome="cancelled",
-                               summary=outcome.stop_reason)
         if outcome.stopped:
             corrected = self._maybe_correct(session, plan, outcome)
             if corrected is not None:
@@ -607,6 +643,12 @@ class CentralAgent:
         when correction handling takes over, else None (existing paths
         proceed unchanged)."""
         sid = session.sessionId
+        # Invariant: the user's stop outranks AURA's own judgement. A
+        # worker terminated by cancellation looks exactly like one that
+        # deviated and died, and correcting it would restart the very
+        # work the user just stopped.
+        if self.runs.is_cancelled(sid):
+            return None
         deviation = getattr(outcome, "deviation_evidence", None) or {}
         if not deviation:
             return None
@@ -1052,6 +1094,147 @@ class CentralAgent:
             corr_outcome=outcome, project_cwd=project_cwd,
             persist=_update)
 
+    # ── cancellation ─────────────────────────────────────────────────
+    # STOP is an authority decision, so it settles here rather than in
+    # any of the paths that might otherwise interpret it. A cancelled
+    # run is terminal: it is not corrected, not retried, not resumed on
+    # its own, and it cannot be reopened by an approval that was pending
+    # when the user stopped it.
+
+    def request_cancel(self, session_id: str, reason: str = "",
+                       by: str = "user") -> dict:
+        """Ask a run to stop. Idempotent, and safe before it has begun.
+
+        Returns immediately with what was recorded. Stopping a worker
+        takes as long as the worker takes to die, so the caller learns
+        that the request landed — not that the process is already gone.
+        The `run.cancelled` event says that.
+        """
+        session = self.sessions.load(session_id)
+        if session is None:
+            raise ValueError(f"no such session: {session_id}")
+        record = self.runs.request_cancel(session_id, reason, by)
+        self._emit("run.cancellation-requested", session_id, **record)
+        if record.get("firstRequest"):
+            self._emit("run.stopping", session_id,
+                       taskId=record.get("taskId"),
+                       workerNodeId=record.get("workerNodeId"))
+            # Persist immediately: a crash between the request and the
+            # run noticing it must still come back cancelled.
+            session.cancellation = {**record, "settled": False}
+            self.sessions.save(session)
+            self._invalidate_pending(session, record)
+        return record
+
+    def _invalidate_pending(self, session: AgentSession,
+                            record: dict) -> list[str]:
+        """Close the approvals this run was waiting on.
+
+        A grant decided after the user stopped the run would otherwise be
+        spendable by a later leg — the run would come back from the dead
+        holding an authorisation for work nobody wants any more. The
+        request is declined in the SAME ledger the Fabric spends from,
+        so there is one answer, and the decline is attributed to the
+        cancellation rather than to the user pretending to refuse.
+        """
+        last = session.lastResult
+        ids = list(last.evidence.approvalIds) if (last and last.evidence) else []
+        ledger = self.fabric_cfg.ledger
+        invalidated: list[str] = []
+        for apr in ids:
+            request = ledger.by_id(apr) if ledger else None
+            if not request or request.get("state") != "pending":
+                continue
+            ledger.decide(apr, False, "aura:cancellation",
+                          f"run cancelled: {record.get('reason') or 'stopped'}")
+            invalidated.append(apr)
+            self._emit("approval.invalidated", session.sessionId,
+                       approvalId=apr, reason="run-cancelled")
+        for entry in (session.correctionChain or []):
+            if isinstance(entry, dict) and entry.get("status") == "parked":
+                entry["status"] = "cancelled"
+        if invalidated or session.correctionChain:
+            self.sessions.save(session)
+        return invalidated
+
+    def _settle_cancellation(self, session: AgentSession,
+                             result: AgentResult,
+                             outcome: Any | None = None,
+                             plan: TaskPlan | None = None) -> AgentResult:
+        """Turn a stopped run into its one terminal record."""
+        sid = session.sessionId
+        token = self.runs.token_for(sid)
+        record = token.snapshot() if token is not None else {
+            "cancelled": True, "reason": "cancelled"}
+        performed = [o.taskId for o in (outcome.outcomes if outcome else [])
+                     if o.performed]
+        verified = [o.taskId for o in (outcome.outcomes if outcome else [])
+                    if o.verified is True]
+        never_started = list(getattr(outcome, "cancelled_before", None) or [])
+        if plan is not None and outcome is not None:
+            settled = {o.taskId for o in outcome.outcomes}
+            never_started = [t.id for t in plan.tasks if t.id not in settled]
+        bundle = None
+        if outcome is not None and outcome.outcomes:
+            bundle = self.evidence.collect(
+                sid, plan.planId if plan else (session.activePlanId or "-"),
+                outcome.outcomes,
+                f"Cancelled: {record.get('reason') or 'stopped by the user'}",
+                _now())
+        # Verified work already done stays verified and stays available;
+        # cancelling a run does not un-do what it finished.
+        if outcome is not None:
+            self._stash_verified(session, outcome.verified_outputs)
+        session.cancellation = {
+            **record, "settled": True, "at": _now(),
+            "performedTasks": performed, "verifiedTasks": verified,
+            "neverStarted": never_started,
+        }
+        summary = self._cancellation_summary(record, verified, never_started)
+        settled = AgentResult(
+            status="cancelled", outcome="cancelled", summary=summary,
+            performed=performed, verified=verified, evidence=bundle,
+            failureReason="cancelled-by-user",
+            runId=getattr(outcome, "run_id", None) if outcome else None)
+        self._emit("run.cancelled", sid, **session.cancellation)
+        self._invalidate_pending(session, record)
+        self.sessions.save(session)
+        return settled
+
+    @staticmethod
+    def _cancellation_summary(record: dict, verified: list[str],
+                              never_started: list[str]) -> str:
+        parts = ["You stopped this run."]
+        stopped = record.get("taskId")
+        if stopped:
+            worker = record.get("workerNodeId")
+            parts.append(
+                f"{stopped} was stopped mid-flight"
+                + (f" on {worker}" if worker else "") + ".")
+        if verified:
+            parts.append(
+                "Work already verified is kept: " + ", ".join(verified) + ".")
+        if never_started:
+            parts.append(
+                "Not started: " + ", ".join(never_started) + ".")
+        parts.append("Nothing will continue on its own — ask to resume when "
+                     "you want the rest of this objective attempted again.")
+        return " ".join(parts)
+
+    def _cancelled_result(self, session: AgentSession,
+                          resumed: bool) -> AgentResult:
+        """The standing answer for a run that is already cancelled."""
+        record = dict(getattr(session, "cancellation", None) or {})
+        return AgentResult(
+            status="cancelled", outcome="cancelled",
+            summary=(record.get("summary")
+                     or self._cancellation_summary(
+                         record, record.get("verifiedTasks") or [],
+                         record.get("neverStarted") or [])),
+            performed=list(record.get("performedTasks") or []),
+            verified=list(record.get("verifiedTasks") or []),
+            failureReason="cancelled-by-user")
+
     def _fail(self, session: AgentSession, reason: str,
               outcomes=None) -> AgentResult:
         self._emit("agent.failed", session.sessionId, reason=reason[:300])
@@ -1094,8 +1277,16 @@ class CentralAgent:
                 "estimatedApprovals": plan.estimatedApprovals}
 
     # ── resume / cancel ──────────────────────────────────────────────────
-    def resume(self, session_id: str) -> AgentResult:
+    def resume(self, session_id: str,
+               resume_cancelled: bool = False) -> AgentResult:
         """Continue a parked session after a human decision.
+
+        A CANCELLED session is refused unless the caller explicitly asks
+        to resume it. That is the difference between recovery and a
+        cancellation that quietly undid itself: the user stopped this
+        run, so restarting it has to be something the user asked for.
+        Resuming clears the stop and starts a FRESH attempt — the
+        terminated attempt is never reported as having completed.
 
         Validates the grant BEFORE re-executing; the Fabric spends it
         single-use at invoke time. A resumed run is a NEW leg — the parked
@@ -1104,6 +1295,19 @@ class CentralAgent:
         session = self.sessions.load(session_id)
         if session is None:
             raise ValueError(f"no such session: {session_id}")
+        cancellation = getattr(session, "cancellation", None)
+        if cancellation and not resume_cancelled:
+            return self._cancelled_result(session, resumed=False)
+        if cancellation and resume_cancelled:
+            # A new attempt, explicitly asked for. The stop is lifted,
+            # the record of it is kept, and the approvals that were
+            # invalidated stay invalidated — the fresh attempt asks
+            # again rather than spending a grant the user cancelled.
+            self.runs.release(session_id)
+            session.cancellation = {**cancellation, "resumedAt": _now()}
+            self.sessions.save(session)
+            self.runs.begin(session_id)
+            return self._retry_after_cancellation(session)
         last = session.lastResult
         if last is None or last.outcome != "awaiting-approval":
             raise ValueError("this session is not awaiting an approval")
@@ -1168,7 +1372,8 @@ class CentralAgent:
         outcome = self.controller.execute(
             plan, session.projectId, resume_grants=task_grants,
             project_cwd=getattr(session, "projectPath", None),
-            prior_verified=self._restored_verified(session))
+            prior_verified=self._restored_verified(session),
+            cancel_token=self.runs.begin(session.sessionId))
         for o in outcome.outcomes:
             self._emit("invocation.observed", session.sessionId,
                        taskId=o.taskId, state=o.state,
@@ -1248,28 +1453,105 @@ class CentralAgent:
         correction until its budget was spent instead of continuing the
         plan.
         """
+        token = self.runs.token_for(session.sessionId)
+        if token is not None and token.cancelled:
+            # Settle here whatever the leg concluded. The user's decision
+            # outranks it, AND this is what writes the persisted record —
+            # a leg that already knew it was cancelled still has to write
+            # it down, or a restart finds a stop requested and never
+            # settled.
+            result = self._settle_cancellation(session, result)
         self._emit("result.ready", session.sessionId, resumed=True,
                    passed=result.outcome == "completed")
         self.sessions.finish(session, result)
+        self._record_answer(session, result)
         if result.outcome != "awaiting-approval":
             session.verifiedEvidence = {}
         self.sessions.save(session)
+        if result.outcome not in ("cancelled", "awaiting-approval"):
+            self.runs.clear(session.sessionId)
         return result
 
+    def _retry_after_cancellation(self, session: AgentSession) -> AgentResult:
+        """Re-attempt what cancellation left unfinished.
+
+        Verified work is restored, not repeated: a task proven before the
+        stop is skipped exactly as it is across an approval. Everything
+        else is a NEW attempt with a new invocation identity — the
+        terminated attempt keeps its own record and is never described
+        as having finished.
+        """
+        sid = session.sessionId
+        stored = getattr(session, "activePlan", None)
+        if not stored:
+            return self._fail(
+                session, "This cancelled run has no stored plan to resume; "
+                         "state the objective again and AURA will re-plan.")
+        try:
+            plan = TaskPlan.model_validate(stored)
+        except Exception as exc:  # noqa: BLE001
+            return self._fail(session,
+                              f"The stored plan could not be restored: {exc}")
+        self._active_plans[plan.planId] = plan
+        session.parkedTaskId = None
+        self._emit("execution.started", sid, planId=plan.planId,
+                   resumedFromCancellation=True)
+        outcome = self.controller.execute(
+            plan, session.projectId,
+            project_cwd=getattr(session, "projectPath", None),
+            prior_verified=self._restored_verified(session),
+            cancel_token=self.runs.begin(sid))
+        for o in outcome.outcomes:
+            self._emit("invocation.observed", sid, taskId=o.taskId,
+                       state=o.state, verified=o.verified,
+                       detail=o.detail[:200])
+        self._emit_worker_observations(sid, outcome)
+        if outcome.cancelled:
+            return self._finish_resume(session, self._settle_cancellation(
+                session, AgentResult(status="cancelled", outcome="cancelled",
+                                     summary=outcome.stop_reason),
+                outcome=outcome, plan=plan))
+        if outcome.approval_id:
+            self._stash_verified(session, outcome.verified_outputs)
+            session.parkedTaskId = next(
+                (o.taskId for o in outcome.outcomes
+                 if o.approvalId == outcome.approval_id), None)
+            bundle = self.evidence.collect(
+                sid, plan.planId, outcome.outcomes,
+                "Awaiting human approval after a resumed cancellation.",
+                _now())
+            self._emit("approval.required", sid, approvalId=outcome.approval_id)
+            return self._finish_resume(session, AgentResult(
+                status="awaiting-approval", outcome="awaiting-approval",
+                summary=("Resumed after cancellation and parked: a human "
+                         f"must decide {outcome.approval_id}."),
+                performed=[o.taskId for o in outcome.outcomes if o.performed],
+                evidence=bundle, runId=outcome.run_id))
+        if outcome.stopped:
+            return self._finish_resume(session, self._fail(
+                session, outcome.stop_reason, outcomes=outcome.outcomes))
+        return self._finish_resume(session,
+                                   self._synthesize(session, plan, outcome))
+
     def cancel(self, session_id: str) -> bool:
-        session = self.sessions.load(session_id)
-        if session is None:
-            raise ValueError(f"no such session: {session_id}")
+        """Stop this run. The request is what returns; the stop follows.
+
+        This used to mark the session FAILED and emit an event without
+        signalling anything, so a worker mid-flight kept running and the
+        record said the wrong thing about why the run ended. Now the
+        request reaches the token the worker is watching, and any engine
+        run in flight is cancelled through the engine that owns it.
+        """
+        record = self.request_cancel(session_id, "cancelled by the user")
         rid = getattr(self.controller, "_active_run_id", None)
-        cancelled = False
         engine = getattr(self.controller, "engine", None)
         if rid and engine is not None:
-            cancelled = engine.cancel(rid)
-        if not cancelled:
-            self._fail(session, "cancelled before completion")
-            cancelled = True
-        self._emit("agent.cancelled", session_id)
-        return cancelled
+            try:
+                engine.cancel(rid)
+            except Exception:  # noqa: BLE001 — the token still stands
+                pass
+        self._emit("agent.cancelled", session_id, **record)
+        return True
 
 
 __all__ = ["AgentIntent", "CentralAgent"]

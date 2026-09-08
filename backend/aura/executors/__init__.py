@@ -320,15 +320,34 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
     return bundle
 
 
+async def _bridge_cancel(token, event: asyncio.Event) -> None:
+    """Carry a run's stop signal onto this worker's event loop.
+
+    The request arrives on the API thread; the worker is awaited on an
+    executor thread with its own loop. Polling is the honest way across
+    that boundary — 100ms is far below any human's sense of "it did not
+    stop", and the wait happens off-loop so it blocks nothing.
+    """
+    while not event.is_set():
+        if await asyncio.to_thread(token.wait, 0.1):
+            event.set()
+            return
+
+
 async def _run_governed(bin_name: str, args: list[str], cwd: str,
                         timeout_ms: int | None, governance: dict,
-                        action_events: list[dict]):
+                        action_events: list[dict], cancel_token=None,
+                        argv_prefix: list[str] | None = None):
     """Run the worker while draining its governance action log.
 
     The drain proves observation DURING the run (250ms granularity);
     enforcement itself happens in-runtime via the staged plugin/hooks,
     never here. Memory stays bounded: at most 500 events are kept, the
     full log remains on disk as evidence.
+
+    A cancellation token, when the run has one, becomes the asyncio
+    event run_file signals the worker's process group on — so STOP
+    terminates the worker and everything it forked, not just the flag.
     """
     log_path = governance.get("logPath") or ""
     extra = governance.get("extraArgs") or []
@@ -336,25 +355,40 @@ async def _run_governed(bin_name: str, args: list[str], cwd: str,
     # positional task text, which is always last in our invocations.
     full_args = [*extra, *args] if extra else list(args)
     env = dict(governance.get("env") or {}) or None
-    # env travels only when governance staged it: existing run_agent
-    # stubs (bin, args, cwd, timeout) keep working untouched.
+    kwargs: dict = {}
     if env:
-        run_task = asyncio.ensure_future(
-            run_agent(bin_name, full_args, cwd, timeout_ms, env=env))
-    else:
-        run_task = asyncio.ensure_future(
-            run_agent(bin_name, full_args, cwd, timeout_ms))
+        # env travels only when governance staged it: existing run_agent
+        # stubs (bin, args, cwd, timeout) keep working untouched.
+        kwargs["env"] = env
+    if argv_prefix:
+        kwargs["argv_prefix"] = list(argv_prefix)
+    cancel_event: asyncio.Event | None = None
+    bridge = None
+    if cancel_token is not None:
+        cancel_event = asyncio.Event()
+        if cancel_token.cancelled:
+            cancel_event.set()          # STOP already pressed: never launch
+        else:
+            bridge = asyncio.ensure_future(
+                _bridge_cancel(cancel_token, cancel_event))
+        kwargs["cancel"] = cancel_event
+    run_task = asyncio.ensure_future(
+        run_agent(bin_name, full_args, cwd, timeout_ms, **kwargs))
     seen = 0
-    while not run_task.done():
-        await asyncio.sleep(0.25)
+    try:
+        while not run_task.done():
+            await asyncio.sleep(0.25)
+            if log_path and len(action_events) < 500:
+                fresh, seen = _drain_log(log_path, seen, len(action_events))
+                action_events.extend(fresh)
+        # Final drain: actions logged between the last poll and exit.
         if log_path and len(action_events) < 500:
-            fresh, seen = _drain_log(log_path, seen, len(action_events))
+            fresh, _ = _drain_log(log_path, seen, len(action_events))
             action_events.extend(fresh)
-    # Final drain: actions logged between the last poll and exit.
-    if log_path and len(action_events) < 500:
-        fresh, _ = _drain_log(log_path, seen, len(action_events))
-        action_events.extend(fresh)
-    return await run_task
+        return await run_task
+    finally:
+        if bridge is not None:
+            bridge.cancel()
 
 
 def _governed_summary(governance: dict, action_events: list[dict],
@@ -482,6 +516,32 @@ async def agent_delegate_run(inv: dict) -> dict:
             f"so nothing was run. Verified today: {', '.join(AGENT_INVOCATIONS)}.")
 
     args = spec["args"](brief, cwd, model)
+
+    # Network governance. The task's policy is AURA-owned and validated
+    # here; the boundary is established and PROVEN before anything is
+    # launched, and a policy this host cannot enforce refuses the launch
+    # rather than running the worker under a claim that is not true.
+    from ..governance import network as netgov
+
+    try:
+        net_policy = netgov.NetworkPolicy.parse(inv["input"].get("network"))
+    except ValueError as exc:
+        return _no(f"The network policy was refused: {exc} Nothing has run.")
+    try:
+        from ..config import aura_home
+
+        net = netgov.establish(net_policy, str(aura_home()))
+    except Exception as exc:  # noqa: BLE001 — a broken boundary is a refusal
+        return _no(f"Network governance could not be established: {exc} "
+                   "Nothing has run.")
+    if not net.ok:
+        return {
+            "ok": False,
+            "detail": (f"{node['name']} was not run: {net.detail}"),
+            "output": {"nodeId": node["id"], "agent": node["name"],
+                       "network": net.to_dict(), "exitCode": None,
+                       "stdout": ""},
+        }
     # Real-time action governance: per-invocation, AURA-authored runtime
     # enforcement compiled from the task contract (opencode permission
     # config + tool.execute.before plugin; claude directory confinement
@@ -492,10 +552,22 @@ async def agent_delegate_run(inv: dict) -> dict:
     if governance.get("args") is not None:
         args = governance["args"]
     action_events: list[dict] = []
+    # The run's stop signal, when it has one. A token already cancelled
+    # means the worker is never launched at all.
+    cancel_token = inv["context"].get("cancelToken")
+    if cancel_token is not None and getattr(cancel_token, "cancelled", False):
+        return {
+            "ok": False,
+            "detail": (f"{node['name']} was not started: the run was "
+                       "cancelled before it could be dispatched."),
+            "output": {"nodeId": node["id"], "agent": node["name"],
+                       "cancelled": True, "exitCode": None, "stdout": ""},
+        }
     try:
         res = await _run_governed(
             bin_name, args, cwd, inv["context"].get("timeoutMs"),
-            governance, action_events)
+            governance, action_events, cancel_token=cancel_token,
+            argv_prefix=net.argv_prefix)
     except Exception as e:  # noqa: BLE001 — TS catches all too
         return _no(f"{node['name']} could not be run: {e}")
 
@@ -503,7 +575,20 @@ async def agent_delegate_run(inv: dict) -> dict:
         "stdout": res.out, "exitCode": res.code, "nodeId": node["id"],
         "agent": node["name"], "args": args,
         "timedOut": bool(res.timedOut), "signal": res.signal,
+        "network": net.to_dict(),
     }
+    # Cancellation is a terminal answer, not a failure to be corrected.
+    # It is decided from the TOKEN, never from the worker's exit code: a
+    # worker that happened to exit 0 as the signal arrived was still
+    # stopped, and one that died on its own was not cancelled.
+    if cancel_token is not None and cancel_token.cancelled:
+        return {
+            "ok": False,
+            "detail": (f"{node['name']} was stopped: the run was cancelled "
+                       "while it was working. Its partial changes are "
+                       "preserved as evidence and nothing was reverted."),
+            "output": {**output, "cancelled": True},
+        }
     governed = _governed_summary(
         governance, action_events, node, res.code,
         include_events=True)

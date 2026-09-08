@@ -46,6 +46,11 @@ AgentEventType = Literal[
     "invocation.observed", "approval.required", "verification.completed",
     "result.ready", "agent.failed", "agent.cancelled",
     "worker.action", "worker.lifecycle",
+    # Cancellation is a lifecycle of its own: asked for, acted on,
+    # settled. Three events rather than one so the workspace can show
+    # "stopping" honestly instead of claiming a stop it has not seen.
+    "run.cancellation-requested", "run.stopping", "run.cancelled",
+    "worker.terminated", "approval.invalidated",
 ]
 
 
@@ -348,6 +353,11 @@ class AgentSession(ContractModel):
     verifiedEvidence: dict[str, dict] = Field(default_factory=dict)
     lastResult: AgentResult | None = None
     eventCount: int = 0
+    """The user's stop, and what it settled. Persisted so the decision
+    survives a restart: a cancelled run must come back cancelled, must
+    not continue on its own, and must never be resurrected by an
+    approval that was pending when it was stopped."""
+    cancellation: dict | None = None
     correctionChain: list[dict] = Field(default_factory=list)
     """Supervisor correction history: one entry per correction dispatch
     (CorrectionRecord dicts). Append-only. Lets a later resume continue a

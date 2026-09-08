@@ -867,12 +867,46 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         result = await anyio.to_thread.run_sync(lambda: agent.resume(request.path_params["sid"]))
         return JSONResponse({"result": _model_dump(result)})
 
-    async def agent_cancel(request: Request):
+    async def agent_network_capability(request: Request):
+        """What this host can really enforce. Read by the UI so it can
+        never describe a boundary the kernel does not provide."""
+        from ..governance import network as netgov
+
+        return JSONResponse(netgov.capability())
+
+    async def agent_resume_cancelled(request: Request):
+        """Explicitly re-attempt a cancelled run. Recovery is a decision
+        the user makes; nothing resumes a cancelled run on its own."""
         import anyio
 
-        cancelled = await anyio.to_thread.run_sync(
-            lambda: agent.cancel(request.path_params["sid"]))
-        return JSONResponse({"cancelled": bool(cancelled)})
+        sid = request.path_params["sid"]
+        result = await anyio.to_thread.run_sync(
+            lambda: agent.resume(sid, resume_cancelled=True))
+        return JSONResponse({"result": _model_dump(result)})
+
+    async def agent_cancel(request: Request):
+        """Request a stop. Returns as soon as the request is RECORDED.
+
+        Deliberately not "returns when the worker is dead": termination
+        takes as long as the process takes, and a UI that waits for it
+        would look hung at exactly the moment the user wants a response.
+        The run.cancelled event reports the actual stop.
+        """
+        import anyio
+
+        sid = request.path_params["sid"]
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — a bare STOP carries no body
+            body = {}
+        reason = str(body.get("reason") or "")[:400]
+        try:
+            record = await anyio.to_thread.run_sync(
+                lambda: agent.request_cancel(sid, reason))
+        except ValueError as exc:
+            return _err(str(exc), 404)
+        return JSONResponse({"cancelled": True, "cancellation": record})
 
     async def agent_plan(request: Request):
         review = agent.review_plan(request.path_params["sid"])
@@ -1489,6 +1523,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/agent/sessions/{sid}/approve", agent_approve, methods=["POST"]),
         Route("/agent/sessions/{sid}/resume", agent_resume, methods=["POST"]),
         Route("/agent/sessions/{sid}/cancel", agent_cancel, methods=["POST"]),
+        Route("/agent/sessions/{sid}/resume-cancelled",
+              agent_resume_cancelled, methods=["POST"]),
+        Route("/governance/network", agent_network_capability, methods=["GET"]),
         Route("/agent/sessions/{sid}/plan", agent_plan, methods=["GET"]),
         Route("/agent/sessions/{sid}/evidence", agent_evidence, methods=["GET"]),
         Route("/agent/sessions/{sid}/events", agent_events, methods=["GET"]),

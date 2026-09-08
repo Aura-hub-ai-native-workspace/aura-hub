@@ -162,6 +162,31 @@ export interface AgentEventFrame {
   payload: Record<string, unknown>;
 }
 
+/** What the backend recorded when STOP was pressed. */
+export interface CancellationRecord {
+  sessionId: string;
+  cancelled: boolean;
+  requestedAt: string;
+  reason: string;
+  requestedBy: string;
+  /** The task that was in flight, when there was one. */
+  taskId: string;
+  workerNodeId: string;
+  firstRequest?: boolean;
+}
+
+/**
+ * Per-mode enforcement truth for this host. Deliberately not a boolean:
+ * "enabled" and "enforced" are different words, and only the backend
+ * knows which one applies.
+ */
+export interface NetworkCapability {
+  platform: string;
+  method: string;
+  modes: Record<string, string>;
+  detail: string;
+}
+
 export interface SubmitResponse {
   result: AgentResult;
   sessionId: string | null;
@@ -221,8 +246,32 @@ export const centralAgentClient = {
   resume: (sessionId: string) =>
     jpost<{ result: AgentResult }>(`/agent/sessions/${encodeURIComponent(sessionId)}/resume`),
 
-  cancel: (sessionId: string) =>
-    jpost<{ cancelled: boolean }>(`/agent/sessions/${encodeURIComponent(sessionId)}/cancel`),
+  /**
+   * Ask the backend to stop this run.
+   *
+   * Resolves when the request is RECORDED, not when the worker is dead —
+   * terminating a process takes as long as the process takes, and a UI
+   * that waited for it would look hung at the moment the user most wants
+   * an answer. The run reaches CANCELLED on its own `run.cancelled`
+   * event; nothing here may render that state early.
+   */
+  cancel: (sessionId: string, reason?: string) =>
+    jpost<{ cancelled: boolean; cancellation: CancellationRecord }>(
+      `/agent/sessions/${encodeURIComponent(sessionId)}/cancel`,
+      { reason },
+    ),
+
+  /**
+   * Re-attempt a cancelled run. Explicit by design: a run the user
+   * stopped never continues on its own, and resuming starts a FRESH
+   * attempt rather than reviving the terminated one.
+   */
+  resumeCancelled: (sessionId: string) =>
+    jpost<{ result: AgentResult }>(
+      `/agent/sessions/${encodeURIComponent(sessionId)}/resume-cancelled`),
+
+  /** What this host can really enforce for worker network access. */
+  networkCapability: () => jget<NetworkCapability>('/governance/network'),
 
   /** Reasoning-free plan review: steps, capabilities, risks, approvals. */
   planReview: (sessionId: string) => jget<PlanReview>(`/agent/sessions/${encodeURIComponent(sessionId)}/plan`),

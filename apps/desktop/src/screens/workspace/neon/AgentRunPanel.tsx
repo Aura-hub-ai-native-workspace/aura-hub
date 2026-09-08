@@ -99,6 +99,14 @@ export function AgentRunPanel({
   const [events, setEvents] = useState<AgentEventFrame[]>([]);
   const [result, setResult] = useState<AgentResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Run control. `stopRequested` means AURA accepted the request, NOT
+   * that anything has stopped — the run reaches CANCELLED only when the
+   * backend says so. Rendering it any earlier would be the UI claiming
+   * a stop it has not seen.
+   */
+  const [stopRequested, setStopRequested] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const closeStream = useRef<(() => void) | null>(null);
 
   useEffect(() => () => closeStream.current?.(), []);
@@ -110,6 +118,8 @@ export function AgentRunPanel({
     setError(null);
     setResult(null);
     setEvents([]);
+    setStopRequested(false);
+    setStopping(false);
     closeStream.current?.();
     try {
       const res = await centralAgentClient.submit(message, {
@@ -136,6 +146,35 @@ export function AgentRunPanel({
       setBusy(false);
     }
   }, [text, busy, projectId, projectPath]);
+
+  const stop = useCallback(async () => {
+    if (!sessionId || stopRequested) return;
+    setStopRequested(true);
+    try {
+      await centralAgentClient.cancel(sessionId, 'stopped from the workspace');
+    } catch (e) {
+      // The request did not land, so nothing was asked to stop. Say so
+      // rather than leaving the button looking like it worked.
+      setStopRequested(false);
+      setError(e instanceof Error ? e.message : 'the stop request did not reach AURA');
+    }
+  }, [sessionId, stopRequested]);
+
+  const resumeCancelled = useCallback(async () => {
+    if (!sessionId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await centralAgentClient.resumeCancelled(sessionId);
+      setResult(res.result);
+      setStopRequested(false);
+      setStopping(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'the run could not be resumed');
+    } finally {
+      setBusy(false);
+    }
+  }, [sessionId]);
 
   /* ── derived, AURA-owned run state ─────────────────────────────── */
 
@@ -280,6 +319,24 @@ export function AgentRunPanel({
     onWorkerActivity(map);
   }, [events, onWorkerActivity]);
 
+  /* Cancellation state comes from the backend's own events. STOPPING
+     appears when AURA says it is stopping; CANCELLED only when AURA
+     says it is cancelled. No timers, no optimistic transitions. */
+  useEffect(() => {
+    for (const f of events) {
+      if (f.type === 'run.cancellation-requested') setStopRequested(true);
+      if (f.type === 'run.stopping') setStopping(true);
+      if (f.type === 'run.cancelled') setStopping(false);
+    }
+  }, [events]);
+
+  const cancelled = result?.outcome === 'cancelled';
+  const runState = cancelled ? 'CANCELLED'
+    : stopping ? 'STOPPING'
+    : stopRequested ? 'STOP REQUESTED'
+    : busy ? 'RUNNING'
+    : result ? 'DONE' : 'READY';
+
   const waiting = busy && plan.length === 0;
 
   return (
@@ -305,15 +362,52 @@ export function AgentRunPanel({
             {busy ? 'AURA is planning, delegating and verifying…'
               : 'AURA plans the work, chooses the worker, and verifies the result.'}
           </span>
-          <GlowButton
-            size="sm"
-            onClick={() => void submit()}
-            disabled={busy || text.trim().length === 0}
-            data-testid="agent-submit"
-            aria-label="Send to AURA"
-          >
-            <Icon name="arrow-right" size={15} />
-          </GlowButton>
+          <span className="flex items-center gap-2">
+            <span
+              data-testid="agent-run-state"
+              data-state={runState}
+              className={cn(
+                'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                runState === 'CANCELLED' ? 'text-neon-warning'
+                  : runState === 'STOPPING' || runState === 'STOP REQUESTED' ? 'text-neon-warning'
+                  : runState === 'RUNNING' ? 'text-neon-cyan' : 'text-text-subtle',
+              )}
+            >
+              {runState}
+            </span>
+            {busy && sessionId && (
+              <button
+                type="button"
+                onClick={() => void stop()}
+                disabled={stopRequested}
+                data-testid="agent-stop"
+                aria-label="Stop this run"
+                className="neon-focus rounded-md border border-[rgba(255,181,71,0.5)] px-2 py-1 text-[11px] font-semibold text-neon-warning transition-colors hover:bg-[rgba(255,181,71,0.12)] disabled:opacity-60"
+              >
+                {stopRequested ? 'Stopping…' : 'Stop'}
+              </button>
+            )}
+            {cancelled && (
+              <button
+                type="button"
+                onClick={() => void resumeCancelled()}
+                disabled={busy}
+                data-testid="agent-resume-cancelled"
+                className="neon-focus rounded-md border border-[rgba(125,146,255,0.45)] px-2 py-1 text-[11px] font-semibold text-neon-blue transition-colors hover:bg-[rgba(125,146,255,0.12)] disabled:opacity-60"
+              >
+                Resume
+              </button>
+            )}
+            <GlowButton
+              size="sm"
+              onClick={() => void submit()}
+              disabled={busy || text.trim().length === 0}
+              data-testid="agent-submit"
+              aria-label="Send to AURA"
+            >
+              <Icon name="arrow-right" size={15} />
+            </GlowButton>
+          </span>
         </div>
       </GlassCard>
 

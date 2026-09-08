@@ -190,11 +190,23 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
         tasks, timeout=timeout_ms / 1000,
         return_when=asyncio.FIRST_COMPLETED)
     if cancel_task and cancel_task in done and not waiter.done():
+        # Escalate on the whole process group: TERM, a grace period, then
+        # KILL. asyncio.wait rather than wait_for on purpose — wait_for
+        # CANCELS the future it times out on, so the follow-up await
+        # raised CancelledError out of the executor and the run never
+        # settled. Observed the first time a real worker was stopped.
         _signal_tree(proc, "TERM")
-        try:
-            out_b, err_b = await asyncio.wait_for(waiter, 5)
-        except TimeoutError:
-            _signal_tree(proc, "KILL"); out_b, err_b = await waiter
+        await asyncio.wait([waiter], timeout=5)
+        if not waiter.done():
+            _signal_tree(proc, "KILL")
+            await asyncio.wait([waiter], timeout=5)
+        if waiter.done() and not waiter.cancelled():
+            out_b, err_b = waiter.result()
+        else:
+            # The child is gone but its pipes never drained. Partial
+            # output is preferable to losing the settle entirely.
+            out_b, err_b = b"", b""
+            waiter.cancel()
         out = (out_b or b"").decode(errors="replace")
         err = (err_b or b"").decode(errors="replace")
         combined = f"{out}\n{err}" if err else out
@@ -242,12 +254,27 @@ async def safe_shell_with_code(command: str, cwd: str,
 
 async def run_agent(bin: str, args: list[str], cwd: str,
                     timeout_ms: int | None = None,
-                    env: dict[str, str] | None = None) -> ProcessOutput:
+                    env: dict[str, str] | None = None,
+                    cancel: asyncio.Event | None = None,
+                    argv_prefix: list[str] | None = None) -> ProcessOutput:
+    """Run an allow-listed coding agent.
+
+    ``cancel`` is what makes STOP real: run_file signals the worker's
+    whole process GROUP on it, so the worker and the children it forked
+    stop together. Without it a cancellation could only be noticed after
+    the worker finished on its own, which is not cancellation.
+
+    ``argv_prefix`` is the network-governance boundary the worker is
+    launched INSIDE (see aura.governance.network). It prefixes the argv
+    rather than wrapping it in a shell, so the allow-list check below
+    still runs against the real agent binary and no shell is introduced.
+    """
     resolved = resolve_agent_binary(bin)
     if not resolved.ok:
         raise RuntimeError(resolved.reason)
-    return await run_file([resolved.bin, *args], cwd,
-                          timeout_ms or AGENT_TIMEOUT_MS, env=env)
+    argv = [*(argv_prefix or []), resolved.bin, *args]
+    return await run_file(argv, cwd, timeout_ms or AGENT_TIMEOUT_MS,
+                          cancel=cancel, env=env)
 
 
 # silence linters about intentional parity imports
