@@ -78,26 +78,56 @@ _AUTHOR_WORDS = ("create workflow", "build workflow", "new workflow",
 _SCHEDULED_WORDS = ("every morning", "every day", "daily", "each morning",
                     "schedule", "cron", "every hour")
 _FIX_WORDS = ("fix", "repair", "run tests")
-#: Work a coding worker does. Deterministic and deliberately narrow —
-#: this is the offline path, and a wrong match here would dispatch a
-#: high-risk capability at a request that did not ask for one.
-_DELEGATE_RE = re.compile(
-    r"\b(implement|refactor|rewrite|add\s+(?:a\s+|an\s+)?"
-    r"(?:feature|endpoint|module|function|test|tests)|"
-    r"write\s+(?:the\s+)?code|build\s+(?:the\s+)?(?:feature|module))\b",
+
+#: Engineering work a coding worker performs on the project. Deliberately
+#: verb-led rather than a list of task shapes: the point of this phase is
+#: that AURA understands what the user wants done, not that it recognises
+#: a fixed catalogue of sentences. Narrow enough that a question about
+#: the repository never dispatches a high-risk capability.
+_WORK_RE = re.compile(
+    r"\b("
+    r"implement|refactor|rewrite|migrate|optimi[sz]e|"
+    r"fix|repair|debug|diagnose|investigate|troubleshoot|"
+    r"build|create|add|write|extend|improve|clean\s*up|"
+    r"harden|instrument|document|speed\s*up|"
+    r"make\s+[\w\s.\-/]{0,30}?(?:faster|safer|testable|simpler)"
+    r")\b", re.IGNORECASE)
+
+#: Things that read as engineering work but are NOT: asking about the
+#: repository, or naming another surface this installation owns.
+_NOT_WORK_RE = re.compile(
+    r"\b(what|which|why|when|who|how many|explain|describe|tell me about)\b",
     re.IGNORECASE)
+
 #: A SECOND worker reviewing the first worker's verified result. Matched
-#: only alongside delegation, so "review" alone never plans a dispatch.
+#: only alongside work, so "review" alone never plans a dispatch.
 _REVIEW_RE = re.compile(
     r"\b(?:and\s+)?(?:then\s+)?(?:have|get|ask)?\s*"
     r"(?:another|a\s+second|a\s+different)?\s*"
     r"(?:ai|agent|worker|model)?\s*review\b|\breview\s+it\b|"
-    r"\breviewed\b|\bcode\s+review\b", re.IGNORECASE)
+    r"\breviewed\b|\bcode\s*review\b|\bsecurity\s+review\b",
+    re.IGNORECASE)
+
+#: "…and fix anything the reviewer finds". Only meaningful with a review.
+_REMEDIATE_RE = re.compile(
+    r"\bfix\s+(?:any(?:thing)?|them|those|the\s+(?:issues?|problems?|"
+    r"findings?))\b|\baddress\s+(?:any|the)\s+"
+    r"(?:issues?|problems?|findings?|comments?)\b|"
+    r"\bresolve\s+(?:any|the)\s+(?:issues?|problems?|findings?)\b",
+    re.IGNORECASE)
+
+#: The user asked for proof beyond "the worker exited zero".
+_PROVE_RE = re.compile(
+    r"\b(?:make sure|ensure|verify|confirm|check)\b[^.]{0,60}?"
+    r"\b(?:tests?|nothing breaks|still works?|passes|passing|build)\b"
+    r"|\btests?\s+(?:pass|passing|green)\b"
+    r"|\bnothing\s+breaks\b", re.IGNORECASE)
+
 #: An explicitly stated task-contract scope. Only a literal, repo-
 #: relative path is accepted; nothing is inferred, because a guessed
 #: scope would either widen the worker's boundary or silently narrow it.
 _SCOPE_RE = re.compile(
-    r"\b(?:in|under|inside|within|scoped to)\s+"
+    r"\b(?:in|under|inside|within|scoped to|only\s+in)\s+"
     r"['\"`]?([A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/?)['\"`]?",
     re.IGNORECASE)
 
@@ -167,34 +197,51 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "writePath": path,
             "writeContent": content,
         })
-    delegating = (_DELEGATE_RE.search(user_message) is not None
+    delegating = (_WORK_RE.search(user_message) is not None
+                  and _NOT_WORK_RE.match(user_message.strip()) is None
                   and not authoring and not running_wf and not file_write)
     if delegating:
         wants_review = _REVIEW_RE.search(user_message) is not None
+        # Remediation only means something when someone reviewed first;
+        # otherwise "fix the issues" IS the work, not a follow-up to it.
+        wants_remediation = (wants_review
+                             and _REMEDIATE_RE.search(user_message) is not None)
+        wants_proof = _PROVE_RE.search(user_message) is not None
         scope = _delegate_scope(user_message)
+        shape = ["implementation"]
+        if wants_review:
+            shape.append("independent review by a second worker")
+        if wants_remediation:
+            shape.append("remediation of whatever the review reports")
         return AgentIntent.model_validate({
             "goal": user_message.strip(),
             "surface": "project",
             "expectedOutcome": (
-                "The change is implemented by a worker and independently "
-                "reviewed by a second worker, both verified."
-                if wants_review else
-                "The change is implemented by a worker and verified."),
+                "The requested work is carried out by a worker, verified "
+                "against its task contract, and followed by "
+                + " then ".join(shape[1:]) + "."
+                if len(shape) > 1 else
+                "The requested work is carried out by a worker and "
+                "verified against its task contract."),
             "constraints": [
                 *constraints,
                 *(["Work stays inside " + ", ".join(scope)] if scope else []),
                 *(["Review is performed by a different worker"]
                   if wants_review else []),
+                *(["The worker must show that the project still builds "
+                   "and its tests pass"] if wants_proof else []),
             ],
             "requiredCapabilities": ["agent.delegate"],
             "urgency": "immediate",
-            "complexity": "multi-step" if wants_review else "single",
+            "complexity": "multi-step" if len(shape) > 1 else "single",
             "approvalLikely": True,
             # AURA-owned planning inputs, not authority: the planner
             # reads these to build the task contract, and every one of
             # them is re-validated there.
             "delegateTask": user_message.strip(),
             "delegateReview": wants_review,
+            "delegateRemediate": wants_remediation,
+            "delegateProve": wants_proof,
             "delegateScope": scope,
         })
     if git_status and not authoring and not running_wf:
@@ -264,8 +311,10 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
         "expectedOutcome": "The requested outcome is achieved and evidenced.",
         "needsClarification": True,
         "clarificationQuestion": (
-            "I could not map this request to a capability this installation "
-            "offers. What concrete outcome do you want?"
+            "I could not tell what work you want done. Describe the change "
+            "you want in the project — for example \"implement token "
+            "refresh in src/auth\" — and I will plan it, choose a worker "
+            "and verify the result."
         ),
         "ambiguity": "ambiguous",
         "confidence": 0.3,

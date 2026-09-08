@@ -48,6 +48,27 @@ class ProviderHealth:
     calls: int = 0
 
 
+def default_model_port(path: str | None = None):
+    """The Central Agent's reasoning model, or None when unconfigured.
+
+    AURA's own reasoning is a SEPARATE concern from the worker runtimes:
+    a machine with Claude Code and OpenCode connected still has no model
+    AURA can think with, because those are workers it delegates to, not
+    its own planner. This is the one place the two are joined, and it
+    joins them only when an operator has written a provider file.
+
+    Returns None rather than raising: no provider means AURA falls back
+    to deterministic planning and says so, which is the honest degraded
+    mode — never a fabricated plan and never a hidden default endpoint.
+    Keys are read from the environment at call time by the port itself
+    and are never persisted here.
+    """
+    specs = [s for s in load_providers(path) if s.enabled]
+    if not specs:
+        return None
+    return RoutedModelPort(specs)
+
+
 def load_providers(path: str | None = None) -> list[ProviderSpec]:
     """Read the operator's provider file (~/.aura/agent/providers.json).
 
@@ -98,7 +119,7 @@ class RoutedModelPort(ModelPort):
         self._post = post or _http_post_json
         self._circuit_opened_at: dict[str, float] = {}
 
-    def health(self) -> dict:
+    def health_snapshot(self) -> dict:
         """Operator-facing per-provider snapshot. Circuits report OPEN only
         while their cooldown is running — a healed provider re-enters the
         rotation automatically once the cooldown elapses."""

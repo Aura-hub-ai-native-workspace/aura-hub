@@ -36,10 +36,18 @@ class TestHeuristic:
         intent = heuristic_interpret("flurb the bazzle")
         assert intent.needsClarification is True
 
-    def test_fixing_intent_does_not_silently_plan_execution(self):
+    def test_fixing_intent_plans_governed_delegation(self):
+        """"Fix my tests" used to be answered with a clarification
+        question, because this installation had no way to act on it.
+        It does now: the request becomes a delegated task under a task
+        contract. What must NOT change is that it stays governed —
+        agent.delegate is high risk, so it still parks for a human
+        before any worker runs, and "silently" was always the operative
+        word in the old name."""
         intent = heuristic_interpret("fix my tests")
+        assert intent.requiredCapabilities == ["agent.delegate"]
         assert intent.approvalLikely is True
-        assert intent.requiredCapabilities == []
+        assert intent.needsClarification is False
 
 
 class TestModelMode:

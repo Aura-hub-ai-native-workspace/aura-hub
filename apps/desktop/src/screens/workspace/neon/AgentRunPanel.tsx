@@ -27,11 +27,31 @@ import { GlowButton } from './GlowButton';
 
 interface PlanTask {
   id: string;
+  description: string;
+  role: string;
+  dependsOn: string[];
+  /** Planned up front, dispatched only if the upstream reports findings. */
+  conditional: boolean;
   state: string;
   verified: boolean | null;
   detail: string;
   worker: string;
   lifecycle: string;
+}
+
+interface Handoff {
+  from: string;
+  to: string;
+  toWorker: string;
+  invocations: string[];
+}
+
+interface ObjectiveState {
+  text: string;
+  expected: string;
+  acceptance: string[];
+  accepted: boolean | null;
+  unmet: string[];
 }
 
 interface GovernedAction {
@@ -119,42 +139,106 @@ export function AgentRunPanel({
 
   /* ── derived, AURA-owned run state ─────────────────────────────── */
 
+  const blank = (id: string): PlanTask => ({
+    id, description: '', role: '', dependsOn: [], conditional: false,
+    state: 'pending', verified: null, detail: '', worker: '', lifecycle: 'IDLE',
+  });
+
   const plan = useMemo<PlanTask[]>(() => {
     const order: string[] = [];
     const byId = new Map<string, PlanTask>();
+    const take = (id: string) => {
+      if (!byId.has(id)) { order.push(id); byId.set(id, blank(id)); }
+      return byId.get(id)!;
+    };
     for (const f of events) {
       const p = f.payload ?? {};
-      if (f.type === 'plan.created' && Array.isArray(p.tasks)) {
-        for (const raw of p.tasks as unknown[]) {
-          const id = str(raw);
-          if (!id || byId.has(id)) continue;
-          order.push(id);
-          byId.set(id, { id, state: 'pending', verified: null, detail: '', worker: '', lifecycle: 'IDLE' });
+      if (f.type === 'plan.created') {
+        // AURA sends the plan it derived: ids, what each step is for, the
+        // role it requires and what it waits on. Nothing here is inferred
+        // from the task id.
+        const rows = Array.isArray(p.plan) ? (p.plan as Record<string, unknown>[]) : [];
+        for (const row of rows) {
+          const id = str(row.id);
+          if (!id) continue;
+          byId.set(id, {
+            ...take(id),
+            description: str(row.description),
+            role: str(row.role),
+            dependsOn: Array.isArray(row.dependsOn) ? row.dependsOn.map(str) : [],
+            conditional: row.conditional === true,
+          });
+        }
+        if (rows.length === 0 && Array.isArray(p.tasks)) {
+          for (const raw of p.tasks as unknown[]) take(str(raw));
         }
       }
       if (f.type === 'invocation.observed' && p.taskId) {
         const id = str(p.taskId);
-        const prev = byId.get(id) ?? { id, state: 'pending', verified: null, detail: '', worker: '', lifecycle: 'IDLE' };
-        if (!byId.has(id)) order.push(id);
         byId.set(id, {
-          ...prev,
-          state: str(p.state) || prev.state,
-          verified: typeof p.verified === 'boolean' ? p.verified : prev.verified,
-          detail: str(p.detail) || prev.detail,
+          ...take(id),
+          state: str(p.state) || take(id).state,
+          verified: typeof p.verified === 'boolean' ? p.verified : take(id).verified,
+          detail: str(p.detail) || take(id).detail,
         });
       }
       if (f.type === 'worker.lifecycle' && p.taskId) {
         const id = str(p.taskId);
-        const prev = byId.get(id) ?? { id, state: 'pending', verified: null, detail: '', worker: '', lifecycle: 'IDLE' };
-        if (!byId.has(id)) order.push(id);
+        const prev = take(id);
         byId.set(id, {
           ...prev,
           worker: str(p.worker) || str(p.nodeId) || prev.worker,
           lifecycle: str(p.lifecycle) || prev.lifecycle,
+          state: str(p.state) || prev.state,
+          verified: typeof p.verified === 'boolean' ? p.verified : prev.verified,
         });
       }
     }
     return order.map((id) => byId.get(id)!).filter(Boolean);
+  }, [events]);
+
+  /* The user's objective, and whether AURA accepted it. Both come from
+     the backend: the workspace never decides that a run succeeded. */
+  const objective = useMemo<ObjectiveState>(() => {
+    const out: ObjectiveState = {
+      text: '', expected: '', acceptance: [], accepted: null, unmet: [],
+    };
+    for (const f of events) {
+      const p = f.payload ?? {};
+      if (f.type === 'plan.created') {
+        out.text = str(p.objective) || out.text;
+        out.expected = str(p.expectedOutcome) || out.expected;
+        if (Array.isArray(p.acceptance)) out.acceptance = p.acceptance.map(str);
+      }
+      if (f.type === 'verification.completed') {
+        if (typeof p.objectiveAccepted === 'boolean') out.accepted = p.objectiveAccepted;
+        if (Array.isArray(p.unmet)) out.unmet = p.unmet.map(str);
+      }
+    }
+    return out;
+  }, [events]);
+
+  /* Verified results AURA passed from one worker to the next. Drawn from
+     the lineage the backend recorded, never from adjacency in the plan. */
+  const handoffs = useMemo<Handoff[]>(() => {
+    const byTask = new Map<string, string>();
+    const out: Handoff[] = [];
+    for (const f of events) {
+      if (f.type !== 'worker.lifecycle') continue;
+      const p = f.payload ?? {};
+      const id = str(p.taskId);
+      const worker = str(p.worker) || str(p.nodeId);
+      if (id && worker) byTask.set(id, worker);
+      const consumed = Array.isArray(p.consumedFrom) ? p.consumedFrom.map(str) : [];
+      const deps = Array.isArray(p.dependsOn) ? p.dependsOn.map(str) : [];
+      if (consumed.length === 0 || deps.length === 0) continue;
+      for (const from of deps) {
+        const key = `${from}->${id}`;
+        if (out.some((h) => `${h.from}->${h.to}` === key)) continue;
+        out.push({ from, to: id, toWorker: worker, invocations: consumed });
+      }
+    }
+    return out.map((h) => ({ ...h, from: byTask.get(h.from) ? `${h.from} (${byTask.get(h.from)})` : h.from }));
   }, [events]);
 
   const actions = useMemo<GovernedAction[]>(() => {
@@ -239,6 +323,19 @@ export function AgentRunPanel({
         </p>
       )}
 
+      {/* USER OBJECTIVE */}
+      {objective.text && (
+        <GlassCard className="p-3" data-testid="agent-objective">
+          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
+            User objective
+          </p>
+          <p className="text-[12.5px] leading-relaxed text-text">{objective.text}</p>
+          {objective.expected && (
+            <p className="mt-1 text-[11px] text-text-muted">{objective.expected}</p>
+          )}
+        </GlassCard>
+      )}
+
       {/* PLAN */}
       {(plan.length > 0 || waiting) && (
         <GlassCard className="p-3" data-testid="agent-plan">
@@ -252,12 +349,37 @@ export function AgentRunPanel({
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="font-medium text-text">{t.id}</span>
+                  {t.role && <span className="text-text-subtle"> · {t.role}</span>}
                   {t.worker && <span className="text-text-muted"> — {t.worker}</span>}
                   <span className={cn('ml-1.5', TASK_TONE[t.state] ?? 'text-text-subtle')}>
                     {t.state}{t.verified === true ? ' · verified' : t.verified === false ? ' · unverified' : ''}
                   </span>
+                  {t.description && (
+                    <span className="block truncate text-[11px] text-text-muted">
+                      {t.description}
+                      {t.dependsOn.length > 0 && <> · after {t.dependsOn.join(', ')}</>}
+                      {t.conditional && <> · only if the review reports findings</>}
+                    </span>
+                  )}
                   {t.detail && <span className="block truncate text-[11px] text-text-subtle">{t.detail}</span>}
                 </span>
+              </li>
+            ))}
+          </ul>
+        </GlassCard>
+      )}
+
+      {/* HANDOFF */}
+      {handoffs.length > 0 && (
+        <GlassCard className="p-3" data-testid="agent-handoff">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
+            Handoff
+          </p>
+          <ul className="space-y-1">
+            {handoffs.map((h) => (
+              <li key={`${h.from}->${h.to}`} className="text-[11.5px] text-text-muted">
+                <span className="text-text">{h.from}</span> → <span className="text-text">{h.to}{h.toWorker ? ` (${h.toWorker})` : ''}</span>
+                <span className="text-text-subtle"> · verified result, {h.invocations.length} invocation{h.invocations.length === 1 ? '' : 's'}</span>
               </li>
             ))}
           </ul>
@@ -304,6 +426,18 @@ export function AgentRunPanel({
             AURA response
           </p>
           <p className="text-[12.5px] leading-relaxed text-text">{result.summary}</p>
+          {objective.accepted !== null && (
+            <p
+              data-testid="agent-objective-verdict"
+              data-accepted={objective.accepted}
+              className={cn('mt-2 text-[11.5px]', objective.accepted ? 'text-neon-success' : 'text-neon-warning')}
+            >
+              Objective {objective.accepted ? 'accepted' : 'NOT accepted'}
+              {!objective.accepted && objective.unmet.length > 0 && (
+                <span className="text-text-muted"> — {objective.unmet.join('; ')}</span>
+              )}
+            </p>
+          )}
           <p className="mt-2 text-[11px] text-text-subtle">
             outcome: <span className="font-semibold">{result.outcome}</span>
             {result.performed.length > 0 && <> · performed: {result.performed.join(', ')}</>}

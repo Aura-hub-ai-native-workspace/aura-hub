@@ -54,6 +54,54 @@ class ContextBundle:
         return "\n".join(parts)
 
 
+#: Bounded project sampling. A planner needs to know what KIND of
+#: project this is and roughly where things live; it does not need the
+#: repository. Everything here is capped, and every item it produces is
+#: marked untrusted external content by the assembler.
+MAX_PROJECT_PATHS = 40
+PROJECT_SCAN_TIMEOUT_MS = 8_000
+
+
+def scan_project(path: str) -> list[str]:
+    """A cheap, read-only look at a project, through the ONE exec boundary.
+
+    Returns bounded strings: the top-level layout and a sample of tracked
+    paths. Never the file CONTENTS — a planner that needs to read code
+    delegates that to a worker under a task contract, which is the whole
+    point of the architecture. A directory that is not a git worktree, or
+    a git that does not answer, yields nothing rather than an error: the
+    absence of context is a smaller problem than a broken submit.
+    """
+    import os
+
+    from ..environment.procexec import run_argv
+
+    if not path or not os.path.isdir(path):
+        return []
+    out: list[str] = []
+    try:
+        listing = sorted(
+            entry.name + ("/" if entry.is_dir() else "")
+            for entry in list(os.scandir(path))[:200]
+            if not entry.name.startswith("."))[:MAX_PROJECT_PATHS]
+    except OSError:
+        listing = []
+    if listing:
+        out.append("top level: " + ", ".join(listing))
+    try:
+        result = run_argv(["git", "ls-files"], timeout_ms=PROJECT_SCAN_TIMEOUT_MS,
+                          cwd=path)
+    except Exception:  # noqa: BLE001 — context is optional, never fatal
+        return out
+    if result.exit_code != 0:
+        return out
+    files = [line for line in (result.stdout or "").splitlines() if line]
+    if files:
+        out.append(f"tracked files: {len(files)}")
+        out.append("sample: " + ", ".join(files[:MAX_PROJECT_PATHS]))
+    return out
+
+
 class ContextAssembler:
     def __init__(self, workflow_lister=None, capability_lister=None,
                  approval_lister=None, session_loader=None,

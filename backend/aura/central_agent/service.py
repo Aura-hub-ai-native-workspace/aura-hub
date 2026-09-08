@@ -64,7 +64,7 @@ def _connected_node_ids(fabric_cfg) -> set[str]:
 
 _PLAN_PROPOSAL_SYSTEM = """You are AURA's task planner. Propose ONLY a JSON object shaped {"tasks": [...]} — a proposal, never authority. AURA validates everything and owns task identity, ordering, workers, and approval.
 One task: {"id": "short-label (optional)", "description": "what must be done", "capabilityId": "one of ALLOWED CAPABILITIES", "nodeId": "one of CONNECTED NODES, or omit for AURA routing", "dependsOn": ["labels of prerequisite tasks"], "inputFrom": "literal" (default) or "upstream-output", "input": {"task": "plain-language brief (agent tasks)"}, "scopePaths": ["repo-relative dirs, same or narrower downstream"], "verificationKind": "read-back" | "exit-code" | "schema-match" | "audit-only", "verification": "how success is confirmed (required for agent tasks)"}.
-Agent work uses capabilityId "agent.delegate". A task may state "workerRole": "code" | "review" | "execute" to require a suitable worker (omit for default routing). A task with inputFrom "upstream-output" MUST name dependsOn and receives verified upstream evidence as data. Optionally add top-level "acceptance": [{"kind": ..., "description": "objective proof required", "tasks": ["labels"]}] — objective criteria beyond per-task success. Rules, no exceptions: no shell commands, no binaries, no approval/policy/secret/credential fields, no absolute or escaping paths, no invented capabilities or nodes."""
+Agent work uses capabilityId "agent.delegate". A task may state "workerRole": "code" | "review" | "execute" to require a suitable worker (omit for default routing), "distinctWorkerFrom": ["labels"] so a reviewer is never the worker that produced the work, and "runWhen": "upstream-reports-findings" for remediation that should only run when a dependency's verified result reports something to address. A task with inputFrom "upstream-output" MUST name dependsOn and receives verified upstream evidence as data. Optionally add top-level "acceptance": [{"kind": ..., "description": "objective proof required", "tasks": ["labels"]}] — objective criteria beyond per-task success. Rules, no exceptions: no shell commands, no binaries, no approval/policy/secret/credential fields, no absolute or escaping paths, no invented capabilities or nodes."""
 
 
 def _engine_config(bus) -> Any:
@@ -140,7 +140,13 @@ class CentralAgent:
         self.evidence = EvidenceCollector(lambda: (audit_store.load() if audit_store else []))
         ledger = fabric_cfg.ledger
         store = getattr(self, "workflow_store", None)
+        # Project context is COLLECTED, not assumed. The scanner is
+        # bounded and read-only, and everything it returns is fenced as
+        # untrusted external content before it can reach a model prompt.
+        from .context import scan_project
+
         self.context = ContextAssembler(
+            project_scanner=scan_project,
             workflow_lister=(lambda: store.list()[:20]) if store else None,
             capability_lister=lambda: [
                 type("V", (), {"id": c.id, "description": c.description,
@@ -202,6 +208,14 @@ class CentralAgent:
             result = self._fail(session, f"Unexpected failure: {exc}")
 
         self.sessions.finish(session, result)
+        # AURA's own answer joins the conversation. Without it the session
+        # holds only the user's side, so a follow-up ("now add rate
+        # limiting") is interpreted with no memory of what AURA just did
+        # or whether it worked — the continuation reads as a fresh,
+        # contextless request. Bounded, and it is AURA's synthesised
+        # summary, never model reasoning and never worker output.
+        self.sessions.append_message(
+            session, "agent", f"[{result.outcome}] {result.summary}"[:2000])
         # Phase I: parked legs keep their verified evidence for resume;
         # terminal outcomes drop it (a later resume must not inherit it).
         if result.outcome != "awaiting-approval":
@@ -284,7 +298,21 @@ class CentralAgent:
         session.pendingQuestion = None
         self._active_plans[plan.planId] = plan
         session.activePlanId = plan.planId
-        self._emit("plan.created", sid, planId=plan.planId, tasks=[t.id for t in plan.tasks])
+        self._emit(
+            "plan.created", sid, planId=plan.planId,
+            tasks=[t.id for t in plan.tasks],
+            # What the user asked for, and the shape AURA derived from it.
+            # The workspace shows the objective it is working toward; the
+            # per-task rows let it name roles and dependencies without
+            # inventing either.
+            objective=intent.goal[:400],
+            expectedOutcome=intent.expectedOutcome[:400],
+            plan=[{"id": t.id, "description": t.description[:160],
+                   "role": t.workerRole, "dependsOn": list(t.dependsOn),
+                   "conditional": getattr(t, "runWhen", "always") != "always",
+                   "scopePaths": list((t.input or {}).get("scopePaths") or [])}
+                  for t in plan.tasks],
+            acceptance=[c.description[:200] for c in (plan.acceptance or [])])
 
         # 3. discovery — what exists for these tasks (read-only)
         tools = self.discovery.available_for([t.capabilityId for t in plan.tasks if t.capabilityId])
@@ -495,7 +523,9 @@ class CentralAgent:
         sid = session.sessionId
         report = self.verifier.verify(plan, outcome.outcomes)
         self._emit("verification.completed", sid, passed=report.passed,
-                   unverified=report.unverifiedActions)
+                   unverified=report.unverifiedActions,
+                   objectiveAccepted=report.objectiveAccepted,
+                   unmet=report.unmetAcceptance)
         summary_bits = [f"{len(outcome.outcomes)} task(s) executed"]
         if report.passed:
             summary_bits.append("all verifications passed")
@@ -522,10 +552,13 @@ class CentralAgent:
         # Phase H honesty: every task verified but the objective
         # acceptance unmet is NOT success. Report the objective as
         # failed with the unmet criteria named — never fabricate it.
+        # An unaccepted objective is never reported as success. The guard
+        # used to require every row to be "done", which silently exempted
+        # any run containing a restored or unnecessary task — exactly the
+        # runs where the distinction matters most.
         if (report.objectiveAccepted is False
                 and not report.unverifiedActions
-                and report.outcomes
-                and all(r.state == "done" for r in report.outcomes)):
+                and report.outcomes):
             unmet = "; ".join(report.unmetAcceptance)
             return AgentResult(
                 status="failed", outcome="failed",
@@ -1142,7 +1175,11 @@ class CentralAgent:
                        verified=o.verified, detail=o.detail[:200])
         self._emit_worker_observations(session.sessionId, outcome)
         report = self.verifier.verify(plan, outcome.outcomes)
-        self._emit("verification.completed", session.sessionId, passed=report.passed)
+        self._emit("verification.completed", session.sessionId,
+                   passed=report.passed,
+                   unverified=report.unverifiedActions,
+                   objectiveAccepted=report.objectiveAccepted,
+                   unmet=report.unmetAcceptance)
         bundle = self.evidence.collect(session.sessionId, plan.planId,
                                        outcome.outcomes,
                                        f"Resumed; {report.detail}", _now())

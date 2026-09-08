@@ -139,6 +139,25 @@ class ExecutionController:
                 ))
                 continue
 
+            # Conditional work: a task planned as remediation runs only
+            # when the verified upstream result actually reports
+            # something to address. The upstream text is DATA — reading
+            # it can skip a dispatch AURA was authorised to make, never
+            # authorise one, never satisfy a verification, and never
+            # decide acceptance. Anything unreadable runs the task.
+            if getattr(task, "runWhen", "always") != "always":
+                decision = self._conditional_gate(task, result)
+                if decision is not None:
+                    result.outcomes.append(decision)
+                    result.worker_assignments[task.id] = {
+                        "taskId": task.id, "nodeId": "", "role":
+                        getattr(task, "workerRole", None) or "",
+                        "capabilityId": task.capabilityId,
+                        "lifecycle": "COMPLETED", "state": "skipped",
+                        "verified": True,
+                    }
+                    continue
+
             # Governed handoff gate: a task declaring inputFrom ==
             # "upstream-output" may only run when EVERY dependency has
             # verified evidence in THIS run. Anything else blocks it here —
@@ -256,6 +275,35 @@ class ExecutionController:
                     out.add(str(node_id))
                     break
         return out
+
+    def _conditional_gate(self, task: Any,
+                          result: ExecutionOutcome) -> TaskOutcome | None:
+        """Decide a runWhen task, or None to dispatch it normally.
+
+        Returns a settled `skipped` outcome ONLY when every dependency has
+        verified evidence in this run AND all of them plainly report
+        nothing to address. A missing dependency, a missing verdict, a
+        malformed one, or conflicting ones all return None — the task
+        runs, which is the direction that cannot manufacture success.
+        """
+        from .findings import review_verdict, should_run_after
+
+        deps = list(task.dependsOn or [])
+        if not deps:
+            return None
+        verdicts: list[str] = []
+        for dep in deps:
+            evidence = result.verified_outputs.get(dep)
+            if evidence is None:
+                return None  # nothing proven upstream: let the gates decide
+            verdicts.append(review_verdict(str(evidence.get("stdout") or "")))
+        run, why = should_run_after(verdicts)
+        if run:
+            return None
+        return TaskOutcome(
+            taskId=task.id, state="skipped", performed=False, verified=True,
+            detail=(f"Not needed: {why}. Nothing was dispatched, and "
+                    "nothing was changed."))
 
     # ── governed handoff ───────────────────────────────────────────────
     def _gate_handoff(self, task: Any, result: ExecutionOutcome,
@@ -510,6 +558,14 @@ class ExecutionController:
                 outcome.state, "FAILED")
             assignment["state"] = outcome.state
             assignment["verified"] = outcome.verified
+            # Handoff lineage: which verified upstream results fed this
+            # worker. Read from the argument, not from the outcome — the
+            # outcome is annotated with it further down this same method,
+            # so reading it here would always find it empty.
+            if handoff_consumed:
+                assignment["consumedFrom"] = list(handoff_consumed)
+            if getattr(task, "dependsOn", None):
+                assignment["dependsOn"] = list(task.dependsOn)
         governed = output.get("governedActions") or {}
         events = governed.get("events") or output.get("actionEvents")
         if isinstance(events, list) and events:

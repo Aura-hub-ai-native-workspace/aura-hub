@@ -138,6 +138,15 @@ class TaskSpecification(ContractModel):
     closed — AURA never lets a worker review its own work and call that
     independent."""
     distinctWorkerFrom: list[str] = Field(default_factory=list)
+    """When this task actually needs to run. "always" is the default.
+    "upstream-reports-findings" plans remediation up front but dispatches
+    it only when a dependency's VERIFIED result reports something to fix
+    — so "fix anything the reviewer finds" is one plan rather than a
+    second round trip through the user. The decision reads bounded
+    upstream evidence as DATA: a review that reports nothing skips the
+    dispatch, and anything AURA cannot read plainly runs the task, which
+    fails toward doing the work rather than toward claiming success."""
+    runWhen: Literal["always", "upstream-reports-findings"] = "always"
     risk: RiskLevel = "low"
     reversible: bool = True
     verification: VerificationRequirement = Field(default_factory=VerificationRequirement)

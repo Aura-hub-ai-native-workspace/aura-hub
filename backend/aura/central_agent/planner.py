@@ -18,6 +18,7 @@ from ..contracts import (
     TaskSpecification,
     VerificationRequirement,
 )
+from .findings import verdict_instruction
 
 MAX_TASKS = 8
 
@@ -32,7 +33,16 @@ _MODEL_TASK_KEYS = {
     "id", "description", "capabilityId", "nodeId", "dependsOn",
     "inputFrom", "input", "scopePaths", "verificationKind",
     "verification", "risk", "workerRole",
+    # A model may say "this review must not be done by the worker that
+    # wrote the code" and "this remediation only runs if the review found
+    # something". Both NARROW what happens; neither can widen authority,
+    # and both are resolved against the proposal's own task labels.
+    "distinctWorkerFrom", "runWhen",
 }
+
+#: runWhen values a model may propose. Closed on purpose: an unknown
+#: value would silently become "always".
+_MODEL_RUN_WHEN = {"always", "upstream-reports-findings"}
 
 #: Closed worker-role vocabulary a model may propose (Phase G).
 #: Anything else is rejected; the role only narrows routing.
@@ -206,85 +216,107 @@ def _delegate_input(task_text: str, scope: list[str]) -> dict:
     return payload
 
 
-def plan_delegate(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
-    """One worker implements the change, under a task contract.
+def plan_delegated_work(intent: AgentIntent, session_id: str,
+                        now: str) -> TaskPlan:
+    """Build the task graph for delegated engineering work.
 
-    The plan states a ROLE, never a worker: Phase G matching picks an
-    eligible connected worker at dispatch, and no eligible worker fails
-    the task closed rather than dispatching an unsuitable one.
-    """
-    scope = _validated_scope(intent)
-    return TaskPlan(
-        planId=_plan_id(), sessionId=session_id, intent=intent,
-        tasks=[TaskSpecification(
-            id="implement",
-            description="Implement the requested change",
-            capabilityId="agent.delegate",
-            input=_delegate_input(_delegate_text(intent), scope),
-            workerRole="code",
-            risk="high",
-            reversible=False,
-            verification=VerificationRequirement(
-                kind="exit-code",
-                description=("The worker exits 0 and every file it changed "
-                             "lies inside the declared scope."))),
-        ],
-        acceptance=[_accept(
-            "exit-code",
-            "The requested change was implemented by a worker and verified.",
-            tasks=["implement"])],
-        createdAt=now)
+    One builder, not a catalogue of templates. The shape comes from what
+    the request actually asked for — work, optionally an independent
+    review, optionally remediation of what that review reports — so the
+    graph grows with the objective instead of matching a sentence:
 
+        implement                       "add a multiply function"
+        implement → review              "…and have another AI review it"
+        implement → review → remediate  "…and fix anything it finds"
 
-def plan_delegate_review(intent: AgentIntent, session_id: str,
-                         now: str) -> TaskPlan:
-    """Two workers: one implements, a second reviews the VERIFIED result.
-
-    The review task consumes upstream-output, so it cannot run until the
-    implementation is done AND verified in this run, and what reaches it
-    is AURA's bounded evidence envelope — never the first worker's
-    private context, and never a direct worker-to-worker channel.
+    The plan states ROLES, never workers: Phase G matching picks eligible
+    connected workers at dispatch, the reviewer is barred from being the
+    implementer, and no eligible worker fails the task closed rather than
+    dispatching an unsuitable one. Acceptance covers every planned task,
+    so finishing the implementation is never on its own the objective.
     """
     scope = _validated_scope(intent)
     text = _delegate_text(intent)
+    wants_review = bool(getattr(intent, "delegateReview", False))
+    wants_remediation = bool(getattr(intent, "delegateRemediate", False))
+    prove = bool(getattr(intent, "delegateProve", False))
+
+    build_note = (
+        " Before finishing, check that the project still builds and that "
+        "its tests pass, and say plainly in your reply what you ran and "
+        "what the result was." if prove else "")
+    build_check = (" The worker also reports what it ran to show the "
+                   "project still builds and its tests pass; that report "
+                   "is the worker's account, not a check AURA performed."
+                   if prove else "")
+
+    tasks: list[TaskSpecification] = [TaskSpecification(
+        id="implement",
+        description="Carry out the requested change",
+        capabilityId="agent.delegate",
+        input=_delegate_input(text + build_note, scope),
+        workerRole="code",
+        risk="high", reversible=False,
+        verification=VerificationRequirement(
+            kind="exit-code",
+            description=("The worker exits 0 and every file it changed "
+                         "lies inside the declared scope." + build_check)))]
+    covered = ["implement"]
+
+    if wants_review:
+        tasks.append(TaskSpecification(
+            id="review",
+            description="Independently review the completed change",
+            capabilityId="agent.delegate",
+            input=_delegate_input(
+                "Review the change described in the verified results "
+                "above. Report correctness, security and quality problems "
+                "you find, and say plainly whether the change is "
+                "acceptable. Do not modify any file."
+                + verdict_instruction(), scope),
+            inputFrom="upstream-output",
+            dependsOn=["implement"],
+            workerRole="review",
+            distinctWorkerFrom=["implement"],
+            risk="high", reversible=True,
+            verification=VerificationRequirement(
+                kind="exit-code",
+                description=("The reviewing worker exits 0 and stays "
+                             "inside the declared scope."))))
+        covered.append("review")
+
+    if wants_remediation:
+        tasks.append(TaskSpecification(
+            id="remediate",
+            description="Address what the review reported",
+            capabilityId="agent.delegate",
+            input=_delegate_input(
+                "The review above lists problems with the change. Fix "
+                "exactly those problems and nothing else. If the review "
+                "reports no problems, change nothing and say so."
+                + build_note, scope),
+            inputFrom="upstream-output",
+            dependsOn=["review"],
+            workerRole="code",
+            runWhen="upstream-reports-findings",
+            risk="high", reversible=False,
+            verification=VerificationRequirement(
+                kind="exit-code",
+                description=("The worker exits 0 and every file it changed "
+                             "lies inside the declared scope, or the task "
+                             "was not needed because the review reported "
+                             "nothing to fix."))))
+        covered.append("remediate")
+
+    accepted = "The requested work was carried out and verified"
+    if wants_review:
+        accepted += (", and independently reviewed by a different worker")
+    if wants_remediation:
+        accepted += ", with anything the review reported addressed"
     return TaskPlan(
         planId=_plan_id(), sessionId=session_id, intent=intent,
-        tasks=[
-            TaskSpecification(
-                id="implement",
-                description="Implement the requested change",
-                capabilityId="agent.delegate",
-                input=_delegate_input(text, scope),
-                workerRole="code",
-                risk="high", reversible=False,
-                verification=VerificationRequirement(
-                    kind="exit-code",
-                    description=("The worker exits 0 and every file it "
-                                 "changed lies inside the declared scope."))),
-            TaskSpecification(
-                id="review",
-                description="Independently review the implemented change",
-                capabilityId="agent.delegate",
-                input=_delegate_input(
-                    "Review the change described in the verified results "
-                    "above. Report correctness, security and quality "
-                    "problems you find, and say plainly whether the change "
-                    "is acceptable. Do not modify any file.", scope),
-                inputFrom="upstream-output",
-                dependsOn=["implement"],
-                workerRole="review",
-                distinctWorkerFrom=["implement"],
-                risk="high", reversible=True,
-                verification=VerificationRequirement(
-                    kind="exit-code",
-                    description=("The reviewing worker exits 0 and stays "
-                                 "inside the declared scope."))),
-        ],
-        acceptance=[_accept(
-            "exit-code",
-            ("The change was implemented AND independently reviewed by a "
-             "second worker, both verified."),
-            tasks=["implement", "review"])],
+        tasks=tasks,
+        acceptance=[_accept("exit-code", accepted + ".", tasks=covered)],
         createdAt=now)
 
 
@@ -425,6 +457,18 @@ class TaskPlanner:
                     raise PlanningError(
                         f"task {label} proposes unknown worker role "
                         f"'{role}'")
+                run_when = rt.get("runWhen")
+                if run_when is not None and run_when not in _MODEL_RUN_WHEN:
+                    raise PlanningError(
+                        f"task {label} proposes unknown runWhen "
+                        f"'{run_when}'")
+                distinct = rt.get("distinctWorkerFrom")
+                if distinct is not None and (
+                        not isinstance(distinct, list)
+                        or not all(isinstance(d, str) for d in distinct)):
+                    raise PlanningError(
+                        f"task {label} distinctWorkerFrom must be a list "
+                        "of task labels")
                 staged.append({"index": i, "label": label, "raw": rt,
                                "cap": cap, "from": from_})
             # Pass 2 — dependency resolution to positional form.
@@ -459,6 +503,19 @@ class TaskPlanner:
                         raise PlanningError(
                             f"task {s['label']} has a malformed dependency")
                 s["deps"] = resolved
+                distinct_raw = (s["raw"].get("distinctWorkerFrom") or [])
+                distinct_idx: list[int] = []
+                for d in distinct_raw:
+                    if d not in by_label:
+                        raise PlanningError(
+                            f"task {s['label']} must differ from unknown "
+                            f"task '{d}'")
+                    if by_label[d] == s["index"]:
+                        raise PlanningError(
+                            f"task {s['label']} cannot be required to "
+                            "differ from itself")
+                    distinct_idx.append(by_label[d])
+                s["distinct"] = distinct_idx
             # Pass 3 — AURA owns identity + ordering: canonical ids in
             # topological order (ties keep proposal order), deps remapped.
             order = _topo_indices(len(staged),
@@ -497,6 +554,10 @@ class TaskPlanner:
                     input=task_input,
                     inputFrom=s["from"],  # type: ignore[arg-value]
                     dependsOn=dep_ids,
+                    distinctWorkerFrom=sorted({canon[d]
+                                               for d in s.get("distinct")
+                                               or []}),
+                    runWhen=rt.get("runWhen") or "always",
                     nodeId=rt.get("nodeId"),
                     workerRole=rt.get("workerRole"),
                     risk=risk,  # type: ignore[arg-value]
@@ -713,9 +774,7 @@ class TaskPlanner:
             # still falls through to its own validated proposal, so
             # adding this template cannot flatten a richer model DAG
             # into a one-task plan.
-            plan = (plan_delegate_review(intent, session_id, now)
-                    if getattr(intent, "delegateReview", False)
-                    else plan_delegate(intent, session_id, now))
+            plan = plan_delegated_work(intent, session_id, now)
         elif run_ref is not None:
             resolved = self._resolve_workflow(run_ref)
             if resolved is None:

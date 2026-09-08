@@ -74,12 +74,29 @@ def main(argv: list[str] | None = None) -> int:
     audit = AuditStore(home / "audit" / "trail.jsonl")
     ledger = ApprovalLedger(audit_append=audit.append)
 
+    # `--mode model` used to construct an IntentCompiler with no port,
+    # which raises before anything runs. The port comes from the same
+    # operator provider file the service reads; without one, the honest
+    # answer is to say so rather than to fail with a type error.
+    from .model_routing import default_model_port
+
+    model_port = default_model_port() if args.mode == "model" else None
+    if args.mode == "model" and model_port is None:
+        print(json.dumps({"error": (
+            "model mode needs a provider: write "
+            f"{home / 'agent' / 'providers.json'} with at least one entry, "
+            "or run with --mode heuristic.")}, indent=2))
+        return 2
+
     bus = EventBus()
     agent = CentralAgent(
         fabric_cfg=build_fabric_config(audit, ledger),
         session_store=AgentSessionStore(home),
         bus=bus,
-        intent_compiler=IntentCompiler(mode=args.mode),
+        intent_compiler=(
+            IntentCompiler(mode="model", model_port=model_port,
+                           allow_heuristic_fallback=True)
+            if model_port is not None else IntentCompiler(mode="heuristic")),
     )
     result = agent.submit(args.intent, project_id=args.project)
     print(json.dumps({

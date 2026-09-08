@@ -10,6 +10,13 @@ from __future__ import annotations
 
 from ..contracts import AgentVerificationReport, TaskOutcome, TaskPlan
 
+#: Task states that count as settled for objective acceptance. "skipped"
+#: is a task whose verification was already proven — on an earlier leg of
+#: the same run, or because AURA determined from verified upstream
+#: evidence that it was not needed. Both carry verified=True; neither is
+#: a task that failed to happen.
+_SETTLED = frozenset({"done", "skipped"})
+
 
 class VerificationEngine:
     def verify(self, plan: TaskPlan, outcomes: list[TaskOutcome]) -> AgentVerificationReport:
@@ -58,10 +65,18 @@ class VerificationEngine:
                          rows: list[TaskOutcome]) -> tuple[bool, list[str]]:
         """Mechanical objective acceptance. A criterion covers the task
         ids in expect["tasks"] (or all tasks when unnamed) and is met
-        only when every covered task is done and verified; mechanical
+        only when every covered task is SETTLED and verified; mechanical
         kinds additionally need a covered task verified under that same
         kind, so a plan cannot claim read-back proof from audit-only
-        records. No criteria → accepted (legacy behavior)."""
+        records. No criteria → accepted (legacy behavior).
+
+        Settled means done, or skipped-because-already-proven. A run that
+        parks for approval finishes in a later leg, where the earlier
+        task is restored as skipped with its verification intact; reading
+        that as "not done" made every multi-worker objective unacceptable
+        the moment it crossed an approval, which then fell through to a
+        summary that said "completed" anyway. One of those had to give,
+        and it is not the honesty of the final answer."""
         criteria = list(getattr(plan, "acceptance", None) or [])
         if not criteria:
             return True, []
@@ -76,7 +91,7 @@ class VerificationEngine:
                 unmet.append(f"{label}: names unknown tasks")
                 continue
             bad = [r.taskId for r in covered
-                   if r.state != "done" or r.verified is not True]
+                   if r.state not in _SETTLED or r.verified is not True]
             if bad:
                 unmet.append(
                     f"{label}: unverified tasks: {', '.join(sorted(bad))}")

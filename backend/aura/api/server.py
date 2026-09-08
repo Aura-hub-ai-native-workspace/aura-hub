@@ -241,9 +241,20 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         EventBus,
         IntentCompiler,
     )
+
+    # AURA's OWN reasoning model, separate from every worker runtime.
+    # Present only when an operator configured a provider; absent means
+    # deterministic planning, reported honestly rather than hidden.
+    from ..central_agent.model_routing import default_model_port
     from ..fabric import FabricConfig
     from ..workflow import EngineConfig
     from ..workflow import WorkflowEngine as EngineFacade
+
+    model_port = default_model_port()
+    intents = (IntentCompiler(mode="model", model_port=model_port,
+                              allow_heuristic_fallback=True)
+               if model_port is not None
+               else IntentCompiler(mode="heuristic"))
 
     agent_bus = EventBus()
     agent_cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
@@ -257,7 +268,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     )
     agent = CentralAgent(
         fabric_cfg=agent_cfg, session_store=sessions, bus=agent_bus,
-        intent_compiler=IntentCompiler(mode="heuristic"),
+        intent_compiler=intents,
         workflow_engine=engine, workflow_store=wf_store, run_store=run_store,
     )
 
@@ -294,6 +305,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         "auto_engine": auto_engine,
         "scheduler": scheduler, "auto_emit": _auto_emit,
         "auto_events": auto_events, "auto_subs": auto_subscribers,
+        "model_port": model_port,
     }
 
 
