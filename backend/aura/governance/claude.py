@@ -17,23 +17,40 @@ Genuine pre-execution boundaries, all owned by the runtime itself:
   repo cwd, and settings-file writes are runtime-gated to persons /
   permission handlers, not to the model.
 
-SUPPORTS: FILE_WRITE / FILE_DELETE / FILE_READ (preflight via hook +
-directory confinement). COMMAND / PROCESS_SPAWN / NETWORK:
-unsupported-by-construction (tool never granted).
+SUPPORTS: FILE_WRITE preflight (hook, verified live). FILE_READ by
+directory confinement only — the hook matcher is Edit|Write, so reads
+never reach it. FILE_DELETE / COMMAND / PROCESS_SPAWN / NETWORK are
+not-granted: no tool exists for them, so there is nothing to intercept
+and nothing that can happen.
 """
 
 from __future__ import annotations
 
 import os
 
+#: What this wiring actually enforces, stated at the precision the
+#: mechanism supports.
+#:
+#: "preflight"   AURA sees the action and can refuse it before it runs.
+#: "confinement" the runtime bounds it; AURA does not see each attempt.
+#: "not-granted" the tool does not exist for this worker, so the action
+#:               cannot occur at all — stronger than governed, and a
+#:               different fact from "AURA cannot govern this".
+#: "allowlist"   only named tools may be used.
+#:
+#: FILE_READ was previously reported as "preflight". It is not: the
+#: PreToolUse matcher below is Edit|Write, so a read never reaches the
+#: hook. Reads are bounded by --add-dir instead, which is a real
+#: boundary but a different one, and observed live — a governed review
+#: task read files and produced zero action events.
 SUPPORTS = {
-    "COMMAND": "unsupported",
+    "COMMAND": "not-granted",
     "FILE_WRITE": "preflight",
-    "FILE_DELETE": "preflight",
-    "FILE_READ": "preflight",
-    "PROCESS_SPAWN": "unsupported",
+    "FILE_DELETE": "not-granted",
+    "FILE_READ": "confinement",
+    "PROCESS_SPAWN": "not-granted",
     "TOOL_CALL": "allowlist",
-    "NETWORK": "unsupported",
+    "NETWORK": "not-granted",
 }
 
 HOOK_NAME = "aura-claude-hook.py"

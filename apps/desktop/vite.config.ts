@@ -43,13 +43,17 @@ export default defineConfig(() => ({
     host: process.env.TAURI_DEV_HOST || false,
     proxy: {
       // Post-migration there is ONE Python backend (canonical Starlette
-      // origin, default :4319) serving workflow, fabric, automation AND the
-      // central-agent spine. Its CORS allow_origin_regex now answers real
-      // browser preflights (verified 2026-08-26), but same-origin dev keeps
-      // the renderer free of mixed-origin credentials quirks; packaged
-      // builds talk to the loopback origin directly.
+      // origin) serving workflow, fabric, automation, every /environment
+      // route AND the central-agent spine. It listens on 4320 —
+      // `service::PYTHON_PORT`, `serve_central_agent_api.py` and
+      // `ENVIRONMENT_BASE` all agree on that; 4319 was the retired Node
+      // service, so this proxy was sending every /agent call to a port
+      // the Python backend does not open. Its CORS allow_origin_regex
+      // answers real browser preflights (verified 2026-08-26), but
+      // same-origin dev keeps the renderer free of mixed-origin
+      // credentials quirks; packaged builds talk to loopback directly.
       '/agent-api': {
-        target: process.env.VITE_AGENT_ORIGIN ?? 'http://127.0.0.1:4319',
+        target: process.env.VITE_AGENT_ORIGIN ?? 'http://127.0.0.1:4320',
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/agent-api/, ''),
       },

@@ -209,6 +209,40 @@ class CentralAgent:
         self.sessions.save(session)
         return result
 
+    def _emit_worker_observations(self, sid: str, outcome: Any) -> None:
+        """Worker lifecycle + governed actions onto the EXISTING bus.
+
+        Called from every leg that executes, first run and resumed alike.
+        A resumed leg is where the work usually happens — the first leg
+        parked on the approval — so emitting only from the first leg left
+        the workspace showing an approval and then silence, exactly when
+        the governed actions it exists to display were being observed.
+
+        Both streams are restatements of what already settled: lifecycle
+        restates the task outcome, actions restate the worker's own
+        governance log. Neither decides anything, and both are bounded at
+        the source (25 actions plus a count; the file log on disk stays
+        complete as evidence).
+        """
+        for assignment in list(
+                (getattr(outcome, "worker_assignments", None) or {}).values()):
+            if isinstance(assignment, dict):
+                self._emit("worker.lifecycle", sid, **assignment)
+        actions = list(getattr(outcome, "governed_actions", None) or [])
+        for event in actions[:25]:
+            if isinstance(event, dict):
+                self._emit("worker.action", sid, **{
+                    k: event.get(k) for k in
+                    ("taskId", "workerNodeId", "invocationId",
+                     "attemptId", "sequence", "actionType", "tool",
+                     "target", "command", "decision", "reason")
+                })
+        if actions:
+            denied = sum(1 for e in actions
+                         if isinstance(e, dict) and e.get("decision") == "DENY")
+            self._emit("worker.action", sid, summary=True,
+                       actions=len(actions), denied=denied)
+
     def _run(self, session: AgentSession, user_message: str) -> AgentResult:
         sid = session.sessionId
 
@@ -294,22 +328,7 @@ class CentralAgent:
         for o in outcome.outcomes:
             self._emit("invocation.observed", sid, taskId=o.taskId,
                        state=o.state, verified=o.verified, detail=o.detail[:200])
-        # Real-time governed actions ride the existing bus (bounded:
-        # first 25 per run + a summary). No second streaming system.
-        for event in list(getattr(outcome, "governed_actions", None) or [])[:25]:
-            if isinstance(event, dict):
-                self._emit("worker.action", sid, **{
-                    k: event.get(k) for k in
-                    ("taskId", "workerNodeId", "invocationId",
-                     "attemptId", "sequence", "actionType", "tool",
-                     "target", "command", "decision", "reason")
-                })
-        if getattr(outcome, "governed_actions", None):
-            denied = sum(1 for e in outcome.governed_actions
-                         if isinstance(e, dict)
-                         and e.get("decision") == "DENY")
-            self._emit("worker.action", sid, summary=True,
-                       actions=len(outcome.governed_actions), denied=denied)
+        self._emit_worker_observations(sid, outcome)
 
         if outcome.cancelled:
             return AgentResult(status="cancelled", outcome="cancelled",
@@ -320,6 +339,11 @@ class CentralAgent:
             self._emit("verification.completed", sid, passed=report.passed)
             # Phase I: verified work so far persists for the resumed leg.
             self._stash_verified(session, outcome.verified_outputs)
+            # Which task the human is being asked about. Needed on resume
+            # to spend the grant on the task that raised it.
+            session.parkedTaskId = next(
+                (o.taskId for o in outcome.outcomes
+                 if o.approvalId == outcome.approval_id), None)
             bundle = self.evidence.collect(sid, plan.planId, outcome.outcomes,
                                            "Awaiting human approval.", _now())
             self._emit("approval.required", sid, approvalId=outcome.approval_id)
@@ -819,9 +843,19 @@ class CentralAgent:
             pos = order.index(task_id)
         except ValueError:
             pos = -1
+        # The remainder must keep the already-verified predecessors it
+        # depends on. They are NOT re-executed — execute() records a task
+        # whose verification is already seeded as skipped — but dropping
+        # them entirely leaves a dependant naming a task the plan no
+        # longer contains, which reads as a dependency deadlock and
+        # strands a run that had corrected itself successfully.
+        pending = [t for t in topo_order(plan.tasks)
+                   if order.index(t.id) > pos
+                   and t.id not in merged_verified]
+        needed = {d for t in pending for d in (t.dependsOn or [])}
         remainder = [t for t in topo_order(plan.tasks)
-                     if order.index(t.id) > pos
-                     and t.id not in merged_verified]
+                     if t in pending or (t.id in needed
+                                         and t.id in merged_verified)]
         prior = [o for o in prior_outcomes if o.taskId != task_id]
         # Phase J: a VERIFIED corrective outcome completes the ORIGINAL
         # task — alias it onto the original id so verification, objective
@@ -853,10 +887,16 @@ class CentralAgent:
                        state=o.state, verified=o.verified,
                        detail=o.detail[:200])
         if rem_outcome.approval_id:
-            # Phase I: the continued leg's verified work persists too.
+            # Phase I: the continued leg's verified work persists too, and
+            # so does WHICH task the human is now being asked about — the
+            # next resume spends the grant on that task, not on whatever
+            # parked before the correction.
             stashed = dict(merged_verified)
             stashed.update(rem_outcome.verified_outputs)
             self._stash_verified(session, stashed)
+            session.parkedTaskId = next(
+                (o.taskId for o in rem_outcome.outcomes
+                 if o.approvalId == rem_outcome.approval_id), None)
             bundle = self.evidence.collect(
                 sid, rem_plan.planId,
                 prior + [o for o in corr_outcomes if o.taskId != task_id]
@@ -1060,7 +1100,8 @@ class CentralAgent:
         # the correction and re-run the deviated original).
         pending = self._pending_correction(session, approval_ids)
         if pending is not None:
-            return self._resume_correction(session, pending, last)
+            return self._finish_resume(
+                session, self._resume_correction(session, pending, last))
         # Phase I: prefer the persisted validated plan (same plan the
         # parked leg ran — including model-proposed DAGs); rebuild from
         # intent only for sessions parked before plan persistence.
@@ -1078,7 +1119,12 @@ class CentralAgent:
                 raise ValueError("session has no intent to resume")
             intent = self.intents.compile(user_messages[0])
             plan = self.planner.plan(intent, session.sessionId, _now())
-        task = plan.tasks[-1]  # parked task is the last planned one
+        # The task the human was actually asked about. Sessions parked
+        # before this was recorded fall back to the last planned task,
+        # which is correct for the single-task plans they could hold.
+        parked_id = getattr(session, "parkedTaskId", None)
+        task = next((t for t in plan.tasks if t.id == parked_id),
+                    plan.tasks[-1])
         apr_id = next(iter(grants.values()), None)
         task_grants = {task.id: (apr_id, last.runId)} if apr_id else {}
         self._emit("execution.started", session.sessionId,
@@ -1094,12 +1140,24 @@ class CentralAgent:
             self._emit("invocation.observed", session.sessionId,
                        taskId=o.taskId, state=o.state,
                        verified=o.verified, detail=o.detail[:200])
+        self._emit_worker_observations(session.sessionId, outcome)
         report = self.verifier.verify(plan, outcome.outcomes)
         self._emit("verification.completed", session.sessionId, passed=report.passed)
         bundle = self.evidence.collect(session.sessionId, plan.planId,
                                        outcome.outcomes,
                                        f"Resumed; {report.detail}", _now())
         if outcome.stopped and outcome.approval_id:
+            # A resumed leg that parks AGAIN must record the same two
+            # things the first leg records, or a multi-task plan can
+            # never get past its second approval: which task the human
+            # is now being asked about, and the work already verified so
+            # the next leg skips it instead of re-running it. Without
+            # both, the next resume spends the grant on the wrong task
+            # and re-executes settled side effects.
+            session.parkedTaskId = next(
+                (o.taskId for o in outcome.outcomes
+                 if o.approvalId == outcome.approval_id), None)
+            self._stash_verified(session, outcome.verified_outputs)
             result = AgentResult(
                 status="awaiting-approval", outcome="awaiting-approval",
                 summary=f"Resumed run parked again on {outcome.approval_id}.",
@@ -1108,6 +1166,17 @@ class CentralAgent:
                 runId=outcome.run_id,
             )
         elif outcome.denied or outcome.timed_out or outcome.cancelled or outcome.stopped:
+            # A scope deviation on a RESUMED leg is the normal case, not
+            # the exception: agent.delegate always parks for approval, so
+            # the worker's first real dispatch happens here. Without this
+            # the correction loop was unreachable in production — a
+            # governed denial simply ended the run as "failed" and the
+            # human's next move was to ask again from scratch.
+            corrected = self._maybe_correct(
+                session, plan, outcome,
+                project_cwd=getattr(session, "projectPath", None))
+            if corrected is not None:
+                return self._finish_resume(session, corrected)
             honest = ("denied" if outcome.denied else
                       "timeout" if outcome.timed_out else
                       "cancelled" if outcome.cancelled else "failed")
@@ -1117,10 +1186,31 @@ class CentralAgent:
                                  performed=[o.taskId for o in outcome.outcomes if o.performed],
                                  evidence=bundle, failureReason=outcome.stop_reason)
         else:
+            # A done-but-deviated task must go through correction before
+            # any success is reported, on a resumed leg exactly as on the
+            # first one.
+            corrected = None
+            if getattr(outcome, "deviation_evidence", None):
+                corrected = self._maybe_correct(
+                    session, plan, outcome,
+                    project_cwd=getattr(session, "projectPath", None))
             # Phase J coherence: resumed completion synthesizes through
             # the ONE record-grounded path (objective acceptance included),
             # never a second hand-rolled vocabulary.
-            result = self._synthesize(session, plan, outcome)
+            result = corrected or self._synthesize(session, plan, outcome)
+        return self._finish_resume(session, result)
+
+    def _finish_resume(self, session: AgentSession,
+                       result: AgentResult) -> AgentResult:
+        """Persist the outcome of a resumed leg. EVERY exit from resume()
+        goes through here.
+
+        A leg that returned a result without recording it left the
+        session still pointing at the previous one, so the next human
+        decision resumed the leg that had already run — replaying a
+        correction until its budget was spent instead of continuing the
+        plan.
+        """
         self._emit("result.ready", session.sessionId, resumed=True,
                    passed=result.outcome == "completed")
         self.sessions.finish(session, result)

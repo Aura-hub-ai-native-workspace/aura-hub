@@ -6,6 +6,9 @@ runtime's own enforcement wiring, all compiled from the task contract:
 
   opencode: aura-governance.json (OPENCODE_CONFIG) + plugin/
             aura-governance.ts (OPENCODE_CONFIG_DIR) + actions.jsonl
+  kilo:     the SAME bundle under KILO_CONFIG / KILO_CONFIG_DIR —
+            verified live against the kilo runtime, not assumed from
+            the shared engine lineage
   claude:   scope.json + aura-claude-settings.json (--settings) +
             actions.jsonl (--add-dir flags returned separately)
 
@@ -40,8 +43,16 @@ def _write(path: str, content: str) -> None:
 
 def stage_opencode(home: str, *, invocation_id: str, task_id: str,
                    node_id: str, attempt: str, cwd: str,
-                   scope_paths: list[str]) -> dict:
-    """Write opencode governance files. Returns env additions + log path."""
+                   scope_paths: list[str],
+                   env_prefix: str = "OPENCODE") -> dict:
+    """Write opencode-family governance files. Returns env additions +
+    log path.
+
+    ``env_prefix`` selects which runtime reads the bundle. OpenCode and
+    Kilo share the same config/plugin surface and the same
+    ``tool.execute.before`` interception point, verified independently
+    against each runtime — the prefix is the only difference, so one
+    staging routine serves both instead of a duplicated adapter."""
     root = gov_dir(home, invocation_id)
     plugin_dir = os.path.join(root, "config-dir", "plugin")
     config_path = os.path.join(root, _opencode.CONFIG_NAME)
@@ -59,10 +70,11 @@ def stage_opencode(home: str, *, invocation_id: str, task_id: str,
         _opencode.compile_config(scope_paths), indent=2))
     _write(plugin_path, _opencode.compile_plugin(policy))
     _write(log_path, "")
+    prefix = (env_prefix or "OPENCODE").strip().upper()
     return {
         "env": {
-            "OPENCODE_CONFIG": config_path,
-            "OPENCODE_CONFIG_DIR": os.path.join(root, "config-dir"),
+            f"{prefix}_CONFIG": config_path,
+            f"{prefix}_CONFIG_DIR": os.path.join(root, "config-dir"),
             "AURA_ACTION_LOG": log_path,
         },
         "configPath": config_path,
@@ -77,7 +89,7 @@ def stage_claude(home: str, *, invocation_id: str, task_id: str,
                  scope_paths: list[str]) -> dict:
     """Write claude governance files. Returns settings path, --add-dir
     roots, env additions, and log path."""
-    from .claude_hook import __file__ as _hook_src  # noqa: F401  (path only)
+    from .claude_hook import __file__ as _hook_src  # path only
 
     root = gov_dir(home, invocation_id)
     hook_path = os.path.join(root, _claude.HOOK_NAME)
@@ -87,10 +99,17 @@ def stage_claude(home: str, *, invocation_id: str, task_id: str,
     with open(_hook_src, encoding="utf-8") as fh:
         hook_src = fh.read()
     _write(hook_path, hook_src)
+    # The hook runs as a COPY under the AURA home, so it cannot find the
+    # governance core by walking up from its own file. The root travels
+    # in the scope document instead — AURA-owned data the worker cannot
+    # reach, resolved once here where the answer is actually known.
+    aura_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(_hook_src))))
     _write(scope_path, json.dumps({
         "taskId": task_id, "nodeId": node_id,
         "invocationId": invocation_id, "attempt": attempt,
         "cwd": cwd, "scopePaths": list(scope_paths),
+        "auraRoot": aura_root,
     }, indent=2))
     _write(settings_path, json.dumps(
         _claude.compile_settings(hook_path, scope_path), indent=2))

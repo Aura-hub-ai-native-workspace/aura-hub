@@ -408,14 +408,45 @@ class TestProcessCleanup:
 
 
 class TestStaging:
-    def test_kilo_honestly_unsupported(self, tmp_path, monkeypatch):
+    def test_kilo_governed_through_its_own_config_surface(
+            self, tmp_path, monkeypatch):
+        """Kilo was UNVERIFIED in Phase J and is verified now.
+
+        The promotion is evidence, not lineage: the AURA plugin was
+        loaded by the real kilo runtime through KILO_CONFIG /
+        KILO_CONFIG_DIR, tool.execute.before denied an out-of-scope
+        write BEFORE it executed, the worker self-terminated (exit 42)
+        and the forbidden file was never created. What this test pins is
+        that AURA stages that same bundle under kilo's OWN env names —
+        opencode's names would silently disable enforcement.
+        """
         import aura.executors as ex
 
         monkeypatch.setenv("AURA_HOME", str(tmp_path))
         bundle = ex._stage_governance(
-            {"id": "inv-1", "context": {"taskId": "t1"}, "node": {}},
+            {"id": "inv-1", "context": {"taskId": "t1"},
+             "node": {"id": "kilo-code"}},
             "kilo", "/repo", "do it", ["src"])
+        assert bundle["logPath"].endswith("actions.jsonl")
+        assert "KILO_CONFIG" in bundle["env"]
+        assert "KILO_CONFIG_DIR" in bundle["env"]
+        assert "OPENCODE_CONFIG" not in bundle["env"]
+        assert bundle["supports"]["FILE_WRITE"] == "preflight"
+
+    def test_runtime_without_proven_interception_stays_unsupported(
+            self, tmp_path, monkeypatch):
+        """Codex exposes flags that LOOK like the others. No
+        pre-execution interception point has been proven for it, so
+        nothing is staged and the output says so."""
+        import aura.executors as ex
+
+        monkeypatch.setenv("AURA_HOME", str(tmp_path))
+        bundle = ex._stage_governance(
+            {"id": "inv-1", "context": {"taskId": "t1"},
+             "node": {"id": "codex-cli"}},
+            "codex", "/repo", "do it", ["src"])
         assert bundle["logPath"] == ""
+        assert bundle["env"] == {}
         assert "unsupported" in json.dumps(bundle["supports"])
 
     def test_unscoped_runs_stage_nothing(self, tmp_path, monkeypatch):

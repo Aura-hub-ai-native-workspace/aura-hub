@@ -48,6 +48,31 @@ class ExecutionOutcome:
     # service layer to emit on the event bus. Bounded at the source
     # (executor caps memory; file log stays complete on disk).
     governed_actions: list[dict] = field(default_factory=list)
+    # Which worker AURA put on which task, and how that task ended.
+    # Recorded at dispatch (so a task that never returned still names its
+    # worker) and completed from the executor's own output. This is the
+    # ONE place worker lifecycle is derived: it restates the task
+    # outcome, it never decides it.
+    worker_assignments: dict[str, dict] = field(default_factory=dict)
+
+
+#: Task state → worker lifecycle. Deliberately a restatement of the
+#: existing TaskOutcome vocabulary rather than a second state machine:
+#: a worker is ACTIVE because its task is running and PARKED because its
+#: task parked, so the two can never disagree.
+_WORKER_LIFECYCLE = {
+    "done": "COMPLETED",
+    "skipped": "COMPLETED",
+    "awaiting-approval": "PARKED",
+    "blocked": "WAITING",
+    "denied": "TERMINATED",
+    "timed-out": "TERMINATED",
+    "cancelled": "CANCELLED",
+    "failed": "FAILED",
+    "running": "ACTIVE",
+    "pending": "IDLE",
+    "ready": "IDLE",
+}
 
 
 class ExecutionController:
@@ -91,6 +116,19 @@ class ExecutionController:
             # are not repeated. Its evidence stays available downstream.
             if task.id in result.verified_outputs:
                 seed = result.verified_outputs[task.id]
+                # Restored, not re-run — but the workspace still needs to
+                # know which worker completed it, so lifecycle stays
+                # coherent across legs instead of blanking on resume.
+                result.worker_assignments[task.id] = {
+                    "taskId": task.id,
+                    "nodeId": str(seed.get("node_id") or ""),
+                    "worker": str(seed.get("agent") or ""),
+                    "role": getattr(task, "workerRole", None) or "",
+                    "capabilityId": task.capabilityId,
+                    "lifecycle": "COMPLETED",
+                    "state": "skipped",
+                    "verified": True,
+                }
                 result.outcomes.append(TaskOutcome(
                     taskId=task.id, state="skipped", performed=False,
                     verified=True,
@@ -175,20 +213,49 @@ class ExecutionController:
         except Exception:
             return None
 
-    def _match_role(self, task: Any, role: str,
-                    pinned_id: str | None) -> str | None:
+    def _match_role(self, task: Any, role: str, pinned_id: str | None,
+                    exclude: set[str] | None = None) -> str | None:
         from .worker_match import match_worker, node_satisfies_role
 
         nodes = self._present_nodes()
+        barred = exclude or set()
         if pinned_id:
             pinned = next((n for n in nodes if n.get("id") == pinned_id),
                           None)
             if pinned is None or not node_satisfies_role(pinned, role):
                 return None
+            if pinned_id in barred:
+                return None  # a pin never overrides an exclusion
             return pinned_id
         usable = self._role_usable(task.capabilityId)
-        node = match_worker(role, nodes, usable)
+        node = match_worker(role, nodes, usable, exclude=barred)
         return node.get("id") if node else None
+
+    def _excluded_workers(self, task: Any,
+                          result: ExecutionOutcome) -> set[str]:
+        """Workers this task may not reuse, resolved from what actually
+        ran. Reads the assignments of the named tasks IN THIS RUN, so a
+        task that never dispatched contributes no exclusion and cannot
+        silently block its dependant."""
+        out: set[str] = set()
+        for other in (getattr(task, "distinctWorkerFrom", None) or []):
+            other = str(other)
+            # Three sources, in order of directness. The evidence records
+            # matter because the upstream task usually ran on an EARLIER
+            # leg: an approval-gated plan parks between tasks, so by the
+            # time the reviewer is dispatched the implementer is restored
+            # verified evidence, not a live assignment. Reading only the
+            # live assignments let the same worker review its own work.
+            candidates = (
+                (result.worker_assignments.get(other) or {}).get("nodeId"),
+                (result.verified_outputs.get(other) or {}).get("node_id"),
+                (result.deviation_evidence.get(other) or {}).get("node_id"),
+            )
+            for node_id in candidates:
+                if node_id:
+                    out.add(str(node_id))
+                    break
+        return out
 
     # ── governed handoff ───────────────────────────────────────────────
     def _gate_handoff(self, task: Any, result: ExecutionOutcome,
@@ -329,19 +396,34 @@ class ExecutionController:
         # the task closed — never a silent unsuitable dispatch.
         role = getattr(task, "workerRole", None)
         if role:
-            matched = self._match_role(task, role, node_id)
+            excluded = self._excluded_workers(task, result)
+            matched = self._match_role(task, role, node_id, excluded)
             if matched is None:
+                why = (f"no connected worker satisfies role '{role}' for "
+                       "this task; refusing rather than dispatching an "
+                       "unsuitable worker.")
+                if excluded:
+                    why = (f"no SECOND connected worker satisfies role "
+                           f"'{role}': this task must not reuse "
+                           f"{', '.join(sorted(excluded))}, and no other "
+                           "eligible worker is connected. Refusing rather "
+                           "than letting a worker review its own work.")
                 result.outcomes.append(TaskOutcome(
                     taskId=task.id, state="failed", performed=False,
-                    detail=(f"no connected worker satisfies role "
-                            f"'{role}' for this task; refusing rather "
-                            "than dispatching an unsuitable worker.")))
+                    detail=why))
                 return
             context["nodeId"] = matched
         if project_cwd:
             context["cwd"] = project_cwd
         if approval_id:
             context["approvalId"] = approval_id
+        result.worker_assignments[task.id] = {
+            "taskId": task.id,
+            "nodeId": context.get("nodeId") or "",
+            "role": role or "",
+            "capabilityId": task.capabilityId,
+            "lifecycle": "ACTIVE",
+        }
         # Phase 11 unification: effects with node bindings go through the
         # SAME interpreter as workflows (one runner); everything else keeps
         # the direct governed invoke (policy/audit identical).
@@ -418,6 +500,16 @@ class ExecutionController:
         if outcome.taskId != task.id:
             return  # defensive: only annotate this task's own outcome
         output = output or {}
+        assignment = result.worker_assignments.get(task.id)
+        if assignment is not None:
+            if output.get("nodeId"):
+                assignment["nodeId"] = str(output["nodeId"])
+            if output.get("agent"):
+                assignment["worker"] = str(output["agent"])
+            assignment["lifecycle"] = _WORKER_LIFECYCLE.get(
+                outcome.state, "FAILED")
+            assignment["state"] = outcome.state
+            assignment["verified"] = outcome.verified
         governed = output.get("governedActions") or {}
         events = governed.get("events") or output.get("actionEvents")
         if isinstance(events, list) and events:

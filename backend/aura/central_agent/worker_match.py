@@ -33,17 +33,29 @@ def match_worker(
     role: str,
     nodes: list[dict],
     usable: Callable[[dict], bool] | None = None,
+    exclude: set[str] | None = None,
 ) -> dict | None:
     """First node (catalogue order) providing what `role` needs and
     passing `usable`. Returns the node dict, or None when nothing is
     eligible — the caller fails closed, never falls back to an
-    unsuitable worker."""
+    unsuitable worker.
+
+    `exclude` names workers this task may not use, which is how an
+    independent review stays independent: excluding the worker that
+    produced the work is the difference between a second opinion and a
+    worker marking its own homework. An exclusion that leaves nothing
+    eligible returns None, exactly like any other unsatisfiable
+    requirement.
+    """
     needed = ROLE_NODE_CAPABILITY.get(role)
     if needed is None:
         return None
     check = usable or (lambda n: True)
+    barred = exclude or set()
     for node in nodes:
         if not isinstance(node, dict):
+            continue
+        if node.get("id") in barred:
             continue
         if needed not in (node.get("capabilities") or []):
             continue

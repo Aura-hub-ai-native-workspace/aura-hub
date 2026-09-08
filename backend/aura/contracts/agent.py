@@ -45,7 +45,7 @@ AgentEventType = Literal[
     "workflow.compiled", "workflow.validated", "execution.started",
     "invocation.observed", "approval.required", "verification.completed",
     "result.ready", "agent.failed", "agent.cancelled",
-    "worker.action",
+    "worker.action", "worker.lifecycle",
 ]
 
 
@@ -131,6 +131,13 @@ class TaskSpecification(ContractModel):
     role never widens authority — an unsatisfiable role fails the task
     closed before anything dispatches."""
     workerRole: WorkerRole | None = None
+    """Task ids whose worker must NOT be reused for this task. An
+    independent review is only independent if a different worker
+    performs it, so "have another AI review it" has to be enforceable
+    and not merely requested. Unsatisfiable exclusion fails the task
+    closed — AURA never lets a worker review its own work and call that
+    independent."""
+    distinctWorkerFrom: list[str] = Field(default_factory=list)
     risk: RiskLevel = "low"
     reversible: bool = True
     verification: VerificationRequirement = Field(default_factory=VerificationRequirement)
@@ -319,6 +326,12 @@ class AgentSession(ContractModel):
     restart resumes the SAME plan instead of re-deriving (or re-proposing)
     it from intent. AURA-owned data, never model input at read time."""
     activePlan: dict | None = None
+    """The task that actually parked on the pending approval. Recorded
+    at park time because a plan can have MORE than one task: assuming
+    the parked task is the last planned one spends the human's grant on
+    the wrong task, which parks the run a second time on a question the
+    human already answered."""
+    parkedTaskId: str | None = None
     """Bounded verified handoff evidence from the latest parked leg
     (Phase I): task id → evidence record, seeded as prior_verified on
     resume so verified work is skipped, never re-executed. Cleared when

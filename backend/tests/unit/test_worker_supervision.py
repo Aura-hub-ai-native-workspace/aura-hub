@@ -498,3 +498,38 @@ class TestWorkerLifecycle:
         assert elapsed < 10, f"timeout took too long: {elapsed:.1f}s"
         assert out.code != 0
         assert out.timedOut is True
+
+
+class TestPorcelainAfterTrimming:
+    """The process boundary trims a command's output at both ends, which
+    silently eats the leading status space of the FIRST porcelain entry.
+    A path off by one turns an in-scope change into a scope deviation and
+    parks a run that did nothing wrong — observed live against OpenCode
+    editing src/util.py inside scope ["src"] and being reported as
+    "rc/util.py"."""
+
+    def test_first_entry_survives_a_trimmed_leading_space(self):
+        from aura.fabric.supervision import parse_porcelain_status
+
+        assert parse_porcelain_status("M src/util.py\x00") == ["src/util.py"]
+
+    def test_untrimmed_entries_are_unchanged(self):
+        from aura.fabric.supervision import parse_porcelain_status
+
+        assert parse_porcelain_status(" M src/a.py\x00?? b.txt\x00") == [
+            "src/a.py", "b.txt"]
+
+    def test_staged_and_rename_shapes_still_parse(self):
+        from aura.fabric.supervision import parse_porcelain_status
+
+        assert parse_porcelain_status("M  staged.py\x00") == ["staged.py"]
+        assert parse_porcelain_status("R  old.py -> new.py\x00") == ["new.py"]
+
+    def test_an_in_scope_edit_is_not_a_deviation(self):
+        from aura.fabric.supervision import (
+            check_scope_paths,
+            parse_porcelain_status,
+        )
+
+        changed = parse_porcelain_status("M src/util.py\x00")
+        assert check_scope_paths(changed, ["src"]).allowed is True

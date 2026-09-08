@@ -31,6 +31,13 @@ from ..exec_ import (
     safe_shell_with_code,
 )
 from ..governance.opencode import SELF_KILL_CODE as _SELF_KILL_CODE
+from ..workers.adapters import (
+    GOV_CLAUDE_HOOK,
+    GOV_NONE,
+    GOV_OPENCODE_PLUGIN,
+    adapter_for_binary,
+    verified_invocations,
+)
 
 MAX_READ_BYTES = 512 * 1024
 MAX_HTTP_BYTES = 512 * 1024
@@ -181,35 +188,12 @@ async def terminal_execute_verify(_inv: dict, result: dict) -> dict:
 
 # ── coding agents ────────────────────────────────────────────────────────────
 
-AGENT_INVOCATIONS = {
-    "opencode": {
-        "args": lambda task, cwd, model=None: (
-            ["run", "--dir", cwd, *(["--model", model] if model else []), task]),
-        "verifiedAgainst": "OpenCode 1.18.16",
-    },
-    # `claude -p` is the documented non-interactive mode: it prints the
-    # result and exits. Verified live (exact-output reply, exit 0; file
-    # creation with --allowedTools Edit Write, exit 0). The tool allow-list
-    # is least-privilege by construction: no Bash, no bypass flags — the
-    # worker can edit files but cannot execute commands. No model flag:
-    # model selection stays an operator concern, and the Fabric timeout
-    # bounds the run.
-    "claude": {
-        "args": lambda task, cwd, model=None: [
-            "-p", task, "--allowedTools", "Edit Write"],
-        "verifiedAgainst": "Claude Code (print mode)",
-    },
-    # `kilo run --dir` mirrors opencode's verified shape (same engine
-    # lineage). Verified live (exact-output reply AND in-repo file
-    # creation, exit 0). --dir is LOAD-BEARING: bare `kilo run` writes to
-    # the parent directory instead of cwd, escaping confinement — never
-    # drop it.
-    "kilo": {
-        "args": lambda task, cwd, model=None: (
-            ["run", "--dir", cwd, task]),
-        "verifiedAgainst": "kilo 7.5.14 (run --dir)",
-    },
-}
+#: How each worker is actually driven, sourced from the ONE worker
+#: adapter registry (aura.workers.adapters). Only adapters whose argv
+#: shape AURA has verified against the real runtime appear here — a
+#: worker AURA cannot prove it can drive is never dispatched.
+AGENT_INVOCATIONS = verified_invocations()
+
 MAX_CONTEXT_CHARS = 12_000
 
 
@@ -223,9 +207,44 @@ def with_context(task: str, raw_context: str) -> str:
     return f"{body}\n\n<TASK>\n{task}\n</TASK>"
 
 
-def agent_delegate_supports_node(node: dict) -> bool:
+def _node_readiness_proved(node: dict) -> bool:
+    """Did AURA itself prove a real round-trip to THIS worker?
+
+    The proof is written only by the readiness handshake, into AURA's own
+    connected-node registry, after a real dispatch produced correlated
+    work. It is what lets a runtime whose argv shape is not verified in
+    code become drivable on a machine where it demonstrably works —
+    without ever letting a caller assert drivability. Absent by default,
+    so the gate fails closed.
+    """
+    readiness = node.get("readiness")
+    return isinstance(readiness, dict) and readiness.get("proved") is True
+
+
+def agent_delegate_invocation(node: dict):
+    """The verified way to drive this node, or None.
+
+    Two independent grounds, both evidence: the argv shape is verified
+    in code against the real runtime, or AURA proved this exact runtime
+    on this machine through the readiness handshake.
+    """
     bin_name = node.get("binary")
-    return bool(bin_name) and resolve_agent_binary(bin_name).ok and bin_name in AGENT_INVOCATIONS
+    if not bin_name or not resolve_agent_binary(bin_name).ok:
+        return None
+    spec = AGENT_INVOCATIONS.get(bin_name)
+    if spec is not None:
+        return spec
+    if not _node_readiness_proved(node):
+        return None
+    adapter = adapter_for_binary(bin_name)
+    if adapter is None:
+        return None
+    return {"args": adapter.build_args,
+            "verifiedAgainst": f"{adapter.name} (proved on this machine)"}
+
+
+def agent_delegate_supports_node(node: dict) -> bool:
+    return agent_delegate_invocation(node) is not None
 
 
 def _stage_governance(inv: dict, bin_name: str, cwd: str,
@@ -240,11 +259,14 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
     """
     bundle: dict = {"args": None, "env": {}, "logPath": "",
                     "supports": {}, "worker": bin_name}
-    if bin_name not in ("opencode", "claude"):
-        # kilo mirrors the opencode engine lineage, but plugin +
-        # permission parity is UNVERIFIED — report honestly, enforce
-        # nothing new, keep the pre-existing boundaries.
-        bundle["supports"] = {"NOTE": "unsupported — untested runtime"}
+    adapter = adapter_for_binary(bin_name)
+    if adapter is None or adapter.governance == GOV_NONE:
+        # No PROVEN pre-execution interception point for this runtime.
+        # Report that honestly, enforce nothing new, and keep the
+        # pre-existing boundaries (allow-lists, approvals, post-hoc
+        # delta verification). Flag parity is never taken as evidence.
+        bundle["supports"] = {"NOTE": "unsupported — no proven "
+                                      "interception point for this runtime"}
         return bundle
     if not scope_paths:
         # Governance is scope-derived: unscoped runs keep the legacy
@@ -265,15 +287,20 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
         node = inv.get("node") or {}
         node_id = str(node.get("id") or bin_name)
         home = str(aura_home())
-        if bin_name == "opencode":
+        if adapter.governance == GOV_OPENCODE_PLUGIN:
+            # OpenCode and Kilo read the same config/plugin surface and
+            # honour the same tool.execute.before interception point;
+            # each was verified against its own runtime, and the env
+            # prefix is the only difference between them.
             staged = staging.stage_opencode(
                 home, invocation_id=invocation_id, task_id=task_id,
                 node_id=node_id, attempt=attempt, cwd=cwd,
-                scope_paths=scope_paths)
+                scope_paths=scope_paths,
+                env_prefix=adapter.env_prefix or "OPENCODE")
             bundle.update(env=staged["env"], logPath=staged["logPath"],
                           supports=staged["supports"])
             bundle["invocationId"] = invocation_id
-        elif bin_name == "claude":
+        elif adapter.governance == GOV_CLAUDE_HOOK:
             staged = staging.stage_claude(
                 home, invocation_id=invocation_id, task_id=task_id,
                 node_id=node_id, attempt=attempt, cwd=cwd,
@@ -448,7 +475,7 @@ async def agent_delegate_run(inv: dict) -> dict:
         return _no(f"{node['name']} has no executable recorded in the catalogue, so it cannot be run.")
     if not resolve_agent_binary(bin_name).ok:
         return _no(f"{node['name']} is not on the coding-agent allow-list, so it was not run.")
-    spec = AGENT_INVOCATIONS.get(bin_name)
+    spec = agent_delegate_invocation(node)
     if not spec:
         return _no(
             f"{node['name']} is connected, but AURA has no verified non-interactive invocation for it yet, "

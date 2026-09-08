@@ -31,8 +31,15 @@ def main() -> int:
             scope_doc = json.load(fh)
     except Exception:
         return 0
-    sys.path.insert(0, os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    # This file runs as a COPY staged under the AURA home, so walking up
+    # from __file__ finds the home directory, not the package. The root
+    # is staged into the scope document for exactly that reason; the
+    # relative guess stays as a fallback for a hook run in place.
+    for root in (str(scope_doc.get("auraRoot") or ""),
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "..", "..")):
+        if root and root not in sys.path:
+            sys.path.insert(0, root)
     try:
         from aura.governance.actions import (
             FILE_WRITE,
@@ -41,7 +48,27 @@ def main() -> int:
             decide_action,
             summarize_event,
         )
-    except Exception:
+    except Exception as exc:
+        # Fail open to the runtime's own confinement (--add-dir), but
+        # NEVER silently: an unenforced hook that logs nothing would let
+        # the run be reported as governed when it was not.
+        log_path = os.environ.get("AURA_ACTION_LOG", "")
+        if log_path:
+            try:
+                with open(log_path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({
+                        "taskId": scope_doc.get("taskId"),
+                        "workerNodeId": scope_doc.get("nodeId"),
+                        "invocationId": scope_doc.get("invocationId"),
+                        "attemptId": scope_doc.get("attempt"),
+                        "actionType": "TOOL_CALL",
+                        "tool": str(payload.get("tool_name") or ""),
+                        "decision": "UNAVAILABLE",
+                        "reason": f"governance core unavailable: {exc}"[:200],
+                        "destructive": False,
+                    }) + "\n")
+            except OSError:
+                pass
         return 0
 
     tool_input = payload.get("tool_input") or {}

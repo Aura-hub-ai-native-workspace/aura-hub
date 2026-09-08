@@ -78,6 +78,47 @@ _AUTHOR_WORDS = ("create workflow", "build workflow", "new workflow",
 _SCHEDULED_WORDS = ("every morning", "every day", "daily", "each morning",
                     "schedule", "cron", "every hour")
 _FIX_WORDS = ("fix", "repair", "run tests")
+#: Work a coding worker does. Deterministic and deliberately narrow —
+#: this is the offline path, and a wrong match here would dispatch a
+#: high-risk capability at a request that did not ask for one.
+_DELEGATE_RE = re.compile(
+    r"\b(implement|refactor|rewrite|add\s+(?:a\s+|an\s+)?"
+    r"(?:feature|endpoint|module|function|test|tests)|"
+    r"write\s+(?:the\s+)?code|build\s+(?:the\s+)?(?:feature|module))\b",
+    re.IGNORECASE)
+#: A SECOND worker reviewing the first worker's verified result. Matched
+#: only alongside delegation, so "review" alone never plans a dispatch.
+_REVIEW_RE = re.compile(
+    r"\b(?:and\s+)?(?:then\s+)?(?:have|get|ask)?\s*"
+    r"(?:another|a\s+second|a\s+different)?\s*"
+    r"(?:ai|agent|worker|model)?\s*review\b|\breview\s+it\b|"
+    r"\breviewed\b|\bcode\s+review\b", re.IGNORECASE)
+#: An explicitly stated task-contract scope. Only a literal, repo-
+#: relative path is accepted; nothing is inferred, because a guessed
+#: scope would either widen the worker's boundary or silently narrow it.
+_SCOPE_RE = re.compile(
+    r"\b(?:in|under|inside|within|scoped to)\s+"
+    r"['\"`]?([A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*/?)['\"`]?",
+    re.IGNORECASE)
+
+
+def _delegate_scope(message: str) -> list[str]:
+    """Repo-relative scope paths stated in the request, or none."""
+    out: list[str] = []
+    for raw in _SCOPE_RE.findall(message):
+        candidate = raw.strip().strip("/")
+        if not candidate or candidate.startswith(".") or ".." in candidate:
+            continue
+        # A bare English word is not a path. Requiring either a
+        # separator or a source-ish name keeps "in order to" from
+        # becoming a task contract.
+        if "/" not in candidate and not re.fullmatch(
+                r"(src|lib|app|apps|tests?|backend|frontend|packages|docs)",
+                candidate, re.IGNORECASE):
+            continue
+        if candidate not in out:
+            out.append(candidate)
+    return out[:8]
 _FILE_WRITE_RE = re.compile(
     r"\b(?:create|write|make|save)\s+(?:a\s+)?(?:file\s+)?"
     r"(?:called\s+|named\s+)?['\"]?(.+?)['\"]?\s+(?:containing|with|that contains)\s+"
@@ -125,6 +166,36 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "approvalLikely": True,
             "writePath": path,
             "writeContent": content,
+        })
+    delegating = (_DELEGATE_RE.search(user_message) is not None
+                  and not authoring and not running_wf and not file_write)
+    if delegating:
+        wants_review = _REVIEW_RE.search(user_message) is not None
+        scope = _delegate_scope(user_message)
+        return AgentIntent.model_validate({
+            "goal": user_message.strip(),
+            "surface": "project",
+            "expectedOutcome": (
+                "The change is implemented by a worker and independently "
+                "reviewed by a second worker, both verified."
+                if wants_review else
+                "The change is implemented by a worker and verified."),
+            "constraints": [
+                *constraints,
+                *(["Work stays inside " + ", ".join(scope)] if scope else []),
+                *(["Review is performed by a different worker"]
+                  if wants_review else []),
+            ],
+            "requiredCapabilities": ["agent.delegate"],
+            "urgency": "immediate",
+            "complexity": "multi-step" if wants_review else "single",
+            "approvalLikely": True,
+            # AURA-owned planning inputs, not authority: the planner
+            # reads these to build the task contract, and every one of
+            # them is re-validated there.
+            "delegateTask": user_message.strip(),
+            "delegateReview": wants_review,
+            "delegateScope": scope,
         })
     if git_status and not authoring and not running_wf:
         return AgentIntent(

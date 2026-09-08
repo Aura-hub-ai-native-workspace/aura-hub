@@ -114,6 +114,36 @@ class ScopeCheck:
     detail: str = ""
 
 
+#: The porcelain v1 status letters. A space means "unchanged on this
+#: side", which is why an entry can legitimately begin with one.
+_STATUS_CHARS = frozenset(" MADRCUT?!")
+
+
+def _entry_after_status(chunk: str) -> str:
+    """The path part of one porcelain v1 entry, tolerating a lost leading
+    space.
+
+    Porcelain v1 is positional: ``XY<space>path``. The process boundary
+    trims whitespace from the ends of a command's output (TS parity,
+    differential-tested), so the FIRST entry of a ``-z`` status arrives
+    with its leading status space already gone — " M src/a.py" becomes
+    "M src/a.py", and a fixed ``chunk[3:]`` then reports "rc/a.py". A
+    path off by one character is worse than useless here: it turns an
+    in-scope change into a scope deviation and parks a run that did
+    nothing wrong.
+
+    Both shapes are unambiguous, so both are read rather than guessed:
+    a well-formed entry has its separator space at index 2, and a
+    single-character-short entry has a status letter at index 0 and the
+    separator at index 1.
+    """
+    if len(chunk) >= 4 and chunk[2] == " ":
+        return chunk[3:].strip()
+    if len(chunk) >= 3 and chunk[1] == " " and chunk[0] in _STATUS_CHARS:
+        return chunk[2:].strip()
+    return ""
+
+
 def parse_porcelain_status(output: str) -> list[str]:
     """Repo-relative changed paths from `git status --porcelain=v1 -z`.
 
@@ -134,9 +164,9 @@ def parse_porcelain_status(output: str) -> list[str]:
         # shift the path slice by one (e.g. " M src/a.py" -> "rc/a.py").
         chunk = chunks[i].rstrip("\r\n")
         i += 1
-        if len(chunk) < 4:
+        if len(chunk) < 3:
             continue
-        entry = chunk[3:].strip()
+        entry = _entry_after_status(chunk)
         if not entry:
             continue
         # Rename/copy entries: "R  old -> new".

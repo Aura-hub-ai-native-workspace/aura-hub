@@ -28,8 +28,9 @@ const ENV = import.meta.env as unknown as Record<string, string | undefined>;
  *     literal strings ("http://localhost:*"), which Starlette does not glob —
  *     verified 2026-08-26: OPTIONS from http://localhost:1420 → 400
  *     "Disallowed CORS origin". Backend fix required: allow_origin_regex.
- *   • packaged/Tauri builds talk to the loopback service directly and stay
- *     BLOCKED until that regex-based origin matching lands.
+ *   • packaged/Tauri builds talk to the loopback service directly, on the
+ *     SAME origin the Environment surface uses (`service::PYTHON_PORT`).
+ *     There is one Python backend and it serves both.
  */
 const BASE =
   ENV.VITE_AGENT_URL?.replace(/\/$/, '') ??

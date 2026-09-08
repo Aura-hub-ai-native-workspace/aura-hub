@@ -7,8 +7,10 @@ import type { MissionRecord } from '../../../ai/missionClient';
 import type { HubProgress, NodeActivityPhase } from '../../../workspace/hubPhase';
 import { ACTIVITY_LABEL } from '../../../workspace/hubPhase';
 import { CATEGORY_ICON, STATUS_LABEL, STATUS_TONE, TONE_DOT } from '../../../environment/presentation';
+import type { WorkerDescriptor } from '../../../ai/workerClient';
 import { GlassCard } from './GlassCard';
 import { GlowButton } from './GlowButton';
+import { WorkerRail } from './WorkerRail';
 
 function MiniCard({
   node,
@@ -81,6 +83,14 @@ export function LeftControlPanel({
   onRelayout,
   activity,
   onInspect,
+  workers,
+  workersLoading,
+  workersConnecting,
+  workersError,
+  workerActivity,
+  onRefreshWorkers,
+  onConnectWorker,
+  onDisconnectWorker,
 }: {
   nodes: EnvironmentNode[];
   scanning: boolean;
@@ -104,6 +114,16 @@ export function LeftControlPanel({
   /** Live execution phase per placed node id (empty map when idle). */
   activity: Map<string, NodeActivityPhase>;
   onInspect: (nodeId: string) => void;
+  /** Real AI workers, with the backend's own connection verdict. */
+  workers: WorkerDescriptor[];
+  workersLoading: boolean;
+  workersConnecting: string[];
+  workersError: string | null;
+  /** node id → live lifecycle while the Central Agent holds a task. */
+  workerActivity: Map<string, string>;
+  onRefreshWorkers: () => void;
+  onConnectWorker: (id: string) => void;
+  onDisconnectWorker: (id: string) => void;
 }) {
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -148,8 +168,27 @@ export function LeftControlPanel({
         <IconButton icon="panel" label="Toggle panel" size="sm" onClick={onRelayout} />
       </div>
 
-      {/* Capability cards → agent hub */}
+      {/* Real AI workers — connection truth from the backend, never a
+          probe. Workers and tools are separate on purpose: a worker is
+          another AI runtime AURA delegates to, a tool is a capability
+          the Fabric drives itself, and they are connected on entirely
+          different evidence. */}
+      <WorkerRail
+        workers={workers}
+        loading={workersLoading}
+        connecting={workersConnecting}
+        error={workersError}
+        activity={workerActivity}
+        onRefresh={onRefreshWorkers}
+        onConnect={onConnectWorker}
+        onDisconnect={onDisconnectWorker}
+      />
+
+      {/* Tools the Fabric drives directly */}
       <GlassCard className="p-3">
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
+          Tools
+        </p>
         <div className="grid grid-cols-3 gap-2" role="list" aria-label="Connected capabilities">
           {top.length === 0 && (
             <p className="col-span-3 py-2 text-center text-[11.5px] text-text-subtle">
@@ -173,7 +212,7 @@ export function LeftControlPanel({
             <Icon name="cpu" size={30} />
           </span>
           <span className="mt-1.5 text-[14px] font-semibold text-text">AURA Agent</span>
-          <span className="text-[11px] text-text-subtle">Plan • Use Tools • Get Results</span>
+          <span className="text-[11px] text-text-subtle">Plan • Delegate • Supervise • Verify</span>
           <span className="mt-0.5 max-w-full truncate text-[11px] text-neon-cyan">{progress.busy ? progress.detail : progress.label}</span>
         </div>
 

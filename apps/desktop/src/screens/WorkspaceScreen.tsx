@@ -35,6 +35,7 @@ import { FloatingSurface } from '../environment/windows/FloatingSurface';
 import { useWindowManager } from '../environment/windows/windowManager';
 import { CATEGORY_ICON, STATUS_TONE, TONE_DOT } from '../environment/presentation';
 import { deriveHubPhase, missingNodesFor, projectNodeActivity, readinessOf } from '../workspace/hubPhase';
+import { useWorkerStore } from '../workspace/useWorkers';
 import { WorkspaceShell } from './workspace/neon/WorkspaceShell';
 import { LeftControlPanel } from './workspace/neon/LeftControlPanel';
 import { TimelineContainer } from './workspace/neon/TimelineContainer';
@@ -167,6 +168,28 @@ export function WorkspaceScreen() {
   // user never asked about.
   const readiness = useMemo(() => readinessOf(placedNodes), [placedNodes]);
 
+  /* ── Real AI workers ─────────────────────────────────────────────
+     Separate from the capability nodes above, and read from the
+     backend's worker routes rather than an environment probe: a probe
+     proves a binary exists, which is not evidence that AURA can hand
+     that runtime a task and get a real answer back. `connected` here is
+     always the backend's verdict. */
+  const workers = useWorkerStore((s) => s.workers);
+  const workersLoading = useWorkerStore((s) => s.loading);
+  const workersConnecting = useWorkerStore((s) => s.connecting);
+  const workersError = useWorkerStore((s) => s.error);
+  const refreshWorkers = useWorkerStore((s) => s.refresh);
+  const connectWorker = useWorkerStore((s) => s.connect);
+  const disconnectWorker = useWorkerStore((s) => s.disconnect);
+  const [workerActivity, setWorkerActivity] = useState<Map<string, string>>(() => new Map());
+
+  useEffect(() => { void refreshWorkers(); }, [refreshWorkers]);
+
+  const projectPath = useMemo(
+    () => projects.find((p) => p.id === projectId)?.path ?? null,
+    [projects, projectId],
+  );
+
   return (
     <div ref={canvasRef} className="relative h-full min-h-0">
       <WorkspaceShell
@@ -191,6 +214,14 @@ export function WorkspaceScreen() {
             onRelayout={relayout}
             activity={activity}
             onInspect={openWindow}
+            workers={workers}
+            workersLoading={workersLoading}
+            workersConnecting={workersConnecting}
+            workersError={workersError}
+            workerActivity={workerActivity}
+            onRefreshWorkers={() => void refreshWorkers()}
+            onConnectWorker={(id) => void connectWorker(id)}
+            onDisconnectWorker={(id) => void disconnectWorker(id)}
           />
         }
         right={
@@ -203,6 +234,8 @@ export function WorkspaceScreen() {
             onSelectProject={selectProject}
             busy={progress.busy && !active}
             error={errorText}
+            projectPath={projectPath}
+            onWorkerActivity={setWorkerActivity}
           />
         }
       />

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Icon } from '@aura/ui';
 import { SkeletonCard } from '@aura/ui';
 import { EmptyState } from '../../../components/EmptyState';
@@ -6,14 +6,21 @@ import type { MissionRecord } from '../../../ai/missionClient';
 import type { ProjectRecord } from '../../../ai/aiClient';
 import type { CreationState } from '../../missions/useMissions';
 import type { HubProgress } from '../../../workspace/hubPhase';
+import { AgentRunPanel } from './AgentRunPanel';
 import { TimelineStepCard } from './TimelineStepCard';
 import { toTimelineSteps } from './timelineSteps';
 
 /**
- * TimelineContainer — right execution rail.
- * Sticky header (title + real project selector + menu), scrollable steps.
- * States: loading skeleton (creation busy, no mission yet), empty
- * (no mission), error, live list. Pure adapter over MissionRecord.
+ * TimelineContainer — right execution rail, two real views.
+ *
+ * "Mission" is the existing mission timeline, unchanged: a pure adapter
+ * over MissionRecord. "AURA Agent" is the governed delegation loop —
+ * plan, worker selection, governed actions, verification, final answer —
+ * driven entirely by the Central Agent's own events.
+ *
+ * They are separate views rather than one merged feed because they are
+ * two different engines with two different authorities, and pretending
+ * otherwise would put a second orchestrator on screen.
  */
 export function TimelineContainer({
   active,
@@ -24,6 +31,8 @@ export function TimelineContainer({
   onSelectProject,
   busy,
   error,
+  projectPath,
+  onWorkerActivity,
 }: {
   active: MissionRecord | null;
   creation: CreationState;
@@ -33,7 +42,11 @@ export function TimelineContainer({
   onSelectProject: (id: string | null) => void;
   busy: boolean;
   error: string | null;
+  /** Absolute path of the active project; the agent runs against it. */
+  projectPath: string | null;
+  onWorkerActivity?: (activity: Map<string, string>) => void;
 }) {
+  const [view, setView] = useState<'agent' | 'mission'>('agent');
   const steps = useMemo(() => toTimelineSteps(active, creation, progress), [active, creation, progress]);
   const projectName = projects.find((p) => p.id === projectId)?.name ?? null;
 
@@ -47,7 +60,7 @@ export function TimelineContainer({
           <h2 className="truncate text-[15px] font-semibold tracking-[-0.01em] text-text">
             AURA Agent Workspace
           </h2>
-          <p className="truncate text-[11.5px] text-text-muted">Thinking. Collaborating. Building.</p>
+          <p className="truncate text-[11.5px] text-text-muted">Plan · Delegate · Supervise · Verify</p>
         </span>
         <label className="inline-flex items-center gap-2 rounded-lg border border-[rgba(125,146,255,0.3)] bg-[rgba(16,24,43,0.9)] px-2.5 py-1.5 text-[12px] text-text">
           <Icon name="folder" size={14} className="text-text-subtle" />
@@ -73,6 +86,35 @@ export function TimelineContainer({
         </button>
       </header>
 
+      <div role="tablist" aria-label="Workspace view" className="flex gap-1 border-b border-[rgba(125,146,255,0.18)] px-4 py-2">
+        {([['agent', 'AURA Agent'], ['mission', 'Mission']] as const).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={view === id}
+            data-testid={`workspace-tab-${id}`}
+            onClick={() => setView(id)}
+            className={
+              view === id
+                ? 'neon-focus rounded-md border border-[rgba(125,146,255,0.4)] bg-[rgba(77,124,255,0.14)] px-2.5 py-1 text-[11.5px] font-semibold text-text'
+                : 'neon-focus rounded-md px-2.5 py-1 text-[11.5px] text-text-muted transition-colors hover:text-text'
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === 'agent' && (
+        <AgentRunPanel
+          projectId={projectId}
+          projectPath={projectPath}
+          onWorkerActivity={onWorkerActivity}
+        />
+      )}
+
+      {view === 'mission' && (
       <div role="log" aria-live="polite" aria-label="Agent activity" className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {error && (
           <div role="alert" className="rounded-lg border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-3 py-2 text-[12px] text-neon-danger">
@@ -114,6 +156,7 @@ export function TimelineContainer({
           </div>
         ))}
       </div>
+      )}
     </section>
   );
 }

@@ -194,6 +194,115 @@ def plan_status(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
     )
 
 
+#: Bounded task text handed to a worker. The worker gets AURA's task,
+#: never AURA's reasoning and never another worker's private context.
+MAX_DELEGATE_CHARS = 4000
+
+
+def _delegate_input(task_text: str, scope: list[str]) -> dict:
+    payload: dict = {"task": task_text[:MAX_DELEGATE_CHARS]}
+    if scope:
+        payload["scopePaths"] = list(scope)
+    return payload
+
+
+def plan_delegate(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
+    """One worker implements the change, under a task contract.
+
+    The plan states a ROLE, never a worker: Phase G matching picks an
+    eligible connected worker at dispatch, and no eligible worker fails
+    the task closed rather than dispatching an unsuitable one.
+    """
+    scope = _validated_scope(intent)
+    return TaskPlan(
+        planId=_plan_id(), sessionId=session_id, intent=intent,
+        tasks=[TaskSpecification(
+            id="implement",
+            description="Implement the requested change",
+            capabilityId="agent.delegate",
+            input=_delegate_input(_delegate_text(intent), scope),
+            workerRole="code",
+            risk="high",
+            reversible=False,
+            verification=VerificationRequirement(
+                kind="exit-code",
+                description=("The worker exits 0 and every file it changed "
+                             "lies inside the declared scope."))),
+        ],
+        acceptance=[_accept(
+            "exit-code",
+            "The requested change was implemented by a worker and verified.",
+            tasks=["implement"])],
+        createdAt=now)
+
+
+def plan_delegate_review(intent: AgentIntent, session_id: str,
+                         now: str) -> TaskPlan:
+    """Two workers: one implements, a second reviews the VERIFIED result.
+
+    The review task consumes upstream-output, so it cannot run until the
+    implementation is done AND verified in this run, and what reaches it
+    is AURA's bounded evidence envelope — never the first worker's
+    private context, and never a direct worker-to-worker channel.
+    """
+    scope = _validated_scope(intent)
+    text = _delegate_text(intent)
+    return TaskPlan(
+        planId=_plan_id(), sessionId=session_id, intent=intent,
+        tasks=[
+            TaskSpecification(
+                id="implement",
+                description="Implement the requested change",
+                capabilityId="agent.delegate",
+                input=_delegate_input(text, scope),
+                workerRole="code",
+                risk="high", reversible=False,
+                verification=VerificationRequirement(
+                    kind="exit-code",
+                    description=("The worker exits 0 and every file it "
+                                 "changed lies inside the declared scope."))),
+            TaskSpecification(
+                id="review",
+                description="Independently review the implemented change",
+                capabilityId="agent.delegate",
+                input=_delegate_input(
+                    "Review the change described in the verified results "
+                    "above. Report correctness, security and quality "
+                    "problems you find, and say plainly whether the change "
+                    "is acceptable. Do not modify any file.", scope),
+                inputFrom="upstream-output",
+                dependsOn=["implement"],
+                workerRole="review",
+                distinctWorkerFrom=["implement"],
+                risk="high", reversible=True,
+                verification=VerificationRequirement(
+                    kind="exit-code",
+                    description=("The reviewing worker exits 0 and stays "
+                                 "inside the declared scope."))),
+        ],
+        acceptance=[_accept(
+            "exit-code",
+            ("The change was implemented AND independently reviewed by a "
+             "second worker, both verified."),
+            tasks=["implement", "review"])],
+        createdAt=now)
+
+
+def _delegate_text(intent: AgentIntent) -> str:
+    raw = getattr(intent, "delegateTask", None)
+    return str(raw or intent.goal).strip()
+
+
+def _validated_scope(intent: AgentIntent) -> list[str]:
+    """Re-validate the scope the intent proposed. The intent layer is a
+    reader of user text, not an authority: a malformed scope is dropped
+    here rather than travelling into a task contract."""
+    raw = getattr(intent, "delegateScope", None)
+    if not isinstance(raw, list) or not raw:
+        return []
+    return _check_scope_paths(raw, "delegated work")
+
+
 def plan_run_workflow(intent: AgentIntent, session_id: str, now: str,
                       workflow_ref: str) -> TaskPlan:
     """Intent asks to RUN a stored workflow → one workflow-run task. The
@@ -597,6 +706,16 @@ class TaskPlanner:
                     "The requested file exists with exactly the requested bytes.",
                     tasks=["t1"])],
                 createdAt=now)
+        elif caps == {"agent.delegate"} and getattr(intent, "delegateTask", None):
+            # Deterministic delegation, and ONLY for an intent the
+            # heuristic compiler produced: `delegateTask` is the marker
+            # it sets. A model-compiled intent has no such marker and
+            # still falls through to its own validated proposal, so
+            # adding this template cannot flatten a richer model DAG
+            # into a one-task plan.
+            plan = (plan_delegate_review(intent, session_id, now)
+                    if getattr(intent, "delegateReview", False)
+                    else plan_delegate(intent, session_id, now))
         elif run_ref is not None:
             resolved = self._resolve_workflow(run_ref)
             if resolved is None:

@@ -215,8 +215,12 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     if hasattr(fabric, "attach_approval_store"):
         fabric.attach_approval_store(_ap_load, _ap_save)
         fabric.attach_audit_store(audit.load, audit.append)
-        # The ONE ledger instance backs both the fabric's gates and HTTP.
-        fabric._ledger = ledger
+        # The ONE ledger instance backs both the fabric's gates and HTTP —
+        # and, after a restart, the ONE record object per approval. Both
+        # sides restore from the same file but parse their own dicts, so
+        # adopting is what makes "one ledger" true across a restart
+        # rather than only within a process.
+        fabric.use_ledger(ledger)
 
     wf_store = WorkflowStore()
     ver_store = WorkflowVersionStore()
@@ -1001,6 +1005,49 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             return _err("no such node", 404)
         return JSONResponse({"ok": True})
 
+    # ── workers (Phase K) ────────────────────────────────────────────
+    # Workers are AI runtimes AURA delegates to; tools are capabilities
+    # the Fabric drives itself. These routes report the FIRST kind, and
+    # they report it honestly: connected means AURA proved a real
+    # round-trip, never that a binary exists.
+
+    async def workers_list(request: Request):
+        from ..workers import describe_workers, matrix_rows
+
+        workers = describe_workers(S["nodes"])
+        return JSONResponse({
+            "workers": [w.to_dict() for w in workers],
+            "matrix": matrix_rows(workers),
+            "connected": sum(1 for w in workers if w.connected),
+            "total": len(workers),
+        })
+
+    async def workers_connect(request: Request):
+        from ..workers import connect_worker
+
+        body = await request.json()
+        worker_id = str(body.get("id") or body.get("workerId") or "").strip()
+        if not worker_id:
+            return _err("No worker id was provided.", 400)
+        descriptor, proof = await asyncio.get_running_loop().run_in_executor(
+            None, connect_worker, worker_id, S["nodes"], str(S["home"]))
+        if descriptor is None:
+            return _err(proof.get("detail") or "unknown worker", 400)
+        return JSONResponse({
+            "connected": descriptor.connected,
+            "worker": descriptor.to_dict(),
+            "proof": proof,
+            "detail": descriptor.detail,
+        })
+
+    async def workers_disconnect(request: Request):
+        from ..workers import disconnect_worker
+
+        ok = disconnect_worker(request.path_params["wid"], S["nodes"])
+        if not ok:
+            return _err("no such worker", 404)
+        return JSONResponse({"ok": True})
+
     async def fabric_audit(request: Request):
         return JSONResponse({"audit": S["audit"].load()})
 
@@ -1442,6 +1489,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/fabric/nodes", fabric_nodes_get, methods=["GET"]),
         Route("/fabric/nodes", fabric_nodes_register, methods=["POST"]),
         Route("/fabric/nodes/{nid}", fabric_nodes_remove, methods=["DELETE"]),
+        Route("/workers", workers_list, methods=["GET"]),
+        Route("/workers/connect", workers_connect, methods=["POST"]),
+        Route("/workers/{wid}", workers_disconnect, methods=["DELETE"]),
         Route("/fabric/audit", fabric_audit, methods=["GET"]),
         Route("/fabric/mission/{pid}/{mid}", fabric_mission_annotation, methods=["GET"]),
         Route("/projects", projects_list, methods=["GET"]),
@@ -1952,6 +2002,24 @@ async def environment_connect(request: Request):
     entry = catalog_entry(node_id)
     if entry is None:
         return JSONResponse({"error": f"'{node_id}' is not in the catalog.", "connected": False}, status_code=400)
+
+    # A WORKER is never connected by a version probe. Presence proves a
+    # binary exists; it proves nothing about whether AURA can dispatch to
+    # that runtime and receive a real, correlated result — which is what
+    # the word has to mean. Workers go through the readiness handshake at
+    # POST /workers/connect and nowhere else.
+    from ..workers import is_worker
+
+    if is_worker(node_id):
+        return JSONResponse({
+            "connected": False,
+            "result": probe_result_to_dict(probe_node(node_id)),
+            "detail": (f"{entry.name} is an AI worker, not a tool. Connecting "
+                       "it means proving AURA can dispatch to it and receive "
+                       "a real result — use POST /workers/connect, which runs "
+                       "that handshake."),
+            "worker": True,
+        }, status_code=409)
 
     # Internal nodes always connected
     if entry.transport == "internal":
