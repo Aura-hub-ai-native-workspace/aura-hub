@@ -206,6 +206,19 @@ textarea,
     radial-gradient(820px 520px at 88% 4%, rgba(122, 92, 255, 0.13), transparent 62%),
     radial-gradient(700px 500px at 50% 110%, rgba(32, 211, 255, 0.06), transparent 60%),
     var(--neon-base);
+
+  /* The workspace owns its foreground because it owns its background.
+     `--neon-base` is #070b14 in BOTH themes — this surface is always
+     dark — but `--text` follows the app theme and is #14171d in light.
+     In the default light theme that put near-black text on a near-black
+     panel: worker names, the AURA wordmark and the active tab label were
+     all invisible in the real application. Restating the dark
+     foreground here keeps the panel internally consistent instead of
+     inheriting a palette written for a light surface it never has. */
+  --text: #f2f4f8;
+  --text-muted: #9aa2b2;
+  --text-subtle: #667085;
+  color: var(--text);
 }
 .neon-grid {
   background-image:

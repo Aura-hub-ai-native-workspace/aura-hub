@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { cn } from '@aura/core';
+import { cn, useAppStore } from '@aura/core';
 import { Icon } from '@aura/ui';
 import {
   centralAgentClient,
@@ -8,6 +8,9 @@ import {
 } from '../../../ai/centralAgentClient';
 import { GlassCard } from './GlassCard';
 import { GlowButton } from './GlowButton';
+import { ApprovalRequestCard } from './ApprovalRequestCard';
+import { RunTimeline } from './RunTimeline';
+import { RunResultCard } from './RunResultCard';
 
 /**
  * AgentRunPanel — the live AURA Agent workspace.
@@ -64,21 +67,6 @@ interface GovernedAction {
   worker: string;
 }
 
-const TASK_TONE: Record<string, string> = {
-  done: 'text-neon-success',
-  skipped: 'text-neon-success',
-  'awaiting-approval': 'text-neon-warning',
-  blocked: 'text-neon-warning',
-  denied: 'text-neon-danger',
-  failed: 'text-neon-danger',
-  'timed-out': 'text-neon-danger',
-};
-
-const TASK_GLYPH: Record<string, string> = {
-  done: '✓', skipped: '✓', 'awaiting-approval': '⏸', blocked: '⏸',
-  denied: '✕', failed: '✕', 'timed-out': '✕',
-};
-
 function str(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v);
 }
@@ -93,6 +81,10 @@ export function AgentRunPanel({
   /** Lifts live worker lifecycle to the rail. Never invents a state. */
   onWorkerActivity?: (activity: Map<string, string>) => void;
 }) {
+  // Real navigation, from the shell's own store: "Open project" shows
+  // the project this run worked in. No OS-level opener exists in this
+  // build, so nothing here pretends to reveal a folder on disk.
+  const openProject = useAppStore((st) => st.openProject);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -330,6 +322,51 @@ export function AgentRunPanel({
     }
   }, [events]);
 
+  /* The approval this run is parked on, if any.
+     Two sources, both the backend's own: the terminal result names the
+     ids it parked on, and `approval.required` carries the id live. The
+     plan row supplies who it is about. Nothing is inferred from prose. */
+  const pendingApproval = useMemo(() => {
+    if (result && result.outcome !== 'awaiting-approval') return null;
+    const fromResult = result?.evidence?.approvalIds ?? [];
+    if (fromResult.length > 0) return fromResult[fromResult.length - 1];
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const f = events[i];
+      if (f.type !== 'approval.required') continue;
+      const id = str(f.payload?.approvalId);
+      if (id) return id;
+    }
+    return null;
+  }, [result, events]);
+
+  const parkedTask = useMemo(
+    () => plan.find((t) => t.state === 'awaiting-approval') ?? null,
+    [plan],
+  );
+
+  /* Scope declared for the parked task, straight from plan.created. AURA
+     enforces it; this only restates it so the person deciding can see
+     the boundary they are authorising. */
+  const parkedScope = useMemo<string[]>(() => {
+    if (!parkedTask) return [];
+    for (const f of events) {
+      if (f.type !== 'plan.created') continue;
+      const rows = Array.isArray(f.payload?.plan) ? (f.payload!.plan as Record<string, unknown>[]) : [];
+      for (const row of rows) {
+        if (str(row.id) !== parkedTask.id) continue;
+        const scope = row.scopePaths;
+        if (Array.isArray(scope)) return scope.map(str).filter(Boolean);
+      }
+    }
+    return [];
+  }, [parkedTask, events]);
+
+  /* A decision resumes the run server-side and returns the next result.
+     The event stream stays open, so the timeline keeps filling in. */
+  const onDecided = useCallback((next: unknown) => {
+    setResult(next as AgentResult);
+  }, []);
+
   const cancelled = result?.outcome === 'cancelled';
   const runState = cancelled ? 'CANCELLED'
     : stopping ? 'STOPPING'
@@ -430,53 +467,37 @@ export function AgentRunPanel({
         </GlassCard>
       )}
 
-      {/* PLAN */}
-      {(plan.length > 0 || waiting) && (
-        <GlassCard className="p-3" data-testid="agent-plan">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">Plan</p>
-          {waiting && <p className="text-[12px] text-text-muted">Waiting for AURA's plan…</p>}
-          <ul className="space-y-1.5">
-            {plan.map((t) => (
-              <li key={t.id} data-testid="agent-plan-task" data-task-state={t.state} className="flex items-baseline gap-2 text-[12px]">
-                <span className={cn('w-3 shrink-0 font-semibold', TASK_TONE[t.state] ?? 'text-text-subtle')}>
-                  {TASK_GLYPH[t.state] ?? '○'}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="font-medium text-text">{t.id}</span>
-                  {t.role && <span className="text-text-subtle"> · {t.role}</span>}
-                  {t.worker && <span className="text-text-muted"> — {t.worker}</span>}
-                  <span className={cn('ml-1.5', TASK_TONE[t.state] ?? 'text-text-subtle')}>
-                    {t.state}{t.verified === true ? ' · verified' : t.verified === false ? ' · unverified' : ''}
-                  </span>
-                  {t.description && (
-                    <span className="block truncate text-[11px] text-text-muted">
-                      {t.description}
-                      {t.dependsOn.length > 0 && <> · after {t.dependsOn.join(', ')}</>}
-                      {t.conditional && <> · only if the review reports findings</>}
-                    </span>
-                  )}
-                  {t.detail && <span className="block truncate text-[11px] text-text-subtle">{t.detail}</span>}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </GlassCard>
+      {/* APPROVAL — the decision this run is parked on. Rendered high in
+          the panel because a parked run cannot advance without it. */}
+      {sessionId && pendingApproval && (
+        <ApprovalRequestCard
+          sessionId={sessionId}
+          approvalId={pendingApproval}
+          worker={parkedTask?.worker ?? ''}
+          taskId={parkedTask?.id ?? ''}
+          taskDescription={parkedTask?.description ?? ''}
+          scopePaths={parkedScope}
+          busy={busy}
+          onDecided={onDecided}
+        />
       )}
 
-      {/* HANDOFF */}
-      {handoffs.length > 0 && (
-        <GlassCard className="p-3" data-testid="agent-handoff">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
-            Handoff
+      {/* ORCHESTRATION — AURA → worker → AURA → worker. The handoff rows
+          are part of this flow rather than a separate card, because the
+          handoff IS the flow: a verified result returning to AURA and
+          going out again. */}
+      {(plan.length > 0 || waiting) && (
+        <GlassCard className="p-3" data-testid="agent-plan">
+          <p className="mb-2.5 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
+            Orchestration
           </p>
-          <ul className="space-y-1">
-            {handoffs.map((h) => (
-              <li key={`${h.from}->${h.to}`} className="text-[11.5px] text-text-muted">
-                <span className="text-text">{h.from}</span> → <span className="text-text">{h.to}{h.toWorker ? ` (${h.toWorker})` : ''}</span>
-                <span className="text-text-subtle"> · verified result, {h.invocations.length} invocation{h.invocations.length === 1 ? '' : 's'}</span>
-              </li>
-            ))}
-          </ul>
+          {waiting && <p className="text-[12px] text-text-muted">Waiting for AURA's plan…</p>}
+          <RunTimeline
+            tasks={plan}
+            handoffs={handoffs}
+            objective={objective}
+            planned={plan.length > 0}
+          />
         </GlassCard>
       )}
 
@@ -510,38 +531,15 @@ export function AgentRunPanel({
 
       {/* AURA RESPONSE */}
       {result && (
-        <GlassCard
-          className="p-3"
-          tint={result.outcome === 'completed' ? 'green' : result.outcome === 'awaiting-approval' ? 'amber' : 'red'}
-          data-testid="agent-result"
-          data-outcome={result.outcome}
-        >
-          <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
-            AURA response
-          </p>
-          <p className="text-[12.5px] leading-relaxed text-text">{result.summary}</p>
-          {objective.accepted !== null && (
-            <p
-              data-testid="agent-objective-verdict"
-              data-accepted={objective.accepted}
-              className={cn('mt-2 text-[11.5px]', objective.accepted ? 'text-neon-success' : 'text-neon-warning')}
-            >
-              Objective {objective.accepted ? 'accepted' : 'NOT accepted'}
-              {!objective.accepted && objective.unmet.length > 0 && (
-                <span className="text-text-muted"> — {objective.unmet.join('; ')}</span>
-              )}
-            </p>
-          )}
-          <p className="mt-2 text-[11px] text-text-subtle">
-            outcome: <span className="font-semibold">{result.outcome}</span>
-            {result.performed.length > 0 && <> · performed: {result.performed.join(', ')}</>}
-            {result.verified.length > 0 && <> · verified: {result.verified.join(', ')}</>}
-            {result.failureReason && <> · {result.failureReason}</>}
-          </p>
-          {sessionId && (
-            <p className="mt-1 truncate text-[10.5px] text-text-subtle">session {sessionId}</p>
-          )}
-        </GlassCard>
+        <RunResultCard
+          result={result}
+          objective={objective}
+          tasks={plan}
+          denied={supervisor.denied}
+          sessionId={sessionId}
+          projectPath={projectPath}
+          onOpenProject={projectId ? () => openProject(projectId) : undefined}
+        />
       )}
     </div>
   );

@@ -6,6 +6,7 @@ import type { MissionRecord } from '../../../ai/missionClient';
 import type { ProjectRecord } from '../../../ai/aiClient';
 import type { CreationState } from '../../missions/useMissions';
 import type { HubProgress } from '../../../workspace/hubPhase';
+import { useWorkspace } from '../../../data/useWorkspace';
 import { AgentRunPanel } from './AgentRunPanel';
 import { TimelineStepCard } from './TimelineStepCard';
 import { toTimelineSteps } from './timelineSteps';
@@ -47,6 +48,8 @@ export function TimelineContainer({
   onWorkerActivity?: (activity: Map<string, string>) => void;
 }) {
   const [view, setView] = useState<'agent' | 'mission'>('agent');
+  const refreshProjects = useWorkspace((st) => st.refresh);
+  const refreshing = useWorkspace((st) => st.loading);
   const steps = useMemo(() => toTimelineSteps(active, creation, progress), [active, creation, progress]);
   const projectName = projects.find((p) => p.id === projectId)?.name ?? null;
 
@@ -77,12 +80,20 @@ export function TimelineContainer({
             ))}
           </select>
         </label>
+        {/* A real action, not a placeholder menu: this re-reads the
+            project list the selector beside it renders. The control that
+            used to sit here was an unwired "Workspace actions" button —
+            an affordance that looked live and did nothing. */}
         <button
           type="button"
-          aria-label="Workspace actions"
-          className="neon-focus grid h-8 w-8 place-items-center rounded-lg border border-[rgba(125,146,255,0.3)] text-text-muted transition-colors duration-150 hover:bg-white/5 hover:text-text"
+          onClick={() => void refreshProjects()}
+          disabled={refreshing}
+          aria-label="Refresh projects"
+          title="Refresh projects"
+          data-testid="workspace-refresh-projects"
+          className="neon-focus grid h-8 w-8 place-items-center rounded-lg border border-[rgba(125,146,255,0.3)] text-text-muted transition-colors duration-150 hover:bg-white/5 hover:text-text disabled:opacity-50"
         >
-          <Icon name="more" size={16} />
+          <Icon name="refresh" size={16} />
         </button>
       </header>
 

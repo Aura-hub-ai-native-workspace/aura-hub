@@ -6,7 +6,7 @@ import type { ProjectRecord } from '../../../ai/aiClient';
 import type { MissionRecord } from '../../../ai/missionClient';
 import type { HubProgress, NodeActivityPhase } from '../../../workspace/hubPhase';
 import { ACTIVITY_LABEL } from '../../../workspace/hubPhase';
-import { CATEGORY_ICON, STATUS_LABEL, STATUS_TONE, TONE_DOT } from '../../../environment/presentation';
+import { CATEGORY_ICON, STATUS_LABEL, STATUS_TONE, TONE_DOT, CATEGORY_LABEL } from '../../../environment/presentation';
 import type { WorkerDescriptor } from '../../../ai/workerClient';
 import { GlassCard } from './GlassCard';
 import { GlowButton } from './GlowButton';
@@ -145,7 +145,6 @@ export function LeftControlPanel({
 
   const top = nodes.slice(0, 3);
   const bottom = nodes.slice(3, 6);
-  const roles = ['Reasoning', 'Analysis', 'Multimodal', 'Executor', 'Integration', 'Tools & APIs'];
 
   return (
     <aside
@@ -184,6 +183,28 @@ export function LeftControlPanel({
         onDisconnect={onDisconnectWorker}
       />
 
+      {/* The orchestrator, on its own.
+          This node used to sit INSIDE the Tools card, wedged between two
+          tool grids — which filed AURA as one more capability. AURA is
+          not a tool and not a worker: it is the thing that chooses them,
+          so it gets its own surface between the two lists it commands. */}
+      <GlassCard className="p-3" tint="blue" data-testid="hub-aura-node">
+        <div className="flex items-center gap-3">
+          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl border border-[rgba(77,124,255,0.5)] bg-[rgba(10,16,34,0.95)] text-text shadow-glow-blue">
+            <Icon name="cpu" size={26} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[14px] font-semibold text-text">AURA Agent</span>
+            <span className="block text-[11px] text-text-subtle">
+              Plan · Delegate · Supervise · Verify
+            </span>
+            <span className="mt-0.5 block max-w-full truncate text-[11px] text-neon-cyan">
+              {progress.busy ? progress.detail : progress.label}
+            </span>
+          </span>
+        </div>
+      </GlassCard>
+
       {/* Tools the Fabric drives directly */}
       <GlassCard className="p-3">
         <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
@@ -195,11 +216,11 @@ export function LeftControlPanel({
               {scanning ? 'Reading your environment…' : 'No capabilities placed yet.'}
             </p>
           )}
-          {top.map((n, i) => (
+          {top.map((n) => (
             <div key={n.id} role="listitem">
               <MiniCard
                 node={n}
-                role={roles[i] ?? n.entry.category}
+                role={CATEGORY_LABEL[n.entry.category] ?? 'Tool'}
                 activity={activity.get(n.id) ?? 'idle'}
                 onInspect={() => onInspect(n.id)}
               />
@@ -207,21 +228,12 @@ export function LeftControlPanel({
           ))}
         </div>
 
-        <div className="flex flex-col items-center py-2" aria-hidden>
-          <span className="grid h-14 w-14 place-items-center rounded-2xl border border-[rgba(77,124,255,0.5)] bg-[rgba(10,16,34,0.95)] text-text shadow-glow-blue">
-            <Icon name="cpu" size={30} />
-          </span>
-          <span className="mt-1.5 text-[14px] font-semibold text-text">AURA Agent</span>
-          <span className="text-[11px] text-text-subtle">Plan • Delegate • Supervise • Verify</span>
-          <span className="mt-0.5 max-w-full truncate text-[11px] text-neon-cyan">{progress.busy ? progress.detail : progress.label}</span>
-        </div>
-
         <div className="grid grid-cols-3 gap-2" role="list" aria-label="Tool integrations">
-          {bottom.map((n, i) => (
+          {bottom.map((n) => (
             <div key={n.id} role="listitem">
               <MiniCard
                 node={n}
-                role={roles[i + 3] ?? n.entry.category}
+                role={CATEGORY_LABEL[n.entry.category] ?? 'Tool'}
                 activity={activity.get(n.id) ?? 'idle'}
                 onInspect={() => onInspect(n.id)}
               />
@@ -278,9 +290,17 @@ export function LeftControlPanel({
         </div>
       </GlassCard>
 
-      {/* Composer */}
+      {/* Mission composer.
+          Named, because it is NOT the AURA Agent composer on the right:
+          these two boxes look alike and drive different engines, and an
+          unlabelled pair leaves the person typing unable to tell which
+          one they are addressing. Missions plan against files on disk;
+          the agent panel delegates to workers. */}
       <GlassCard className="p-3">
-        <label htmlFor="neon-composer" className="sr-only">Type your message</label>
+        <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
+          New mission
+        </p>
+        <label htmlFor="neon-composer" className="sr-only">Describe a mission</label>
         <textarea
           id="neon-composer"
           ref={taRef}
@@ -295,12 +315,16 @@ export function LeftControlPanel({
             }
           }}
           data-testid="hub-composer"
-          placeholder={hasProject ? 'Type your message…' : 'Choose a project first…'}
+          placeholder={hasProject ? 'Describe a mission…' : 'Choose a project first…'}
           className="neon-focus w-full resize-none bg-transparent text-[13px] leading-relaxed text-text outline-none placeholder:text-text-subtle disabled:cursor-not-allowed"
         />
         <div className="mt-2 flex items-center justify-between gap-2">
           <span className="truncate text-[10.5px] text-text-subtle">
-            {progress.busy ? progress.detail : hasProject ? 'Enter to send · Shift+Enter for new line' : 'Missions plan against real files on disk.'}
+            {progress.busy
+              ? progress.detail
+              : hasProject
+                ? 'Plans against files on disk · to delegate to workers, use the AURA Agent panel'
+                : 'Missions plan against real files on disk.'}
           </span>
           <GlowButton size="sm" onClick={submit} disabled={!canSubmit} data-testid="hub-submit" aria-label="Send message">
             <Icon name="arrow-right" size={15} />
