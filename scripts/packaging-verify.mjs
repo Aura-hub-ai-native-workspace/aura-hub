@@ -44,6 +44,25 @@ const check = (n, ok, extra = '') => {
 const info = (m) => console.log(`      ${m}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * The Python environment backend's port, kept separate from the Node
+ * service's: they are two supervised processes and a check that conflates
+ * them proves nothing about either.
+ */
+const PYTHON_PORT = Number(process.env.AURA_ENVIRONMENT_PORT ?? 4320);
+const pyApi = async (p, ms = 4000) => {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ms);
+  try {
+    const r = await fetch(`http://127.0.0.1:${PYTHON_PORT}${p}`, { signal: ac.signal });
+    return { status: r.status, body: await r.json().catch(() => null) };
+  } catch (e) {
+    return { status: 0, body: null, error: e.message };
+  } finally {
+    clearTimeout(t);
+  }
+};
+
 const api = async (p, ms = 4000) => {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), ms);
@@ -180,23 +199,42 @@ check('1f. the Python environment backend is packaged inside the artifact',
     ? `${packagedPyEntry[0].replace(squash, '…')} + aura package`
     : `entry: ${packagedPyEntry.length}, aura.api.server: ${packagedPyPkg.length}`);
 
-/**
- * Reads as a string search and is really an assertion about resolution
- * order. A CI-built artifact whose only backend location is
- * `/home/runner/work/...` is exactly the v0.1.8 defect, so that shape is
- * what this rejects — on any machine, without needing a CI build to
- * reproduce it.
+/*
+ * Resolution ORDER, read from the source that does the resolving.
+ *
+ * This used to grep the binary for `/home/runner/work/...` and fail if the
+ * string was present at all. That is the wrong invariant twice over. The
+ * string is `env!("CARGO_MANIFEST_DIR")`, which every build bakes in as
+ * the DEVELOPMENT fallback — a correct CI artifact contains it and never
+ * consults it, so the check failed the very artifacts it was written to
+ * protect, while passing locally only because a developer's build path
+ * does not start with `/home/runner`. Presence was never the question;
+ * precedence is.
+ *
+ * So this asserts the order directly: inside `resolve_python_backend`,
+ * the `BaseDirectory::Resource` lookup must appear before the
+ * `CARGO_MANIFEST_DIR` fallback. A packaged build that consulted the
+ * build-machine path first — the v0.1.8 defect — fails here.
+ *
+ * The runtime half of the same invariant is checked after launch (3f/3g):
+ * where the backend was ACTUALLY resolved from, and whether it answered.
+ * Reading the order is cheap and precise; proving the behaviour needs the
+ * app running.
  */
-const mainBinary = existsSync(squash)
-  ? findIn(squash, 'aura-hub').find((p) => !p.endsWith('.desktop'))
-  : null;
-const runnerPaths = mainBinary
-  ? spawnSync('sh', ['-c', `strings -a '${mainBinary}' | grep -oE '/home/runner/work/[^ ]*' | sort -u | head -5`],
-      { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean)
-  : [];
-check('1g. the packaged backend is not located through a build-machine path',
-  mainBinary !== null && runnerPaths.length === 0,
-  runnerPaths.length ? runnerPaths.join(' ') : 'no CI checkout path embedded');
+const libRsSrc = readFileSync(`${REPO}/apps/desktop/src-tauri/src/lib.rs`, 'utf8');
+const resolveFn = libRsSrc.slice(libRsSrc.indexOf('fn resolve_python_backend'));
+const fnBody = resolveFn.slice(0, resolveFn.indexOf('\n}\n') + 1);
+const resourceAt = fnBody.indexOf('BaseDirectory::Resource');
+const manifestAt = fnBody.indexOf('CARGO_MANIFEST_DIR');
+check('1g. the packaged resource directory outranks the development fallback',
+  resourceAt !== -1 && manifestAt !== -1 && resourceAt < manifestAt,
+  resourceAt === -1
+    ? 'resolve_python_backend never consults BaseDirectory::Resource'
+    : manifestAt === -1
+      ? 'no development fallback found — expected one after the resource lookup'
+      : resourceAt < manifestAt
+        ? 'resource lookup precedes the CARGO_MANIFEST_DIR fallback'
+        : 'CARGO_MANIFEST_DIR is consulted BEFORE the packaged resources');
 
 /* ── 2. launch from outside the repo, with a hostile environment ──── */
 
@@ -219,19 +257,55 @@ const auraHome = mkdtempSync(path.join(tmpdir(), 'aura-home-'));
  * in the shell works; if it only worked from a developer shell, this is
  * where that shows.
  */
+/*
+ * One deliberate concession to the minimal PATH: the directory of a Python
+ * that can actually run the backend, if one exists on this machine.
+ *
+ * This suite tests the PACKAGE, not the host's Python installation. The
+ * backend needs starlette, uvicorn and pydantic, and on a machine whose
+ * only such interpreter lives somewhere non-standard (pyenv, conda, a
+ * virtualenv) a bare `/usr/bin:/bin` makes the app refuse — correctly, and
+ * for a reason that says nothing about whether the package is built right.
+ * Without this the backend checks below would report a packaging failure
+ * on a perfectly good artifact.
+ *
+ * Only that one directory is added, and only when the interpreter there
+ * genuinely imports what the backend needs. Everything else stays hostile,
+ * so the PATH-seeding claim 4e makes is still tested against a launcher's
+ * environment rather than a developer's shell.
+ */
+const pythonSearch = [
+  ...(process.env.PATH ?? '').split(':').filter(Boolean),
+  '/usr/local/bin', '/usr/bin', '/bin', '/opt/homebrew/bin',
+];
+let capablePythonDir = null;
+for (const dir of pythonSearch) {
+  for (const exe of ['python3', 'python']) {
+    const candidate = path.join(dir, exe);
+    if (!existsSync(candidate)) continue;
+    const probe = spawnSync(candidate, ['-c', 'import starlette, uvicorn, pydantic'],
+      { encoding: 'utf8', timeout: 20000 });
+    if (probe.status === 0) { capablePythonDir = dir; break; }
+  }
+  if (capablePythonDir) break;
+}
+
 const launchEnv = {
   HOME: process.env.HOME,
   USER: process.env.USER,
   DISPLAY: process.env.DISPLAY ?? ':0',
   XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid()}`,
   XAUTHORITY: process.env.XAUTHORITY ?? '',
-  PATH: '/usr/bin:/bin',
+  PATH: capablePythonDir && !['/usr/bin', '/bin'].includes(capablePythonDir)
+    ? `/usr/bin:/bin:${capablePythonDir}`
+    : '/usr/bin:/bin',
   AURA_HOME: auraHome,
   AI_PORT: String(PORT),
 };
 
 info(`cwd     : ${runDir} (outside the repository)`);
 info(`PATH    : ${launchEnv.PATH} (deliberately minimal)`);
+info(`python  : ${capablePythonDir ?? 'none on this machine can import starlette/uvicorn/pydantic'}`);
 info(`AURA_HOME: ${auraHome}`);
 
 const app = spawn(APPIMAGE, [], {
@@ -274,6 +348,46 @@ const servicePids = pidsOnPort();
 check('3b. the service is a child of the packaged app, not a leftover',
   servicePids.length > 0 && !servicePids.some((p) => before.includes(p)),
   `pid ${servicePids.join(',')}`);
+
+/*
+ * The Python environment backend, checked where it actually matters.
+ *
+ * Nothing in this suite exercised it before: 3a, 4a and 4c all talk to the
+ * Node service. That is how v0.1.8 shipped an application whose machine
+ * inventory could never work — every packaging assertion passed while the
+ * backend it supervises was not in the package at all.
+ *
+ * The app reports both resolutions on stdout as it starts them. This reads
+ * that line rather than inferring: the entry script it chose must live
+ * inside the mounted application, not in a source checkout. It is running
+ * from `runDir` with a minimal PATH, so a build that depended on the
+ * developer's or CI's tree has nothing to fall back to and is caught here.
+ *
+ * It has to answer, too: a path that resolves but never serves would leave
+ * the Machine Inventory exactly as empty as no path at all. So the health
+ * gate is awaited FIRST — the backend starts after the Node service, and
+ * reading stdout before it comes up would report "no backend path" for a
+ * backend that was merely still starting.
+ */
+let pythonReady = false;
+const pyDeadline = Date.now() + 120000;
+while (Date.now() < pyDeadline) {
+  const h = await pyApi('/health');
+  if (h.status === 200 && h.body?.health?.backend === 'python') { pythonReady = true; break; }
+  if (appExited !== null) break;
+  await sleep(1000);
+}
+
+const backendLine = (appOut.match(/^\[aura\] backend\s*:\s*(.+)$/m) ?? [])[1]?.trim() ?? '';
+const inPackagedResources = /\/resources\/python\/scripts\/serve_central_agent_api\.py$/.test(backendLine)
+  && !backendLine.startsWith(REPO)
+  && !/\/home\/runner\/work\//.test(backendLine);
+check('3f. the backend was resolved from the packaged resources, not a source tree',
+  backendLine !== '' && inPackagedResources,
+  backendLine || 'the app never reported a backend path');
+
+check('3g. the packaged backend serves its own health endpoint',
+  pythonReady, pythonReady ? `backend=python on ${PYTHON_PORT}` : `no python backend on ${PYTHON_PORT}`);
 
 /**
  * The window is configured hidden and shown only after the health gate,
