@@ -54,6 +54,45 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
+## [0.1.8] - 2026-09-13 — Environment Backend Startup
+
+v0.1.7 shipped a desktop app whose environment backend never started. The
+renderer asked `127.0.0.1:4320` for the machine inventory, found nobody
+listening, and reported "0 installed" on a machine with hundreds of
+packages on it. Two defects stood between the shell and a working
+backend; both are fixed here, and the fix is verified on the packaged
+binary rather than in a source checkout.
+
+### Fixed
+
+- **The desktop shell now starts the Python environment backend.** It was
+  supervising only the Node AI service on 4319 and nothing ever launched
+  the Python API on 4320, so Connected Environment, Machine Inventory and
+  the Workspace session all failed against a port with no listener. The
+  backend is now a second slot in the supervisor that already ran the
+  Node service — the same handle, health check and shutdown path, not a
+  second process model. A port is adopted only when `/health` answers in
+  AURA's shape **and** reports `"backend":"python"`, so the Node service
+  is never mistaken for the environment backend.
+- **AppImage no longer breaks the interpreter it launches.** The AppImage
+  runtime exports `PYTHONHOME` pointing into its own mount, which holds
+  no standard library. Every candidate interpreter inherited it and died
+  before running a line of user code, reporting `<no Python frame>` —
+  identically, whatever was actually installed. `PYTHONHOME` is now
+  removed from the spawned environment; an interpreter knows its own
+  home, and inheriting another process's is never right.
+
+### Verified
+
+Checked against the real packaged AppImage, not a source tree: the
+backend starts automatically, `/health` reports `backend: python` and a
+ready index, the Capability Fabric answers, a machine scan returns real
+counts, the inventory returns named tools with versions, and a Workspace
+session loads. Stopping the backend produces an explicit unreachable
+state rather than an empty inventory that looks like a valid result, the
+Node service on 4319 is unaffected, and relaunching restores the
+inventory.
+
 ## [0.1.7] - 2026-09-13 — Central Agent
 
 The Central Agent becomes the one path a request travels: it reads what
