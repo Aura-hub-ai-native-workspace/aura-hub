@@ -24,8 +24,15 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO = '/home/Groot/aura-hub';
+// Derived from this file's own location, the way every sibling script does
+// it. It was a hardcoded absolute path to one developer's checkout, which
+// meant the suite reported "no packaged artifact to test" — and exited 0
+// on the assertions it never reached — anywhere else, CI included. A
+// packaging suite that cannot find the package on the machine that built
+// it is the one thing it must never be.
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.AURA_VERIFY_PORT ?? 4319);
 const BUNDLE_DIR = `${REPO}/apps/desktop/src-tauri/target/release/bundle`;
 
@@ -146,6 +153,50 @@ const stagedPkgs = existsSync(`${squash}/usr/lib/AURA Hub/resources/node_modules
   : [];
 check('1e. only the declared runtime dependency is staged',
   stagedPkgs.length === 1 && stagedPkgs[0] === 'typescript', stagedPkgs.join(', ') || 'none');
+
+/*
+ * The Python environment backend, and the specific way it was once absent.
+ *
+ * v0.1.8 shipped a shell that supervised this backend correctly and still
+ * could not start it: `resolve_python_backend` located it through
+ * `env!("CARGO_MANIFEST_DIR")`, a COMPILE-TIME constant, so the published
+ * binary looked for the backend under the CI runner's checkout. That path
+ * exists on the machine that built the artifact and on no machine that
+ * installs it — which is why building and testing on one workstation
+ * passed while every user saw "0 installed".
+ *
+ * 1f and 1g are the pair that catches a regression: the files have to be
+ * IN the artifact, and the binary must not be depending on a build-machine
+ * path to find them.
+ */
+const packagedPyEntry = existsSync(squash) ? findIn(squash, 'serve_central_agent_api.py') : [];
+const packagedPyPkg = existsSync(squash)
+  ? spawnSync('find', [squash, '-path', '*/resources/python/backend/aura/api/server.py'], { encoding: 'utf8' })
+      .stdout.trim().split('\n').filter(Boolean)
+  : [];
+check('1f. the Python environment backend is packaged inside the artifact',
+  packagedPyEntry.length > 0 && packagedPyPkg.length > 0,
+  packagedPyEntry.length && packagedPyPkg.length
+    ? `${packagedPyEntry[0].replace(squash, '…')} + aura package`
+    : `entry: ${packagedPyEntry.length}, aura.api.server: ${packagedPyPkg.length}`);
+
+/**
+ * Reads as a string search and is really an assertion about resolution
+ * order. A CI-built artifact whose only backend location is
+ * `/home/runner/work/...` is exactly the v0.1.8 defect, so that shape is
+ * what this rejects — on any machine, without needing a CI build to
+ * reproduce it.
+ */
+const mainBinary = existsSync(squash)
+  ? findIn(squash, 'aura-hub').find((p) => !p.endsWith('.desktop'))
+  : null;
+const runnerPaths = mainBinary
+  ? spawnSync('sh', ['-c', `strings -a '${mainBinary}' | grep -oE '/home/runner/work/[^ ]*' | sort -u | head -5`],
+      { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean)
+  : [];
+check('1g. the packaged backend is not located through a build-machine path',
+  mainBinary !== null && runnerPaths.length === 0,
+  runnerPaths.length ? runnerPaths.join(' ') : 'no CI checkout path embedded');
 
 /* ── 2. launch from outside the repo, with a hostile environment ──── */
 
@@ -412,12 +463,51 @@ check('7b. no renderer-invokable command can spawn a process',
   spawnInExposed.length === 0,
   spawnInExposed.length ? 'a #[tauri::command] contains a spawn' : `${commandBlocks.length} commands, none spawn`);
 
-// And the one spawn that does exist must run a resolved interpreter, never
-// something a caller supplied.
-const spawnsResolvedOnly = /Command::new\(&node\)/.test(serviceRs)
-  && (serviceRs.match(/Command::new/g) ?? []).length === 1;
-check('7b2. the only process the shell starts is the resolved Node interpreter',
-  spawnsResolvedOnly, `${(serviceRs.match(/Command::new/g) ?? []).length} spawn site(s) in service.rs`);
+/*
+ * Every spawn must run an interpreter this code RESOLVED, never a string a
+ * caller supplied.
+ *
+ * This counted spawn sites and required exactly one, which described the
+ * shell when it supervised only the Node service. It now supervises the
+ * Python environment backend too (two more sites: one import check, one
+ * long-lived server), so the count was failing on a system that had not
+ * become less safe — and a count is the weaker claim anyway. A second
+ * `Command::new(&node)` would have passed it while doubling the spawns.
+ *
+ * The invariant is therefore stated directly: the executable of every
+ * `Command::new` in service.rs is a bare variable holding a resolved path.
+ * It fails if any spawn takes a literal, a caller argument, a formatted
+ * string, or anything else that could carry user or model input.
+ */
+const spawnExecutables = [...serviceRs.matchAll(/Command::new\(([^)]*)\)/g)].map((m) => m[1].trim());
+const RESOLVED_INTERPRETER = /^&?(node|python)$/;
+const unresolvedSpawns = spawnExecutables.filter((e) => !RESOLVED_INTERPRETER.test(e));
+check('7b2. every process the shell starts is a resolved interpreter',
+  spawnExecutables.length > 0 && unresolvedSpawns.length === 0,
+  unresolvedSpawns.length
+    ? `not resolved: ${unresolvedSpawns.join(', ')}`
+    : `${spawnExecutables.length} spawn site(s), all resolved: ${spawnExecutables.join(', ')}`);
+
+/*
+ * No shell, ever. A shell would make every argument below a potential
+ * command, so the absence is worth asserting separately from what the
+ * spawns receive.
+ */
+const shellSpawns = spawnExecutables.filter((e) => /"(sh|bash|zsh|cmd|powershell|.*\/(sh|bash))"/.test(e));
+check('7b3. the shell never spawns a shell',
+  shellSpawns.length === 0, shellSpawns.join(', ') || 'no sh/bash/cmd/powershell spawn');
+
+/*
+ * `-c` hands an interpreter code to execute, so it is the one argument
+ * that must never be variable. The import probe legitimately uses it; the
+ * string it passes has to be a literal in this file, not something built
+ * at runtime.
+ */
+const dashCArgs = [...serviceRs.matchAll(/\.arg\("-c"\)\s*\n\s*\.arg\(([^)]*)\)/g)].map((m) => m[1].trim());
+const dynamicCode = dashCArgs.filter((a) => !a.startsWith('"'));
+check('7b4. any -c payload is a fixed literal, never composed at runtime',
+  dynamicCode.length === 0,
+  dynamicCode.length ? `dynamic: ${dynamicCode.join(', ')}` : `${dashCArgs.length} literal -c payload(s)`);
 
 // Every filesystem command must pass through the confinement guard —
 // checked per command body, not by asking whether the guard exists at all.
@@ -426,9 +516,45 @@ const unguarded = fsCommands.filter((b) => !/resolve_within_root/.test(b));
 check('7c. every filesystem command is root-confined',
   fsCommands.length > 0 && unguarded.length === 0,
   `${fsCommands.length} fs command(s), ${unguarded.length} unguarded`);
-check('7d. the capability ACL grants only core defaults',
-  JSON.stringify(capsFile.permissions) === JSON.stringify(['core:default']),
+/*
+ * The renderer's capability ACL, pinned as an exact set.
+ *
+ * This required `['core:default']` alone, which stopped being true when
+ * the updater landed and has been failing since. The fix is NOT to relax
+ * it to "contains core:default" — a subset test would let any future
+ * permission in silently. Each grant is listed here with the reason it
+ * exists, and anything else fails:
+ *
+ *   core:default       — the baseline Tauri window/event surface.
+ *   updater:default    — check and download a signed update. The signature
+ *                        is verified against the pubkey in tauri.conf.json
+ *                        (see the S-group checks in release-gate-verify).
+ *   process:allow-restart
+ *                      — relaunch AURA itself after an update is staged.
+ *                        Used in exactly one place, `updater/tauriAdapter.ts`,
+ *                        which imports `relaunch` from the process plugin.
+ *                        This permits restarting THIS application and
+ *                        nothing else: it is not `allow-exit`, and it
+ *                        grants no ability to spawn, exec, or run a shell.
+ *                        An update that cannot restart the app cannot be
+ *                        applied, so removing it would break the updater
+ *                        rather than tighten it.
+ *
+ * Deliberately absent, and asserted as absent below: every `shell:`
+ * permission, `process:allow-exit`, and anything granting arbitrary
+ * execution. Those are what would actually widen the renderer's reach.
+ */
+const APPROVED_PERMISSIONS = ['core:default', 'updater:default', 'process:allow-restart'];
+check('7d. the capability ACL grants exactly the approved, justified set',
+  JSON.stringify(capsFile.permissions) === JSON.stringify(APPROVED_PERMISSIONS),
   JSON.stringify(capsFile.permissions));
+
+const dangerousPermissions = (capsFile.permissions ?? []).filter(
+  (p) => /^shell:/.test(p) || /allow-(exit|execute|spawn)/.test(p),
+);
+check('7d2. no permission grants arbitrary execution',
+  dangerousPermissions.length === 0,
+  dangerousPermissions.join(', ') || 'no shell/exec/spawn/exit grant');
 check('7e. the window is not shown before the service is ready',
   conf.app.windows[0].visible === false, `visible=${conf.app.windows[0].visible}`);
 
