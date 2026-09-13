@@ -30,18 +30,44 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// The pid of the service THIS process started, or 0.
+/// The pids of the services THIS process started, one slot each, or 0.
 ///
 /// Duplicated out of `ServiceHandle` because a signal handler may not lock
 /// a mutex or allocate — an atomic read is one of the few things it may
-/// safely do. It is only ever set for a service we spawned, so a reused
-/// one is never signalled from here.
-static SERVICE_PID: AtomicI32 = AtomicI32::new(0);
+/// safely do. A slot is only ever set for a service we spawned, so a
+/// reused one is never signalled from here.
+///
+/// Two slots because the shell supervises two backends (see `PYTHON_PORT`).
+/// A single global would mean the second `adopt` overwrote the first, and
+/// a termination signal would orphan whichever service started earlier —
+/// the exact failure `install_termination_handlers` exists to prevent.
+static SERVICE_PIDS: [AtomicI32; SLOT_COUNT] = [AtomicI32::new(0), AtomicI32::new(0)];
+
+const SLOT_COUNT: usize = 2;
+
+/// Slot of the Node AI service.
+pub const SLOT_AI: usize = 0;
+/// Slot of the canonical Python backend.
+pub const SLOT_PYTHON: usize = 1;
 
 /// The port AURA's service and the renderer both agree on. The renderer
 /// has this baked in at build time (`aiClient.ts`), so this is not a
 /// preference — the two must match or the UI talks to nothing.
 pub const DEFAULT_PORT: u16 = 4319;
+
+/// The port the canonical Python backend listens on.
+///
+/// The Python backend is the sole authority on machine state: discovery,
+/// the inventory, the safe-probe boundary, install and connect all live
+/// there and nowhere else. The renderer has this baked in the same way
+/// (`environmentClient.ts` → `ENVIRONMENT_BASE`), so the two must agree.
+///
+/// It is a SECOND port rather than a replacement because the Node AI
+/// service still owns the workflow, provider and knowledge surfaces on
+/// `DEFAULT_PORT`. Migrating those is a separate piece of work; making
+/// the machine-state surface reachable is not, and it does not need to
+/// wait for them.
+pub const PYTHON_PORT: u16 = 4320;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 const READ_TIMEOUT: Duration = Duration::from_millis(4000);
@@ -75,15 +101,18 @@ pub struct ServiceHandle {
     /// request on platforms without POSIX signals (Windows).
     #[cfg_attr(not(windows), allow(dead_code))]
     port: u16,
+    /// Which `SERVICE_PIDS` slot this handle owns.
+    slot: usize,
 }
 
 impl ServiceHandle {
-    pub fn new(port: u16) -> Self {
-        Self { child: Mutex::new(None), port }
+    pub fn new(port: u16, slot: usize) -> Self {
+        assert!(slot < SLOT_COUNT, "service slot out of range");
+        Self { child: Mutex::new(None), port, slot }
     }
 
     fn adopt(&self, child: Child) {
-        SERVICE_PID.store(child.id() as i32, Ordering::SeqCst);
+        SERVICE_PIDS[self.slot].store(child.id() as i32, Ordering::SeqCst);
         *self.child.lock().unwrap() = Some(child);
     }
 
@@ -119,7 +148,7 @@ impl ServiceHandle {
     /// spawning.
     pub fn shutdown(&self) {
         let mut guard = self.child.lock().unwrap();
-        SERVICE_PID.store(0, Ordering::SeqCst);
+        SERVICE_PIDS[self.slot].store(0, Ordering::SeqCst);
         let Some(mut child) = guard.take() else { return };
 
         // Already gone — nothing to signal, and no zombie to leave behind
@@ -161,7 +190,7 @@ impl ServiceHandle {
 
 impl Default for ServiceHandle {
     fn default() -> Self {
-        Self::new(DEFAULT_PORT)
+        Self::new(DEFAULT_PORT, SLOT_AI)
     }
 }
 
@@ -277,9 +306,11 @@ mod job {
 /// still dies from the original signal rather than silently absorbing it.
 #[cfg(unix)]
 extern "C" fn on_terminating_signal(sig: libc::c_int) {
-    let pid = SERVICE_PID.swap(0, Ordering::SeqCst);
-    if pid > 0 {
-        unsafe { libc::kill(pid, libc::SIGTERM) };
+    for slot in SERVICE_PIDS.iter() {
+        let pid = slot.swap(0, Ordering::SeqCst);
+        if pid > 0 {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
     }
     unsafe {
         libc::signal(sig, libc::SIG_DFL);
@@ -719,18 +750,32 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
 /// distinct outcome from "start timed out": a process that exits during
 /// startup is detected immediately instead of costing the full timeout.
 fn wait_healthy(handle: &ServiceHandle, port: u16, timeout: Duration) -> Result<(), String> {
+    wait_ready(handle, port, timeout, identify, "AURA's local service")
+}
+
+/// The same wait, for any backend and any fingerprint.
+///
+/// `what` names the backend in the two messages a caller can receive, so a
+/// failed Python start does not report itself as the Node service dying.
+fn wait_ready(
+    handle: &ServiceHandle,
+    port: u16,
+    timeout: Duration,
+    fingerprint: fn(u16) -> PortState,
+    what: &str,
+) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if let PortState::Aura = identify(port) {
+        if let PortState::Aura = fingerprint(port) {
             return Ok(());
         }
         if !handle.is_alive() {
-            return Err("AURA's local service stopped while starting up.".to_string());
+            return Err(format!("{what} stopped while starting up."));
         }
         std::thread::sleep(Duration::from_millis(250));
     }
     Err(format!(
-        "AURA's local service did not become ready within {}s.",
+        "{what} did not become ready within {}s.",
         timeout.as_secs()
     ))
 }
@@ -738,4 +783,298 @@ fn wait_healthy(handle: &ServiceHandle, port: u16, timeout: Duration) -> Result<
 /// Public probe used by the readiness command and the crash watcher.
 pub fn is_healthy(port: u16) -> bool {
     matches!(identify(port), PortState::Aura)
+}
+
+/// The same, for the canonical Python backend.
+pub fn is_python_healthy(port: u16) -> bool {
+    matches!(identify_python(port), PortState::Aura)
+}
+
+/* ── the canonical Python backend ────────────────────────────────── */
+//
+// The Node service above owns workflows, providers and the knowledge
+// index. It does NOT own machine state: discovery, the machine inventory,
+// the safe-probe boundary, install and connect live only in the Python
+// backend (`backend/aura/environment/**`, routed by `aura/api/server.py`).
+//
+// Nothing used to start that backend. The renderer asked
+// `127.0.0.1:4320/environment/inventory` for the machine inventory, found
+// nobody listening, and the Machine Inventory panel read "0 installed" on
+// a machine with thousands of packages on it. Supervising it here is what
+// makes the authoritative answer reachable — and it is supervised exactly
+// like the Node service, under the same two rules: never attach to a
+// process we cannot identify, and never fake readiness.
+
+/// Is the thing on this port the canonical Python backend?
+///
+/// Two questions, both of which have to be answered yes.
+///
+/// *Is it AURA?* — `/health` in AURA's shape plus a Capability Fabric on
+/// `/fabric/capabilities`, the same pair `identify` requires, for the same
+/// reason: `/health` alone is a path any local dev server might answer.
+///
+/// *Is it the PYTHON one?* — `/health` reports `"backend":"python"`. The
+/// Node service answers `/health` and `/fabric/capabilities` in shapes
+/// close enough to pass the first test, and adopting it as the Environment
+/// backend is the specific mistake that produced an empty inventory that
+/// looked like a working one. A backend that does not say it is Python is
+/// reported as foreign rather than used.
+fn identify_python(port: u16) -> PortState {
+    let health = match http_get(port, "/health", CONNECT_TIMEOUT) {
+        Ok(v) => v,
+        Err(_) => return PortState::Free,
+    };
+
+    if health.0 != 200 {
+        return PortState::Foreign(format!("answered /health with HTTP {}", health.0));
+    }
+    if !(health.1.contains("\"health\"") && health.1.contains("\"index\"")) {
+        return PortState::Foreign("answered /health, but not in AURA's shape".into());
+    }
+    if !health.1.contains("\"python\"") {
+        return PortState::Foreign(
+            "is an AURA backend, but not the Python one — it cannot serve the machine inventory"
+                .into(),
+        );
+    }
+
+    match http_get(port, "/fabric/capabilities", CONNECT_TIMEOUT) {
+        Ok((200, body)) if body.contains("\"capabilities\"") && body.contains("\"policy\"") => {
+            PortState::Aura
+        }
+        Ok((code, _)) => PortState::Foreign(format!(
+            "has no Capability Fabric (/fabric/capabilities → HTTP {code})"
+        )),
+        Err(e) => PortState::Foreign(format!("has no Capability Fabric ({e})")),
+    }
+}
+
+/// A Python interpreter that can actually run the backend.
+///
+/// Order matters, and it is deliberately not "whatever `python3` resolves
+/// to first". The backend imports Starlette, uvicorn and Pydantic; a bare
+/// system interpreter usually has none of them, so preferring the project
+/// venv is what makes the common developer case work without configuration.
+///
+///   1. `AURA_PYTHON` — an explicit answer always wins.
+///   2. the virtualenv beside the backend, if one was created.
+///   3. `python3`, then `python`, from PATH and the conventional locations.
+///
+/// Candidates are returned in order; `ensure_python_running` picks the
+/// first that can import the application, because a path existing is not
+/// evidence that it can run this program.
+fn python_candidates(backend_root: &std::path::Path) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(explicit) = std::env::var_os("AURA_PYTHON") {
+        candidates.push(PathBuf::from(explicit));
+    }
+
+    let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };
+    let venv_exe = if cfg!(windows) { "python.exe" } else { "python" };
+    candidates.push(backend_root.join(".venv").join(venv_bin).join(venv_exe));
+    if let Some(parent) = backend_root.parent() {
+        candidates.push(parent.join(".venv").join(venv_bin).join(venv_exe));
+    }
+
+    let names: &[&str] = if cfg!(windows) {
+        &["python.exe", "python3.exe"]
+    } else {
+        &["python3", "python"]
+    };
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for name in names {
+                candidates.push(dir.join(name));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    for fixed in ["/usr/local/bin/python3", "/usr/bin/python3", "/opt/homebrew/bin/python3"] {
+        candidates.push(PathBuf::from(fixed));
+    }
+
+    let mut seen: Vec<PathBuf> = Vec::new();
+    candidates.retain(|c| {
+        if seen.contains(c) {
+            return false;
+        }
+        seen.push(c.clone());
+        c.is_file()
+    });
+    // Each candidate costs one interpreter start-up to test. A PATH with a
+    // dozen Pythons on it is unusual but real (pyenv shims, a conda base, a
+    // system copy); trying all of them would put seconds of process spawns
+    // in front of the window appearing, and the answer is almost always in
+    // the first few.
+    candidates.truncate(MAX_PYTHON_CANDIDATES);
+    candidates
+}
+
+/// How many interpreters are worth testing before giving up.
+const MAX_PYTHON_CANDIDATES: usize = 8;
+
+/// Can this interpreter import the backend, right now?
+///
+/// A one-shot import check before the long-lived spawn. Without it a
+/// missing dependency shows up as "the backend did not become ready within
+/// 90s" — ninety seconds of waiting for a process that died on its first
+/// import — instead of the one line that says which import failed.
+fn python_can_import(python: &std::path::Path, backend_root: &std::path::Path) -> Result<(), String> {
+    let output = Command::new(python)
+        .arg("-c")
+        .arg("import starlette, uvicorn, aura.api.server")
+        .env("PYTHONPATH", backend_root)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("{} could not be run: {e}", python.display()))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+    // The last line of a traceback is the ImportError itself, which is the
+    // only part a user can act on.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = stderr
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("no output")
+        .trim()
+        .to_string();
+    Err(format!("{}: {reason}", python.display()))
+}
+
+/// Bring the Python backend up, or explain precisely why we did not.
+///
+/// `entry` is the resolved launcher script and `backend_root` the
+/// directory holding the `aura` package — the caller owns finding both,
+/// because they differ between a dev tree and a packaged resource
+/// directory and the shell should not guess.
+///
+/// A failure here is NOT fatal to the application: the shell reports it and
+/// carries on, and the Environment screen says the backend is not answering
+/// instead of showing an empty machine. Silently degrading to "0 installed"
+/// is the one outcome that is not allowed.
+pub fn ensure_python_running(
+    handle: &ServiceHandle,
+    entry: PathBuf,
+    backend_root: PathBuf,
+    port: u16,
+) -> Result<Startup, String> {
+    match identify_python(port) {
+        // Already there — a developer's `npm run environment:api`, or a
+        // second window. Reuse it and leave its lifecycle to its owner.
+        PortState::Aura => return Ok(Startup::Reused),
+        PortState::Foreign(why) => {
+            return Err(format!(
+                "Port {port} is in use by another program ({why}). AURA will not take over a port \
+                 it does not own, and will not read machine state from a service it cannot \
+                 identify. Stop that program, or free port {port}, then start AURA again."
+            ))
+        }
+        PortState::Free => {}
+    }
+
+    if !entry.is_file() {
+        return Err(format!(
+            "AURA's Python environment backend was not found at {}. \
+             The machine inventory needs it; the installation looks incomplete.",
+            entry.display()
+        ));
+    }
+
+    let candidates = python_candidates(&backend_root);
+    if candidates.is_empty() {
+        return Err(
+            "AURA needs Python 3.12 or newer to read this machine's inventory, and none was \
+             found. Install Python, or set AURA_PYTHON to its full path."
+                .to_string(),
+        );
+    }
+
+    let mut rejected: Vec<String> = Vec::new();
+    let mut chosen: Option<PathBuf> = None;
+    for candidate in &candidates {
+        match python_can_import(candidate, &backend_root) {
+            Ok(()) => {
+                chosen = Some(candidate.clone());
+                break;
+            }
+            Err(why) => rejected.push(why),
+        }
+    }
+    let Some(python) = chosen else {
+        return Err(format!(
+            "No Python on this machine can run AURA's environment backend. It needs starlette, \
+             uvicorn and pydantic. Tried:\n  {}",
+            rejected.join("\n  ")
+        ));
+    };
+
+    let home = aura_home();
+    let log_dir = home.join("logs");
+    std::fs::create_dir_all(&log_dir)
+        .map_err(|e| format!("Could not create {}: {e}", log_dir.display()))?;
+    let log_path = log_dir.join("environment-backend.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("Could not open {}: {e}", log_path.display()))?;
+    let log_err = log.try_clone().map_err(|e| e.to_string())?;
+
+    eprintln!("[aura] python : {}", python.display());
+    eprintln!("[aura] backend: {}", entry.display());
+
+    // The PATH matters here more than anywhere else in this file: PATH
+    // discovery IS the inventory. A GUI launcher hands its child a minimal
+    // PATH, and under that the backend would report a machine with almost
+    // nothing installed — confidently, and wrongly.
+    let child = Command::new(&python)
+        .arg(&entry)
+        .arg(port.to_string())
+        .current_dir(&home)
+        .env("PATH", augmented_path(python.parent().map(PathBuf::from).as_ref()))
+        .env("PYTHONPATH", &backend_root)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        // Unbuffered: the log is the only account of a backend that dies
+        // during startup, and a buffered one loses the traceback.
+        .env("PYTHONUNBUFFERED", "1")
+        .env("AURA_HOME", &home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .spawn()
+        .map_err(|e| {
+            format!("Could not start AURA's environment backend using {}: {e}", python.display())
+        })?;
+
+    #[cfg(windows)]
+    if !job::attach(child.id()) {
+        eprintln!(
+            "[aura] warning: could not put the environment backend in a job object; it may \
+             survive an abnormal termination of this process and keep port {port} open."
+        );
+    }
+
+    handle.adopt(child);
+
+    match wait_ready(
+        handle,
+        port,
+        Duration::from_secs(60),
+        identify_python,
+        "AURA's environment backend",
+    ) {
+        Ok(()) => Ok(Startup::Spawned),
+        Err(e) => {
+            handle.shutdown();
+            Err(format!("{e} The backend log is at {}.", log_path.display()))
+        }
+    }
 }
