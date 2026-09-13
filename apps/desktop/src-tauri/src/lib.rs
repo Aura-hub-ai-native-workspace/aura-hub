@@ -16,7 +16,7 @@ mod appimage;
 mod service;
 
 use serde::Serialize;
-use service::{ServiceHandle, Startup, DEFAULT_PORT};
+use service::{ServiceHandle, Startup, DEFAULT_PORT, PYTHON_PORT, SLOT_AI, SLOT_PYTHON};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -231,6 +231,13 @@ pub struct ServiceState {
     handle: ServiceHandle,
     port: u16,
     status: Mutex<ServiceStatus>,
+    /// The canonical Python backend — the sole authority on machine state.
+    /// Supervised beside the Node service rather than instead of it: the
+    /// two own different surfaces, and only this one can answer
+    /// `/environment/inventory`.
+    python: ServiceHandle,
+    python_port: u16,
+    python_status: Mutex<ServiceStatus>,
 }
 
 /// Where the packaged service bundle lives.
@@ -251,6 +258,34 @@ fn resolve_service_script(app: &tauri::App) -> Option<PathBuf> {
         .join("../../..")
         .join(".aura/ai-service.mjs");
     dev.canonicalize().ok().filter(|p| p.is_file()).map(strip_verbatim)
+}
+
+/// Where the Python environment backend lives, and the directory its
+/// `aura` package is imported from.
+///
+/// Both parts are returned together because they are only useful as a pair:
+/// the interpreter needs the second on `PYTHONPATH` to import what the
+/// first runs.
+///
+/// The repository tree is the only resolution, and that is a statement
+/// about the packaging pipeline rather than an oversight. `resources/`
+/// currently holds the Node bundle and nothing else, because shipping this
+/// backend means shipping an interpreter and its C extensions (pydantic-core
+/// is a native wheel) per platform — a distribution problem, not an
+/// environment one. Until that build step exists, a packaged application
+/// finds no backend here and says so, which is the honest report; guessing
+/// at a resource path no build produces would only turn a clear failure
+/// into a confusing one.
+fn resolve_python_backend() -> Option<(PathBuf, PathBuf)> {
+    // `CARGO_MANIFEST_DIR` is apps/desktop/src-tauri; the repo root is three up.
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let entry = repo.join("scripts/serve_central_agent_api.py").canonicalize().ok()?;
+    let root = repo.join("backend").canonicalize().ok()?;
+    if entry.is_file() && root.is_dir() {
+        Some((strip_verbatim(entry), strip_verbatim(root)))
+    } else {
+        None
+    }
 }
 
 /// Turn a Windows verbatim path back into an ordinary one.
@@ -298,6 +333,24 @@ fn service_status(state: tauri::State<'_, ServiceState>) -> ServiceStatus {
     status.clone()
 }
 
+/// The environment backend's current condition, re-checked on every call.
+///
+/// Separate from `service_status` because the two fail independently and
+/// mean different things to the user: without the Node service AURA cannot
+/// run workflows; without this one it cannot say what is installed on the
+/// machine. Reporting one condition for both would let a healthy Node
+/// service vouch for a backend that is not running — which is how an empty
+/// machine inventory came to look like an accurate one.
+#[tauri::command]
+fn environment_backend_status(state: tauri::State<'_, ServiceState>) -> ServiceStatus {
+    let mut status = state.python_status.lock().unwrap();
+    if status.state == "ready" && !service::is_python_healthy(state.python_port) {
+        status.state = "failed".into();
+        status.message = "AURA's environment backend stopped responding.".into();
+    }
+    status.clone()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Installed before anything is spawned, so there is no window in which
@@ -308,6 +361,11 @@ pub fn run() {
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(DEFAULT_PORT);
+
+    let python_port = std::env::var("AURA_ENVIRONMENT_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(PYTHON_PORT);
 
     let builder = tauri::Builder::default();
 
@@ -332,7 +390,7 @@ pub fn run() {
 
     let app = builder
         .manage(ServiceState {
-            handle: ServiceHandle::new(port),
+            handle: ServiceHandle::new(port, SLOT_AI),
             port,
             status: Mutex::new(ServiceStatus {
                 state: "starting".into(),
@@ -340,11 +398,20 @@ pub fn run() {
                 message: "Starting AURA's local service…".into(),
                 port,
             }),
+            python: ServiceHandle::new(python_port, SLOT_PYTHON),
+            python_port,
+            python_status: Mutex::new(ServiceStatus {
+                state: "starting".into(),
+                origin: String::new(),
+                message: "Starting AURA's environment backend…".into(),
+                port: python_port,
+            }),
         })
         .invoke_handler(tauri::generate_handler![
             environment_ping,
             ui_token,
             service_status,
+            environment_backend_status,
             code_read_dir,
             code_read_file,
             code_write_file,
@@ -356,6 +423,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             let script = resolve_service_script(app);
+            let python_backend = resolve_python_backend();
             let handle = app.handle().clone();
 
             // Off the UI thread: startup can take seconds (module load,
@@ -399,6 +467,60 @@ pub fn run() {
                     eprintln!("AURA Hub: {message}");
                 }
 
+                // The environment backend, started after the Node service
+                // rather than beside it. Sequential on purpose: both walk
+                // PATH and read package databases while starting, and racing
+                // them only makes a slow first launch slower. It is started
+                // even when the Node service failed — the two answer
+                // different questions, and a machine inventory is still
+                // worth having when workflows are not available.
+                let python_outcome = match &python_backend {
+                    Some((entry, root)) => service::ensure_python_running(
+                        &state.python,
+                        entry.clone(),
+                        root.clone(),
+                        python_port,
+                    ),
+                    None => Err(
+                        "AURA's Python environment backend is not part of this build, so the \
+                         machine inventory is unavailable. Run it from a checkout with \
+                         `npm run environment:api`."
+                            .to_string(),
+                    ),
+                };
+
+                {
+                    let mut status = state.python_status.lock().unwrap();
+                    *status = match &python_outcome {
+                        Ok(Startup::Reused) => ServiceStatus {
+                            state: "ready".into(),
+                            origin: "reused".into(),
+                            message: format!(
+                                "Connected to the AURA environment backend already running on port {python_port}."
+                            ),
+                            port: python_port,
+                        },
+                        Ok(Startup::Spawned) => ServiceStatus {
+                            state: "ready".into(),
+                            origin: "spawned".into(),
+                            message: format!(
+                                "AURA's environment backend is ready on port {python_port}."
+                            ),
+                            port: python_port,
+                        },
+                        Err(message) => ServiceStatus {
+                            state: "failed".into(),
+                            origin: String::new(),
+                            message: message.clone(),
+                            port: python_port,
+                        },
+                    };
+                }
+
+                if let Err(message) = &python_outcome {
+                    eprintln!("AURA Hub: {message}");
+                }
+
                 // Shown either way. A failed start still deserves a window
                 // that can explain itself; a permanently invisible app
                 // would be the least honest outcome available.
@@ -418,7 +540,12 @@ pub fn run() {
         // signals a child this process actually spawned, so a developer's
         // own `npm run ai` survives the app closing.
         if let RunEvent::Exit = event {
-            app_handle.state::<ServiceState>().handle.shutdown();
+            let state = app_handle.state::<ServiceState>();
+            state.handle.shutdown();
+            // The environment backend too, and for the same reason: a
+            // service this process started must not outlive it holding a
+            // port the next launch will need.
+            state.python.shutdown();
         }
     });
 }
