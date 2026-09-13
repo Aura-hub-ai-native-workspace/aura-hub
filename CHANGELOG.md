@@ -54,6 +54,36 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
+## [0.1.10] - 2026-09-13 — Verification
+
+A maintenance release. The shipped application is functionally identical
+to 0.1.9 — no runtime, backend, packaging or UI code changed between the
+two tags. What changed is the packaging suite's ability to tell the truth
+about a build, which is worth a version of its own because the previous
+two releases each shipped a defect it should have caught and did not.
+
+### Changed
+
+- **The packaged-backend check verifies resolution instead of a string.**
+  It asserted that the binary contained no CI checkout path. Every build
+  embeds one — `CARGO_MANIFEST_DIR` is the development fallback — so the
+  check failed correct artifacts and passed locally only because a
+  developer's build path looks different. It now reads the actual
+  invariant: the packaged resource lookup must precede the development
+  fallback.
+- **The Python backend is exercised at runtime for the first time.** Every
+  existing assertion spoke to the Node service; the environment backend
+  was never started, asked for health, or asked where it came from. Two
+  checks now do: the path the packaged application reports must be inside
+  its own resources rather than any source tree, and that backend must
+  answer its own health endpoint. This is the gap 0.1.8 fell through.
+- **The suite gives the application a usable interpreter.** It launches
+  with a deliberately minimal PATH to prove PATH seeding works, which on a
+  machine whose only suitable Python lives in pyenv or conda made the
+  backend refuse for reasons that said nothing about the package. One
+  directory — the interpreter's, and only when it genuinely imports what
+  the backend needs — is now added; everything else stays hostile.
+
 ## [0.1.9] - 2026-09-13 — Packaged Backend
 
 v0.1.8 shipped a desktop application that supervised the Python
