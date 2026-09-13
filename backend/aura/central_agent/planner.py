@@ -18,12 +18,78 @@ from ..contracts import (
     TaskSpecification,
     VerificationRequirement,
 )
+from .findings import verdict_instruction
 
 MAX_TASKS = 8
+
+#: agent.delegate input fields the model may populate. Everything else —
+#: node binaries, commands, approvals, policy, secrets — is rejected.
+_DELEGATE_INPUT_KEYS = {"task", "model", "context", "scopePaths"}
+
+#: Per-task proposal keys. "risk" is accepted but advisory only: authority
+#: preflight recomputes risk from the manifest (a proposal can only be
+#: confirmed, never believed). Anything else fails closed.
+_MODEL_TASK_KEYS = {
+    "id", "description", "capabilityId", "nodeId", "dependsOn",
+    "inputFrom", "input", "scopePaths", "verificationKind",
+    "verification", "risk", "workerRole",
+    # A model may say "this review must not be done by the worker that
+    # wrote the code" and "this remediation only runs if the review found
+    # something". Both NARROW what happens; neither can widen authority,
+    # and both are resolved against the proposal's own task labels.
+    "distinctWorkerFrom", "runWhen",
+}
+
+#: runWhen values a model may propose. Closed on purpose: an unknown
+#: value would silently become "always".
+_MODEL_RUN_WHEN = {"always", "upstream-reports-findings"}
+
+#: Closed worker-role vocabulary a model may propose (Phase G).
+#: Anything else is rejected; the role only narrows routing.
+_MODEL_WORKER_ROLES = {"code", "review", "execute"}
+
+#: inputFrom values a model may propose. "compiled-workflow" is
+#: compiler-owned and never model-proposable.
+_MODEL_INPUT_FROM = {"literal", "upstream-output"}
+
+_TASK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
+_MAX_SCOPE_PATHS = 16
+_MAX_SCOPE_LEN = 256
+_MAX_TASK_TEXT = 8000
 
 
 class PlanningError(Exception):
     pass
+
+
+def _check_scope_paths(raw: object, task_label: str) -> list[str]:
+    """Strict shape validation for model-proposed scopePaths. The
+    executor re-validates before spawning and supervision enforces at
+    runtime; this gate keeps malformed/escaping scope out of plans."""
+    if not isinstance(raw, list) or not raw:
+        raise PlanningError(
+            f"task {task_label} scopePaths must be a non-empty list")
+    if len(raw) > _MAX_SCOPE_PATHS:
+        raise PlanningError(
+            f"task {task_label} declares {len(raw)} scope paths; bound "
+            f"is {_MAX_SCOPE_PATHS}")
+    out: list[str] = []
+    for p in raw:
+        if not isinstance(p, str) or not p.strip():
+            raise PlanningError(
+                f"task {task_label} has a non-string scope path")
+        s = p.strip().replace("\\", "/")
+        if (len(s) > _MAX_SCOPE_LEN or s.startswith("/")
+                or s.startswith("~") or ".." in s.split("/")
+                or s in (".", "")):
+            raise PlanningError(
+                f"task {task_label} scope path {p!r} is not a bounded "
+                "repo-relative path")
+        out.append(s)
+    if len(set(out)) != len(out):
+        raise PlanningError(
+            f"task {task_label} repeats a scope path")
+    return out
 
 
 def _plan_id() -> str:
@@ -62,6 +128,17 @@ def _run_workflow_ref(intent: AgentIntent) -> str | None:
     return ref or None
 
 
+def _accept(kind: str, description: str,
+            tasks: list[str] | None = None) -> VerificationRequirement:
+    """One objective acceptance criterion (Phase H): kind + what it
+    proves, optionally scoped to task ids via expect."""
+    return VerificationRequirement(
+        kind=kind,  # type: ignore[arg-value]
+        description=description,
+        expect={"tasks": list(tasks)} if tasks else {},
+    )
+
+
 def _task(tid: str, description: str, capability_id: str | None = None,
           input: dict | None = None, input_from: str = "literal",
           verification: VerificationRequirement | None = None) -> TaskSpecification:
@@ -94,6 +171,10 @@ def plan_authoring(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
                 ),
             ),
         ],
+        acceptance=[_accept(
+            "read-back",
+            "The requested workflow definition is stored and reads back.",
+            tasks=["t1"])],
         createdAt=now,
     )
 
@@ -115,8 +196,166 @@ def plan_status(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
                 ),
             ),
         ],
+        acceptance=[_accept(
+            "audit-only",
+            "The inventory answer was produced and recorded.",
+            tasks=["t1"])],
         createdAt=now,
     )
+
+
+#: Bounded task text handed to a worker. The worker gets AURA's task,
+#: never AURA's reasoning and never another worker's private context.
+MAX_DELEGATE_CHARS = 4000
+
+
+def expects_change(worker_role: str | None, run_when: str | None) -> bool:
+    """True when a delegate task is only DONE once the worker actually
+    changed something.
+
+    Decided from the task's own shape, never from "changed == 0": review,
+    investigation and audit work legitimately finishes having touched no
+    file, and conditional remediation is explicitly asked to change
+    nothing when the review reports nothing to fix. Implementation work
+    asked for unconditionally is the one shape whose acceptance requires
+    an artifact — so it is the one shape that must not be able to pass by
+    doing nothing at all.
+    """
+    return worker_role == "code" and (run_when or "always") == "always"
+
+
+def _delegate_input(task_text: str, scope: list[str],
+                    expect_change: bool = False) -> dict:
+    payload: dict = {"task": task_text[:MAX_DELEGATE_CHARS]}
+    if scope:
+        payload["scopePaths"] = list(scope)
+    if expect_change:
+        # AURA-OWNED, and deliberately absent from _DELEGATE_INPUT_KEYS so
+        # a model proposal can never set or clear it. It rides the input,
+        # so it is part of the approved fingerprint: the requirement the
+        # human authorised is the requirement verification enforces.
+        payload["expectChange"] = True
+    return payload
+
+
+def plan_delegated_work(intent: AgentIntent, session_id: str,
+                        now: str) -> TaskPlan:
+    """Build the task graph for delegated engineering work.
+
+    One builder, not a catalogue of templates. The shape comes from what
+    the request actually asked for — work, optionally an independent
+    review, optionally remediation of what that review reports — so the
+    graph grows with the objective instead of matching a sentence:
+
+        implement                       "add a multiply function"
+        implement → review              "…and have another AI review it"
+        implement → review → remediate  "…and fix anything it finds"
+
+    The plan states ROLES, never workers: Phase G matching picks eligible
+    connected workers at dispatch, the reviewer is barred from being the
+    implementer, and no eligible worker fails the task closed rather than
+    dispatching an unsuitable one. Acceptance covers every planned task,
+    so finishing the implementation is never on its own the objective.
+    """
+    scope = _validated_scope(intent)
+    text = _delegate_text(intent)
+    wants_review = bool(getattr(intent, "delegateReview", False))
+    wants_remediation = bool(getattr(intent, "delegateRemediate", False))
+    prove = bool(getattr(intent, "delegateProve", False))
+
+    build_note = (
+        " Before finishing, check that the project still builds and that "
+        "its tests pass, and say plainly in your reply what you ran and "
+        "what the result was." if prove else "")
+    build_check = (" The worker also reports what it ran to show the "
+                   "project still builds and its tests pass; that report "
+                   "is the worker's account, not a check AURA performed."
+                   if prove else "")
+
+    tasks: list[TaskSpecification] = [TaskSpecification(
+        id="implement",
+        description="Carry out the requested change",
+        capabilityId="agent.delegate",
+        input=_delegate_input(text + build_note, scope,
+                              expect_change=expects_change("code", "always")),
+        workerRole="code",
+        risk="high", reversible=False,
+        verification=VerificationRequirement(
+            kind="exit-code",
+            description=("The worker exits 0 and every file it changed "
+                         "lies inside the declared scope." + build_check)))]
+    covered = ["implement"]
+
+    if wants_review:
+        tasks.append(TaskSpecification(
+            id="review",
+            description="Independently review the completed change",
+            capabilityId="agent.delegate",
+            input=_delegate_input(
+                "Review the change described in the verified results "
+                "above. Report correctness, security and quality problems "
+                "you find, and say plainly whether the change is "
+                "acceptable. Do not modify any file."
+                + verdict_instruction(), scope),
+            inputFrom="upstream-output",
+            dependsOn=["implement"],
+            workerRole="review",
+            distinctWorkerFrom=["implement"],
+            risk="high", reversible=True,
+            verification=VerificationRequirement(
+                kind="exit-code",
+                description=("The reviewing worker exits 0 and stays "
+                             "inside the declared scope."))))
+        covered.append("review")
+
+    if wants_remediation:
+        tasks.append(TaskSpecification(
+            id="remediate",
+            description="Address what the review reported",
+            capabilityId="agent.delegate",
+            input=_delegate_input(
+                "The review above lists problems with the change. Fix "
+                "exactly those problems and nothing else. If the review "
+                "reports no problems, change nothing and say so."
+                + build_note, scope),
+            inputFrom="upstream-output",
+            dependsOn=["review"],
+            workerRole="code",
+            runWhen="upstream-reports-findings",
+            risk="high", reversible=False,
+            verification=VerificationRequirement(
+                kind="exit-code",
+                description=("The worker exits 0 and every file it changed "
+                             "lies inside the declared scope, or the task "
+                             "was not needed because the review reported "
+                             "nothing to fix."))))
+        covered.append("remediate")
+
+    accepted = "The requested work was carried out and verified"
+    if wants_review:
+        accepted += (", and independently reviewed by a different worker")
+    if wants_remediation:
+        accepted += ", with anything the review reported addressed"
+    return TaskPlan(
+        planId=_plan_id(), sessionId=session_id, intent=intent,
+        tasks=tasks,
+        acceptance=[_accept("exit-code", accepted + ".", tasks=covered)],
+        createdAt=now)
+
+
+def _delegate_text(intent: AgentIntent) -> str:
+    raw = getattr(intent, "delegateTask", None)
+    return str(raw or intent.goal).strip()
+
+
+def _validated_scope(intent: AgentIntent) -> list[str]:
+    """Re-validate the scope the intent proposed. The intent layer is a
+    reader of user text, not an authority: a malformed scope is dropped
+    here rather than travelling into a task contract."""
+    raw = getattr(intent, "delegateScope", None)
+    if not isinstance(raw, list) or not raw:
+        return []
+    return _check_scope_paths(raw, "delegated work")
 
 
 def plan_run_workflow(intent: AgentIntent, session_id: str, now: str,
@@ -143,6 +382,10 @@ def plan_run_workflow(intent: AgentIntent, session_id: str, now: str,
                 ),
             })
         ],
+        acceptance=[_accept(
+            "audit-only",
+            "The stored workflow ran to a terminal state with evidence.",
+            tasks=["t1"])],
         createdAt=now,
     )
 
@@ -157,51 +400,367 @@ class TaskPlanner:
     """
 
     def __init__(self, workflow_resolver: Callable[[str], str | None] | None = None,
-                 known_capabilities: Callable[[], set[str]] | None = None) -> None:
+                  known_capabilities: Callable[[], set[str]] | None = None,
+                  known_nodes: Callable[[], set[str]] | None = None) -> None:
         self._resolve_workflow = workflow_resolver or (lambda ref: None)
         self._known = known_capabilities or (lambda: set())
+        # Connected-node ids usable for nodeId validation. None means the
+        # planner cannot verify worker pins, so any requested nodeId is
+        # rejected (fail closed); omitting nodeId always stays valid.
+        self._known_nodes = known_nodes
+
+    def known_capability_ids(self) -> set[str]:
+        return set(self._known())
+
+    def known_node_ids(self) -> set[str]:
+        return set(self._known_nodes()) if self._known_nodes else set()
 
     def plan_from_model(self, intent, session_id: str, now: str,
                         proposal: dict) -> TaskPlan:
-        """Validate a model-proposed plan structure. Fails CLOSED."""
+        """Validate a model-proposed plan structure. Fails CLOSED.
+
+        The model proposes structure only — descriptions, dependencies,
+        scope, verification text. AURA owns identity (canonical ids in
+        topological order), ordering, worker authorization (nodeId checked
+        against the connected catalogue, Fabric re-checks at preflight
+        and dispatch), and risk (manifest-owned at preflight).
+        """
         if intent.needsClarification:
             raise PlanningError("intent needs clarification before planning")
         try:
-            raw_tasks = proposal["tasks"]
+            if not isinstance(proposal, dict):
+                raise PlanningError("proposal must be an object")
+            extra_top = set(proposal) - {"tasks", "acceptance"}
+            if extra_top:
+                raise PlanningError(
+                    f"proposal carries unsupported fields: {sorted(extra_top)}")
+            raw_tasks = proposal.get("tasks")
             if not isinstance(raw_tasks, list) or not raw_tasks:
                 raise PlanningError("proposal has no tasks")
             if len(raw_tasks) > MAX_TASKS:
                 raise PlanningError(
                     f"model proposed {len(raw_tasks)} tasks; bound is {MAX_TASKS}")
             known = self._known()
-            tasks: list[TaskSpecification] = []
-            for i, rt in enumerate(raw_tasks[:MAX_TASKS]):
-                cap = rt.get("capabilityId")
-                if cap is not None and cap not in known:
+            # Pass 1 — per-task shape, authority rejection, id registry.
+            staged: list[dict] = []
+            seen_ids: set[str] = set()
+            for i, rt in enumerate(raw_tasks):
+                if not isinstance(rt, dict):
+                    raise PlanningError(f"proposal task {i} is not an object")
+                extra = set(rt) - _MODEL_TASK_KEYS
+                if extra:
                     raise PlanningError(
-                        f"model proposed unknown capability '{cap}'")
+                        f"proposal task {i} carries unsupported fields: "
+                        f"{sorted(extra)}")
+                label = str(rt.get("id") or f"#{i}")
+                if rt.get("id") is not None:
+                    if (not isinstance(rt["id"], str)
+                            or not _TASK_ID_RE.fullmatch(rt["id"])):
+                        raise PlanningError(
+                            f"proposal task id {rt['id']!r} is malformed")
+                    if rt["id"] in seen_ids:
+                        raise PlanningError(
+                            f"duplicate proposal task id '{rt['id']}'")
+                    seen_ids.add(rt["id"])
+                cap = rt.get("capabilityId")
+                if cap is not None:
+                    if not isinstance(cap, str) or cap not in known:
+                        raise PlanningError(
+                            f"model proposed unknown capability '{cap}'")
+                from_ = rt.get("inputFrom") or "literal"
+                if from_ not in _MODEL_INPUT_FROM:
+                    raise PlanningError(
+                        f"task {label} proposes unsupported inputFrom "
+                        f"'{from_}'")
+                node = rt.get("nodeId")
+                if node is not None:
+                    self._check_node(node, label)
+                role = rt.get("workerRole")
+                if role is not None and role not in _MODEL_WORKER_ROLES:
+                    raise PlanningError(
+                        f"task {label} proposes unknown worker role "
+                        f"'{role}'")
+                run_when = rt.get("runWhen")
+                if run_when is not None and run_when not in _MODEL_RUN_WHEN:
+                    raise PlanningError(
+                        f"task {label} proposes unknown runWhen "
+                        f"'{run_when}'")
+                distinct = rt.get("distinctWorkerFrom")
+                if distinct is not None and (
+                        not isinstance(distinct, list)
+                        or not all(isinstance(d, str) for d in distinct)):
+                    raise PlanningError(
+                        f"task {label} distinctWorkerFrom must be a list "
+                        "of task labels")
+                staged.append({"index": i, "label": label, "raw": rt,
+                               "cap": cap, "from": from_})
+            # Pass 2 — dependency resolution to positional form.
+            by_label = {s["label"]: s["index"] for s in staged}
+            for s in staged:
+                deps = (s["raw"].get("dependsOn") or [])
+                if not isinstance(deps, list):
+                    raise PlanningError(
+                        f"task {s['label']} dependsOn must be a list")
+                resolved: list[int] = []
+                for d in deps:
+                    if isinstance(d, bool):
+                        raise PlanningError(
+                            f"task {s['label']} has a malformed dependency")
+                    if isinstance(d, int):
+                        # Legacy positional form: index into proposal order.
+                        if not 0 <= d < len(staged):
+                            raise PlanningError(
+                                f"task {s['label']} depends on unknown "
+                                f"position {d}")
+                        resolved.append(d)
+                    elif isinstance(d, str):
+                        if d not in by_label:
+                            raise PlanningError(
+                                f"task {s['label']} depends on unknown "
+                                f"task '{d}'")
+                        if by_label[d] == s["index"]:
+                            raise PlanningError(
+                                f"task {s['label']} depends on itself")
+                        resolved.append(by_label[d])
+                    else:
+                        raise PlanningError(
+                            f"task {s['label']} has a malformed dependency")
+                s["deps"] = resolved
+                distinct_raw = (s["raw"].get("distinctWorkerFrom") or [])
+                distinct_idx: list[int] = []
+                for d in distinct_raw:
+                    if d not in by_label:
+                        raise PlanningError(
+                            f"task {s['label']} must differ from unknown "
+                            f"task '{d}'")
+                    if by_label[d] == s["index"]:
+                        raise PlanningError(
+                            f"task {s['label']} cannot be required to "
+                            "differ from itself")
+                    distinct_idx.append(by_label[d])
+                s["distinct"] = distinct_idx
+            # Pass 3 — AURA owns identity + ordering: canonical ids in
+            # topological order (ties keep proposal order), deps remapped.
+            order = _topo_indices(len(staged),
+                                  [s["deps"] for s in staged])
+            canon = {pos: f"t{k + 1}" for k, pos in enumerate(order)}
+            tasks: list[TaskSpecification] = []
+            for k, pos in enumerate(order):
+                s = staged[pos]
+                rt = s["raw"]
+                tid = canon[pos]
+                dep_ids = sorted({canon[d] for d in s["deps"]})
+                if s["from"] == "upstream-output" and not dep_ids:
+                    raise PlanningError(
+                        f"task {tid} declares inputFrom 'upstream-output' "
+                        "but names no dependencies")
+                task_input = self._model_task_input(
+                    rt, s["cap"], s["label"], tid)
+                scope = self._model_scope(rt, task_input, s["label"], tid)
+                if scope is not None:
+                    task_input = {**task_input, "scopePaths": scope}
+                run_when = rt.get("runWhen") or "always"
+                if (s["cap"] == "agent.delegate"
+                        and expects_change(rt.get("workerRole"), run_when)):
+                    # Same acceptance rule as the deterministic planner:
+                    # a model-proposed implementation task cannot pass by
+                    # changing nothing either. AURA sets this, never the
+                    # proposal — "expectChange" is not an accepted key.
+                    task_input = {**task_input, "expectChange": True}
+                ver_kind = rt.get("verificationKind") or "audit-only"
+                ver_desc = str(rt.get("verification") or "")
+                if s["cap"] == "agent.delegate" and not ver_desc.strip():
+                    raise PlanningError(
+                        f"task {tid} delegates to an agent but states no "
+                        "verification requirement")
+                if len(ver_desc) > 500:
+                    raise PlanningError(
+                        f"task {tid} verification text exceeds its bound")
                 risk = rt.get("risk") or "low"
-                tasks.append(_task(
-                    f"t{i + 1}",
-                    str(rt.get("description") or f"step {i + 1}"),
-                    capability_id=cap,
-                    input=rt.get("input") or {},
+                tasks.append(TaskSpecification(
+                    id=tid,
+                    description=str(rt.get("description")
+                                    or f"step {s['index'] + 1}"),
+                    capabilityId=s["cap"],
+                    input=task_input,
+                    inputFrom=s["from"],  # type: ignore[arg-value]
+                    dependsOn=dep_ids,
+                    distinctWorkerFrom=sorted({canon[d]
+                                               for d in s.get("distinct")
+                                               or []}),
+                    runWhen=rt.get("runWhen") or "always",
+                    nodeId=rt.get("nodeId"),
+                    workerRole=rt.get("workerRole"),
+                    risk=risk,  # type: ignore[arg-value]
                     verification=VerificationRequirement(
-                        kind=rt.get("verificationKind") or "audit-only",
-                        description=str(rt.get("verification") or "")),
-                ).model_copy(update={
-                    "risk": risk,
-                    "dependsOn": [f"t{d + 1}" for d in (rt.get("dependsOn") or [])
-                                  if isinstance(d, int) and 0 <= d < i],
-                }))
+                        kind=ver_kind,  # type: ignore[arg-value]
+                        description=ver_desc),
+                ))
+            self._check_scope_narrowing(tasks)
+            # Acceptance may name the model's own labels or the canonical
+            # ids; both resolve to AURA-owned identity here.
+            label_map = {canon[pos]: canon[pos] for pos in order}
+            label_map.update(
+                {staged[pos]["label"]: canon[pos] for pos in order})
+            acceptance = self._model_acceptance(
+                proposal.get("acceptance"), label_map)
             plan = TaskPlan(planId=_plan_id(), sessionId=session_id,
-                            intent=intent, tasks=tasks, createdAt=now)
+                            intent=intent, tasks=tasks, createdAt=now,
+                            acceptance=acceptance)
         except PlanningError:
             raise
         except Exception as exc:
             raise PlanningError(f"invalid model plan: {exc}") from exc
         self.validate(plan)
         return plan
+
+    @staticmethod
+    def _model_acceptance(raw: object,
+                          label_map: dict[str, str]) -> list[VerificationRequirement]:
+        """Objective acceptance criteria from a proposal (Phase H). Each
+        entry states kind + what it proves, optionally scoped to task
+        ids. Malformed, unbounded, or dangling criteria fail closed."""
+        if raw is None:
+            return []
+        if not isinstance(raw, list) or not raw or len(raw) > MAX_TASKS:
+            raise PlanningError(
+                "proposal acceptance must be a non-empty bounded list")
+        out: list[VerificationRequirement] = []
+        for i, entry in enumerate(raw):
+            if not isinstance(entry, dict):
+                raise PlanningError(
+                    f"proposal acceptance entry {i} is not an object")
+            extra = set(entry) - {"kind", "description", "tasks"}
+            if extra:
+                raise PlanningError(
+                    f"proposal acceptance entry {i} carries unsupported "
+                    f"fields: {sorted(extra)}")
+            desc = str(entry.get("description") or "")
+            if not desc.strip() or len(desc) > 500:
+                raise PlanningError(
+                    f"proposal acceptance entry {i} states no bounded "
+                    "description")
+            wanted = entry.get("tasks")
+            resolved: list[str] = []
+            if wanted is not None:
+                if (not isinstance(wanted, list) or not wanted
+                        or any(not isinstance(t, str) for t in wanted)):
+                    raise PlanningError(
+                        f"proposal acceptance entry {i} names malformed tasks")
+                unknown = [t for t in wanted if t not in label_map]
+                if unknown:
+                    raise PlanningError(
+                        f"proposal acceptance covers unknown tasks {unknown}")
+                resolved = sorted({label_map[t] for t in wanted})
+            try:
+                out.append(VerificationRequirement(
+                    kind=entry.get("kind") or "audit-only",  # type: ignore[arg-value]
+                    description=desc,
+                    expect={"tasks": resolved} if resolved else {}))
+            except Exception as exc:
+                raise PlanningError(
+                    f"proposal acceptance entry {i} is malformed: "
+                    f"{exc}") from exc
+        return out
+
+    def _check_node(self, node: object, label: str) -> None:
+        if not isinstance(node, str) or not node.strip():
+            raise PlanningError(f"task {label} has a malformed nodeId")
+        if self._known_nodes is None:
+            raise PlanningError(
+                f"task {label} requests node '{node}' but this planner "
+                "cannot verify workers; omit nodeId for deterministic "
+                "routing")
+        if node not in self._known_nodes():
+            raise PlanningError(
+                f"task {label} requests unknown node '{node}'")
+
+    @staticmethod
+    def _model_task_input(rt: dict, cap: str | None, label: str,
+                          tid: str) -> dict:
+        """Task input from a proposal. Non-delegate capabilities keep the
+        legacy passthrough (executor + policy stay the backstop, as proven
+        by test_model_plan_cannot_widen_executor_scope). agent.delegate —
+        the new Phase F surface — is allow-listed: task text, model hint,
+        context, scope. Binaries, commands, approvals, policy, secrets can
+        never arrive through a model plan."""
+        raw_input = rt.get("input") or {}
+        if not isinstance(raw_input, dict):
+            raise PlanningError(f"task {tid} input must be an object")
+        if cap != "agent.delegate":
+            return dict(raw_input)
+        extra = set(raw_input) - _DELEGATE_INPUT_KEYS
+        if extra:
+            raise PlanningError(
+                f"task {tid} delegate input carries unsupported fields: "
+                f"{sorted(extra)}")
+        task_text = str(raw_input.get("task") or "")
+        if not task_text.strip():
+            raise PlanningError(
+                f"task {tid} delegates to an agent with no task text")
+        if len(task_text) > _MAX_TASK_TEXT:
+            raise PlanningError(
+                f"task {tid} task text exceeds its bound")
+        out = {"task": task_text}
+        for key in ("model", "context"):
+            if raw_input.get(key) is not None:
+                val = raw_input[key]
+                if not isinstance(val, str) or not val.strip():
+                    raise PlanningError(
+                        f"task {tid} delegate input '{key}' must be text")
+                if len(val) > _MAX_TASK_TEXT:
+                    raise PlanningError(
+                        f"task {tid} delegate input '{key}' exceeds its bound")
+                out[key] = val
+        return out
+
+    @staticmethod
+    def _model_scope(rt: dict, task_input: dict, label: str,
+                     tid: str) -> list[str] | None:
+        """Merge top-level scopePaths with input.scopePaths (conflicts
+        fail closed) and shape-validate. Returns None when unscoped."""
+        top = rt.get("scopePaths")
+        inner = task_input.get("scopePaths")
+        if top is None and inner is None:
+            return None
+        if top is not None and inner is not None and top != inner:
+            raise PlanningError(
+                f"task {tid} states scopePaths twice with different values")
+        return _check_scope_paths(top if top is not None else inner, tid)
+
+    @staticmethod
+    def _check_scope_narrowing(tasks: list[TaskSpecification]) -> None:
+        """A downstream task cannot expand upstream authority merely
+        because it received upstream output: when a task and ALL its
+        dependencies declare scope, the task scope must be a subset of
+        the union. Unscoped legs stay comparable-free (supervision +
+        approval still bind them)."""
+        by_id = {t.id: t for t in tasks}
+        for t in tasks:
+            scope = (t.input.get("scopePaths")
+                     if isinstance(t.input, dict) else None)
+            if not scope or not t.dependsOn:
+                continue
+            dep_scopes = [(by_id[d].input.get("scopePaths")
+                           if isinstance(by_id[d].input, dict) else None)
+                          for d in t.dependsOn if d in by_id]
+            if any(not s for s in dep_scopes):
+                continue
+            union: set[str] = set()
+            for s in dep_scopes:
+                union.update(s or [])
+
+            def _covered(path: str) -> bool:
+                # Same path, or strictly beneath a dependency scope dir.
+                return any(path == d or path.startswith(d.rstrip("/") + "/")
+                           for d in union)
+
+            wider = [p for p in scope if not _covered(p)]
+            if wider:
+                raise PlanningError(
+                    f"task {t.id} scope {wider} expands beyond its "
+                    "dependencies' scope; downstream scope must be the "
+                    "same or narrower")
 
     def plan(self, intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
         if intent.needsClarification:
@@ -218,6 +777,10 @@ class TaskPlanner:
                     verification=VerificationRequirement(
                         kind="audit-only",
                         description="git exit-code verification in the Fabric."))],
+                acceptance=[_accept(
+                    "audit-only",
+                    "Accurate repository status reported from real git.",
+                    tasks=["t1"])],
                 createdAt=now)
         elif caps == {"filesystem.write"}:
             write_input = _write_inputs(intent)
@@ -230,7 +793,19 @@ class TaskPlanner:
                     verification=VerificationRequirement(
                         kind="read-back",
                         description="File reads back byte-identical."))],
+                acceptance=[_accept(
+                    "read-back",
+                    "The requested file exists with exactly the requested bytes.",
+                    tasks=["t1"])],
                 createdAt=now)
+        elif caps == {"agent.delegate"} and getattr(intent, "delegateTask", None):
+            # Deterministic delegation, and ONLY for an intent the
+            # heuristic compiler produced: `delegateTask` is the marker
+            # it sets. A model-compiled intent has no such marker and
+            # still falls through to its own validated proposal, so
+            # adding this template cannot flatten a richer model DAG
+            # into a one-task plan.
+            plan = plan_delegated_work(intent, session_id, now)
         elif run_ref is not None:
             resolved = self._resolve_workflow(run_ref)
             if resolved is None:
@@ -259,6 +834,11 @@ class TaskPlanner:
             unknown = [d for d in t.dependsOn if d not in known]
             if unknown:
                 raise PlanningError(f"task {t.id} depends on unknown {unknown}")
+            if t.inputFrom == "upstream-output" and not t.dependsOn:
+                raise PlanningError(
+                    f"task {t.id} declares inputFrom 'upstream-output' but "
+                    "names no dependencies; declare dependsOn or use a "
+                    "literal input.")
         # cycle check (small n — iterative DFS is plenty)
         state: dict[str, int] = {}
 
@@ -277,6 +857,21 @@ class TaskPlanner:
 
         for tid in ids:
             visit(tid)
+
+
+def _topo_indices(n: int, deps: list[list[int]]) -> list[int]:
+    """Positional topological order; ties keep proposal order. Raises
+    PlanningError on cycles (fail closed before AURA assigns identity)."""
+    done: set[int] = set()
+    out: list[int] = []
+    while len(out) < n:
+        runnable = [i for i in range(n)
+                    if i not in done and all(d in done for d in deps[i])]
+        if not runnable:
+            raise PlanningError("model proposal contains a dependency cycle")
+        out.extend(runnable)
+        done.update(runnable)
+    return out
 
 
 def topo_order(tasks: list[TaskSpecification]) -> list[TaskSpecification]:

@@ -1,7 +1,7 @@
 {
   "name": "aura-hub",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "AURA Hub — an AI Operating Environment. Application shell and architecture.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/Aura-hub-ai-native-workspace/aura-hub#readme",
@@ -29,6 +29,7 @@
   "scripts": {
     "dev": "npm run dev --workspace @aura/desktop",
     "ai": "esbuild packages/ai-service/src/start.ts --bundle --platform=node --format=esm --external:typescript --outfile=.aura/ai-service.mjs && node .aura/ai-service.mjs",
+    "environment:api": "python3 scripts/serve_central_agent_api.py",
     "build": "npm run build --workspace @aura/desktop",
     "preview": "npm run preview --workspace @aura/desktop",
     "tauri": "npm run tauri --workspace @aura/desktop",
@@ -37,14 +38,18 @@
     "desktop:build": "NO_STRIP=true npm run tauri --workspace @aura/desktop -- build",
     "typecheck": "tsc -p packages/ai-service/tsconfig.json --noEmit && tsc -p packages/workflow/tsconfig.json --noEmit && tsc -b apps/desktop/tsconfig.json",
     "clean": "rimraf node_modules apps/*/node_modules packages/*/node_modules apps/*/dist",
-    "test:ui": "node scripts/ui-approval-test.mjs"
+    "test:ui": "node scripts/ui-approval-test.mjs",
+    "test:ui-events": "node scripts/ui-agent-events.mjs",
+    "test:front": "vitest run apps/desktop/src",
+    "check:environment": "esbuild scripts/environment-inventory-check.ts --bundle --platform=node --format=esm --define:import.meta.env={} --outfile=.aura/environment-inventory-check.mjs --log-level=error && node .aura/environment-inventory-check.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "esbuild": "0.21.5",
     "playwright-core": "^1.62.1",
     "rimraf": "^5.0.7",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=18.18"

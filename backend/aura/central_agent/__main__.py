@@ -15,8 +15,14 @@ import os
 import sys
 
 
-def build_fabric_config(audit, ledger):
-    """FabricConfig wired to this installation's stores."""
+def build_fabric_config(audit, ledger, policy_config=None):
+    """FabricConfig wired to this installation's stores.
+
+    `policy_config` overrides the base policy through the same merge
+    the Fabric itself applies (see FabricConfig.sanitized_policy), so
+    callers needing deterministic strictness use this factory rather
+    than hand-rolling a config without a live fabric attached.
+    """
     from ..executors import all_executors, register_canonical_internal_capabilities
     from ..fabric import CapabilityFabric, FabricConfig, FabricHost
 
@@ -41,14 +47,21 @@ def build_fabric_config(audit, ledger):
             execs[exe.capabilityId] = exe
         except Exception:
             pass
-    return FabricConfig(
+    cfg = FabricConfig(
         fabric=fabric,
-        policy_config={},
+        policy_config=policy_config or {},
         permissions={"read": True, "write": True},
         executors=execs,
         audit_store=audit,
         ledger=ledger,
     )
+    # The live fabric enforces its own policy object: sync the merged
+    # config onto it here (same convention as the test suites' explicit
+    # `cfg.fabric.set_policy(cfg.sanitized_policy())`), so a factory
+    # caller can never hold a config whose policy the fabric ignores.
+    # With no overrides the merged policy equals the fabric default.
+    fabric.set_policy(cfg.sanitized_policy())
+    return cfg
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -74,12 +87,29 @@ def main(argv: list[str] | None = None) -> int:
     audit = AuditStore(home / "audit" / "trail.jsonl")
     ledger = ApprovalLedger(audit_append=audit.append)
 
+    # `--mode model` used to construct an IntentCompiler with no port,
+    # which raises before anything runs. The port comes from the same
+    # operator provider file the service reads; without one, the honest
+    # answer is to say so rather than to fail with a type error.
+    from .model_routing import default_model_port
+
+    model_port = default_model_port() if args.mode == "model" else None
+    if args.mode == "model" and model_port is None:
+        print(json.dumps({"error": (
+            "model mode needs a provider: write "
+            f"{home / 'agent' / 'providers.json'} with at least one entry, "
+            "or run with --mode heuristic.")}, indent=2))
+        return 2
+
     bus = EventBus()
     agent = CentralAgent(
         fabric_cfg=build_fabric_config(audit, ledger),
         session_store=AgentSessionStore(home),
         bus=bus,
-        intent_compiler=IntentCompiler(mode=args.mode),
+        intent_compiler=(
+            IntentCompiler(mode="model", model_port=model_port,
+                           allow_heuristic_fallback=True)
+            if model_port is not None else IntentCompiler(mode="heuristic")),
     )
     result = agent.submit(args.intent, project_id=args.project)
     print(json.dumps({

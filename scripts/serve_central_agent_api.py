@@ -1,32 +1,49 @@
 #!/usr/bin/env python3
-"""Central Agent API host — verification harness entry point.
+"""Canonical Python API host — the desktop's Environment backend.
 
-Runs the existing `aura.api.build_default_api` server as a long-lived
-process so browser/UI verification suites can drive the real service.
-This file adds NO backend behavior: it imports public constructors and
-calls serve_forever, exactly as the tests do in-process.
+Runs the Starlette application from :mod:`aura.api.server`, which is the
+ONE production Python API surface: workflows, the Capability Fabric, the
+central agent AND every ``/environment`` route (scan, inventory, probe,
+install, connect).
+
+This file used to start ``aura.api.build_default_api`` instead. That is a
+Central-Agent-only host from before the Environment routes existed: it
+answers ``/health`` and ``/fabric/capabilities`` — so it looks like a
+healthy AURA backend to anything fingerprinting the port — while
+``/environment/inventory`` 404s. A desktop pointed at it showed an empty
+Machine Inventory with nothing obviously wrong, which is precisely the
+failure this repository refuses to ship.
 
     AURA_HOME=/tmp/... python3 scripts/serve_central_agent_api.py [port]
+
+The port defaults to 4320, matching ``service::PYTHON_PORT`` in the
+desktop shell and ``ENVIRONMENT_BASE`` in the renderer.
 """
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[1] / "backend"
 sys.path.insert(0, str(BACKEND))
 
+DEFAULT_PORT = 4320
+
 
 def main() -> int:
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 4320
-    home = os.environ.get("AURA_HOME")
-    from aura.api import build_default_api
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_PORT
 
-    server, _agent = build_default_api(home=home, port=port)
-    print(f"CENTRAL_AGENT_READY {port}", flush=True)
-    server.serve_forever()
+    import uvicorn
+    from aura.api.server import create_app
+
+    app = create_app()
+    # Printed only after the application has been CONSTRUCTED. Construction
+    # is what reads persisted state, so a store this host cannot load fails
+    # here — visibly, before anything claims to be ready — rather than
+    # leaving a supervisor waiting on a port that will never open.
+    print(f"AURA_PYTHON_API_READY {port}", flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0
 
 

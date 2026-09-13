@@ -33,13 +33,46 @@ class ProjectRegistry:
     # persistence -------------------------------------------------------------
 
     def load(self) -> None:
-        data = read_json_file(self._file, {"projects": [], "current": None})
-        self._items = [p for p in (data.get("projects") or []) if isinstance(p, dict)]
-        self._current_id = data.get("current")
+        """Read the registry in the shape the oracle writes it.
+
+        ``projects.json`` is a BARE ARRAY of project records — that is what
+        ``ai-service/src/projects.ts`` reads and writes, and both services
+        run against the same ``AURA_HOME``, so the format is a contract
+        between them rather than an implementation detail of either.
+
+        Getting this wrong broke the canonical Python API in both
+        directions and was the reason it could not start on a machine that
+        had ever run the desktop:
+
+          • reading — a real ``projects.json`` is a list, so ``data.get``
+            raised ``AttributeError: 'list' object has no attribute 'get'``
+            during app construction, before any route existed;
+          • writing — an envelope written here is not an array, so the
+            oracle declares the registry corrupt and then REFUSES TO SAVE
+            it, which would have cost the user every project they added
+            afterwards.
+
+        The envelope is still accepted on read so a file written by an
+        earlier Python build loads instead of being discarded.
+        """
+        data = read_json_file(self._file, [])
+        if isinstance(data, dict):
+            # Written by an earlier Python build. Read it, then let the
+            # next save rewrite it in the oracle's shape.
+            records = data.get("projects")
+            current = data.get("current")
+            self._current_id = current if isinstance(current, str) else None
+        else:
+            records = data
+            # The oracle keeps the open project in memory (pipeline state),
+            # not on disk; a restart legitimately has none.
+            self._current_id = None
+        if not isinstance(records, list):
+            records = []
+        self._items = [p for p in records if isinstance(p, dict)]
 
     def save(self) -> None:
-        write_json_file(self._file, {"projects": self._items,
-                                     "current": self._current_id})
+        write_json_file(self._file, self._items)
 
     # queries -------------------------------------------------------------------
 

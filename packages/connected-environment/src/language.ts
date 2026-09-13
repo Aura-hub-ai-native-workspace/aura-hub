@@ -54,6 +54,11 @@ const NODE_PHRASES: Record<NodeStatus, (node: EnvironmentNode) => Phrase> = {
     nextStep: 'The Hub will look for it again when this finishes, and only then call it available.',
     tone: 'progress',
   }),
+  uninstalling: (n) => ({
+    headline: `${n.entry.name} is being removed`,
+    nextStep: 'The Hub will look for it again when this finishes, and only then call it gone.',
+    tone: 'progress',
+  }),
   degraded: (n) => ({
     headline: `${n.entry.name} answered, but not healthily`,
     nextStep: n.health.detail,
@@ -89,7 +94,7 @@ export function describeNode(node: EnvironmentNode): Phrase {
  * The environment's one-line status. Deliberately leads with what *is*
  * working rather than with what is missing.
  */
-export function describeEnvironment(summary: { connected: number; available: number; catalogued: number; running: number }): string {
+export function describeEnvironment(summary: { connected: number; available: number; catalogued: number; running: number; internal?: number }): string {
   if (summary.running > 0) {
     return `${summary.running} ${summary.running === 1 ? 'task' : 'tasks'} running across ${summary.connected} connected ${summary.connected === 1 ? 'node' : 'nodes'}.`;
   }

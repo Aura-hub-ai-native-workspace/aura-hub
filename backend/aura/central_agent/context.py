@@ -54,6 +54,54 @@ class ContextBundle:
         return "\n".join(parts)
 
 
+#: Bounded project sampling. A planner needs to know what KIND of
+#: project this is and roughly where things live; it does not need the
+#: repository. Everything here is capped, and every item it produces is
+#: marked untrusted external content by the assembler.
+MAX_PROJECT_PATHS = 40
+PROJECT_SCAN_TIMEOUT_MS = 8_000
+
+
+def scan_project(path: str) -> list[str]:
+    """A cheap, read-only look at a project, through the ONE exec boundary.
+
+    Returns bounded strings: the top-level layout and a sample of tracked
+    paths. Never the file CONTENTS — a planner that needs to read code
+    delegates that to a worker under a task contract, which is the whole
+    point of the architecture. A directory that is not a git worktree, or
+    a git that does not answer, yields nothing rather than an error: the
+    absence of context is a smaller problem than a broken submit.
+    """
+    import os
+
+    from ..environment.procexec import run_argv
+
+    if not path or not os.path.isdir(path):
+        return []
+    out: list[str] = []
+    try:
+        listing = sorted(
+            entry.name + ("/" if entry.is_dir() else "")
+            for entry in list(os.scandir(path))[:200]
+            if not entry.name.startswith("."))[:MAX_PROJECT_PATHS]
+    except OSError:
+        listing = []
+    if listing:
+        out.append("top level: " + ", ".join(listing))
+    try:
+        result = run_argv(["git", "ls-files"], timeout_ms=PROJECT_SCAN_TIMEOUT_MS,
+                          cwd=path)
+    except Exception:  # noqa: BLE001 — context is optional, never fatal
+        return out
+    if result.exit_code != 0:
+        return out
+    files = [line for line in (result.stdout or "").splitlines() if line]
+    if files:
+        out.append(f"tracked files: {len(files)}")
+        out.append("sample: " + ", ".join(files[:MAX_PROJECT_PATHS]))
+    return out
+
+
 class ContextAssembler:
     def __init__(self, workflow_lister=None, capability_lister=None,
                  approval_lister=None, session_loader=None,
@@ -65,7 +113,8 @@ class ContextAssembler:
         self._project_scan = project_scanner or (lambda path: [])
 
     def assemble(self, session_id: str | None = None,
-                 project_path: str | None = None) -> ContextBundle:
+                 project_path: str | None = None,
+                 editor_block: str | None = None) -> ContextBundle:
         bundle = ContextBundle()
         caps = self._capabilities()[:MAX_ITEMS_PER_SOURCE]
         for c in caps:
@@ -98,5 +147,15 @@ class ContextAssembler:
             for entry in self._project_scan(project_path)[:MAX_ITEMS_PER_SOURCE]:
                 bundle.items.append(ContextItem(
                     kind="project", text=str(entry)[:300],
+                    provenance=PROVENANCE_EXTERNAL, untrusted=True))
+        if editor_block:
+            # Ephemeral editor snapshot (Ctrl+I and siblings): fenced
+            # untrusted content, chunked to the item bound, capped so one
+            # editor request can never flood the model context.
+            chunk = MAX_ITEM_CHARS
+            for part in [editor_block[i:i + chunk]
+                         for i in range(0, len(editor_block), chunk)][:8]:
+                bundle.items.append(ContextItem(
+                    kind="editor", text=part,
                     provenance=PROVENANCE_EXTERNAL, untrusted=True))
         return bundle

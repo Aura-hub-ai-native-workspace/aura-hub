@@ -31,10 +31,28 @@ class AgentSessionStore:
     def _dir(self) -> Path:
         return (self._home or aura_home()) / "agent" / "sessions"
 
-    def create(self, project_id: str | None) -> AgentSession:
+    def create(self, project_id: str | None,
+               session_id: str | None = None) -> AgentSession:
+        """Create a session, optionally under a caller-supplied id.
+
+        A client that needs the id BEFORE the first run settles (live
+        event subscription, early cancellation) may propose one shaped
+        exactly like a server id (`agt-` + 12 hex chars). Anything else
+        — wrong shape, or an id already taken — falls back to a fresh
+        server id, so a caller can never hijack or overwrite a session.
+        """
+        import re as _re
+
         ts = _now()
+        sid = None
+        if isinstance(session_id, str) and _re.fullmatch(
+                r"agt-[0-9a-f]{12}", session_id):
+            if self.load(session_id) is None:
+                sid = session_id
+        if sid is None:
+            sid = f"agt-{uuid.uuid4().hex[:12]}"
         return AgentSession(
-            sessionId=f"agt-{uuid.uuid4().hex[:12]}",
+            sessionId=sid,
             projectId=project_id,
             createdAt=ts,
             updatedAt=ts,

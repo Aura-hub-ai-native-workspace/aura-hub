@@ -38,8 +38,20 @@ from ..persistence.workflows import WorkflowStore
 from ..secrets import SecretStore as AuraSecrets
 from ..workflow.runner import WorkflowRunner
 
-ALLOWED_ORIGIN = re.compile(
-    r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?|tauri://localhost|https?://tauri\.localhost)$"
+#: Every origin the desktop can legitimately call this backend from.
+#:
+#: One pattern, used as the CORS middleware's `allow_origin_regex`, because
+#: two lists drift: the middleware used to carry its own shorter copy that
+#: omitted ``http://tauri.localhost`` — the origin a Tauri v2 window has on
+#: WINDOWS — so every request the desktop made there failed preflight while
+#: Linux and macOS (``tauri://localhost``) worked.
+#:
+#: Loopback keeps an optional port for the Vite dev server (:1420) and for
+#: `npm run preview`; the tauri origins have none.
+ALLOWED_ORIGIN = (
+    r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?"
+    r"|tauri://localhost"
+    r"|https?://tauri\.localhost)$"
 )
 
 MSGS = {
@@ -203,8 +215,12 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     if hasattr(fabric, "attach_approval_store"):
         fabric.attach_approval_store(_ap_load, _ap_save)
         fabric.attach_audit_store(audit.load, audit.append)
-        # The ONE ledger instance backs both the fabric's gates and HTTP.
-        fabric._ledger = ledger
+        # The ONE ledger instance backs both the fabric's gates and HTTP —
+        # and, after a restart, the ONE record object per approval. Both
+        # sides restore from the same file but parse their own dicts, so
+        # adopting is what makes "one ledger" true across a restart
+        # rather than only within a process.
+        fabric.use_ledger(ledger)
 
     wf_store = WorkflowStore()
     ver_store = WorkflowVersionStore()
@@ -225,9 +241,20 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         EventBus,
         IntentCompiler,
     )
+
+    # AURA's OWN reasoning model, separate from every worker runtime.
+    # Present only when an operator configured a provider; absent means
+    # deterministic planning, reported honestly rather than hidden.
+    from ..central_agent.model_routing import default_model_port
     from ..fabric import FabricConfig
     from ..workflow import EngineConfig
     from ..workflow import WorkflowEngine as EngineFacade
+
+    model_port = default_model_port()
+    intents = (IntentCompiler(mode="model", model_port=model_port,
+                              allow_heuristic_fallback=True)
+               if model_port is not None
+               else IntentCompiler(mode="heuristic"))
 
     agent_bus = EventBus()
     agent_cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
@@ -241,7 +268,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     )
     agent = CentralAgent(
         fabric_cfg=agent_cfg, session_store=sessions, bus=agent_bus,
-        intent_compiler=IntentCompiler(mode="heuristic"),
+        intent_compiler=intents,
         workflow_engine=engine, workflow_store=wf_store, run_store=run_store,
     )
 
@@ -278,6 +305,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         "auto_engine": auto_engine,
         "scheduler": scheduler, "auto_emit": _auto_emit,
         "auto_events": auto_events, "auto_subs": auto_subscribers,
+        "model_port": model_port,
     }
 
 
@@ -790,12 +818,26 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             return _err("message is required")
         import anyio
 
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
+        editor_context = body.get("editorContext")
+        if editor_context is not None and not isinstance(editor_context, dict):
+            return _err("editorContext must be an object")
+        session_id = body.get("sessionId")
+        if session_id is not None and not isinstance(session_id, str):
+            return _err("sessionId must be a string")
         result = await anyio.to_thread.run_sync(
             lambda: agent.submit(message,
                                  project_id=body.get("projectId") or None,
-                                 project_path=body.get("projectPath") or None))
+                                 project_path=body.get("projectPath") or None,
+                                 editor_context=editor_context,
+                                 session_id=session_id,
+                                 request_id=rid))
         return JSONResponse({"result": _model_dump(result),
-                             "sessionId": sessions.last_session_id})
+                             "sessionId": sessions.last_session_id,
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
 
     async def agent_message(request: Request):
         body = await request.json()
@@ -804,10 +846,29 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             return _err("message is required")
         import anyio
 
-        result = await anyio.to_thread.run_sync(
-            lambda: agent.message(request.path_params["sid"], message,
-                                  body.get("projectPath")))
-        return JSONResponse({"result": _model_dump(result)})
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
+        editor_context = body.get("editorContext")
+        if editor_context is not None and not isinstance(editor_context, dict):
+            return _err("editorContext must be an object")
+        project_id = body.get("projectId")
+        if project_id is not None and not isinstance(project_id, str):
+            return _err("projectId must be a string")
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: agent.message(request.path_params["sid"], message,
+                                      body.get("projectPath"), editor_context,
+                                      project_id or None,
+                                      request_id=rid))
+        except ValueError as exc:
+            text = str(exc)
+            if "no such session" in text:
+                return _err(text, 404)
+            return _err(text, 409)
+        return JSONResponse({"result": _model_dump(result),
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
 
     async def agent_session_get(request: Request):
         session = _session_or_none(request.path_params["sid"])
@@ -820,31 +881,122 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         approval_id = str(body.get("approvalId") or "")
         granted = bool(body.get("granted"))
         reason = body.get("reason")
-        decided = S["ledger"].decide(approval_id, granted, "user", reason)
-        if decided is None:
-            return _err("this request was already decided", 409)
         import anyio
 
-        result = await anyio.to_thread.run_sync(lambda: agent.resume(request.path_params["sid"]))
-        return JSONResponse({"approval": decided, "result": _model_dump(result)})
+        sid = request.path_params["sid"]
+        try:
+            # Binding BEFORE deciding: a mismatched approval must not
+            # even be recorded, let alone spent.
+            await anyio.to_thread.run_sync(
+                lambda: agent.check_approval_binding(sid, approval_id))
+            decided = S["ledger"].decide(approval_id, granted, "user", reason)
+        except ValueError as exc:
+            return _err(str(exc), 409)
+        if decided is None:
+            return _err("this request was already decided", 409)
+
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: agent.resume(sid, request_id=rid))
+        except (ValueError, PermissionError) as exc:
+            return _err(str(exc), 409)
+        return JSONResponse({"approval": decided,
+                             "result": _model_dump(result),
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
 
     async def agent_resume(request: Request):
         import anyio
 
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
         session = _session_or_none(request.path_params["sid"])
         if session is None:
             return _err("no such session", 404)
         if session.state != "awaiting-approval":
             return _err("that session is not awaiting approval", 400)
-        result = await anyio.to_thread.run_sync(lambda: agent.resume(request.path_params["sid"]))
-        return JSONResponse({"result": _model_dump(result)})
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: agent.resume(request.path_params["sid"],
+                                     request_id=rid))
+        except (ValueError, PermissionError) as exc:
+            return _err(str(exc), 409)
+        return JSONResponse({"result": _model_dump(result),
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
 
-    async def agent_cancel(request: Request):
+    async def agent_network_capability(request: Request):
+        """What this host can really enforce. Read by the UI so it can
+        never describe a boundary the kernel does not provide."""
+        from ..governance import network as netgov
+
+        return JSONResponse(netgov.capability())
+
+    async def agent_resume_cancelled(request: Request):
+        """Explicitly re-attempt a cancelled run. Recovery is a decision
+        the user makes; nothing resumes a cancelled run on its own."""
         import anyio
 
-        cancelled = await anyio.to_thread.run_sync(
-            lambda: agent.cancel(request.path_params["sid"]))
-        return JSONResponse({"cancelled": bool(cancelled)})
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
+        sid = request.path_params["sid"]
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: agent.resume(sid, resume_cancelled=True,
+                                     request_id=rid))
+        except (ValueError, PermissionError) as exc:
+            return _err(str(exc), 409)
+        return JSONResponse({"result": _model_dump(result),
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
+
+    async def agent_cancel(request: Request):
+        """Request a stop. Returns as soon as the request is RECORDED.
+
+        Deliberately not "returns when the worker is dead": termination
+        takes as long as the process takes, and a UI that waits for it
+        would look hung at exactly the moment the user wants a response.
+        The run.cancelled event reports the actual stop.
+        """
+        import anyio
+
+        sid = request.path_params["sid"]
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — a bare STOP carries no body
+            body = {}
+        reason = str(body.get("reason") or "")[:400]
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
+        try:
+            record = await anyio.to_thread.run_sync(
+                lambda: agent.request_cancel(sid, reason))
+        except ValueError as exc:
+            return _err(str(exc), 404)
+        return JSONResponse({"cancelled": True, "cancellation": record,
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
+
+    async def agent_model(request: Request):
+        """Secret-free model routing observability (P1-D).
+
+        Which provider/model the agent would reason with, per-call
+        telemetry, and honest unavailability — never keys, prompts, or
+        completions, and never a fabricated identity.
+        """
+        port = S.get("model_port")
+        telemetry = (port.telemetry() if port is not None
+                     and hasattr(port, "telemetry")
+                     else {"configured": False, "providers": [],
+                           "lastCall": None})
+        return JSONResponse(telemetry)
 
     async def agent_plan(request: Request):
         review = agent.review_plan(request.path_params["sid"])
@@ -861,19 +1013,84 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse(evidence.model_dump() if evidence else {"evidence": None})
 
     async def agent_events(request: Request):
+        import anyio
+
+        from ..central_agent.events import _StreamLagged
+
         sid = request.path_params["sid"]
-        # Tail replay then close: the client's reconnect loop re-subscribes
-        # with backoff and dedupes by (type, at), so a bounded stream can
-        # never strand a reader and can never double-render.
         session = _session_or_none(sid)
         if session is None:
             return _err("no such session", 404)
-        frames = [json.loads(chunk) for chunk in agent.bus.tail_stream(sid)]
+        # Cursor: standard Last-Event-ID header or ?after=N. Malformed
+        # cursors fail closed (400) rather than replaying the wrong
+        # window; the client resubscribes without a cursor instead.
+        # The cursor can never cross scope: replay and live frames are
+        # always filtered to this session (+ the global "-" channel).
+        after: int | None = None
+        raw_cursor = (request.headers.get("last-event-id")
+                      or request.query_params.get("after"))
+        if raw_cursor not in (None, ""):
+            try:
+                after = int(raw_cursor)
+            except (TypeError, ValueError):
+                return _err("malformed cursor: after must be an integer "
+                            "sequence", 400)
+            if after < 0:
+                return _err("malformed cursor: after must be >= 0", 400)
 
-        def stream():
-            for frame in frames:
-                yield frame
-        return _sse(stream())
+        def frame_line(event) -> str:
+            body = (event.model_dump() if hasattr(event, "model_dump")
+                    else event)
+            text = dumps_compact(body)
+            seq = body.get("seq")
+            head = f"id: {seq}\n" if isinstance(seq, int) else ""
+            return f"{head}data: {text}\n\n"
+
+        def resync_line() -> str:
+            return ("data: " + dumps_compact({
+                "type": "stream.resync",
+                "at": _now(),
+                "sessionId": sid,
+                "payload": {"message": "consumer lagged; reconnect with "
+                                       "your last seen id"},
+            }) + "\n\n")
+
+        pump, close = agent.bus.subscribe_live(sid)
+
+        def _pump_once():
+            """Blocking pump for the worker thread: one live event, a
+            lag signal, or a heartbeat tick (never blocks past 20s so
+            disconnects and heartbeats stay timely)."""
+            import queue as _queue
+
+            try:
+                return ("event", pump(20.0))
+            except _StreamLagged:
+                return ("lagged", None)
+            except _queue.Empty:
+                return ("heartbeat", None)
+
+        async def gen():
+            try:
+                for event in agent.bus.tail_after(sid, after):
+                    yield frame_line(event)
+                while True:
+                    kind, event = await anyio.to_thread.run_sync(
+                        _pump_once, abandon_on_cancel=True)
+                    if kind == "event":
+                        yield frame_line(event)
+                    elif kind == "lagged":
+                        yield resync_line()
+                    else:
+                        yield ": heartbeat\n\n"
+            except asyncio.CancelledError:  # client disconnected
+                pass
+            finally:
+                close()
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"cache-control": "no-cache",
+                                          "x-accel-buffering": "no"})
 
     # ── governance: approvals + fabric ──────────────────────────────
     async def fabric_approvals(request: Request):
@@ -987,6 +1204,49 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         ok = S["nodes"].remove(request.path_params["nid"])
         if not ok:
             return _err("no such node", 404)
+        return JSONResponse({"ok": True})
+
+    # ── workers (Phase K) ────────────────────────────────────────────
+    # Workers are AI runtimes AURA delegates to; tools are capabilities
+    # the Fabric drives itself. These routes report the FIRST kind, and
+    # they report it honestly: connected means AURA proved a real
+    # round-trip, never that a binary exists.
+
+    async def workers_list(request: Request):
+        from ..workers import describe_workers, matrix_rows
+
+        workers = describe_workers(S["nodes"])
+        return JSONResponse({
+            "workers": [w.to_dict() for w in workers],
+            "matrix": matrix_rows(workers),
+            "connected": sum(1 for w in workers if w.connected),
+            "total": len(workers),
+        })
+
+    async def workers_connect(request: Request):
+        from ..workers import connect_worker
+
+        body = await request.json()
+        worker_id = str(body.get("id") or body.get("workerId") or "").strip()
+        if not worker_id:
+            return _err("No worker id was provided.", 400)
+        descriptor, proof = await asyncio.get_running_loop().run_in_executor(
+            None, connect_worker, worker_id, S["nodes"], str(S["home"]))
+        if descriptor is None:
+            return _err(proof.get("detail") or "unknown worker", 400)
+        return JSONResponse({
+            "connected": descriptor.connected,
+            "worker": descriptor.to_dict(),
+            "proof": proof,
+            "detail": descriptor.detail,
+        })
+
+    async def workers_disconnect(request: Request):
+        from ..workers import disconnect_worker
+
+        ok = disconnect_worker(request.path_params["wid"], S["nodes"])
+        if not ok:
+            return _err("no such worker", 404)
         return JSONResponse({"ok": True})
 
     async def fabric_audit(request: Request):
@@ -1412,12 +1672,16 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/workflow-runs/{rid}", run_get, methods=["GET"]),
         Route("/agent/bounds", agent_bounds, methods=["GET"]),
         Route("/agent/tools", agent_tools, methods=["GET"]),
+        Route("/agent/model", agent_model, methods=["GET"]),
         Route("/agent/sessions", agent_submit, methods=["POST"]),
         Route("/agent/sessions/{sid}", agent_session_get, methods=["GET"]),
         Route("/agent/sessions/{sid}/message", agent_message, methods=["POST"]),
         Route("/agent/sessions/{sid}/approve", agent_approve, methods=["POST"]),
         Route("/agent/sessions/{sid}/resume", agent_resume, methods=["POST"]),
         Route("/agent/sessions/{sid}/cancel", agent_cancel, methods=["POST"]),
+        Route("/agent/sessions/{sid}/resume-cancelled",
+              agent_resume_cancelled, methods=["POST"]),
+        Route("/governance/network", agent_network_capability, methods=["GET"]),
         Route("/agent/sessions/{sid}/plan", agent_plan, methods=["GET"]),
         Route("/agent/sessions/{sid}/evidence", agent_evidence, methods=["GET"]),
         Route("/agent/sessions/{sid}/events", agent_events, methods=["GET"]),
@@ -1430,6 +1694,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/fabric/nodes", fabric_nodes_get, methods=["GET"]),
         Route("/fabric/nodes", fabric_nodes_register, methods=["POST"]),
         Route("/fabric/nodes/{nid}", fabric_nodes_remove, methods=["DELETE"]),
+        Route("/workers", workers_list, methods=["GET"]),
+        Route("/workers/connect", workers_connect, methods=["POST"]),
+        Route("/workers/{wid}", workers_disconnect, methods=["DELETE"]),
         Route("/fabric/audit", fabric_audit, methods=["GET"]),
         Route("/fabric/mission/{pid}/{mid}", fabric_mission_annotation, methods=["GET"]),
         Route("/projects", projects_list, methods=["GET"]),
@@ -1467,14 +1734,18 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/automation/events/stream", automation_events_stream, methods=["GET"]),
         Route("/events/workflow", sse_workflow_events, methods=["GET"]),
         Route("/environment/scan", environment_scan, methods=["POST"]),
+        Route("/environment/inventory", environment_inventory, methods=["POST"]),
+        Route("/environment/search", environment_search, methods=["POST"]),
         Route("/environment/probe", environment_probe, methods=["POST"]),
+        Route("/environment/install", environment_install, methods=["POST"]),
+        Route("/environment/uninstall", environment_uninstall, methods=["POST"]),
+        Route("/environment/connect", environment_connect, methods=["POST"]),
     ]
 
     app = Starlette(
         routes=routes,
         middleware=[Middleware(CORSMiddleware,
-                               allow_origins=["tauri://localhost", "https://tauri.localhost"],
-                               allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+                               allow_origin_regex=ALLOWED_ORIGIN,
                                allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                                allow_headers=["Content-Type", "x-aura-shutdown",
                                               "Last-Event-ID"])])
@@ -1517,20 +1788,150 @@ async def automation_validate_route(request: Request):
     return JSONResponse({"issues": validate_rule(body)})
 
 
+async def _environment_body(request: Request) -> dict:
+    """Parse an /environment request body defensively.
+
+    A malformed payload is a client mistake, not a server fault: it must not
+    surface as an unhandled JSONDecodeError and a 500.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _environment_ids(raw: object) -> list[str] | None:
+    """Validate the optional `ids` filter.
+
+    Anything that is not a list of non-empty strings is treated as "no
+    filter" rather than being passed through to a membership test that would
+    do substring matching on a bare string, or raise on an int.
+    """
+    if not isinstance(raw, list):
+        return None
+    ids = [item.strip() for item in raw if isinstance(item, str) and item.strip()]
+    return ids or None
+
+
 async def environment_scan(request: Request):
     """Scan the machine for known catalog nodes.
 
     POST /environment/scan
     Body: { ids?: string[], refresh?: boolean }
-    Returns: { results: Record<string, ProbeResult>, scannedAt: string, found: number }
+    Returns: { results, scannedAt, found, discovered, packages, osPackages, ... }
+
+    The scan runs subprocesses for many seconds. It is handed to a worker
+    thread so the event loop keeps serving every other route while it does;
+    `scan_environment` itself collapses concurrent identical scans into one.
     """
+    import anyio.to_thread
+
     from ..environment import scan_environment, scan_result_to_dict
 
-    body = await request.json()
-    node_ids = body.get("ids")
+    body = await _environment_body(request)
+    node_ids = _environment_ids(body.get("ids"))
     refresh = bool(body.get("refresh", False))
-    result = scan_environment(node_ids=node_ids if node_ids else None, refresh=refresh)
-    return JSONResponse(scan_result_to_dict(result))
+    result = await anyio.to_thread.run_sync(
+        lambda: scan_result_to_dict(scan_environment(node_ids=node_ids, refresh=refresh))
+    )
+    return JSONResponse(result)
+
+
+async def environment_search(request: Request):
+    """Resolve a software search across every layer AURA has.
+
+    POST /environment/search
+    Body: { query, limit?, external? }
+    Returns: { query, results[], consulted[], offline, stale, detail }
+
+    This is AURA Everything's only backend surface. It DESCRIBES software;
+    it installs nothing. Each result carries an explicit `installable`
+    flag, and that flag is true only when the resolved identity matches a
+    curated catalogue entry whose existing InstallSpec can produce a real
+    command on this machine — never because a registry listed a package.
+    Installing still goes through /environment/install, unchanged, by
+    catalogue id.
+
+    Local layers answer first and cost nothing; a registry is consulted
+    only when nothing local or curated satisfied the query. Pass
+    `external: false` to stay entirely offline.
+    """
+    import anyio.to_thread
+
+    from ..environment.software.resolve import DEFAULT_LIMIT, search
+
+    body = await _environment_body(request)
+    query = str(body.get("query") or "").strip()
+    if not query:
+        return _err("query is required")
+    if len(query) > 120:
+        return _err("query is too long")
+    limit = min(_positive_int(body.get("limit"), DEFAULT_LIMIT), 50)
+    external = bool(body.get("external", True))
+
+    outcome = await anyio.to_thread.run_sync(
+        lambda: search(query, limit=limit, allow_external=external))
+    return JSONResponse(outcome.to_dict())
+
+
+async def environment_inventory(request: Request):
+    """The complete machine inventory, paginated.
+
+    POST /environment/inventory
+    Body: { refresh?, offset?, limit?, kinds?: string[], query?, verify? }
+    Returns: { items, total, returned, offset, truncated, counts, sources, ... }
+
+    `total` is how many items matched, not how many were returned: a caller
+    that wants everything pages through it, and one that wants a screenful
+    is told how much more there is. Collection runs on a worker thread and
+    is shared between concurrent callers.
+    """
+    import anyio.to_thread
+
+    from ..environment.inventory import get_inventory, inventory_to_dict
+
+    body = await _environment_body(request)
+    refresh = bool(body.get("refresh", False))
+    verify = bool(body.get("verify", True))
+    offset = _positive_int(body.get("offset"), 0)
+    raw_limit = body.get("limit", 200)
+    limit = None if raw_limit is None else min(_positive_int(raw_limit, 200), 5000)
+    kinds = _string_set(body.get("kinds"))
+    raw_query = body.get("query")
+    query = raw_query if isinstance(raw_query, str) else None
+
+    inventory = await anyio.to_thread.run_sync(
+        lambda: get_inventory(refresh=refresh, verify=verify)
+    )
+    payload = await anyio.to_thread.run_sync(
+        lambda: inventory_to_dict(inventory, offset=offset, limit=limit, kinds=kinds, query=query)
+    )
+    return JSONResponse(payload)
+
+
+def _string_set(value: object) -> set[str] | None:
+    """A set of strings from an untrusted body, or no filter at all.
+
+    `value or []` is not enough: a body of `{"kinds": 5}` leaves the 5 in
+    place and iterating it raises, which reaches the client as a 500 for
+    what is only a malformed request.
+    """
+    if not isinstance(value, (list, tuple, set)):
+        return None
+    names = {item for item in value if isinstance(item, str) and item.strip()}
+    return names or None
+
+
+def _positive_int(value: object, fallback: int) -> int:
+    """A bounded integer from an untrusted body, never an exception."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return fallback
+    try:
+        number = int(value)
+    except (ValueError, OverflowError):
+        return fallback
+    return max(0, min(number, 1_000_000))
 
 
 async def environment_probe(request: Request):
@@ -1540,12 +1941,371 @@ async def environment_probe(request: Request):
     Body: { id: string, refresh?: boolean }
     Returns: { result?: ProbeResult }
     """
+    import anyio.to_thread
+
     from ..environment import probe_node, probe_result_to_dict
 
-    body = await request.json()
+    body = await _environment_body(request)
     node_id = str(body.get("id") or "").strip()
     if not node_id:
-        return JSONResponse({"result": {"present": False, "detail": "No node id was provided."}})
+        return JSONResponse({"result": {"present": False, "status": "unsupported", "detail": "No node id was provided."}})
     refresh = bool(body.get("refresh", False))
-    result = probe_node(node_id, refresh=refresh)
+    result = await anyio.to_thread.run_sync(lambda: probe_node(node_id, refresh=refresh))
     return JSONResponse({"result": probe_result_to_dict(result)})
+
+
+async def environment_install(request: Request):
+    """Direct human installation — bypasses Fabric approval gate.
+
+    POST /environment/install
+    Body: { id: string }
+    Returns: InstallResult-like payload with installOutcome, privilege,
+             requiresUserAction, command, why, probe, detail, exitCode.
+
+    Security: catalog-only, validated InstallSpec, allow-listed bin,
+              argv-only, no shell, frontend sends id only.
+    """
+    from ..environment import catalog_entry, is_plan, plan_install, probe_node, probe_result_to_dict
+    from ..exec_ import INSTALL_TIMEOUT_MS, resolve_installer_binary
+
+    body = await _environment_body(request)
+    node_id = str(body.get("id") or body.get("nodeId") or "").strip()
+    if not node_id:
+        return JSONResponse({"error": "No node id was provided.", "installOutcome": "failed", "detail": "No node id was provided."}, status_code=400)
+
+    entry = catalog_entry(node_id)
+    if entry is None:
+        return JSONResponse({"error": f"'{node_id}' is not in the catalog.", "installOutcome": "failed", "detail": f"'{node_id}' is not in the catalog."}, status_code=400)
+
+    plan = plan_install(entry)
+    if not is_plan(plan):
+        return JSONResponse({
+            "installOutcome": "unavailable",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "detail": plan.reason,
+            "why": plan.reason,
+        }, status_code=400)
+
+    if plan.privilege == "root":
+        return JSONResponse({
+            "installOutcome": "guided",
+            "nodeId": node_id,
+            "privilege": "root",
+            "requiresUserAction": True,
+            "command": plan.command,
+            "why": plan.why,
+            "detail": f"{entry.name} needs administrator rights to install, so AURA did not run anything. Run this yourself, then re-scan: {plan.command}",
+        })
+
+    resolved = resolve_installer_binary(plan.bin)
+    if not resolved.ok:
+        return JSONResponse({
+            "installOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": resolved.reason,
+            "detail": f"{entry.name} could not be installed: {resolved.reason}",
+        }, status_code=400)
+
+    # Execution is delegated to the one hardened install runner, which the
+    # Fabric capability uses too. This route previously spawned the installer
+    # itself and had drifted: stdin was still attached to the operator's
+    # terminal and only the direct child was killed on timeout.
+    from ..environment.executor import run_install_plan
+
+    run = await run_install_plan(plan, timeout_ms=INSTALL_TIMEOUT_MS)
+
+    if run.status in ("missing", "error"):
+        return JSONResponse({
+            "installOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": run.error,
+            "detail": f"{entry.name} could not be installed: {run.error}",
+        }, status_code=400)
+
+    if run.status == "timeout":
+        return JSONResponse({
+            "installOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": "The installer ran out of time and was stopped.",
+            "timedOut": True,
+            "exitCode": -1,
+            "detail": f"{entry.name} was not installed. The installer ran out of time and was stopped.",
+        })
+
+    exit_code = run.exit_code
+    stdout = run.stdout
+
+    if exit_code != 0:
+        why = f"The installer exited {exit_code}."
+        return JSONResponse({
+            "installOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": why,
+            "exitCode": exit_code,
+            "stdout": stdout,
+            "detail": f"{entry.name} was not installed. {why} {stdout[:300]}".strip(),
+        })
+
+    # Post-install verification — exit 0 is claim, probe is evidence
+    probe_result = probe_node(node_id, refresh=True)
+    if not probe_result.present:
+        return JSONResponse({
+            "installOutcome": "unverified",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": True,
+            "command": plan.command,
+            "why": f"The installer finished without an error, but {entry.name} still cannot be found on this machine.",
+            "exitCode": 0,
+            "stdout": stdout,
+            "probe": probe_result_to_dict(probe_result),
+            "detail": f"{entry.name} reported a successful install, but AURA still cannot find it, so it is NOT being reported as installed. {probe_result.detail}",
+        })
+
+    return JSONResponse({
+        "installOutcome": "installed",
+        "nodeId": node_id,
+        "privilege": "user",
+        "requiresUserAction": False,
+        "command": plan.command,
+        "why": f"{entry.name} is now installed and available.",
+        "exitCode": 0,
+        "stdout": stdout,
+        "probe": probe_result_to_dict(probe_result),
+        "detail": f"{entry.name} was successfully installed and verified.",
+    })
+
+
+async def environment_uninstall(request: Request):
+    """Direct human uninstallation — removes software, then verifies absence.
+
+    POST /environment/uninstall
+    Body: { id: string }
+    Returns: UninstallResult-like payload with uninstallOutcome, privilege,
+             requiresUserAction, command, why, probe, detail, exitCode.
+
+    Security: catalog-only, validated UninstallSpec derived from InstallSpec,
+              allow-listed bin, argv-only, no shell, frontend sends id only.
+    """
+    from ..environment import (
+        catalog_entry,
+        is_uninstall_plan,
+        plan_uninstall,
+        probe_node,
+        probe_result_to_dict,
+    )
+    from ..exec_ import INSTALL_TIMEOUT_MS, resolve_installer_binary
+
+    body = await _environment_body(request)
+    node_id = str(body.get("id") or body.get("nodeId") or "").strip()
+    if not node_id:
+        return JSONResponse({"error": "No node id was provided.", "uninstallOutcome": "failed", "detail": "No node id was provided."}, status_code=400)
+
+    entry = catalog_entry(node_id)
+    if entry is None:
+        return JSONResponse({"error": f"'{node_id}' is not in the catalog.", "uninstallOutcome": "failed", "detail": f"'{node_id}' is not in the catalog."}, status_code=400)
+
+    plan = plan_uninstall(entry)
+    if not is_uninstall_plan(plan):
+        return JSONResponse({
+            "uninstallOutcome": "unavailable",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "detail": plan.reason,
+            "why": plan.reason,
+        }, status_code=400)
+
+    if plan.privilege == "root":
+        return JSONResponse({
+            "uninstallOutcome": "guided",
+            "nodeId": node_id,
+            "privilege": "root",
+            "requiresUserAction": True,
+            "command": plan.command,
+            "why": plan.why,
+            "detail": f"{entry.name} needs administrator rights to remove, so AURA did not run anything. Run this yourself, then re-scan: {plan.command}",
+        })
+
+    resolved = resolve_installer_binary(plan.bin)
+    if not resolved.ok:
+        return JSONResponse({
+            "uninstallOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": resolved.reason,
+            "detail": f"{entry.name} could not be uninstalled: {resolved.reason}",
+        }, status_code=400)
+
+    from ..environment.executor import run_uninstall_plan
+
+    run = await run_uninstall_plan(plan, timeout_ms=INSTALL_TIMEOUT_MS)
+
+    if run.status in ("missing", "error"):
+        return JSONResponse({
+            "uninstallOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": run.error,
+            "detail": f"{entry.name} could not be uninstalled: {run.error}",
+        }, status_code=400)
+
+    if run.status == "timeout":
+        return JSONResponse({
+            "uninstallOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": "The uninstaller ran out of time and was stopped.",
+            "timedOut": True,
+            "exitCode": -1,
+            "detail": f"{entry.name} was not uninstalled. The uninstaller ran out of time and was stopped.",
+        })
+
+    exit_code = run.exit_code
+    stdout = run.stdout
+
+    if exit_code != 0:
+        why = f"The uninstaller exited {exit_code}."
+        return JSONResponse({
+            "uninstallOutcome": "failed",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": why,
+            "exitCode": exit_code,
+            "stdout": stdout,
+            "detail": f"{entry.name} was not uninstalled. {why} {stdout[:300]}".strip(),
+        })
+
+    # Post-uninstall verification — exit 0 is claim, probe absence is evidence
+    probe_result = probe_node(node_id, refresh=True)
+    if probe_result.present:
+        return JSONResponse({
+            "uninstallOutcome": "unverified",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": True,
+            "command": plan.command,
+            "why": f"The uninstaller finished without an error, but {entry.name} can still be found on this machine.",
+            "exitCode": 0,
+            "stdout": stdout,
+            "probe": probe_result_to_dict(probe_result),
+            "detail": f"{entry.name} reported a successful removal, but AURA can still find it, so it is NOT being reported as removed. {probe_result.detail}",
+        })
+
+    return JSONResponse({
+        "uninstallOutcome": "uninstalled",
+        "nodeId": node_id,
+        "privilege": "user",
+        "requiresUserAction": False,
+        "command": plan.command,
+        "why": f"{entry.name} is now removed.",
+        "exitCode": 0,
+        "stdout": stdout,
+        "probe": probe_result_to_dict(probe_result),
+        "detail": f"{entry.name} was successfully uninstalled and verified as absent.",
+    })
+
+
+async def environment_connect(request: Request):
+    """Direct human connect — verifies usability, persists via ConnectedNodeStore.
+
+    POST /environment/connect
+    Body: { id: string }
+    Returns: { connected: bool, result: ProbeResult, detail: string }
+    """
+    from ..environment import catalog_entry, probe_node, probe_result_to_dict
+
+    body = await _environment_body(request)
+    node_id = str(body.get("id") or body.get("nodeId") or "").strip()
+    if not node_id:
+        return JSONResponse({"error": "No node id was provided.", "connected": False}, status_code=400)
+
+    entry = catalog_entry(node_id)
+    if entry is None:
+        return JSONResponse({"error": f"'{node_id}' is not in the catalog.", "connected": False}, status_code=400)
+
+    # A WORKER is never connected by a version probe. Presence proves a
+    # binary exists; it proves nothing about whether AURA can dispatch to
+    # that runtime and receive a real, correlated result — which is what
+    # the word has to mean. Workers go through the readiness handshake at
+    # POST /workers/connect and nowhere else.
+    from ..workers import is_worker
+
+    if is_worker(node_id):
+        return JSONResponse({
+            "connected": False,
+            "result": probe_result_to_dict(probe_node(node_id)),
+            "detail": (f"{entry.name} is an AI worker, not a tool. Connecting "
+                       "it means proving AURA can dispatch to it and receive "
+                       "a real result — use POST /workers/connect, which runs "
+                       "that handshake."),
+            "worker": True,
+        }, status_code=409)
+
+    # Internal nodes always connected
+    if entry.transport == "internal":
+        result = probe_node(node_id, refresh=True)
+        return JSONResponse({
+            "connected": True,
+            "result": probe_result_to_dict(result),
+            "detail": "Built into AURA Hub — always available.",
+        })
+
+    # Real verification: probe with refresh
+    result = probe_node(node_id, refresh=True)
+    if not result.present:
+        return JSONResponse({
+            "connected": False,
+            "result": probe_result_to_dict(result),
+            "detail": result.detail,
+        })
+
+    # Verify integration: for local-process, probe success means executable + version;
+    # for http, probe already verified endpoint liveness. If present, consider drivable
+    # unless we have explicit evidence otherwise. Persist verified connection.
+    try:
+        from ..persistence.nodes import ConnectedNodeStore
+
+        nodes = ConnectedNodeStore()
+        # Persist verified connection — register as connected node
+        nodes.register(
+            node_id,
+            entry.name,
+            list(entry.capabilities),
+            internal=False,
+            version=result.version or "",
+        )
+    except Exception as e:
+        return JSONResponse({
+            "connected": False,
+            "result": probe_result_to_dict(result),
+            "detail": f"Installed and found, but AURA could not persist the connection: {e}.",
+        })
+
+    return JSONResponse({
+        "connected": True,
+        "result": probe_result_to_dict(result),
+        "detail": f"{entry.name} is connected and usable. {result.detail}",
+    })

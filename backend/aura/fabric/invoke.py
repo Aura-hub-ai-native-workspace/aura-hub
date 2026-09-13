@@ -101,6 +101,8 @@ def validate_input(capability: dict, input: dict[str, Any]) -> str | None:
             ok = isinstance(value, bool)
         elif f.get("type") == "array":
             ok = isinstance(value, list)
+        elif f.get("type") == "string[]":
+            ok = isinstance(value, list) and all(isinstance(v, str) for v in value)
         elif f.get("type") == "object":
             ok = isinstance(value, dict)
         else:
@@ -164,6 +166,8 @@ def _settle(
         "durationMs": duration_ms,
         "inputSummary": policy.pop("_input_summary", "(no arguments)"),
         **({"taskId": context["taskId"]} if context.get("taskId") else {}),
+        **({"sessionId": context["sessionId"]} if context.get("sessionId") else {}),
+        **({"requestId": context["requestId"]} if context.get("requestId") else {}),
         **({"workflowId": context["workflowId"]} if context.get("workflowId") else {}),
         **({"runId": context["runId"]} if context.get("runId") else {}),
         **({"workflowNodeId": context["workflowNodeId"]}

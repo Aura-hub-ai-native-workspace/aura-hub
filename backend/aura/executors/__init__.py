@@ -14,6 +14,7 @@ Nothing here decides policy. Nothing here grants authority.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import urllib.error
 import urllib.request
@@ -28,6 +29,14 @@ from ..exec_ import (
     resolve_agent_binary,
     run_agent,
     safe_shell_with_code,
+)
+from ..governance.opencode import SELF_KILL_CODE as _SELF_KILL_CODE
+from ..workers.adapters import (
+    GOV_CLAUDE_HOOK,
+    GOV_NONE,
+    GOV_OPENCODE_PLUGIN,
+    adapter_for_binary,
+    verified_invocations,
 )
 
 MAX_READ_BYTES = 512 * 1024
@@ -179,13 +188,12 @@ async def terminal_execute_verify(_inv: dict, result: dict) -> dict:
 
 # ── coding agents ────────────────────────────────────────────────────────────
 
-AGENT_INVOCATIONS = {
-    "opencode": {
-        "args": lambda task, cwd, model=None: (
-            ["run", "--dir", cwd, *(["--model", model] if model else []), task]),
-        "verifiedAgainst": "OpenCode 1.18.16",
-    },
-}
+#: How each worker is actually driven, sourced from the ONE worker
+#: adapter registry (aura.workers.adapters). Only adapters whose argv
+#: shape AURA has verified against the real runtime appear here — a
+#: worker AURA cannot prove it can drive is never dispatched.
+AGENT_INVOCATIONS = verified_invocations()
+
 MAX_CONTEXT_CHARS = 12_000
 
 
@@ -199,9 +207,263 @@ def with_context(task: str, raw_context: str) -> str:
     return f"{body}\n\n<TASK>\n{task}\n</TASK>"
 
 
-def agent_delegate_supports_node(node: dict) -> bool:
+def _node_readiness_proved(node: dict) -> bool:
+    """Did AURA itself prove a real round-trip to THIS worker?
+
+    The proof is written only by the readiness handshake, into AURA's own
+    connected-node registry, after a real dispatch produced correlated
+    work. It is what lets a runtime whose argv shape is not verified in
+    code become drivable on a machine where it demonstrably works —
+    without ever letting a caller assert drivability. Absent by default,
+    so the gate fails closed.
+    """
+    readiness = node.get("readiness")
+    return isinstance(readiness, dict) and readiness.get("proved") is True
+
+
+def agent_delegate_invocation(node: dict):
+    """The verified way to drive this node, or None.
+
+    Two independent grounds, both evidence: the argv shape is verified
+    in code against the real runtime, or AURA proved this exact runtime
+    on this machine through the readiness handshake.
+    """
     bin_name = node.get("binary")
-    return bool(bin_name) and resolve_agent_binary(bin_name).ok and bin_name in AGENT_INVOCATIONS
+    if not bin_name or not resolve_agent_binary(bin_name).ok:
+        return None
+    spec = AGENT_INVOCATIONS.get(bin_name)
+    if spec is not None:
+        return spec
+    if not _node_readiness_proved(node):
+        return None
+    adapter = adapter_for_binary(bin_name)
+    if adapter is None:
+        return None
+    return {"args": adapter.build_args,
+            "verifiedAgainst": f"{adapter.name} (proved on this machine)"}
+
+
+def agent_delegate_supports_node(node: dict) -> bool:
+    return agent_delegate_invocation(node) is not None
+
+
+def _stage_governance(inv: dict, bin_name: str, cwd: str,
+                      task: str, scope_paths: list[str]) -> dict:
+    """Compile per-invocation runtime enforcement from the task contract.
+
+    Returns {"args" | None, "env", "logPath", "supports", "worker"}.
+    Anything unsupported or any staging failure yields an empty
+    governance bundle — the run proceeds under the pre-existing
+    boundaries (allow-lists, approvals, post-hoc delta verification),
+    and the output says so honestly instead of claiming supervision.
+    """
+    bundle: dict = {"args": None, "env": {}, "logPath": "",
+                    "supports": {}, "worker": bin_name}
+    adapter = adapter_for_binary(bin_name)
+    if adapter is None or adapter.governance == GOV_NONE:
+        # No PROVEN pre-execution interception point for this runtime.
+        # Report that honestly, enforce nothing new, and keep the
+        # pre-existing boundaries (allow-lists, approvals, post-hoc
+        # delta verification). Flag parity is never taken as evidence.
+        bundle["supports"] = {"NOTE": "unsupported — no proven "
+                                      "interception point for this runtime"}
+        return bundle
+    if not scope_paths:
+        # Governance is scope-derived: unscoped runs keep the legacy
+        # boundaries (allow-lists, approvals, post-hoc verification)
+        # instead of a deny-all config. Reported in the output.
+        return bundle
+    try:
+        from ..config import aura_home
+        from ..governance import staging
+    except Exception:
+        return bundle
+    try:
+        context = inv.get("context") or {}
+        invocation_id = str(inv.get("id") or context.get("taskId")
+                            or "inv")
+        task_id = str(context.get("taskId") or "")
+        attempt = str(context.get("attempt") or "1")
+        node = inv.get("node") or {}
+        node_id = str(node.get("id") or bin_name)
+        home = str(aura_home())
+        if adapter.governance == GOV_OPENCODE_PLUGIN:
+            # OpenCode and Kilo read the same config/plugin surface and
+            # honour the same tool.execute.before interception point;
+            # each was verified against its own runtime, and the env
+            # prefix is the only difference between them.
+            staged = staging.stage_opencode(
+                home, invocation_id=invocation_id, task_id=task_id,
+                node_id=node_id, attempt=attempt, cwd=cwd,
+                scope_paths=scope_paths,
+                env_prefix=adapter.env_prefix or "OPENCODE")
+            bundle.update(env=staged["env"], logPath=staged["logPath"],
+                          supports=staged["supports"])
+            bundle["invocationId"] = invocation_id
+        elif adapter.governance == GOV_CLAUDE_HOOK:
+            staged = staging.stage_claude(
+                home, invocation_id=invocation_id, task_id=task_id,
+                node_id=node_id, attempt=attempt, cwd=cwd,
+                scope_paths=scope_paths)
+            bundle.update(env=staged["env"], logPath=staged["logPath"],
+                          supports=staged["supports"])
+            bundle["invocationId"] = invocation_id
+            extra = []
+            for root in staged["addDirs"]:
+                extra += ["--add-dir", root]
+            if staged.get("settingsPath"):
+                extra += ["--settings", staged["settingsPath"]]
+            bundle["extraArgs"] = extra
+    except Exception:
+        return {"args": None, "env": {}, "logPath": "",
+                "supports": {}, "worker": bin_name}
+    return bundle
+
+
+async def _bridge_cancel(token, event: asyncio.Event) -> None:
+    """Carry a run's stop signal onto this worker's event loop.
+
+    The request arrives on the API thread; the worker is awaited on an
+    executor thread with its own loop. Polling is the honest way across
+    that boundary — 100ms is far below any human's sense of "it did not
+    stop", and the wait happens off-loop so it blocks nothing.
+    """
+    while not event.is_set():
+        if await asyncio.to_thread(token.wait, 0.1):
+            event.set()
+            return
+
+
+async def _run_governed(bin_name: str, args: list[str], cwd: str,
+                        timeout_ms: int | None, governance: dict,
+                        action_events: list[dict], cancel_token=None,
+                        argv_prefix: list[str] | None = None):
+    """Run the worker while draining its governance action log.
+
+    The drain proves observation DURING the run (250ms granularity);
+    enforcement itself happens in-runtime via the staged plugin/hooks,
+    never here. Memory stays bounded: at most 500 events are kept, the
+    full log remains on disk as evidence.
+
+    A cancellation token, when the run has one, becomes the asyncio
+    event run_file signals the worker's process group on — so STOP
+    terminates the worker and everything it forked, not just the flag.
+    """
+    log_path = governance.get("logPath") or ""
+    extra = governance.get("extraArgs") or []
+    # Runtime flags (claude --add-dir/--settings) slot before the
+    # positional task text, which is always last in our invocations.
+    full_args = [*extra, *args] if extra else list(args)
+    env = dict(governance.get("env") or {}) or None
+    kwargs: dict = {}
+    if env:
+        # env travels only when governance staged it: existing run_agent
+        # stubs (bin, args, cwd, timeout) keep working untouched.
+        kwargs["env"] = env
+    if argv_prefix:
+        kwargs["argv_prefix"] = list(argv_prefix)
+    cancel_event: asyncio.Event | None = None
+    bridge = None
+    if cancel_token is not None:
+        cancel_event = asyncio.Event()
+        if cancel_token.cancelled:
+            cancel_event.set()          # STOP already pressed: never launch
+        else:
+            bridge = asyncio.ensure_future(
+                _bridge_cancel(cancel_token, cancel_event))
+        kwargs["cancel"] = cancel_event
+    run_task = asyncio.ensure_future(
+        run_agent(bin_name, full_args, cwd, timeout_ms, **kwargs))
+    seen = 0
+    try:
+        while not run_task.done():
+            await asyncio.sleep(0.25)
+            if log_path and len(action_events) < 500:
+                fresh, seen = _drain_log(log_path, seen, len(action_events))
+                action_events.extend(fresh)
+        # Final drain: actions logged between the last poll and exit.
+        if log_path and len(action_events) < 500:
+            fresh, _ = _drain_log(log_path, seen, len(action_events))
+            action_events.extend(fresh)
+        return await run_task
+    finally:
+        if bridge is not None:
+            bridge.cancel()
+
+
+def _governed_summary(governance: dict, action_events: list[dict],
+                       node: dict, exit_code: int | None,
+                       include_events: bool = False) -> dict | None:
+    """Bounded governance record for the invocation output. Denied
+    entries carry tool/target/command/reason/sequence for park reasons
+    and correction context; the full log stays on disk (logPath) as
+    evidence next to the audit trail."""
+    log_path = governance.get("logPath") or ""
+    if not log_path and not action_events:
+        return None
+    if log_path and not action_events:
+        # No events observed: governance was staged but the worker
+        # performed no mediated actions (or the runtime ignored the
+        # wiring — reported, never assumed).
+        return {"worker": node.get("name"), "governed": False,
+                "allowed": 0, "denied": [],
+                "detail": ("governance staged but no worker actions "
+                           "observed"),
+                "logPath": log_path,
+                "supports": dict(governance.get("supports") or {})}
+    denied = []
+    for event in action_events[:500]:
+        if not isinstance(event, dict):
+            continue
+        if event.get("decision") != "DENY":
+            continue
+        denied.append({
+            "sequence": event.get("sequence"),
+            "tool": str(event.get("tool") or "")[:64],
+            "actionType": str(event.get("actionType") or "")[:32],
+            "target": str(event.get("target") or "")[:500],
+            "command": str(event.get("command") or "")[:500],
+            "reason": str(event.get("reason") or "")[:200],
+            "destructive": bool(event.get("destructive")),
+        })
+    allowed = sum(1 for e in action_events
+                  if isinstance(e, dict) and e.get("decision") == "ALLOW")
+    summary: dict = {"worker": node.get("name"), "governed": True,
+                       "allowed": allowed, "denied": denied,
+                       "stoppedByGovernance":
+                       exit_code == _SELF_KILL_CODE,
+                       "logPath": log_path,
+                       "supports": dict(governance.get("supports") or {})}
+    if include_events:
+        # Bounded ride-along for the event bus (first 100); the file
+        # log stays complete on disk as evidence.
+        summary["events"] = [e for e in action_events[:100]
+                             if isinstance(e, dict)]
+    return summary
+
+
+def _drain_log(log_path: str, already: int,
+               kept: int) -> tuple[list[dict], int]:
+    """Lines appended since `already`; memory capped at 500 events
+    (the file on disk stays complete as evidence)."""
+    import json as _json
+
+    try:
+        with open(log_path, encoding="utf-8") as fh:
+            lines = [line for line in fh.read().splitlines()
+                     if line.strip()]
+    except OSError:
+        return [], already
+    fresh: list[dict] = []
+    for line in lines[already:]:
+        try:
+            record = _json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            fresh.append(record)
+    room = max(0, 500 - kept)
+    return fresh[:room], len(lines)
 
 
 async def agent_delegate_run(inv: dict) -> dict:
@@ -212,6 +474,33 @@ async def agent_delegate_run(inv: dict) -> dict:
     model = _s(inv["input"].get("model")).strip() or None
     brief = with_context(task, _s(inv["input"].get("context")))
 
+    # Optional task contract: deterministic scope boundaries for the run.
+    # Validated BEFORE anything spawns; malformed scope is a refusal, and
+    # the accepted scope travels in the output so evidence shows what was
+    # enforced. Scope never widens an approval: it is part of the approved
+    # input fingerprint via the manifest's scopePaths field.
+    from ..fabric.supervision import (
+        check_scope_paths,
+        delta_since,
+        hash_paths,
+        parse_porcelain_status,
+        snapshot_worktree,
+        validate_scope_paths,
+    )
+
+    scope_raw = inv["input"].get("scopePaths")
+    scope_paths: list[str] = []
+    if scope_raw is not None:
+        scope_ok, scope_paths, scope_reason = validate_scope_paths(scope_raw)
+        if not scope_ok:
+            return _no(f"The task contract was refused: {scope_reason} Nothing has run.")
+
+    # Snapshot the tree BEFORE spawning so multi-leg workflows do not bill
+    # earlier legs' uncommitted work to this run's scope contract.
+    scope_snapshot = None
+    if scope_paths:
+        scope_snapshot = await snapshot_worktree(cwd)
+
     node = inv.get("node")
     if not node:
         return _no("No coding-agent node was resolved for this call, so nothing was run.")
@@ -220,23 +509,215 @@ async def agent_delegate_run(inv: dict) -> dict:
         return _no(f"{node['name']} has no executable recorded in the catalogue, so it cannot be run.")
     if not resolve_agent_binary(bin_name).ok:
         return _no(f"{node['name']} is not on the coding-agent allow-list, so it was not run.")
-    spec = AGENT_INVOCATIONS.get(bin_name)
+    spec = agent_delegate_invocation(node)
     if not spec:
         return _no(
             f"{node['name']} is connected, but AURA has no verified non-interactive invocation for it yet, "
             f"so nothing was run. Verified today: {', '.join(AGENT_INVOCATIONS)}.")
 
     args = spec["args"](brief, cwd, model)
+
+    # Network governance. The task's policy is AURA-owned and validated
+    # here; the boundary is established and PROVEN before anything is
+    # launched, and a policy this host cannot enforce refuses the launch
+    # rather than running the worker under a claim that is not true.
+    from ..governance import network as netgov
+
     try:
-        res = await run_agent(bin_name, args, cwd, inv["context"].get("timeoutMs"))
+        net_policy = netgov.NetworkPolicy.parse(inv["input"].get("network"))
+    except ValueError as exc:
+        return _no(f"The network policy was refused: {exc} Nothing has run.")
+    try:
+        from ..config import aura_home
+
+        net = netgov.establish(net_policy, str(aura_home()))
+    except Exception as exc:  # noqa: BLE001 — a broken boundary is a refusal
+        return _no(f"Network governance could not be established: {exc} "
+                   "Nothing has run.")
+    if not net.ok:
+        return {
+            "ok": False,
+            "detail": (f"{node['name']} was not run: {net.detail}"),
+            "output": {"nodeId": node["id"], "agent": node["name"],
+                       "network": net.to_dict(), "exitCode": None,
+                       "stdout": ""},
+        }
+    # Real-time action governance: per-invocation, AURA-authored runtime
+    # enforcement compiled from the task contract (opencode permission
+    # config + tool.execute.before plugin; claude directory confinement
+    # + PreToolUse hook). Denials happen INSIDE the worker runtime
+    # before the action executes — never reconstructed from stdout.
+    governance = _stage_governance(
+        inv, bin_name, cwd, task, scope_paths)
+    if governance.get("args") is not None:
+        args = governance["args"]
+    action_events: list[dict] = []
+    # The run's stop signal, when it has one. A token already cancelled
+    # means the worker is never launched at all.
+    cancel_token = inv["context"].get("cancelToken")
+    if cancel_token is not None and getattr(cancel_token, "cancelled", False):
+        net.close()
+        return {
+            "ok": False,
+            "detail": (f"{node['name']} was not started: the run was "
+                       "cancelled before it could be dispatched."),
+            "output": {"nodeId": node["id"], "agent": node["name"],
+                       "cancelled": True, "exitCode": None, "stdout": ""},
+        }
+    try:
+        res = await _run_governed(
+            bin_name, args, cwd, inv["context"].get("timeoutMs"),
+            governance, action_events, cancel_token=cancel_token,
+            argv_prefix=net.argv_prefix)
     except Exception as e:  # noqa: BLE001 — TS catches all too
+        net.close()
         return _no(f"{node['name']} could not be run: {e}")
+    # The egress door belongs to THIS invocation. Read what it decided
+    # while it is still open, then close it — a gateway that outlived
+    # its worker would be a standing hole in the next task's boundary.
+    network_record = net.to_dict()
+    network_decisions = net.decisions()
+    net.close()
 
     output = {
         "stdout": res.out, "exitCode": res.code, "nodeId": node["id"],
         "agent": node["name"], "args": args,
         "timedOut": bool(res.timedOut), "signal": res.signal,
+        "network": network_record,
     }
+    if network_decisions:
+        # Every destination the worker asked for, and what AURA decided.
+        # Evidence of the same kind as the governed file actions: what
+        # was attempted, and what was permitted.
+        output["networkDecisions"] = network_decisions[:200]
+        action_events.extend({
+            "taskId": str((inv.get("context") or {}).get("taskId") or ""),
+            "workerNodeId": node["id"],
+            "invocationId": str(inv.get("id") or ""),
+            "attemptId": str((inv.get("context") or {}).get("attempt") or "1"),
+            "sequence": index + 1,
+            "at": d.get("at"), "actionType": "NETWORK",
+            "tool": d.get("tool") or "proxy",
+            "target": f"{d.get('host')}:{d.get('port')}",
+            "command": "", "decision": d.get("decision"),
+            "reason": d.get("reason"), "destructive": False,
+        } for index, d in enumerate(network_decisions[:200]))
+    # Cancellation is a terminal answer, not a failure to be corrected.
+    # It is decided from the TOKEN, never from the worker's exit code: a
+    # worker that happened to exit 0 as the signal arrived was still
+    # stopped, and one that died on its own was not cancelled.
+    if cancel_token is not None and cancel_token.cancelled:
+        return {
+            "ok": False,
+            "detail": (f"{node['name']} was stopped: the run was cancelled "
+                       "while it was working. Its partial changes are "
+                       "preserved as evidence and nothing was reverted."),
+            "output": {**output, "cancelled": True},
+        }
+    governed = _governed_summary(
+        governance, action_events, node, res.code,
+        include_events=True)
+    if governed:
+        output["governedActions"] = governed
+    denied = list((governed or {}).get("denied") or [])
+    # Only HARD violations park the run: soft denials (refused recon
+    # the worker adapted around) are logged evidence, and the run's
+    # fate stays with post-hoc verification. A hard denial stopped the
+    # action AND (via worker self-termination) the worker.
+    hard = [d for d in denied if d.get("destructive")]
+    if scope_paths:
+        output["scopePaths"] = list(scope_paths)
+    if hard or res.code == _SELF_KILL_CODE:
+        # Real-time denial happened BEFORE execution: the forbidden
+        # action never ran. This is a deviation by construction — park
+        # for a decision through the existing correction loop, with the
+        # denied actions named as evidence.
+        targets = [str(d.get("target") or d.get("command") or d.get("tool"))
+                   for d in hard]
+        targets = [t for t in targets if t][:5]
+        why = ("the worker was stopped by AURA governance after a hard "
+               "boundary violation" if res.code == _SELF_KILL_CODE else
+               "AURA denied hard-boundary worker action(s) before execution")
+        output["scopeCheck"] = {
+            "supported": True,
+            "allowed": False,
+            "changed": [],
+            "outside": [d.get("target", "") for d in hard
+                        if d.get("target")],
+            "detail": (f"{why}: "
+                       + "; ".join(
+                           f"[{d.get('tool')}] {d.get('target') or d.get('command')}"
+                           f" — {d.get('reason')}" for d in hard[:5])),
+        }
+        return {
+            "ok": False,
+            "detail": (
+                f"{node['name']} was governed in real time and parked: "
+                f"{why} ({', '.join(targets) or 'see governedActions'}). "
+                "Nothing denied was executed; the run is parked for a "
+                "decision through the correction loop."
+            ),
+            "output": {**output, "scopeDeviation": True},
+        }
+    if res.code == 0 and scope_paths:
+        # Post-execution scope verification over the DELTA since task
+        # start: only files this run dirtied are judged. A deviation stops
+        # here — parked for a decision, never silently accepted, never
+        # reverted.
+        from ..exec_ import git as run_git
+
+        delta: list[str] | None = None
+        delta_note = ""
+        if scope_snapshot is None:
+            delta_note = "Scope could not be evidenced here: not a git working tree."
+        else:
+            try:
+                post = await run_git(
+                    ["status", "--porcelain=v1", "-z",
+                     "--untracked-files=all"], cwd, None)
+            except Exception:  # noqa: BLE001
+                post = None
+            if post is None or post.code != 0:
+                delta_note = "Scope could not be evidenced here: git status failed after the run."
+            else:
+                after_changed = parse_porcelain_status(post.out)
+                after_hashes = await hash_paths(cwd, after_changed)
+                worker_files = delta_since(scope_snapshot, after_changed,
+                                           after_hashes)
+                check = check_scope_paths(worker_files, scope_paths)
+                if scope_snapshot.capped:
+                    delta_note = ("Tree was dirtier than the snapshot cap at "
+                                  "task start; pre-existing paths grandfathered.")
+                output["scopeCheck"] = {
+                    "supported": True,
+                    "allowed": check.allowed,
+                    "changed": worker_files,
+                    "outside": check.outside,
+                    "detail": ((delta_note + " " if delta_note else "")
+                               + check.detail),
+                }
+                if not check.allowed:
+                    return {
+                        "ok": False,
+                        "detail": (
+                            f"{node['name']} finished, but {check.detail} "
+                            "The run is parked for a decision: nothing was "
+                            "reverted, and the changes are evidence, not an "
+                            "accepted result."
+                        ),
+                        "output": {**output, "scopeDeviation": True},
+                    }
+                delta = worker_files
+        if delta is None:
+            # No git evidence available: record the limitation honestly
+            # instead of claiming verification.
+            output["scopeCheck"] = {
+                "supported": False,
+                "allowed": True,
+                "changed": [],
+                "outside": [],
+                "detail": delta_note or "Scope could not be evidenced here.",
+            }
     if res.code == 0:
         return _ok(f"{node['name']} completed the task. Exit code 0.", output)
     why = (f"{node['name']} ran out of time and was stopped. Its changes, if any, are partial."
@@ -246,10 +727,75 @@ async def agent_delegate_run(inv: dict) -> dict:
     return {"ok": False, "detail": f"{why} {res.out[:400]}".strip(), "output": output}
 
 
-async def agent_delegate_verify(_inv: dict, result: dict) -> dict:
-    exit_code = (result.get("output") or {}).get("exitCode")
-    return (_pass("exit-code", "The agent exited 0.") if exit_code == 0
-            else _fail("exit-code", f"The agent exited {exit_code if exit_code is not None else 'unknown'}."))
+async def agent_delegate_verify(inv: dict, result: dict) -> dict:
+    """Confirm the task, which is not the same as the worker surviving.
+
+    Three questions, in order: did anything escape the scope, did the
+    worker exit cleanly, and — when the task's own contract requires an
+    artifact — did the required work actually happen. The last one is
+    what stops a worker that was DENIED its meaningful actions, exited 0
+    and changed nothing from being recorded as verified: "every file it
+    changed lies inside the declared scope" is vacuously true of a run
+    that changed no files, and a vacuous truth must not become evidence
+    that the objective was met.
+    """
+    output = result.get("output") or {}
+    if output.get("scopeDeviation"):
+        outside = ((output.get("scopeCheck") or {}).get("outside")) or []
+        shown = ", ".join(outside[:5])
+        return _fail("read-back",
+                     f"Worker files fell outside the declared scope: {shown}."
+                     " Parked for a decision; nothing was reverted.")
+    exit_code = output.get("exitCode")
+    if exit_code != 0:
+        return _fail("exit-code",
+                     f"The agent exited {exit_code if exit_code is not None else 'unknown'}.")
+    verdict = _required_change_verdict(inv, output)
+    return verdict if verdict is not None else _pass(
+        "exit-code", "The agent exited 0.")
+
+
+def _required_change_verdict(inv: dict, output: dict) -> dict | None:
+    """A failure when this task had to produce an artifact and did not.
+
+    Returns None when the question does not arise: the task does not
+    require a change (review, investigation, conditional remediation), or
+    AURA did not MEASURE the worktree and so cannot honestly say whether
+    work happened. Asserting only over a measured delta is the point —
+    silence about an unmeasured tree is not evidence of success, but nor
+    is it evidence of failure, so the existing exit-code verdict stands
+    and the run's scope contract is what changes that.
+    """
+    if not (inv.get("input") or {}).get("expectChange"):
+        return None
+    scope_check = output.get("scopeCheck") or {}
+    if not scope_check.get("supported"):
+        return None                      # nothing was measured; claim nothing
+    if list(scope_check.get("changed") or []):
+        return None                      # the artifact exists; task stands
+    worker = str(output.get("agent") or "The worker")
+    denied = list(((output.get("governedActions") or {}).get("denied")) or [])
+    if denied:
+        # Case 3: prevented. The denial itself was correct and stays —
+        # nothing forbidden ran, nothing is reverted — but the task it
+        # blocked did not happen, and the record has to say so.
+        shown = "; ".join(
+            f"[{d.get('tool')}] {d.get('target') or d.get('command')}"
+            for d in denied[:3] if (d.get('target') or d.get('command')))
+        where = shown or "see governedActions"
+        return _fail("read-back",
+                     f"{worker} exited 0 but changed nothing inside the "
+                     f"declared scope, and AURA denied {len(denied)} of its "
+                     f"action(s) before they ran ({where}). The requested "
+                     "work did not happen: the worker was prevented from "
+                     "carrying it out. Nothing denied was executed and "
+                     "nothing was reverted.")
+    # Case 2: exited successfully, performed no meaningful work.
+    return _fail("read-back",
+                 f"{worker} exited 0 but changed no file inside the "
+                 "declared scope, so the change this task asked for was "
+                 "never made. Reported as unverified rather than "
+                 "complete.")
 
 
 # ── git ──────────────────────────────────────────────────────────────────────

@@ -73,6 +73,46 @@ class ConnectedNodeStore:
         self.save()
         return record
 
+    def register_worker(self, node_id: str, name: str,
+                        capabilities: list[str], *, binary: str,
+                        version: str = "",
+                        readiness: dict | None = None) -> dict:
+        """Register a WORKER, with the runtime binding execution needs.
+
+        Separate from :meth:`register` on purpose. ``register`` is the
+        wire-reachable configuration seam and must never be able to
+        state a binary or a readiness proof — otherwise a client could
+        assert that a runtime is drivable and connected without AURA
+        ever having driven it. Only the readiness handshake calls this,
+        and only with a proof it produced itself.
+
+        A record whose proof did not succeed is still written: the
+        registry then carries the honest reason a worker is not
+        connected, instead of silently forgetting the attempt.
+        """
+        record = self.register(node_id, name, capabilities,
+                               internal=False, version=version)
+        nid = record["id"]
+        bin_name = str(binary or "").strip()
+        if bin_name and ("/" in bin_name or "\\" in bin_name
+                         or ".." in bin_name):
+            raise ValueError("a worker binary must be named, not a path")
+        proved = bool((readiness or {}).get("proved"))
+        record = {
+            **record,
+            "worker": True,
+            # The runtime binding is what makes dispatch possible at
+            # all, so it is recorded ONLY alongside a successful proof.
+            **({"binary": bin_name} if (bin_name and proved) else {}),
+            **({"readiness": dict(readiness)} if readiness else {}),
+        }
+        self._items[self._items.index(self.get(nid))] = record
+        self.save()
+        return record
+
+    def workers(self) -> list[dict]:
+        return [n for n in self._items if n.get("worker") is True]
+
     def remove(self, node_id: str) -> bool:
         node = self.get(node_id)
         if not node:

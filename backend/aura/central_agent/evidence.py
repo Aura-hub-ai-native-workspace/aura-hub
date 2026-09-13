@@ -22,6 +22,7 @@ class EvidenceCollector:
         outcomes: list[TaskOutcome],
         summary: str,
         now: str,
+        request_ids: list[str] | None = None,
     ) -> EvidenceBundle:
         wanted: set[str] = set()
         approvals: set[str] = set()
@@ -41,4 +42,5 @@ class EvidenceCollector:
             approvalIds=sorted(approvals),
             summary=summary,
             createdAt=now,
+            requestIds=[r for r in (request_ids or []) if r],
         )

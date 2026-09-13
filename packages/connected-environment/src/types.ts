@@ -153,6 +153,14 @@ export type NodeStatus =
    * never be mistaken for "installed".
    */
   | 'installing'
+  /**
+   * A governed uninstall is running right now.
+   *
+   * Transient like `installing`: never persisted, never a resting state.
+   * Only a real post-uninstall probe (absence) moves a node on to
+   * `not-installed`, so this can never be mistaken for "removed".
+   */
+  | 'uninstalling'
   /** Present but needs credentials the Hub does not hold. */
   | 'needs-auth'
   /** Catalogued, but no connector has been built for it yet. */
@@ -167,6 +175,20 @@ export interface NodeHealth {
   /** Probe round-trip in ms, when measured. */
   latencyMs?: number;
   checkedAt: string;
+  /**
+   * Evidence from the last probe. `status` keeps the distinctions
+   * `NodeStatus` collapses (a timeout is not an absence), and the remaining
+   * fields say *what* was measured — the file that answered and the package
+   * that installed it — so the UI can show provenance instead of asserting
+   * a version from nowhere.
+   */
+  probeStatus?: ProbeStatus;
+  executable?: string;
+  origin?: string;
+  package?: string;
+  manager?: string;
+  packageVersion?: string;
+  versionConflict?: boolean;
 }
 
 export type ActivityState = 'queued' | 'running' | 'succeeded' | 'blocked' | 'idle';
@@ -228,12 +250,43 @@ export interface EnvironmentNode {
    2. Transports — the only place side effects enter the domain
    ══════════════════════════════════════════════════════════════════ */
 
+/**
+ * The distinct conclusions a probe can reach. `present` alone cannot carry
+ * them: a tool that timed out and a tool that is genuinely absent are both
+ * "not present", and only one of them should be reported as not installed.
+ */
+export type ProbeStatus =
+  | 'verified'
+  | 'unverified'
+  | 'not-found'
+  | 'failed'
+  | 'timeout'
+  | 'blocked'
+  /** The file changed between being vetted and being run; nothing ran. */
+  | 'tampered'
+  | 'internal'
+  | 'needs-auth'
+  | 'unsupported';
+
 export interface ProbeResult {
   present: boolean;
   version?: string;
   latencyMs?: number;
   /** Why the probe concluded what it concluded. Shown verbatim to users. */
   detail: string;
+  /** Present on results from the Python backend; absent from older fakes. */
+  status?: ProbeStatus;
+  /** The file that was actually run, so a PATH surprise is visible. */
+  executable?: string;
+  exitCode?: number;
+  /** Which package installed that file, when one can be named. */
+  origin?: string;
+  package?: string;
+  manager?: string;
+  /** What the package manager claims, kept beside what the tool reported. */
+  packageVersion?: string;
+  /** The two disagree. Shown rather than silently resolved. */
+  versionConflict?: boolean;
 }
 
 /**

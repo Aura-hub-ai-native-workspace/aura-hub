@@ -194,6 +194,7 @@ const LOCAL: CapabilityDescriptor[] = [
       // Intelligence, and the two would drift. An agent that receives it
       // starts oriented instead of re-scanning the repository.
       f('context', 'string', false, 'AURA context contract to orient the agent, composed by the caller'),
+      f('scopePaths', 'string[]', false, 'Optional task-contract scope: repo-relative paths the worker may change. Changed files outside the scope park the run for a decision instead of reporting success.'),
       // `nodeId` is deliberately NOT an input any more. Which node runs an
       // action is routing, not an argument, and it now lives on
       // `InvocationContext.nodeId` (§22.2). The transport still accepts it
@@ -266,6 +267,22 @@ const LOCAL: CapabilityDescriptor[] = [
      * irreversible floor here would be dishonest about what an install is,
      * and would devalue the flag where it genuinely applies.
      */
+    irreversible: false,
+  }),
+
+  cap({
+    id: 'system.uninstall', name: 'Remove a tool', category: 'system', surface: 'local-process',
+    description:
+      'Removes a catalogued tool from this machine, using the package manager that tool '
+      + 'declares. The caller names a NODE, never a command: the package and arguments come from the '
+      + 'catalogue, so this can never be turned into "run anything". Removals that need administrator '
+      + 'rights are not performed — AURA hands you the exact verified command instead.',
+    risk: 'high', permissions: ['process.execute', 'system.modify'],
+    input: [
+      f('nodeId', 'string', true, 'Catalogue id of the node to remove, e.g. "pnpm"'),
+    ],
+    output: 'UninstallResult — uninstallOutcome, privilege, command, probe',
+    verify: 'read-back',
     irreversible: false,
   }),
 

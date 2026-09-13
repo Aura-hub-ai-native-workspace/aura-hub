@@ -172,6 +172,33 @@ class FabricHost:
 # ── the fabric ───────────────────────────────────────────────────────────────
 
 
+def _named_refusal(named: dict | None, matches_action: bool) -> str:
+    """Why a named approval could not be spent, said precisely.
+
+    The user-facing sentence is frozen by the TS oracle and collapses
+    every cause into "the action or its arguments changed". Those are
+    different problems with different fixes, and the collapse hid a real
+    one: a grant recorded on a different copy of the record read exactly
+    like a changed action. This is the honest version, kept for
+    diagnosis and for any caller that is not parity-bound.
+    """
+    if named is None:
+        return "the authorization it named no longer exists."
+    if not matches_action:
+        return ("the authorization on record is for a different action "
+                "than the one requested; the request stands.")
+    state = named.get("state")
+    if named.get("consumedAt"):
+        return ("the authorization it named was already spent; approvals "
+                "are single-use.")
+    if state == "denied":
+        return "the authorization it named was declined."
+    if state != "granted":
+        return (f"the authorization it named is still {state or 'pending'}; "
+                "it has not been decided yet.")
+    return "the authorization it named cannot be spent."
+
+
 class CapabilityFabric:
     def __init__(
         self,
@@ -233,6 +260,33 @@ class CapabilityFabric:
             else:
                 key = f"inv:{items[0].get('invocationId')}"
             self._approvals_by_key[key] = r
+
+    def use_ledger(self, ledger) -> None:
+        """Adopt the canonical ledger — ONE record object per approval.
+
+        The fabric and the ledger each restore approvals from the store,
+        and each `load()` parses fresh dicts. In a single process that is
+        invisible, because a request the fabric creates is handed to the
+        ledger by reference. Across a RESTART it is not: the two maps end
+        up holding different objects for the same request, so a human
+        grant recorded on the ledger's copy leaves the fabric's copy
+        pending — and the fabric is what decides whether a call is
+        authorised. The approval is then refused as if the action had
+        changed, which is both wrong and misleading.
+
+        Adopting means: the ledger's object wins wherever both know a
+        request, and anything only the fabric knows is registered into
+        the ledger. After this call there is one object, so one decision.
+        """
+        self._ledger = ledger
+        if ledger is None:
+            return
+        for key, request in list(self._approvals_by_key.items()):
+            shared = ledger.open_for_key(key)
+            if shared is not None:
+                self._approvals_by_key[key] = shared
+            else:
+                ledger.register(key, request)
 
     def attach_audit_store(self, load: Callable[[], list], append: Callable[[dict], None]) -> None:
         """EVERYTHING restores for audit — forgetting would be wrong, not cautious."""
@@ -453,12 +507,15 @@ class CapabilityFabric:
 
             if context.get("approvalId"):
                 named = self.approval_by_id(context["approvalId"])
+                matches_action = bool(named) and any(
+                    i.get("capabilityId") == capability_id
+                    and i.get("fingerprint") == fingerprint
+                    for i in (named or {}).get("items") or [])
                 usable = bool(
                     named
                     and named.get("state") == "granted"
                     and not named.get("consumedAt")
-                    and any(i.get("capabilityId") == capability_id and i.get("fingerprint") == fingerprint
-                            for i in named.get("items") or [])
+                    and matches_action
                 )
                 if usable and self.consume_approval(named["id"]):
                     self._emit({"type": "approval.granted", "at": self._clock_iso(),
@@ -469,6 +526,14 @@ class CapabilityFabric:
                         "type": "invocation.denied",
                         "at": self._clock_iso(),
                         "invocationId": invocation["id"],
+                        # Wording is pinned by the frozen TS oracle
+                        # (tests/fabric/test_fabric_diff.py), so it stays
+                        # verbatim even though it collapses "never
+                        # granted", "already spent" and "arguments
+                        # changed" into one sentence. `_named_refusal`
+                        # keeps the distinction those three deserve;
+                        # surfacing it would change the contract, which
+                        # is not a Phase K decision to make.
                         "reason": ("The approval named for this call does not authorize it — the action or its arguments changed since it was granted."
                                    if named else
                                    "The approval named for this call no longer exists."),
@@ -671,6 +736,8 @@ class CapabilityFabric:
             "projectId": invocation["context"].get("projectId"),
             **({"missionId": invocation["context"]["missionId"]} if invocation["context"].get("missionId") else {}),
             **({"taskId": invocation["context"]["taskId"]} if invocation["context"].get("taskId") else {}),
+            **({"sessionId": invocation["context"]["sessionId"]} if invocation["context"].get("sessionId") else {}),
+            **({"requestId": invocation["context"]["requestId"]} if invocation["context"].get("requestId") else {}),
             **({"workflowId": invocation["context"]["workflowId"]} if invocation["context"].get("workflowId") else {}),
             **({"runId": invocation["context"]["runId"]} if invocation["context"].get("runId") else {}),
             **({"workflowNodeId": invocation["context"]["workflowNodeId"]} if invocation["context"].get("workflowNodeId") else {}),

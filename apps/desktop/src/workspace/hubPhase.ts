@@ -326,6 +326,39 @@ export const ACTIVITY_LABEL: Record<NodeActivityPhase, string> = {
   blocked: 'Blocked',
 };
 
+/* ══════════════════════════════════════════════════════════════════
+   Readiness (measured counts for the placed nodes only)
+   ══════════════════════════════════════════════════════════════════ */
+
+export interface HubReadiness {
+  connected: number;
+  available: number;
+  missing: number;
+  unscanned: number;
+}
+
+/** Counts real probe outcomes — never catalogue size, never guesses. */
+export function readinessOf(nodes: EnvironmentNode[]): HubReadiness {
+  const readiness: HubReadiness = { connected: 0, available: 0, missing: 0, unscanned: 0 };
+  for (const node of nodes) {
+    switch (node.health.status) {
+      case 'connected':
+        readiness.connected += 1;
+        break;
+      case 'available':
+      case 'needs-auth':
+        readiness.available += 1;
+        break;
+      case 'not-installed':
+        readiness.missing += 1;
+        break;
+      default:
+        readiness.unscanned += 1;
+    }
+  }
+  return readiness;
+}
+
 /**
  * Which placed nodes a mission needs but cannot use. Drives the Hub's
  * "Docker is required but isn't installed" line, using the Fabric's gap

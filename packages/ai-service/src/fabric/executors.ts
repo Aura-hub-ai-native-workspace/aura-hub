@@ -17,13 +17,18 @@
  */
 
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
-import { git, parseCommand, resolveAgentBinary, runAgent, runInstaller, safeShellWithCode } from '../exec/process';
-import { isPlan, planInstall } from '../exec/install';
+import { git, parseCommand, resolveAgentBinary, runAgent, safeShellWithCode } from '../exec/process';
+import {
+  checkScopePaths,
+  deltaSince,
+  hashPaths,
+  parsePorcelainStatus,
+  snapshotWorktree,
+  validateScopePaths,
+} from './supervision';
 import { catalogEntry } from '@aura/connected-environment';
-import { probeNode } from '../environment';
 import type { WorkspaceManager } from '../workspace';
 
 const MAX_READ_BYTES = 512 * 1024;
@@ -165,6 +170,21 @@ const AGENT_INVOCATIONS: Record<string, AgentInvocation> = {
     args: (task, cwd, model) => ['run', '--dir', cwd, ...(model ? ['--model', model] : []), task],
     verifiedAgainst: 'OpenCode 1.18.16',
   },
+  // `claude -p` is the documented non-interactive mode: it prints the
+  // result and exits. Verified live (exact-output reply, exit 0; file
+  // creation with --allowedTools Edit Write, exit 0). Least-privilege:
+  // no Bash, no bypass flags.
+  claude: {
+    args: (_task, _cwd, _model) => ['-p', _task, '--allowedTools', 'Edit Write'],
+    verifiedAgainst: 'Claude Code (print mode)',
+  },
+  // `kilo run --dir` mirrors opencode (same engine lineage). Verified live
+  // (exact-output reply AND in-repo file creation, exit 0). --dir is
+  // LOAD-BEARING: bare `kilo run` escapes cwd — never drop it.
+  kilo: {
+    args: (_task, cwd, _model) => ['run', '--dir', cwd, _task],
+    verifiedAgainst: 'kilo 7.5.14 (run --dir)',
+  },
 };
 
 /**
@@ -215,6 +235,17 @@ const agentDelegate: Executor = {
     const cwd = cwdOf(inv);
     const task = s(inv.input.task).trim();
     if (!task) return no('No task was given for the agent to carry out.');
+    // Optional task contract: deterministic scope boundaries. Validated
+    // BEFORE anything spawns; malformed scope is a refusal, and the
+    // accepted scope travels in the output so evidence shows what held.
+    const scopeCheck = validateScopePaths((inv.input as { scopePaths?: unknown }).scopePaths);
+    if (!scopeCheck.ok) {
+      return no(`The task contract was refused: ${scopeCheck.reason} Nothing has run.`);
+    }
+    const scopePaths = scopeCheck.paths;
+    // Snapshot the tree BEFORE spawning so multi-leg workflows do not bill
+    // earlier legs' uncommitted work to this run's scope contract.
+    const scopeSnapshot = scopePaths.length > 0 ? await snapshotWorktree(cwd) : null;
     const model = s(inv.input.model).trim() || undefined;
     // Context is CONSUMED, never composed here. The caller supplies an
     // already-rendered AURA context contract; this executor only decides
@@ -261,7 +292,7 @@ const agentDelegate: Executor = {
 
     // `nodeId` travels with the result so the work is attributable to the
     // agent that did it rather than to "some coding agent".
-    const output = {
+    const output: Record<string, unknown> = {
       stdout: res.out,
       exitCode: res.code,
       nodeId: target.nodeId,
@@ -270,6 +301,51 @@ const agentDelegate: Executor = {
       timedOut: res.timedOut ?? false,
       signal: res.signal,
     };
+    if (scopePaths.length > 0) output.scopePaths = [...scopePaths];
+    if (res.code === 0 && scopePaths.length > 0) {
+      // Post-execution scope verification over the DELTA since task start:
+      // only files this run dirtied are judged. A deviation stops here —
+      // parked for a decision, never silently accepted, never reverted.
+      if (scopeSnapshot === null) {
+        output.scopeCheck = { supported: false, allowed: true, changed: [], outside: [], detail: 'Scope could not be evidenced here: not a git working tree.' };
+      } else {
+        let deltaNote = '';
+        let delta: string[] | null = null;
+        try {
+          const status = await git(['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd, timeoutMs: 30_000 });
+          if (status.code !== 0) {
+            deltaNote = 'Scope could not be evidenced here: git status failed after the run.';
+          } else {
+            const afterChanged = parsePorcelainStatus(status.out);
+            const afterHashes = await hashPaths(cwd, afterChanged);
+            delta = deltaSince(scopeSnapshot, afterChanged, afterHashes);
+          }
+        } catch {
+          deltaNote = 'Scope could not be evidenced here: git status failed after the run.';
+        }
+        if (delta === null) {
+          output.scopeCheck = { supported: false, allowed: true, changed: [], outside: [], detail: deltaNote || 'Scope could not be evidenced here.' };
+        } else {
+          const check = checkScopePaths(delta, scopePaths);
+          if (scopeSnapshot.capped) {
+            deltaNote = 'Tree was dirtier than the snapshot cap at task start; pre-existing paths grandfathered.';
+          }
+          output.scopeCheck = {
+            supported: true, allowed: check.allowed, changed: delta, outside: check.outside,
+            detail: (deltaNote ? `${deltaNote} ` : '') + check.detail,
+          };
+          if (!check.allowed) {
+            return {
+              ok: false,
+              detail:
+                `${target.name} finished, but ${check.detail} `
+                + 'The run is parked for a decision: nothing was reverted, and the changes are evidence, not an accepted result.',
+              output: { ...output, scopeDeviation: true },
+            };
+          }
+        }
+      }
+    }
     if (res.code === 0) return ok(`${target.name} completed the task. Exit code 0.`, output);
     // A run that was cut short is reported as cut short, not as a
     // generic failure — the operator needs to know it may be half-done.
@@ -281,7 +357,12 @@ const agentDelegate: Executor = {
     return { ok: false, detail: `${why} ${res.out.slice(0, 400)}`.trim(), output };
   },
   async verify(_inv, result) {
-    const exit = (result.output as { exitCode?: number } | undefined)?.exitCode;
+    const out = result.output as { exitCode?: number; scopeDeviation?: boolean; scopeCheck?: { outside?: string[] } } | undefined;
+    if (out?.scopeDeviation) {
+      const outside = (out.scopeCheck?.outside ?? []).slice(0, 5).join(', ');
+      return fail('read-back', `Worker files fell outside the declared scope: ${outside}. Parked for a decision; nothing was reverted.`);
+    }
+    const exit = out?.exitCode;
     return exit === 0
       ? pass('exit-code', 'The agent exited 0.')
       : fail('exit-code', `The agent exited ${exit ?? 'unknown'}.`);
@@ -309,14 +390,36 @@ interface InstallResult {
 }
 
 /**
- * Re-probe the node, bypassing the scan cache.
+ * Where the canonical Python Environment backend answers.
  *
- * `refresh: true` is mandatory here. The cached answer was taken before
- * the install and would happily report the tool still missing — or, worse,
- * still present after a failure. Verification must look at the machine as
- * it is now.
+ * Fixed loopback, never caller input — so no SSRF surface: the node id
+ * travels in the JSON body, never in the URL. Approval has already
+ * happened in the Fabric before either executor below runs; this only
+ * executes the trusted plan via the single Python executor.
  */
-const probeAfterInstall = (nodeId: string) => probeNode(nodeId, true);
+const PYTHON_ENV_BASE =
+  process.env.AURA_ENVIRONMENT_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:4320';
+
+async function callPythonEnvironment(
+  path: '/environment/install' | '/environment/uninstall',
+  nodeId: string,
+  timeoutMs?: number,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs ?? 300_000, 330_000));
+  try {
+    const res = await fetch(`${PYTHON_ENV_BASE}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: nodeId }),
+      signal: controller.signal,
+    });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    return { status: res.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const systemInstall: Executor = {
   capabilityId: 'system.install',
@@ -326,112 +429,47 @@ const systemInstall: Executor = {
     if (!nodeId) return no('No node was named, so there is nothing to install.');
 
     // The catalogue is the only source of truth for what may be installed.
-    // An id that is not in it is refused before anything else happens.
+    // An id that is not in it is refused before anything else happens —
+    // and before any network call leaves this process.
     const entry = catalogEntry(nodeId);
     if (!entry) {
       return no(`'${nodeId}' is not a node in AURA's catalogue, so there is nothing to install.`);
     }
 
-    const plan = planInstall(entry);
-
-    // No InstallSpec, or nothing verified for this machine. An honest
-    // "AURA does not know how" — never a guessed package name.
-    if (!isPlan(plan)) {
-      return no(plan.reason);
-    }
-
-    /* ── root tier: AURA executes NOTHING (§25.3) ─────────────────── */
-    if (plan.privilege === 'root') {
-      const result: InstallResult = {
-        installOutcome: 'guided',
-        nodeId,
-        privilege: 'root',
-        requiresUserAction: true,
-        command: plan.command,
-        why: plan.why,
-      };
-      // `ok: false` satisfies the existing Fabric contract; the payload
-      // carries the real answer. Callers branch on `installOutcome`, never
-      // on `ok` — a guided handoff is not a failure (§25.1).
-      return {
-        ok: false,
-        detail:
-          `${entry.name} needs administrator rights to install, so AURA did not run anything. `
-          + `Run this yourself, then re-scan: ${plan.command}`,
-        output: result,
-      };
-    }
-
-    /* ── user tier: governed, bounded, then VERIFIED ──────────────── */
-    let res: Awaited<ReturnType<typeof runInstaller>>;
+    // Approved by the Fabric before reaching here. Execution itself lives
+    // in exactly one place — the Python Environment API — so this never
+    // duplicates the installer, the probe, or their guarantees. Exit 0 is
+    // still only a claim there; only its probe can report `installed`.
+    let status: number;
+    let body: Record<string, unknown>;
     try {
-      // cwd is the user's home rather than a project: installing a global
-      // tool is not project work, and pointing an installer at a project
-      // root invites it to write lockfiles there. `os.homedir()` is the
-      // fallback rather than `/`, because Windows does not set `HOME`.
-      res = await runInstaller(plan.bin, plan.args, {
-        cwd: process.env.HOME || os.homedir(),
-        timeoutMs: inv.context.timeoutMs,
-      });
-    } catch (e) {
-      return no(`${entry.name} could not be installed: ${(e as Error).message}`);
+      const r = await callPythonEnvironment('/environment/install', nodeId, inv.context.timeoutMs);
+      status = r.status;
+      body = r.body;
+    } catch {
+      return no(
+        `The Python Environment API is not answering, so ${entry.name} was not installed. `
+        + 'Start it with `npm run environment:api` and try again.',
+      );
     }
-
-    const base = {
-      nodeId,
-      privilege: 'user' as const,
-      command: plan.command,
-      exitCode: res.code,
-      timedOut: res.timedOut ?? false,
-      stdout: res.out.slice(0, 4000),
+    const outcome = (body as { installOutcome?: string }).installOutcome;
+    if (!outcome) {
+      return no(`${entry.name} was not installed. The environment backend answered ${status} without an install result.`);
+    }
+    if (outcome === 'installed') {
+      return ok(
+        (body as { detail?: string }).detail || `${entry.name} is installed and verified.`,
+        body as unknown as InstallResult,
+      );
+    }
+    // `guided` is an honest handoff, not a failure of this executor — but
+    // the Fabric contract reports non-installed outcomes as not-ok while
+    // the payload carries the real answer (§25.1).
+    return {
+      ok: false,
+      detail: (body as { detail?: string }).detail || `${entry.name} was not installed.`,
+      output: body as unknown as InstallResult,
     };
-
-    if (res.code !== 0) {
-      const why = res.timedOut
-        ? `The installer ran out of time and was stopped.`
-        : res.signal
-          ? `The installer was terminated by ${res.signal}.`
-          : `The installer exited ${res.code}.`;
-      const result: InstallResult = { ...base, installOutcome: 'failed', requiresUserAction: false, why };
-      return { ok: false, detail: `${entry.name} was not installed. ${why} ${res.out.slice(0, 300)}`.trim(), output: result };
-    }
-
-    /**
-     * Exit 0 is a claim. The probe is the evidence.
-     *
-     * An installer can succeed while leaving nothing runnable — wrong
-     * package, a binary outside PATH, a partial write. Reporting that as
-     * installed is exactly the confident-but-wrong failure this codebase
-     * refuses, so a clean exit with no detectable tool is `unverified`.
-     */
-    const probe = await probeAfterInstall(nodeId);
-    if (!probe.present) {
-      const result: InstallResult = {
-        ...base,
-        installOutcome: 'unverified',
-        requiresUserAction: true,
-        why: `The installer finished without an error, but ${entry.name} still cannot be found on this machine.`,
-        probe: { present: false, detail: probe.detail },
-      };
-      return {
-        ok: false,
-        detail:
-          `${entry.name} reported a successful install, but AURA still cannot find it, so it is NOT `
-          + `being reported as installed. ${probe.detail}`,
-        output: result,
-      };
-    }
-
-    const result: InstallResult = {
-      ...base,
-      installOutcome: 'installed',
-      requiresUserAction: false,
-      probe: { present: true, version: probe.version, detail: probe.detail },
-    };
-    return ok(
-      `${entry.name} is installed and verified${probe.version ? ` (${probe.version})` : ''}.`,
-      result,
-    );
   },
 
   /**
@@ -453,6 +491,79 @@ const systemInstall: Executor = {
         return fail('read-back', `The installer exited 0 but a fresh probe still cannot find ${out.nodeId}.`);
       case 'failed':
         return fail('read-back', out.why ?? 'The installer did not succeed.');
+    }
+  },
+};
+
+type UninstallOutcome = 'uninstalled' | 'guided' | 'failed' | 'unverified';
+
+interface UninstallResult {
+  uninstallOutcome: UninstallOutcome;
+  nodeId: string;
+  privilege: 'user' | 'root';
+  requiresUserAction: boolean;
+  command?: string;
+  why?: string;
+  exitCode?: number;
+  timedOut?: boolean;
+  stdout?: string;
+  probe?: { present: boolean; version?: string; detail: string };
+}
+
+const systemUninstall: Executor = {
+  capabilityId: 'system.uninstall',
+
+  async run(inv) {
+    const nodeId = s(inv.input.nodeId).trim();
+    if (!nodeId) return no('No node was named, so there is nothing to uninstall.');
+    const entry = catalogEntry(nodeId);
+    if (!entry) {
+      return no(`'${nodeId}' is not a node in AURA's catalogue, so there is nothing to uninstall.`);
+    }
+    // Approved by the Fabric before reaching here. Execution itself lives
+    // in exactly one place — the Python Environment API — so this never
+    // duplicates the uninstaller, the probe, or their guarantees.
+    let status: number;
+    let body: Record<string, unknown>;
+    try {
+      const r = await callPythonEnvironment('/environment/uninstall', nodeId, inv.context.timeoutMs);
+      status = r.status;
+      body = r.body;
+    } catch {
+      return no(
+        `The Python Environment API is not answering, so ${entry.name} was not uninstalled. `
+        + 'Start it with `npm run environment:api` and try again.',
+      );
+    }
+    const outcome = (body as { uninstallOutcome?: string }).uninstallOutcome;
+    if (!outcome) {
+      return no(`${entry.name} was not uninstalled. The environment backend answered ${status} without an uninstall result.`);
+    }
+    if (outcome === 'uninstalled') {
+      return ok(
+        (body as { detail?: string }).detail || `${entry.name} is removed and verified as absent.`,
+        body as unknown as UninstallResult,
+      );
+    }
+    return {
+      ok: false,
+      detail: (body as { detail?: string }).detail || `${entry.name} was not uninstalled.`,
+      output: body as unknown as UninstallResult,
+    };
+  },
+
+  async verify(_inv, result) {
+    const out = result.output as UninstallResult | undefined;
+    if (!out) return fail('read-back', 'The uninstaller returned no result to verify.');
+    switch (out.uninstallOutcome) {
+      case 'uninstalled':
+        return pass('read-back', `A fresh probe no longer finds ${out.nodeId}.`);
+      case 'guided':
+        return fail('read-back', 'Nothing was removed — this needs administrator rights and is waiting on you.');
+      case 'unverified':
+        return fail('read-back', `The uninstaller exited 0 but a fresh probe still finds ${out.nodeId}.`);
+      case 'failed':
+        return fail('read-back', out.why ?? 'The uninstaller did not succeed.');
     }
   },
 };
@@ -771,6 +882,7 @@ export function allExecutors(manager: WorkspaceManager): Executor[] {
     terminalExecute,
     agentDelegate,
     systemInstall,
+    systemUninstall,
     gitStatus, gitDiff, gitBranch, gitCommit, gitPush,
     httpRequest,
     ...internalExecutors(manager),

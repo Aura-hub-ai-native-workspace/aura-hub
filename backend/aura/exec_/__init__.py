@@ -28,7 +28,10 @@ INSTALL_TIMEOUT_MS = 5 * 60_000
 
 SAFE_BINARIES = {"git", "ls", "pwd", "node", "npm", "npx", "wc", "du", "grep",
                  "find", "cargo", "python3", "go"}
-AGENT_BINARIES = {"opencode", "claude", "codex", "gemini", "qwen", "cursor-agent"}
+# kilo allowed 2026-09-06: opencode-family engine, `kilo run --dir` verified
+# live to confine writes to cwd (bare `kilo run` escapes to the parent
+# directory, so the verified entry MUST pin --dir; see AGENT_INVOCATIONS).
+AGENT_BINARIES = {"opencode", "claude", "codex", "gemini", "qwen", "cursor-agent", "kilo"}
 INSTALLER_BINARIES = {"npm", "pipx", "cargo", "gh"}
 
 
@@ -136,35 +139,81 @@ def settle(out: str, code: int | None, *, killed: bool | None = None,
     return ProcessOutput(out or (err_message or "failed"), 1)
 
 
+def _signal_tree(proc, which: str) -> None:
+    """Signal the whole process group, falling back to the direct child.
+
+    A build or test command routinely forks workers. Signalling only the
+    process we launched leaves those behind holding ports and file locks.
+    """
+    import signal as _signal
+
+    sig = _signal.SIGKILL if which == "KILL" else _signal.SIGTERM
+    if os.name != "nt":
+        try:
+            os.killpg(os.getpgid(proc.pid), sig)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill() if which == "KILL" else proc.terminate()
+    except Exception:
+        pass
+
+
 async def run_file(argv: list[str], cwd: str, timeout_ms: int,
-                   cancel: asyncio.Event | None = None) -> ProcessOutput:
+                   cancel: asyncio.Event | None = None,
+                   env: dict[str, str] | None = None) -> ProcessOutput:
     """execFile-equivalent: argv array, bounded, stdin closed, truthful settle."""
     exe = argv[0]
     path = _which(exe)
     if path is None:
         raise RuntimeError(f"{exe} is not installed")   # ENOENT parity
+    merged_env = dict(os.environ)
+    if env:
+        for key, value in env.items():
+            if isinstance(key, str) and isinstance(value, str):
+                merged_env[key] = value
     proc = await asyncio.create_subprocess_exec(
         path, *argv[1:], cwd=cwd,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        stdin=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.DEVNULL, env=merged_env,
+        # Its own session, so a build tool that forks workers can be stopped
+        # as a group rather than leaving them running after a timeout.
+        **({"start_new_session": True} if os.name != "nt" else {}),
     )
     waiter = asyncio.ensure_future(proc.communicate())
     cancel_task = asyncio.ensure_future(cancel.wait()) if cancel else None
     tasks = [waiter] + ([cancel_task] if cancel_task else [])
-    done, pending = await asyncio.wait(tasks, timeout=timeout_ms / 1000)
+    # return_when is explicit: some interpreters do not default to
+    # FIRST_COMPLETED, and without it a cancel waits out the full timeout.
+    done, pending = await asyncio.wait(
+        tasks, timeout=timeout_ms / 1000,
+        return_when=asyncio.FIRST_COMPLETED)
     if cancel_task and cancel_task in done and not waiter.done():
-        proc.terminate()
-        try:
-            out_b, err_b = await asyncio.wait_for(waiter, 5)
-        except TimeoutError:
-            proc.kill(); out_b, err_b = await waiter
+        # Escalate on the whole process group: TERM, a grace period, then
+        # KILL. asyncio.wait rather than wait_for on purpose — wait_for
+        # CANCELS the future it times out on, so the follow-up await
+        # raised CancelledError out of the executor and the run never
+        # settled. Observed the first time a real worker was stopped.
+        _signal_tree(proc, "TERM")
+        await asyncio.wait([waiter], timeout=5)
+        if not waiter.done():
+            _signal_tree(proc, "KILL")
+            await asyncio.wait([waiter], timeout=5)
+        if waiter.done() and not waiter.cancelled():
+            out_b, err_b = waiter.result()
+        else:
+            # The child is gone but its pipes never drained. Partial
+            # output is preferable to losing the settle entirely.
+            out_b, err_b = b"", b""
+            waiter.cancel()
         out = (out_b or b"").decode(errors="replace")
         err = (err_b or b"").decode(errors="replace")
         combined = f"{out}\n{err}" if err else out
         return ProcessOutput(f"{combined.strip()}[terminated by SIGTERM]".strip(),
                              SIGNAL_EXIT_BASE + 15, True, "SIGTERM", None)
     if not waiter.done():
-        proc.kill()
+        _signal_tree(proc, "KILL")
         out_b, err_b = await waiter
         out = (out_b or b"").decode(errors="replace")
         err = (err_b or b"").decode(errors="replace")
@@ -204,11 +253,28 @@ async def safe_shell_with_code(command: str, cwd: str,
 
 
 async def run_agent(bin: str, args: list[str], cwd: str,
-                    timeout_ms: int | None = None) -> ProcessOutput:
+                    timeout_ms: int | None = None,
+                    env: dict[str, str] | None = None,
+                    cancel: asyncio.Event | None = None,
+                    argv_prefix: list[str] | None = None) -> ProcessOutput:
+    """Run an allow-listed coding agent.
+
+    ``cancel`` is what makes STOP real: run_file signals the worker's
+    whole process GROUP on it, so the worker and the children it forked
+    stop together. Without it a cancellation could only be noticed after
+    the worker finished on its own, which is not cancellation.
+
+    ``argv_prefix`` is the network-governance boundary the worker is
+    launched INSIDE (see aura.governance.network). It prefixes the argv
+    rather than wrapping it in a shell, so the allow-list check below
+    still runs against the real agent binary and no shell is introduced.
+    """
     resolved = resolve_agent_binary(bin)
     if not resolved.ok:
         raise RuntimeError(resolved.reason)
-    return await run_file([resolved.bin, *args], cwd, timeout_ms or AGENT_TIMEOUT_MS)
+    argv = [*(argv_prefix or []), resolved.bin, *args]
+    return await run_file(argv, cwd, timeout_ms or AGENT_TIMEOUT_MS,
+                          cancel=cancel, env=env)
 
 
 # silence linters about intentional parity imports

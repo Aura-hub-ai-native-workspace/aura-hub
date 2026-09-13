@@ -53,6 +53,30 @@ export const STATUS = {
   info: AURA_BLUE[500],
 } as const;
 
+/**
+ * AURA Neon — cyber-glass Workspace accent ramp (additive).
+ * Blue stays the primary action hue; violet is ambient/secondary and
+ * must never replace blue on primary buttons. Cyan marks live execution.
+ */
+export const AURA_VIOLET = {
+  300: '#b7a6ff',
+  400: '#9785ff',
+  500: '#7a5cff',
+  600: '#6547f0',
+} as const;
+
+export const NEON = {
+  blue: '#4d7cff',
+  violet: '#7a5cff',
+  cyan: '#20d3ff',
+  success: '#1fd38a',
+  warning: '#ffb547',
+  danger: '#ff5d7a',
+  base: '#070b14',
+  elev1: '#0b1120',
+  elev2: '#10182b',
+} as const;
+
 /** Spacing scale (px). Generous by design — whitespace is a feature. */
 export const SPACE = {
   0: 0,

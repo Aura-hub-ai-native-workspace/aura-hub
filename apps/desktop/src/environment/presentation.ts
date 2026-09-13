@@ -38,6 +38,7 @@ export const STATUS_TONE: Record<NodeStatus, Tone> = {
   unknown: 'neutral',
   'not-installed': 'attention',
   installing: 'progress',
+  uninstalling: 'progress',
   degraded: 'attention',
   'needs-auth': 'progress',
   'no-connector': 'neutral',
@@ -50,9 +51,30 @@ export const STATUS_LABEL: Record<NodeStatus, string> = {
   unknown: 'Not scanned',
   'not-installed': 'Not installed',
   installing: 'Installing…',
+  uninstalling: 'Uninstalling…',
   degraded: 'Degraded',
   'needs-auth': 'Needs sign-in',
   'no-connector': 'Catalogued',
+};
+
+/**
+ * The category a node actually declares, in prose.
+ *
+ * A LABEL, never a capability claim: it restates `entry.category` from the
+ * catalogue and nothing more. The Hub used to caption tool tiles from a
+ * positional array ("Reasoning", "Multimodal", …), so the third tool in
+ * the grid was captioned "Multimodal" whatever it happened to be. That is
+ * the same invented-capability problem WorkerRail already removed from
+ * workers; tools are held to the same standard here.
+ */
+export const CATEGORY_LABEL: Record<NodeCategory, string> = {
+  hub: 'Hub',
+  development: 'Development',
+  cloud: 'Cloud',
+  design: 'Design',
+  productivity: 'Productivity',
+  ai: 'AI runtime',
+  browser: 'Browser',
 };
 
 export const CATEGORY_ICON: Record<NodeCategory, IconName> = {

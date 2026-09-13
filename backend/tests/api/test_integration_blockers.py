@@ -173,6 +173,77 @@ def test_b3_projects_survive_restart(svc):
     assert any(p["id"] == rec["id"] for p in listing["projects"])
 
 
+# ── BLOCKER 3b — projects.json is ONE format shared with the oracle ─────────
+# `ai-service/src/projects.ts` reads and writes a BARE ARRAY of records, and
+# both services run against the same AURA_HOME. The Python registry used an
+# envelope, which broke startup in one direction and the oracle's registry in
+# the other. These pin the format from both sides.
+
+def test_b3_python_api_starts_against_an_oracle_written_registry(tmp_path, monkeypatch):
+    """A projects.json written by the Node service must not break startup.
+
+    It is a bare array. Calling .get() on it raised AttributeError inside
+    create_app(), so the canonical API — including every /environment route —
+    never came up on any machine that had run the desktop before.
+    """
+    monkeypatch.setenv("AURA_HOME", str(tmp_path))
+    (tmp_path / "projects.json").write_text(
+        '[{"id":"proj-existing-1","name":"Existing","path":"/tmp"}]',
+        encoding="utf-8",
+    )
+
+    client = TestClient(create_app())
+    response = client.get("/projects")
+
+    assert response.status_code == 200
+    assert response.json()["projects"][0]["id"] == "proj-existing-1"
+    # The Environment surface is the reason startup has to survive this.
+    assert client.post("/environment/inventory", json={"limit": 1, "verify": False}).status_code == 200
+
+
+def test_b3_saving_keeps_the_registry_readable_by_the_oracle(tmp_path, monkeypatch):
+    """What Python writes must still be the array the oracle expects.
+
+    An envelope on disk makes `ProjectRegistry` in projects.ts declare the
+    file corrupt, and a corrupt registry there REFUSES to save — so every
+    project the user added afterwards would be lost.
+    """
+    import json
+
+    monkeypatch.setenv("AURA_HOME", str(tmp_path))
+    (tmp_path / "projects.json").write_text(
+        '[{"id":"proj-existing-1","name":"Existing","path":"/tmp"}]',
+        encoding="utf-8",
+    )
+    client = TestClient(create_app())
+    added = tmp_path / "added"; added.mkdir()
+
+    assert client.post("/projects", json={"path": str(added)}).status_code == 200
+
+    on_disk = json.loads((tmp_path / "projects.json").read_text(encoding="utf-8"))
+    assert isinstance(on_disk, list), "the oracle reads a bare array; an envelope is corruption to it"
+    assert {p["id"] for p in on_disk} >= {"proj-existing-1"}, "an existing project was dropped"
+    assert len(on_disk) == 2
+
+
+def test_b3_an_envelope_written_by_an_earlier_build_is_not_discarded(tmp_path, monkeypatch):
+    """Forward compatibility: read the old shape, rewrite it as the new one."""
+    import json
+
+    monkeypatch.setenv("AURA_HOME", str(tmp_path))
+    (tmp_path / "projects.json").write_text(
+        '{"projects":[{"id":"proj-legacy-1","name":"Legacy","path":"/tmp"}],"current":null}',
+        encoding="utf-8",
+    )
+    client = TestClient(create_app())
+
+    assert client.get("/projects").json()["projects"][0]["id"] == "proj-legacy-1"
+
+    added = tmp_path / "added"; added.mkdir()
+    client.post("/projects", json={"path": str(added)})
+    assert isinstance(json.loads((tmp_path / "projects.json").read_text(encoding="utf-8")), list)
+
+
 def test_b3_missions_stay_honestly_unsupported(svc):
     c, _ = svc
     for path in ("/missions/dashboard", "/projects/p1/missions",

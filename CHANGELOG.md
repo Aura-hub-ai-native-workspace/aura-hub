@@ -54,6 +54,49 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
+## [0.1.6] - 2026-09-13 — Central Agent
+
+The Central Agent becomes the one path a request travels: it reads what
+you asked for, plans it, checks authority, dispatches a worker, and
+verifies the result before reporting it.
+
+### Added
+
+- **Central-agent orchestration** — governed plan/authority/execute/verify
+  loop with model-proposed plans validated into `agent.delegate` DAGs,
+  role-matched workers, inter-task result handoff, a bounded correction
+  loop, objective acceptance beyond per-task success, and restart-safe
+  resume from persisted plans and verified evidence.
+- **Conversational intent routing** — a deterministic floor that tells a
+  question from a job. Greetings and "what can you do?" are answered in
+  words; engineering work and failure diagnosis reach a worker; known
+  read-only capabilities such as `git status` answer directly instead of
+  dispatching one. The conversational path reaches no planner, no
+  authority check and no executor, so it can report no work because it
+  has no way to do any.
+- **Worker and tool workspace** — six worker slots and three tool slots
+  as first-class saved placements, a live orchestration graph, a
+  conversation pane over the agent's own event stream, and streamed
+  answer tokens rendered from the existing `answer.*` frames.
+- **Software discovery** — identity, classification and installability
+  resolution for the machine's real software, behind the environment API.
+
+### Security
+
+- **Per-domain network egress allowlist** enforced by an AURA-owned door,
+  with platform enforcement adapters that stay honest on Windows and
+  macOS rather than claiming a guarantee they cannot make.
+- **Kernel-enforced network denial** and real run cancellation.
+- Worker task contracts enforce declared scope: changes outside it park
+  the run for a decision instead of being accepted.
+
+### Validation
+
+- Conversation routing, conversational-turn, event-spine, correlation,
+  approval-binding, provider-bridge and worker-selection suites brought
+  under version control, alongside frontend coverage for the conversation
+  pane, orchestration graph and slot model.
+
 ## [0.1.0] - 2026-07-31 — AURA Presentation Build
 
 The first tagged milestone build: application shell, design system,

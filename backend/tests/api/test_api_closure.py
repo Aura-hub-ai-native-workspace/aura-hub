@@ -267,16 +267,66 @@ def test_agent_unknown_session_404(svc):
 
 
 def test_agent_events_stream_replays_tail(svc):
-    c, _ = svc
-    body = c.post("/agent/sessions", json={"message": "list capabilities"}).json()
-    sid = body["sessionId"]
-    frames = []
-    with c.stream("GET", f"/agent/sessions/{sid}/events") as r:
-        for line in r.iter_lines():
-            if line.strip() == "data: [DONE]":
+    # Live-follow streams never terminate, and starlette's TestClient
+    # cannot hold an infinite stream open — so this exercises the real
+    # uvicorn path with a bounded socket read, like production serves.
+    import socket
+    import threading
+
+    import uvicorn
+
+    from aura.api.server import create_app
+
+    app = create_app()
+    server = uvicorn.Server(uvicorn.Config(
+        app, host="127.0.0.1", port=44331, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        body = None
+        for _ in range(100):
+            try:
+                import urllib.request
+
+                req = urllib.request.Request(
+                    "http://127.0.0.1:44331/agent/sessions",
+                    data=json.dumps(
+                        {"message": "list capabilities"}).encode(),
+                    headers={"content-type": "application/json"},
+                    method="POST")
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    body = json.loads(resp.read())
                 break
-            if line.startswith("data:"):
-                frames.append(json.loads(line[5:].strip()))
+            except OSError:
+                import time
+
+                time.sleep(0.1)
+        assert body is not None, "live server did not start"
+        sid = body["sessionId"]
+        frames = []
+        sock = socket.create_connection(("127.0.0.1", 44331), timeout=15)
+        try:
+            sock.sendall(
+                f"GET /agent/sessions/{sid}/events?after=0 HTTP/1.1\r\n"
+                "Host: x\r\nConnection: close\r\n\r\n".encode())
+            buf = b""
+            while len(frames) < 3:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n\n" in buf:
+                    block, buf = buf.split(b"\n\n", 1)
+                    for line in block.decode("utf-8", "replace").split("\n"):
+                        if line.startswith("data:"):
+                            text = line[5:].strip()
+                            if text in ("", "[DONE]"):
+                                continue
+                            frames.append(json.loads(text))
+        finally:
+            sock.close()
+    finally:
+        server.should_exit = True
     # The session's lifecycle events replay: session.started at minimum.
     assert any(f.get("type") == "session.started" and f.get("sessionId") == sid
                for f in frames), frames

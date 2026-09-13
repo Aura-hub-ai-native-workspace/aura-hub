@@ -1,90 +1,92 @@
 /**
- * WorkspaceScreen — AURA's execution environment.
- * ------------------------------------------------------------------
- * One Hub at the centre, capability nodes around it, live measured state.
- * See docs/WORKSPACE_EXECUTION_ARCHITECTURE.md.
+ * WorkspaceScreen — the place you talk to AURA.
  *
- * What this screen is *not*: it is not a workflow builder. Edges run from
- * the Hub to capabilities it can reach; you cannot wire node to node,
- * because execution order is decided by the mission DAG (Mission Control
- * v3), never by dragging. It is also not a second source of truth —
- * every status shown comes from `environmentStore`, whose values are real
- * probes of this machine, and nothing here caches them across a restart.
+ * This screen used to be a control centre: a capability graph on the
+ * left with the only composer under it, and a run timeline on the
+ * right showing task ids, worker lifecycles and an outcome enum. It
+ * described orchestration accurately and answered nothing. "Hi" got a
+ * plan review, and two composers on one screen made it a guess which
+ * one was listening.
  *
- * Clicking a node opens a floating **inspection** window. Windows are not
- * nodes: closing one never removes the capability, and the canvas stays
- * visible behind it.
+ * It is now a conversation with a capability graph beside it. The
+ * conversation is the content; the graph supports it by showing who
+ * AURA can call on and lighting up while they work. There is exactly
+ * one composer, at the foot of the conversation.
+ *
+ * Nothing about authority moved. The same Central Agent session drives
+ * the same intent → plan → approval → Fabric → verification path, the
+ * same approval ledger decides, and this screen reads the same stores
+ * it always did. What changed is which of it is the headline.
+ *
+ * One conversation store (`useAgentConversations`, the existing project
+ * Ask AURA engine) owns the transcript, the session and the live
+ * events. There is no second chat implementation and no second stream.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AnimatePresence } from 'framer-motion';
-import { useAppStore } from '@aura/core';
+import { useEffect, useMemo, useRef, useState, useCallback, type RefObject } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { cn, spring, useAppStore } from '@aura/core';
 import { Icon } from '@aura/ui';
 import { useEnvironmentStore } from '../environment/environmentStore';
-import { useWindowManager } from '../environment/windows/windowManager';
-import { FloatingSurface } from '../environment/windows/FloatingSurface';
-import { NodeInspector } from '../environment/NodeInspector';
-import { CATEGORY_ICON, STATUS_TONE, TONE_DOT } from '../environment/presentation';
-import { fabricClient, type MissionCapabilityAnnotation } from '../ai/fabricClient';
 import { useWorkspace } from '../data/useWorkspace';
-import { useMissions } from './missions/useMissions';
-import { HubCanvas } from '../workspace/HubCanvas';
-import { HubSurface, readinessOf } from '../workspace/HubSurface';
+
+import { ACTIVE_TOOL_SLOTS, useHubStore } from '../workspace/hubStore';
+import { deriveToolSlots } from '../workspace/toolSlots';
+import { deriveWorkerSlots } from '../workspace/workerSlots';
+import { fabricClient, type ApprovalRequest } from '../ai/fabricClient';
 import { AddNodeDialog } from '../workspace/AddNodeDialog';
-import {
-  buildCapabilityNodeMap,
-  deriveHubPhase,
-  missingNodesFor,
-  projectNodeActivity,
-  type CapabilityNodeMap,
-} from '../workspace/hubPhase';
-import { useHubStore } from '../workspace/hubStore';
-import { WorkspaceWindowLayer } from '../ops/WorkspaceCanvas';
+import { NodeInspector } from '../environment/NodeInspector';
+import { FloatingSurface } from '../environment/windows/FloatingSurface';
+import { useWindowManager } from '../environment/windows/windowManager';
+import { CATEGORY_ICON, STATUS_TONE, TONE_DOT } from '../environment/presentation';
+
+import { useWorkerStore } from '../workspace/useWorkers';
+import { WorkspaceShell } from './workspace/neon/WorkspaceShell';
+import { LeftControlPanel } from './workspace/neon/LeftControlPanel';
+import { ConversationPane } from './workspace/neon/ConversationPane';
+import { useAgentConversations } from '../ai/useAgentConversations';
+import { AuraEverything } from '../environment/AuraEverything';
+import { AddWorkerPanel } from '../workspace/AddWorkerPanel';
 
 export function WorkspaceScreen() {
-  const canvasRef = useRef<HTMLDivElement>(null);
   const [adding, setAdding] = useState(false);
-
+  const canvasRef = useRef<HTMLDivElement>(null);
   const placed = useHubStore((s) => s.placed);
   const relayout = useHubStore((s) => s.relayout);
-  const remove = useHubStore((s) => s.remove);
+  // Placing and freeing a slot are layout edits and nothing else. Neither
+  // installs, uninstalls, connects, or touches the machine inventory.
+  const placeTool = useHubStore((s) => s.add);
+  const removeTool = useHubStore((s) => s.remove);
+  const replaceToolAt = useHubStore((s) => s.replaceAt);
+  // The six worker slots live in the same layout store as the three tool
+  // slots, under their own key. Placing and freeing one is a layout edit
+  // and nothing else: no connect, no disconnect, no install, no scan.
+  const workerIds = useHubStore((s) => s.workerIds);
+  const placeWorkerAt = useHubStore((s) => s.placeWorkerAt);
+  const clearWorkerAt = useHubStore((s) => s.clearWorkerAt);
+  const firstFreeWorkerSlot = useHubStore((s) => s.firstFreeWorkerSlot);
+  const hasFreeSlot = useHubStore((s) => s.placed.length < ACTIVE_TOOL_SLOTS);
 
   const envNodes = useEnvironmentStore((s) => s.nodes);
   const scanning = useEnvironmentStore((s) => s.scanning);
   const lastScanAt = useEnvironmentStore((s) => s.lastScanAt);
   const scan = useEnvironmentStore((s) => s.scan);
   const openWindow = useWindowManager((s) => s.open);
+  // Installation runs through the existing environment store action, which
+  // posts a catalogue id to /environment/install. The UI never builds a
+  // command and never learns one.
+  const installNode = useEnvironmentStore((s) => s.install);
+  const busyNodes = useEnvironmentStore((s) => s.busy);
 
-  /* ── Mission wiring ──────────────────────────────────────────────
-     Missions plan against real files, so they are project-scoped. The Hub
-     is global, and it now reads the SHELL's active project rather than
-     remembering its own — the Hub used to keep a private
-     `aura.workspace.projectId` because navigating here cleared
-     `activeProjectId`. Now that the active project survives navigation,
-     that second pointer is gone and the Hub and the rest of the shell can
-     no longer disagree about which project is being worked on. */
+  /* The project the conversation works in. The Hub reads the SHELL's
+     active project rather than remembering its own, so the two can
+     never disagree about what AURA is pointed at. A project is needed
+     for work on files; it is NOT needed to talk. */
   const projects = useWorkspace((s) => s.projects);
   const refreshProjects = useWorkspace((s) => s.refresh);
   const projectId = useAppStore((s) => s.activeProjectId);
   const setActiveProject = useAppStore((s) => s.setActiveProject);
 
-  // The entire mission lifecycle, reused as-is. No second engine.
-  const m = useMissions(projectId);
-  const { active, creation, approvals, createMission, approve, startExecution, runBatch } = m;
-
-  const [annotation, setAnnotation] = useState<MissionCapabilityAnnotation | null>(null);
-  const [capabilityToNode, setCapabilityToNode] = useState<CapabilityNodeMap>(() => new Map());
-
   useEffect(() => { void refreshProjects(); }, [refreshProjects]);
-
-  // The capability→node mapping, read from the running service so it can
-  // never disagree with the Fabric that will actually execute.
-  useEffect(() => {
-    let cancelled = false;
-    void fabricClient.capabilities()
-      .then((res) => { if (!cancelled) setCapabilityToNode(buildCapabilityNodeMap(res.capabilities)); })
-      .catch(() => { /* service unreachable — nodes simply show no activity */ });
-    return () => { cancelled = true; };
-  }, []);
 
   // Measure the machine once on arrival. Without this the canvas would
   // show every node as "Not scanned", which is honest but useless.
@@ -97,180 +99,293 @@ export function WorkspaceScreen() {
      registry, and doing it here as well would be a second authority for the
      same decision. */
 
-  const selectProject = useCallback((id: string) => {
+  /**
+   * Selects the active project for mission planning.
+   * @param id Project ID or null to deselect
+   */
+  const selectProject = useCallback((id: string | null) => {
     setActiveProject(id || null);
-    setAnnotation(null);
   }, [setActiveProject]);
 
-  /* What the plan actually needs, read from the Fabric's existing
-     annotation route. Re-read whenever the plan changes. */
+  /* The three active workspace tool slots. Resolved against the live
+     environment for status, but WHICH tools occupy them comes only from
+     the saved layout — an unresolvable id keeps its slot and reads as
+     unavailable rather than silently disappearing. */
+  const toolSlots = useMemo(() => deriveToolSlots(placed, envNodes), [placed, envNodes]);
+
+  const placedIds = useMemo(() => placed.map((p) => p.nodeId), [placed]);
+
+
+  /* ── Real AI workers ─────────────────────────────────────────────
+     Separate from the capability nodes above, and read from the
+     backend's worker routes rather than an environment probe: a probe
+     proves a binary exists, which is not evidence that AURA can hand
+     that runtime a task and get a real answer back. `connected` here is
+     always the backend's verdict. */
+  const workers = useWorkerStore((s) => s.workers);
+  const workersConnecting = useWorkerStore((s) => s.connecting);
+  const workersError = useWorkerStore((s) => s.error);
+  const refreshWorkers = useWorkerStore((s) => s.refresh);
+  const connectWorker = useWorkerStore((s) => s.connect);
+  const disconnectWorker = useWorkerStore((s) => s.disconnect);
+  useEffect(() => { void refreshWorkers(); }, [refreshWorkers]);
+
+  /* The six worker slots: the saved arrangement resolved against the
+     live roster. WHICH workers occupy them comes only from the layout;
+     their state comes only from the backend's verdict, and an unread
+     roster reads as unknown rather than as absence. */
+  const workerSlots = useMemo(
+    () => deriveWorkerSlots(workerIds, workers),
+    [workerIds, workers],
+  );
+
+  const projectPath = useMemo(
+    () => projects.find((p) => p.id === projectId)?.path ?? null,
+    [projects, projectId],
+  );
+
+  // ONE conversation, owned above both panels: the composer lives in the
+  // rail, the run it starts renders in the workspace. Same client, same
+  // session — lifted only so the two halves cannot disagree.
+  // Which management surface is open, if any. Opening one costs nothing:
+  // the worker roster and the machine inventory are already loaded, so
+  // neither entry point triggers a scan.
+  const [surface, setSurface] = useState<'none' | 'worker' | 'tool'>('none');
+
+  /* Which slot the open tool surface is replacing, if any. This is the
+     whole of the replace flow's state: a slot index, held only while the
+     surface is open. Null means the surface was opened from an empty
+     slot and the next choice fills it instead of swapping. */
+  const [replacingSlot, setReplacingSlot] = useState<number | null>(null);
+
+  /* Which worker slot the open worker surface will fill. Null means it
+     was opened from the rail's own button rather than from a slot, and
+     the choice lands in the first free slot. */
+  const [workerSlotIndex, setWorkerSlotIndex] = useState<number | null>(null);
+
+  const closeSurface = useCallback(() => {
+    setSurface('none');
+    setReplacingSlot(null);
+    setWorkerSlotIndex(null);
+  }, []);
+
+  const openToolSurface = useCallback((slotIndex: number | null) => {
+    setReplacingSlot(slotIndex);
+    setSurface('tool');
+  }, []);
+
+  /* Opening the worker surface costs nothing: the roster is already
+     loaded, so no scan, no probe and no connection attempt happens
+     because a slot was clicked. */
+  const openWorkerSurface = useCallback((slotIndex: number | null) => {
+    setWorkerSlotIndex(slotIndex);
+    setSurface('worker');
+  }, []);
+
+  /* The worker slot the surface will fill, named so it can say what it
+     is about to displace. */
+  const workerSlotContext = useMemo(() => {
+    if (workerSlotIndex === null) return null;
+    const slot = workerSlots[workerSlotIndex];
+    return { index: workerSlotIndex, name: slot?.workerId ? slot.worker?.name ?? slot.workerId : null };
+  }, [workerSlotIndex, workerSlots]);
+
+  /* What the open surface is replacing, named so it can say so. The name
+     comes from the catalogue entry when the id still resolves; otherwise
+     the raw id, which is the honest thing to show for a tool AURA no
+     longer knows. */
+  const replacing = useMemo(() => {
+    if (replacingSlot === null) return null;
+    const slot = toolSlots[replacingSlot];
+    if (!slot?.nodeId) return null;
+    return { index: replacingSlot, name: slot.node?.entry.name ?? slot.nodeId };
+  }, [replacingSlot, toolSlots]);
+
+  /* ── the one conversation ─────────────────────────────────────────
+     The existing project Ask AURA engine, unchanged: it owns the
+     transcript, the Central Agent session and the single SSE
+     subscription. Pointing it at the active project (or at none) is
+     the only wiring this screen does. */
+  const conv = useAgentConversations();
   useEffect(() => {
-    if (!projectId || !active?.goalGraph) { setAnnotation(null); return; }
+    void conv.loadForProject(projectId, projectPath);
+  }, [projectId, projectPath]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Live worker highlight for the graph, from the frames the
+     conversation already receives. No second subscription. */
+  const workerActivity = useMemo(
+    () => new Map(Object.entries(conv.activity.workers)),
+    [conv.activity.workers],
+  );
+
+  /* Pending approvals, read from the existing ledger by id. A parked
+     message names its approval; this resolves that id to the real
+     request so the existing gate can render it. Never guessed: an id
+     with no match stays null and the gate is not shown. */
+  const [approvals, setApprovals] = useState<Record<string, ApprovalRequest | null>>({});
+  const [deciding, setDeciding] = useState(false);
+  const parkedIds = useMemo(
+    () => conv.messages.map((m) => m.agent?.approvalId).filter((x): x is string => !!x),
+    [conv.messages],
+  );
+  useEffect(() => {
+    const missing = parkedIds.filter((id) => approvals[id] === undefined);
+    if (!missing.length) return;
     let cancelled = false;
-    void fabricClient.missionCapabilities(projectId, active.id).then((res) => {
+    setApprovals((prev) => {
+      const next = { ...prev };
+      for (const id of missing) next[id] = null;
+      return next;
+    });
+    void fabricClient.approvals().then(({ approvals: list }) => {
       if (cancelled) return;
-      setAnnotation('error' in res ? null : res);
-    }).catch(() => { if (!cancelled) setAnnotation(null); });
+      setApprovals((prev) => {
+        const next = { ...prev };
+        for (const id of missing) next[id] = list.find((a) => a.id === id) ?? null;
+        return next;
+      });
+    }).catch(() => { /* the gate stays unrendered rather than guessing */ });
     return () => { cancelled = true; };
-  }, [projectId, active?.id, active?.goalGraph]);
+  }, [parkedIds, approvals]);
 
-  // Once execution is running, keep pulling waves so the canvas reflects
-  // real progress rather than a single frozen snapshot.
-  useEffect(() => {
-    if (active?.execution?.status === 'running' && !m.batchBusy) void runBatch();
-  }, [active?.execution?.status, active?.execution?.batchIndex, m.batchBusy, runBatch]);
+  const decide = useCallback(async (messageId: string, granted: boolean, reason?: string) => {
+    setDeciding(true);
+    try { await conv.decide(messageId, granted, reason); }
+    finally { setDeciding(false); }
+  }, [conv]);
 
-  const canvasNodes = useMemo(
-    () => placed.map((p) => ({ placed: p, node: envNodes.find((n) => n.id === p.nodeId) ?? null })),
-    [placed, envNodes],
-  );
-
-  const placedNodes = useMemo(
-    () => canvasNodes.map((c) => c.node).filter((n): n is NonNullable<typeof n> => !!n),
-    [canvasNodes],
-  );
-
-  /* The Fabric's approval queue is global. Only the requests raised by
-     THIS mission may speak for it — otherwise an unrelated mission's gate
-     would make the Hub claim this one is waiting on the user. */
-  const missionApprovals = useMemo(
-    () => (active ? approvals.filter((a) => a.missionId === active.id) : []),
-    [approvals, active],
-  );
-
-  const progress = useMemo(
-    () => deriveHubPhase(creation, active, annotation, missionApprovals),
-    [creation, active, annotation, missionApprovals],
-  );
-
-  const projection = useMemo(
-    () => projectNodeActivity(active, annotation, placedNodes, missionApprovals, capabilityToNode),
-    [active, annotation, placedNodes, missionApprovals, capabilityToNode],
-  );
-  const activity = projection.byNode;
-
-  const missing = useMemo(
-    () => missingNodesFor(annotation, placedNodes, capabilityToNode),
-    [annotation, placedNodes, capabilityToNode],
-  );
-
-  /* Both failure channels reach the user. `useMissions` reports action
-     failures through `error`, but a planning failure arrives as a stream
-     event and only lands in `creation.errorMessage` — without this, a
-     mission that could not be planned would show a phase and no reason. */
-  const errorText =
-    m.error ?? (creation.stage === 'error' ? creation.errorMessage : null) ?? active?.error ?? null;
-
-  // Readiness reflects the nodes actually in this workspace, not all 110
-  // catalogue entries — otherwise the count would describe a machine the
-  // user never asked about.
-  const readiness = useMemo(() => readinessOf(placedNodes), [placedNodes]);
+  /* The graph's status line: what AURA is doing, in the same words the
+     conversation uses. One vocabulary, two places. */
+  const agentPhase = conv.activity.phase
+    ?? (conv.phase === 'working' ? 'Working' : 'Ready when you are');
 
   return (
-    <div className="relative flex h-full min-h-full flex-col">
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-surface/40 px-5 py-2.5 backdrop-blur-sm">
-        <div className="flex min-w-0 items-center gap-2">
-          <Icon name="spark" size={15} className="shrink-0 text-accent" />
-          <span className="truncate text-[13px] font-semibold text-text">Workspace</span>
-          <span className="truncate text-[11.5px] text-text-subtle">
-            {placed.length} {placed.length === 1 ? 'capability' : 'capabilities'} around the Hub
-          </span>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <HeaderButton icon="refresh" label="Re-arrange" onClick={relayout} />
-          <HeaderButton icon="plus" label="Add node" onClick={() => setAdding(true)} testId="add-node-open" />
-        </div>
-      </header>
-
-      <div ref={canvasRef} className="relative min-h-0 flex-1 overflow-hidden">
-        <HubCanvas
-          nodes={canvasNodes}
-          canvasRef={canvasRef}
-          onInspect={openWindow}
-          activity={activity}
-          hub={
-            <HubSurface
-              readiness={readiness}
-              scanning={scanning}
-              lastScanAt={lastScanAt}
-              onScan={() => void scan(true)}
-              projects={projects}
-              projectId={projectId}
-              onSelectProject={selectProject}
-              progress={progress}
-              mission={active}
-              missing={missing}
-              unattributed={projection.unattributed}
-              error={errorText}
-              onSubmit={(text) => void createMission(text)}
-              onApprove={() => void approve()}
-              onStart={() => void startExecution()}
-            />
-          }
-        />
-
-        <NodeWindows canvasRef={canvasRef} onRemove={remove} />
-
-        {/* The Workspace's panel windows — Mission Control, Knowledge,
-            Diagnostics and the rest. `layoutStore.openPanel()` has always
-            been wired to roughly nineteen command-palette entries, but the
-            component that renders those windows was mounted by nothing, so
-            every one of them silently did nothing (Audit Defect #1). This
-            mounts the EXISTING renderer; no panel was rebuilt. */}
-        <WorkspaceWindowLayer canvasRef={canvasRef} />
-
-        {placed.length === 0 && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-8 grid place-items-center">
-            <p className="pointer-events-auto rounded-xl border border-dashed border-line bg-surface/80 px-4 py-2 text-[12px] text-text-muted">
-              No capabilities placed yet — use <span className="font-medium text-text">Add node</span>.
-            </p>
+    <div ref={canvasRef} className="relative h-full min-h-0">
+      <WorkspaceShell
+        left={
+          <LeftControlPanel
+            toolSlots={toolSlots}
+            workerSlots={workerSlots}
+            scanning={scanning}
+            projects={projects}
+            projectId={projectId}
+            onSelectProject={selectProject}
+            onAddWorker={(index) => openWorkerSurface(index)}
+            onRemoveWorker={(index) => clearWorkerAt(index)}
+            onReplaceWorker={(index) => openWorkerSurface(index)}
+            onAddTool={() => openToolSurface(null)}
+            onRemoveTool={removeTool}
+            onReplaceTool={(index) => openToolSurface(index)}
+            onRelayout={relayout}
+            onInspect={openWindow}
+            workers={workers}
+            workersConnecting={workersConnecting}
+            workersError={workersError}
+            workerActivity={workerActivity}
+            onRefreshWorkers={() => void refreshWorkers()}
+            onConnectWorker={(id) => void connectWorker(id)}
+            onDisconnectWorker={(id) => void disconnectWorker(id)}
+            phase={agentPhase}
+            agentBusy={conv.phase === 'working'}
+          />
+        }
+        right={
+          <ConversationPane
+            messages={conv.messages}
+            activity={conv.activity}
+            busy={conv.phase === 'working'}
+            agentUp={conv.agentUp}
+            approvals={approvals}
+            deciding={deciding}
+            onSend={(text) => void conv.send(text)}
+            onStop={() => conv.stop()}
+            onRegenerate={() => void conv.regenerate()}
+            onDecide={(id, granted, reason) => void decide(id, granted, reason)}
+            projectName={projects.find((p) => p.id === projectId)?.name ?? null}
+          />
+        }
+      />
+      {/* Catalogue dialog mounts alongside so placing a node never unmounts the shell. */}
+      {surface !== 'none' && (
+        <div
+          className="absolute inset-0 z-30 flex items-stretch justify-end bg-[rgba(4,7,14,0.72)] p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-label={surface === 'worker' ? 'Add AI Worker' : 'AURA Everything'}
+          onClick={(e) => { if (e.target === e.currentTarget) closeSurface(); }}
+        >
+          <div className="flex w-full max-w-[560px] min-h-0 flex-col rounded-2xl border border-[rgba(125,146,255,0.3)] bg-[rgba(9,13,26,0.97)] p-4 shadow-card">
+            <div className="mb-3 flex items-start justify-end">
+              <button
+                type="button"
+                onClick={closeSurface}
+                aria-label="Close"
+                data-testid="surface-close"
+                className="neon-focus grid h-8 w-8 place-items-center rounded-lg border border-[rgba(125,146,255,0.3)] text-text-muted transition-colors hover:text-text"
+              >
+                <Icon name="close" size={15} />
+              </button>
+            </div>
+            {surface === 'worker' ? (
+              <AddWorkerPanel
+                workers={workers}
+                connecting={workersConnecting}
+                error={workersError}
+                slot={workerSlotContext}
+                inWorkspace={workerIds.filter((id): id is string => !!id)}
+                hasFreeSlot={firstFreeWorkerSlot() !== null}
+                onConnect={(id) => void connectWorker(id)}
+                onDisconnect={(id) => void disconnectWorker(id)}
+                onPlace={(workerId) => {
+                  // Layout only. The chosen id is the backend's own worker
+                  // id, so the slot's status still comes from the next
+                  // answer `GET /workers` gives about it — placing proves
+                  // nothing and claims nothing.
+                  const index = workerSlotIndex ?? firstFreeWorkerSlot();
+                  if (index === null) return;
+                  if (placeWorkerAt(index, workerId)) closeSurface();
+                }}
+              />
+            ) : (
+              <AuraEverything
+                installing={busyNodes}
+                onInstall={(catalogId) => void installNode(catalogId)}
+                inWorkspace={placedIds}
+                hasFreeSlot={hasFreeSlot}
+                replacing={replacing}
+                onAddToWorkspace={(catalogId) => {
+                  // Layout only, on both paths. The result already carries a
+                  // catalogue id, which is the same identity the environment
+                  // scanner probes — nothing new is discovered, installed or
+                  // run, and the slot's status still comes from the next
+                  // answer the environment gives about that id.
+                  const done =
+                    replacingSlot === null
+                      ? placeTool(catalogId)
+                      : replaceToolAt(replacingSlot, catalogId);
+                  if (done) closeSurface();
+                }}
+              />
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       <AddNodeDialog open={adding} onClose={() => setAdding(false)} />
+      <NodeWindows canvasRef={canvasRef} />
+      <WindowTray />
     </div>
   );
 }
 
-function HeaderButton({
-  icon,
-  label,
-  onClick,
-  testId,
-}: {
-  icon: 'refresh' | 'plus';
-  label: string;
-  onClick: () => void;
-  testId?: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      data-testid={testId}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-[11.5px] font-medium text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
-    >
-      <Icon name={icon} size={13} />
-      {label}
-    </button>
-  );
-}
+/* ── Floating node inspectors ───────────────────────────────────────
+   Same proven surface as ConnectedEnvironment: clicking a capability
+   opens its live inspector (probe state, connect, permissions) above the
+   shell. Windows are working surfaces — closing one never removes the
+   capability. Copied contract, not a second implementation. */
 
-/**
- * Inspection windows over placed nodes. This reuses the Connected
- * Environment's generic window manager (keyed by an opaque `contentId`)
- * rather than the Workspace's older `PanelKind`-bound one — that manager
- * is the intended survivor of the two, per its own note.
- */
-function NodeWindows({
-  canvasRef,
-  onRemove,
-}: {
-  canvasRef: React.RefObject<HTMLDivElement | null>;
-  onRemove: (nodeId: string) => void;
-}) {
+function NodeWindows({ canvasRef }: { canvasRef: RefObject<HTMLDivElement | null> }) {
   const windows = useWindowManager((s) => s.windows);
-  const close = useWindowManager((s) => s.close);
   const nodes = useEnvironmentStore((s) => s.nodes);
   const busy = useEnvironmentStore((s) => s.busy);
   const connect = useEnvironmentStore((s) => s.connect);
@@ -282,6 +397,7 @@ function NodeWindows({
       {windows.map((win) => {
         const node = nodes.find((n) => n.id === win.contentId);
         if (!node) return null;
+        const tone = STATUS_TONE[node.health.status];
         return (
           <FloatingSurface
             key={win.id}
@@ -290,33 +406,66 @@ function NodeWindows({
             title={node.entry.name}
             icon={CATEGORY_ICON[node.entry.category]}
             subtitle={node.health.version}
-            toneClass={TONE_DOT[STATUS_TONE[node.health.status]]}
+            toneClass={TONE_DOT[tone]}
           >
-            <div className="flex h-full min-h-0 flex-col">
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <NodeInspector
-                  node={node}
-                  busy={busy.includes(node.id)}
-                  onConnect={() => void connect(node.id)}
-                  onDisconnect={() => disconnect(node.id)}
-                  onPermissions={(partial) => setNodePermissions(node.id, partial)}
-                />
-              </div>
-              <div className="shrink-0 border-t border-line px-3 py-2">
-                <button
-                  onClick={() => {
-                    onRemove(node.id);
-                    close(win.id);
-                  }}
-                  className="text-[11px] font-medium text-text-subtle transition-colors hover:text-danger"
-                >
-                  Remove from workspace
-                </button>
-              </div>
-            </div>
+            <NodeInspector
+              node={node}
+              busy={busy.includes(node.id)}
+              onConnect={() => void connect(node.id)}
+              onDisconnect={() => disconnect(node.id)}
+              onPermissions={(partial) => setNodePermissions(node.id, partial)}
+            />
           </FloatingSurface>
         );
       })}
     </AnimatePresence>
+  );
+}
+
+function WindowTray() {
+  const windows = useWindowManager((s) => s.windows);
+  const focusedId = useWindowManager((s) => s.focusedId);
+  const focus = useWindowManager((s) => s.focus);
+  const minimize = useWindowManager((s) => s.minimize);
+  const closeAll = useWindowManager((s) => s.closeAll);
+  const nodes = useEnvironmentStore((s) => s.nodes);
+
+  if (!windows.length) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={spring.smooth}
+      className="pointer-events-none absolute inset-x-0 bottom-3 z-40 flex justify-center"
+    >
+      <div className="pointer-events-auto flex items-center gap-1 rounded-2xl border border-line bg-surface/90 p-1.5 shadow-lg backdrop-blur-xl">
+        {windows.map((win) => {
+          const node = nodes.find((n) => n.id === win.contentId);
+          if (!node) return null;
+          const active = focusedId === win.id && !win.minimized;
+          return (
+            <button
+              key={win.id}
+              onClick={() => (active ? minimize(win.id) : focus(win.id))}
+              title={node.entry.name}
+              className={cn(
+                'grid h-8 w-8 place-items-center rounded-xl transition-all hover:scale-105',
+                active ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-hover hover:text-text',
+              )}
+            >
+              <Icon name={CATEGORY_ICON[node.entry.category]} size={16} />
+            </button>
+          );
+        })}
+        <button
+          onClick={() => closeAll()}
+          title="Close all windows"
+          className="grid h-8 w-8 place-items-center rounded-xl text-text-subtle transition-colors hover:bg-surface-hover hover:text-text"
+        >
+          <Icon name="close" size={14} />
+        </button>
+      </div>
+    </motion.div>
   );
 }

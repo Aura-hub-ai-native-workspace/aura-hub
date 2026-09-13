@@ -13,6 +13,35 @@ from ..contracts import AuthorityRequirement, TaskPlan
 from ..fabric import FabricConfig, describe_authority
 
 
+def _requested_node_denial(task, cfg) -> str | None:
+    """Preflight for an AURA-validated worker pin: the requested node must
+    exist and provide what the capability needs, or the task is denied
+    here — before anything parks. Operates only when the host exposes
+    resolve_node (the same resolution dispatch uses); otherwise the
+    planner membership check plus dispatch-time routing stay the
+    backstops. Usability (verified invocation) is always re-checked at
+    dispatch. Returns a denial reason, or None when the pin resolves."""
+    node_id = getattr(task, "nodeId", None)
+    if not node_id:
+        return None
+    try:
+        from ..fabric import describe_capability
+        fabric = getattr(cfg, "fabric", None)
+        host = getattr(fabric, "host", None)
+        resolve = getattr(host, "resolve_node", None)
+        if resolve is None:
+            return None
+        capability = describe_capability(task.capabilityId or "")
+        if not capability:
+            return None  # unknown capability denied by the main path
+        result = resolve(capability, {"nodeId": node_id})
+        if isinstance(result, dict) and result.get("ok") is False:
+            return str(result.get("reason") or result.get("code"))
+        return None
+    except Exception:
+        return None
+
+
 class AuthorityChecker:
     def __init__(self, fabric_cfg: FabricConfig) -> None:
         self._cfg = fabric_cfg
@@ -23,12 +52,29 @@ class AuthorityChecker:
         for task in plan.tasks:
             if not task.capabilityId:
                 continue
+            node_denial = _requested_node_denial(task, self._cfg)
+            if node_denial is not None:
+                out.append(AuthorityRequirement(
+                    capabilityId=task.capabilityId,
+                    decision="deny", rule="unknown-or-unusable-node",
+                    reason=node_denial,
+                    risk=task.risk, available=False,
+                    approvalRequired=False,
+                ))
+                continue
             requested_scope = task.input.get("path") \
                 if isinstance(task.input, dict) else None
+            preflight_ctx = {
+                "actor": {"kind": "agent", "id": "central-agent"},
+                "projectId": project_id, "taskId": task.id,
+            }
+            # Preflight sees the same worker pin dispatch will resolve:
+            # an unknown/unusable node denies here, before anything parks.
+            if getattr(task, "nodeId", None):
+                preflight_ctx["nodeId"] = task.nodeId
             raw = describe_authority(
                 task.capabilityId,
-                {"actor": {"kind": "agent", "id": "central-agent"},
-                 "projectId": project_id, "taskId": task.id},
+                preflight_ctx,
                 self._cfg,
             )
             # EFFECTIVE scope is policy's confinement of the request: for

@@ -19,6 +19,8 @@
  *     as empty successes.
  */
 
+import { FrameDeduper, parseBlock, splitBlocks } from './agentEventStream';
+
 const ENV = import.meta.env as unknown as Record<string, string | undefined>;
 /**
  * Base URL resolution:
@@ -28,8 +30,9 @@ const ENV = import.meta.env as unknown as Record<string, string | undefined>;
  *     literal strings ("http://localhost:*"), which Starlette does not glob —
  *     verified 2026-08-26: OPTIONS from http://localhost:1420 → 400
  *     "Disallowed CORS origin". Backend fix required: allow_origin_regex.
- *   • packaged/Tauri builds talk to the loopback service directly and stay
- *     BLOCKED until that regex-based origin matching lands.
+ *   • packaged/Tauri builds talk to the loopback service directly, on the
+ *     SAME origin the Environment surface uses (`service::PYTHON_PORT`).
+ *     There is one Python backend and it serves both.
  */
 const BASE =
   ENV.VITE_AGENT_URL?.replace(/\/$/, '') ??
@@ -48,11 +51,12 @@ async function jget<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function jpost<T>(path: string, body?: unknown): Promise<T> {
+async function jpost<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body ?? {}),
+    signal,
   });
   if (!res.ok) {
     let message = `request failed (${res.status})`;
@@ -96,6 +100,11 @@ export interface AgentEvidenceBundle {
   approvalIds: string[];
   summary: string;
   createdAt: string;
+  /** Request legs that contributed (absent on older backends). */
+  requestIds?: string[];
+  /** Model behind model-backed synthesis; absent means heuristic. */
+  modelProvider?: string | null;
+  modelName?: string | null;
 }
 
 /** The backend's terminal report. See docs/AURA_CENTRAL_AGENT_API.md. */
@@ -159,11 +168,73 @@ export interface AgentEventFrame {
   at: string;
   sessionId: string;
   payload: Record<string, unknown>;
+  /** Bus-wide monotonic sequence (SSE `id:`); absent on legacy frames. */
+  seq?: number | null;
+}
+
+/** What the backend recorded when STOP was pressed. */
+export interface CancellationRecord {
+  sessionId: string;
+  cancelled: boolean;
+  requestedAt: string;
+  reason: string;
+  requestedBy: string;
+  /** The task that was in flight, when there was one. */
+  taskId: string;
+  workerNodeId: string;
+  firstRequest?: boolean;
+}
+
+/**
+ * Per-mode enforcement truth for this host. Deliberately not a boolean:
+ * "enabled" and "enforced" are different words, and only the backend
+ * knows which one applies. `modes` is keyed by policy mode
+ * (`deny` / `allowlist` / `unrestricted`) and carries the backend's own
+ * state vocabulary — SUPPORTED_AND_ENFORCED, UNSUPPORTED, and so on —
+ * so the UI can name what is actually true rather than paraphrasing it.
+ */
+export interface NetworkCapability {
+  platform: string;
+  method: string;
+  modes: Record<string, string>;
+  detail: string;
+  /** Which protocols can pass an allowlist, where one is enforced. */
+  protocols?: Record<string, string>;
 }
 
 export interface SubmitResponse {
   result: AgentResult;
   sessionId: string | null;
+  /** Server-generated leg correlation (see docs/architecture/OBSERVABILITY-CONTRACT.md). */
+  requestId?: string | null;
+}
+
+/**
+ * Ephemeral editor snapshot for code-intelligence entry points (Ctrl+I).
+ * Local interaction state the agent cannot observe on its own. The
+ * backend bounds, fences (untrusted data, never instructions) and
+ * validates every field; projectId/projectPath still resolve through
+ * the registry — this carries NO authority.
+ */
+export interface EditorContext {
+  filePath?: string;
+  language?: string;
+  cursor?: { line: number; column: number };
+  selection?: { startLine: number; startColumn: number; endLine: number; endColumn: number };
+  selectedCode?: string;
+  surrounding?: { before: string; after: string };
+  symbol?: string;
+  diagnostics?: string[];
+  action?: string;
+  customInstruction?: string;
+}
+
+/** A client-proposed session id (`agt-` + 12 hex). The server accepts it
+ *  only when well-shaped and untaken — otherwise it issues its own. */
+export function newClientSessionId(): string {
+  const bytes = new Uint8Array(6);
+  crypto.getRandomValues(bytes);
+  return `agt-${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
 }
 
 /* ── the client ────────────────────────────────────────────────────── */
@@ -176,25 +247,35 @@ export const centralAgentClient = {
    * Submit an intent. Creates a session and drives it synchronously to a
    * terminal-or-parked outcome; live progress between those points comes
    * from `events`.
+   *
+   * Pass `sessionId` (see newClientSessionId) when the caller needs the
+   * id BEFORE the run settles — to subscribe to events immediately or to
+   * cancel early. Pass `editorContext` for code-intelligence entries.
    */
-  submit: (message: string, opts: { projectId?: string; projectPath?: string } = {}) =>
+  submit: (
+    message: string,
+    opts: { projectId?: string; projectPath?: string; editorContext?: EditorContext; sessionId?: string; signal?: AbortSignal } = {},
+  ) =>
     jpost<SubmitResponse>('/agent/sessions', {
       message,
       projectId: opts.projectId,
       projectPath: opts.projectPath,
-    }),
+      editorContext: opts.editorContext,
+      sessionId: opts.sessionId,
+    }, opts.signal),
 
   /** Continue a conversation — answer a clarification or add follow-up. */
   message: (
     sessionId: string,
     message: string,
-    opts: { projectPath?: string; projectId?: string } = {},
+    opts: { projectPath?: string; projectId?: string; editorContext?: EditorContext; signal?: AbortSignal } = {},
   ) =>
-    jpost<{ result: AgentResult }>(`/agent/sessions/${encodeURIComponent(sessionId)}/message`, {
+    jpost<{ result: AgentResult; requestId?: string | null }>(`/agent/sessions/${encodeURIComponent(sessionId)}/message`, {
       message,
       projectPath: opts.projectPath,
       projectId: opts.projectId,
-    }),
+      editorContext: opts.editorContext,
+    }, opts.signal),
 
   getSession: (sessionId: string) => jget<AgentSession>(`/agent/sessions/${encodeURIComponent(sessionId)}`),
 
@@ -212,16 +293,48 @@ export const centralAgentClient = {
    * refused by the backend with 409 — surfaced here as a thrown Error.
    */
   approve: (sessionId: string, approvalId: string, granted: boolean, reason?: string) =>
-    jpost<{ approval: ApprovalDecision; result: AgentResult }>(
+    jpost<{ approval: ApprovalDecision; result: AgentResult; requestId?: string | null }>(
       `/agent/sessions/${encodeURIComponent(sessionId)}/approve`,
       { approvalId, granted, reason },
     ),
 
   resume: (sessionId: string) =>
-    jpost<{ result: AgentResult }>(`/agent/sessions/${encodeURIComponent(sessionId)}/resume`),
+    jpost<{ result: AgentResult; requestId?: string | null }>(`/agent/sessions/${encodeURIComponent(sessionId)}/resume`),
 
-  cancel: (sessionId: string) =>
-    jpost<{ cancelled: boolean }>(`/agent/sessions/${encodeURIComponent(sessionId)}/cancel`),
+  /**
+   * Ask the backend to stop this run.
+   *
+   * Resolves when the request is RECORDED, not when the worker is dead —
+   * terminating a process takes as long as the process takes, and a UI
+   * that waited for it would look hung at the moment the user most wants
+   * an answer. The run reaches CANCELLED on its own `run.cancelled`
+   * event; nothing here may render that state early.
+   */
+  cancel: (sessionId: string, reason?: string) =>
+    jpost<{ cancelled: boolean; cancellation: CancellationRecord; requestId?: string | null }>(
+      `/agent/sessions/${encodeURIComponent(sessionId)}/cancel`,
+      { reason },
+    ),
+
+  /**
+   * Re-attempt a cancelled run. Explicit by design: a run the user
+   * stopped never continues on its own, and resuming starts a FRESH
+   * attempt rather than reviving the terminated one.
+   */
+  resumeCancelled: (sessionId: string) =>
+    jpost<{ result: AgentResult; requestId?: string | null }>(
+      `/agent/sessions/${encodeURIComponent(sessionId)}/resume-cancelled`),
+
+  /** Secret-free model routing observability: which provider/model the
+   *  agent reasons with, per-call telemetry, honest unavailability. */
+  modelStatus: () => jget<{
+    configured: boolean;
+    providers: Array<{ id: string; model: string; calls: number; consecutiveFailures: number; lastError: string | null; circuit: string }>;
+    lastCall: { provider: string; model: string; latencyMs: number; ok: boolean; error: string | null } | null;
+  }>('/agent/model'),
+
+  /** What this host can really enforce for worker network access. */
+  networkCapability: () => jget<NetworkCapability>('/governance/network'),
 
   /** Reasoning-free plan review: steps, capabilities, risks, approvals. */
   planReview: (sessionId: string) => jget<PlanReview>(`/agent/sessions/${encodeURIComponent(sessionId)}/plan`),
@@ -245,38 +358,43 @@ export const centralAgentClient = {
    * stream never falsifies a result.
    */
   /**
-   * Subscribe to the session's live event stream with automatic reconnection.
+   * Subscribe to the session's live event stream with cursor reconnect.
    *
-   * Reconnect policy (all client-side; the backend keeps no cursor):
-   *   • exponential backoff 250ms → 8s cap, reset on a successful frame;
-   *   • every received frame is deduplicated by its `at` timestamp + type
-   *     pair so a replayed tail after reconnect never double-renders;
-   *   • each reconnect emits an honest `stream.reconnecting` frame — the UI
-   *     must be able to say "live updates paused" rather than silently
-   *     stalling;
-   *   • the durable result always comes from submit/approve response bodies,
-   *     so a permanently lost stream can never fabricate or erase a result.
+   * One persistent connection per call: the server replays bounded
+   * history after our cursor, then follows live (heartbeats included).
+   * Reconnect policy:
+   *   • the last seen `id:` sequence is sent as Last-Event-ID, so the
+   *     server replays only what we missed — no polling, no full tails;
+   *   • frames are deduplicated by sequence (legacy frames without one
+   *     fall back to the `type@at` pair), so replay overlap after
+   *     reconnect never double-renders — effectively-once delivery;
+   *   • `stream.resync` (we lagged past the server buffer) and any
+   *     transport error both reconnect from the last seen sequence;
+   *   • each reconnect emits an honest `stream.reconnecting` frame;
+   *   • malformed frames are skipped, never fatal;
+   *   • the durable result always comes from submit/approve response
+   *     bodies, so a permanently lost stream can never fabricate or
+   *     erase a result.
    */
   events: (
     sessionId: string,
     onEvent: (frame: AgentEventFrame) => void,
   ): (() => void) => {
     const controller = new AbortController();
-    const seen = new Set<string>();
+    const deduper = new FrameDeduper();
     let attempt = 0;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
-    const emitDeduped = (frame: AgentEventFrame) => {
+    const emitDeduped = (frame: AgentEventFrame, seq: number | null) => {
       const key = `${frame.type}@${frame.at}`;
-      if (seen.has(key)) return; // dedupe replayed tails after reconnect
-      seen.add(key);
+      if (!deduper.check(seq, key)) return; // replay overlap after reconnect
       onEvent(frame);
     };
 
-    const onFrame = (frame: AgentEventFrame) => {
+    const onFrame = (frame: AgentEventFrame, seq: number | null) => {
       attempt = 0; // a delivered frame proves connectivity — reset backoff
-      emitDeduped(frame);
+      emitDeduped(frame, seq);
     };
 
     const connectLoop = async () => {
@@ -284,27 +402,40 @@ export const centralAgentClient = {
         try {
           const res = await fetch(
             `${BASE}/agent/sessions/${encodeURIComponent(sessionId)}/events`,
-            { signal: controller.signal },
+            {
+              signal: controller.signal,
+              headers: deduper.cursor !== null ? { 'Last-Event-ID': String(deduper.cursor) } : {},
+            },
           );
           if (!res.ok || !res.body) throw new Error(`stream status ${res.status}`);
           const reader = res.body.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
+          const handleBlock = (frameText: string) => {
+            const { seq, data } = parseBlock(frameText);
+            if (data === null || data === '[DONE]') return;
+            try {
+              const frame = JSON.parse(data) as AgentEventFrame;
+              const bodySeq = (frame as { seq?: unknown }).seq;
+              const effective = seq ?? (typeof bodySeq === 'number' ? bodySeq : null);
+              if (frame.type === 'stream.resync') {
+                // Server dropped us from its buffer: reconnect from the
+                // last seen sequence rather than skipping history.
+                throw new Error('stream lagged behind server buffer');
+              }
+              onFrame(frame, effective);
+            } catch (err) {
+              if (err instanceof Error && err.message === 'stream lagged behind server buffer') throw err;
+              /* malformed frame skipped, not fatal */
+            }
+          };
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
             buffer += decoder.decode(value, { stream: true });
-            let idx: number;
-            while ((idx = buffer.indexOf('\n\n')) !== -1) {
-              const frameText = buffer.slice(0, idx);
-              buffer = buffer.slice(idx + 2);
-              for (const line of frameText.split('\n')) {
-                if (!line.startsWith('data:')) continue;
-                try {
-                  onFrame(JSON.parse(line.slice(5).trim()) as AgentEventFrame);
-                } catch { /* malformed frame skipped, not fatal */ }
-              }
-            }
+            const { blocks, rest } = splitBlocks(buffer);
+            buffer = rest;
+            for (const block of blocks) handleBlock(block);
           }
           // Server closed the stream cleanly — treat as disconnect and retry.
         } catch (err) {
@@ -317,7 +448,7 @@ export const centralAgentClient = {
             at: new Date().toISOString(),
             sessionId,
             payload: { attempt: attempt + 1, message: msg },
-          });
+          }, null);
         }
         if (stopped || controller.signal.aborted) return;
         // Capped exponential backoff between attempts.

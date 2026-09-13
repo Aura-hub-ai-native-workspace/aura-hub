@@ -1,135 +1,100 @@
-import { useMemo, useState } from 'react';
-import { DiffEditor } from '@monaco-editor/react';
-import { Badge, Button, Dialog, Icon, type IconName } from '@aura/ui';
-import type { StatusTone } from '@aura/core';
+import { useEffect, useState } from 'react';
+import { Badge, Button, Dialog, Icon } from '@aura/ui';
 import { useAppStore } from '@aura/core';
-import { aiClient, type RiskLevel } from '../ai/aiClient';
-import { recordAiActionMemory } from '../ops/memoryRecorder';
 import { actionSpec } from './actionSpecs';
 import { useEditorStore } from './editorStore';
-import { spliceSelection, type AiActionState } from './useAiAction';
+import type { AiActionState } from './useAiAction';
+import type { ActionKind } from '../ai/aiClient';
 
-const RISK_TONE: Record<RiskLevel, StatusTone> = { safe: 'positive', medium: 'attention', high: 'critical' };
-const RISK_LABEL: Record<RiskLevel, string> = { safe: '🟢 Safe', medium: '🟡 Medium Risk', high: '🔴 High Risk' };
-const SEVERITY_TONE: Record<'info' | 'warning' | 'critical', StatusTone> = { info: 'info', warning: 'attention', critical: 'critical' };
-const SEVERITY_ICON: Record<'info' | 'warning' | 'critical', IconName> = { info: 'spark', warning: 'bug', critical: 'shield' };
+export interface AiActionControls {
+  state: AiActionState;
+  run: (action: ActionKind, customInstruction?: string) => Promise<void>;
+  reset: () => void;
+  cancel: () => void;
+  followUp: (text: string) => Promise<void>;
+  decide: (granted: boolean, reason?: string) => Promise<void>;
+}
+
+const OUTCOME_TONE: Record<string, 'positive' | 'attention' | 'critical' | 'info' | 'neutral'> = {
+  completed: 'positive',
+  'awaiting-approval': 'attention',
+  'needs-clarification': 'info',
+  failed: 'critical',
+  denied: 'critical',
+  timeout: 'attention',
+  blocked: 'attention',
+  cancelled: 'neutral',
+  unsupported: 'neutral',
+};
 
 /**
- * The one result shell for every AI code action — two body modes
- * (`diff`/`new-file` via Monaco's real DiffEditor, `findings` via a
- * severity list), driven entirely by `useAiAction`'s state. Never writes
- * anything until Accept; "Explain Changes" just reveals the explanation
- * already fetched in the same response — no second AI call.
+ * The one result shell for every AI code action, now driven by the
+ * Central Agent. Read-only answers render as text; governed mutations
+ * park on approval and execute server-side through the Capability
+ * Fabric — this dialog NEVER writes AI-proposed code itself. After a
+ * completed mutation the tab is refreshed from disk (refused when the
+ * user has unsaved edits, so nothing is silently discarded).
  */
-export function AIActionDialog({
-  aiAction,
-}: {
-  aiAction: { state: AiActionState; run: (action: import('../ai/aiClient').ActionKind, customInstruction?: string) => Promise<void>; reset: () => void };
-}) {
-  const { state, run, reset } = aiAction;
-  const theme = useAppStore((s) => s.theme);
+export function AIActionDialog({ aiAction }: { aiAction: AiActionControls }) {
+  const { state, reset, cancel, followUp, decide } = aiAction;
+  void useAppStore((s) => s.theme);
   const openFiles = useEditorStore((s) => s.openFiles);
-  const updateContent = useEditorStore((s) => s.updateContent);
-  const saveFile = useEditorStore((s) => s.saveFile);
-  const createFile = useEditorStore((s) => s.createFile);
+  const reloadFile = useEditorStore((s) => s.reloadFile);
 
-  const [showExplanation, setShowExplanation] = useState(false);
-  const [accepting, setAccepting] = useState(false);
-  const [accepted, setAccepted] = useState(false);
-  const [acceptError, setAcceptError] = useState<string | null>(null);
-  const [askAgainOpen, setAskAgainOpen] = useState(false);
-  const [refinement, setRefinement] = useState('');
+  const [followUpText, setFollowUpText] = useState('');
+  const [sendingFollowUp, setSendingFollowUp] = useState(false);
+  const [deciding, setDeciding] = useState(false);
+  const [refreshNote, setRefreshNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (state.phase === 'idle') {
+      setFollowUpText('');
+      setSendingFollowUp(false);
+      setDeciding(false);
+      setRefreshNote(null);
+    }
+  }, [state.phase]);
 
   const spec = state.action ? actionSpec(state.action) : null;
   const file = state.filePath ? openFiles[state.filePath] : undefined;
   const open = state.phase !== 'idle';
-
-  const modifiedFull = useMemo(() => {
-    if (!state.response?.newCode || !file) return '';
-    if (spec?.mode === 'new-file') return state.response.newCode;
-    return spliceSelection(file.content, state.selection, state.response.newCode);
-  }, [state.response, file, state.selection, spec]);
-
-  const close = () => {
-    setShowExplanation(false);
-    setAskAgainOpen(false);
-    setRefinement('');
-    setAccepted(false);
-    setAcceptError(null);
-    reset();
-  };
-
-  const handleAccept = async () => {
-    if (!state.response || !file || accepting) return;
-    setAccepting(true);
-    setAcceptError(null);
-    try {
-      if (spec?.mode === 'new-file' && state.response.newFilePath) {
-        await createFile(state.response.newFilePath, state.response.newCode ?? '');
-      } else {
-        updateContent(file.path, modifiedFull);
-        await saveFile(file.path);
-        // saveFile() catches its own write errors and records them on the
-        // file rather than throwing — check for that instead of assuming
-        // the write succeeded just because the promise resolved.
-        const written = useEditorStore.getState().openFiles[file.path];
-        if (written?.saveError) throw new Error(written.saveError);
-      }
-      void aiClient.reindex(); // fire-and-forget — refreshes the Knowledge Fabric shortly after
-      recordAiActionMemory({
-        accepted: true,
-        action: state.action ?? spec?.id ?? 'custom',
-        filePath: file.path,
-        symbolLabel: state.contextSummary?.symbolLabel ?? null,
-        explanation: state.response.explanation,
-        riskLevel: risk?.level ?? null,
-      });
-      setAccepted(true);
-      setTimeout(close, 900);
-    } catch (e) {
-      setAcceptError((e as Error).message || 'Could not write the change to disk.');
-    } finally {
-      setAccepting(false);
-    }
-  };
-
-  const handleReject = () => {
-    if (state.response && file && state.action) {
-      recordAiActionMemory({
-        accepted: false,
-        action: state.action,
-        filePath: file.path,
-        symbolLabel: state.contextSummary?.symbolLabel ?? null,
-        explanation: state.response.explanation,
-        riskLevel: risk?.level ?? null,
-      });
-    }
-    close();
-  };
-
-  const handleCopy = () => {
-    const text = state.response?.newCode ?? state.response?.explanation ?? '';
-    void navigator.clipboard.writeText(text);
-  };
-
-  const handleAskAgain = () => {
-    if (!state.action) return;
-    const instruction = refinement.trim() || undefined;
-    setAskAgainOpen(false);
-    setRefinement('');
-    setShowExplanation(false);
-    void run(state.action, instruction);
-  };
-
   if (!spec) return null;
 
   const analyzing = state.phase === 'context-resolved' || state.phase === 'generating';
-  const risk = state.response?.risk ?? state.risk;
+  const outcome = state.result?.outcome;
+
+  const handleFollowUp = () => {
+    const text = followUpText.trim();
+    if (!text || sendingFollowUp) return;
+    setSendingFollowUp(true);
+    setFollowUpText('');
+    void followUp(text).finally(() => setSendingFollowUp(false));
+  };
+
+  const handleDecide = (granted: boolean) => {
+    if (deciding) return;
+    setDeciding(true);
+    void decide(granted).finally(() => setDeciding(false));
+  };
+
+  const handleRefresh = async () => {
+    if (!state.filePath) return;
+    setRefreshNote(null);
+    const content = await reloadFile(state.filePath);
+    if (content === null) {
+      const current = useEditorStore.getState().openFiles[state.filePath];
+      setRefreshNote(current?.dirty
+        ? 'Tab has unsaved edits — your content was kept. Save or discard them, then refresh.'
+        : (current?.saveError ?? 'Could not refresh the tab from disk.'));
+    } else {
+      setRefreshNote('Tab refreshed from disk.');
+    }
+  };
 
   return (
     <Dialog
       open={open}
-      onClose={close}
+      onClose={reset}
       size="lg"
       className="max-w-[1040px]"
       title={
@@ -140,48 +105,55 @@ export function AIActionDialog({
         </span>
       }
       footer={
-        state.phase === 'done' && state.response?.ok ? (
+        analyzing ? (
+          <div className="flex w-full items-center justify-between">
+            <span className="text-[12px] text-text-muted">The agent is working — cancellation stops the run server-side.</span>
+            <Button variant="secondary" size="sm" onClick={cancel}>Cancel</Button>
+          </div>
+        ) : state.phase === 'awaiting-approval' ? (
           <div className="flex w-full items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Button variant="ghost" size="sm" icon="clipboard" onClick={handleCopy}>Copy</Button>
-              <Button variant="ghost" size="sm" icon="refresh" onClick={() => setAskAgainOpen((v) => !v)}>Ask Again</Button>
-              {state.response.explanation && (
-                <Button variant="ghost" size="sm" icon="spark" onClick={() => setShowExplanation((v) => !v)}>
-                  {showExplanation ? 'Hide Explanation' : 'Explain Changes'}
-                </Button>
-              )}
+            <span className="text-[12px] text-text-muted">Approval is decided in the agent ledger — the same ledger the Fabric spends from.</span>
+            <div className="flex gap-2">
+              <Button variant="secondary" size="sm" onClick={reset}>Close</Button>
+              <Button variant="secondary" size="sm" loading={deciding} onClick={() => handleDecide(false)}>Deny</Button>
+              <Button variant="primary" size="sm" loading={deciding} onClick={() => handleDecide(true)}>Approve & Apply</Button>
             </div>
-            {spec.mode !== 'findings' && (
-              <div className="flex items-center gap-2">
-                {acceptError && <span className="text-[12px] text-danger">{acceptError}</span>}
-                <Button variant="secondary" size="sm" onClick={handleReject}>Reject</Button>
-                <Button variant="primary" size="sm" icon={accepted ? 'check' : undefined} loading={accepting} onClick={handleAccept}>
-                  {accepted ? 'Applied' : acceptError ? 'Retry' : 'Accept Changes'}
-                </Button>
-              </div>
-            )}
-            {spec.mode === 'findings' && <Button variant="secondary" size="sm" onClick={close}>Close</Button>}
+          </div>
+        ) : state.phase === 'done' ? (
+          <div className="flex w-full items-center justify-between gap-3">
+            <Button variant="ghost" size="sm" icon="clipboard" onClick={() => void navigator.clipboard.writeText(state.result?.summary ?? '')}>Copy answer</Button>
+            <div className="flex gap-2">
+              {outcome === 'completed' && state.filePath && (
+                <Button variant="ghost" size="sm" icon="refresh" onClick={() => void handleRefresh()}>Refresh tab from disk</Button>
+              )}
+              <Button variant="secondary" size="sm" onClick={reset}>Close</Button>
+            </div>
+          </div>
+        ) : state.phase === 'cancelled' ? (
+          <div className="flex w-full items-center justify-between">
+            <span className="text-[12px] text-text-muted">Cancelled — the run was stopped and will not continue in the background.</span>
+            <div className="flex gap-2">
+              <Button variant="ghost" size="sm" onClick={reset}>Close</Button>
+              {state.action && <Button variant="secondary" size="sm" icon="refresh" onClick={() => void aiAction.run(state.action!)}>Retry</Button>}
+            </div>
           </div>
         ) : state.phase === 'error' ? (
           <div className="flex w-full items-center justify-between">
             <span className="text-[12px] text-danger">{state.errorMessage}</span>
             <div className="flex gap-2">
-              <Button variant="ghost" size="sm" onClick={close}>Close</Button>
-              {state.action && <Button variant="secondary" size="sm" icon="refresh" onClick={() => void run(state.action!)}>Retry</Button>}
+              <Button variant="ghost" size="sm" onClick={reset}>Close</Button>
+              {state.action && <Button variant="secondary" size="sm" icon="refresh" onClick={() => void aiAction.run(state.action!)}>Retry</Button>}
             </div>
           </div>
         ) : null
       }
     >
       <div className="min-h-[120px]">
-        {/* Step 1 + 2 — real, honest progress: real counts first, then a real elapsed timer. No fabricated reasoning text. */}
         {analyzing && (
           <div className="space-y-3 py-4">
             <div className="flex items-center gap-2 text-[12.5px] text-text-muted">
               <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-line-strong border-t-accent" />
-              {state.phase === 'context-resolved'
-                ? 'Analyzing project…'
-                : `${spec.promptVerb}… ${(state.elapsedMs / 1000).toFixed(1)}s`}
+              {`${spec.promptVerb}… ${(state.elapsedMs / 1000).toFixed(1)}s`}
             </div>
             {state.contextSummary && (
               <div className="rounded-xl border border-line bg-canvas px-3.5 py-3 text-[12.5px] text-text">
@@ -197,87 +169,71 @@ export function AIActionDialog({
                   {state.contextSummary.dependentFileCount} file{state.contextSummary.dependentFileCount === 1 ? '' : 's'} ·{' '}
                   {state.contextSummary.dependencyCount} dependenc{state.contextSummary.dependencyCount === 1 ? 'y' : 'ies'}
                 </div>
-                {state.risk && (
-                  <div className="mt-2">
-                    <Badge tone={RISK_TONE[state.risk.level]}>{RISK_LABEL[state.risk.level]}</Badge>
-                  </div>
-                )}
+                <div className="mt-1 text-text-subtle">Canonical project context is assembled server-side by the Central Agent.</div>
+              </div>
+            )}
+            {state.progress.length > 0 && (
+              <div className="space-y-1">
+                {state.progress.slice(-6).map((p, i) => (
+                  <div key={`${i}-${p}`} className="text-[12px] text-text-muted">· {p}</div>
+                ))}
               </div>
             )}
           </div>
         )}
 
-        {state.phase === 'done' && state.response?.ok && (
+        {state.phase === 'awaiting-approval' && state.result && (
           <div className="space-y-3 pb-2">
-            {risk && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <Badge tone={RISK_TONE[risk.level]}>{RISK_LABEL[risk.level]}</Badge>
-                {risk.reasons.slice(0, 4).map((r, i) => (
-                  <Badge key={i} tone="neutral">{r}</Badge>
-                ))}
-              </div>
-            )}
-
-            {spec.id === 'rename' && (state.contextSummary?.dependentFileCount ?? 0) > 0 && (
-              <div className="rounded-xl border border-attention/30 bg-attention/10 px-3.5 py-2.5 text-[12px] text-attention">
-                ⚠ {state.contextSummary!.referenceCount} reference(s) in {state.contextSummary!.dependentFileCount} other file(s) will not
-                be updated — Phase 1 rename only edits the current file.
-              </div>
-            )}
-
-            {showExplanation && state.response.explanation && (
-              <div className="rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-[12.5px] leading-relaxed text-text">
-                {state.response.explanation}
-              </div>
-            )}
-
-            {askAgainOpen && (
-              <div className="flex items-center gap-2">
-                <input
-                  autoFocus
-                  value={refinement}
-                  onChange={(e) => setRefinement(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAskAgain()}
-                  placeholder="Refine the request (optional) and press Enter…"
-                  className="flex-1 rounded-lg border border-line bg-canvas px-3 py-1.5 text-[12.5px] text-text outline-none placeholder:text-text-subtle focus:border-accent"
-                />
-                <Button size="sm" variant="primary" onClick={handleAskAgain}>Send</Button>
-              </div>
-            )}
-
-            {spec.mode === 'findings' ? (
+            <div className="flex items-center gap-2">
+              <Badge tone="attention">Waiting for approval</Badge>
+              {state.stale && <Badge tone="neutral">File changed since request</Badge>}
+            </div>
+            <p className="text-[12.5px] leading-relaxed text-text">{state.result.summary}</p>
+            {state.planReview && state.planReview.steps.length > 0 && (
               <div className="space-y-2">
-                {!state.response.findings?.length && (
-                  <div className="rounded-xl border border-line bg-canvas px-3.5 py-3 text-[12.5px] text-text-muted">
-                    {state.response.explanation || 'No issues found.'}
-                  </div>
-                )}
-                {state.response.findings?.map((f, i) => (
-                  <div key={i} className="flex items-start gap-2.5 rounded-xl border border-line bg-canvas px-3.5 py-3">
-                    <Icon name={SEVERITY_ICON[f.severity]} size={15} className="mt-0.5 shrink-0 text-text-subtle" />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[13px] font-medium text-text">{f.title}</span>
-                        <Badge tone={SEVERITY_TONE[f.severity]}>{f.severity}</Badge>
-                        {f.line && <span className="text-[11px] text-text-subtle">Line {f.line}</span>}
-                      </div>
-                      <p className="mt-0.5 text-[12px] leading-relaxed text-text-muted">{f.detail}</p>
+                {state.planReview.steps.map((step) => (
+                  <div key={step.id} className="rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-[12.5px]">
+                    <div className="font-medium text-text">{step.action}</div>
+                    <div className="mt-0.5 text-text-muted">
+                      {step.capability ? `Capability: ${step.capability} · ` : ''}Risk: {step.risk} · {step.reversible ? 'Reversible' : 'Irreversible'} · Verify: {step.verification}
                     </div>
                   </div>
                 ))}
               </div>
-            ) : (
-              <div className="overflow-hidden rounded-xl border border-line">
-                <DiffEditor
-                  height="420px"
-                  language={file?.language ?? 'plaintext'}
-                  original={spec.mode === 'new-file' ? '' : (file?.content ?? '')}
-                  modified={modifiedFull}
-                  theme={theme === 'dark' ? 'aura-dark' : 'aura-light'}
-                  options={{ fontSize: 12.5, readOnly: true, renderSideBySide: true, minimap: { enabled: false }, scrollBeyondLastLine: false }}
-                />
+            )}
+            <p className="text-[12px] text-text-muted">
+              Approving applies the change through the Capability Fabric with verification and evidence — never as a direct editor write.
+            </p>
+          </div>
+        )}
+
+        {state.phase === 'done' && state.result && (
+          <div className="space-y-3 pb-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Badge tone={OUTCOME_TONE[outcome ?? ''] ?? 'neutral'}>{outcome}</Badge>
+              {state.stale && <Badge tone="neutral">File changed since request</Badge>}
+              {state.result.verified.length > 0 && <Badge tone="positive">Verified: {state.result.verified.join(', ')}</Badge>}
+            </div>
+            <div className="whitespace-pre-wrap rounded-xl border border-line bg-canvas px-3.5 py-3 text-[12.5px] leading-relaxed text-text">
+              {state.result.summary || 'The agent returned no summary.'}
+            </div>
+            {(state.result.performed.length > 0 || state.result.evidence) && (
+              <div className="text-[12px] text-text-muted">
+                {state.result.performed.length > 0 && <>Performed: {state.result.performed.join(', ')}. </>}
+                {state.result.evidence && <>Evidence: {state.result.evidence.summary}</>}
               </div>
             )}
+            {refreshNote && <div className="text-[12px] text-text-muted">{refreshNote}</div>}
+            <div className="flex items-center gap-2">
+              <input
+                value={followUpText}
+                onChange={(e) => setFollowUpText(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleFollowUp()}
+                placeholder={outcome === 'needs-clarification' ? 'Answer the question above…' : 'Ask a follow-up on the same session…'}
+                className="flex-1 rounded-lg border border-line bg-canvas px-3 py-1.5 text-[12.5px] text-text outline-none placeholder:text-text-subtle focus:border-accent"
+              />
+              <Button size="sm" variant="primary" loading={sendingFollowUp} onClick={handleFollowUp}>Send</Button>
+            </div>
           </div>
         )}
       </div>

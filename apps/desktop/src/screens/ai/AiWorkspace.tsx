@@ -1,25 +1,36 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { motion } from 'framer-motion';
 import { cn, spring, useAppStore } from '@aura/core';
-import { Badge, Button, Icon, IconButton, Menu, type IconName } from '@aura/ui';
-import { aiClient, type HealthResult, type InspectResult, type ConversationSummary } from '../../ai/aiClient';
-import { useConversations, type ChatMessage } from '../../ai/useConversations';
+import { Badge, Button, Icon, IconButton, Input, Menu, type IconName } from '@aura/ui';
+import { centralAgentClient, type EditorContext } from '../../ai/centralAgentClient';
+import { useAgentConversations, type AgentChatMessage } from '../../ai/useAgentConversations';
 import { useWorkspace } from '../../data/useWorkspace';
 import { AiMarkdown } from '../../ai/AiMarkdown';
 import { EmptyState as EmptyScreen } from '../../components/EmptyState';
+import { AgentPhaseStrip, phaseForResult, phaseFromEvents } from '../../components/agent/AgentPhaseStrip';
+import { ApprovalGate } from '../missions/ApprovalGate';
+import { useEditorStore } from '../../editor/editorStore';
+import { extractSelection, surroundingLines } from '../../editor/useAiAction';
 
 /**
- * AI Workspace — every project's own intelligent conversation surface.
+ * AI Workspace — every project's own Central Agent conversation surface.
  * There is NO global chat: the workspace is scoped to the currently open
- * project, shows THAT project's conversations, and streams answers
- * grounded in its code, system graph, memory and conversation history.
+ * project, shows THAT project's threads, and works through the Central
+ * Agent (intent → plan → approval → Fabric execution → verification →
+ * evidence). Token-level answers stream as `answer.token` frames;
+ * governed work parks on approval and executes server-side.
+ *
+ * Thread persistence stays in the existing per-project conversation
+ * store; each thread's agent session id rides in message metadata.
+ * This surface contains ZERO references to the legacy `/stream` chat
+ * pipeline (Home quick-chat keeps that path; see AskAuraChatbox).
  */
 
 const SUGGESTIONS = [
-  'What is this project?',
-  'How is this project structured?',
-  'What are the main entry points?',
   'Explain the architecture of this project.',
+  'Find why the login system is failing.',
+  'Review this project for security problems.',
+  'Create tests for the payment module and run them.',
 ];
 
 function relTime(iso: string): string {
@@ -30,33 +41,44 @@ function relTime(iso: string): string {
   return h < 24 ? `${h}h` : `${Math.round(h / 24)}d`;
 }
 
+/** Optional active-editor snapshot. Project-level first: undefined when
+ *  no file is open, and the server treats it as bounded untrusted data. */
+function activeEditorContext(): EditorContext | undefined {
+  try {
+    const { activePath, openFiles } = useEditorStore.getState();
+    const file = activePath ? openFiles[activePath] : undefined;
+    if (!file || !file.content) return undefined;
+    return {
+      filePath: file.path,
+      language: file.language,
+      cursor: { line: file.cursor.line, column: file.cursor.column },
+      selection: file.selection ?? undefined,
+      selectedCode: extractSelection(file.content, file.selection),
+      surrounding: surroundingLines(file.content, file.selection),
+      action: 'ask',
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export function AiWorkspace() {
   const setNav = useAppStore((s) => s.setNav);
   const openId = useWorkspace((s) => s.openId);
   const project = useWorkspace((s) => s.projects.find((p) => p.id === s.openId));
-  const conv = useConversations();
+  const conv = useAgentConversations();
   const [dev, setDev] = useState(false);
-  const [health, setHealth] = useState<HealthResult | null>(null);
-  const [model, setModel] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // The conversation store is always scoped to the open project.
-  useEffect(() => { void conv.loadForProject(openId); }, [openId, conv]);
-
-  useEffect(() => {
-    let alive = true;
-    aiClient.health().then((h) => alive && setHealth(h)).catch(() => alive && setHealth(null));
-    aiClient.getProviders().then((r) => alive && setModel(r.status?.model ?? '')).catch(() => {});
-    return () => { alive = false; };
-  }, []);
+  useEffect(() => { void conv.loadForProject(openId, project?.path ?? null); }, [openId, project?.path]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [conv.messages, conv.phase]);
 
-  const lastMeta = useMemo(() => [...conv.messages].reverse().find((m) => m.role === 'assistant' && m.meta)?.meta, [conv.messages]);
-  const connected = health?.health.ok && health?.key.configured;
   const streaming = conv.phase !== 'idle';
+  const agentDown = conv.agentUp === false;
 
   if (!openId || !project) {
     return (
@@ -64,7 +86,7 @@ export function AiWorkspace() {
         <EmptyScreen
           icon="spark"
           title="Open a project to talk to its brain"
-          description="AURA has no global chat. Each project has its own conversations, memory and knowledge. Open a project, then choose Ask AURA."
+          description="AURA has no global chat. Each project has its own conversations. Open a project, then choose Ask AURA."
           action={<Button icon="home" onClick={() => setNav('home')}>Go to Home</Button>}
         />
       </div>
@@ -80,19 +102,18 @@ export function AiWorkspace() {
           <div className="min-w-0">
             <div className="flex items-center gap-2.5">
               <h1 className="truncate text-[18px] font-semibold tracking-[-0.01em] text-text">{project.name}</h1>
-              <span className={cn('inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium', connected ? 'bg-positive/10 text-positive' : 'bg-attention/12 text-attention')}>
-                <span className={cn('h-1.5 w-1.5 rounded-full', connected ? 'bg-positive aura-live' : 'bg-attention')} />
-                {connected ? 'Connected' : health ? (health.key.configured ? 'Provider offline' : 'No API key') : 'Connecting…'}
+              <span className={cn('inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium', conv.agentUp ? 'bg-positive/10 text-positive' : 'bg-attention/12 text-attention')}>
+                <span className={cn('h-1.5 w-1.5 rounded-full', conv.agentUp ? 'bg-positive aura-live' : 'bg-attention')} />
+                {conv.agentUp ? 'Agent connected' : conv.agentUp === false ? 'Agent unavailable' : 'Connecting…'}
               </span>
             </div>
-            <p className="mt-0.5 truncate text-[12px] text-text-muted">Grounded in this project · {model || 'No provider configured'} · memory + conversation aware</p>
+            <p className="mt-0.5 truncate text-[12px] text-text-muted">Central Agent · project work with plans, approvals and evidence</p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <button onClick={() => setDev((d) => !d)} className={cn('inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors', dev ? 'bg-accent-50 text-accent-700 dark:bg-accent/15 dark:text-accent-200' : 'text-text-muted hover:bg-surface-hover hover:text-text')}>
             <Icon name="cpu" size={14} /> Developer
           </button>
-          {!health?.key.configured && <Button size="sm" variant="secondary" icon="settings" onClick={() => setNav('settings')}>Configure AI</Button>}
         </div>
       </div>
 
@@ -110,22 +131,35 @@ export function AiWorkspace() {
         <div className="flex min-h-0 flex-col border-l border-line">
           <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-8 py-6">
             <div className="mx-auto max-w-3xl">
-              {conv.messages.length === 0 ? (
-                <EmptyState onPick={(t) => void conv.send(t)} disabled={!connected} project={project.name} />
+              {agentDown && conv.messages.length === 0 ? (
+                <div role="alert" className="rounded-xl border border-danger/25 bg-danger/5 px-4 py-3 text-[13px] text-danger">
+                  Central Agent service is not reachable right now. Start AURA's backend and reload this view — no request has been sent.
+                </div>
+              ) : conv.messages.length === 0 ? (
+                <EmptyState onPick={(t) => void conv.send(t, { editorContext: activeEditorContext() })} disabled={streaming} project={project.name} />
               ) : (
                 <div className="space-y-6">
                   {conv.messages.map((m, i) => (
-                    <MessageView key={m.id} message={m} phase={conv.phase} isLast={i === conv.messages.length - 1} onRegenerate={() => void conv.regenerate()} canRegenerate={!streaming} />
+                    <MessageView
+                      key={m.id}
+                      message={m}
+                      isLast={i === conv.messages.length - 1}
+                      working={streaming}
+                      canRegenerate={!streaming}
+                      onRegenerate={() => void conv.regenerate()}
+                      onAnswer={(t) => void conv.answer(t)}
+                      onDecide={(granted) => void conv.decide(m.id, granted)}
+                    />
                   ))}
                 </div>
               )}
             </div>
           </div>
-          <Composer streaming={streaming} disabled={!connected} onSend={(t) => void conv.send(t)} onStop={conv.stop} />
+          <Composer streaming={streaming} onSend={(t) => void conv.send(t, { editorContext: activeEditorContext() })} onStop={conv.stop} />
         </div>
 
         <aside className="hidden min-h-0 overflow-y-auto border-l border-line bg-surface/40 xl:block">
-          <SidePanel meta={lastMeta} dev={dev} lastAssistant={[...conv.messages].reverse().find((m) => m.role === 'assistant')} />
+          <SidePanel message={[...conv.messages].reverse().find((m) => m.role === 'assistant')} dev={dev} />
         </aside>
       </div>
     </div>
@@ -134,11 +168,11 @@ export function AiWorkspace() {
 
 /* ── Conversations rail (project-scoped) ─────────────────────────── */
 function ConversationsRail({ conversations, activeId, onSelect, onNew, onRename, onRemove }: {
-  conversations: ConversationSummary[];
+  conversations: { id: string; title: string; messageCount: number; updatedAt: string }[];
   activeId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
-  onRename: (id: string, title: string) => void;
+  onRename: (id: string, t: string) => void;
   onRemove: (id: string) => void;
 }) {
   return (
@@ -187,8 +221,8 @@ function EmptyState({ onPick, disabled, project }: { onPick: (t: string) => void
         <div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-3xl border border-line bg-surface text-accent shadow-sm">
           <Icon name="spark" size={28} strokeWidth={1.5} />
         </div>
-        <h2 className="text-[20px] font-semibold text-text">Ask about {project}</h2>
-        <p className="mx-auto mt-2 max-w-md text-[13.5px] text-text-muted">Answers are grounded in this project's real code, system graph, memory and this conversation's history.</p>
+        <h2 className="text-[20px] font-semibold text-text">Ask AURA to work on {project}</h2>
+        <p className="mx-auto mt-2 max-w-md text-[13.5px] text-text-muted">The Central Agent understands the project, plans the work, and performs governed changes with verification and evidence.</p>
         <div className="mt-6 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {SUGGESTIONS.map((s) => (
             <button key={s} disabled={disabled} onClick={() => onPick(s)} className="rounded-xl border border-line bg-surface px-3.5 py-3 text-left text-[12.5px] text-text-muted transition-all hover:border-line-strong hover:text-text disabled:opacity-50">
@@ -202,8 +236,18 @@ function EmptyState({ onPick, disabled, project }: { onPick: (t: string) => void
 }
 
 /* ── Message ─────────────────────────────────────────────────────── */
-function MessageView({ message, phase, isLast, onRegenerate, canRegenerate }: { message: ChatMessage; phase: string; isLast: boolean; onRegenerate: () => void; canRegenerate: boolean }) {
+function MessageView({ message, isLast, working, canRegenerate, onRegenerate, onAnswer, onDecide }: {
+  message: AgentChatMessage;
+  isLast: boolean;
+  working: boolean;
+  canRegenerate: boolean;
+  onRegenerate: () => void;
+  onAnswer: (text: string) => void;
+  onDecide: (granted: boolean) => void;
+}) {
   const [copied, setCopied] = useState(false);
+  const [answerText, setAnswerText] = useState('');
+  const [deciding, setDeciding] = useState(false);
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -212,64 +256,141 @@ function MessageView({ message, phase, isLast, onRegenerate, canRegenerate }: { 
     );
   }
 
+  const agent = message.agent;
   const thinking = message.status === 'streaming' && message.content.length === 0;
   const copy = async () => { try { await navigator.clipboard.writeText(message.content); setCopied(true); setTimeout(() => setCopied(false), 1400); } catch { /* noop */ } };
+  const lifecycle = agent?.outcome
+    ? phaseForResult(agent.outcome)
+    : agent && agent.events.length > 0
+      ? phaseFromEvents(agent.events)
+      : message.status === 'streaming' ? ('intent' as const) : ('idle' as const);
 
   return (
     <div className="flex gap-3">
       <div className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-accent-50 text-accent dark:bg-accent/15"><Icon name="spark" size={16} /></div>
       <div className="min-w-0 flex-1">
+        {(message.status === 'streaming' || agent) && (
+          <div className="mb-2"><AgentPhaseStrip current={lifecycle} outcome={agent?.outcome ?? undefined} /></div>
+        )}
         {thinking ? (
-          <ThinkingState phase={phase} meta={message.meta} />
+          <ThinkingState label={agent?.progress[agent.progress.length - 1] ?? 'Working'} />
+        ) : message.status === 'cancelled' ? (
+          <div className="rounded-xl border border-line bg-surface px-4 py-3 text-[13px] text-text-muted">
+            Cancelled — the run was stopped and did not continue in the background.
+            {isLast && canRegenerate && <button onClick={onRegenerate} className="ml-2 inline-flex items-center gap-1.5 text-[12px] font-medium text-accent hover:underline"><Icon name="activity" size={13} /> Retry</button>}
+          </div>
         ) : message.status === 'error' ? (
           <div className="rounded-xl border border-danger/30 bg-danger/5 px-4 py-3 text-[13px] text-danger">
-            <div className="flex items-center gap-2 font-medium"><Icon name="close" size={14} /> {errorTitle(message.error?.type)}</div>
-            <div className="mt-1 text-[12.5px] text-danger/80">{message.error?.message}</div>
+            <div className="flex items-center gap-2 font-medium"><Icon name="close" size={14} /> Request failed</div>
+            <div className="mt-1 text-[12.5px] text-danger/80">{message.error}</div>
             {canRegenerate && <button onClick={onRegenerate} className="mt-2 inline-flex items-center gap-1.5 text-[12px] font-medium text-danger hover:underline"><Icon name="activity" size={13} /> Try again</button>}
           </div>
         ) : (
           <>
+            {agent?.outcome && agent.outcome !== 'completed' && (
+              <div className="mb-1.5"><Badge tone={agent.outcome === 'awaiting-approval' || agent.outcome === 'needs-clarification' ? 'attention' : agent.outcome === 'failed' || agent.outcome === 'denied' || agent.outcome === 'timeout' ? 'critical' : 'neutral'}>{agent.outcome}</Badge></div>
+            )}
             <AiMarkdown source={message.content} />
             {message.status === 'streaming' && <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse bg-accent align-middle" />}
           </>
         )}
 
-        {message.status === 'done' && message.done && (() => {
-          const d = message.done;
-          const u = d.usage;
-          const hasStats = (message.meta?.engines?.length ?? 0) > 0 || d.latencyMs != null || d.provider != null || u != null;
-          const citations = d.citations ?? [];
-          return (
+        {message.status === 'done' && agent?.needsInput && (
+          <form
+            className="mt-3 flex max-w-lg items-center gap-2"
+            onSubmit={(e) => { e.preventDefault(); const t = answerText.trim(); if (t) { setAnswerText(''); onAnswer(t); } }}
+          >
+            <Input
+              value={answerText}
+              onChange={(e) => setAnswerText(e.target.value)}
+              placeholder="Answer the question above…"
+              aria-label="Your clarifying answer"
+              className="h-9 flex-1"
+            />
+            <Button type="submit" size="sm" disabled={!answerText.trim() || working}>Reply</Button>
+          </form>
+        )}
+
+        {message.status === 'done' && agent?.plan && agent.plan.steps.length > 0 && (
+          <ol className="mb-3 mt-3 space-y-1.5 border-y border-line py-3" aria-label="What AURA plans to do">
+            {agent.plan.steps.map((s, i) => (
+              <li key={s.id} className="flex items-center gap-2 text-[13px] text-text-muted">
+                <span className="text-text-subtle">{i + 1}.</span>
+                <span className="min-w-0 truncate">{s.action}</span>
+                {s.capability && (
+                  <code className="rounded bg-surface-active px-1.5 py-0.5 text-[11px] text-text-subtle">{s.capability}</code>
+                )}
+                <span className="ml-auto shrink-0 text-[11px] uppercase tracking-wide text-text-subtle">{s.risk}</span>
+              </li>
+            ))}
+          </ol>
+        )}
+
+        {message.status === 'done' && agent?.approvalId && (
+          <AgentApprovalGate
+            approvalId={agent.approvalId}
+            busy={deciding}
+            onDecide={(granted) => { setDeciding(true); onDecide(granted); }}
+          />
+        )}
+
+        {message.status === 'done' && (agent?.performed.length || agent?.verified.length || agent?.evidenceSummary) ? (
           <div className="mt-3 border-t border-line pt-2.5">
-            {hasStats && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-text-subtle">
-              {(message.meta?.engines ?? []).map((e) => <Badge key={e} tone="info">{e} KE</Badge>)}
-              {u && <span className="inline-flex items-center gap-1"><Icon name="cpu" size={12} /> {u.totalTokens} tok</span>}
-              {d.latencyMs != null && <span className="inline-flex items-center gap-1"><Icon name="activity" size={12} /> {d.latencyMs}ms</span>}
-              {d.provider != null && <span className="inline-flex items-center gap-1"><Icon name="spark" size={12} /> {d.provider}</span>}
+              {agent.performed.length > 0 && <span className="inline-flex items-center gap-1"><Icon name="activity" size={12} /> {agent.performed.length} performed</span>}
+              {agent.verified.length > 0 && <span className="inline-flex items-center gap-1"><Icon name="check" size={12} /> {agent.verified.length} verified</span>}
+              {agent.evidenceSummary && <span className="inline-flex items-center gap-1"><Icon name="shield" size={12} /> {agent.evidenceSummary}</span>}
               <div className="ml-auto flex items-center gap-1">
                 <button onClick={copy} className={cn('inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors', copied ? 'text-positive' : 'hover:text-text hover:bg-surface-hover')}><Icon name={copied ? 'check' : 'doc'} size={12} /> {copied ? 'Copied' : 'Copy'}</button>
                 {isLast && canRegenerate && <button onClick={onRegenerate} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:text-text hover:bg-surface-hover"><Icon name="activity" size={12} /> Regenerate</button>}
               </div>
             </div>
-            )}
-            {citations.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {citations.slice(0, 8).map((c) => (
-                  <span key={c.sourceId} className="inline-flex items-center gap-1 rounded-md bg-surface-active px-2 py-0.5 text-[10.5px] text-text-muted" title={c.ref}><Icon name="link" size={11} /> {c.title}</span>
-                ))}
-              </div>
-            )}
           </div>
-          );
-        })()}
+        ) : message.status === 'done' && (
+          <div className="mt-3 border-t border-line pt-2.5">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-text-subtle">
+              <div className="ml-auto flex items-center gap-1">
+                <button onClick={copy} className={cn('inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors', copied ? 'text-positive' : 'hover:text-text hover:bg-surface-hover')}><Icon name={copied ? 'check' : 'doc'} size={12} /> {copied ? 'Copied' : 'Copy'}</button>
+                {isLast && canRegenerate && <button onClick={onRegenerate} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:text-text hover:bg-surface-hover"><Icon name="activity" size={12} /> Regenerate</button>}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function ThinkingState({ phase, meta }: { phase: string; meta?: InspectResult }) {
-  const label = phase === 'retrieving' ? 'Retrieving context' : 'Generating';
+/** The EXISTING ApprovalGate fed the agent ledger's real request. */
+function AgentApprovalGate({ approvalId, busy, onDecide }: { approvalId: string; busy: boolean; onDecide: (granted: boolean) => void }) {
+  type GateRequest = Parameters<typeof ApprovalGate>[0]['request'];
+  const [request, setRequest] = useState<GateRequest | null | undefined>(undefined);
+  useEffect(() => {
+    let alive = true;
+    centralAgentClient.pendingApprovals()
+      .then((list) => {
+        if (!alive) return;
+        setRequest((list.approvals.find((a) => a.id === approvalId) as unknown as GateRequest) ?? null);
+      })
+      .catch(() => { if (alive) setRequest(null); });
+    return () => { alive = false; };
+  }, [approvalId]);
+  if (request) return <ApprovalGate request={request} busy={busy} onDecide={(_id, granted) => onDecide(granted)} />;
+  if (request === null) {
+    return (
+      <p role="status" className="mt-3 text-[12.5px] text-text-subtle">
+        Loading authorization details… If this persists, the approval list could not be read.
+      </p>
+    );
+  }
+  return (
+    <p role="alert" className="mt-3 text-[12.5px] text-attention">
+      The parked approval was not found in the pending list — it may already be decided elsewhere. Start a new request to continue.
+    </p>
+  );
+}
+
+function ThinkingState({ label }: { label: string }) {
   return (
     <div className="inline-flex flex-col gap-1.5">
       <div className="inline-flex items-center gap-2 text-[13px] text-text-muted">
@@ -277,22 +398,13 @@ function ThinkingState({ phase, meta }: { phase: string; meta?: InspectResult })
           {[0, 1, 2].map((i) => <motion.span key={i} className="h-1.5 w-1.5 rounded-full bg-accent" animate={{ opacity: [0.3, 1, 0.3] }} transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }} />)}
         </span>
         {label}
-        {meta && phase === 'retrieving' && meta.engines.length > 0 && <span className="text-text-subtle">via {meta.engines.join(' + ')}</span>}
       </div>
-      {meta && (
-        <div className="text-[11px] text-text-subtle">
-          {meta.coding.files.length > 0 && <span>{meta.coding.files.length} files · {meta.coding.chunks} chunks · </span>}
-          {meta.fullstack.paths.length > 0 && <span>{meta.fullstack.paths.length} relationships · </span>}
-          {meta.memory.items.length > 0 && <span>{meta.memory.items.length} memory · </span>}
-          {meta.contextTokens} ctx tokens
-        </div>
-      )}
     </div>
   );
 }
 
 /* ── Composer ────────────────────────────────────────────────────── */
-function Composer({ streaming, disabled, onSend, onStop }: { streaming: boolean; disabled: boolean; onSend: (t: string) => void; onStop: () => void }) {
+function Composer({ streaming, onSend, onStop }: { streaming: boolean; onSend: (t: string) => void; onStop: () => void }) {
   const [text, setText] = useState('');
   const submit = () => { if (!streaming && text.trim()) { onSend(text); setText(''); } };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } };
@@ -305,85 +417,74 @@ function Composer({ streaming, disabled, onSend, onStop }: { streaming: boolean;
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKey}
             rows={1}
-            placeholder={disabled ? 'Configure AI in Settings to begin…' : 'Ask about this project…'}
+            placeholder="Tell AURA what to do with this project…"
             className="max-h-40 min-h-[24px] flex-1 resize-none bg-transparent px-2 py-1.5 text-[13.5px] text-text outline-none placeholder:text-text-subtle"
           />
           {streaming ? (
             <Button size="sm" variant="secondary" icon="close" onClick={onStop}>Stop</Button>
           ) : (
-            <Button size="sm" icon="arrow-right" disabled={disabled || !text.trim()} onClick={submit}>Send</Button>
+            <Button size="sm" icon="arrow-right" disabled={!text.trim()} onClick={submit}>Send</Button>
           )}
         </div>
-        <div className="mt-1.5 px-1 text-[10.5px] text-text-subtle">Enter to send · Shift+Enter for a new line · this conversation belongs only to this project</div>
+        <div className="mt-1.5 px-1 text-[10.5px] text-text-subtle">Enter to send · Shift+Enter for a new line · governed work asks for approval first</div>
       </div>
     </div>
   );
 }
 
-/* ── Side panel: context + debug ─────────────────────────────────── */
-function SidePanel({ meta, dev, lastAssistant }: { meta?: InspectResult; dev: boolean; lastAssistant?: ChatMessage }) {
+/* ── Side panel: agent session ───────────────────────────────────── */
+function SidePanel({ message, dev }: { message?: AgentChatMessage; dev: boolean }) {
+  const agent = message?.agent;
   return (
     <div className="divide-y divide-line">
-      <Section title="Context sources" icon="knowledge">
-        {!meta ? (
-          <Empty>Ask a question to see the retrieved context.</Empty>
+      <Section title="Agent session" icon="spark">
+        {!agent?.sessionId ? (
+          <Empty>Send a request to open a Central Agent session for this thread.</Empty>
         ) : (
-          <div className="space-y-3">
-            <div className="flex flex-wrap gap-1.5">{meta.engines.length ? meta.engines.map((e) => <Badge key={e} tone="info" dot>{e}</Badge>) : <Badge tone="neutral">no retrieval</Badge>}</div>
-            {meta.coding.files.length > 0 && (
-              <div>
-                <Label>Retrieved files ({meta.coding.chunks} chunks)</Label>
-                <div className="mt-1 space-y-1">{meta.coding.files.map((f) => <div key={f} className="flex items-center gap-2 text-[11.5px] text-text-muted"><Icon name="doc" size={12} className="text-accent" /><span className="truncate font-mono">{f}</span></div>)}</div>
-              </div>
-            )}
-            {meta.fullstack.paths.length > 0 && (
-              <div>
-                <Label>Relationships</Label>
-                <div className="mt-1 space-y-1">{meta.fullstack.paths.map((p, i) => <div key={i} className="truncate font-mono text-[10.5px] text-text-muted" title={p}>{p}</div>)}</div>
-              </div>
-            )}
-            {meta.memory.items.length > 0 && (
-              <div>
-                <Label>Memory recalled</Label>
-                <div className="mt-1 space-y-1">{meta.memory.items.map((it) => <div key={it.id} className="flex items-center gap-2 text-[11.5px] text-text-muted"><Icon name="memory" size={12} className="text-attention" /><span className="truncate">{it.kind}: {it.title}</span></div>)}</div>
-              </div>
-            )}
-            <div className="flex items-center gap-2 border-t border-line pt-2 text-[11px] text-text-subtle"><Icon name="cpu" size={12} /> {meta.contextTokens} context tokens</div>
+          <div className="space-y-2.5 font-mono text-[11px]">
+            <Kv k="session" v={agent.sessionId} />
+            {agent.outcome && <Kv k="outcome" v={agent.outcome} />}
+            {agent.performed.length > 0 && <Kv k="performed" v={agent.performed.join(', ')} />}
+            {agent.verified.length > 0 && <Kv k="verified" v={agent.verified.join(', ')} />}
+            {agent.evidenceSummary && <Kv k="evidence" v={agent.evidenceSummary} />}
+            {agent.events.length > 0 && <Kv k="events" v={String(agent.events.length)} />}
           </div>
         )}
       </Section>
 
-      {dev && (
-        <Section title="Debug" icon="cpu">
-          {!meta ? <Empty>Developer trace appears after a query.</Empty> : <DebugView meta={meta} done={lastAssistant?.done} />}
+      {agent?.plan && agent.plan.steps.length > 0 && (
+        <Section title="Plan" icon="note">
+          <div className="space-y-1.5">
+            {agent.plan.steps.map((s, i) => (
+              <div key={s.id} className="text-[11.5px] text-text-muted">
+                <span className="text-text-subtle">{i + 1}. </span>{s.action}
+                <div className="mt-0.5 font-mono text-[10.5px] text-text-subtle">
+                  {s.capability ? `${s.capability} · ` : ''}{s.risk} · {s.reversible ? 'reversible' : 'irreversible'}
+                </div>
+              </div>
+            ))}
+          </div>
         </Section>
       )}
-    </div>
-  );
-}
 
-function DebugView({ meta, done }: { meta: InspectResult; done?: ChatMessage['done'] }) {
-  return (
-    <div className="space-y-2.5 font-mono text-[11px]">
-      <Kv k="project" v={meta.projectId ?? '—'} />
-      <Kv k="intent" v={`${meta.intent} (${meta.intentConfidence.toFixed(2)})`} />
-      <Kv k="enhanced" v={meta.enhancedPrompt} clamp />
-      <Kv k="engines" v={meta.engines.join(', ') || '—'} />
-      <Kv k="files" v={String(meta.coding.files.length)} />
-      <Kv k="chunks" v={String(meta.coding.chunks)} />
-      <Kv k="fs paths" v={String(meta.fullstack.paths.length)} />
-      <Kv k="memory" v={String(meta.memory.items.length)} />
-      <Kv k="ctx tokens" v={String(meta.contextTokens)} />
-      {done && <>
-        <div className="border-t border-line pt-2" />
-        {done.provider != null && <Kv k="provider" v={done.provider} />}
-        {done.engineId != null && <Kv k="engine" v={done.engineId} />}
-        {done.usage && <Kv k="tokens" v={`p${done.usage.promptTokens} c${done.usage.completionTokens} = ${done.usage.totalTokens}`} />}
-        {done.latencyMs != null && <Kv k="latency" v={`${done.latencyMs}ms`} />}
-        {done.finishReason != null && <Kv k="finish" v={done.finishReason} />}
-        {done.trace && done.trace.length > 0 && <><Label>trace</Label>
-        {done.trace.map((s, i) => <div key={i} className="flex justify-between text-text-subtle"><span>{s.stage}</span><span>{s.durationMs}ms</span></div>)}</>}
-      </>}
+      {dev && (
+        <Section title="Debug" icon="cpu">
+          {!agent ? <Empty>No agent activity on this message yet.</Empty> : (
+            <div className="space-y-2.5 font-mono text-[11px]">
+              <Kv k="session" v={agent.sessionId ?? '—'} />
+              <Kv k="request" v={agent.requestId ?? '—'} />
+              <Kv k="outcome" v={agent.outcome ?? '—'} />
+              <Kv k="approval" v={agent.approvalId ?? '—'} />
+              <Kv k="run" v={agent.runId ?? '—'} />
+              {agent.events.length > 0 && (
+                <><Label>lifecycle</Label>
+                  {agent.events.slice(-12).map((e, i) => <div key={i} className="truncate text-text-subtle" title={e}>{e}</div>)}
+                </>
+              )}
+            </div>
+          )}
+        </Section>
+      )}
     </div>
   );
 }
@@ -398,22 +499,6 @@ function Section({ title, icon, children }: { title: string; icon: IconName; chi
 }
 const Label = ({ children }: { children: React.ReactNode }) => <div className="text-[10px] font-semibold uppercase tracking-wider text-text-subtle">{children}</div>;
 const Empty = ({ children }: { children: React.ReactNode }) => <div className="rounded-xl border border-dashed border-line px-3 py-4 text-center text-[11.5px] text-text-subtle">{children}</div>;
-function Kv({ k, v, clamp }: { k: string; v: string; clamp?: boolean }) {
-  return <div className="flex gap-2"><span className="w-16 shrink-0 text-text-subtle">{k}</span><span className={cn('min-w-0 flex-1 text-text-muted', clamp && 'line-clamp-2')}>{v}</span></div>;
-}
-
-function errorTitle(type?: string): string {
-  switch (type) {
-    case 'auth': return 'Authentication failed';
-    case 'authorization': return 'Permission denied';
-    case 'billing': return 'No credits remaining';
-    case 'rate_limit': return 'Rate limited';
-    case 'model': return 'Model unavailable';
-    case 'configuration': return 'Invalid provider/model configuration';
-    case 'timeout': return 'Request timed out';
-    case 'network': return 'Cannot reach provider';
-    case 'server_error': return 'Provider error';
-    case 'no_provider': return 'No AI provider connected';
-    default: return 'Something went wrong';
-  }
+function Kv({ k, v }: { k: string; v: string }) {
+  return <div className="flex gap-2"><span className="w-16 shrink-0 text-text-subtle">{k}</span><span className="min-w-0 flex-1 break-words text-text-muted">{v}</span></div>;
 }

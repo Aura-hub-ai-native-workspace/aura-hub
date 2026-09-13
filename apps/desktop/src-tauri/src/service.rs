@@ -470,6 +470,7 @@ fn augmented_path(node_dir: Option<&PathBuf>) -> String {
     for candidate in [
         home.join(".local/bin"),
         home.join("bin"),
+        home.join(".npm-global/bin"),
         home.join(".opencode/bin"),
         home.join(".cargo/bin"),
         home.join(".bun/bin"),
@@ -487,6 +488,17 @@ fn augmented_path(node_dir: Option<&PathBuf>) -> String {
         PathBuf::from("/sbin"),
     ] {
         parts.push(candidate);
+    }
+    // Custom npm global prefix (e.g. ~/.npm-global used when `npm config set prefix`)
+    // Covers the case where `npm config get prefix` is ~/.npm-global rather than the
+    // default Node prefix. The probe side also resolves this dynamically via
+    // `npm config get prefix`; the shell seeds it statically to avoid spawning at
+    // startup while still handling the common custom-prefix layout.
+    {
+        let npm_global = home.join(".npm-global/bin");
+        if !parts.contains(&npm_global) {
+            parts.push(npm_global);
+        }
     }
 
     #[cfg(windows)]
