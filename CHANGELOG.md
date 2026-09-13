@@ -54,6 +54,47 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
+## [0.1.9] - 2026-09-13 — Packaged Backend
+
+v0.1.8 shipped a desktop application that supervised the Python
+environment backend correctly and still could not start it. The backend
+was never in the package, and the shell looked for it at the path of the
+machine that compiled the binary — so the artifact worked for whoever
+built it and for nobody who installed it.
+
+### Fixed
+
+- **The Python backend is part of the package now.** `serve_central_agent_api.py`
+  and the `aura` package are staged into `resources/python/`, keeping
+  `scripts/` beside `backend/` so the entry script's own
+  `parents[1] / "backend"` lookup needs no packaging special case. The
+  interpreter and the third-party wheels are still NOT bundled: the shell
+  discovers a Python on the machine and refuses any that cannot import
+  starlette, uvicorn and `aura.api.server`, so a machine without them gets
+  the same honest refusal it always did.
+- **The packaged application resolves the backend from its own resource
+  directory**, mirroring how the Node service has always been found.
+  `env!("CARGO_MANIFEST_DIR")` is a compile-time constant, so the previous
+  build carried `/home/runner/work/...` inside it and looked for the
+  backend on the CI runner's disk. The repository path remains as a
+  development fallback only.
+
+### Changed
+
+- **The packaging suite runs everywhere.** Its repository root was a
+  hardcoded absolute path to one developer's checkout, so on every other
+  machine — CI included — it exited with "no packaged artifact to test"
+  and none of its assertions ran.
+- **Two security invariants now state what they mean.** The process check
+  counted spawn sites and demanded exactly one, which broke when the shell
+  legitimately began supervising a second backend; it now asserts that
+  every spawned executable is a resolved interpreter, that no shell is
+  ever spawned, and that any `-c` payload is a fixed literal. The
+  capability check demanded a permission set that stopped being accurate
+  when the updater landed; it now pins the exact approved set with each
+  grant's justification, and separately rejects any permission that would
+  grant arbitrary execution.
+
 ## [0.1.8] - 2026-09-13 — Environment Backend Startup
 
 v0.1.7 shipped a desktop app whose environment backend never started. The
