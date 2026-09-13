@@ -926,6 +926,15 @@ fn python_can_import(python: &std::path::Path, backend_root: &std::path::Path) -
         .arg("-c")
         .arg("import starlette, uvicorn, aura.api.server")
         .env("PYTHONPATH", backend_root)
+        // The AppImage runtime exports PYTHONHOME pointing INTO its own
+        // mount, which holds no stdlib. An interpreter that inherits it
+        // dies before it runs a line of user code — "No module named
+        // 'encodings'", whose last stderr line is "<no Python frame>".
+        // Every candidate then reports that same meaningless string and a
+        // perfectly good Python looks broken. The interpreter we are
+        // testing knows its own home; inheriting anyone else's is never
+        // right, so it is removed here rather than overridden.
+        .env_remove("PYTHONHOME")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1041,6 +1050,10 @@ pub fn ensure_python_running(
         .current_dir(&home)
         .env("PATH", augmented_path(python.parent().map(PathBuf::from).as_ref()))
         .env("PYTHONPATH", &backend_root)
+        // Same reason as in `python_can_import`: a PYTHONHOME inherited
+        // from the AppImage runtime points at a mount with no stdlib, and
+        // the backend would die on startup instead of at the import check.
+        .env_remove("PYTHONHOME")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         // Unbuffered: the log is the only account of a backend that dies
         // during startup, and a buffered one loses the traceback.
