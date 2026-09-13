@@ -63,6 +63,10 @@ export function signalForEvent(type: string): LifecycleSignal | null {
       return 'execution';
     case 'verification.completed':
       return 'verification';
+    case 'answer.started':
+    case 'answer.token':
+    case 'answer.completed':
+      return 'result'; // streamed synthesis composes the result, nothing else
     case 'result.ready':
     case 'agent.failed':
     case 'agent.cancelled':

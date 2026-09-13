@@ -14,7 +14,7 @@ import { useMemo, useState } from 'react';
 import { CATALOG, type CatalogEntry, type NodeCategory } from '@aura/connected-environment';
 import { Dialog, Icon } from '@aura/ui';
 import { CATEGORY_ICON } from '../environment/presentation';
-import { useHubStore } from './hubStore';
+import { ACTIVE_TOOL_SLOTS, useHubStore } from './hubStore';
 
 const CATEGORY_ORDER: NodeCategory[] = [
   'development',
@@ -40,6 +40,9 @@ export function AddNodeDialog({ open, onClose }: { open: boolean; onClose: () =>
   const [query, setQuery] = useState('');
   const placed = useHubStore((s) => s.placed);
   const add = useHubStore((s) => s.add);
+  // The Workspace holds three tools. At capacity the store refuses, so the
+  // rows say so rather than offering an Add that quietly does nothing.
+  const full = placed.length >= ACTIVE_TOOL_SLOTS;
 
   const placedIds = useMemo(() => new Set(placed.map((p) => p.nodeId)), [placed]);
 
@@ -93,7 +96,8 @@ export function AddNodeDialog({ open, onClose }: { open: boolean; onClose: () =>
                       key={entry.id}
                       entry={entry}
                       placed={placedIds.has(entry.id)}
-                      onAdd={() => add(entry.id)}
+                      full={full}
+                      onAdd={() => { add(entry.id); }}
                     />
                   ))}
                 </div>
@@ -106,7 +110,17 @@ export function AddNodeDialog({ open, onClose }: { open: boolean; onClose: () =>
   );
 }
 
-function EntryRow({ entry, placed, onAdd }: { entry: CatalogEntry; placed: boolean; onAdd: () => void }) {
+function EntryRow({
+  entry,
+  placed,
+  full,
+  onAdd,
+}: {
+  entry: CatalogEntry;
+  placed: boolean;
+  full: boolean;
+  onAdd: () => void;
+}) {
   return (
     <div className="flex items-center gap-3 rounded-xl border border-transparent px-2.5 py-2 transition-colors hover:border-line hover:bg-surface-hover">
       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-active text-text-muted">
@@ -126,11 +140,12 @@ function EntryRow({ entry, placed, onAdd }: { entry: CatalogEntry; placed: boole
       </div>
       <button
         onClick={onAdd}
-        disabled={placed}
+        disabled={placed || full}
+        title={placed ? undefined : full ? 'All three workspace tool slots are taken.' : undefined}
         data-testid={`add-node-${entry.id}`}
         className="shrink-0 rounded-lg border border-line bg-surface px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:bg-surface-hover hover:text-text disabled:opacity-40"
       >
-        {placed ? 'Added' : 'Add'}
+        {placed ? 'Added' : full ? 'Slots full' : 'Add'}
       </button>
     </div>
   );

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { cn } from '@aura/core';
 
 interface Metric {
@@ -25,8 +25,6 @@ interface QuickInsight {
 export function BottomInfoPanel({
   envSummary,
   onScanEnvironment,
-  activeProjectId,
-  projects,
 }: {
   envSummary: {
     connected: number;
@@ -36,10 +34,8 @@ export function BottomInfoPanel({
     lastScanAt: string | null;
   } | null;
   onScanEnvironment: () => void;
-  activeProjectId: string | null;
-  projects: any[];
 }) {
-  const [scanning, setScanning] = useState(false);
+  const [scanning] = useState(false);
 
   const metrics: Metric[] = [
     { label: 'Connected', value: envSummary?.connected ?? 0, status: 'connected' },

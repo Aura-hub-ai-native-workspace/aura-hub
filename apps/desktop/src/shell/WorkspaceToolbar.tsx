@@ -1,15 +1,8 @@
-import { useCallback } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
 import { cn } from '@aura/core';
-import { Icon, IconButton, Tooltip, Badge } from '@aura/ui';
+import { Icon, IconButton, Tooltip } from '@aura/ui';
 
-// @ts-ignore - IconName type strictness, icons work in JSX
-/* eslint-disable */
-import React from 'react';
-// @ts-ignore
 const IconButtonIcon = ({ icon }: { icon: any }) => <Icon name={icon} size={12} />;
 export { IconButtonIcon };
-/* eslint-enable */
 
 export interface WorkspaceToolbarProps {
   onRelayout: () => void;
@@ -60,8 +53,8 @@ export function WorkspaceToolbar({
         <div className="flex items-center gap-1.5 mt-0">
           {/* View mode toggle */}
           <Tooltip content="Grid view" side="top">
- // @ts-ignore - IconName type strictness
             <IconButton
+              // @ts-ignore
               icon="grid"
               label="View mode"
               size="sm"
@@ -73,8 +66,8 @@ export function WorkspaceToolbar({
             />
           </Tooltip>
           <Tooltip content="List view" side="top">
- // @ts-ignore - IconName type strictness
             <IconButton
+              // @ts-ignore
               icon="list"
               label="View mode"
               size="sm"
@@ -96,8 +89,8 @@ export function WorkspaceToolbar({
           />
 
           <Tooltip content="More actions" side="top">
- // @ts-ignore - IconName type strictness
             <IconButton
+              // @ts-ignore
               icon="more-vertical"
               label="More"
               size="sm"
@@ -122,14 +115,13 @@ function HeaderButton({
   testId?: string;
 }) {
   return (
-    <button
-      onClick={onClick}
-      data-testid={testId}
-      className="inline-flex items-center gap-1 rounded-lg border border-line bg-surface px-2.5 py-0.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
-    >
- // @ts-ignore - IconName type strictness, string works at runtime
-      <Icon name={icon} size={12} />
-      {label}
-    </button>
+<button
+        onClick={onClick}
+        data-testid={testId}
+        className="inline-flex items-center gap-1 rounded-lg border border-line bg-surface px-2.5 py-0.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-surface-hover hover:text-text disabled:opacity-50"
+      >
+        <Icon name={icon as any} size={12} />
+        {label}
+      </button>
   );
 }

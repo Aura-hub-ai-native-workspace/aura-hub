@@ -1,60 +1,26 @@
-import { useEffect, useRef, useState } from 'react';
-import { cn } from '@aura/core';
 import { Icon, IconButton, type IconName } from '@aura/ui';
-import type { EnvironmentNode } from '@aura/connected-environment';
 import type { ProjectRecord } from '../../../ai/aiClient';
-import type { MissionRecord } from '../../../ai/missionClient';
-import type { HubProgress, NodeActivityPhase } from '../../../workspace/hubPhase';
-import { ACTIVITY_LABEL } from '../../../workspace/hubPhase';
-import { CATEGORY_ICON, STATUS_LABEL, STATUS_TONE, TONE_DOT, CATEGORY_LABEL } from '../../../environment/presentation';
 import type { WorkerDescriptor } from '../../../ai/workerClient';
-import { GlassCard } from './GlassCard';
-import { GlowButton } from './GlowButton';
-import { WorkerRail } from './WorkerRail';
-
-function MiniCard({
-  node,
-  role,
-  activity,
-  onInspect,
-}: {
-  node: EnvironmentNode;
-  role: string;
-  /** Live execution phase — pulses only while a real task is in flight. */
-  activity: NodeActivityPhase;
-  onInspect: () => void;
-}) {
-  const tone = STATUS_TONE[node.health.status];
-  const live = activity !== 'idle';
-  return (
-    <button
-      type="button"
-      onClick={onInspect}
-      data-testid="hub-node"
-      data-node-id={node.id}
-      data-status={node.health.status}
-      data-activity={activity}
-      className="neon-focus group flex flex-col items-center gap-1.5 rounded-md border border-[rgba(125,146,255,0.25)] bg-[rgba(13,19,38,0.85)] px-2 py-3 text-center transition-colors duration-150 hover:border-[rgba(125,146,255,0.5)]"
-      title={`${node.entry.name} — ${STATUS_LABEL[node.health.status]}${live ? ` · ${ACTIVITY_LABEL[activity]}` : ''}`}
-    >
-      <span className="relative grid h-10 w-10 place-items-center rounded-xl border border-white/5 bg-black/30 text-text">
-        <Icon name={CATEGORY_ICON[node.entry.category]} size={20} />
-        {live && <span className="aura-live absolute inset-0 text-neon-cyan" aria-hidden />}
-      </span>
-      <span className="w-full truncate text-[11.5px] font-semibold text-text">{node.entry.name}</span>
-      <span className="text-[10.5px] text-text-subtle">{live ? ACTIVITY_LABEL[activity] : role}</span>
-      <span className={cn('flex items-center gap-1 text-[10px]', tone === 'positive' ? 'text-neon-success' : tone === 'attention' ? 'text-neon-warning' : 'text-text-subtle')}>
-        <span className={cn('h-1.5 w-1.5 rounded-full', TONE_DOT[tone])} />
-        {STATUS_LABEL[node.health.status]}
-      </span>
-    </button>
-  );
-}
+import type { ToolSlot } from '../../../workspace/toolSlots';
+import type { WorkerSlot } from '../../../workspace/workerSlots';
+import { OrchestrationGraph } from './OrchestrationGraph';
 
 /**
- * LeftControlPanel — brand, real capability cards, agent hub, composer, dock.
- * Presentational only: all state/actions come from WorkspaceScreen props
- * (same contract as HubSurface), so no business logic is duplicated.
+ * LeftControlPanel — the AURA Hub: who AURA can call on, and the one
+ * place you talk to it.
+ *
+ * The rail used to read as an inventory dashboard — a grid of worker
+ * cards, a grid of tool cards, and the agent itself as a small strip
+ * wedged between them. That inverted the product: the orchestrator
+ * looked like one more item in a list of resources. It now reads top to
+ * bottom as minds → AURA → tools, with the composer directly beneath,
+ * so the thing you address is visibly the thing that commands the rest.
+ *
+ * Presentational only. Every value comes from WorkspaceScreen props, and
+ * every one of them originates in the backend or the saved layout: worker
+ * verdicts from `GET /workers`, the three tool slots from the workspace
+ * layout resolved against the environment catalogue, the phase line from
+ * the existing hub progress.
  */
 export interface RailReadiness {
   connected: number;
@@ -64,59 +30,57 @@ export interface RailReadiness {
 }
 
 export function LeftControlPanel({
-  nodes,
+  toolSlots,
+  workerSlots,
   scanning,
-  readiness,
-  lastScanAt,
-  gaps,
   projects,
   projectId,
   onSelectProject,
-  progress,
-  mission,
-  error,
-  onSubmit,
-  onApprove,
-  onStart,
-  onScan,
-  onAddNode,
+  phase,
+  onAddWorker,
+  onRemoveWorker,
+  onReplaceWorker,
+  onAddTool,
+  onRemoveTool,
+  onReplaceTool,
   onRelayout,
-  activity,
   onInspect,
   workers,
-  workersLoading,
   workersConnecting,
   workersError,
   workerActivity,
   onRefreshWorkers,
   onConnectWorker,
   onDisconnectWorker,
+  agentBusy,
 }: {
-  nodes: EnvironmentNode[];
+  /** The workspace's three active tool slots, filled or empty. */
+  toolSlots: ToolSlot[];
+  /** The workspace's six worker slots, filled or empty. */
+  workerSlots: WorkerSlot[];
   scanning: boolean;
-  /** Measured counts for the placed nodes only — same probe source as before. */
-  readiness: RailReadiness;
-  lastScanAt: string | null;
-  /** Real capability gaps from the Fabric annotation (never guessed). */
-  gaps: { node: EnvironmentNode; capabilityId: string }[];
   projects: ProjectRecord[];
   projectId: string | null;
   onSelectProject: (id: string | null) => void;
-  progress: HubProgress;
-  mission: MissionRecord | null;
-  error: string | null;
-  onSubmit: (text: string) => void;
-  onApprove: () => void;
-  onStart: () => void;
-  onScan: () => void;
-  onAddNode: () => void;
+  /** What AURA is doing, in the conversation's own words. */
+  phase: string;
+  /** Opens worker management for one slot, or for the rail's own button
+      when no slot asked. Never scans the machine. */
+  onAddWorker: (index: number | null) => void;
+  /** Frees one worker slot. Layout only. */
+  onRemoveWorker: (index: number) => void;
+  /** Opens worker management to swap one slot's occupant. Layout only. */
+  onReplaceWorker: (index: number, workerId: string) => void;
+  /** Opens AURA Everything from an empty slot. Never scans the machine. */
+  onAddTool: () => void;
+  /** Removes a tool from the active workspace. Layout only. */
+  onRemoveTool: (nodeId: string) => void;
+  /** Opens AURA Everything to swap one slot's occupant. Layout only. */
+  onReplaceTool: (index: number, nodeId: string) => void;
   onRelayout: () => void;
-  /** Live execution phase per placed node id (empty map when idle). */
-  activity: Map<string, NodeActivityPhase>;
   onInspect: (nodeId: string) => void;
   /** Real AI workers, with the backend's own connection verdict. */
   workers: WorkerDescriptor[];
-  workersLoading: boolean;
   workersConnecting: string[];
   workersError: string | null;
   /** node id → live lifecycle while the Central Agent holds a task. */
@@ -124,254 +88,126 @@ export function LeftControlPanel({
   onRefreshWorkers: () => void;
   onConnectWorker: (id: string) => void;
   onDisconnectWorker: (id: string) => void;
+  /** True while AURA is working, so the graph can breathe. */
+  agentBusy: boolean;
 }) {
-  const [text, setText] = useState('');
-  const taRef = useRef<HTMLTextAreaElement>(null);
-
-  useEffect(() => {
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 132)}px`;
-  }, [text]);
-
-  const hasProject = !!projectId;
-  const canSubmit = hasProject && text.trim().length > 0 && !progress.busy;
-  const submit = () => {
-    if (!canSubmit) return;
-    onSubmit(text.trim());
-    setText('');
-  };
-
-  const top = nodes.slice(0, 3);
-  const bottom = nodes.slice(3, 6);
+  const connected = workers.filter((w) => w.connected).length;
+  const governed = workers.filter((w) => w.governance === 'FULLY_GOVERNED').length;
+  const hasProject = Boolean(projectId);
 
   return (
     <aside
-      aria-label="Agent controls"
-      data-testid="hub-surface"
-      data-phase={progress.phase}
-      className="flex min-h-0 w-full flex-col gap-3"
+      aria-label="AURA Hub"
+      data-testid="left-control-panel"
+      className="flex min-h-0 w-full flex-col gap-4"
     >
       {/* Brand */}
       <div className="flex items-center gap-2.5">
-        <span className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-white shadow-glow-blue">
-          <Icon name="spark" size={18} />
+        <span className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-white shadow-glow-blue">
+          <Icon name="spark" size={20} />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-[15px] font-semibold text-text">
+          <span className="block text-[17px] font-semibold tracking-[-0.01em] text-text">
             AURA <span className="text-neon-blue">Hub</span>
           </span>
-          <span className="block truncate text-[11px] text-text-subtle">One Prompt. Multiple Minds.</span>
+          <span className="block truncate text-[11.5px] text-text-subtle">
+            One Prompt. Multiple Minds.
+          </span>
         </span>
         <IconButton icon="panel" label="Toggle panel" size="sm" onClick={onRelayout} />
       </div>
 
-      {/* Real AI workers — connection truth from the backend, never a
-          probe. Workers and tools are separate on purpose: a worker is
-          another AI runtime AURA delegates to, a tool is a capability
-          the Fabric drives itself, and they are connected on entirely
-          different evidence. */}
-      <WorkerRail
-        workers={workers}
-        loading={workersLoading}
+      {workersError && (
+        <p
+          role="alert"
+          data-testid="worker-error"
+          className="rounded-lg border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-2.5 py-1.5 text-[11px] text-neon-danger"
+        >
+          {workersError}
+        </p>
+      )}
+
+      {/* MINDS → AURA → TOOLS */}
+      <OrchestrationGraph
+        workerSlots={workerSlots}
+        workerActivity={workerActivity}
         connecting={workersConnecting}
-        error={workersError}
-        activity={workerActivity}
-        onRefresh={onRefreshWorkers}
+        toolSlots={toolSlots}
+        phase={phase}
+        busy={agentBusy}
         onConnect={onConnectWorker}
         onDisconnect={onDisconnectWorker}
+        onInspect={onInspect}
+        onAddWorker={onAddWorker}
+        onRemoveWorker={onRemoveWorker}
+        onReplaceWorker={onReplaceWorker}
+        onAddTool={onAddTool}
+        onRemoveTool={onRemoveTool}
+        onReplaceTool={onReplaceTool}
       />
 
-      {/* The orchestrator, on its own.
-          This node used to sit INSIDE the Tools card, wedged between two
-          tool grids — which filed AURA as one more capability. AURA is
-          not a tool and not a worker: it is the thing that chooses them,
-          so it gets its own surface between the two lists it commands. */}
-      <GlassCard className="p-3" tint="blue" data-testid="hub-aura-node">
-        <div className="flex items-center gap-3">
-          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl border border-[rgba(77,124,255,0.5)] bg-[rgba(10,16,34,0.95)] text-text shadow-glow-blue">
-            <Icon name="cpu" size={26} />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-[14px] font-semibold text-text">AURA Agent</span>
-            <span className="block text-[11px] text-text-subtle">
-              Plan · Delegate · Supervise · Verify
-            </span>
-            <span className="mt-0.5 block max-w-full truncate text-[11px] text-neon-cyan">
-              {progress.busy ? progress.detail : progress.label}
-            </span>
-          </span>
-        </div>
-      </GlassCard>
-
-      {/* Tools the Fabric drives directly */}
-      <GlassCard className="p-3">
-        <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
-          Tools
-        </p>
-        <div className="grid grid-cols-3 gap-2" role="list" aria-label="Connected capabilities">
-          {top.length === 0 && (
-            <p className="col-span-3 py-2 text-center text-[11.5px] text-text-subtle">
-              {scanning ? 'Reading your environment…' : 'No capabilities placed yet.'}
-            </p>
-          )}
-          {top.map((n) => (
-            <div key={n.id} role="listitem">
-              <MiniCard
-                node={n}
-                role={CATEGORY_LABEL[n.entry.category] ?? 'Tool'}
-                activity={activity.get(n.id) ?? 'idle'}
-                onInspect={() => onInspect(n.id)}
-              />
-            </div>
-          ))}
-        </div>
-
-        <div className="grid grid-cols-3 gap-2" role="list" aria-label="Tool integrations">
-          {bottom.map((n) => (
-            <div key={n.id} role="listitem">
-              <MiniCard
-                node={n}
-                role={CATEGORY_LABEL[n.entry.category] ?? 'Tool'}
-                activity={activity.get(n.id) ?? 'idle'}
-                onInspect={() => onInspect(n.id)}
-              />
-            </div>
-          ))}
-        </div>
-
-        {mission?.approval.status === 'pending' && (
-          <GlowButton block size="sm" icon="check" onClick={onApprove} className="mt-3" data-testid="hub-approve">
-            Approve plan
-          </GlowButton>
-        )}
-        {mission?.approval.status === 'approved' && mission.execution?.status === 'approved' && (
-          <GlowButton block size="sm" icon="deploy" onClick={onStart} className="mt-3" data-testid="hub-start">
-            Start execution
-          </GlowButton>
-        )}
-        {error && (
-          <p role="alert" data-testid="hub-error" className="mt-2 rounded-md border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-2.5 py-1.5 text-[11.5px] text-neon-danger">
-            {error}
-          </p>
-        )}
-
-        {gaps.slice(0, 3).map(({ node, capabilityId }) => (
-          <p
-            key={`${node.id}:${capabilityId}`}
-            className="mt-2 rounded-md border border-[rgba(255,181,71,0.4)] bg-[rgba(255,181,71,0.08)] px-2.5 py-1.5 text-[11.5px] text-neon-warning"
-          >
-            <span className="font-semibold">{node.entry.name}</span> is required but{' '}
-            {node.health.status === 'not-installed' ? "isn't installed" : 'is not connected'}.
-          </p>
-        ))}
-
-        <div className="mt-3 flex items-center justify-between border-t border-white/5 pt-2.5 text-[10.5px] text-text-subtle" aria-label="Environment readiness">
-          <span>
-            <span className="font-semibold text-neon-success">{readiness.connected}</span> connected
+      {/* Honest counts, straight from the backend's verdicts. */}
+      <p
+        data-testid="worker-readiness"
+        className="flex items-center justify-center gap-1.5 text-[10.5px] text-text-subtle"
+      >
+        <span className="font-semibold text-neon-success">{connected}</span> of{' '}
+        <span className="font-semibold">{workers.length}</span> connected
+        {governed > 0 && (
+          <>
             {' · '}
-            <span className="font-semibold text-neon-blue">{readiness.available}</span> found
-            {' · '}
-            <span className="font-semibold text-neon-warning">{readiness.missing}</span> missing
-            {' · '}
-            <span className="font-semibold">{readiness.unscanned}</span> unscanned
-          </span>
-          <button
-            type="button"
-            onClick={onScan}
-            disabled={scanning}
-            data-testid="hub-scan"
-            className="neon-focus inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-text-muted transition-colors duration-150 hover:text-text disabled:opacity-50"
-          >
-            <Icon name="refresh" size={12} />
-            {scanning ? 'Scanning…' : lastScanAt ? 'Rescan' : 'Scan'}
-          </button>
-        </div>
-      </GlassCard>
-
-      {/* Mission composer.
-          Named, because it is NOT the AURA Agent composer on the right:
-          these two boxes look alike and drive different engines, and an
-          unlabelled pair leaves the person typing unable to tell which
-          one they are addressing. Missions plan against files on disk;
-          the agent panel delegates to workers. */}
-      <GlassCard className="p-3">
-        <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
-          New mission
-        </p>
-        <label htmlFor="neon-composer" className="sr-only">Describe a mission</label>
-        <textarea
-          id="neon-composer"
-          ref={taRef}
-          rows={3}
-          value={text}
-          disabled={progress.busy}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-          data-testid="hub-composer"
-          placeholder={hasProject ? 'Describe a mission…' : 'Choose a project first…'}
-          className="neon-focus w-full resize-none bg-transparent text-[13px] leading-relaxed text-text outline-none placeholder:text-text-subtle disabled:cursor-not-allowed"
-        />
-        <div className="mt-2 flex items-center justify-between gap-2">
-          <span className="truncate text-[10.5px] text-text-subtle">
-            {progress.busy
-              ? progress.detail
-              : hasProject
-                ? 'Plans against files on disk · to delegate to workers, use the AURA Agent panel'
-                : 'Missions plan against real files on disk.'}
-          </span>
-          <GlowButton size="sm" onClick={submit} disabled={!canSubmit} data-testid="hub-submit" aria-label="Send message">
-            <Icon name="arrow-right" size={15} />
-          </GlowButton>
-        </div>
-        {!hasProject && projects.length > 0 && (
-          <label className="mt-2 flex items-center gap-2 text-[11.5px] text-text-subtle">
-            <Icon name="folder" size={13} />
-            <span className="sr-only">Select project</span>
-            <select
-              value={projectId ?? ''}
-              onChange={(e) => onSelectProject(e.target.value || null)}
-              data-testid="hub-project"
-              className="neon-focus min-w-0 flex-1 truncate rounded-md border border-[rgba(125,146,255,0.3)] bg-transparent px-2 py-1 text-text outline-none"
-            >
-              <option value="">Choose a project…</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          </label>
+            <span className="font-semibold text-neon-success">{governed}</span> governed live
+          </>
         )}
-      </GlassCard>
+        <button
+          type="button"
+          onClick={onRefreshWorkers}
+          data-testid="worker-refresh"
+          className="neon-focus ml-1 inline-flex items-center gap-1 rounded px-1 text-text-muted transition-colors hover:text-text"
+        >
+          <Icon name="refresh" size={11} />
+          {scanning ? 'Reading…' : 'Refresh'}
+        </button>
+      </p>
 
-      {/* Dock */}
-      <div className="mt-auto flex items-center gap-2" role="toolbar" aria-label="Quick actions">
-        {(
-          [
-            { icon: 'plus' as const, label: 'Add capability node', fn: onAddNode, testId: 'add-node-open' },
-            { icon: 'command' as const, label: 'Scan environment', fn: onScan, testId: undefined },
-            { icon: 'file' as const, label: 'Re-arrange workspace', fn: onRelayout, testId: undefined },
-            { icon: 'settings' as const, label: 'Workspace settings', fn: onRelayout, testId: undefined },
-          ]
-        ).map((a) => (
-          <button
-            key={a.label}
-            type="button"
-            onClick={a.fn}
-            aria-label={a.label}
-            title={a.label}
-            data-testid={a.testId}
-            className="neon-focus grid h-10 flex-1 place-items-center rounded-md border border-[rgba(125,146,255,0.25)] bg-[rgba(13,19,38,0.85)] text-text-muted transition-colors duration-150 hover:border-[rgba(125,146,255,0.5)] hover:text-text"
+      {!hasProject && projects.length > 0 && (
+        <label className="flex items-center gap-2 text-[11.5px] text-text-subtle">
+          <Icon name="folder" size={13} />
+          <span className="sr-only">Select project</span>
+          <select
+            value={projectId ?? ''}
+            onChange={(e) => onSelectProject(e.target.value || null)}
+            data-testid="hub-project"
+            className="neon-focus min-w-0 flex-1 truncate rounded-md border border-[rgba(125,146,255,0.3)] bg-transparent px-2 py-1 text-text outline-none"
           >
-            <Icon name={a.icon} size={17} />
-          </button>
-        ))}
-      </div>
+            <option value="">Choose a project…</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {/* The rail's own way into worker management, kept for the case a
+          slot cannot serve: it says which surface it opens without
+          claiming a slot, and the surface fills the first free one (or
+          says plainly that there is none). A TOOL has no equivalent
+          button, because a tool belongs to a slot and the empty slot
+          above already carries its own "+ Add Tool".
+          Neither entry point triggers a machine scan: the roster and the
+          inventory are already known, and a button labelled "add" should
+          not cost twenty seconds of probing. */}
+      <button
+        type="button"
+        onClick={() => onAddWorker(null)}
+        data-testid="add-worker-open"
+        className="neon-focus inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-xl border border-[rgba(122,92,255,0.4)] bg-[rgba(122,92,255,0.1)] text-[12px] font-semibold text-[#c9bcff] transition-colors hover:bg-[rgba(122,92,255,0.18)]"
+      >
+        <Icon name="plus" size={14} />
+        Add Worker
+      </button>
     </aside>
   );
 }

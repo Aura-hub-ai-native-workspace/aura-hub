@@ -445,4 +445,101 @@ async function inventory(options: {
   }
 }
 
-export const environmentClient = { scan, probe, install, uninstall, connectDirect, inventory };
+
+/* ── AURA Everything: software discovery ───────────────────────────── */
+
+/** How far AURA has actually proven a piece of software. Mirrors the
+ *  backend ladder; the UI never computes or upgrades one of these. */
+export type SoftwareState =
+  | 'UNKNOWN' | 'DISCOVERED' | 'CATALOGUE' | 'UNTRUSTED' | 'UNSUPPORTED'
+  | 'INSTALLABLE' | 'INSTALLED' | 'VERIFIED' | 'CONNECTED' | 'AURA_READY';
+
+export interface SoftwareProvenance {
+  source: string;
+  trust: 'curated' | 'machine' | 'registry' | 'unknown';
+  identifier: string;
+  url: string;
+  version: string;
+  fetchedAt: string;
+}
+
+export interface SoftwareResult {
+  canonicalId: string;
+  displayName: string;
+  kind: string;
+  summary: string;
+  category: string;
+  homepage: string;
+  repository: string;
+  latestVersion: string;
+  aliases: string[];
+  platforms: string[];
+  executables: string[];
+  /** The curated catalogue id, when AURA actually knows this software. */
+  catalogId: string | null;
+  state: SoftwareState;
+  installed: boolean;
+  verified: boolean;
+  connected: boolean;
+  installedVersion: string;
+  reason: string;
+  trust: string;
+  sources: string[];
+  provenance: SoftwareProvenance[];
+  /** The ONLY field that may gate an Install control. True exclusively
+   *  when a curated InstallSpec can produce a real command here. */
+  installable: boolean;
+}
+
+export interface SoftwareSearchResponse {
+  query: string;
+  results: SoftwareResult[];
+  /** Which layers answered — rendered as the search trail. */
+  consulted: string[];
+  offline: boolean;
+  stale: boolean;
+  detail: string;
+}
+
+export type SearchOutcome =
+  | { ok: true; response: SoftwareSearchResponse }
+  | { ok: false; reason: string };
+
+/** External discovery is bounded server-side, but the UI must not hang
+ *  on it either. */
+const SEARCH_TIMEOUT_MS = 20000;
+
+/**
+ * Resolve a software search through every layer AURA has.
+ *
+ * Describes software; installs nothing. Installing still goes through
+ * `install(catalogId)` — the existing governed route — and only for
+ * results the backend marked `installable`.
+ */
+async function search(
+  query: string,
+  opts: { limit?: number; external?: boolean } = {},
+): Promise<SearchOutcome> {
+  try {
+    const res = await fetch(`${ENVIRONMENT_BASE}/environment/search`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query, limit: opts.limit, external: opts.external }),
+      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      return { ok: false, reason: `The Python environment backend answered ${res.status}.` };
+    }
+    return { ok: true, response: (await res.json()) as SoftwareSearchResponse };
+  } catch (e) {
+    const aborted = e instanceof DOMException && e.name === 'TimeoutError';
+    return {
+      ok: false,
+      reason: aborted
+        ? 'Software discovery took too long and was stopped.'
+        : UNREACHABLE_DETAIL,
+    };
+  }
+}
+
+export const environmentClient = { scan, probe, install, uninstall, connectDirect, inventory, search };

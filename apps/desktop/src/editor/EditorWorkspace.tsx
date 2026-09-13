@@ -53,7 +53,7 @@ export function EditorWorkspace({ projectId }: { projectId: string }) {
   const activePath = useEditorStore((s) => s.activePath);
   const openFiles = useEditorStore((s) => s.openFiles);
 
-  const aiAction = useAiAction(projectId);
+  const aiAction = useAiAction(projectId, project?.path);
   const diagnosis = useDiagnosis(projectId);
   const { graph } = useProjectData(projectId);
   const [auraPaletteOpen, setAuraPaletteOpen] = useState(false);

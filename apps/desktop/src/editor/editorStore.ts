@@ -74,6 +74,15 @@ interface EditorState {
   updateCursor: (path: string, cursor: CursorPosition) => void;
   updateSelection: (path: string, selection: EditorSelection | null) => void;
   saveFile: (path: string) => Promise<void>;
+  /**
+   * Re-read an open file from disk, replacing the tab content. Used
+   * after GOVERNED server-side changes (Central Agent → Capability
+   * Fabric) so the editor shows what the Fabric wrote. Refuses when the
+   * tab has unsaved local edits — overwriting those would silently
+   * discard the user's work. Returns the fresh content, or null when
+   * the reload was refused or failed (error recorded on the file).
+   */
+  reloadFile: (path: string) => Promise<string | null>;
   setExplorerWidth: (w: number) => void;
   setAiPanelWidth: (w: number) => void;
   toggleAiPanel: () => void;
@@ -343,6 +352,31 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         if (!current) return s;
         return { openFiles: { ...s.openFiles, [path]: { ...current, saveError: (e as Error).message } } };
       });
+    }
+  },
+
+  async reloadFile(path) {
+    const { root, openFiles } = get();
+    const file = openFiles[path];
+    if (!root || !file) return null;
+    if (file.dirty) return null;
+    try {
+      const content = await fsReadFile(root, path);
+      set((s) => {
+        const current = s.openFiles[path];
+        if (!current) return s;
+        return {
+          openFiles: { ...s.openFiles, [path]: { ...current, content, originalContent: content, dirty: false, saveError: null } },
+        };
+      });
+      return content;
+    } catch (e) {
+      set((s) => {
+        const current = s.openFiles[path];
+        if (!current) return s;
+        return { openFiles: { ...s.openFiles, [path]: { ...current, saveError: (e as Error).message } } };
+      });
+      return null;
     }
   },
 
