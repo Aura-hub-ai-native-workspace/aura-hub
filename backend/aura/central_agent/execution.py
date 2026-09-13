@@ -32,6 +32,10 @@ class ExecutionOutcome:
     timed_out: bool = False
     denied: bool = False
     run_id: str | None = None
+    #: The inbound request leg that caused this execution (see
+    #: central_agent.correlation). Observability only — the outcome's
+    #: authority comes from verification, never from this field.
+    request_id: str = ""
     resumed_run_id: str | None = None
     parked_runs: dict[str, str] = field(default_factory=dict)  # taskId → rid
     # Verified upstream evidence, keyed by task id, for inputFrom ==
@@ -97,13 +101,20 @@ class ExecutionController:
         resume_grants: dict[str, str] | None = None,
         project_cwd: str | None = None,
         prior_verified: dict[str, dict] | None = None,
+        correlation: dict[str, str] | None = None,
     ) -> ExecutionOutcome:
         """Run one plan leg. `prior_verified` seeds handoff evidence from an
         earlier leg of the same workflow (verified task_id → evidence
         record, as filed by _note_task_closed): a resumed leg must not
         re-prove what a previous leg already verified, and a parked
-        upstream must never silently become verified by re-running."""
+        upstream must never silently become verified by re-running.
+        `correlation` carries {"session_id", "request_id"} into every
+        invocation context, worker assignment, and the outcome itself —
+        observability only, never authority."""
         result = ExecutionOutcome()
+        correlation = {k: v for k, v in (correlation or {}).items() if v}
+        if correlation.get("request_id"):
+            result.request_id = correlation["request_id"]
         if prior_verified:
             result.verified_outputs.update(prior_verified)
         resume_grants = resume_grants or {}
@@ -142,6 +153,10 @@ class ExecutionController:
                     "capabilityId": task.capabilityId,
                     "lifecycle": "COMPLETED",
                     "state": "skipped",
+                    **({"sessionId": correlation["session_id"]}
+                       if correlation.get("session_id") else {}),
+                    **({"requestId": correlation["request_id"]}
+                       if correlation.get("request_id") else {}),
                     "verified": True,
                 }
                 result.outcomes.append(TaskOutcome(
@@ -198,7 +213,8 @@ class ExecutionController:
                 self._invoke_single(task, project_id, compiled_workflow, result,
                                     approval_id=grant_for_task[0] if grant_for_task else None,
                                     project_cwd=project_cwd,
-                                    cancel_token=cancel_token)
+                                    cancel_token=cancel_token,
+                                    correlation=correlation)
 
             last = result.outcomes[-1] if result.outcomes else None
             if last is None:
@@ -251,14 +267,29 @@ class ExecutionController:
     def _role_usable(self, capability_id: str):
         """Executor usability check, mirroring the Fabric invoke path:
         the routing executor's supportsNode, or None (match on role
-        provision only; dispatch still enforces usability)."""
-        try:
-            exe = (getattr(self._cfg, "executors", None) or {}).get(
-                capability_id)
+        provision only; dispatch still enforces usability).
+
+        The config's own executor map is consulted first, then the
+        Fabric's registry. The fallback is what makes selection agree
+        with dispatch in the production composition, which hands the
+        agent an empty map and registers the real executors on the
+        Fabric: without it, selection sees no usability check at all and
+        can pick a worker AURA has no verified way to drive — passing
+        over one it can — only for dispatch to refuse it. Failing that
+        way is honest but useless; the point is to choose a worker that
+        works.
+        """
+        for source in (getattr(self._cfg, "executors", None),
+                       getattr(getattr(self._cfg, "fabric", None),
+                               "executors", None)):
+            try:
+                exe = (source or {}).get(capability_id)
+            except Exception:
+                continue
             fn = getattr(exe, "supportsNode", None)
-            return fn if callable(fn) else None
-        except Exception:
-            return None
+            if callable(fn):
+                return fn
+        return None
 
     def _match_role(self, task: Any, role: str, pinned_id: str | None,
                     exclude: set[str] | None = None) -> str | None:
@@ -397,7 +428,9 @@ class ExecutionController:
         approval_id: str | None = None,
         project_cwd: str | None = None,
         cancel_token: Any | None = None,
+        correlation: dict[str, str] | None = None,
     ) -> None:
+        correlation = {k: v for k, v in (correlation or {}).items() if v}
         if not task.capabilityId:
             result.outcomes.append(TaskOutcome(
                 taskId=task.id, state="failed",
@@ -461,6 +494,12 @@ class ExecutionController:
             "projectId": project_id,
             "taskId": task.id,
         }
+        # Leg correlation into the governed invocation (lands in the
+        # Fabric audit record; see fabric.invoke._settle). IDs only.
+        if correlation.get("session_id"):
+            context["sessionId"] = correlation["session_id"]
+        if correlation.get("request_id"):
+            context["requestId"] = correlation["request_id"]
         # AURA-validated worker pin (planner-checked, routing-enforced):
         # the requested node is never substituted, only denied.
         node_id = getattr(task, "nodeId", None)
@@ -507,6 +546,10 @@ class ExecutionController:
             "role": role or "",
             "capabilityId": task.capabilityId,
             "lifecycle": "ACTIVE",
+            **({"sessionId": correlation["session_id"]}
+               if correlation.get("session_id") else {}),
+            **({"requestId": correlation["request_id"]}
+               if correlation.get("request_id") else {}),
         }
         # Phase 11 unification: effects with node bindings go through the
         # SAME interpreter as workflows (one runner); everything else keeps

@@ -818,12 +818,26 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             return _err("message is required")
         import anyio
 
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
+        editor_context = body.get("editorContext")
+        if editor_context is not None and not isinstance(editor_context, dict):
+            return _err("editorContext must be an object")
+        session_id = body.get("sessionId")
+        if session_id is not None and not isinstance(session_id, str):
+            return _err("sessionId must be a string")
         result = await anyio.to_thread.run_sync(
             lambda: agent.submit(message,
                                  project_id=body.get("projectId") or None,
-                                 project_path=body.get("projectPath") or None))
+                                 project_path=body.get("projectPath") or None,
+                                 editor_context=editor_context,
+                                 session_id=session_id,
+                                 request_id=rid))
         return JSONResponse({"result": _model_dump(result),
-                             "sessionId": sessions.last_session_id})
+                             "sessionId": sessions.last_session_id,
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
 
     async def agent_message(request: Request):
         body = await request.json()
@@ -832,10 +846,29 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             return _err("message is required")
         import anyio
 
-        result = await anyio.to_thread.run_sync(
-            lambda: agent.message(request.path_params["sid"], message,
-                                  body.get("projectPath")))
-        return JSONResponse({"result": _model_dump(result)})
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
+        editor_context = body.get("editorContext")
+        if editor_context is not None and not isinstance(editor_context, dict):
+            return _err("editorContext must be an object")
+        project_id = body.get("projectId")
+        if project_id is not None and not isinstance(project_id, str):
+            return _err("projectId must be a string")
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: agent.message(request.path_params["sid"], message,
+                                      body.get("projectPath"), editor_context,
+                                      project_id or None,
+                                      request_id=rid))
+        except ValueError as exc:
+            text = str(exc)
+            if "no such session" in text:
+                return _err(text, 404)
+            return _err(text, 409)
+        return JSONResponse({"result": _model_dump(result),
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
 
     async def agent_session_get(request: Request):
         session = _session_or_none(request.path_params["sid"])
@@ -848,24 +881,53 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         approval_id = str(body.get("approvalId") or "")
         granted = bool(body.get("granted"))
         reason = body.get("reason")
-        decided = S["ledger"].decide(approval_id, granted, "user", reason)
-        if decided is None:
-            return _err("this request was already decided", 409)
         import anyio
 
-        result = await anyio.to_thread.run_sync(lambda: agent.resume(request.path_params["sid"]))
-        return JSONResponse({"approval": decided, "result": _model_dump(result)})
+        sid = request.path_params["sid"]
+        try:
+            # Binding BEFORE deciding: a mismatched approval must not
+            # even be recorded, let alone spent.
+            await anyio.to_thread.run_sync(
+                lambda: agent.check_approval_binding(sid, approval_id))
+            decided = S["ledger"].decide(approval_id, granted, "user", reason)
+        except ValueError as exc:
+            return _err(str(exc), 409)
+        if decided is None:
+            return _err("this request was already decided", 409)
+
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: agent.resume(sid, request_id=rid))
+        except (ValueError, PermissionError) as exc:
+            return _err(str(exc), 409)
+        return JSONResponse({"approval": decided,
+                             "result": _model_dump(result),
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
 
     async def agent_resume(request: Request):
         import anyio
 
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
         session = _session_or_none(request.path_params["sid"])
         if session is None:
             return _err("no such session", 404)
         if session.state != "awaiting-approval":
             return _err("that session is not awaiting approval", 400)
-        result = await anyio.to_thread.run_sync(lambda: agent.resume(request.path_params["sid"]))
-        return JSONResponse({"result": _model_dump(result)})
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: agent.resume(request.path_params["sid"],
+                                     request_id=rid))
+        except (ValueError, PermissionError) as exc:
+            return _err(str(exc), 409)
+        return JSONResponse({"result": _model_dump(result),
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
 
     async def agent_network_capability(request: Request):
         """What this host can really enforce. Read by the UI so it can
@@ -879,10 +941,19 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         the user makes; nothing resumes a cancelled run on its own."""
         import anyio
 
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
         sid = request.path_params["sid"]
-        result = await anyio.to_thread.run_sync(
-            lambda: agent.resume(sid, resume_cancelled=True))
-        return JSONResponse({"result": _model_dump(result)})
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: agent.resume(sid, resume_cancelled=True,
+                                     request_id=rid))
+        except (ValueError, PermissionError) as exc:
+            return _err(str(exc), 409)
+        return JSONResponse({"result": _model_dump(result),
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
 
     async def agent_cancel(request: Request):
         """Request a stop. Returns as soon as the request is RECORDED.
@@ -901,12 +972,31 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         except Exception:  # noqa: BLE001 — a bare STOP carries no body
             body = {}
         reason = str(body.get("reason") or "")[:400]
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
         try:
             record = await anyio.to_thread.run_sync(
                 lambda: agent.request_cancel(sid, reason))
         except ValueError as exc:
             return _err(str(exc), 404)
-        return JSONResponse({"cancelled": True, "cancellation": record})
+        return JSONResponse({"cancelled": True, "cancellation": record,
+                             "requestId": rid},
+                            headers={"X-Aura-Request": rid})
+
+    async def agent_model(request: Request):
+        """Secret-free model routing observability (P1-D).
+
+        Which provider/model the agent would reason with, per-call
+        telemetry, and honest unavailability — never keys, prompts, or
+        completions, and never a fabricated identity.
+        """
+        port = S.get("model_port")
+        telemetry = (port.telemetry() if port is not None
+                     and hasattr(port, "telemetry")
+                     else {"configured": False, "providers": [],
+                           "lastCall": None})
+        return JSONResponse(telemetry)
 
     async def agent_plan(request: Request):
         review = agent.review_plan(request.path_params["sid"])
@@ -923,19 +1013,84 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse(evidence.model_dump() if evidence else {"evidence": None})
 
     async def agent_events(request: Request):
+        import anyio
+
+        from ..central_agent.events import _StreamLagged
+
         sid = request.path_params["sid"]
-        # Tail replay then close: the client's reconnect loop re-subscribes
-        # with backoff and dedupes by (type, at), so a bounded stream can
-        # never strand a reader and can never double-render.
         session = _session_or_none(sid)
         if session is None:
             return _err("no such session", 404)
-        frames = [json.loads(chunk) for chunk in agent.bus.tail_stream(sid)]
+        # Cursor: standard Last-Event-ID header or ?after=N. Malformed
+        # cursors fail closed (400) rather than replaying the wrong
+        # window; the client resubscribes without a cursor instead.
+        # The cursor can never cross scope: replay and live frames are
+        # always filtered to this session (+ the global "-" channel).
+        after: int | None = None
+        raw_cursor = (request.headers.get("last-event-id")
+                      or request.query_params.get("after"))
+        if raw_cursor not in (None, ""):
+            try:
+                after = int(raw_cursor)
+            except (TypeError, ValueError):
+                return _err("malformed cursor: after must be an integer "
+                            "sequence", 400)
+            if after < 0:
+                return _err("malformed cursor: after must be >= 0", 400)
 
-        def stream():
-            for frame in frames:
-                yield frame
-        return _sse(stream())
+        def frame_line(event) -> str:
+            body = (event.model_dump() if hasattr(event, "model_dump")
+                    else event)
+            text = dumps_compact(body)
+            seq = body.get("seq")
+            head = f"id: {seq}\n" if isinstance(seq, int) else ""
+            return f"{head}data: {text}\n\n"
+
+        def resync_line() -> str:
+            return ("data: " + dumps_compact({
+                "type": "stream.resync",
+                "at": _now(),
+                "sessionId": sid,
+                "payload": {"message": "consumer lagged; reconnect with "
+                                       "your last seen id"},
+            }) + "\n\n")
+
+        pump, close = agent.bus.subscribe_live(sid)
+
+        def _pump_once():
+            """Blocking pump for the worker thread: one live event, a
+            lag signal, or a heartbeat tick (never blocks past 20s so
+            disconnects and heartbeats stay timely)."""
+            import queue as _queue
+
+            try:
+                return ("event", pump(20.0))
+            except _StreamLagged:
+                return ("lagged", None)
+            except _queue.Empty:
+                return ("heartbeat", None)
+
+        async def gen():
+            try:
+                for event in agent.bus.tail_after(sid, after):
+                    yield frame_line(event)
+                while True:
+                    kind, event = await anyio.to_thread.run_sync(
+                        _pump_once, abandon_on_cancel=True)
+                    if kind == "event":
+                        yield frame_line(event)
+                    elif kind == "lagged":
+                        yield resync_line()
+                    else:
+                        yield ": heartbeat\n\n"
+            except asyncio.CancelledError:  # client disconnected
+                pass
+            finally:
+                close()
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"cache-control": "no-cache",
+                                          "x-accel-buffering": "no"})
 
     # ── governance: approvals + fabric ──────────────────────────────
     async def fabric_approvals(request: Request):
@@ -1517,6 +1672,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/workflow-runs/{rid}", run_get, methods=["GET"]),
         Route("/agent/bounds", agent_bounds, methods=["GET"]),
         Route("/agent/tools", agent_tools, methods=["GET"]),
+        Route("/agent/model", agent_model, methods=["GET"]),
         Route("/agent/sessions", agent_submit, methods=["POST"]),
         Route("/agent/sessions/{sid}", agent_session_get, methods=["GET"]),
         Route("/agent/sessions/{sid}/message", agent_message, methods=["POST"]),
@@ -1579,6 +1735,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/events/workflow", sse_workflow_events, methods=["GET"]),
         Route("/environment/scan", environment_scan, methods=["POST"]),
         Route("/environment/inventory", environment_inventory, methods=["POST"]),
+        Route("/environment/search", environment_search, methods=["POST"]),
         Route("/environment/probe", environment_probe, methods=["POST"]),
         Route("/environment/install", environment_install, methods=["POST"]),
         Route("/environment/uninstall", environment_uninstall, methods=["POST"]),
@@ -1679,6 +1836,43 @@ async def environment_scan(request: Request):
         lambda: scan_result_to_dict(scan_environment(node_ids=node_ids, refresh=refresh))
     )
     return JSONResponse(result)
+
+
+async def environment_search(request: Request):
+    """Resolve a software search across every layer AURA has.
+
+    POST /environment/search
+    Body: { query, limit?, external? }
+    Returns: { query, results[], consulted[], offline, stale, detail }
+
+    This is AURA Everything's only backend surface. It DESCRIBES software;
+    it installs nothing. Each result carries an explicit `installable`
+    flag, and that flag is true only when the resolved identity matches a
+    curated catalogue entry whose existing InstallSpec can produce a real
+    command on this machine — never because a registry listed a package.
+    Installing still goes through /environment/install, unchanged, by
+    catalogue id.
+
+    Local layers answer first and cost nothing; a registry is consulted
+    only when nothing local or curated satisfied the query. Pass
+    `external: false` to stay entirely offline.
+    """
+    import anyio.to_thread
+
+    from ..environment.software.resolve import DEFAULT_LIMIT, search
+
+    body = await _environment_body(request)
+    query = str(body.get("query") or "").strip()
+    if not query:
+        return _err("query is required")
+    if len(query) > 120:
+        return _err("query is too long")
+    limit = min(_positive_int(body.get("limit"), DEFAULT_LIMIT), 50)
+    external = bool(body.get("external", True))
+
+    outcome = await anyio.to_thread.run_sync(
+        lambda: search(query, limit=limit, allow_external=external))
+    return JSONResponse(outcome.to_dict())
 
 
 async def environment_inventory(request: Request):

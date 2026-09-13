@@ -736,6 +736,8 @@ class CapabilityFabric:
             "projectId": invocation["context"].get("projectId"),
             **({"missionId": invocation["context"]["missionId"]} if invocation["context"].get("missionId") else {}),
             **({"taskId": invocation["context"]["taskId"]} if invocation["context"].get("taskId") else {}),
+            **({"sessionId": invocation["context"]["sessionId"]} if invocation["context"].get("sessionId") else {}),
+            **({"requestId": invocation["context"]["requestId"]} if invocation["context"].get("requestId") else {}),
             **({"workflowId": invocation["context"]["workflowId"]} if invocation["context"].get("workflowId") else {}),
             **({"runId": invocation["context"]["runId"]} if invocation["context"].get("runId") else {}),
             **({"workflowNodeId": invocation["context"]["workflowNodeId"]} if invocation["context"].get("workflowNodeId") else {}),

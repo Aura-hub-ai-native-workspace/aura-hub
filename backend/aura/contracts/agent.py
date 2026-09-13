@@ -46,6 +46,11 @@ AgentEventType = Literal[
     "invocation.observed", "approval.required", "verification.completed",
     "result.ready", "agent.failed", "agent.cancelled",
     "worker.action", "worker.lifecycle",
+    # Model-backed read-only answer synthesis streams user-facing text
+    # incrementally. Tokens are presentation only: the terminal result
+    # stays authoritative, and reasoning never leaves the model.
+    "answer.started", "answer.token", "answer.completed",
+    "answer.cancelled", "answer.failed",
     # Cancellation is a lifecycle of its own: asked for, acted on,
     # settled. Three events rather than one so the workspace can show
     # "stopping" honestly instead of claiming a stop it has not seen.
@@ -88,6 +93,13 @@ class AgentIntent(ContractModel):
     ambiguity: Literal["clear", "ambiguous", "impossible"] = "clear"
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     requestedOutcome: str | None = None
+    conversational: bool = False
+    """This turn is answerable in words alone — no plan, no authority
+    check, no invocation, no effect. Set by the intent compiler under the
+    deterministic rules in `intent._validated`, never by a caller and
+    never by model output alone. A conversational result carries no
+    performed ids, no verified ids and no evidence, because a turn that
+    ran nothing has nothing to show."""
 
 
 # ── planning ─────────────────────────────────────────────────────────────────
@@ -296,6 +308,16 @@ class EvidenceBundle(ContractModel):
     approvalIds: list[str] = Field(default_factory=list)
     summary: str
     createdAt: str
+    #: Request legs that contributed to this evidence (see
+    #: central_agent.correlation). Observability only; authority rides
+    #: the referenced records, never this list.
+    requestIds: list[str] = Field(default_factory=list)
+    #: Model identity behind model-backed synthesis, when a model call
+    #: actually happened on a contributing leg (see provider_bridge).
+    #: Absent means heuristic/deterministic — never a fabricated model.
+    #: Observability only.
+    modelProvider: str | None = None
+    modelName: str | None = None
 
 
 class AgentResult(ContractModel):
@@ -377,3 +399,9 @@ class AgentEvent(ContractModel):
     at: str
     sessionId: str
     payload: dict = Field(default_factory=dict)
+    #: Bus-wide monotonic sequence, assigned by EventBus.emit. Optional
+    #: (older producers predate it) so historic payloads still validate.
+    #: The SSE layer exposes it as the `id:` field: clients reconnect
+    #: with Last-Event-ID and dedupe on it. Observability only — never
+    #: authority, never ordering of execution.
+    seq: int | None = None

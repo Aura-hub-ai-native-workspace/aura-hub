@@ -132,20 +132,41 @@ class AgentApiServer:
         if seg[:1] == ["health"] and method == "GET":
             return {"ok": True, "service": "aura-central-agent"}
 
+        if seg[:2] == ["agent", "model"] and method == "GET":
+            port = getattr(d.agent.intents, "model_port", None)
+            telemetry = (port.telemetry() if port is not None
+                         and hasattr(port, "telemetry")
+                         else {"configured": False, "providers": [],
+                               "lastCall": None})
+            return telemetry
+
         if seg[:2] == ["agent", "sessions"]:
             rest = seg[2:]
             if not rest and method == "POST":
+                from aura.central_agent.correlation import new_request_id
+
+                rid = new_request_id()
                 body = read_body()
                 message = str(body.get("message") or "").strip()
                 if not message:
                     raise AuraError("message is required")
                 project_id = body.get("projectId") or None
                 project_path = body.get("projectPath") or None
+                editor_context = body.get("editorContext")
+                if editor_context is not None and not isinstance(editor_context, dict):
+                    raise AuraError("editorContext must be an object")
+                session_id = body.get("sessionId")
+                if session_id is not None and not isinstance(session_id, str):
+                    raise AuraError("sessionId must be a string")
                 with d.lock:
                     result = d.agent.submit(message, project_id=project_id,
-                                            project_path=project_path)
+                                            project_path=project_path,
+                                            editor_context=editor_context,
+                                            session_id=session_id,
+                                            request_id=rid)
                 return {"result": result.model_dump(),
-                        "sessionId": d.sessions.last_session_id}
+                        "sessionId": d.sessions.last_session_id,
+                        "requestId": rid}
 
             sid = rest[0] if rest else ""
             sub = rest[1] if len(rest) > 1 else ""
@@ -160,34 +181,75 @@ class AgentApiServer:
                 return ("SSE", lambda: d.agent.bus.subscribe_stream(sid))
 
             if sub == "message" and method == "POST":
+                from aura.central_agent.correlation import new_request_id
+
+                rid = new_request_id()
                 body = read_body()
                 text = str(body.get("message") or "").strip()
                 if not text:
                     raise AuraError("message is required")
+                editor_context = body.get("editorContext")
+                if editor_context is not None and not isinstance(editor_context, dict):
+                    raise AuraError("editorContext must be an object")
+                project_id = body.get("projectId")
+                if project_id is not None and not isinstance(project_id, str):
+                    raise AuraError("projectId must be a string")
                 with d.lock:
-                    result = d.agent.message(sid, text,
-                                             project_path=body.get("projectPath"))
-                return {"result": result.model_dump()}
+                    try:
+                        result = d.agent.message(
+                            sid, text,
+                            project_path=body.get("projectPath"),
+                            editor_context=editor_context,
+                            project_id=project_id or None,
+                            request_id=rid)
+                    except ValueError as exc:
+                        text_err = str(exc)
+                        if "no such session" in text_err:
+                            raise NotFound(text_err)
+                        raise AuraError(text_err, status=409)
+                return {"result": result.model_dump(), "requestId": rid}
 
             if sub == "approve" and method == "POST":
+                from aura.central_agent.correlation import new_request_id
+
+                rid = new_request_id()
                 body = read_body()
                 approval_id = str(body.get("approvalId") or "")
                 granted = bool(body.get("granted", True))
-                decided = d.ledger.decide(approval_id, granted, "user",
-                                          body.get("reason"))
+                with d.lock:
+                    try:
+                        d.agent.check_approval_binding(sid, approval_id)
+                    except ValueError as exc:
+                        raise AuraError(str(exc), status=409)
+                    decided = d.ledger.decide(approval_id, granted, "user",
+                                              body.get("reason"))
                 if decided is None:
                     raise AuraError("this request was already decided", status=409)
                 if not granted:
-                    result = d.agent.resume(sid)
-                    return {"approval": decided, "result": result.model_dump()}
+                    try:
+                        result = d.agent.resume(sid, request_id=rid)
+                    except (ValueError, PermissionError) as exc:
+                        raise AuraError(str(exc), status=409)
+                    return {"approval": decided,
+                            "result": result.model_dump(), "requestId": rid}
                 with d.lock:
-                    result = d.agent.resume(sid)
-                return {"approval": decided, "result": result.model_dump()}
+                    try:
+                        result = d.agent.resume(sid, request_id=rid)
+                    except (ValueError, PermissionError) as exc:
+                        raise AuraError(str(exc), status=409)
+                return {"approval": decided, "result": result.model_dump(),
+                        "requestId": rid}
 
             if sub == "resume" and method == "POST":
+                from aura.central_agent.correlation import new_request_id
+
+                rid = new_request_id()
                 with d.lock:
-                    result = d.agent.resume(sid)
-                return {"result": result.model_dump()}
+                    try:
+                        result = d.agent.resume(sid, request_id=rid)
+                    except (ValueError, PermissionError) as exc:
+                        raise AuraError(str(exc), status=409)
+                return {"result": result.model_dump(), "requestId": rid}
 
             if sub == "plan" and method == "GET":
                 review = d.agent.review_plan(sid)
@@ -286,8 +348,23 @@ class AgentApiServer:
 
 def build_default_api(home=None, host: str = "127.0.0.1",
                       port: int = 4320) -> tuple[AgentApiServer, CentralAgent]:
-    """Wire the API to freshly constructed canonical stores."""
+    """DEPRECATED compatibility wrapper — not a production entry point.
+
+    The ONE canonical production application factory is
+    ``aura.api.server.create_app`` (Starlette; see
+    ``scripts/serve_central_agent_api.py``). This stdlib-threading host
+    exists only for ``backend/scripts/verify_central_agent.py`` and
+    predates the Environment routes: it answers ``/health`` while
+    ``/environment/*`` 404. New code must use ``create_app``; this
+    wrapper emits ``DeprecationWarning`` and will be removed once the
+    verify script migrates.
+    """
     import os
+    import warnings
+
+    warnings.warn(
+        "build_default_api is deprecated; use aura.api.server.create_app",
+        DeprecationWarning, stacklevel=2)
 
     if home is not None:
         os.environ["AURA_HOME"] = str(home)

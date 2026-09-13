@@ -15,8 +15,14 @@ import os
 import sys
 
 
-def build_fabric_config(audit, ledger):
-    """FabricConfig wired to this installation's stores."""
+def build_fabric_config(audit, ledger, policy_config=None):
+    """FabricConfig wired to this installation's stores.
+
+    `policy_config` overrides the base policy through the same merge
+    the Fabric itself applies (see FabricConfig.sanitized_policy), so
+    callers needing deterministic strictness use this factory rather
+    than hand-rolling a config without a live fabric attached.
+    """
     from ..executors import all_executors, register_canonical_internal_capabilities
     from ..fabric import CapabilityFabric, FabricConfig, FabricHost
 
@@ -41,14 +47,21 @@ def build_fabric_config(audit, ledger):
             execs[exe.capabilityId] = exe
         except Exception:
             pass
-    return FabricConfig(
+    cfg = FabricConfig(
         fabric=fabric,
-        policy_config={},
+        policy_config=policy_config or {},
         permissions={"read": True, "write": True},
         executors=execs,
         audit_store=audit,
         ledger=ledger,
     )
+    # The live fabric enforces its own policy object: sync the merged
+    # config onto it here (same convention as the test suites' explicit
+    # `cfg.fabric.set_policy(cfg.sanitized_policy())`), so a factory
+    # caller can never hold a config whose policy the fabric ignores.
+    # With no overrides the merged policy equals the fabric default.
+    fabric.set_policy(cfg.sanitized_policy())
+    return cfg
 
 
 def main(argv: list[str] | None = None) -> int:

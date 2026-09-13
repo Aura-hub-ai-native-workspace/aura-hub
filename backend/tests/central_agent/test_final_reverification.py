@@ -360,49 +360,100 @@ def test_mcp_resources_prompts_context_fenced_and_fresh(env):
 
 # ── items 16–20: evidence, audit, SSE live+replay, restart persistence ──────
 
-def test_evidence_audit_sse_replay_and_restart(env):
-    client, proj, home, _t = env
-    client.post("/fabric/nodes", json={
-        "id": "local-cli", "name": "L",
-        "capabilities": ["source-control", "terminal"], "kind": "local"})
+def _live_post(base, path, body):
+    import urllib.request
 
-    # 16/17: agent run leaves evidence + audit records
-    r = client.post("/agent/sessions", json={
-        "message": "show me git status",
-        "projectId": "p", "projectPath": str(proj)})
-    sid = r.json().get("sessionId")
-    assert r.json()["result"]["status"] == "completed"
+    req = urllib.request.Request(
+        base + path, data=json.dumps(body).encode(),
+        headers={"content-type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        return resp.status, json.loads(resp.read())
 
-    # 18: live SSE stream carries the whole session tail + [DONE]
-    ev = client.get(f"/agent/sessions/{sid}/events")
-    assert ev.status_code == 200
-    assert "text/event-stream" in ev.headers["content-type"]
-    assert ev.text.rstrip().endswith("data: [DONE]")
-    frames = frames_of(ev)
-    types = [f.get("type") for f in frames]
-    assert any(t and t.startswith("intent.") for t in types)
-    assert any(t and "invocation" in t or t == "run-event" for t in types)
 
-    # 19: ?since replays STRICTLY-AFTER; Last-Event-ID header equivalent
-    cut = last_seq(frames)
-    if cut is not None:
-        tail = client.get(f"/agent/sessions/{sid}/events",
-                          params={"since": cut})
-        for f in frames_of(tail):
-            assert f["seq"] > cut
-        hdr = client.get(f"/agent/sessions/{sid}/events",
-                         headers={"Last-Event-ID": str(cut)})
-        for f in frames_of(hdr):
-            assert f["seq"] > cut
+def _live_get(base, path):
+    import urllib.request
 
-    # 20: restart persistence — a NEW app over the SAME AURA_HOME sees
-    # sessions, runs, audit and the node registry.
-    client2 = TestClient(create_app())
-    sess = client2.get(f"/agent/sessions/{sid}")
-    assert sess.status_code == 200, "session survived restart"
-    assert sess.json().get("sessionId") == sid
-    nodes_after = client2.get("/fabric/nodes").json()
-    assert nodes_after, "connected-node registry persisted"
+    with urllib.request.urlopen(base + path, timeout=30) as resp:
+        return resp.status, json.loads(resp.read())
+
+
+def test_evidence_audit_sse_replay_and_restart(env, tmp_path, monkeypatch):
+    # NOTE (live-follow contract): the agent `/events` route intentionally
+    # never terminates and TestClient cannot even open it, so this test
+    # runs wholly over live HTTP — same factory, isolated AURA_HOME —
+    # while preserving every behavioral assertion below.
+    from .sse_live import boot_live_server, read_frames
+
+    _client, proj, home, _t = env
+
+    base, server = boot_live_server(monkeypatch, tmp_path, create_app)
+    try:
+        _, _ = _live_post(base, "/fabric/nodes", {
+            "id": "local-cli", "name": "L",
+            "capabilities": ["source-control", "terminal"], "kind": "local"})
+
+        # 16/17: agent run leaves evidence + audit records
+        _, body = _live_post(base, "/agent/sessions", {
+            "message": "show me git status",
+            "projectId": "p", "projectPath": str(proj)})
+        sid = body.get("sessionId")
+        assert body["result"]["status"] == "completed"
+
+        # 18: live SSE stream carries the session lifecycle; consumed as
+        # a BOUNDED read stopping at the terminal result (never waits
+        # for a [DONE] that will never arrive). The terminal is
+        # result.ready/agent.failed specifically: verification.completed
+        # is followed by result synthesis, so stopping there would leave
+        # legitimate strictly-after frames for the cursor check below.
+        frames = read_frames(
+            base, f"/agent/sessions/{sid}/events?after=0",
+            terminal_types=frozenset({"result.ready", "agent.failed"}),
+            timeout_s=30.0, session_id=sid or "?")
+        types = [f.get("type") for f in frames]
+        assert any(t and t.startswith("intent.") for t in types)
+        assert any(t and "invocation" in t or t == "run-event"
+                   for t in types)
+
+        # 19: ?after= replays STRICTLY-AFTER (the legacy ?since= parameter
+        # never existed on this route); Last-Event-ID header equivalent.
+        # The completed run emits nothing newer, so bounded reads past
+        # the cursor must time out EMPTY rather than repeat history.
+        from .sse_live import SseTimeout
+
+        cut = last_seq(frames)
+        assert cut is not None, "live route must sequence its frames"
+        for use_header in (False, True):
+            path = (f"/agent/sessions/{sid}/events"
+                    if use_header else
+                    f"/agent/sessions/{sid}/events?after={cut}")
+            try:
+                read_frames(
+                    base, path, want_frames=1, timeout_s=6.0,
+                    session_id=sid or "?",
+                    extra_headers={"Last-Event-ID": str(cut)}
+                    if use_header else None)
+                replayed = True
+            except SseTimeout as timeout_exc:
+                replayed = False
+                assert timeout_exc.frames == [], timeout_exc.frames
+            assert not replayed, (
+                "cursor replay must not repeat consumed frames "
+                f"(header={use_header})")
+
+        # 20: restart persistence — a SECOND live server over the SAME
+        # AURA_HOME sees sessions and the node registry (the closest
+        # equivalent to a process restart inside one test).
+        base2, server2 = boot_live_server(monkeypatch, tmp_path,
+                                          create_app)
+        try:
+            _, sess = _live_get(base2, f"/agent/sessions/{sid}")
+            assert sess.get("sessionId") == sid, "session survived restart"
+            _, nodes_after = _live_get(base2, "/fabric/nodes")
+            assert nodes_after, "connected-node registry persisted"
+        finally:
+            server2.should_exit = True
+    finally:
+        server.should_exit = True
 
 
 def test_secrets_never_leak_into_events_results_or_persistence(env):

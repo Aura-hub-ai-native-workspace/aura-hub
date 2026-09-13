@@ -209,10 +209,32 @@ def plan_status(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
 MAX_DELEGATE_CHARS = 4000
 
 
-def _delegate_input(task_text: str, scope: list[str]) -> dict:
+def expects_change(worker_role: str | None, run_when: str | None) -> bool:
+    """True when a delegate task is only DONE once the worker actually
+    changed something.
+
+    Decided from the task's own shape, never from "changed == 0": review,
+    investigation and audit work legitimately finishes having touched no
+    file, and conditional remediation is explicitly asked to change
+    nothing when the review reports nothing to fix. Implementation work
+    asked for unconditionally is the one shape whose acceptance requires
+    an artifact — so it is the one shape that must not be able to pass by
+    doing nothing at all.
+    """
+    return worker_role == "code" and (run_when or "always") == "always"
+
+
+def _delegate_input(task_text: str, scope: list[str],
+                    expect_change: bool = False) -> dict:
     payload: dict = {"task": task_text[:MAX_DELEGATE_CHARS]}
     if scope:
         payload["scopePaths"] = list(scope)
+    if expect_change:
+        # AURA-OWNED, and deliberately absent from _DELEGATE_INPUT_KEYS so
+        # a model proposal can never set or clear it. It rides the input,
+        # so it is part of the approved fingerprint: the requirement the
+        # human authorised is the requirement verification enforces.
+        payload["expectChange"] = True
     return payload
 
 
@@ -254,7 +276,8 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
         id="implement",
         description="Carry out the requested change",
         capabilityId="agent.delegate",
-        input=_delegate_input(text + build_note, scope),
+        input=_delegate_input(text + build_note, scope,
+                              expect_change=expects_change("code", "always")),
         workerRole="code",
         risk="high", reversible=False,
         verification=VerificationRequirement(
@@ -536,6 +559,14 @@ class TaskPlanner:
                 scope = self._model_scope(rt, task_input, s["label"], tid)
                 if scope is not None:
                     task_input = {**task_input, "scopePaths": scope}
+                run_when = rt.get("runWhen") or "always"
+                if (s["cap"] == "agent.delegate"
+                        and expects_change(rt.get("workerRole"), run_when)):
+                    # Same acceptance rule as the deterministic planner:
+                    # a model-proposed implementation task cannot pass by
+                    # changing nothing either. AURA sets this, never the
+                    # proposal — "expectChange" is not an accepted key.
+                    task_input = {**task_input, "expectChange": True}
                 ver_kind = rt.get("verificationKind") or "audit-only"
                 ver_desc = str(rt.get("verification") or "")
                 if s["cap"] == "agent.delegate" and not ver_desc.strip():

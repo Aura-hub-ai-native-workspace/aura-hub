@@ -113,7 +113,8 @@ class ContextAssembler:
         self._project_scan = project_scanner or (lambda path: [])
 
     def assemble(self, session_id: str | None = None,
-                 project_path: str | None = None) -> ContextBundle:
+                 project_path: str | None = None,
+                 editor_block: str | None = None) -> ContextBundle:
         bundle = ContextBundle()
         caps = self._capabilities()[:MAX_ITEMS_PER_SOURCE]
         for c in caps:
@@ -146,5 +147,15 @@ class ContextAssembler:
             for entry in self._project_scan(project_path)[:MAX_ITEMS_PER_SOURCE]:
                 bundle.items.append(ContextItem(
                     kind="project", text=str(entry)[:300],
+                    provenance=PROVENANCE_EXTERNAL, untrusted=True))
+        if editor_block:
+            # Ephemeral editor snapshot (Ctrl+I and siblings): fenced
+            # untrusted content, chunked to the item bound, capped so one
+            # editor request can never flood the model context.
+            chunk = MAX_ITEM_CHARS
+            for part in [editor_block[i:i + chunk]
+                         for i in range(0, len(editor_block), chunk)][:8]:
+                bundle.items.append(ContextItem(
+                    kind="editor", text=part,
                     provenance=PROVENANCE_EXTERNAL, untrusted=True))
         return bundle

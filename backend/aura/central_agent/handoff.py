@@ -46,19 +46,37 @@ class UpstreamEvidence:
     node_id: str = ""
     agent: str = ""
     stdout: str = ""
+    #: Length of the worker's stdout AS PRODUCED, which is not always
+    #: len(stdout): persistence keeps a bounded copy, so a resumed leg
+    #: rebuilds this evidence from fewer characters than the leg that
+    #: first ran it. The truncation notice quotes this number, and an
+    #: envelope must render identically on both legs — the task input
+    #: it becomes is what the approval on record is bound to, and a
+    #: notice that disagrees by one character reads as a different
+    #: action. 0 means "unrecorded": fall back to len(stdout).
+    stdout_chars: int = 0
     scope_paths: list[str] = field(default_factory=list)
     changed_paths: list[str] = field(default_factory=list)
     invocation_ids: list[str] = field(default_factory=list)
     approval_ids: list[str] = field(default_factory=list)
 
 
-def _clip(text: str, limit: int, ref: str) -> tuple[str, bool]:
+def _clip(text: str, limit: int, ref: str,
+          full_len: int = 0) -> tuple[str, bool]:
     """Deterministic truncation that announces itself with a pointer back
-    to the full evidence."""
-    if len(text) <= limit:
+    to the full evidence.
+
+    `full_len` is how long the text was BEFORE any earlier bounding (0 =
+    it was never bounded, so len(text) is the truth). Quoting the
+    original length rather than this copy's is what makes the result
+    stable across a leg that holds the worker's live output and a leg
+    that restored a persisted, already-shortened copy of it.
+    """
+    original = max(full_len, len(text))
+    if original <= limit:
         return text, False
     return (text[:limit]
-            + f"\n[truncated: {len(text) - limit} more characters "
+            + f"\n[truncated: {original - limit} more characters "
             f"in audit {ref}]"), True
 
 
@@ -79,7 +97,8 @@ def build_envelope(sources: list[UpstreamEvidence]) -> dict:
         if not src.task_id:
             raise HandoffRefusal("upstream evidence without a task id.")
         ref = (src.invocation_ids[0] if src.invocation_ids else "unrecorded")
-        body, cut = _clip(src.stdout or "", MAX_SOURCE_CHARS, ref)
+        body, cut = _clip(src.stdout or "", MAX_SOURCE_CHARS, ref,
+                          src.stdout_chars)
         truncated_any = truncated_any or cut
         lines = [
             f'<AURA-VERIFIED-RESULT task="{src.task_id}" '

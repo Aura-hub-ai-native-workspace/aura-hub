@@ -727,7 +727,18 @@ async def agent_delegate_run(inv: dict) -> dict:
     return {"ok": False, "detail": f"{why} {res.out[:400]}".strip(), "output": output}
 
 
-async def agent_delegate_verify(_inv: dict, result: dict) -> dict:
+async def agent_delegate_verify(inv: dict, result: dict) -> dict:
+    """Confirm the task, which is not the same as the worker surviving.
+
+    Three questions, in order: did anything escape the scope, did the
+    worker exit cleanly, and — when the task's own contract requires an
+    artifact — did the required work actually happen. The last one is
+    what stops a worker that was DENIED its meaningful actions, exited 0
+    and changed nothing from being recorded as verified: "every file it
+    changed lies inside the declared scope" is vacuously true of a run
+    that changed no files, and a vacuous truth must not become evidence
+    that the objective was met.
+    """
     output = result.get("output") or {}
     if output.get("scopeDeviation"):
         outside = ((output.get("scopeCheck") or {}).get("outside")) or []
@@ -736,8 +747,55 @@ async def agent_delegate_verify(_inv: dict, result: dict) -> dict:
                      f"Worker files fell outside the declared scope: {shown}."
                      " Parked for a decision; nothing was reverted.")
     exit_code = output.get("exitCode")
-    return (_pass("exit-code", "The agent exited 0.") if exit_code == 0
-            else _fail("exit-code", f"The agent exited {exit_code if exit_code is not None else 'unknown'}."))
+    if exit_code != 0:
+        return _fail("exit-code",
+                     f"The agent exited {exit_code if exit_code is not None else 'unknown'}.")
+    verdict = _required_change_verdict(inv, output)
+    return verdict if verdict is not None else _pass(
+        "exit-code", "The agent exited 0.")
+
+
+def _required_change_verdict(inv: dict, output: dict) -> dict | None:
+    """A failure when this task had to produce an artifact and did not.
+
+    Returns None when the question does not arise: the task does not
+    require a change (review, investigation, conditional remediation), or
+    AURA did not MEASURE the worktree and so cannot honestly say whether
+    work happened. Asserting only over a measured delta is the point —
+    silence about an unmeasured tree is not evidence of success, but nor
+    is it evidence of failure, so the existing exit-code verdict stands
+    and the run's scope contract is what changes that.
+    """
+    if not (inv.get("input") or {}).get("expectChange"):
+        return None
+    scope_check = output.get("scopeCheck") or {}
+    if not scope_check.get("supported"):
+        return None                      # nothing was measured; claim nothing
+    if list(scope_check.get("changed") or []):
+        return None                      # the artifact exists; task stands
+    worker = str(output.get("agent") or "The worker")
+    denied = list(((output.get("governedActions") or {}).get("denied")) or [])
+    if denied:
+        # Case 3: prevented. The denial itself was correct and stays —
+        # nothing forbidden ran, nothing is reverted — but the task it
+        # blocked did not happen, and the record has to say so.
+        shown = "; ".join(
+            f"[{d.get('tool')}] {d.get('target') or d.get('command')}"
+            for d in denied[:3] if (d.get('target') or d.get('command')))
+        where = shown or "see governedActions"
+        return _fail("read-back",
+                     f"{worker} exited 0 but changed nothing inside the "
+                     f"declared scope, and AURA denied {len(denied)} of its "
+                     f"action(s) before they ran ({where}). The requested "
+                     "work did not happen: the worker was prevented from "
+                     "carrying it out. Nothing denied was executed and "
+                     "nothing was reverted.")
+    # Case 2: exited successfully, performed no meaningful work.
+    return _fail("read-back",
+                 f"{worker} exited 0 but changed no file inside the "
+                 "declared scope, so the change this task asked for was "
+                 "never made. Reported as unverified rather than "
+                 "complete.")
 
 
 # ── git ──────────────────────────────────────────────────────────────────────
