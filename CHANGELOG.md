@@ -54,7 +54,7 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
-## [0.1.6] - 2026-09-13 — Central Agent
+## [0.1.7] - 2026-09-13 — Central Agent
 
 The Central Agent becomes the one path a request travels: it reads what
 you asked for, plans it, checks authority, dispatches a worker, and
