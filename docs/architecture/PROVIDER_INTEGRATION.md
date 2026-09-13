@@ -38,6 +38,7 @@ Registered today (`packages/ai-service/src/provider/registry.ts`):
 | `kimi` | Kimi | `adapters/kimi.ts` | — |
 | `novita` | **Novita AI** | `adapters/novita.ts` | `deepseek/deepseek-r1` |
 | `qwen` | **Qwen** | `adapters/qwen.ts` | `qwen-plus` |
+| `local-llama` | **Local LLaMA** | `adapters/local-llama.ts` | `qwen-3.5-27b-instruct` |
 
 ---
 
@@ -113,7 +114,9 @@ Rules for adapter authors:
 
 - **No provider-specific branches anywhere else.** The runtime, store,
   server and UI must never `if (id === 'mistral') …`. Provider
-  differences live inside the adapter.
+  differences live inside the adapter, or behind generic adapter
+  properties the shared paths read without knowing any id (today:
+  `authOptional` — see §13 — and `omitEmptyAuth` in `base.ts`).
 - **`detect()` is a heuristic**, used by `autoConnectProvider` and the
   client-side key-prefix screen. It must never be the only path a
   provider can be connected through (providers without a distinctive
@@ -224,6 +227,9 @@ mock OpenAI-compatible endpoints.
 |----------|---------|
 | `MISTRAL_API_KEY` | Env-configures Mistral: validates, stores and **activates** it at startup (see §2). |
 | `CEREBRAS_API_KEY` | Env-configures Cerebras: validates, stores and **activates** it at startup (see §2). |
+| `AURA_LOCAL_LLM_BASE_URL` | Endpoint of the self-hosted llama-server (see §13). `http(s)` origin only; trailing `/v1` tolerated. Unset → loopback default. |
+| `AURA_LOCAL_LLM_API_KEY` | Optional key for the llama-server: validates, stores and **activates** it at startup through the same map. Keyless servers connect explicitly with an empty key. |
+| `AURA_LOCAL_LLM_MODEL` | Advisory model id for live checks/docs (see §13). Runtime model selection still goes through discovery + `resolveModel`. |
 | `AURA_HOME` | Override the config home (default `~/.aura`); also where `providers.json` lives. |
 | `AURA_PROVIDER_SECRET` | Deterministic AES seed for the provider store (instead of a generated secret). |
 | `AI_PORT` | Local service port (default `4319`). |
@@ -344,7 +350,92 @@ Qwen is a full peer of every provider above:
 
 ---
 
-## 12. API Surface
+## 12. Local LLaMA (self-hosted llama-server) — first-class provider
+
+Local LLaMA is a full peer of every provider above, with two honest
+differences that are properties of self-hosted deployments, not of AURA:
+
+- **Adapter** — `packages/ai-service/src/provider/adapters/local-llama.ts`,
+  extends `BaseOpenAICompatible`, docs link to
+  `https://github.com/llama.cpp/llama.cpp`, default model
+  `qwen-3.5-27b-instruct` (a fallback only — discovery reads the real
+  served id from `/v1/models` and `resolveModel` prefers it). `detect()`
+  returns `false`: llama-server keys have no distinctive shape, so the
+  user picks Local LLaMA explicitly.
+- **Deployment-specific endpoint** — the base URL is configuration
+  (`AURA_LOCAL_LLM_BASE_URL`, same split as `KAGE7_BASE_URL`), resolved
+  per access via `localLlamaOrigin()`. `normalizeLocalLlamaUrl()` accepts
+  a trailing `/v1`, requires an `http(s)` origin and rejects embedded
+  credentials; a set-but-invalid value fails validation deterministically
+  instead of silently falling back.
+- **Optional authentication** — `authOptional: true` on the adapter. The
+  shared connect/switch paths distinguish "no stored credential" (`null`)
+  from "explicitly stored empty key" (`''`) and accept the latter only
+  when the generic flag is set — no provider-id branch anywhere. With no
+  key configured the adapter and runtime send no `Authorization` header at
+  all (an empty `Bearer ` is rejected by some servers); with a key it
+  travels the existing encrypted credential store as a Bearer token.
+- **Conservative discovery** — `parseLocalLlamaModels()` tolerates
+  `{data}`, `{models}` and bare-array payloads, dedupes, skips nameless
+  entries, and reports `streaming: true` only. No vision/reasoning flags
+  are inferred from model names: the server advertises no capability
+  metadata, so unknown stays unknown.
+- **Named health states** — `connected` / `unauthorized` (with separate
+  guidance for keyless vs keyed misconfiguration) / `no-models` (a bare
+  200 with an empty catalogue is not "connected") / `error` (malformed
+  body, bad config, unexpected status) / `unreachable` (refused, DNS,
+  TLS, timeout — timeouts named distinctly in the message).
+- **Runtime** — the shared `OpenAICompatibleRuntime` (`POST
+  {baseUrl}/chat/completions`, SSE streaming, usage, `AbortController`
+  cancellation, timeouts). The only base-class addition is the additive,
+  default-off `omitEmptyAuth` header option.
+- **Validation** — real `GET /models` call; a 200 with an empty or
+  malformed catalogue is a validation failure (a model-less server cannot
+  answer anything, and it keeps generic key-paste detection honest).
+- **Switching** — identical to any provider via `RuntimeManager`
+  (which restores a keyless local-llama across restarts); `resolveModel`
+  and the per-request `isModelValidForProvider` guard apply unchanged.
+- **Environment** — `AURA_LOCAL_LLM_API_KEY` auto-connects a keyed
+  deployment at startup through `ENV_VAR_BY_PROVIDER`; keyless servers
+  connect explicitly with an empty key.
+- **UI** — the generic Settings connect dialog (key field marked
+  optional via the `authOptional` flag on the dynamically listed
+  provider), status card, model dropdown and Status Bar. No bespoke UI.
+- **Verification** — `scripts/verify-local-llama.ts` (registry,
+  configuration, discovery, health, chat, streaming, cancellation,
+  telemetry, routing, governance + opt-in live section driven by
+  `AURA_LOCAL_LLM_BASE_URL` / `_MODEL` / `_API_KEY`).
+- **Operator guide** — `docs/LOCAL_INFERENCE_L40S.md` (server setup,
+  endpoint checks, AURA configuration, private-network security,
+  troubleshooting).
+
+### 12.1 Why AURA connects to llama-server instead of embedding inference
+
+GPU inference is infrastructure; AURA is orchestration. Embedding a
+runtime (llama.cpp compilation, model download/quantization, VRAM and
+CUDA management) would weld the governed workspace to one machine, one
+GPU and one model family. The provider abstraction keeps them separate:
+
+- **AURA decides** context (Context Fabric assembles the canonical
+  context once; each provider receives its own serialized
+  representation), routing (`RoutedModelPort` → registry →
+  `RuntimeManager`), policy, approval, execution, verification, evidence
+  and audit. The model proposes text and tool calls; only the Capability
+  Fabric executes, under the unchanged policy → approval → execution →
+  verification → evidence → audit chain.
+- **llama-server decides** token generation only.
+- **No vendor lock-in**: OpenAI, Anthropic, Gemini, Groq, Mistral,
+  Cerebras, Kimi, Novita, Qwen, Kage7 and a private llama-server coexist
+  behind one `Runtime` contract, so the same Central Agent, missions and
+  workflows run on any of them with no per-model agent implementation.
+- **Sovereignty stays a deployment property**: pointing the provider at a
+  private endpoint keeps inference local and failures local and visible.
+  Neither the desktop shell nor the adapter claims air-gapped operation
+  by itself — the network policy and firewall do.
+
+---
+
+## 13. API Surface
 
 `GET /providers` — known providers, connected providers (fingerprint,
 models, health), active id/model, pipeline status.
@@ -363,7 +454,7 @@ deactivates if it was active.
 
 ---
 
-## 13. UI Surfaces
+## 14. UI Surfaces
 
 - **Onboarding** (`apps/desktop/src/onboarding/WorkspaceActivation.tsx`)
   — featured provider cards, live debounced key validation through the

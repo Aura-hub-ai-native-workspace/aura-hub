@@ -71,7 +71,7 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
     }
   }
 
-  protected makeRuntime(config: { baseUrl: string; apiKey: string; defaultModel?: string }): Runtime {
+  protected makeRuntime(config: { baseUrl: string; apiKey: string; defaultModel?: string; omitEmptyAuth?: boolean }): Runtime {
     return new OpenAICompatibleRuntime({ ...config, providerName: this.metadata.name });
   }
 }
@@ -82,19 +82,30 @@ class OpenAICompatibleRuntime implements Runtime {
   private defaultModel: string;
   private providerName: string;
   private timeoutMs = 30000;
+  private omitEmptyAuth = false;
   private ac: AbortController | null = null;
 
-  constructor(config: { baseUrl: string; apiKey: string; defaultModel?: string; providerName?: string; timeoutMs?: number }) {
+  constructor(config: { baseUrl: string; apiKey: string; defaultModel?: string; providerName?: string; timeoutMs?: number; omitEmptyAuth?: boolean }) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.apiKey = config.apiKey;
     this.defaultModel = config.defaultModel ?? '';
     this.providerName = config.providerName ?? 'The AI provider';
     this.timeoutMs = config.timeoutMs ?? 30000;
+    this.omitEmptyAuth = config.omitEmptyAuth ?? false;
   }
 
   cancel(): void { this.ac?.abort(); this.ac = null; }
 
-  private headers() { return { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` }; }
+  private headers(): Record<string, string> {
+    // Providers whose server works without authentication (see
+    // ProviderAdapter.authOptional) send no Authorization header at all
+    // when no key is configured — an empty `Bearer ` value is rejected by
+    // some servers and would break a working keyless deployment. Every
+    // other provider keeps the existing always-send behaviour.
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (this.apiKey || !this.omitEmptyAuth) headers.authorization = `Bearer ${this.apiKey}`;
+    return headers;
+  }
 
   private buildBody(messages: RuntimeMessage[], opts: { model?: string; temperature?: number; maxTokens?: number; stream: boolean }): string {
     const model = opts.model || this.defaultModel;

@@ -204,6 +204,8 @@ export interface ProviderInfo {
   description: string;
   apiEndpoint?: string;
   docsUrl?: string;
+  /** True when the provider's endpoint accepts unauthenticated requests — the key field is optional. */
+  authOptional?: boolean;
 }
 export interface ConnectedProvider {
   id: string;

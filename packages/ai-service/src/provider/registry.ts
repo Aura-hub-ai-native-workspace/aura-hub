@@ -11,6 +11,7 @@ import { KimiAdapter } from './adapters/kimi';
 import { NovitaAdapter } from './adapters/novita';
 import { QwenAdapter } from './adapters/qwen';
 import { Kage7Adapter } from './adapters/kage7';
+import { LocalLlamaAdapter } from './adapters/local-llama';
 
 // Bring-your-own-key providers. There is NO built-in default — the hub has
 // no AI until the user connects one of these with their own API key.
@@ -27,6 +28,7 @@ const ALL: ProviderAdapter[] = [
   new NovitaAdapter(),
   new QwenAdapter(),
   new Kage7Adapter(),
+  new LocalLlamaAdapter(),
 ];
 
 const adapters: Map<string, ProviderAdapter> = new Map(ALL.map((a) => [a.metadata.id, a]));
@@ -44,6 +46,11 @@ export const ENV_VAR_BY_PROVIDER: Record<string, string> = {
   // environment: it is encrypted into the credential store on connect and
   // never written to source, config or logs.
   kage7: 'KAGE7_API_KEY',
+  // Same split as Kage7: the llama-server URL is separate configuration
+  // (AURA_LOCAL_LLM_BASE_URL, read by the adapter); the optional key maps
+  // here so a keyed deployment auto-connects at startup like any other
+  // provider. Keyless deployments connect explicitly with an empty key.
+  'local-llama': 'AURA_LOCAL_LLM_API_KEY',
 };
 
 export function registerAdapter(adapter: ProviderAdapter): void {

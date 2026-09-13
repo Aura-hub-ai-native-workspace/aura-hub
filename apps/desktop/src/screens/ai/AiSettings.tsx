@@ -22,7 +22,7 @@ function providerIcon(id: string): 'spark' | 'cpu' {
   const icons: Record<string, 'spark' | 'cpu'> = {
     openai: 'spark', anthropic: 'spark', groq: 'cpu', gemini: 'spark',
     mistral: 'spark', kimi: 'spark', openrouter: 'cpu', nvidia: 'cpu', cerebras: 'cpu',
-    novita: 'cpu', qwen: 'spark', kage7: 'cpu',
+    novita: 'cpu', qwen: 'spark', kage7: 'cpu', 'local-llama': 'cpu',
   };
   return icons[id] ?? 'cpu';
 }
@@ -108,8 +108,15 @@ export function AiSettings() {
     setDialog((d) => ({ ...d, step: 'key', providerId: id, providerName: p?.name ?? id, error: '' }));
   };
 
+  // Providers whose endpoint accepts unauthenticated requests (e.g. a
+  // self-hosted server on a trusted network) may connect with an empty
+  // key. Driven by the generic `authOptional` flag from GET /providers —
+  // never a provider-id branch.
+  const selectedProvider = knownProviders.find((k) => k.id === dialog.providerId);
+  const keyOptional = selectedProvider?.authOptional === true;
+
   const connectProvider = async () => {
-    if (!dialog.providerId || !dialog.apiKey.trim()) return;
+    if (!dialog.providerId || (!dialog.apiKey.trim() && !keyOptional)) return;
     setDialog((d) => ({ ...d, step: 'connecting', error: '' }));
     try {
       const r = await aiClient.connectProvider(dialog.providerId, dialog.apiKey.trim());
@@ -312,7 +319,7 @@ export function AiSettings() {
           dialog.step === 'key' ? (
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={closeDialog}>Cancel</Button>
-              <Button icon="plus" onClick={connectProvider} disabled={!dialog.apiKey.trim()}>Connect</Button>
+              <Button icon="plus" onClick={connectProvider} disabled={!dialog.apiKey.trim() && !keyOptional}>Connect</Button>
             </div>
           ) : dialog.step === 'connecting' ? (
             <div className="flex justify-end"><Button loading disabled>Connecting…</Button></div>
@@ -343,11 +350,11 @@ export function AiSettings() {
               <span className="text-[14px] font-semibold text-text">{dialog.providerName}</span>
             </div>
             <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-text-muted">API Key</label>
+              <label className="mb-1.5 block text-[12px] font-medium text-text-muted">API Key{keyOptional ? ' (optional)' : ''}</label>
               <div className="flex gap-2">
                 <Input
                   type={dialog.showKey ? 'text' : 'password'}
-                  placeholder="Paste your API key…"
+                  placeholder={keyOptional ? 'Optional — leave empty if your server needs no key…' : 'Paste your API key…'}
                   value={dialog.apiKey}
                   onChange={(e) => setDialog((d) => ({ ...d, apiKey: (e as React.ChangeEvent<HTMLInputElement>).target.value, error: '' }))}
                   className="flex-1"

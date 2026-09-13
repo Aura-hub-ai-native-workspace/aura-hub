@@ -14,6 +14,7 @@ import { classifyAllTools, describeTools, resolveTools } from './workflow/agent/
 import { AGENT_CEILINGS, AGENT_DEFAULTS } from './workflow/agent/types';
 import type { RunEvent, Workflow } from './workflow/types';
 import { setupProviders } from './provider';
+import { getAdapter } from './provider/registry';
 import { graphifyGraphPath, graphifyStatus, runGraphify } from './graphify';
 import { handleCodeAction, type CodeActionRequest } from './codeAction';
 import { CATALOG } from '@aura/connected-environment';
@@ -273,7 +274,12 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         const b = await readJson(req);
         const providerId = String(b.providerId ?? '');
         const apiKey = String(b.apiKey ?? '');
-        if (!providerId || !apiKey) return json(res, 400, { ok: false, error: 'Provider ID and API key are required' });
+        const adapter = getAdapter(providerId);
+        if (!adapter) return json(res, 400, { ok: false, error: 'Unknown provider' });
+        // Auth-optional providers (self-hosted servers that accept
+        // unauthenticated requests) may connect with an empty key. The
+        // check is driven by the generic adapter flag, never a provider id.
+        if (!apiKey && adapter.authOptional !== true) return json(res, 400, { ok: false, error: 'Provider ID and API key are required' });
         const result = await manager.connectProvider(providerId, apiKey);
         return json(res, result.ok ? 200 : 400, result);
       }
@@ -296,8 +302,10 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       }
       if ((method === 'GET' || method === 'POST') && seg[0] === 'providers' && seg[1] === 'models') {
         const b = (seg[3] ? { providerId: seg[2], apiKey: seg[3] } : await readJson(req)) as { providerId?: string; apiKey?: string };
-        if (!b.providerId || !b.apiKey) return json(res, 400, { models: [] });
-        const models = await manager.discoverModels(b.providerId, b.apiKey);
+        const modelsAdapter = b.providerId ? getAdapter(b.providerId) : undefined;
+        if (!b.providerId) return json(res, 400, { models: [] });
+        if (!b.apiKey && (!modelsAdapter || modelsAdapter.authOptional !== true)) return json(res, 400, { models: [] });
+        const models = await manager.discoverModels(b.providerId, b.apiKey ?? '');
         return json(res, 200, { models });
       }
 

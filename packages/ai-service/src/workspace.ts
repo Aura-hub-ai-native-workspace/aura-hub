@@ -57,6 +57,8 @@ export interface ProviderInfo {
   name: string;
   description: string;
   docsUrl?: string;
+  /** True when the provider's endpoint accepts unauthenticated requests (see ProviderAdapter.authOptional). */
+  authOptional?: boolean;
 }
 
 export interface ConnectedProvider {
@@ -1297,11 +1299,13 @@ export class WorkspaceManager {
 
   listKnownProviders(): ProviderInfo[] {
     // Every provider is bring-your-own-key — there is no built-in default.
+    // (Auth-optional providers additionally accept a stored empty key.)
     return getAllAdapters().map((a) => ({
       id: a.metadata.id,
       name: a.metadata.name,
       description: a.metadata.description,
       docsUrl: a.metadata.docsUrl,
+      authOptional: a.authOptional ?? false,
     }));
   }
 
@@ -1384,7 +1388,10 @@ export class WorkspaceManager {
     const adapter = getAdapter(providerId);
     if (!adapter) return { ok: false, error: 'Unknown provider' };
     const apiKey = getKey(providerId);
-    if (!apiKey) return { ok: false, error: 'No API key configured for this provider' };
+    // `null` is "no credential"; `''` is an explicitly stored empty key,
+    // accepted only for auth-optional providers (generic flag, no id check).
+    if (apiKey == null) return { ok: false, error: 'No API key configured for this provider' };
+    if (apiKey === '' && adapter.authOptional !== true) return { ok: false, error: 'No API key configured for this provider' };
     // RuntimeManager.switchToProvider() persists the active pointer itself
     // (credentialStore.setActive) — only on success, so a failed switch never
     // leaves the store pointing at a provider with no working runtime.

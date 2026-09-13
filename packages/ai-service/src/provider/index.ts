@@ -11,6 +11,8 @@ export interface ProviderInfo {
   name: string;
   description: string;
   docsUrl?: string;
+  /** True when the provider's endpoint accepts unauthenticated requests (see ProviderAdapter.authOptional). Lets the UI offer an optional key field. */
+  authOptional?: boolean;
 }
 
 export interface ConnectedProvider {
@@ -51,6 +53,7 @@ export function listProviders(): ProviderInfo[] {
       name: a.metadata.name,
       description: a.metadata.description,
       docsUrl: a.metadata.docsUrl,
+      authOptional: a.authOptional ?? false,
     }));
 }
 
@@ -63,6 +66,7 @@ export function getProvider(providerId: string): { info: ProviderInfo & { apiEnd
       name: adapter.metadata.name,
       description: adapter.metadata.description,
       docsUrl: adapter.metadata.docsUrl,
+      authOptional: adapter.authOptional ?? false,
     },
     factory: {
       validateKey: (apiKey) => adapter.validate(apiKey),
@@ -136,7 +140,12 @@ export class RuntimeManager {
       if (!saved.providerId) return;
       const adapter = getAdapter(saved.providerId);
       const apiKey = credentialStore.getKey(saved.providerId);
-      if (!adapter || !apiKey) return;
+      // `null` means no stored credential at all; `''` is an explicitly
+      // stored empty key, valid only for auth-optional providers (see
+      // ProviderAdapter.authOptional). The old `!apiKey` check conflated
+      // the two and made keyless providers unrestorable.
+      if (!adapter || apiKey == null) return;
+      if (apiKey === '' && adapter.authOptional !== true) return;
       const known = cachedModelsFor(saved.providerId);
       const model = resolveModel(saved.providerId, saved.model || undefined, known);
       this.active = { type: 'byoak', providerId: saved.providerId, runtime: adapter.createRuntime(apiKey, model || undefined), model };
@@ -179,7 +188,10 @@ export class RuntimeManager {
     const adapter = getAdapter(providerId);
     if (!adapter) return false;
     const apiKey = credentialStore.getKey(providerId);
-    if (!apiKey) return false;
+    // See the constructor: `null` is "no credential", `''` is an explicit
+    // empty key, accepted only when the adapter declares authOptional.
+    if (apiKey == null) return false;
+    if (apiKey === '' && adapter.authOptional !== true) return false;
     let known = cachedModelsFor(providerId);
     try {
       const fresh = await adapter.discoverModels(apiKey);

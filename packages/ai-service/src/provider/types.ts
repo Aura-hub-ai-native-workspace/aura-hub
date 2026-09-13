@@ -50,6 +50,15 @@ export interface ProviderHealth {
 
 export interface ProviderAdapter {
   readonly metadata: ProviderMetadata;
+  /**
+   * Set when the endpoint genuinely accepts unauthenticated requests (a
+   * self-hosted server on a trusted network, not a cloud vendor). The
+   * shared connect/switch paths accept a stored empty key for such
+   * providers — via this generic flag only. Callers must never branch on
+   * a provider id; they branch on this flag. Absent/false preserves the
+   * existing key-required behaviour for every other provider.
+   */
+  readonly authOptional?: boolean;
   detect(apiKey: string): boolean;
   validate(apiKey: string): Promise<{ ok: boolean; error?: string }>;
   discoverModels(apiKey: string): Promise<DiscoveredModel[]>;
