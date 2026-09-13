@@ -267,17 +267,39 @@ fn resolve_service_script(app: &tauri::App) -> Option<PathBuf> {
 /// the interpreter needs the second on `PYTHONPATH` to import what the
 /// first runs.
 ///
-/// The repository tree is the only resolution, and that is a statement
-/// about the packaging pipeline rather than an oversight. `resources/`
-/// currently holds the Node bundle and nothing else, because shipping this
-/// backend means shipping an interpreter and its C extensions (pydantic-core
-/// is a native wheel) per platform — a distribution problem, not an
-/// environment one. Until that build step exists, a packaged application
-/// finds no backend here and says so, which is the honest report; guessing
-/// at a resource path no build produces would only turn a clear failure
-/// into a confusing one.
-fn resolve_python_backend() -> Option<(PathBuf, PathBuf)> {
-    // `CARGO_MANIFEST_DIR` is apps/desktop/src-tauri; the repo root is three up.
+/// Two resolutions, in the same order and for the same reason as
+/// `resolve_service_script`: the packaged resource directory first, the
+/// repository tree second.
+///
+/// The repository tree used to be the ONLY resolution, and that shipped a
+/// desktop application which could never start its own backend.
+/// `CARGO_MANIFEST_DIR` is a COMPILE-TIME constant, so a binary built by CI
+/// carried `/home/runner/work/aura-hub/aura-hub/...` inside it and looked
+/// for the backend at a path that exists on no user's machine. It resolved
+/// on the machine that built it — which is exactly why a smoke test run
+/// against a locally built package could pass while the published artifact
+/// failed for everyone.
+///
+/// `build-service-bundle.mjs` now stages the backend under
+/// `resources/python/`, keeping `scripts/` beside `backend/` so the entry
+/// script's own `parents[1] / "backend"` lookup is undisturbed. The old
+/// comment here deferred this as "shipping an interpreter and its C
+/// extensions per platform"; that is still not attempted. Only AURA's own
+/// pure-Python source is packaged, and `service.rs` still requires a
+/// machine Python that can import starlette, uvicorn and `aura.api.server`
+/// — so a machine without them gets the same refusal as before, not a
+/// worse failure.
+fn resolve_python_backend(app: &tauri::App) -> Option<(PathBuf, PathBuf)> {
+    if let Ok(root) = app.path().resolve("resources/python", BaseDirectory::Resource) {
+        let entry = root.join("scripts/serve_central_agent_api.py");
+        let backend = root.join("backend");
+        if entry.is_file() && backend.is_dir() {
+            return Some((strip_verbatim(entry), strip_verbatim(backend)));
+        }
+    }
+    // `CARGO_MANIFEST_DIR` is apps/desktop/src-tauri; the repo root is three
+    // up. Development only: in a packaged build this path does not exist,
+    // and the resource branch above is the one that answers.
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let entry = repo.join("scripts/serve_central_agent_api.py").canonicalize().ok()?;
     let root = repo.join("backend").canonicalize().ok()?;
@@ -423,7 +445,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             let script = resolve_service_script(app);
-            let python_backend = resolve_python_backend();
+            let python_backend = resolve_python_backend(app);
             let handle = app.handle().clone();
 
             // Off the UI thread: startup can take seconds (module load,

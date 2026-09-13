@@ -24,8 +24,15 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO = '/home/Groot/aura-hub';
+// Derived from this file's own location, the way every sibling script does
+// it. It was a hardcoded absolute path to one developer's checkout, which
+// meant the suite reported "no packaged artifact to test" — and exited 0
+// on the assertions it never reached — anywhere else, CI included. A
+// packaging suite that cannot find the package on the machine that built
+// it is the one thing it must never be.
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.AURA_VERIFY_PORT ?? 4319);
 const BUNDLE_DIR = `${REPO}/apps/desktop/src-tauri/target/release/bundle`;
 
@@ -146,6 +153,50 @@ const stagedPkgs = existsSync(`${squash}/usr/lib/AURA Hub/resources/node_modules
   : [];
 check('1e. only the declared runtime dependency is staged',
   stagedPkgs.length === 1 && stagedPkgs[0] === 'typescript', stagedPkgs.join(', ') || 'none');
+
+/*
+ * The Python environment backend, and the specific way it was once absent.
+ *
+ * v0.1.8 shipped a shell that supervised this backend correctly and still
+ * could not start it: `resolve_python_backend` located it through
+ * `env!("CARGO_MANIFEST_DIR")`, a COMPILE-TIME constant, so the published
+ * binary looked for the backend under the CI runner's checkout. That path
+ * exists on the machine that built the artifact and on no machine that
+ * installs it — which is why building and testing on one workstation
+ * passed while every user saw "0 installed".
+ *
+ * 1f and 1g are the pair that catches a regression: the files have to be
+ * IN the artifact, and the binary must not be depending on a build-machine
+ * path to find them.
+ */
+const packagedPyEntry = existsSync(squash) ? findIn(squash, 'serve_central_agent_api.py') : [];
+const packagedPyPkg = existsSync(squash)
+  ? spawnSync('find', [squash, '-path', '*/resources/python/backend/aura/api/server.py'], { encoding: 'utf8' })
+      .stdout.trim().split('\n').filter(Boolean)
+  : [];
+check('1f. the Python environment backend is packaged inside the artifact',
+  packagedPyEntry.length > 0 && packagedPyPkg.length > 0,
+  packagedPyEntry.length && packagedPyPkg.length
+    ? `${packagedPyEntry[0].replace(squash, '…')} + aura package`
+    : `entry: ${packagedPyEntry.length}, aura.api.server: ${packagedPyPkg.length}`);
+
+/**
+ * Reads as a string search and is really an assertion about resolution
+ * order. A CI-built artifact whose only backend location is
+ * `/home/runner/work/...` is exactly the v0.1.8 defect, so that shape is
+ * what this rejects — on any machine, without needing a CI build to
+ * reproduce it.
+ */
+const mainBinary = existsSync(squash)
+  ? findIn(squash, 'aura-hub').find((p) => !p.endsWith('.desktop'))
+  : null;
+const runnerPaths = mainBinary
+  ? spawnSync('sh', ['-c', `strings -a '${mainBinary}' | grep -oE '/home/runner/work/[^ ]*' | sort -u | head -5`],
+      { encoding: 'utf8' }).stdout.trim().split('\n').filter(Boolean)
+  : [];
+check('1g. the packaged backend is not located through a build-machine path',
+  mainBinary !== null && runnerPaths.length === 0,
+  runnerPaths.length ? runnerPaths.join(' ') : 'no CI checkout path embedded');
 
 /* ── 2. launch from outside the repo, with a hostile environment ──── */
 
