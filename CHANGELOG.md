@@ -54,6 +54,62 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
+## [0.1.11] - 2026-09-14 — Batteries Included
+
+Every release before this one shipped the environment backend's source
+and then expected the machine to already have the packages it imports.
+Most machines do not. A user on Arch installed 0.1.10, opened AURA, and
+got "Load failed", "Not scanned", "0 installed" and `backend is not
+answering on http://127.0.0.1:4320` — and had to run `pacman -S
+python-starlette python-pydantic` and `pip install uvicorn` by hand
+before the application worked at all. Shipping source without its
+imports was never a working product; this is the release that stops
+doing it.
+
+The artifacts are larger for it — the AppImage grows by roughly 15 MB —
+which is the price of an application that works when it is installed.
+
+### Fixed
+
+- **The backend's dependencies ship with it.** Starlette, uvicorn,
+  Pydantic and their pure-Python dependencies are staged into
+  `resources/python/site-packages`, and `pydantic_core` — a compiled
+  extension that is not abi3, so one build genuinely cannot load into
+  another CPython — is staged once per supported version under
+  `resources/python/abi/cp3NN/`. The entry script selects the directory
+  matching the interpreter that is running. Versions are resolved from
+  `backend/pyproject.toml` rather than a list in the build script, so the
+  bundle cannot drift from what the test suite runs against. An
+  interpreter is still not bundled: AURA needs a Python 3.12+ on the
+  machine, it no longer needs one somebody has configured.
+- **Python is found where version managers put it.** A desktop launcher
+  hands the application a minimal PATH that excludes pyenv shims, conda
+  and per-user installs, so the one interpreter that could run the
+  backend was invisible to it. Those locations are now searched by
+  location rather than through PATH.
+- **The window appears before the environment backend starts.** It was
+  shown only after both services had been dealt with, so a machine that
+  took a moment to find a Python got an invisible application — and on
+  Windows an unkillable one, because a close request posted at a process
+  with no window is delivered nowhere and the shell never reached its
+  exit handler.
+- **A probe that times out is no longer reported as a missing tool.**
+  The scan gave each tool four seconds and read silence as absence, with
+  a guessed reason. The same machine reported 12 tools present, then 10,
+  then 8, unchanged — the first execution of a binary on Windows is slow
+  because the anti-malware scanner reads the whole file first. Probes are
+  now retried once, warm, and a probe that still does not answer says it
+  timed out rather than claiming the tool is missing.
+
+### Changed
+
+- **Packaging verification proves the dependencies are sufficient, not
+  merely present.** A new check imports the packaged entry point on a
+  virtualenv built `--without-pip`, having first confirmed that
+  virtualenv is empty. Every other check in that suite runs on a machine
+  where Starlette is installed three times over and would pass on an
+  artifact that silently depends on it.
+
 ## [0.1.10] - 2026-09-13 — Verification
 
 A maintenance release. The shipped application is functionally identical
