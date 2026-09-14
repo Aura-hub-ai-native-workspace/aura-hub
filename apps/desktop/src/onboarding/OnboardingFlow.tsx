@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { OnboardingLayout, type OnboardingStep } from './OnboardingLayout';
 import { WelcomeScreen } from './WelcomeScreen';
-import { WorkspaceActivation } from './WorkspaceActivation';
+import { LocalModelSetup } from './LocalModelSetup';
 import { ReadyScreen } from './ReadyScreen';
 
 /**
@@ -18,7 +18,7 @@ export function OnboardingFlow({ onComplete }: { onComplete: () => void }) {
       <AnimatePresence mode="wait">
         {step === 'welcome' && <WelcomeScreen key="welcome" onBegin={() => setStep('activate')} />}
         {step === 'activate' && (
-          <WorkspaceActivation key="activate" onActivated={() => setStep('ready')} onOffline={() => setStep('ready')} />
+          <LocalModelSetup key="activate" onActivated={() => setStep('ready')} onOffline={() => setStep('ready')} />
         )}
         {step === 'ready' && <ReadyScreen key="ready" onComplete={onComplete} />}
       </AnimatePresence>

@@ -11,12 +11,14 @@ interface DialogState {
   step: 'provider' | 'key' | 'connecting';
   providerId: string;
   providerName: string;
+  /** The chosen provider runs on the user's machine: this is an address, not a key. */
+  local: boolean;
   apiKey: string;
   showKey: boolean;
   error: string;
 }
 
-const EMPTY_DIALOG: DialogState = { open: false, step: 'provider', providerId: '', providerName: '', apiKey: '', showKey: false, error: '' };
+const EMPTY_DIALOG: DialogState = { open: false, step: 'provider', providerId: '', providerName: '', local: false, apiKey: '', showKey: false, error: '' };
 
 function providerIcon(id: string): 'spark' | 'cpu' {
   const icons: Record<string, 'spark' | 'cpu'> = {
@@ -105,14 +107,27 @@ export function AiSettings() {
 
   const selectProvider = (id: string) => {
     const p = knownProviders.find((k) => k.id === id);
-    setDialog((d) => ({ ...d, step: 'key', providerId: id, providerName: p?.name ?? id, error: '' }));
+    // A local provider is configured by address, so the field is prefilled
+    // with the port it conventionally listens on rather than left blank
+    // waiting for a secret that does not exist.
+    setDialog((d) => ({
+      ...d,
+      step: 'key',
+      providerId: id,
+      providerName: p?.name ?? id,
+      local: p?.local === true,
+      apiKey: p?.local ? (p.defaultBaseUrl ?? '') : '',
+      error: '',
+    }));
   };
 
   const connectProvider = async () => {
     if (!dialog.providerId || !dialog.apiKey.trim()) return;
     setDialog((d) => ({ ...d, step: 'connecting', error: '' }));
     try {
-      const r = await aiClient.connectProvider(dialog.providerId, dialog.apiKey.trim());
+      const r = dialog.local
+        ? await aiClient.connectLocalProvider(dialog.providerId, dialog.apiKey.trim())
+        : await aiClient.connectProvider(dialog.providerId, dialog.apiKey.trim());
       if (r?.ok) {
         setDialog(EMPTY_DIALOG);
         await refreshProviderState();
@@ -322,17 +337,53 @@ export function AiSettings() {
           <div className="space-y-2">
             <p className="text-[13px] text-text-muted">Choose a provider to connect:</p>
             <div className="max-h-64 space-y-1 overflow-y-auto">
-              {knownProviders.map((p) => (
-                <button key={p.id} onClick={() => selectProvider(p.id)}
-                  className="flex w-full items-center gap-3 rounded-xl border border-line px-3.5 py-3 text-left transition-colors hover:border-accent/40 hover:bg-accent/5">
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-active text-text-muted"><Icon name={providerIcon(p.id)} size={16} /></span>
-                  <div className="min-w-0 flex-1">
-                    <span className="block text-[13px] font-medium text-text">{p.name ?? p.id}</span>
-                    {p.description && <span className="block text-[11.5px] text-text-subtle">{p.description}</span>}
-                  </div>
-                  <Icon name="arrow-right" size={16} className="text-text-subtle" />
-                </button>
-              ))}
+              {/*
+                Your own machine first, hosted services below it.
+
+                AURA's default is a model server the user runs, and the
+                ordering says so — but the cloud providers are still here,
+                one click away, for anyone who wants one. Demoting them is
+                a statement about what AURA reaches for by default, not a
+                removal.
+              */}
+              {(() => {
+                const local = knownProviders.filter((p) => p.local);
+                const cloud = knownProviders.filter((p) => !p.local);
+                const row = (p: ProviderInfo) => (
+                  <button key={p.id} onClick={() => selectProvider(p.id)}
+                    className="flex w-full items-center gap-3 rounded-xl border border-line px-3.5 py-3 text-left transition-colors hover:border-accent/40 hover:bg-accent/5">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-active text-text-muted"><Icon name={providerIcon(p.id)} size={16} /></span>
+                    <div className="min-w-0 flex-1">
+                      <span className="block text-[13px] font-medium text-text">{p.name ?? p.id}</span>
+                      {p.description && <span className="block text-[11.5px] text-text-subtle">{p.description}</span>}
+                    </div>
+                    <Icon name="arrow-right" size={16} className="text-text-subtle" />
+                  </button>
+                );
+                return (
+                  <>
+                    {local.length > 0 && (
+                      <>
+                        <p className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-text-subtle">On this machine</p>
+                        {local.map(row)}
+                      </>
+                    )}
+                    {cloud.length > 0 && (
+                      <>
+                        <p className="px-1 pb-1 pt-4 text-[11px] font-medium uppercase tracking-wide text-text-subtle">
+                          Fallback — hosted providers
+                        </p>
+                        <p className="px-1 pb-2 text-[11.5px] leading-relaxed text-text-subtle">
+                          These need an API key and send your prompts to a third party.
+                        </p>
+                        <div className="space-y-2 opacity-70 transition-opacity hover:opacity-100">
+                          {cloud.map(row)}
+                        </div>
+                      </>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </div>
         )}
@@ -343,19 +394,26 @@ export function AiSettings() {
               <span className="text-[14px] font-semibold text-text">{dialog.providerName}</span>
             </div>
             <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-text-muted">API Key</label>
+              <label className="mb-1.5 block text-[12px] font-medium text-text-muted">
+                {dialog.local ? 'Server address' : 'API Key'}
+              </label>
               <div className="flex gap-2">
                 <Input
-                  type={dialog.showKey ? 'text' : 'password'}
-                  placeholder="Paste your API key…"
+                  // An address is not a secret, so it is never masked —
+                  // hiding it would only stop the user checking their own
+                  // typing on the one field most likely to have a typo.
+                  type={dialog.local || dialog.showKey ? 'text' : 'password'}
+                  placeholder={dialog.local ? 'http://127.0.0.1:11434' : 'Paste your API key…'}
                   value={dialog.apiKey}
                   onChange={(e) => setDialog((d) => ({ ...d, apiKey: (e as React.ChangeEvent<HTMLInputElement>).target.value, error: '' }))}
                   className="flex-1"
                   autoFocus
                 />
-                <button onClick={() => setDialog((d) => ({ ...d, showKey: !d.showKey }))} className="grid h-9 w-9 place-items-center rounded-lg border border-line text-text-muted hover:text-text">
-                  <Icon name={dialog.showKey ? 'close' : 'activity'} size={14} />
-                </button>
+                {!dialog.local && (
+                  <button onClick={() => setDialog((d) => ({ ...d, showKey: !d.showKey }))} className="grid h-9 w-9 place-items-center rounded-lg border border-line text-text-muted hover:text-text">
+                    <Icon name={dialog.showKey ? 'close' : 'activity'} size={14} />
+                  </button>
+                )}
               </div>
               {dialog.error && <p className="mt-1.5 text-[12px] text-danger">{dialog.error}</p>}
             </div>

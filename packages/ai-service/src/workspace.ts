@@ -43,6 +43,7 @@ import type { ExecutionEvent } from './mission/execution/types';
 import type { MissionEvent, MissionRecord, MissionSummary, MissionTask } from './mission/types';
 import { getAdapter, getAllAdapters, ENV_VAR_BY_PROVIDER } from './provider/registry';
 import { storeKey, removeKey, getKey, getActive, getAllProviderStores, storeModels, storeHealth } from './provider/credentialStore';
+import { normaliseOllamaUrl } from './provider/adapters/ollama';
 import { detectProvider } from './provider/detector';
 import type { DiscoveredModel } from './provider/types';
 
@@ -57,6 +58,10 @@ export interface ProviderInfo {
   name: string;
   description: string;
   docsUrl?: string;
+  /** Runs on the user's own hardware, so it is configured by address, not key. */
+  local?: boolean;
+  /** What to prefill the address field with, for local providers. */
+  defaultBaseUrl?: string;
 }
 
 export interface ConnectedProvider {
@@ -1296,13 +1301,25 @@ export class WorkspaceManager {
   /* ── BYOAK provider management ──────────────────────────────────── */
 
   listKnownProviders(): ProviderInfo[] {
-    // Every provider is bring-your-own-key — there is no built-in default.
-    return getAllAdapters().map((a) => ({
-      id: a.metadata.id,
-      name: a.metadata.name,
-      description: a.metadata.description,
-      docsUrl: a.metadata.docsUrl,
-    }));
+    /*
+     * Local providers first, cloud behind them.
+     *
+     * There is still no built-in default: the hub has no AI until the user
+     * points it at their own model server or connects their own key. What
+     * changed is which of those it asks for first. `local` travels with
+     * each entry so the UI can make that distinction itself rather than
+     * matching on ids.
+     */
+    return getAllAdapters()
+      .map((a) => ({
+        id: a.metadata.id,
+        name: a.metadata.name,
+        description: a.metadata.description,
+        docsUrl: a.metadata.docsUrl,
+        local: (a.metadata as { local?: boolean }).local === true,
+        defaultBaseUrl: (a.metadata as { defaultBaseUrl?: string }).defaultBaseUrl,
+      }))
+      .sort((a, b) => Number(b.local) - Number(a.local));
   }
 
   byoakStatus(): { connected: ConnectedProvider[]; active: string | null; model: string } {
@@ -1356,7 +1373,10 @@ export class WorkspaceManager {
     if (!adapter) return { ok: false, error: 'Unknown provider' };
     const validation = await adapter.validate(apiKey);
     if (!validation.ok) return { ok: false, error: validation.error ?? 'Key validation failed' };
-    const { fingerprint } = storeKey(providerId, apiKey);
+    // A local provider is identified by where it is, not by a masked
+    // secret — see the note on `storeKey`.
+    const isLocal = (adapter.metadata as { local?: boolean }).local === true;
+    const { fingerprint } = storeKey(providerId, apiKey, isLocal ? normaliseOllamaUrl(apiKey) : undefined);
     let models: DiscoveredModel[] = [];
     try {
       models = await adapter.discoverModels(apiKey);

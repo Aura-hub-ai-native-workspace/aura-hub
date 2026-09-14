@@ -7,6 +7,16 @@ import { cachedModelsFor, resolveModel } from './modelValidation';
 /* ── types ──────────────────────────────────────────────────────────── */
 
 export interface ProviderInfo {
+  /**
+   * Runs on the user's own hardware, and is therefore configured by
+   * ADDRESS rather than by key. The onboarding flow shows only these; the
+   * rest are reachable from Settings as a fallback. A boolean rather than
+   * a hardcoded id list, so adding a second local backend does not mean
+   * hunting for the places that special-case Ollama by name.
+   */
+  local?: boolean;
+  /** What to prefill the address field with, for local providers. */
+  defaultBaseUrl?: string;
   id: string;
   name: string;
   description: string;
@@ -51,7 +61,13 @@ export function listProviders(): ProviderInfo[] {
       name: a.metadata.name,
       description: a.metadata.description,
       docsUrl: a.metadata.docsUrl,
-    }));
+      local: (a.metadata as { local?: boolean }).local === true,
+      defaultBaseUrl: (a.metadata as { defaultBaseUrl?: string }).defaultBaseUrl,
+    }))
+    // Local first. The order this returns is the order the UI offers, and
+    // a hub whose default is the user's own machine should not present a
+    // cloud provider above it.
+    .sort((a, b) => Number(b.local) - Number(a.local));
 }
 
 export function getProvider(providerId: string): { info: ProviderInfo & { apiEndpoint?: string }; factory: ProviderAdapterFactory } | null {
