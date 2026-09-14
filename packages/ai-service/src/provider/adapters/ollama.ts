@@ -3,112 +3,140 @@ import type { Runtime } from '@aura/runtime';
 import type { DiscoveredModel, ProviderHealth } from '../types';
 
 /**
- * Ollama — a model server the user runs, on hardware the user owns.
+ * Ollama — a model server somebody runs, addressed over HTTP.
+ *
+ * ## Where the server is, is not this adapter's business
+ *
+ * It may be on this machine. It may equally be a GPU box in a lab, a
+ * shared institutional server, or anything else reachable over HTTP. The
+ * client does the same thing in every case: POST to an address. Nothing
+ * here should assume, prefer, or require loopback — the deployment this
+ * was written for is a shared college GPU server that many laptops talk
+ * to, and on those laptops there is no Ollama, no model, and no GPU.
+ *
+ * That is why the address is asked for rather than detected, and why
+ * `AURA_OLLAMA_BASE_URL` exists: an institution can ship a default that
+ * points at its own server, and nobody has to type it.
  *
  * ## Why the connect value is an address, not a key
  *
- * Every other adapter here is bring-your-own-key: the thing the user
- * supplies is a secret, and the endpoint is a constant baked into the
- * adapter. A local server inverts both halves. There is no secret — it
- * listens on loopback and asks nothing of callers — and the endpoint is
- * the only thing AURA cannot know in advance, because it is wherever the
- * user decided to run it.
+ * Every other adapter here is bring-your-own-key: the user supplies a
+ * secret and the endpoint is a constant baked in. A self-hosted server
+ * inverts both halves. A trusted internal server asks nothing of callers,
+ * and its address is the one thing AURA cannot know in advance.
  *
  * So the value that travels through the connect path IS the base URL, and
- * it is stored in the same slot a key would occupy. That slot is
- * encrypted at rest, which is harmless for a value that is not secret,
- * and it means connect, disconnect, switch, health and model discovery
- * all keep working without a second storage shape to maintain. The
- * fingerprint the UI shows becomes the address, which is more useful to a
- * user debugging a local server than four characters of a key ever were.
- *
- * ## Why not autodetect and be done
- *
- * 11434 on localhost is the common case, and it is the default offered.
- * It is not the only case: Ollama is routinely run on another machine on
- * the LAN, behind a reverse proxy, or on a non-default port because
- * something else took that one. Asking is one field, and it is the
- * difference between "works for most people" and "works".
+ * it occupies the slot a key would. Connect, disconnect, switch, health
+ * and model discovery then need no second code path, and the fingerprint
+ * the UI shows becomes the address — which is what someone debugging a
+ * server on another machine actually needs to see.
  */
-const DEFAULT_BASE_URL = 'http://127.0.0.1:11434';
 
-/** Accept what people actually type, and produce what the API needs. */
+/**
+ * The address offered before the user types one.
+ *
+ * `AURA_OLLAMA_BASE_URL` wins so a deployment can point every install at
+ * its own server. Loopback is the fallback SUGGESTION, not a constraint:
+ * any reachable host is equally valid, and the field it prefills is an
+ * ordinary editable text box.
+ */
+export function defaultOllamaBaseUrl(): string {
+  const configured = process.env.AURA_OLLAMA_BASE_URL?.trim();
+  return configured ? normaliseOllamaUrl(configured) : 'http://127.0.0.1:11434';
+}
+
+/** How long to wait on a server that may be across a campus network. */
+const REACH_TIMEOUT_MS = 10_000;
+
+/**
+ * Accept what people actually type; never change which host they meant.
+ *
+ * The only rewrites are a missing scheme, a trailing slash, and a
+ * trailing `/v1` — the last because Ollama's own documentation shows the
+ * OpenAI-compatible path with it, and both spellings name the same
+ * server. Host, port and any path in front of `/v1` are left exactly as
+ * given, so a reverse proxy at `https://ai.college.edu/ollama/v1` stays
+ * pointed at `https://ai.college.edu/ollama`.
+ */
 export function normaliseOllamaUrl(raw: string): string {
   let value = (raw || '').trim();
-  if (!value) value = DEFAULT_BASE_URL;
+  if (!value) return '';
   // A bare host or host:port is the commonest thing to paste out of a
-  // terminal, and it is unambiguous here — there is no scheme-less URL a
-  // model server could be reached at.
+  // terminal or a wiki page, and it is unambiguous here.
   if (!/^https?:\/\//i.test(value)) value = `http://${value}`;
   value = value.replace(/\/+$/, '');
-  // The OpenAI-compatible surface lives under /v1, and a user reading
-  // Ollama's own documentation may well paste the path with it already
-  // there. Both spellings should mean the same server.
   value = value.replace(/\/v1$/i, '');
   return value;
+}
+
+/** Turn a failed fetch into something the user can act on. */
+function reachError(base: string, e: unknown): string {
+  const err = e as { name?: string; message?: string };
+  if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+    return `${base} did not respond within ${REACH_TIMEOUT_MS / 1000}s. The server may be busy, or unreachable from this network.`;
+  }
+  return `Could not reach an Ollama server at ${base} (${err?.message ?? 'network error'}). Check the address, and that the server is running and reachable from this machine.`;
 }
 
 export class OllamaAdapter extends BaseOpenAICompatible {
   readonly metadata = {
     id: 'ollama',
-    name: 'Ollama',
-    description: 'A model server you run yourself. Nothing leaves your machine.',
-    docsUrl: 'https://ollama.com/download',
-    // Deliberately empty: there is no model every installation has. The
-    // user names one they have pulled, and `modelValidation` reads this
-    // same field, so a wrong guess here would become a wrong default
-    // everywhere rather than an honest "tell me which one".
+    name: 'Ollama (self-hosted)',
+    description: 'A model server you or your institution runs — on this machine or another. No account, no API key.',
+    docsUrl: 'https://docs.ollama.com/api',
+    // Deliberately empty: there is no model every server has. The user
+    // names one their server offers, and `modelValidation` reads this same
+    // field, so a guess here would become a wrong default everywhere.
     defaultModel: '',
-    local: true as const,
-    defaultBaseUrl: DEFAULT_BASE_URL,
+    /** Addressed, not keyed. Used for ordering and for asking the right question. */
+    selfHosted: true as const,
+    get defaultBaseUrl() { return defaultOllamaBaseUrl(); },
   };
 
-  /** Only a fallback; every call below resolves the address it was given. */
-  protected baseUrl = `${DEFAULT_BASE_URL}/v1`;
+  /** Only a fallback; every call below uses the address it was given. */
+  protected baseUrl = 'http://127.0.0.1:11434/v1';
 
   private api(endpoint: string): string {
-    return `${normaliseOllamaUrl(endpoint)}/v1`;
+    return `${normaliseOllamaUrl(endpoint) || 'http://127.0.0.1:11434'}/v1`;
   }
 
-  /** Nothing to detect — a local address is never mistaken for a key. */
+  /** Nothing to detect — an address is never mistaken for a key. */
   detect(): boolean {
     return false;
   }
 
   async validate(endpoint: string): Promise<{ ok: boolean; error?: string }> {
     const base = normaliseOllamaUrl(endpoint);
+    if (!base) return { ok: false, error: 'Enter the address of your Ollama server.' };
     try {
-      const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(8000) });
+      const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(REACH_TIMEOUT_MS) });
       if (!res.ok) {
-        return { ok: false, error: `${base} answered HTTP ${res.status}. Is that an Ollama server?` };
+        return { ok: false, error: `${base} answered HTTP ${res.status}. That address is reachable but is not an Ollama server.` };
       }
       const body = await res.json() as { models?: unknown[] };
       if (!Array.isArray(body.models) || body.models.length === 0) {
         // Reachable and empty is a different problem from unreachable, and
-        // it has a different fix — one the user can act on immediately.
-        return { ok: false, error: `Ollama is running at ${base} but has no models. Pull one first, for example: ollama pull qwen2.5-coder` };
+        // the fix is on the SERVER, which may not be this machine.
+        return { ok: false, error: `Connected to ${base}, but that server has no models. Pull one on the server first, for example: ollama pull qwen3:4b` };
       }
       return { ok: true };
     } catch (e) {
-      return {
-        ok: false,
-        error: `Could not reach Ollama at ${base} (${(e as Error).message}). Start it with \`ollama serve\`, or correct the address.`,
-      };
+      return { ok: false, error: reachError(base, e) };
     }
   }
 
   /**
    * Ollama's native listing, not the OpenAI-compatible one.
    *
-   * `/api/tags` returns the parameter size and quantisation alongside the
-   * name, and on a local server that is the information that decides
-   * whether a model will actually run on this machine. `/v1/models`
-   * returns names only.
+   * `/api/tags` reports parameter size and quantisation alongside the
+   * name, which is what tells a user whether the server is offering the
+   * 4B or the 70B. `/v1/models` returns names only.
    */
   async discoverModels(endpoint: string): Promise<DiscoveredModel[]> {
     const base = normaliseOllamaUrl(endpoint);
+    if (!base) return [];
     try {
-      const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(15000) });
+      const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(REACH_TIMEOUT_MS) });
       if (!res.ok) return [];
       const body = await res.json() as {
         models?: { name?: string; details?: { parameter_size?: string; quantization_level?: string } }[];
@@ -131,16 +159,27 @@ export class OllamaAdapter extends BaseOpenAICompatible {
   createRuntime(endpoint: string, model?: string): Runtime {
     return this.makeRuntime({
       baseUrl: this.api(endpoint),
-      // Ollama ignores Authorization. An empty string keeps the header
-      // well-formed for any reverse proxy sitting in front of it.
+      // A trusted internal server authenticates nobody. An empty string
+      // keeps the header well-formed for any reverse proxy in front of it.
       apiKey: '',
       defaultModel: model || this.metadata.defaultModel,
+      /*
+       * Generous, because this budget now bounds SILENCE rather than the
+       * length of an answer. The first request to a shared server usually
+       * pays for loading the model into VRAM, and on a busy GPU that can
+       * take a while with nothing on the wire. Once tokens start arriving
+       * the clock resets on every one, so a long answer never trips it.
+       */
+      timeoutMs: 120_000,
     });
   }
 
   async checkHealth(endpoint: string): Promise<ProviderHealth> {
     const base = normaliseOllamaUrl(endpoint);
     const start = performance.now();
+    if (!base) {
+      return { ok: false, latencyMs: 0, error: 'No server address configured.', lastChecked: new Date().toISOString() };
+    }
     try {
       const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(5000) });
       return {
@@ -153,7 +192,7 @@ export class OllamaAdapter extends BaseOpenAICompatible {
       return {
         ok: false,
         latencyMs: Math.round(performance.now() - start),
-        error: `Could not reach Ollama at ${base} (${(e as Error).message})`,
+        error: reachError(base, e),
         lastChecked: new Date().toISOString(),
       };
     }

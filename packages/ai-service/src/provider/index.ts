@@ -8,14 +8,14 @@ import { cachedModelsFor, resolveModel } from './modelValidation';
 
 export interface ProviderInfo {
   /**
-   * Runs on the user's own hardware, and is therefore configured by
-   * ADDRESS rather than by key. The onboarding flow shows only these; the
-   * rest are reachable from Settings as a fallback. A boolean rather than
-   * a hardcoded id list, so adding a second local backend does not mean
-   * hunting for the places that special-case Ollama by name.
+   * Runs on hardware someone controls — this machine or another — and is
+   * therefore configured by ADDRESS rather than by key. Deliberately not
+   * called "local": the deployment this was built for is a shared GPU
+   * server that laptops connect to across a network. Onboarding offers
+   * only these; the key-based providers stay in Settings as a fallback.
    */
-  local?: boolean;
-  /** What to prefill the address field with, for local providers. */
+  selfHosted?: boolean;
+  /** What to prefill the address field with. */
   defaultBaseUrl?: string;
   id: string;
   name: string;
@@ -61,13 +61,13 @@ export function listProviders(): ProviderInfo[] {
       name: a.metadata.name,
       description: a.metadata.description,
       docsUrl: a.metadata.docsUrl,
-      local: (a.metadata as { local?: boolean }).local === true,
+      selfHosted: (a.metadata as { selfHosted?: boolean }).selfHosted === true,
       defaultBaseUrl: (a.metadata as { defaultBaseUrl?: string }).defaultBaseUrl,
     }))
-    // Local first. The order this returns is the order the UI offers, and
-    // a hub whose default is the user's own machine should not present a
-    // cloud provider above it.
-    .sort((a, b) => Number(b.local) - Number(a.local));
+    // Self-hosted first. The order returned is the order offered, and a
+    // hub whose default is a server you control should not present a
+    // third-party service above it.
+    .sort((a, b) => Number(b.selfHosted) - Number(a.selfHosted));
 }
 
 export function getProvider(providerId: string): { info: ProviderInfo & { apiEndpoint?: string }; factory: ProviderAdapterFactory } | null {

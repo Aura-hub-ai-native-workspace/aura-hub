@@ -58,9 +58,9 @@ export interface ProviderInfo {
   name: string;
   description: string;
   docsUrl?: string;
-  /** Runs on the user's own hardware, so it is configured by address, not key. */
-  local?: boolean;
-  /** What to prefill the address field with, for local providers. */
+  /** Runs on hardware someone controls — here or elsewhere — so it is configured by address, not key. */
+  selfHosted?: boolean;
+  /** What to prefill the address field with. */
   defaultBaseUrl?: string;
 }
 
@@ -1302,13 +1302,13 @@ export class WorkspaceManager {
 
   listKnownProviders(): ProviderInfo[] {
     /*
-     * Local providers first, cloud behind them.
+     * Self-hosted first, key-based services behind them.
      *
      * There is still no built-in default: the hub has no AI until the user
-     * points it at their own model server or connects their own key. What
-     * changed is which of those it asks for first. `local` travels with
-     * each entry so the UI can make that distinction itself rather than
-     * matching on ids.
+     * points it at a model server or connects their own key. What changed
+     * is which of those it asks for first. `selfHosted` travels with each
+     * entry so the UI can make the distinction itself rather than matching
+     * on ids — and the server it names may be on any machine.
      */
     return getAllAdapters()
       .map((a) => ({
@@ -1316,10 +1316,10 @@ export class WorkspaceManager {
         name: a.metadata.name,
         description: a.metadata.description,
         docsUrl: a.metadata.docsUrl,
-        local: (a.metadata as { local?: boolean }).local === true,
+        selfHosted: (a.metadata as { selfHosted?: boolean }).selfHosted === true,
         defaultBaseUrl: (a.metadata as { defaultBaseUrl?: string }).defaultBaseUrl,
       }))
-      .sort((a, b) => Number(b.local) - Number(a.local));
+      .sort((a, b) => Number(b.selfHosted) - Number(a.selfHosted));
   }
 
   byoakStatus(): { connected: ConnectedProvider[]; active: string | null; model: string } {
@@ -1373,10 +1373,10 @@ export class WorkspaceManager {
     if (!adapter) return { ok: false, error: 'Unknown provider' };
     const validation = await adapter.validate(apiKey);
     if (!validation.ok) return { ok: false, error: validation.error ?? 'Key validation failed' };
-    // A local provider is identified by where it is, not by a masked
+    // A self-hosted provider is identified by where it is, not by a masked
     // secret — see the note on `storeKey`.
-    const isLocal = (adapter.metadata as { local?: boolean }).local === true;
-    const { fingerprint } = storeKey(providerId, apiKey, isLocal ? normaliseOllamaUrl(apiKey) : undefined);
+    const addressed = (adapter.metadata as { selfHosted?: boolean }).selfHosted === true;
+    const { fingerprint } = storeKey(providerId, apiKey, addressed ? normaliseOllamaUrl(apiKey) : undefined);
     let models: DiscoveredModel[] = [];
     try {
       models = await adapter.discoverModels(apiKey);
@@ -1403,8 +1403,42 @@ export class WorkspaceManager {
   async switchToProvider(providerId: string, model?: string): Promise<{ ok: boolean; error?: string }> {
     const adapter = getAdapter(providerId);
     if (!adapter) return { ok: false, error: 'Unknown provider' };
+    const addressed = (adapter.metadata as { selfHosted?: boolean }).selfHosted === true;
     const apiKey = getKey(providerId);
-    if (!apiKey) return { ok: false, error: 'No API key configured for this provider' };
+    if (!apiKey) {
+      return {
+        ok: false,
+        error: addressed
+          ? 'No server address configured for this provider'
+          : 'No API key configured for this provider',
+      };
+    }
+
+    /*
+     * A model that was asked for by name is never quietly swapped.
+     *
+     * `resolveModel` falls back to the first model it knows about when the
+     * requested one is unknown, which is the right behaviour for REPAIRING
+     * persisted state at startup and the wrong behaviour for an explicit
+     * request. Asking for `qwen3.8:27b` and silently getting
+     * `nemotron-3-ultra:cloud` is not a smaller version of success — the
+     * user believes they are running one model while running another, and
+     * on a shared server that is also somebody else's GPU time.
+     *
+     * An empty known list still passes: a provider that has connected but
+     * not yet discovered anything has no grounds to call a name wrong.
+     */
+    if (model) {
+      const known = getAllProviderStores().find((st) => st.id === providerId)?.models ?? [];
+      if (known.length > 0 && !known.some((m) => m.id === model)) {
+        const sample = known.slice(0, 5).map((m) => m.id).join(', ');
+        return {
+          ok: false,
+          error: `"${model}" is not served by this provider. Available: ${sample}`
+            + `${known.length > 5 ? `, and ${known.length - 5} more` : ''}.`,
+        };
+      }
+    }
     // RuntimeManager.switchToProvider() persists the active pointer itself
     // (credentialStore.setActive) — only on success, so a failed switch never
     // leaves the store pointing at a provider with no working runtime.

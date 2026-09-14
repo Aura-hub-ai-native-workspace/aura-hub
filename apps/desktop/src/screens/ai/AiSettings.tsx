@@ -11,14 +11,14 @@ interface DialogState {
   step: 'provider' | 'key' | 'connecting';
   providerId: string;
   providerName: string;
-  /** The chosen provider runs on the user's machine: this is an address, not a key. */
-  local: boolean;
+  /** The chosen provider is addressed by URL, not authenticated by key. */
+  addressed: boolean;
   apiKey: string;
   showKey: boolean;
   error: string;
 }
 
-const EMPTY_DIALOG: DialogState = { open: false, step: 'provider', providerId: '', providerName: '', local: false, apiKey: '', showKey: false, error: '' };
+const EMPTY_DIALOG: DialogState = { open: false, step: 'provider', providerId: '', providerName: '', addressed: false, apiKey: '', showKey: false, error: '' };
 
 function providerIcon(id: string): 'spark' | 'cpu' {
   const icons: Record<string, 'spark' | 'cpu'> = {
@@ -107,16 +107,16 @@ export function AiSettings() {
 
   const selectProvider = (id: string) => {
     const p = knownProviders.find((k) => k.id === id);
-    // A local provider is configured by address, so the field is prefilled
-    // with the port it conventionally listens on rather than left blank
-    // waiting for a secret that does not exist.
+    // A self-hosted provider is configured by address, so the field starts
+    // from whatever default the deployment configured rather than waiting
+    // for a secret that does not exist.
     setDialog((d) => ({
       ...d,
       step: 'key',
       providerId: id,
       providerName: p?.name ?? id,
-      local: p?.local === true,
-      apiKey: p?.local ? (p.defaultBaseUrl ?? '') : '',
+      addressed: p?.selfHosted === true,
+      apiKey: p?.selfHosted ? (p.defaultBaseUrl ?? '') : '',
       error: '',
     }));
   };
@@ -125,8 +125,8 @@ export function AiSettings() {
     if (!dialog.providerId || !dialog.apiKey.trim()) return;
     setDialog((d) => ({ ...d, step: 'connecting', error: '' }));
     try {
-      const r = dialog.local
-        ? await aiClient.connectLocalProvider(dialog.providerId, dialog.apiKey.trim())
+      const r = dialog.addressed
+        ? await aiClient.connectServerProvider(dialog.providerId, dialog.apiKey.trim())
         : await aiClient.connectProvider(dialog.providerId, dialog.apiKey.trim());
       if (r?.ok) {
         setDialog(EMPTY_DIALOG);
@@ -338,17 +338,17 @@ export function AiSettings() {
             <p className="text-[13px] text-text-muted">Choose a provider to connect:</p>
             <div className="max-h-64 space-y-1 overflow-y-auto">
               {/*
-                Your own machine first, hosted services below it.
+                A server you control first, third-party services below it.
 
-                AURA's default is a model server the user runs, and the
-                ordering says so — but the cloud providers are still here,
-                one click away, for anyone who wants one. Demoting them is
-                a statement about what AURA reaches for by default, not a
-                removal.
+                AURA's default is an Ollama server — which may be on this
+                machine or on a shared one somebody else administers. The
+                cloud providers are still here, one click away, for anyone
+                who wants one. Demoting them states what AURA reaches for
+                by default; it does not remove them.
               */}
               {(() => {
-                const local = knownProviders.filter((p) => p.local);
-                const cloud = knownProviders.filter((p) => !p.local);
+                const served = knownProviders.filter((p) => p.selfHosted);
+                const cloud = knownProviders.filter((p) => !p.selfHosted);
                 const row = (p: ProviderInfo) => (
                   <button key={p.id} onClick={() => selectProvider(p.id)}
                     className="flex w-full items-center gap-3 rounded-xl border border-line px-3.5 py-3 text-left transition-colors hover:border-accent/40 hover:bg-accent/5">
@@ -362,10 +362,15 @@ export function AiSettings() {
                 );
                 return (
                   <>
-                    {local.length > 0 && (
+                    {served.length > 0 && (
                       <>
-                        <p className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-text-subtle">On this machine</p>
-                        {local.map(row)}
+                        <p className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-text-subtle">
+                          Your own server
+                        </p>
+                        <p className="px-1 pb-2 text-[11.5px] leading-relaxed text-text-subtle">
+                          Addressed by URL. This machine or another — a lab or GPU server works the same way.
+                        </p>
+                        {served.map(row)}
                       </>
                     )}
                     {cloud.length > 0 && (
@@ -395,21 +400,21 @@ export function AiSettings() {
             </div>
             <div>
               <label className="mb-1.5 block text-[12px] font-medium text-text-muted">
-                {dialog.local ? 'Server address' : 'API Key'}
+                {dialog.addressed ? 'Server address' : 'API Key'}
               </label>
               <div className="flex gap-2">
                 <Input
                   // An address is not a secret, so it is never masked —
                   // hiding it would only stop the user checking their own
                   // typing on the one field most likely to have a typo.
-                  type={dialog.local || dialog.showKey ? 'text' : 'password'}
-                  placeholder={dialog.local ? 'http://127.0.0.1:11434' : 'Paste your API key…'}
+                  type={dialog.addressed || dialog.showKey ? 'text' : 'password'}
+                  placeholder={dialog.addressed ? 'http://gpu-server.example.edu:11434' : 'Paste your API key…'}
                   value={dialog.apiKey}
                   onChange={(e) => setDialog((d) => ({ ...d, apiKey: (e as React.ChangeEvent<HTMLInputElement>).target.value, error: '' }))}
                   className="flex-1"
                   autoFocus
                 />
-                {!dialog.local && (
+                {!dialog.addressed && (
                   <button onClick={() => setDialog((d) => ({ ...d, showKey: !d.showKey }))} className="grid h-9 w-9 place-items-center rounded-lg border border-line text-text-muted hover:text-text">
                     <Icon name={dialog.showKey ? 'close' : 'activity'} size={14} />
                   </button>

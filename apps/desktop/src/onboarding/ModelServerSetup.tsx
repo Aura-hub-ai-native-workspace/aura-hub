@@ -4,24 +4,30 @@ import { Icon } from '@aura/ui';
 import { aiClient, type ProviderInfo } from '../ai/aiClient';
 
 /**
- * The only thing AURA asks for before it will work: where your model
+ * The only thing AURA asks for before it will work: where the model
  * server is, and which model to use.
  *
  * This replaces a screen that asked for an API key and offered twelve
- * hosted providers to buy one from. Two fields, both about a machine the
- * user already controls, and nothing leaves it. Cloud providers still
- * exist — they moved to the bottom of Settings, where someone who wants
- * one can go and find it, instead of being the toll gate on first launch.
+ * hosted providers to buy one from. Two fields, and no account.
  *
- * Neither field is guessed at silently. The address is prefilled with the
- * port Ollama listens on by default and then actually CHECKED against a
- * running server, and the model list is whatever that server reports —
- * so a user who has pulled nothing is told to pull something rather than
- * left with an empty dropdown and no explanation.
+ * ## The server is not assumed to be here
+ *
+ * It may be on this machine, and it may just as well be a shared GPU
+ * server somebody else administers — which is the deployment this was
+ * written for. On those laptops there is no Ollama, no model and no GPU;
+ * the client posts to an address and renders what comes back. So the
+ * address is asked for rather than detected, the prefill is a suggestion
+ * an institution can override with `AURA_OLLAMA_BASE_URL`, and none of
+ * the copy here tells anyone to install a runtime they do not need.
+ *
+ * Neither field is guessed at silently: the address is CHECKED against
+ * the server, and the model list is whatever that server reports — so
+ * "the server has no models" is a distinct, fixable message rather than
+ * an empty dropdown.
  */
 type Probe = 'idle' | 'checking' | 'reachable' | 'unreachable';
 
-export function LocalModelSetup({ onActivated, onOffline }: { onActivated: () => void; onOffline: () => void }) {
+export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () => void; onOffline: () => void }) {
   const [provider, setProvider] = useState<ProviderInfo | null>(null);
   const [serviceError, setServiceError] = useState<string | null>(null);
   const [baseUrl, setBaseUrl] = useState('');
@@ -37,9 +43,9 @@ export function LocalModelSetup({ onActivated, onOffline }: { onActivated: () =>
     aiClient.getProviders()
       .then((r) => {
         if (!alive) return;
-        const local = (r.providers ?? []).find((x) => x.local) ?? null;
-        setProvider(local);
-        setBaseUrl(local?.defaultBaseUrl ?? 'http://127.0.0.1:11434');
+        const served = (r.providers ?? []).find((x) => x.selfHosted) ?? null;
+        setProvider(served);
+        setBaseUrl(served?.defaultBaseUrl ?? '');
       })
       .catch(() => {
         if (alive) setServiceError('Could not reach AURA’s local service. Give it a moment to finish starting, or continue offline.');
@@ -61,7 +67,7 @@ export function LocalModelSetup({ onActivated, onOffline }: { onActivated: () =>
     setProbeError(undefined);
     debounce.current = setTimeout(async () => {
       try {
-        const r = await aiClient.connectLocalProvider(provider.id, baseUrl.trim());
+        const r = await aiClient.connectServerProvider(provider.id, baseUrl.trim());
         if (r?.ok) {
           setProbe('reachable');
           const found = r.models ?? [];
@@ -107,8 +113,8 @@ export function LocalModelSetup({ onActivated, onOffline }: { onActivated: () =>
       <div className="text-center">
         <h1 className="text-[32px] font-semibold tracking-[-0.02em] text-white">Connect your model server</h1>
         <p className="mx-auto mt-3 max-w-lg text-[14px] leading-relaxed text-white/60">
-          AURA runs on a model server you control. Point it at yours — no account, no API key,
-          nothing sent anywhere else.
+          AURA talks to an Ollama server over HTTP — your own machine, or a shared one such as a
+          lab or GPU server. The model runs there, not here. No account, no API key.
         </p>
       </div>
 
@@ -127,7 +133,7 @@ export function LocalModelSetup({ onActivated, onOffline }: { onActivated: () =>
               onChange={(e) => setBaseUrl(e.target.value)}
               spellCheck={false}
               autoFocus
-              placeholder="http://127.0.0.1:11434"
+              placeholder="http://gpu-server.example.edu:11434"
               className="w-full rounded-xl border border-white/12 bg-white/[0.04] px-4 py-3 pr-11 font-mono text-[13.5px] text-white outline-none transition focus:border-white/30"
             />
             <span className="absolute right-3.5 top-1/2 -translate-y-1/2">
@@ -141,7 +147,7 @@ export function LocalModelSetup({ onActivated, onOffline }: { onActivated: () =>
           )}
           {probe === 'reachable' && (
             <p className="mt-2 text-[12.5px] text-emerald-300/80">
-              Reachable — {models.length} model{models.length === 1 ? '' : 's'} available.
+              Reachable — {models.length} model{models.length === 1 ? '' : 's'} served there.
             </p>
           )}
         </label>
@@ -153,7 +159,7 @@ export function LocalModelSetup({ onActivated, onOffline }: { onActivated: () =>
             onChange={(e) => setModel(e.target.value)}
             spellCheck={false}
             list="aura-local-models"
-            placeholder="the model id on your server"
+            placeholder="the model id served there, e.g. qwen3:4b"
             className="mt-2 w-full rounded-xl border border-white/12 bg-white/[0.04] px-4 py-3 font-mono text-[13.5px] text-white outline-none transition focus:border-white/30"
           />
           {/*
@@ -205,9 +211,10 @@ export function LocalModelSetup({ onActivated, onOffline }: { onActivated: () =>
       </div>
 
       <p className="mt-6 text-center text-[12px] leading-relaxed text-white/30">
-        Don’t have a server yet? Install Ollama, run <span className="font-mono">ollama serve</span>,
-        then <span className="font-mono">ollama pull qwen2.5-coder</span>.
-        A hosted provider can be connected later from Settings.
+        Using a shared server? Ask whoever runs it for the address and a model id — nothing needs
+        installing here. Running one yourself instead? Install Ollama on that machine and start it
+        with <span className="font-mono">ollama serve</span>. A hosted provider can be connected
+        later from Settings.
       </p>
     </motion.div>
   );

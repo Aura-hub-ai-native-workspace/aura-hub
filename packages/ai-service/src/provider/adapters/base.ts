@@ -71,7 +71,8 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
     }
   }
 
-  protected makeRuntime(config: { baseUrl: string; apiKey: string; defaultModel?: string }): Runtime {
+  /** `timeoutMs` bounds silence on the wire — see the note in `stream()`. */
+  protected makeRuntime(config: { baseUrl: string; apiKey: string; defaultModel?: string; timeoutMs?: number }): Runtime {
     return new OpenAICompatibleRuntime({ ...config, providerName: this.metadata.name });
   }
 }
@@ -130,15 +131,45 @@ class OpenAICompatibleRuntime implements Runtime {
     const body = this.buildBody(msgs, { model: request.model, temperature: request.temperature, maxTokens: request.maxTokens, stream: true });
     this.ac?.abort();
     this.ac = new AbortController();
-    const signal = AbortSignal.any([this.ac.signal, AbortSignal.timeout(this.timeoutMs)]);
-    const response = await fetch(`${this.baseUrl}/chat/completions`, { method: 'POST', headers: this.headers(), body, signal });
-    if (!response.ok) { const t = await response.text().catch(() => ''); throw new ProviderHttpError(this.providerName, response.status, t || response.statusText); }
+    /*
+     * The timeout bounds SILENCE, not the length of the answer.
+     *
+     * `AbortSignal.timeout()` on this fetch stays live for as long as the
+     * body is being read, because the body IS the stream — so a flat
+     * deadline is a cap on total generation time, and it killed working
+     * requests at 30s while tokens were arriving. A self-hosted server
+     * makes that obvious: a shared GPU loading a model into VRAM can be
+     * quiet for a minute before the first token, and a long answer can
+     * take several more.
+     *
+     * So the clock is reset every time the server sends anything. It
+     * fires only when the connection has gone quiet for the whole budget,
+     * which is the condition that actually means something is wrong.
+     */
+    const ac = this.ac;
+    let idle: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+    const resetIdle = () => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => { timedOut = true; ac.abort(); }, this.timeoutMs);
+    };
+    resetIdle();
+    let response: Response;
+    try {
+      response = await fetch(`${this.baseUrl}/chat/completions`, { method: 'POST', headers: this.headers(), body, signal: ac.signal });
+    } catch (e) {
+      if (idle) clearTimeout(idle);
+      if (timedOut) throw new Error(`${this.providerName} sent nothing for ${Math.round(this.timeoutMs / 1000)}s. The server may be loading the model, or may be unreachable.`);
+      throw e;
+    }
+    if (!response.ok) { if (idle) clearTimeout(idle); const t = await response.text().catch(() => ''); throw new ProviderHttpError(this.providerName, response.status, t || response.statusText); }
     const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
-    if (!reader) throw new Error('No stream body');
+    if (!reader) { if (idle) clearTimeout(idle); throw new Error('No stream body'); }
     let buf = '';
     try {
       while (true) {
         const { done, value } = await reader.read();
+        resetIdle();
         if (done) break;
         buf += value;
         const lines = buf.split('\n');
@@ -159,6 +190,7 @@ class OpenAICompatibleRuntime implements Runtime {
         }
       }
     } finally {
+      if (idle) clearTimeout(idle);
       // Tear the connection down via the controller: aborting the fetch
       // cancels the body cleanly, whereas reader.cancel() mid-flight can
       // surface an undici unhandled rejection (reason undefined).

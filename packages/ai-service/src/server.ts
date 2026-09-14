@@ -284,12 +284,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
          */
         const secret = String(b.apiKey ?? b.baseUrl ?? '');
         if (!providerId || !secret) {
-          // Answer in the vocabulary the caller used, so a local-server
-          // setup is never told it is missing an API key it will never have.
+          // Answer in the vocabulary the caller used, so a self-hosted
+          // setup is never told it is missing an API key it will never
+          // have. The server may be on this machine or anywhere else, so
+          // the message says "your model server", not "local".
           return json(res, 400, {
             ok: false,
             error: b.baseUrl !== undefined
-              ? 'Provider ID and the address of your local server are required'
+              ? 'Provider ID and the address of your model server are required'
               : 'Provider ID and API key are required',
           });
         }

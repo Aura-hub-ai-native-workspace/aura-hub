@@ -204,9 +204,9 @@ export interface ProviderInfo {
   description: string;
   apiEndpoint?: string;
   docsUrl?: string;
-  /** Runs on the user's own hardware: configured by address, never by key. */
-  local?: boolean;
-  /** What to prefill the address field with, for local providers. */
+  /** Runs on hardware someone controls — this machine or another: configured by address, never by key. */
+  selfHosted?: boolean;
+  /** What to prefill the address field with. */
   defaultBaseUrl?: string;
 }
 export interface ConnectedProvider {
@@ -749,15 +749,15 @@ export const aiClient = {
   getProviders: () => jget<ProvidersResult>('/providers'),
   connectProvider: (providerId: string, apiKey: string) => jpost<{ ok: boolean; fingerprint?: string; models?: { id: string; name: string }[]; error?: string }>('/providers/connect', { providerId, apiKey }),
   /**
-   * Connect a provider that runs on the user's own machine.
+   * Connect a provider addressed by URL rather than authenticated by key.
    *
    * Separate from `connectProvider` because the thing being sent is not a
    * secret and must not be described as one — the service answers "an API
-   * key is required" or "the address of your local server is required"
+   * key is required" or "the address of your server is required"
    * depending on which field arrives, and a caller that sent an address
    * should never be told to go and find a key.
    */
-  connectLocalProvider: (providerId: string, baseUrl: string) => jpost<{ ok: boolean; fingerprint?: string; models?: { id: string; name: string }[]; error?: string }>('/providers/connect', { providerId, baseUrl }),
+  connectServerProvider: (providerId: string, baseUrl: string) => jpost<{ ok: boolean; fingerprint?: string; models?: { id: string; name: string }[]; error?: string }>('/providers/connect', { providerId, baseUrl }),
   disconnectProvider: (providerId: string) => jpost<{ ok: boolean }>('/providers/disconnect', { providerId }),
   switchProvider: (providerId: string, model?: string) => jpost<{ ok: boolean; status: ProviderStatus; error?: string }>('/providers/switch', { providerId, model }),
   discoverModels: (providerId: string, apiKey: string) => jpost<{ models: { id: string; name: string }[] }>(`/providers/models`, { providerId, apiKey }),
