@@ -489,6 +489,36 @@ pub fn run() {
                     eprintln!("AURA Hub: {message}");
                 }
 
+                /*
+                 * The window appears now — after the Node service, BEFORE
+                 * the environment backend.
+                 *
+                 * It used to be shown after both, which quietly made the
+                 * whole application hostage to the slower of the two. The
+                 * window is configured hidden, so until `show()` runs there
+                 * is nothing to click, nothing to focus, and on Windows
+                 * nothing for a close request to reach: WM_CLOSE posted at
+                 * a process with no window is delivered nowhere, the app
+                 * never reaches `RunEvent::Exit`, and its service keeps the
+                 * port. CI caught exactly that once the environment backend
+                 * started succeeding on Windows and took a few seconds over
+                 * it — an application that cannot be closed while it is
+                 * still looking for a Python.
+                 *
+                 * Shown either way, success or failure. A failed start still
+                 * deserves a window that can explain itself; a permanently
+                 * invisible app would be the least honest outcome
+                 * available. The environment backend's own state reaches
+                 * the UI through `python_status`, and the Environment
+                 * screen says plainly when it is not answering — which is a
+                 * far better account of a slow start than an empty screen
+                 * the user cannot even close.
+                 */
+                if let Some(window) = handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+
                 // The environment backend, started after the Node service
                 // rather than beside it. Sequential on purpose: both walk
                 // PATH and read package databases while starting, and racing
@@ -543,13 +573,6 @@ pub fn run() {
                     eprintln!("AURA Hub: {message}");
                 }
 
-                // Shown either way. A failed start still deserves a window
-                // that can explain itself; a permanently invisible app
-                // would be the least honest outcome available.
-                if let Some(window) = handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
             });
 
             Ok(())
