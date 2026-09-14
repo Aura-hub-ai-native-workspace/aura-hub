@@ -857,8 +857,22 @@ fn identify_python(port: u16) -> PortState {
 /// venv is what makes the common developer case work without configuration.
 ///
 ///   1. `AURA_PYTHON` — an explicit answer always wins.
-///   2. the virtualenv beside the backend, if one was created.
-///   3. `python3`, then `python`, from PATH and the conventional locations.
+///   2. the interpreter of an ACTIVE environment (`VIRTUAL_ENV`,
+///      `CONDA_PREFIX`) — someone chose it for this shell, so it is the
+///      best guess after an explicit one.
+///   3. the virtualenv beside the backend, if one was created.
+///   4. `python3`, then `python`, from PATH.
+///   5. version managers and per-user installs: pyenv (its shims and each
+///      installed version), conda/mamba roots, `~/.local/bin`.
+///   6. the conventional system locations.
+///
+/// Steps 2 and 5 exist because of a real failure, not for completeness. A
+/// desktop launcher hands the application a PATH like `/usr/bin:/bin`,
+/// which sees the system interpreter and nothing else. On a machine whose
+/// working Python lives in pyenv or conda — an ordinary setup, not an
+/// exotic one — every candidate lacked Starlette and the Machine Inventory
+/// read "0 installed" on a machine full of software. The interpreter that
+/// would have worked was one directory away and never looked at.
 ///
 /// Candidates are returned in order; `ensure_python_running` picks the
 /// first that can import the application, because a path existing is not
@@ -872,6 +886,15 @@ fn python_candidates(backend_root: &std::path::Path) -> Vec<PathBuf> {
 
     let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };
     let venv_exe = if cfg!(windows) { "python.exe" } else { "python" };
+
+    // An environment someone activated is a deliberate choice, so it ranks
+    // directly below an explicit `AURA_PYTHON`.
+    for active in ["VIRTUAL_ENV", "CONDA_PREFIX"] {
+        if let Some(root) = std::env::var_os(active) {
+            candidates.push(PathBuf::from(root).join(venv_bin).join(venv_exe));
+        }
+    }
+
     candidates.push(backend_root.join(".venv").join(venv_bin).join(venv_exe));
     if let Some(parent) = backend_root.parent() {
         candidates.push(parent.join(".venv").join(venv_bin).join(venv_exe));
@@ -890,6 +913,46 @@ fn python_candidates(backend_root: &std::path::Path) -> Vec<PathBuf> {
         }
     }
 
+    /*
+     * Version managers and per-user installs.
+     *
+     * These are searched by LOCATION rather than through PATH because the
+     * PATH a desktop launcher provides does not contain them — that is the
+     * whole point. `pyenv` is listed by its shims first (the interpreter
+     * the user selected) and then by each installed version, so a machine
+     * with pyenv but no global shim still resolves.
+     */
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home = PathBuf::from(home);
+        let pyenv_root = std::env::var_os("PYENV_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".pyenv"));
+
+        for name in names {
+            candidates.push(pyenv_root.join("shims").join(name));
+        }
+        // Newest first: a version manager's later installs are the ones a
+        // user is likely to have provisioned for current work.
+        if let Ok(entries) = std::fs::read_dir(pyenv_root.join("versions")) {
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_dir())
+                .collect();
+            versions.sort();
+            for version in versions.into_iter().rev() {
+                candidates.push(version.join(venv_bin).join(venv_exe));
+                candidates.push(version.join(venv_bin).join("python3"));
+            }
+        }
+
+        for root in ["miniconda3", "anaconda3", "miniforge3", "mambaforge"] {
+            candidates.push(home.join(root).join(venv_bin).join(venv_exe));
+        }
+        for name in names {
+            candidates.push(home.join(".local").join("bin").join(name));
+        }
+    }
+
     #[cfg(unix)]
     for fixed in ["/usr/local/bin/python3", "/usr/bin/python3", "/opt/homebrew/bin/python3"] {
         candidates.push(PathBuf::from(fixed));
@@ -903,17 +966,29 @@ fn python_candidates(backend_root: &std::path::Path) -> Vec<PathBuf> {
         seen.push(c.clone());
         c.is_file()
     });
-    // Each candidate costs one interpreter start-up to test. A PATH with a
-    // dozen Pythons on it is unusual but real (pyenv shims, a conda base, a
-    // system copy); trying all of them would put seconds of process spawns
-    // in front of the window appearing, and the answer is almost always in
-    // the first few.
+    /*
+     * Each candidate costs one interpreter start-up to test, so the list is
+     * capped rather than exhaustive.
+     *
+     * The cap used to be small enough to be the bug: a machine with several
+     * Pythons on PATH could exhaust it before reaching the pyenv or conda
+     * interpreter that was the only one able to run the backend, and the
+     * application reported that no Python on the machine could work while
+     * one sat a directory away. The limit now sits past the version-manager
+     * locations for that reason.
+     *
+     * The cost of raising it is bounded and paid only on failure: a probe
+     * that cannot import exits in tens of milliseconds, and the search
+     * stops at the first interpreter that works — which on a machine with a
+     * usable Python is near the front. The cost of the old value was an
+     * application that did not function at all.
+     */
     candidates.truncate(MAX_PYTHON_CANDIDATES);
     candidates
 }
 
 /// How many interpreters are worth testing before giving up.
-const MAX_PYTHON_CANDIDATES: usize = 8;
+const MAX_PYTHON_CANDIDATES: usize = 24;
 
 /// Can this interpreter import the backend, right now?
 ///
