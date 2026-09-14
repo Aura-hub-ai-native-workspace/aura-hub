@@ -288,7 +288,24 @@ async function stagePythonRuntime() {
   const tmp = path.join(PY_OUT, '.runtime-unpack');
   rmSync(tmp, { recursive: true, force: true });
   mkdirSync(tmp, { recursive: true });
-  execFileSync('tar', ['-xzf', cached, '-C', tmp], { stdio: ['ignore', 'pipe', 'pipe'] });
+  /*
+   * The archive goes in on stdin and the destination is the working
+   * directory, so `tar` is handed no path at all.
+   *
+   * Windows runners resolve `tar` to the GNU build that ships with Git,
+   * and GNU tar reads `D:\\path\\archive.tar.gz` as a REMOTE host spec —
+   * everything before the colon is a hostname. It fails with "Cannot
+   * connect to D: resolve failed", which says nothing about the real
+   * problem. `--force-local` fixes it for GNU tar and is rejected by the
+   * bsdtar in System32, and which of the two answers depends on PATH
+   * order; passing no paths is correct for both.
+   */
+  execFileSync('tar', ['-xzf', '-'], {
+    cwd: tmp,
+    input: readFileSync(cached),
+    maxBuffer: 512 * 1024 * 1024,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
   const unpacked = path.join(tmp, 'python');
   if (!existsSync(unpacked)) {
     throw new Error(`${asset} did not contain the expected python/ directory.`);
