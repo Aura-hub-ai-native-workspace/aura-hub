@@ -773,10 +773,11 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * deliberately does not touch it.
    *
    * 0.1.11 is the first release that installs into a working application
-   * on a machine with no Python set up. Every release before it shipped
-   * the environment backend's source and expected the user to have
-   * already installed Starlette, uvicorn and Pydantic — 0.1.10 on Arch
-   * showed "0 installed" until the user ran pacman and pip by hand.
+   * on a machine with no Python set up. 0.1.9 and 0.1.10 packaged the
+   * environment backend's source and expected the user to have installed
+   * Starlette, uvicorn and Pydantic already; 0.1.10 on Arch showed
+   * "0 installed" until the user ran pacman and pip by hand. This one
+   * carries the packages AND the interpreter.
    */
    const RELEASE_CANDIDATE = '0.1.11';
   check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);

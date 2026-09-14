@@ -56,21 +56,50 @@ and a window-manager rework (floating panels, workspace canvas).
 
 ## [0.1.11] - 2026-09-14 — Batteries Included
 
-Every release before this one shipped the environment backend's source
-and then expected the machine to already have the packages it imports.
-Most machines do not. A user on Arch installed 0.1.10, opened AURA, and
-got "Load failed", "Not scanned", "0 installed" and `backend is not
-answering on http://127.0.0.1:4320` — and had to run `pacman -S
-python-starlette python-pydantic` and `pip install uvicorn` by hand
-before the application worked at all. Shipping source without its
-imports was never a working product; this is the release that stops
-doing it.
+The first release that installs into a working application on a machine
+that has no Python set up.
 
-The artifacts are larger for it — the AppImage grows by roughly 15 MB —
-which is the price of an application that works when it is installed.
+0.1.9 and 0.1.10 packaged the environment backend's source and then
+expected the machine to already have the packages it imports; the
+releases before them shipped no backend at all. A user on Arch installed
+0.1.10, opened AURA, and got "Load failed", "Not scanned", "0 installed"
+and `backend is not answering on http://127.0.0.1:4320` — and had to run
+`pacman -S python-starlette python-pydantic` and `pip install uvicorn` by
+hand before the application worked. Shipping source without its imports
+was never a working product.
+
+Bundling those packages turned out to be only half of it. It removed the
+need for a *configured* Python, not for a Python: Windows ships none at
+all, macOS ships 3.9 through the Command Line Tools, Ubuntu 22.04 ships
+3.10 and Debian 12 ships 3.11 — every one below the 3.12 this backend
+requires. So the interpreter travels too, and an installed AURA now needs
+nothing from the machine: no interpreter, no pip, no package manager, no
+administrator.
+
+The artifacts are larger for it. The bundled interpreter is 30–44 MB
+depending on platform and the packages add about 6.6 MB compressed, so
+expect the downloads to roughly double. That is the price of an
+application that works when it is installed.
+
+Still required from the machine: **Node.js**. AURA runs its local service
+on the Node it finds rather than a bundled copy, deliberately — it also
+reports Node as a detected tool, and running on a different one than it
+reports would be its own kind of lie. A machine without Node still cannot
+start AURA.
 
 ### Fixed
 
+- **The Python interpreter ships with it.** A relocatable CPython
+  3.12.14, pinned by SHA-256 and verified before a single file is
+  extracted — a release URL is a promise about where bytes live, not
+  about what they are. It is ranked above every interpreter on the
+  machine, because it is the exact CPython the bundled wheels were built
+  for and cannot be upgraded out from under the application;
+  `AURA_PYTHON` still overrides it, and a source checkout stages no
+  runtime, so development is unchanged. What a headless API server never
+  reaches for is removed — Tk, IDLE, headers, the static library, pip,
+  terminfo — taking it from 101 MB to 44 MB on Linux and proportionally
+  on the other platforms.
 - **The backend's dependencies ship with it.** Starlette, uvicorn,
   Pydantic and their pure-Python dependencies are staged into
   `resources/python/site-packages`, and `pydantic_core` — a compiled
@@ -108,7 +137,22 @@ which is the price of an application that works when it is installed.
   virtualenv built `--without-pip`, having first confirmed that
   virtualenv is empty. Every other check in that suite runs on a machine
   where Starlette is installed three times over and would pass on an
-  artifact that silently depends on it.
+  artifact that silently depends on it. Three further checks cover the
+  interpreter: that it is packaged AND executes, that it alone can import
+  the backend, and — the one that matters — that the running application
+  actually used it rather than one it found on the machine.
+- **A probe that times out is no longer reported as a missing tool.** The
+  environment scan gave each tool four seconds and read silence as
+  absence, with a guessed reason. The same machine reported 12 tools
+  present, then 10, then 8, unchanged: the first execution of a binary on
+  Windows is slow because the anti-malware scanner reads the whole file
+  first. Probes are retried once, warm, and one that still does not
+  answer now says it timed out instead of claiming the tool is missing.
+- **The window appears before the environment backend starts.** It was
+  shown only after both services had been dealt with, so a machine that
+  took a moment to find a Python got an invisible application — and on
+  Windows an unquittable one, because a close request posted at a process
+  with no window is delivered nowhere.
 
 ## [0.1.10] - 2026-09-13 — Verification
 
