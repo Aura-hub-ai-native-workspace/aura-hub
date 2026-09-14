@@ -298,6 +298,20 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         const result = await manager.connectProvider(providerId, secret);
         return json(res, result.ok ? 200 : 400, result);
       }
+      /*
+       * The onboarding gate. Runs the whole path — reach, identify, list,
+       * exact-match, generate, stream — and saves nothing unless all of it
+       * passes, so a stored configuration is always one that has answered
+       * a real prompt at least once.
+       */
+      if (method === 'POST' && seg[0] === 'providers' && seg[1] === 'verify') {
+        const b = await readJson(req);
+        const providerId = String(b.providerId ?? 'ollama');
+        const baseUrl = String(b.baseUrl ?? '');
+        const model = String(b.model ?? '');
+        const result = await manager.verifySelfHosted(providerId, baseUrl, model);
+        return json(res, result.ok ? 200 : 400, result);
+      }
       if (method === 'POST' && seg[0] === 'providers' && seg[1] === 'disconnect') {
         const b = await readJson(req);
         const providerId = String(b.providerId ?? '');

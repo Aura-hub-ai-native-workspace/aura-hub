@@ -133,7 +133,7 @@ async function withRetry<T>(
 
 const NO_PROVIDER: NormalizedError = {
   type: 'no_provider',
-  message: 'No AI provider connected. Add your API key in Settings to use AURA\'s AI.',
+  message: 'No AI provider connected. Connect your Ollama server in Settings to use AURA\'s AI.',
   retryable: false,
 };
 

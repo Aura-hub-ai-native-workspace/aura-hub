@@ -1,42 +1,56 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Icon } from '@aura/ui';
 import { aiClient, type ProviderInfo } from '../ai/aiClient';
+import { detectConnection } from './detectConnection';
 
 /**
- * The only thing AURA asks for before it will work: where the model
- * server is, and which model to use.
+ * The first screen: where Ollama is, and which model to use.
  *
- * This replaces a screen that asked for an API key and offered twelve
- * hosted providers to buy one from. Two fields, and no account.
+ * It replaces a screen that asked for an API key and offered twelve hosted
+ * providers to buy one from. Two fields, no account, and — the part that
+ * matters — no way into the workspace until the configured server has
+ * actually answered a prompt with the exact model requested.
  *
- * ## The server is not assumed to be here
+ * ## Why verification is the gate, not the connection
  *
- * It may be on this machine, and it may just as well be a shared GPU
- * server somebody else administers — which is the deployment this was
- * written for. On those laptops there is no Ollama, no model and no GPU;
- * the client posts to an address and renders what comes back. So the
- * address is asked for rather than detected, the prefill is a suggestion
- * an institution can override with `AURA_OLLAMA_BASE_URL`, and none of
- * the copy here tells anyone to install a runtime they do not need.
+ * Reaching an address proves a socket opened. `/api/tags` answering proves
+ * something Ollama-shaped is there. Neither proves the model will load, and
+ * a workspace that opens and then fails on its first question is worse than
+ * one that explains the problem while it can still be fixed. So "Verify and
+ * Continue" runs the whole path and only then saves anything.
  *
- * Neither field is guessed at silently: the address is CHECKED against
- * the server, and the model list is whatever that server reports — so
- * "the server has no models" is a distinct, fixable message rather than
- * an empty dropdown.
+ * ## Where the server is, is the user's business
+ *
+ * It may be this machine, a box on the LAN, or a college GPU server behind
+ * HTTPS. The address is classified as it is typed purely to reflect what
+ * AURA read back — it never restricts what may be entered, and a hostname
+ * whose location cannot be known from the URL says exactly that.
  */
-type Probe = 'idle' | 'checking' | 'reachable' | 'unreachable';
+type Phase = 'idle' | 'verifying' | 'failed' | 'passed';
+
+/** The steps the gate walks, in the order the user sees them. */
+const STEPS = [
+  { id: 'url', label: 'Address looks valid' },
+  { id: 'reach', label: 'Server reachable and speaking Ollama' },
+  { id: 'models', label: 'Model list retrieved' },
+  { id: 'model', label: 'Requested model is served there' },
+  { id: 'generate', label: 'Model answered a real prompt' },
+  { id: 'save', label: 'Configuration saved' },
+] as const;
+
+type StageId = typeof STEPS[number]['id'] | 'timeout';
 
 export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () => void; onOffline: () => void }) {
   const [provider, setProvider] = useState<ProviderInfo | null>(null);
   const [serviceError, setServiceError] = useState<string | null>(null);
   const [baseUrl, setBaseUrl] = useState('');
-  const [probe, setProbe] = useState<Probe>('idle');
-  const [probeError, setProbeError] = useState<string>();
-  const [models, setModels] = useState<{ id: string; name: string }[]>([]);
   const [model, setModel] = useState('');
-  const [activating, setActivating] = useState(false);
-  const debounce = useRef<ReturnType<typeof setTimeout>>();
+  const [phase, setPhase] = useState<Phase>('idle');
+  const [failedAt, setFailedAt] = useState<StageId | null>(null);
+  const [error, setError] = useState<string>();
+  const [models, setModels] = useState<{ id: string; name: string }[]>([]);
+  const [sample, setSample] = useState<string>();
 
   useEffect(() => {
     let alive = true;
@@ -53,54 +67,71 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
     return () => { alive = false; };
   }, []);
 
-  /*
-   * Checked as it is typed, against the real server.
+  // Recomputed as the address is typed; no network, no commitment.
+  const detected = useMemo(() => detectConnection(baseUrl), [baseUrl]);
+
+  /**
+   * Offer the server's own model list once an address looks plausible.
    *
-   * Debounced because every keystroke of a hostname would otherwise be a
-   * connection attempt, and the intermediate states of "127.0.0.1:114" are
-   * all failures that mean nothing.
+   * Convenience only — the field stays free text, because a model pulled a
+   * minute ago will not be in a list fetched before that.
    */
   useEffect(() => {
-    if (!provider || !baseUrl.trim()) { setProbe('idle'); return; }
-    if (debounce.current) clearTimeout(debounce.current);
-    setProbe('checking');
-    setProbeError(undefined);
-    debounce.current = setTimeout(async () => {
-      try {
-        const r = await aiClient.connectServerProvider(provider.id, baseUrl.trim());
-        if (r?.ok) {
-          setProbe('reachable');
-          const found = r.models ?? [];
-          setModels(found);
-          // Pre-select only when the user has not already chosen. A list
-          // that reorders under a typed model id would be maddening.
-          setModel((m) => (m || found[0]?.id || ''));
-        } else {
-          setProbe('unreachable');
-          setProbeError(r?.error ?? 'That address did not answer as a model server.');
-          setModels([]);
-        }
-      } catch {
-        setProbe('unreachable');
-        setProbeError('Could not reach AURA’s local service.');
-      }
-    }, 600);
-    return () => { if (debounce.current) clearTimeout(debounce.current); };
-  }, [baseUrl, provider]);
+    if (!provider || detected.kind === 'invalid' || !baseUrl.trim()) { setModels([]); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      aiClient.discoverServerModels(provider.id, baseUrl.trim())
+        .then((r) => { if (alive) setModels(r?.models ?? []); })
+        .catch(() => { if (alive) setModels([]); });
+    }, 700);
+    return () => { alive = false; clearTimeout(t); };
+  }, [baseUrl, provider, detected.kind]);
 
-  const ready = probe === 'reachable' && model.trim().length > 0 && !activating;
-
-  const activate = async () => {
-    if (!provider || !ready) return;
-    setActivating(true);
+  const verify = async () => {
+    if (!provider) return;
+    setPhase('verifying');
+    setError(undefined);
+    setFailedAt(null);
+    setSample(undefined);
     try {
-      await aiClient.switchProvider(provider.id, model.trim());
-      onActivated();
+      const r = await aiClient.verifyServerProvider(provider.id, baseUrl.trim(), model.trim());
+      if (r?.ok) {
+        setPhase('passed');
+        setSample(r.sample);
+        if (r.models?.length) setModels(r.models);
+        // A short beat so the finished checklist is readable rather than
+        // a flash before the workspace replaces it.
+        setTimeout(onActivated, 650);
+        return;
+      }
+      setPhase('failed');
+      setFailedAt((r?.stage as StageId) ?? 'reach');
+      setError(r?.error ?? 'Verification failed.');
+      if (r?.models?.length) setModels(r.models);
     } catch {
-      setActivating(false);
-      setProbeError('The model could not be activated. Check that it is pulled on your server.');
+      setPhase('failed');
+      setFailedAt('reach');
+      setError('Could not reach AURA’s local service to run the check.');
     }
   };
+
+  const stepState = (id: string): 'done' | 'active' | 'failed' | 'todo' => {
+    if (phase === 'passed') return 'done';
+    if (phase !== 'failed' && phase !== 'verifying') return 'todo';
+    const order = STEPS.findIndex((s) => s.id === id);
+    // A timeout is a failure of the generation step.
+    const failedIndex = STEPS.findIndex((s) => s.id === (failedAt === 'timeout' ? 'generate' : failedAt));
+    if (phase === 'failed') {
+      if (failedIndex === -1) return 'todo';
+      if (order < failedIndex) return 'done';
+      if (order === failedIndex) return 'failed';
+      return 'todo';
+    }
+    return 'active';
+  };
+
+  const canVerify = Boolean(provider) && baseUrl.trim().length > 0 && model.trim().length > 0
+    && detected.kind !== 'invalid' && phase !== 'verifying' && phase !== 'passed';
 
   return (
     <motion.div
@@ -111,10 +142,10 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
       className="flex max-h-[86vh] w-full max-w-[620px] flex-col overflow-y-auto px-1 pb-2"
     >
       <div className="text-center">
-        <h1 className="text-[32px] font-semibold tracking-[-0.02em] text-white">Connect your model server</h1>
+        <h1 className="text-[32px] font-semibold tracking-[-0.02em] text-white">Connect your Ollama server</h1>
         <p className="mx-auto mt-3 max-w-lg text-[14px] leading-relaxed text-white/60">
-          AURA talks to an Ollama server over HTTP — your own machine, or a shared one such as a
-          lab or GPU server. The model runs there, not here. No account, no API key.
+          Enter the address of the machine where Ollama is running. AURA Hub will verify the server
+          and the selected model before opening the workspace.
         </p>
       </div>
 
@@ -126,49 +157,31 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
 
       <div className="mt-8 space-y-5">
         <label className="block">
-          <span className="text-[12.5px] font-medium uppercase tracking-wide text-white/45">Server address</span>
-          <div className="relative mt-2">
-            <input
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              spellCheck={false}
-              autoFocus
-              placeholder="http://gpu-server.example.edu:11434"
-              className="w-full rounded-xl border border-white/12 bg-white/[0.04] px-4 py-3 pr-11 font-mono text-[13.5px] text-white outline-none transition focus:border-white/30"
-            />
-            <span className="absolute right-3.5 top-1/2 -translate-y-1/2">
-              {probe === 'checking' && <Icon name="refresh" size={15} className="animate-spin text-white/40" />}
-              {probe === 'reachable' && <Icon name="check" size={15} className="text-emerald-400" />}
-              {probe === 'unreachable' && <Icon name="close" size={15} className="text-rose-400" />}
-            </span>
-          </div>
-          {probe === 'unreachable' && probeError && (
-            <p className="mt-2 text-[12.5px] leading-relaxed text-rose-300/90">{probeError}</p>
-          )}
-          {probe === 'reachable' && (
-            <p className="mt-2 text-[12.5px] text-emerald-300/80">
-              Reachable — {models.length} model{models.length === 1 ? '' : 's'} served there.
-            </p>
-          )}
+          <span className="text-[12.5px] font-medium uppercase tracking-wide text-white/45">Ollama server</span>
+          <input
+            value={baseUrl}
+            onChange={(e) => { setBaseUrl(e.target.value); setPhase('idle'); }}
+            spellCheck={false}
+            autoFocus
+            placeholder="http://127.0.0.1:11434"
+            className="mt-2 w-full rounded-xl border border-white/12 bg-white/[0.04] px-4 py-3 font-mono text-[13.5px] text-white outline-none transition focus:border-white/30"
+          />
+          <p className={`mt-2 text-[12.5px] ${detected.kind === 'invalid' ? 'text-rose-300/90' : 'text-white/45'}`}>
+            <span className="text-white/30">Detected: </span>{detected.label}
+          </p>
         </label>
 
         <label className="block">
-          <span className="text-[12.5px] font-medium uppercase tracking-wide text-white/45">Model</span>
+          <span className="text-[12.5px] font-medium uppercase tracking-wide text-white/45">Model ID</span>
           <input
             value={model}
-            onChange={(e) => setModel(e.target.value)}
+            onChange={(e) => { setModel(e.target.value); setPhase('idle'); }}
             spellCheck={false}
-            list="aura-local-models"
-            placeholder="the model id served there, e.g. qwen3:4b"
+            list="aura-server-models"
+            placeholder="qwen3:4b"
             className="mt-2 w-full rounded-xl border border-white/12 bg-white/[0.04] px-4 py-3 font-mono text-[13.5px] text-white outline-none transition focus:border-white/30"
           />
-          {/*
-            A datalist rather than a select: the server's own list is the
-            useful default, but a model pulled a second ago — or one served
-            by something that does not list models at all — must still be
-            typeable.
-          */}
-          <datalist id="aura-local-models">
+          <datalist id="aura-server-models">
             {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </datalist>
           {models.length > 0 && (
@@ -177,7 +190,7 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
                 <button
                   key={m.id}
                   type="button"
-                  onClick={() => setModel(m.id)}
+                  onClick={() => { setModel(m.id); setPhase('idle'); }}
                   className={`rounded-lg border px-2.5 py-1 font-mono text-[11.5px] transition ${
                     model === m.id
                       ? 'border-white/35 bg-white/10 text-white'
@@ -192,29 +205,55 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
         </label>
       </div>
 
-      <div className="mt-9 flex items-center justify-between gap-4">
-        <button
-          type="button"
-          onClick={onOffline}
-          className="text-[13px] text-white/40 transition hover:text-white/70"
-        >
+      {phase !== 'idle' && (
+        <div className="mt-7 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3.5">
+          <ul className="space-y-2">
+            {STEPS.map((s) => {
+              const state = stepState(s.id);
+              return (
+                <li key={s.id} className="flex items-center gap-2.5 text-[12.5px]">
+                  <span className="grid h-4 w-4 shrink-0 place-items-center">
+                    {state === 'done' && <Icon name="check" size={13} className="text-emerald-400" />}
+                    {state === 'failed' && <Icon name="close" size={13} className="text-rose-400" />}
+                    {state === 'active' && <Icon name="refresh" size={12} className="animate-spin text-white/50" />}
+                    {state === 'todo' && <span className="h-1.5 w-1.5 rounded-full bg-white/15" />}
+                  </span>
+                  <span className={
+                    state === 'done' ? 'text-white/70'
+                      : state === 'failed' ? 'text-rose-300/90'
+                        : state === 'active' ? 'text-white/70' : 'text-white/30'
+                  }>
+                    {s.label}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+          {error && <p className="mt-3 border-t border-white/8 pt-3 text-[12.5px] leading-relaxed text-rose-300/90">{error}</p>}
+          {phase === 'passed' && sample && (
+            <p className="mt-3 border-t border-white/8 pt-3 font-mono text-[12px] text-emerald-300/80">{sample}</p>
+          )}
+        </div>
+      )}
+
+      <div className="mt-8 flex items-center justify-between gap-4">
+        <button type="button" onClick={onOffline} className="text-[13px] text-white/40 transition hover:text-white/70">
           Skip for now
         </button>
         <button
           type="button"
-          disabled={!ready}
-          onClick={activate}
+          disabled={!canVerify}
+          onClick={verify}
           className="rounded-xl bg-white px-6 py-3 text-[13.5px] font-medium text-black transition disabled:cursor-not-allowed disabled:bg-white/20 disabled:text-white/40"
         >
-          {activating ? 'Activating…' : 'Activate workspace'}
+          {phase === 'verifying' ? 'Verifying…' : phase === 'passed' ? 'Opening workspace…' : 'Verify and Continue'}
         </button>
       </div>
 
       <p className="mt-6 text-center text-[12px] leading-relaxed text-white/30">
-        Using a shared server? Ask whoever runs it for the address and a model id — nothing needs
-        installing here. Running one yourself instead? Install Ollama on that machine and start it
-        with <span className="font-mono">ollama serve</span>. A hosted provider can be connected
-        later from Settings.
+        Ollama can be on this machine or on another one — a lab or GPU server works the same way.
+        Nothing is installed here, and the model runs wherever the server is. A hosted provider can
+        be connected later from Settings.
       </p>
     </motion.div>
   );

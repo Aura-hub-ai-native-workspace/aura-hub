@@ -53,6 +53,9 @@ export interface OpenResult {
   status: IndexStatus;
 }
 
+/** Which step of `verifySelfHosted` a failure belongs to. */
+export type VerifyStage = 'url' | 'reach' | 'models' | 'model' | 'generate' | 'timeout' | 'save';
+
 export interface ProviderInfo {
   id: string;
   name: string;
@@ -1388,9 +1391,26 @@ export class WorkspaceManager {
     return { ok: true, fingerprint, models };
   }
 
+  /**
+   * Disconnect, and mean it.
+   *
+   * The active pointer had to be read BEFORE the credential was removed.
+   * `removeKey` clears `active` itself, so the old guard compared a
+   * freshly-nulled pointer against the id being disconnected, found them
+   * different, and skipped `deactivate()` — leaving the in-memory runtime
+   * answering requests for a provider whose configuration had just been
+   * deleted. Health said "connected" with nothing stored behind it.
+   *
+   * Chosen behaviour for a stream already in flight: it is ABORTED.
+   * `deactivate()` drops the runtime, and the adapter's own controller
+   * tears the connection down. Letting it finish would mean tokens still
+   * arriving from a server the user has just disconnected from, which is
+   * the more surprising of the two options.
+   */
   disconnectProvider(providerId: string): void {
+    const wasActive = getActive().providerId === providerId;
     removeKey(providerId);
-    if (getActive().providerId === providerId) {
+    if (wasActive) {
       this.pipeline.runtimeManager.deactivate();
     }
   }
@@ -1444,6 +1464,106 @@ export class WorkspaceManager {
     // leaves the store pointing at a provider with no working runtime.
     const switched = await this.pipeline.runtimeManager.switchToProvider(providerId, model);
     return switched ? { ok: true } : { ok: false, error: 'Failed to activate runtime' };
+  }
+
+  /**
+   * Prove the server and the model work, before anyone is let into the Hub.
+   *
+   * Reaching an address is not evidence that inference works there, and
+   * `/api/tags` answering is not evidence that the requested model will
+   * load. Onboarding used to accept both as proof and hand the user a
+   * workspace that failed on its first question. This runs the whole path
+   * — reach, identify, list, match exactly, generate, stream — and
+   * persists nothing until every step has passed.
+   *
+   * `stage` is what the caller shows and what an error is attributed to,
+   * so a failure says which step broke rather than "connection failed".
+   */
+  async verifySelfHosted(
+    providerId: string,
+    baseUrl: string,
+    model: string,
+  ): Promise<{ ok: boolean; stage?: VerifyStage; error?: string; models?: DiscoveredModel[]; sample?: string; chunks?: number }> {
+    const adapter = getAdapter(providerId);
+    if (!adapter) return { ok: false, stage: 'url', error: 'Unknown provider' };
+    if (!baseUrl.trim()) return { ok: false, stage: 'url', error: 'Enter your Ollama server address.' };
+    if (!model.trim()) return { ok: false, stage: 'model', error: 'Enter the model ID to use.' };
+
+    // Reach the server and confirm it answers like Ollama. `validate`
+    // already separates unreachable, wrong-service and no-models.
+    const reach = await adapter.validate(baseUrl);
+    if (!reach.ok) {
+      const stage: VerifyStage = /no models/i.test(reach.error ?? '') ? 'models' : 'reach';
+      return { ok: false, stage, error: reach.error };
+    }
+
+    const models = await adapter.discoverModels(baseUrl);
+    if (models.length === 0) {
+      return { ok: false, stage: 'models', error: 'Ollama is running, but no models are available.' };
+    }
+
+    /*
+     * Exactly this model, or none.
+     *
+     * A near-match is not a match: `qwen3:4b` and `qwen3.8:27b` are
+     * different weights on different hardware, and a user who asked for
+     * one and silently got the other has been told something untrue about
+     * what their answers came from.
+     */
+    if (!models.some((m) => m.id === model)) {
+      const sample = models.slice(0, 6).map((m) => m.id).join(', ');
+      return {
+        ok: false,
+        stage: 'model',
+        error: `This model is not served by the selected Ollama server. Available: ${sample}`
+          + `${models.length > 6 ? `, and ${models.length - 6} more` : ''}.`,
+        models,
+      };
+    }
+
+    /*
+     * A real generation, streamed, on the model that was asked for.
+     *
+     * The prompt is deterministic so the answer is checkable, and the
+     * chunks are counted because "it streamed" is the property the chat
+     * path depends on — a server that only ever returns one final blob
+     * would pass a non-streaming check and then feel broken in use.
+     */
+    let chunks = 0;
+    let text = '';
+    try {
+      const runtime = adapter.createRuntime(baseUrl, model);
+      for await (const chunk of runtime.stream({
+        messages: [{ role: 'user', content: 'Respond with exactly: AURA_CONNECTION_OK' }],
+        model,
+        maxTokens: 64,
+      })) {
+        if (chunk.delta) { text += chunk.delta; chunks += 1; }
+        if (chunk.done) break;
+      }
+    } catch (e) {
+      const message = (e as Error).message ?? 'Unknown error';
+      const stage: VerifyStage = /sent nothing for|timed out|did not respond/i.test(message) ? 'timeout' : 'generate';
+      return {
+        ok: false,
+        stage,
+        error: stage === 'timeout'
+          ? `The selected model did not respond within the allowed time. ${message}`
+          : `The model started responding but the stream failed: ${message}`,
+      };
+    }
+
+    if (!text.trim()) {
+      return { ok: false, stage: 'generate', error: 'The model connected but returned no response.' };
+    }
+
+    // Only now is any of this written down.
+    const connected = await this.connectProvider(providerId, baseUrl);
+    if (!connected.ok) return { ok: false, stage: 'save', error: connected.error ?? 'Could not save the connection.' };
+    const switched = await this.switchToProvider(providerId, model);
+    if (!switched.ok) return { ok: false, stage: 'save', error: switched.error ?? 'Could not select the model.' };
+
+    return { ok: true, models, sample: text.trim().slice(0, 120), chunks };
   }
 
   async discoverModels(providerId: string, apiKey: string): Promise<DiscoveredModel[]> {

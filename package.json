@@ -2,7 +2,7 @@
   "name": "aura-hub",
   "private": true,
   "version": "0.1.10",
-  "description": "AURA Hub — an AI Operating Environment. Application shell and architecture.",
+  "description": "AURA Hub \u2014 an AI Operating Environment. Application shell and architecture.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/Aura-hub-ai-native-workspace/aura-hub#readme",
   "repository": {
@@ -41,6 +41,7 @@
     "test:ui": "node scripts/ui-approval-test.mjs",
     "test:ui-events": "node scripts/ui-agent-events.mjs",
     "test:front": "vitest run apps/desktop/src",
+    "test:service": "vitest run packages/ai-service/src",
     "check:environment": "esbuild scripts/environment-inventory-check.ts --bundle --platform=node --format=esm --define:import.meta.env={} --outfile=.aura/environment-inventory-check.mjs --log-level=error && node .aura/environment-inventory-check.mjs"
   },
   "devDependencies": {

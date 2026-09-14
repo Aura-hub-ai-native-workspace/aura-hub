@@ -69,13 +69,31 @@ export function normaliseOllamaUrl(raw: string): string {
   return value;
 }
 
-/** Turn a failed fetch into something the user can act on. */
+/*
+ * One sentence naming the failure, then the context needed to fix it.
+ *
+ * The leading sentence is fixed per failure so the same condition always
+ * reads the same way, and the address is appended because a connection
+ * DESTINATION is not a secret — it is the single most useful thing to see
+ * when a server on another machine will not answer.
+ */
 function reachError(base: string, e: unknown): string {
   const err = e as { name?: string; message?: string };
   if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
-    return `${base} did not respond within ${REACH_TIMEOUT_MS / 1000}s. The server may be busy, or unreachable from this network.`;
+    return `Cannot reach the configured Ollama server: ${base} did not respond within ${REACH_TIMEOUT_MS / 1000}s. It may be busy, or unreachable from this network.`;
   }
-  return `Could not reach an Ollama server at ${base} (${err?.message ?? 'network error'}). Check the address, and that the server is running and reachable from this machine.`;
+  return `Cannot reach the configured Ollama server at ${base} (${err?.message ?? 'network error'}). Check the address, and that the server is running and reachable from this machine.`;
+}
+
+/** An HTTP answer that is not a model list still tells us what went wrong. */
+function statusError(base: string, status: number): string {
+  if (status === 401 || status === 403 || status === 407) {
+    return `The configured server rejected the request (HTTP ${status} from ${base}).`;
+  }
+  if (status >= 500) {
+    return `The Ollama server returned an error (HTTP ${status} from ${base}).`;
+  }
+  return `This address is reachable but is not an Ollama server (${base} answered HTTP ${status}).`;
 }
 
 export class OllamaAdapter extends BaseOpenAICompatible {
@@ -107,17 +125,20 @@ export class OllamaAdapter extends BaseOpenAICompatible {
 
   async validate(endpoint: string): Promise<{ ok: boolean; error?: string }> {
     const base = normaliseOllamaUrl(endpoint);
-    if (!base) return { ok: false, error: 'Enter the address of your Ollama server.' };
+    if (!base) return { ok: false, error: 'Enter your Ollama server address.' };
     try {
       const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(REACH_TIMEOUT_MS) });
-      if (!res.ok) {
-        return { ok: false, error: `${base} answered HTTP ${res.status}. That address is reachable but is not an Ollama server.` };
-      }
+      if (!res.ok) return { ok: false, error: statusError(base, res.status) };
       const body = await res.json() as { models?: unknown[] };
-      if (!Array.isArray(body.models) || body.models.length === 0) {
+      // An Ollama model list is an object with a `models` array. Anything
+      // else answered 200 without being the service we need.
+      if (!body || !Array.isArray(body.models)) {
+        return { ok: false, error: `This address is reachable but is not an Ollama server (${base} did not return a model list).` };
+      }
+      if (body.models.length === 0) {
         // Reachable and empty is a different problem from unreachable, and
         // the fix is on the SERVER, which may not be this machine.
-        return { ok: false, error: `Connected to ${base}, but that server has no models. Pull one on the server first, for example: ollama pull qwen3:4b` };
+        return { ok: false, error: `Ollama is running, but no models are available at ${base}. Pull one on the server, for example: ollama pull qwen3:4b` };
       }
       return { ok: true };
     } catch (e) {
