@@ -3,6 +3,7 @@ import type {
 } from '@aura/runtime';
 import type { ProviderAdapter, DiscoveredModel, ProviderHealth, ModelCapabilities } from '../types';
 import { ProviderHttpError } from '../errorTranslator';
+import { pinnedFetch } from '../redirectGuard';
 
 /** Classify an OpenAI-compatible HTTP status into a user-facing validation state. */
 function classifyError(status: number): string {
@@ -71,8 +72,12 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
     }
   }
 
-  /** `timeoutMs` bounds silence on the wire — see the note in `stream()`. */
-  protected makeRuntime(config: { baseUrl: string; apiKey: string; defaultModel?: string; timeoutMs?: number }): Runtime {
+  /**
+   * `timeoutMs` bounds silence on the wire — see the note in `stream()`.
+   * `guardRedirects` pins requests to the configured destination, for
+   * providers whose endpoint the user chose rather than this code.
+   */
+  protected makeRuntime(config: { baseUrl: string; apiKey: string; defaultModel?: string; timeoutMs?: number; guardRedirects?: boolean }): Runtime {
     return new OpenAICompatibleRuntime({ ...config, providerName: this.metadata.name });
   }
 }
@@ -85,12 +90,26 @@ class OpenAICompatibleRuntime implements Runtime {
   private timeoutMs = 30000;
   private ac: AbortController | null = null;
 
-  constructor(config: { baseUrl: string; apiKey: string; defaultModel?: string; providerName?: string; timeoutMs?: number }) {
+  /**
+   * Which `fetch` to use for the chat endpoint.
+   *
+   * A hosted provider's endpoint is a constant this code chose, and those
+   * services redirect for their own reasons; they keep the default
+   * behaviour they were tested against. A self-hosted endpoint is an
+   * address the USER chose, and a redirect away from it would move their
+   * prompts to a machine they never configured — so those are pinned.
+   */
+  private send: typeof fetch;
+
+  constructor(config: { baseUrl: string; apiKey: string; defaultModel?: string; providerName?: string; timeoutMs?: number; guardRedirects?: boolean }) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.apiKey = config.apiKey;
     this.defaultModel = config.defaultModel ?? '';
     this.providerName = config.providerName ?? 'The AI provider';
     this.timeoutMs = config.timeoutMs ?? 30000;
+    this.send = config.guardRedirects
+      ? ((input, init) => pinnedFetch(String(input), init as RequestInit))
+      : fetch;
   }
 
   cancel(): void { this.ac?.abort(); this.ac = null; }
@@ -156,7 +175,7 @@ class OpenAICompatibleRuntime implements Runtime {
     resetIdle();
     let response: Response;
     try {
-      response = await fetch(`${this.baseUrl}/chat/completions`, { method: 'POST', headers: this.headers(), body, signal: ac.signal });
+      response = await this.send(`${this.baseUrl}/chat/completions`, { method: 'POST', headers: this.headers(), body, signal: ac.signal });
     } catch (e) {
       if (idle) clearTimeout(idle);
       if (timedOut) throw new Error(`${this.providerName} sent nothing for ${Math.round(this.timeoutMs / 1000)}s. The server may be loading the model, or may be unreachable.`);
@@ -203,13 +222,13 @@ class OpenAICompatibleRuntime implements Runtime {
   async health(): Promise<HealthStatus> {
     const start = performance.now();
     try {
-      const res = await fetch(`${this.baseUrl}/models`, { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(5000) });
+      const res = await this.send(`${this.baseUrl}/models`, { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(5000) });
       return { ok: res.ok, status: res.ok ? 'connected' : 'error', latencyMs: Math.round(performance.now() - start) };
     } catch (e) { return { ok: false, status: 'offline', latencyMs: Math.round(performance.now() - start), error: (e as Error).message }; }
   }
   private async post<T>(path: string, body: string): Promise<T> {
     const signal = AbortSignal.any([this.ac?.signal ?? new AbortController().signal, AbortSignal.timeout(this.timeoutMs)].filter(Boolean));
-    const res = await fetch(`${this.baseUrl}${path}`, { method: 'POST', headers: this.headers(), body, signal });
+    const res = await this.send(`${this.baseUrl}${path}`, { method: 'POST', headers: this.headers(), body, signal });
     if (!res.ok) { const t = await res.text().catch(() => ''); throw new ProviderHttpError(this.providerName, res.status, t || res.statusText); }
     return res.json() as Promise<T>;
   }

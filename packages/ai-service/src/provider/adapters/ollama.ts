@@ -1,6 +1,7 @@
 import { BaseOpenAICompatible } from './base';
 import type { Runtime } from '@aura/runtime';
 import type { DiscoveredModel, ProviderHealth } from '../types';
+import { pinnedFetch, RedirectBlocked } from '../redirectGuard';
 
 /**
  * Ollama — a model server somebody runs, addressed over HTTP.
@@ -78,6 +79,10 @@ export function normaliseOllamaUrl(raw: string): string {
  * when a server on another machine will not answer.
  */
 function reachError(base: string, e: unknown): string {
+  // A refused redirect is a decision AURA made, not a failure of the
+  // network, and saying so is the difference between "try again" and
+  // "something is pointing you somewhere else".
+  if (e instanceof RedirectBlocked) return e.message;
   const err = e as { name?: string; message?: string };
   if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
     return `Cannot reach the configured Ollama server: ${base} did not respond within ${REACH_TIMEOUT_MS / 1000}s. It may be busy, or unreachable from this network.`;
@@ -127,7 +132,7 @@ export class OllamaAdapter extends BaseOpenAICompatible {
     const base = normaliseOllamaUrl(endpoint);
     if (!base) return { ok: false, error: 'Enter your Ollama server address.' };
     try {
-      const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(REACH_TIMEOUT_MS) });
+      const res = await pinnedFetch(`${base}/api/tags`, { signal: AbortSignal.timeout(REACH_TIMEOUT_MS) });
       if (!res.ok) return { ok: false, error: statusError(base, res.status) };
       const body = await res.json() as { models?: unknown[] };
       // An Ollama model list is an object with a `models` array. Anything
@@ -157,7 +162,7 @@ export class OllamaAdapter extends BaseOpenAICompatible {
     const base = normaliseOllamaUrl(endpoint);
     if (!base) return [];
     try {
-      const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(REACH_TIMEOUT_MS) });
+      const res = await pinnedFetch(`${base}/api/tags`, { signal: AbortSignal.timeout(REACH_TIMEOUT_MS) });
       if (!res.ok) return [];
       const body = await res.json() as {
         models?: { name?: string; details?: { parameter_size?: string; quantization_level?: string } }[];
@@ -184,6 +189,10 @@ export class OllamaAdapter extends BaseOpenAICompatible {
       // keeps the header well-formed for any reverse proxy in front of it.
       apiKey: '',
       defaultModel: model || this.metadata.defaultModel,
+      // Inference is pinned to the configured destination — see
+      // `redirectGuard`. Only this adapter opts in; the key-based
+      // providers keep the default `fetch` behaviour they were tested on.
+      guardRedirects: true,
       /*
        * Generous, because this budget now bounds SILENCE rather than the
        * length of an answer. The first request to a shared server usually
@@ -202,7 +211,7 @@ export class OllamaAdapter extends BaseOpenAICompatible {
       return { ok: false, latencyMs: 0, error: 'No server address configured.', lastChecked: new Date().toISOString() };
     }
     try {
-      const res = await fetch(`${base}/api/tags`, { signal: AbortSignal.timeout(5000) });
+      const res = await pinnedFetch(`${base}/api/tags`, { signal: AbortSignal.timeout(5000) });
       return {
         ok: res.ok,
         latencyMs: Math.round(performance.now() - start),
