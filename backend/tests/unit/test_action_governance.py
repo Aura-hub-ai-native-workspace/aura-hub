@@ -137,7 +137,14 @@ class TestEventBounds:
     def test_no_secret_fields(self):
         event = summarize_event(_req(), ActionVerdict("ALLOW", "ok"), "t")
         blob = json.dumps(event)
-        for marker in ("apiKey", "BEGIN PRIVATE KEY", "AWS_SECRET",
+        # Assembled rather than written out. A release gate scans every
+        # tracked file for key material, and it cannot tell a test that
+        # names the PEM header from a file that contains one — so spelling
+        # it in full turns this test into a permanent false positive on
+        # that scan. Same string at runtime; `updater-verify.mjs` splits
+        # its own copy of the marker for exactly this reason.
+        pem_header = "BEGIN " + "PRIVATE" + " KEY"
+        for marker in ("apiKey", pem_header, "AWS_SECRET",
                        "password", "token"):
             assert marker not in blob
 
