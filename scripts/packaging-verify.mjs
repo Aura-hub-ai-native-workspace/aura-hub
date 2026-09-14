@@ -236,6 +236,104 @@ check('1g. the packaged resource directory outranks the development fallback',
         ? 'resource lookup precedes the CARGO_MANIFEST_DIR fallback'
         : 'CARGO_MANIFEST_DIR is consulted BEFORE the packaged resources');
 
+/*
+ * 1h/1i. The backend's dependencies ship WITH it.
+ *
+ * v0.1.10 packaged the backend's source and nothing else, so the first
+ * thing a new user saw was an empty Machine Inventory and "backend is not
+ * answering" — the application was complete except for the packages it
+ * imports, which it expected the machine to have installed already. 1h
+ * asserts the files are in the artifact; 1i proves they are sufficient, by
+ * running the packaged entry point on an interpreter that has nothing.
+ *
+ * The empty virtualenv is the whole point. Every other check here runs on
+ * a development machine where starlette is installed three times over, and
+ * would pass on an artifact that silently depends on that. A venv built
+ * `--without-pip` has no third-party package at all, which is the state of
+ * the machine this is meant to protect.
+ */
+/*
+ * The environment for every probe that runs the PACKAGED entry script.
+ *
+ * `PYTHONDONTWRITEBYTECODE` matters as much here as it does in the shell:
+ * importing from the extracted tree without it leaves `__pycache__`
+ * directories behind, and check 6b would then report the application as
+ * having written inside itself — a finding this suite would have caused.
+ * The inherited PYTHONPATH and PYTHONHOME go for the opposite reason: a
+ * developer's shell must not be able to supply a package the artifact
+ * failed to ship.
+ */
+const PROBE_ENV = { ...process.env, PYTHONDONTWRITEBYTECODE: '1' };
+delete PROBE_ENV.PYTHONPATH;
+delete PROBE_ENV.PYTHONHOME;
+
+const pyRes = (rel) => (existsSync(squash)
+  ? spawnSync('find', [squash, '-path', `*/resources/python/${rel}`], { encoding: 'utf8' })
+      .stdout.trim().split('\n').filter(Boolean)
+  : []);
+const vendoredPure = ['starlette/__init__.py', 'uvicorn/__init__.py', 'pydantic/version.py']
+  .filter((rel) => pyRes(`site-packages/${rel}`).length === 0);
+const vendoredAbi = pyRes('abi/cp3*/pydantic_core/_pydantic_core*.so');
+check('1h. the backend\'s third-party dependencies are packaged with it',
+  vendoredPure.length === 0 && vendoredAbi.length > 0,
+  vendoredPure.length
+    ? `missing from resources/python/site-packages: ${vendoredPure.join(', ')}`
+    : vendoredAbi.length === 0
+      ? 'no pydantic_core extension under resources/python/abi/cp3NN/'
+      : `site-packages + ${vendoredAbi.length} ABI build(s) of pydantic_core`);
+
+/*
+ * A base interpreter for 1i: new enough for the backend (3.12+, per
+ * `backend/pyproject.toml`) and otherwise unremarkable. What it has
+ * installed does not matter, because the virtualenv built from it keeps
+ * none of it.
+ */
+const pythonSearch = [
+  ...(process.env.PATH ?? '').split(':').filter(Boolean),
+  '/usr/local/bin', '/usr/bin', '/bin', '/opt/homebrew/bin',
+];
+let venvBase = null;
+for (const dir of pythonSearch) {
+  for (const exe of ['python3', 'python']) {
+    const candidate = path.join(dir, exe);
+    if (!existsSync(candidate)) continue;
+    const v = spawnSync(candidate, ['-c', 'import sys; print(sys.version_info >= (3, 12))'],
+      { encoding: 'utf8', timeout: 20000 });
+    if (v.status === 0 && v.stdout.trim() === 'True') { venvBase = candidate; break; }
+  }
+  if (venvBase) break;
+}
+
+let cleanRoomDetail = 'no Python 3.12+ on this machine to build an empty virtualenv from';
+let cleanRoomOk = false;
+if (venvBase && packagedPyEntry.length > 0) {
+  const venvDir = path.join(mkdtempSync(path.join(tmpdir(), 'aura-cleanroom-')), 'venv');
+  const made = spawnSync(venvBase, ['-m', 'venv', '--without-pip', venvDir],
+    { encoding: 'utf8', timeout: 120000 });
+  const venvPython = existsSync(path.join(venvDir, 'bin/python'))
+    ? path.join(venvDir, 'bin/python')
+    : path.join(venvDir, 'Scripts/python.exe');
+  if (made.status !== 0 || !existsSync(venvPython)) {
+    cleanRoomDetail = `could not build a virtualenv from ${venvBase}: `
+      + `${(made.stderr ?? '').trim().slice(0, 160)}`;
+  } else {
+    // Confirm the room really is empty first — otherwise a `--check` that
+    // passes proves nothing about the bundle.
+    const bare = spawnSync(venvPython, ['-c', 'import starlette'],
+      { encoding: 'utf8', timeout: 60000, env: PROBE_ENV });
+    const probe = spawnSync(venvPython, [packagedPyEntry[0], '--check'],
+      { encoding: 'utf8', timeout: 120000, env: PROBE_ENV });
+    cleanRoomOk = bare.status !== 0 && probe.status === 0;
+    cleanRoomDetail = bare.status === 0
+      ? 'the virtualenv was not empty — this machine cannot prove the claim'
+      : probe.status === 0
+        ? `imports on ${venvBase} with nothing installed`
+        : (probe.stderr ?? '').trim().split('\n').filter(Boolean).pop() ?? 'no output';
+  }
+}
+check('1i. the packaged backend imports on an interpreter with no packages installed',
+  cleanRoomOk, cleanRoomDetail);
+
 /* ── 2. launch from outside the repo, with a hostile environment ──── */
 
 console.log('\n=== 2. LAUNCH OUTSIDE THE REPOSITORY ===');
@@ -262,29 +360,32 @@ const auraHome = mkdtempSync(path.join(tmpdir(), 'aura-home-'));
  * that can actually run the backend, if one exists on this machine.
  *
  * This suite tests the PACKAGE, not the host's Python installation. The
- * backend needs starlette, uvicorn and pydantic, and on a machine whose
- * only such interpreter lives somewhere non-standard (pyenv, conda, a
- * virtualenv) a bare `/usr/bin:/bin` makes the app refuse — correctly, and
- * for a reason that says nothing about whether the package is built right.
- * Without this the backend checks below would report a packaging failure
- * on a perfectly good artifact.
+ * candidate is asked the question the shell itself asks — the packaged
+ * entry point with `--check` — so what counts as capable here is exactly
+ * what will count at launch, vendored dependencies included.
+ *
+ * Since the artifact now carries those dependencies, a plain `/usr/bin`
+ * interpreter normally qualifies and nothing is added. The search survives
+ * because the version requirement has not gone away: on a machine whose
+ * only 3.12+ Python lives somewhere non-standard (pyenv, conda), a bare
+ * `/usr/bin:/bin` makes the app refuse — correctly, and for a reason that
+ * says nothing about whether the package is built right.
  *
  * Only that one directory is added, and only when the interpreter there
  * genuinely imports what the backend needs. Everything else stays hostile,
  * so the PATH-seeding claim 4e makes is still tested against a launcher's
  * environment rather than a developer's shell.
  */
-const pythonSearch = [
-  ...(process.env.PATH ?? '').split(':').filter(Boolean),
-  '/usr/local/bin', '/usr/bin', '/bin', '/opt/homebrew/bin',
-];
 let capablePythonDir = null;
 for (const dir of pythonSearch) {
   for (const exe of ['python3', 'python']) {
     const candidate = path.join(dir, exe);
     if (!existsSync(candidate)) continue;
-    const probe = spawnSync(candidate, ['-c', 'import starlette, uvicorn, pydantic'],
-      { encoding: 'utf8', timeout: 20000 });
+    const probe = packagedPyEntry.length
+      ? spawnSync(candidate, [packagedPyEntry[0], '--check'],
+        { encoding: 'utf8', timeout: 60000, env: PROBE_ENV })
+      : spawnSync(candidate, ['-c', 'import starlette, uvicorn, pydantic'],
+        { encoding: 'utf8', timeout: 20000 });
     if (probe.status === 0) { capablePythonDir = dir; break; }
   }
   if (capablePythonDir) break;
@@ -613,15 +714,25 @@ check('7b3. the shell never spawns a shell',
 
 /*
  * `-c` hands an interpreter code to execute, so it is the one argument
- * that must never be variable. The import probe legitimately uses it; the
- * string it passes has to be a literal in this file, not something built
- * at runtime.
+ * that must never be variable.
+ *
+ * There are currently none: the import probe used to pass `-c "import
+ * starlette, ..."` and now runs the packaged entry script with `--check`
+ * instead, so the shell hands Python file paths it resolved and nothing
+ * else. Zero is the strongest result this check can report, not a gap in
+ * it — the guard stays because the next person to need a quick probe will
+ * reach for `-c`, and a payload built from a variable is the one form of
+ * it that must not survive review.
  */
 const dashCArgs = [...serviceRs.matchAll(/\.arg\("-c"\)\s*\n\s*\.arg\(([^)]*)\)/g)].map((m) => m[1].trim());
 const dynamicCode = dashCArgs.filter((a) => !a.startsWith('"'));
 check('7b4. any -c payload is a fixed literal, never composed at runtime',
   dynamicCode.length === 0,
-  dynamicCode.length ? `dynamic: ${dynamicCode.join(', ')}` : `${dashCArgs.length} literal -c payload(s)`);
+  dynamicCode.length
+    ? `dynamic: ${dynamicCode.join(', ')}`
+    : dashCArgs.length === 0
+      ? 'no -c payload at all; the shell only runs resolved script paths'
+      : `${dashCArgs.length} literal -c payload(s)`);
 
 // Every filesystem command must pass through the confinement guard —
 // checked per command body, not by asking whether the guard exists at all.
