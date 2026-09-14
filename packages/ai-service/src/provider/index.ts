@@ -7,6 +7,16 @@ import { cachedModelsFor, resolveModel } from './modelValidation';
 /* ── types ──────────────────────────────────────────────────────────── */
 
 export interface ProviderInfo {
+  /**
+   * Runs on hardware someone controls — this machine or another — and is
+   * therefore configured by ADDRESS rather than by key. Deliberately not
+   * called "local": the deployment this was built for is a shared GPU
+   * server that laptops connect to across a network. Onboarding offers
+   * only these; the key-based providers stay in Settings as a fallback.
+   */
+  selfHosted?: boolean;
+  /** What to prefill the address field with. */
+  defaultBaseUrl?: string;
   id: string;
   name: string;
   description: string;
@@ -51,7 +61,13 @@ export function listProviders(): ProviderInfo[] {
       name: a.metadata.name,
       description: a.metadata.description,
       docsUrl: a.metadata.docsUrl,
-    }));
+      selfHosted: (a.metadata as { selfHosted?: boolean }).selfHosted === true,
+      defaultBaseUrl: (a.metadata as { defaultBaseUrl?: string }).defaultBaseUrl,
+    }))
+    // Self-hosted first. The order returned is the order offered, and a
+    // hub whose default is a server you control should not present a
+    // third-party service above it.
+    .sort((a, b) => Number(b.selfHosted) - Number(a.selfHosted));
 }
 
 export function getProvider(providerId: string): { info: ProviderInfo & { apiEndpoint?: string }; factory: ProviderAdapterFactory } | null {

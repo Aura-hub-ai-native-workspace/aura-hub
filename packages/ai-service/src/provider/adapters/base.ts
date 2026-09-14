@@ -3,6 +3,7 @@ import type {
 } from '@aura/runtime';
 import type { ProviderAdapter, DiscoveredModel, ProviderHealth, ModelCapabilities } from '../types';
 import { ProviderHttpError } from '../errorTranslator';
+import { pinnedFetch } from '../redirectGuard';
 
 /** Classify an OpenAI-compatible HTTP status into a user-facing validation state. */
 function classifyError(status: number): string {
@@ -71,7 +72,12 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
     }
   }
 
-  protected makeRuntime(config: { baseUrl: string; apiKey: string; defaultModel?: string }): Runtime {
+  /**
+   * `timeoutMs` bounds silence on the wire — see the note in `stream()`.
+   * `guardRedirects` pins requests to the configured destination, for
+   * providers whose endpoint the user chose rather than this code.
+   */
+  protected makeRuntime(config: { baseUrl: string; apiKey: string; defaultModel?: string; timeoutMs?: number; guardRedirects?: boolean }): Runtime {
     return new OpenAICompatibleRuntime({ ...config, providerName: this.metadata.name });
   }
 }
@@ -84,12 +90,26 @@ class OpenAICompatibleRuntime implements Runtime {
   private timeoutMs = 30000;
   private ac: AbortController | null = null;
 
-  constructor(config: { baseUrl: string; apiKey: string; defaultModel?: string; providerName?: string; timeoutMs?: number }) {
+  /**
+   * Which `fetch` to use for the chat endpoint.
+   *
+   * A hosted provider's endpoint is a constant this code chose, and those
+   * services redirect for their own reasons; they keep the default
+   * behaviour they were tested against. A self-hosted endpoint is an
+   * address the USER chose, and a redirect away from it would move their
+   * prompts to a machine they never configured — so those are pinned.
+   */
+  private send: typeof fetch;
+
+  constructor(config: { baseUrl: string; apiKey: string; defaultModel?: string; providerName?: string; timeoutMs?: number; guardRedirects?: boolean }) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.apiKey = config.apiKey;
     this.defaultModel = config.defaultModel ?? '';
     this.providerName = config.providerName ?? 'The AI provider';
     this.timeoutMs = config.timeoutMs ?? 30000;
+    this.send = config.guardRedirects
+      ? ((input, init) => pinnedFetch(String(input), init as RequestInit))
+      : fetch;
   }
 
   cancel(): void { this.ac?.abort(); this.ac = null; }
@@ -130,15 +150,45 @@ class OpenAICompatibleRuntime implements Runtime {
     const body = this.buildBody(msgs, { model: request.model, temperature: request.temperature, maxTokens: request.maxTokens, stream: true });
     this.ac?.abort();
     this.ac = new AbortController();
-    const signal = AbortSignal.any([this.ac.signal, AbortSignal.timeout(this.timeoutMs)]);
-    const response = await fetch(`${this.baseUrl}/chat/completions`, { method: 'POST', headers: this.headers(), body, signal });
-    if (!response.ok) { const t = await response.text().catch(() => ''); throw new ProviderHttpError(this.providerName, response.status, t || response.statusText); }
+    /*
+     * The timeout bounds SILENCE, not the length of the answer.
+     *
+     * `AbortSignal.timeout()` on this fetch stays live for as long as the
+     * body is being read, because the body IS the stream — so a flat
+     * deadline is a cap on total generation time, and it killed working
+     * requests at 30s while tokens were arriving. A self-hosted server
+     * makes that obvious: a shared GPU loading a model into VRAM can be
+     * quiet for a minute before the first token, and a long answer can
+     * take several more.
+     *
+     * So the clock is reset every time the server sends anything. It
+     * fires only when the connection has gone quiet for the whole budget,
+     * which is the condition that actually means something is wrong.
+     */
+    const ac = this.ac;
+    let idle: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+    const resetIdle = () => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => { timedOut = true; ac.abort(); }, this.timeoutMs);
+    };
+    resetIdle();
+    let response: Response;
+    try {
+      response = await this.send(`${this.baseUrl}/chat/completions`, { method: 'POST', headers: this.headers(), body, signal: ac.signal });
+    } catch (e) {
+      if (idle) clearTimeout(idle);
+      if (timedOut) throw new Error(`${this.providerName} sent nothing for ${Math.round(this.timeoutMs / 1000)}s. The server may be loading the model, or may be unreachable.`);
+      throw e;
+    }
+    if (!response.ok) { if (idle) clearTimeout(idle); const t = await response.text().catch(() => ''); throw new ProviderHttpError(this.providerName, response.status, t || response.statusText); }
     const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
-    if (!reader) throw new Error('No stream body');
+    if (!reader) { if (idle) clearTimeout(idle); throw new Error('No stream body'); }
     let buf = '';
     try {
       while (true) {
         const { done, value } = await reader.read();
+        resetIdle();
         if (done) break;
         buf += value;
         const lines = buf.split('\n');
@@ -159,6 +209,7 @@ class OpenAICompatibleRuntime implements Runtime {
         }
       }
     } finally {
+      if (idle) clearTimeout(idle);
       // Tear the connection down via the controller: aborting the fetch
       // cancels the body cleanly, whereas reader.cancel() mid-flight can
       // surface an undici unhandled rejection (reason undefined).
@@ -171,13 +222,13 @@ class OpenAICompatibleRuntime implements Runtime {
   async health(): Promise<HealthStatus> {
     const start = performance.now();
     try {
-      const res = await fetch(`${this.baseUrl}/models`, { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(5000) });
+      const res = await this.send(`${this.baseUrl}/models`, { method: 'GET', headers: this.headers(), signal: AbortSignal.timeout(5000) });
       return { ok: res.ok, status: res.ok ? 'connected' : 'error', latencyMs: Math.round(performance.now() - start) };
     } catch (e) { return { ok: false, status: 'offline', latencyMs: Math.round(performance.now() - start), error: (e as Error).message }; }
   }
   private async post<T>(path: string, body: string): Promise<T> {
     const signal = AbortSignal.any([this.ac?.signal ?? new AbortController().signal, AbortSignal.timeout(this.timeoutMs)].filter(Boolean));
-    const res = await fetch(`${this.baseUrl}${path}`, { method: 'POST', headers: this.headers(), body, signal });
+    const res = await this.send(`${this.baseUrl}${path}`, { method: 'POST', headers: this.headers(), body, signal });
     if (!res.ok) { const t = await res.text().catch(() => ''); throw new ProviderHttpError(this.providerName, res.status, t || res.statusText); }
     return res.json() as Promise<T>;
   }

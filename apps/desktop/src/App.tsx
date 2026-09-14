@@ -5,6 +5,7 @@ import { AppShell } from './shell/AppShell';
 import { BootSequence } from './shell/BootSequence';
 import { useCommands } from './shell/useCommands';
 import { OnboardingFlow } from './onboarding/OnboardingFlow';
+import { useProviderGate } from './onboarding/useProviderGate';
 import { useWorkspace } from './data/useWorkspace';
 import { useEditorStore } from './editor/editorStore';
 import { useLayoutStore } from './ops/layoutStore';
@@ -33,6 +34,7 @@ export function App() {
   const booted = useAppStore((s) => s.booted);
   const setBooted = useAppStore((s) => s.setBooted);
   const onboarded = useAppStore((s) => s.onboarded);
+  const providerGate = useProviderGate(onboarded);
   const completeOnboarding = useAppStore((s) => s.completeOnboarding);
   const recentCommandIds = useAppStore((s) => s.recentCommandIds);
   const pushRecentCommand = useAppStore((s) => s.pushRecentCommand);
@@ -122,10 +124,18 @@ export function App() {
       <WindowSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
       {/* Renders only for a portable AppImage that is not already installed. */}
       <AppImageInstallPrompt />
-      {!onboarded ? (
+      {/*
+        The stored flag says onboarding was completed once; the gate says
+        the server it was completed against still works. A tunnel that
+        rotated or a model that was removed sends the user back to the
+        connection screen rather than into a workspace that will fail on
+        its first question. `checking` renders neither, so the workspace is
+        not flashed before the answer arrives.
+      */}
+      {!onboarded || providerGate === 'needs-setup' ? (
         <OnboardingFlow onComplete={completeOnboarding} />
       ) : (
-        !booted && <BootSequence onComplete={completeBoot} />
+        providerGate === 'ready' && !booted && <BootSequence onComplete={completeBoot} />
       )}
     </>
   );

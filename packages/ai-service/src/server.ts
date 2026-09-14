@@ -272,9 +272,44 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       if (method === 'POST' && seg[0] === 'providers' && seg[1] === 'connect') {
         const b = await readJson(req);
         const providerId = String(b.providerId ?? '');
-        const apiKey = String(b.apiKey ?? '');
-        if (!providerId || !apiKey) return json(res, 400, { ok: false, error: 'Provider ID and API key are required' });
-        const result = await manager.connectProvider(providerId, apiKey);
+        /*
+         * A key for cloud providers, an address for local ones.
+         *
+         * Both arrive in the same field downstream because both answer the
+         * same question — what this adapter needs in order to reach its
+         * model server — and a local server's address is the one thing
+         * AURA cannot know in advance. Accepting either spelling here
+         * keeps the client honest about which it is sending without
+         * forcing a second connect path through the manager and store.
+         */
+        const secret = String(b.apiKey ?? b.baseUrl ?? '');
+        if (!providerId || !secret) {
+          // Answer in the vocabulary the caller used, so a self-hosted
+          // setup is never told it is missing an API key it will never
+          // have. The server may be on this machine or anywhere else, so
+          // the message says "your model server", not "local".
+          return json(res, 400, {
+            ok: false,
+            error: b.baseUrl !== undefined
+              ? 'Provider ID and the address of your model server are required'
+              : 'Provider ID and API key are required',
+          });
+        }
+        const result = await manager.connectProvider(providerId, secret);
+        return json(res, result.ok ? 200 : 400, result);
+      }
+      /*
+       * The onboarding gate. Runs the whole path — reach, identify, list,
+       * exact-match, generate, stream — and saves nothing unless all of it
+       * passes, so a stored configuration is always one that has answered
+       * a real prompt at least once.
+       */
+      if (method === 'POST' && seg[0] === 'providers' && seg[1] === 'verify') {
+        const b = await readJson(req);
+        const providerId = String(b.providerId ?? 'ollama');
+        const baseUrl = String(b.baseUrl ?? '');
+        const model = String(b.model ?? '');
+        const result = await manager.verifySelfHosted(providerId, baseUrl, model);
         return json(res, result.ok ? 200 : 400, result);
       }
       if (method === 'POST' && seg[0] === 'providers' && seg[1] === 'disconnect') {
@@ -295,9 +330,11 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         return json(res, result.ok ? 200 : 400, { ok: result.ok, status: p.providerStatus, error: result.error });
       }
       if ((method === 'GET' || method === 'POST') && seg[0] === 'providers' && seg[1] === 'models') {
-        const b = (seg[3] ? { providerId: seg[2], apiKey: seg[3] } : await readJson(req)) as { providerId?: string; apiKey?: string };
-        if (!b.providerId || !b.apiKey) return json(res, 400, { models: [] });
-        const models = await manager.discoverModels(b.providerId, b.apiKey);
+        const b = (seg[3] ? { providerId: seg[2], apiKey: seg[3] } : await readJson(req)) as { providerId?: string; apiKey?: string; baseUrl?: string };
+        // Same reasoning as /connect: local providers are addressed, not keyed.
+        const secret = b.apiKey ?? b.baseUrl;
+        if (!b.providerId || !secret) return json(res, 400, { models: [] });
+        const models = await manager.discoverModels(b.providerId, secret);
         return json(res, 200, { models });
       }
 
