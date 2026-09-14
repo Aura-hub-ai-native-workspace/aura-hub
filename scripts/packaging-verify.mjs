@@ -283,6 +283,55 @@ check('1h. the backend\'s third-party dependencies are packaged with it',
       : `site-packages + ${vendoredAbi.length} ABI build(s) of pydantic_core`);
 
 /*
+ * 1j. The interpreter ships too.
+ *
+ * Vendoring the dependencies removed the need for a CONFIGURED Python; it
+ * did not remove the need for a Python, and that is most of the problem.
+ * Windows ships none, macOS ships 3.9 through the Command Line Tools,
+ * Ubuntu 22.04 ships 3.10 — all below the 3.12 the backend requires, so on
+ * those machines AURA installed and then reported an empty inventory.
+ *
+ * The check runs the packaged interpreter rather than merely finding it: a
+ * file at the right path that cannot execute is the failure worth catching,
+ * and it is the one a relocatable build is most likely to have.
+ */
+const packagedRuntime = pyRes(process.platform === 'win32' ? 'runtime/python.exe' : 'runtime/bin/python3');
+let runtimeDetail = 'no interpreter under resources/python/runtime/';
+let runtimeOk = false;
+if (packagedRuntime.length) {
+  const v = spawnSync(packagedRuntime[0],
+    ['-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'],
+    { encoding: 'utf8', timeout: 60000, env: PROBE_ENV });
+  const version = (v.stdout ?? '').trim();
+  const [maj, min] = version.split('.').map(Number);
+  runtimeOk = v.status === 0 && maj === 3 && min >= 12;
+  runtimeDetail = v.status === 0
+    ? `CPython ${version}, packaged and executable`
+    : `the packaged interpreter would not run: ${(v.stderr ?? '').trim().slice(0, 120)}`;
+}
+check('1j. a Python interpreter is packaged inside the artifact', runtimeOk, runtimeDetail);
+
+/*
+ * 1k. And it is sufficient on its own.
+ *
+ * The packaged interpreter runs the packaged entry point with the machine's
+ * environment stripped out. Passing means an installed AURA needs nothing
+ * from the host: no interpreter, no pip, no package manager, no admin.
+ */
+let selfContainedDetail = 'no packaged interpreter to test';
+let selfContained = false;
+if (packagedRuntime.length && packagedPyEntry.length) {
+  const probe = spawnSync(packagedRuntime[0], [packagedPyEntry[0], '--check'],
+    { encoding: 'utf8', timeout: 120000, env: PROBE_ENV });
+  selfContained = probe.status === 0;
+  selfContainedDetail = selfContained
+    ? 'the shipped interpreter imports the shipped backend'
+    : (probe.stderr ?? '').trim().split('\n').filter(Boolean).pop() ?? 'no output';
+}
+check('1k. the packaged interpreter alone can import the packaged backend',
+  selfContained, selfContainedDetail);
+
+/*
  * A base interpreter for 1i: new enough for the backend (3.12+, per
  * `backend/pyproject.toml`) and otherwise unremarkable. What it has
  * installed does not matter, because the virtualenv built from it keeps
@@ -489,6 +538,22 @@ check('3f. the backend was resolved from the packaged resources, not a source tr
 
 check('3g. the packaged backend serves its own health endpoint',
   pythonReady, pythonReady ? `backend=python on ${PYTHON_PORT}` : `no python backend on ${PYTHON_PORT}`);
+
+/*
+ * 3h. It ran on the interpreter AURA ships, not one it found.
+ *
+ * 3g only proves the backend answered, and on a developer's machine it
+ * would answer just as happily using a pyenv Python — which is precisely
+ * the arrangement that worked here and failed for users. This reads the
+ * interpreter line the shell printed and requires it to be inside the
+ * mounted application.
+ */
+const pythonLine = (appOut.match(/^\[aura\] python\s*:\s*(.+)$/m) ?? [])[1]?.trim() ?? '';
+const usesBundled = /[/\\]resources[/\\]python[/\\]runtime[/\\]/.test(pythonLine)
+  && !pythonLine.startsWith(REPO);
+check('3h. the backend ran on the interpreter AURA ships, not one from the machine',
+  pythonLine !== '' && usesBundled,
+  pythonLine || 'the app never reported which interpreter it used');
 
 /**
  * The window is configured hidden and shown only after the health gate,

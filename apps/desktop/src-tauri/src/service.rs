@@ -884,6 +884,29 @@ fn python_candidates(backend_root: &std::path::Path) -> Vec<PathBuf> {
         candidates.push(PathBuf::from(explicit));
     }
 
+    /*
+     * The interpreter AURA ships, ranked above everything on the machine.
+     *
+     * It is the only candidate known in advance to work: it is the exact
+     * CPython the vendored wheels were built for, it cannot be upgraded out
+     * from under the application, and it is there on machines that have no
+     * other Python at all — Windows ships none, macOS ships 3.9 through the
+     * Command Line Tools, Ubuntu 22.04 ships 3.10. Those are the machines
+     * where AURA used to install and then report an empty inventory.
+     *
+     * It outranks an activated virtualenv deliberately. That rule exists
+     * for a user's own project work; this is AURA's internal plumbing, and
+     * borrowing whatever environment happened to be active is how the same
+     * build behaves differently on two machines. A source checkout stages
+     * no runtime, so development still falls through to the search below.
+     *
+     * `AURA_PYTHON` still wins, because an explicit instruction should.
+     */
+    let runtime_exe = if cfg!(windows) { "python.exe" } else { "bin/python3" };
+    if let Some(resources) = backend_root.parent() {
+        candidates.push(resources.join("runtime").join(runtime_exe));
+    }
+
     let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };
     let venv_exe = if cfg!(windows) { "python.exe" } else { "python" };
 
@@ -1108,9 +1131,9 @@ pub fn ensure_python_running(
     }
     let Some(python) = chosen else {
         return Err(format!(
-            "No Python on this machine can run AURA's environment backend. AURA ships the \
-             packages it needs, so this is usually an interpreter too old for them — 3.12 or \
-             newer is required. Tried:\n  {}",
+            "AURA could not start its environment backend with any interpreter, including the \
+             one it ships. A packaged installation should never reach this, so the installation \
+             is probably damaged — reinstalling is the fastest fix. Tried:\n  {}",
             rejected.join("\n  ")
         ));
     };
