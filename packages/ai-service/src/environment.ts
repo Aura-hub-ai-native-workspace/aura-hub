@@ -25,6 +25,23 @@ import { CATALOG, catalogEntry } from '@aura/connected-environment';
 import type { CatalogEntry, ProbeResult } from '@aura/connected-environment';
 
 const PROBE_TIMEOUT_MS = 4000;
+/*
+ * A second, longer budget for a probe that ran out of the first one.
+ *
+ * The first execution of a binary on Windows is the expensive one — the
+ * anti-malware scanner reads the whole file before the process is allowed
+ * to start — and on a loaded machine `git --version` can sit well past
+ * four seconds. Every execution after that is warm and returns in
+ * milliseconds, so a single retry converts almost every timeout into a
+ * real answer.
+ *
+ * The cost is bounded and paid only by tools that are genuinely slow: an
+ * absent tool fails with ENOENT immediately and never reaches this, and a
+ * present one normally answers on the first attempt. The worst case for
+ * one probe goes from 4s to 12s, which is the right trade against telling
+ * someone that software they have installed is missing.
+ */
+const PROBE_RETRY_TIMEOUT_MS = 8000;
 const HTTP_TIMEOUT_MS = 2500;
 const CACHE_TTL_MS = 30_000;
 /** Keep the scan from spawning a hundred processes at once on a laptop. */
@@ -53,15 +70,96 @@ function extractVersion(output: string): string | undefined {
   return match ? match[0] : line.slice(0, 40);
 }
 
-function runProbe(entry: CatalogEntry): Promise<ProbeResult> {
+/**
+ * One execution of a probe command, with a deadline.
+ *
+ * `timedOut` is reported separately from every other failure because the
+ * two mean opposite things: a tool that answers nothing in the time
+ * allowed is usually present and slow, while ENOENT means it genuinely is
+ * not there. Collapsing them is how a scan comes to report a machine
+ * emptier than it is.
+ */
+interface Attempt {
+  result?: ProbeResult;
+  timedOut: boolean;
+}
+
+function attemptProbe(
+  entry: CatalogEntry,
+  target: { file: string; args: string[] },
+  budgetMs: number,
+): Promise<Attempt> {
+  const probe = entry.probe!;
+  const started = Date.now();
+  return new Promise((resolve) => {
+    execFile(
+      target.file,
+      target.args,
+      { timeout: budgetMs, maxBuffer: 256 * 1024, ...spawnFlags(target) },
+      (error, stdout, stderr) => {
+        const latencyMs = Date.now() - started;
+        // Several tools (notably `java -version`) print to stderr and some
+        // exit non-zero while still being perfectly present, so presence is
+        // decided by "did we get recognisable output", not by exit code.
+        const output = `${stdout ?? ''}${stderr ?? ''}`.trim();
+        if (output) {
+          const version = extractVersion(output);
+          resolve({
+            timedOut: false,
+            result: {
+              present: true,
+              version,
+              latencyMs,
+              detail: version
+                ? `Found ${entry.name} ${version} on this machine.`
+                : `Found ${entry.name} on this machine.`,
+            },
+          });
+          return;
+        }
+        const err = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
+        const code = err?.code;
+        if (code === 'ENOENT') {
+          resolve({
+            timedOut: false,
+            result: {
+              present: false,
+              status: 'not-found',
+              latencyMs,
+              detail: `${probe.command} is not on PATH. Install ${entry.name}, or connect something else that provides the same capability.`,
+            },
+          });
+          return;
+        }
+        // We killed it. Nothing was learned about whether the tool exists,
+        // so nothing is concluded here — the caller decides whether to
+        // spend more time or give up and say so.
+        if (err?.killed) {
+          resolve({ timedOut: true });
+          return;
+        }
+        resolve({
+          timedOut: false,
+          result: {
+            present: false,
+            status: 'failed',
+            latencyMs,
+            detail: `${entry.name} did not answer the version check${code ? ` (${code})` : ''}. It may be installed but not on PATH for this session.`,
+          },
+        });
+      },
+    );
+  });
+}
+
+async function runProbe(entry: CatalogEntry): Promise<ProbeResult> {
   const probe = entry.probe;
   if (!probe) {
-    return Promise.resolve({
+    return {
       present: false,
       detail: 'No dependable way to detect this tool across platforms, so the Hub does not guess.',
-    });
+    };
   }
-  const started = Date.now();
   /**
    * Resolve the probe command to a real file before spawning it.
    *
@@ -78,49 +176,42 @@ function runProbe(entry: CatalogEntry): Promise<ProbeResult> {
   } catch (e) {
     // A catalogue probe the platform's interpreter would rewrite. One
     // unprobeable entry must not take the whole scan down with it.
-    return Promise.resolve({
+    return {
       present: false,
       detail: `${entry.name} could not be probed safely on this platform: ${(e as Error).message}`,
-    });
+    };
   }
-  return new Promise((resolve) => {
-    execFile(
-      target.file,
-      target.args,
-      { timeout: PROBE_TIMEOUT_MS, maxBuffer: 256 * 1024, ...spawnFlags(target) },
-      (error, stdout, stderr) => {
-        const latencyMs = Date.now() - started;
-        // Several tools (notably `java -version`) print to stderr and some
-        // exit non-zero while still being perfectly present, so presence is
-        // decided by "did we get recognisable output", not by exit code.
-        const output = `${stdout ?? ''}${stderr ?? ''}`.trim();
-        if (output) {
-          const version = extractVersion(output);
-          resolve({
-            present: true,
-            version,
-            latencyMs,
-            detail: version ? `Found ${entry.name} ${version} on this machine.` : `Found ${entry.name} on this machine.`,
-          });
-          return;
-        }
-        const code = (error as NodeJS.ErrnoException | null)?.code;
-        if (code === 'ENOENT') {
-          resolve({
-            present: false,
-            latencyMs,
-            detail: `${probe.command} is not on PATH. Install ${entry.name}, or connect something else that provides the same capability.`,
-          });
-          return;
-        }
-        resolve({
-          present: false,
-          latencyMs,
-          detail: `${entry.name} did not answer the version check${code ? ` (${code})` : ''}. It may be installed but not on PATH for this session.`,
-        });
-      },
-    );
-  });
+
+  /*
+   * Ask twice before concluding anything from silence.
+   *
+   * A probe that ran out of time taught us nothing, and reporting it as
+   * absent was a lie the scan told confidently: CI watched this machine
+   * report git, rust, curl and python as NOT INSTALLED on one run and
+   * find all four on the next, because a busy Windows runner could not
+   * start them inside four seconds. Users get the same lie on the same
+   * hardware — an inventory that shrinks when the laptop is busy.
+   *
+   * The retry is warm, so it nearly always answers. When it does not, the
+   * result says the tool timed out rather than inventing a reason it is
+   * missing; `status: 'timeout'` is a value this contract already had and
+   * this probe had never once used.
+   */
+  const first = await attemptProbe(entry, target, PROBE_TIMEOUT_MS);
+  if (first.result) return first.result;
+
+  const started = Date.now();
+  const second = await attemptProbe(entry, target, PROBE_RETRY_TIMEOUT_MS);
+  if (second.result) return second.result;
+
+  return {
+    present: false,
+    status: 'timeout',
+    latencyMs: Date.now() - started,
+    detail: `${entry.name} did not answer within ${
+      (PROBE_TIMEOUT_MS + PROBE_RETRY_TIMEOUT_MS) / 1000
+    }s, over two attempts. Whether it is installed is unknown — this is not a report that it is missing.`,
+  };
 }
 
 async function runHttpProbe(entry: CatalogEntry): Promise<ProbeResult> {
