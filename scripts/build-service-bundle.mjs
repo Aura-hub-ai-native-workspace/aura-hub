@@ -394,45 +394,70 @@ const pip = (args) => execFileSync(stagingPython, ['-m', 'pip', ...args], {
  * (`--check` imports the whole backend), and packaging-verify starts the
  * real thing on a machine with no other Python.
  */
-const DYNLOAD_SUFFIX = process.platform === 'darwin' ? 'darwin' : 'x86_64-linux-gnu';
+/**
+ * Everything to delete from the staged interpreter, for this platform.
+ *
+ * The three distributions are laid out differently — Unix puts the
+ * standard library under `lib/python3.12/`, Windows uses `Lib/` beside
+ * `DLLs/` and a top-level `tcl/` — so the list is computed, not written
+ * once and hoped over. Entries are matched by prefix wherever a name
+ * carries a version that could move under us.
+ */
+function runtimeDropList(runtimeDir) {
+  const under = (dir, pred) => {
+    const full = path.join(runtimeDir, dir);
+    if (!existsSync(full)) return [];
+    return readdirSync(full).filter(pred).map((n) => path.join(dir, n));
+  };
+
+  if (process.platform === 'win32') {
+    return [
+      // Tk: no GUI in a headless API server, and the largest thing here.
+      'tcl', 'Lib/tkinter', 'Lib/idlelib', 'Lib/turtledemo',
+      ...under('DLLs', (n) => n.startsWith('_tkinter') || n.startsWith('tcl') || n.startsWith('tk')),
+      // For BUILDING extensions. The wheels are already built.
+      'include', 'libs',
+      // pip vendored the dependencies moments ago and is now expendable —
+      // and a package manager inside a signed artifact invites use.
+      'Lib/site-packages/pip', 'Lib/ensurepip',
+    ];
+  }
+
+  const lib = 'lib';
+  const stdlib = 'lib/python3.12';
+  return [
+    // The shared library and every symlink to it. `bin/python3.12` is
+    // statically linked on both Linux and macOS, and no extension module
+    // references it — verified on each distribution, not assumed. Matched
+    // by prefix so a dangling `libpython3.12.so -> …so.1.0` cannot be left.
+    ...under(lib, (n) => n.startsWith('libpython')),
+    // Tk, by prefix: the Tcl/Tk version is part of these names and moves
+    // between distributions.
+    ...under(lib, (n) => /^(libtcl|libtk|tcl|tk)/.test(n)),
+    `${stdlib}/tkinter`, `${stdlib}/idlelib`, `${stdlib}/turtledemo`,
+    // Extension modules belonging to the same decisions. Leaving one while
+    // deleting the libraries it links against produces an ELF with an
+    // unresolvable dependency, and `linuxdeploy` walks every ELF in the
+    // AppDir and fails the whole build on one — the trim would break
+    // packaging rather than the feature it meant to drop.
+    //
+    // `_crypt` goes for its own reason: deprecated since 3.11, gone in
+    // 3.13, unused here, and it links the `libcrypt.so.1` that modern
+    // distributions replaced with libxcrypt.
+    ...under(`${stdlib}/lib-dynload`, (n) => n.startsWith('_tkinter') || n.startsWith('_crypt')),
+    // Headers and the static library: for BUILDING extensions.
+    'include', ...under(stdlib, (n) => n.startsWith('config-')),
+    // See the Windows note on pip.
+    `${stdlib}/site-packages/pip`, `${stdlib}/ensurepip`,
+    // A terminal capability database and man pages, for a process with no
+    // terminal and no reader.
+    'share/terminfo', 'share/man',
+  ];
+}
 
 function trimPythonRuntime(runtimeDir) {
   const before = dirBytes(runtimeDir);
-  const drop = [
-    // The shared library and every symlink to it. Only an embedder needs
-    // it — `bin/python3.12` is statically linked and no extension module
-    // in lib-dynload links against it. Matched by prefix so a dangling
-    // `libpython3.12.so -> …so.1.0` cannot be left behind.
-    ...readdirSync(path.join(runtimeDir, 'lib'))
-      .filter((n) => n.startsWith('libpython'))
-      .map((n) => path.join('lib', n)),
-    // Tk. There is no GUI in a headless API server, and these are the
-    // largest non-essential thing in the tree.
-    'lib/tcl9.0', 'lib/tk9.0', 'lib/libtcl9.0.so', 'lib/libtcl9tk9.0.so',
-    'lib/python3.12/tkinter', 'lib/python3.12/idlelib', 'lib/python3.12/turtledemo',
-    // The extension module belongs to that same decision. Leaving it while
-    // deleting the Tcl/Tk libraries it links against produces an ELF with
-    // an unresolvable dependency, and `linuxdeploy` walks every ELF in the
-    // AppDir and refuses to build one it cannot resolve — the trim would
-    // break packaging rather than the feature it meant to drop.
-    `lib/python3.12/lib-dynload/_tkinter.cpython-312-${DYNLOAD_SUFFIX}.so`,
-    // `crypt` is deprecated since 3.11 and gone in 3.13, nothing here calls
-    // it, and it links `libcrypt.so.1` — which modern distributions replaced
-    // with libxcrypt. Shipping it makes packaging depend on the build
-    // machine happening to carry a compatibility library.
-    `lib/python3.12/lib-dynload/_crypt.cpython-312-${DYNLOAD_SUFFIX}.so`,
-    // Headers and the static library: for BUILDING extensions, and the
-    // wheels are already built.
-    'include', 'lib/python3.12/config-3.12-x86_64-linux-gnu',
-    // pip and its bootstrap. Used to vendor the dependencies moments ago;
-    // the shipped application installs nothing, and leaving a package
-    // manager inside a signed artifact invites someone to use it.
-    'lib/python3.12/site-packages/pip', 'lib/python3.12/ensurepip',
-    // Terminal capability database and man pages, for a process that has
-    // no terminal and no reader.
-    'share/terminfo', 'share/man',
-  ];
-  for (const rel of drop) {
+  for (const rel of runtimeDropList(runtimeDir)) {
     rmSync(path.join(runtimeDir, rel), { recursive: true, force: true });
   }
   // Bytecode compiled by the build machine, next to source the user's copy
@@ -479,6 +504,24 @@ function trimPythonRuntime(runtimeDir) {
         + 'the libraries.',
       );
     }
+  }
+  /*
+   * And it must still be an interpreter afterwards.
+   *
+   * The `ldd` sweep above is Linux-only and catches a specific kind of
+   * damage; this catches the rest, on every platform, by the only test
+   * that really settles it — importing the backend through the trimmed
+   * runtime. Cheap, and it runs before anything is built around the
+   * result.
+   */
+  const exe = path.join(PY_OUT, PY_RUNTIME_EXE);
+  const alive = spawnSync(exe, ['-c', 'import ssl, hashlib, sqlite3, asyncio, ctypes'],
+    { encoding: 'utf8' });
+  if (alive.status !== 0) {
+    throw new Error(
+      'Trimming the bundled interpreter broke it: '
+      + `${(alive.stderr || '').trim().split('\n').pop()}`,
+    );
   }
   return { before, after: dirBytes(runtimeDir) };
 }
