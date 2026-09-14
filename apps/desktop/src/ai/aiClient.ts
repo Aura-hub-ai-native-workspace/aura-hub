@@ -204,6 +204,10 @@ export interface ProviderInfo {
   description: string;
   apiEndpoint?: string;
   docsUrl?: string;
+  /** Runs on hardware someone controls — this machine or another: configured by address, never by key. */
+  selfHosted?: boolean;
+  /** What to prefill the address field with. */
+  defaultBaseUrl?: string;
 }
 export interface ConnectedProvider {
   id: string;
@@ -744,6 +748,33 @@ export const aiClient = {
   /* BYOAK providers */
   getProviders: () => jget<ProvidersResult>('/providers'),
   connectProvider: (providerId: string, apiKey: string) => jpost<{ ok: boolean; fingerprint?: string; models?: { id: string; name: string }[]; error?: string }>('/providers/connect', { providerId, apiKey }),
+  /**
+   * Connect a provider addressed by URL rather than authenticated by key.
+   *
+   * Separate from `connectProvider` because the thing being sent is not a
+   * secret and must not be described as one — the service answers "an API
+   * key is required" or "the address of your server is required"
+   * depending on which field arrives, and a caller that sent an address
+   * should never be told to go and find a key.
+   */
+  /**
+   * The onboarding gate: verify a self-hosted server end to end.
+   *
+   * Returns only after a real prompt has been streamed back from the exact
+   * model requested. Nothing is persisted unless it all passed, so a
+   * `true` here means the saved configuration has actually worked once.
+   */
+  /** Models served by a given address, without connecting to it. */
+  discoverServerModels: (providerId: string, baseUrl: string) => jpost<{ models: { id: string; name: string }[] }>('/providers/models', { providerId, baseUrl }),
+  verifyServerProvider: (providerId: string, baseUrl: string, model: string) => jpost<{
+    ok: boolean;
+    stage?: 'url' | 'reach' | 'models' | 'model' | 'generate' | 'timeout' | 'save';
+    error?: string;
+    models?: { id: string; name: string }[];
+    sample?: string;
+    chunks?: number;
+  }>('/providers/verify', { providerId, baseUrl, model }),
+  connectServerProvider: (providerId: string, baseUrl: string) => jpost<{ ok: boolean; fingerprint?: string; models?: { id: string; name: string }[]; error?: string }>('/providers/connect', { providerId, baseUrl }),
   disconnectProvider: (providerId: string) => jpost<{ ok: boolean }>('/providers/disconnect', { providerId }),
   switchProvider: (providerId: string, model?: string) => jpost<{ ok: boolean; status: ProviderStatus; error?: string }>('/providers/switch', { providerId, model }),
   discoverModels: (providerId: string, apiKey: string) => jpost<{ models: { id: string; name: string }[] }>(`/providers/models`, { providerId, apiKey }),

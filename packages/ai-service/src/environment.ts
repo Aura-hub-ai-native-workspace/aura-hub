@@ -21,6 +21,7 @@
 
 import { execFile } from 'node:child_process';
 import { launchSpec, spawnFlags } from './exec/which';
+import { pinnedFetch } from './provider/redirectGuard';
 import { CATALOG, catalogEntry } from '@aura/connected-environment';
 import type { CatalogEntry, ProbeResult } from '@aura/connected-environment';
 
@@ -223,7 +224,16 @@ async function runHttpProbe(entry: CatalogEntry): Promise<ProbeResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
-    const res = await fetch(endpoint, { signal: controller.signal });
+    /*
+     * Probed with redirects pinned, like every other service call.
+     *
+     * This asks a catalogued endpoint "are you there?" — including
+     * Ollama's `/api/version` on this machine. It decides presence, not
+     * inference, but a probe that quietly followed a redirect elsewhere
+     * would report a tool as present based on an answer from somewhere
+     * else entirely. Same rule, same reason.
+     */
+    const res = await pinnedFetch(endpoint, { signal: controller.signal });
     const latencyMs = Date.now() - started;
     if (!res.ok) {
       return {
