@@ -772,13 +772,16 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * at each release — that edit IS the check, and `bump-version.mjs`
    * deliberately does not touch it.
    *
-   * 0.1.3 is the first release from the unified mainline: the first to
-   * carry the Workflow Engine, Workspace 2.0 and the AppImage desktop
-   * integration alongside the updater, and the first whose updater can
-   * actually finish a check — 0.1.2 shipped without the OS plugin, so
-   * `platform()` threw and the state machine parked in `checking`.
+   * 0.1.11 is the first release that installs into a working application
+   * on a machine with no Python set up. 0.1.9 and 0.1.10 packaged the
+   * environment backend's source and expected the user to have installed
+   * Starlette, uvicorn and Pydantic already; 0.1.10 on Arch showed
+   * "0 installed" until the user ran pacman and pip by hand. This one
+   * carries the packages AND the interpreter — and asks for a model
+   * server on first run instead of an API key, so a fresh install needs
+   * nothing bought and nothing configured.
    */
-   const RELEASE_CANDIDATE = '0.1.10';
+   const RELEASE_CANDIDATE = '0.1.11';
   check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);
 }
 

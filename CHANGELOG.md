@@ -54,6 +54,161 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
+## [0.1.11] - 2026-09-15 — Batteries Included
+
+The first release that installs into a working application on a machine
+that has no Python set up, and the first whose first screen asks for a
+model server instead of a credit card.
+
+0.1.9 and 0.1.10 packaged the environment backend's source and then
+expected the machine to already have the packages it imports; the
+releases before them shipped no backend at all. A user on Arch installed
+0.1.10, opened AURA, and got "Load failed", "Not scanned", "0 installed"
+and `backend is not answering on http://127.0.0.1:4320` — and had to run
+`pacman -S python-starlette python-pydantic` and `pip install uvicorn` by
+hand before the application worked. Shipping source without its imports
+was never a working product.
+
+Bundling those packages turned out to be only half of it. It removed the
+need for a *configured* Python, not for a Python: Windows ships none at
+all, macOS ships 3.9 through the Command Line Tools, Ubuntu 22.04 ships
+3.10 and Debian 12 ships 3.11 — every one below the 3.12 this backend
+requires. So the interpreter travels too, and an installed AURA now needs
+nothing from the machine: no interpreter, no pip, no package manager, no
+administrator.
+
+The artifacts are larger for it. The bundled interpreter is 30–44 MB
+depending on platform and the packages add about 6.6 MB compressed, so
+expect the downloads to roughly double. That is the price of an
+application that works when it is installed.
+
+### Added
+
+- **AURA runs on an Ollama server you control.** The first screen asks for
+  two things — the server's address and a model ID — and nothing else. No
+  API key, no account, no cloud provider. The server may be on this
+  machine or on another one: a laptop, a lab box, a shared university GPU
+  server behind HTTPS. The address is classified as it is typed (this
+  machine · another machine on the network · remote server), and a bare
+  hostname honestly reports that its location cannot be known from a URL
+  rather than guessing.
+- **Nothing is saved until the model has actually answered.** "Verify and
+  Continue" reaches the server, confirms it speaks Ollama, retrieves the
+  model list, checks the requested model is served there *exactly*, and
+  sends a real streamed prompt. Only then is the configuration written.
+  Reaching an address proves a socket opened; it does not prove a model
+  will load, and a workspace that opens and fails on its first question is
+  worse than one that explains the problem while it can still be fixed.
+  A stale configuration — a rotated tunnel, a removed model — returns to
+  the connection screen instead of into a broken workspace.
+
+### Fixed
+
+- **A requested model is never silently swapped for another.** Asking for
+  a model the server does not serve used to fall through to the first one
+  it knew about: a request for `qwen3.8:27b` quietly ran a different
+  model. The user believed they were running one thing while running
+  another, and on a shared server that is also somebody else's GPU time.
+- **Generation is no longer capped at thirty seconds.** The streaming
+  timeout was attached to the request whose body *is* the stream, so it
+  stayed live while tokens were arriving and killed working answers
+  mid-sentence. A reasoning model that thinks for half a minute before its
+  first token never got started at all. The budget now bounds silence —
+  the clock resets on every chunk — so a long answer never trips it and a
+  dead connection still does.
+- **Disconnect now disconnects.** Removing the credential cleared the
+  active pointer, which made the guard that was supposed to shut the
+  runtime down compare two different things and skip it — so the
+  in-memory provider kept answering for a configuration that had just been
+  deleted, and health reported "connected" with nothing stored behind it.
+- **Redirects cannot move inference to another machine.** `fetch` follows
+  them by default and says nothing about it, so a 302 from the configured
+  address could have sent prompts to a server the user never chose. Every
+  request to a self-hosted server is now pinned to the destination that
+  was configured: same protocol, same host, same port. A path rewrite on
+  the same server is fine, which is what reverse proxies do; a
+  cross-host hop, a cross-port hop, an HTTPS-to-HTTP downgrade or a loop
+  is refused and named. This is a *pin*, and deliberately not the existing
+  SSRF deny list, which would refuse the loopback and LAN addresses that
+  are supported deployments here.
+
+Cloud providers remain available as explicit fallbacks at the bottom of
+Settings. They are never selected automatically, and AURA never silently
+sends a prompt to one because a self-hosted server is unavailable.
+
+Still required from the machine: **Node.js**. AURA runs its local service
+on the Node it finds rather than a bundled copy, deliberately — it also
+reports Node as a detected tool, and running on a different one than it
+reports would be its own kind of lie. A machine without Node still cannot
+start AURA.
+
+### Fixed
+
+- **The Python interpreter ships with it.** A relocatable CPython
+  3.12.14, pinned by SHA-256 and verified before a single file is
+  extracted — a release URL is a promise about where bytes live, not
+  about what they are. It is ranked above every interpreter on the
+  machine, because it is the exact CPython the bundled wheels were built
+  for and cannot be upgraded out from under the application;
+  `AURA_PYTHON` still overrides it, and a source checkout stages no
+  runtime, so development is unchanged. What a headless API server never
+  reaches for is removed — Tk, IDLE, headers, the static library, pip,
+  terminfo — taking it from 101 MB to 44 MB on Linux and proportionally
+  on the other platforms.
+- **The backend's dependencies ship with it.** Starlette, uvicorn,
+  Pydantic and their pure-Python dependencies are staged into
+  `resources/python/site-packages`, and `pydantic_core` — a compiled
+  extension that is not abi3, so one build genuinely cannot load into
+  another CPython — is staged once per supported version under
+  `resources/python/abi/cp3NN/`. The entry script selects the directory
+  matching the interpreter that is running. Versions are resolved from
+  `backend/pyproject.toml` rather than a list in the build script, so the
+  bundle cannot drift from what the test suite runs against. An
+  interpreter is still not bundled: AURA needs a Python 3.12+ on the
+  machine, it no longer needs one somebody has configured.
+- **Python is found where version managers put it.** A desktop launcher
+  hands the application a minimal PATH that excludes pyenv shims, conda
+  and per-user installs, so the one interpreter that could run the
+  backend was invisible to it. Those locations are now searched by
+  location rather than through PATH.
+- **The window appears before the environment backend starts.** It was
+  shown only after both services had been dealt with, so a machine that
+  took a moment to find a Python got an invisible application — and on
+  Windows an unkillable one, because a close request posted at a process
+  with no window is delivered nowhere and the shell never reached its
+  exit handler.
+- **A probe that times out is no longer reported as a missing tool.**
+  The scan gave each tool four seconds and read silence as absence, with
+  a guessed reason. The same machine reported 12 tools present, then 10,
+  then 8, unchanged — the first execution of a binary on Windows is slow
+  because the anti-malware scanner reads the whole file first. Probes are
+  now retried once, warm, and a probe that still does not answer says it
+  timed out rather than claiming the tool is missing.
+
+### Changed
+
+- **Packaging verification proves the dependencies are sufficient, not
+  merely present.** A new check imports the packaged entry point on a
+  virtualenv built `--without-pip`, having first confirmed that
+  virtualenv is empty. Every other check in that suite runs on a machine
+  where Starlette is installed three times over and would pass on an
+  artifact that silently depends on it. Three further checks cover the
+  interpreter: that it is packaged AND executes, that it alone can import
+  the backend, and — the one that matters — that the running application
+  actually used it rather than one it found on the machine.
+- **A probe that times out is no longer reported as a missing tool.** The
+  environment scan gave each tool four seconds and read silence as
+  absence, with a guessed reason. The same machine reported 12 tools
+  present, then 10, then 8, unchanged: the first execution of a binary on
+  Windows is slow because the anti-malware scanner reads the whole file
+  first. Probes are retried once, warm, and one that still does not
+  answer now says it timed out instead of claiming the tool is missing.
+- **The window appears before the environment backend starts.** It was
+  shown only after both services had been dealt with, so a machine that
+  took a moment to find a Python got an invisible application — and on
+  Windows an unquittable one, because a close request posted at a process
+  with no window is delivered nowhere.
+
 ## [0.1.10] - 2026-09-13 — Verification
 
 A maintenance release. The shipped application is functionally identical
