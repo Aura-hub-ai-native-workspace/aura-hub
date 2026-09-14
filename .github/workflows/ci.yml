@@ -84,6 +84,15 @@ jobs:
           node-version: 22
           cache: npm
 
+      # The packaging step vendors the Python backend's dependencies into the
+      # artifact, and the interpreter that resolves them decides which
+      # versions ship. Pinned rather than left to the runner image so a
+      # Linux, macOS and Windows build of the same commit carry the same
+      # packages, and an image update cannot change them underneath us.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - uses: dtolnay/rust-toolchain@stable
 
       # Linux apt has stalled for up to 6 hours in CI (observed 21s … 85m39s

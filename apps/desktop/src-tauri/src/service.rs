@@ -996,10 +996,24 @@ const MAX_PYTHON_CANDIDATES: usize = 24;
 /// missing dependency shows up as "the backend did not become ready within
 /// 90s" — ninety seconds of waiting for a process that died on its first
 /// import — instead of the one line that says which import failed.
-fn python_can_import(python: &std::path::Path, backend_root: &std::path::Path) -> Result<(), String> {
+///
+/// The check runs the REAL entry script with `--check` rather than a
+/// `-c` snippet listing the imports. A packaged AURA carries its own
+/// Starlette, uvicorn and Pydantic, and the entry script is what puts them
+/// on `sys.path` — including picking the `pydantic_core` built for this
+/// interpreter's exact CPython version. A snippet here would have to
+/// restate those rules, and any drift between the two copies rejects every
+/// interpreter on the machine while the backend would have started fine.
+/// Asking the script is the only way to test the conditions it will run
+/// under.
+fn python_can_import(
+    python: &std::path::Path,
+    entry: &std::path::Path,
+    backend_root: &std::path::Path,
+) -> Result<(), String> {
     let output = Command::new(python)
-        .arg("-c")
-        .arg("import starlette, uvicorn, aura.api.server")
+        .arg(entry)
+        .arg("--check")
         .env("PYTHONPATH", backend_root)
         // The AppImage runtime exports PYTHONHOME pointing INTO its own
         // mount, which holds no stdlib. An interpreter that inherits it
@@ -1084,7 +1098,7 @@ pub fn ensure_python_running(
     let mut rejected: Vec<String> = Vec::new();
     let mut chosen: Option<PathBuf> = None;
     for candidate in &candidates {
-        match python_can_import(candidate, &backend_root) {
+        match python_can_import(candidate, &entry, &backend_root) {
             Ok(()) => {
                 chosen = Some(candidate.clone());
                 break;
@@ -1094,8 +1108,9 @@ pub fn ensure_python_running(
     }
     let Some(python) = chosen else {
         return Err(format!(
-            "No Python on this machine can run AURA's environment backend. It needs starlette, \
-             uvicorn and pydantic. Tried:\n  {}",
+            "No Python on this machine can run AURA's environment backend. AURA ships the \
+             packages it needs, so this is usually an interpreter too old for them — 3.12 or \
+             newer is required. Tried:\n  {}",
             rejected.join("\n  ")
         ));
     };

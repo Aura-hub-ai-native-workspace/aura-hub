@@ -29,8 +29,10 @@
  * loaded at runtime. That is ~9 MB instead of ~23 MB.
  */
 import { build } from 'esbuild';
+import { execFileSync, spawnSync } from 'node:child_process';
 import {
-  copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync,
+  copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
+  statSync,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,15 +50,11 @@ const TS_OUT = path.join(OUT_DIR, 'node_modules/typescript');
  * staged copy that keeps its neighbour keeps working with no packaging
  * special case inside the Python.
  *
- * What is NOT staged, deliberately: the interpreter and the third-party
- * wheels. `service.rs` already discovers a Python on the machine and
- * refuses any that cannot import starlette, uvicorn and `aura.api.server`,
- * so the dependency story is unchanged by this — AURA supplies its own
- * source, the user's interpreter supplies the rest. Shipping CPython and
- * pydantic-core's native wheel per platform is the separate distribution
- * problem the old comment in `lib.rs` described; this does not attempt it,
- * and a machine without those packages still gets the same honest refusal
- * it got before.
+ * The third-party dependencies are staged beside it, under `site-packages/`
+ * and `abi/cp3NN/`; see the vendoring block further down for why they are
+ * split in two. What is still NOT staged is the interpreter itself, so
+ * `service.rs` goes on discovering a Python on the machine — it just no
+ * longer needs one that somebody has already installed Starlette into.
  *
  * `aura/` is pure Python plus one data file (`fabric/manifest.json`, found
  * relative to its own module), so the whole runtime set is ~1.8 MB of text.
@@ -145,11 +143,176 @@ mkdirSync(path.join(PY_OUT, 'scripts'), { recursive: true });
 copyFileSync(pyEntryFrom, path.join(PY_OUT, PY_ENTRY_REL));
 const staged = stagePython(pyPackageFrom, path.join(PY_OUT, PY_PACKAGE_REL));
 
+/*
+ * The backend's third-party dependencies, vendored.
+ *
+ * Until now AURA shipped its own source and then required the machine to
+ * already have Starlette, uvicorn and Pydantic. On a clean install it does
+ * not: a user on Arch had to `pacman -S python-starlette python-pydantic`
+ * and `pip install uvicorn` by hand before the Machine Inventory would show
+ * anything but "0 installed". Shipping source without its imports was never
+ * a working product.
+ *
+ * Two directories, because the dependencies are not the same kind of thing:
+ *
+ *   site-packages/   pure Python (`py3-none-any`). One copy serves every
+ *                    interpreter.
+ *   abi/cp3NN/       `pydantic_core`, a compiled extension. Its wheel is
+ *                    built per CPython version and is NOT abi3, so a cp312
+ *                    build does not load into cp313 — it fails on an
+ *                    `undefined symbol`, not a missing module. One directory
+ *                    per supported version; the entry script picks the one
+ *                    matching whoever is running.
+ *
+ * Per-platform needs no handling here: each CI runner stages wheels for its
+ * own platform, so the macOS artifact carries macOS wheels and the Windows
+ * one Windows wheels. Nothing cross-compiles.
+ *
+ * Still NOT vendored: an interpreter. AURA goes on using a Python from the
+ * machine. This removes the requirement to have *configured* one.
+ */
+const PY_ABI_TAGS = ['cp312', 'cp313', 'cp314'];
+
+/**
+ * The backend's runtime requirements, read from the file that declares them.
+ *
+ * Deliberately not a list typed out here. `backend/pyproject.toml` caps
+ * Starlette below 1.0 because the suite has never been run against 1.x, and
+ * a second copy of that constraint is a second copy to forget: a bundle
+ * resolved from a stale duplicate would ship versions the tests never
+ * exercised, which is worse than shipping nothing.
+ */
+function backendRequirements() {
+  const file = path.join(REPO, 'backend/pyproject.toml');
+  const toml = readFileSync(file, 'utf8').replace(/^\s*#.*$/gm, '');
+  const block = /^dependencies = \[([\s\S]*?)^\]/m.exec(toml);
+  const reqs = block ? [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : [];
+  if (!reqs.length) {
+    throw new Error(
+      `Cannot read the backend's runtime dependencies from ${file}. `
+      + 'Vendoring a guessed set would ship versions the test suite has '
+      + 'never run against.',
+    );
+  }
+  return reqs;
+}
+
+function dirBytes(dir) {
+  if (!existsSync(dir)) return 0;
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    total += entry.isDirectory() ? dirBytes(p) : statSync(p).size;
+  }
+  return total;
+}
+
+/**
+ * The interpreter that RESOLVES the wheels — not the one that runs them.
+ *
+ * Its pip picks the versions, so the choice is worth being explicit about;
+ * `AURA_BUNDLE_PYTHON` exists for a build that needs to pin one. The
+ * `python3` / `python` fallback is not cosmetic: Windows installs the
+ * interpreter as `python`, and a build script that only knows `python3`
+ * fails there with ENOENT after the rest of the packaging has succeeded.
+ */
+const stagingPython = (() => {
+  const named = process.env.AURA_BUNDLE_PYTHON;
+  const tried = named ? [named] : ['python3', 'python'];
+  for (const exe of tried) {
+    const probe = spawnSync(exe, ['-c', 'import pip'], { stdio: 'ignore' });
+    if (probe.status === 0) return exe;
+  }
+  throw new Error(
+    `No Python with pip was found (tried: ${tried.join(', ')}). `
+    + 'The desktop package vendors the backend\'s dependencies at build '
+    + 'time; set AURA_BUNDLE_PYTHON to an interpreter that has pip.',
+  );
+})();
+
+const pip = (args) => execFileSync(stagingPython, ['-m', 'pip', ...args], {
+  encoding: 'utf8',
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+
+const SITE_OUT = path.join(PY_OUT, 'site-packages');
+const vendored = { bytes: 0, abis: [] };
+try {
+  pip(['install', '--quiet', '--no-compile', '--target', SITE_OUT,
+    ...backendRequirements()]);
+
+  // Console scripts: a `uvicorn` launcher hard-coded to the BUILD machine's
+  // interpreter path. Nothing runs it, and shipping it would only invite
+  // someone to try.
+  rmSync(path.join(SITE_OUT, 'bin'), { recursive: true, force: true });
+  rmSync(path.join(SITE_OUT, 'Scripts'), { recursive: true, force: true });
+
+  /*
+   * pydantic_core arrives here as a transitive dependency, built for the
+   * STAGING interpreter. It is moved aside rather than kept, because one
+   * version's binary sitting on the path for every interpreter is exactly
+   * the crash the per-ABI directories exist to prevent.
+   *
+   * Its exact version is carried over to those directories: Pydantic pins
+   * `pydantic-core==<x>` and checks the match at import, so re-resolving
+   * the native half independently could pair two versions that refuse to
+   * work together.
+   */
+  const coreDists = readdirSync(SITE_OUT)
+    .filter((e) => e.startsWith('pydantic_core-') && e.endsWith('.dist-info'));
+  if (coreDists.length !== 1) {
+    throw new Error(
+      `Expected exactly one vendored pydantic_core, found ${coreDists.length}.`,
+    );
+  }
+  const coreVersion = coreDists[0].slice('pydantic_core-'.length, -'.dist-info'.length);
+  for (const entry of readdirSync(SITE_OUT)) {
+    if (entry.startsWith('pydantic_core')) {
+      rmSync(path.join(SITE_OUT, entry), { recursive: true, force: true });
+    }
+  }
+
+  for (const tag of PY_ABI_TAGS) {
+    const abiOut = path.join(PY_OUT, 'abi', tag);
+    try {
+      pip(['install', '--quiet', '--no-compile', '--no-deps',
+        '--only-binary=:all:', '--python-version', tag.slice('cp'.length),
+        '--target', abiOut, `pydantic-core==${coreVersion}`]);
+      vendored.abis.push(tag);
+    } catch {
+      // A CPython version with no published wheel for this platform is not
+      // a build failure — that interpreter is simply unsupported here, and
+      // the entry script finds no directory for it rather than loading a
+      // binary built for someone else.
+      rmSync(abiOut, { recursive: true, force: true });
+    }
+  }
+  if (!vendored.abis.length) {
+    throw new Error(
+      `No pydantic-core==${coreVersion} wheel was available for any of `
+      + `${PY_ABI_TAGS.join(', ')} on this platform.`,
+    );
+  }
+  vendored.bytes = dirBytes(SITE_OUT) + dirBytes(path.join(PY_OUT, 'abi'));
+} catch (e) {
+  throw new Error(
+    'Cannot vendor the Python backend dependencies: '
+    + `${(e.stderr || e.message || '').toString().trim().slice(-400)}\n`
+    + `Staging used "${stagingPython}"; set AURA_BUNDLE_PYTHON to pick another. `
+    + 'Building without them produces an application that installs, launches, '
+    + 'and then reports an empty machine.',
+  );
+}
+
 const mb = (p) => (statSync(p).size / 1024 / 1024).toFixed(1);
 console.log(`  ai-service.mjs        ${mb(path.join(OUT_DIR, 'ai-service.mjs'))} MB`);
 console.log(`  typescript/lib        ${mb(path.join(TS_OUT, 'lib/typescript.js'))} MB`);
 console.log(
   `  python backend        ${(staged.bytes / 1024 / 1024).toFixed(1)} MB`
   + ` (${staged.files} files)`,
+);
+console.log(
+  `  python deps           ${(vendored.bytes / 1024 / 1024).toFixed(1)} MB`
+  + ` (pydantic_core for ${vendored.abis.join(', ')})`,
 );
 console.log(`  staged into           ${OUT_DIR}`);
