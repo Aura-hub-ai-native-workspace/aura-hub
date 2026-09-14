@@ -54,10 +54,11 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
-## [0.1.11] - 2026-09-14 — Batteries Included
+## [0.1.11] - 2026-09-15 — Batteries Included
 
 The first release that installs into a working application on a machine
-that has no Python set up.
+that has no Python set up, and the first whose first screen asks for a
+model server instead of a credit card.
 
 0.1.9 and 0.1.10 packaged the environment backend's source and then
 expected the machine to already have the packages it imports; the
@@ -80,6 +81,60 @@ The artifacts are larger for it. The bundled interpreter is 30–44 MB
 depending on platform and the packages add about 6.6 MB compressed, so
 expect the downloads to roughly double. That is the price of an
 application that works when it is installed.
+
+### Added
+
+- **AURA runs on an Ollama server you control.** The first screen asks for
+  two things — the server's address and a model ID — and nothing else. No
+  API key, no account, no cloud provider. The server may be on this
+  machine or on another one: a laptop, a lab box, a shared university GPU
+  server behind HTTPS. The address is classified as it is typed (this
+  machine · another machine on the network · remote server), and a bare
+  hostname honestly reports that its location cannot be known from a URL
+  rather than guessing.
+- **Nothing is saved until the model has actually answered.** "Verify and
+  Continue" reaches the server, confirms it speaks Ollama, retrieves the
+  model list, checks the requested model is served there *exactly*, and
+  sends a real streamed prompt. Only then is the configuration written.
+  Reaching an address proves a socket opened; it does not prove a model
+  will load, and a workspace that opens and fails on its first question is
+  worse than one that explains the problem while it can still be fixed.
+  A stale configuration — a rotated tunnel, a removed model — returns to
+  the connection screen instead of into a broken workspace.
+
+### Fixed
+
+- **A requested model is never silently swapped for another.** Asking for
+  a model the server does not serve used to fall through to the first one
+  it knew about: a request for `qwen3.8:27b` quietly ran a different
+  model. The user believed they were running one thing while running
+  another, and on a shared server that is also somebody else's GPU time.
+- **Generation is no longer capped at thirty seconds.** The streaming
+  timeout was attached to the request whose body *is* the stream, so it
+  stayed live while tokens were arriving and killed working answers
+  mid-sentence. A reasoning model that thinks for half a minute before its
+  first token never got started at all. The budget now bounds silence —
+  the clock resets on every chunk — so a long answer never trips it and a
+  dead connection still does.
+- **Disconnect now disconnects.** Removing the credential cleared the
+  active pointer, which made the guard that was supposed to shut the
+  runtime down compare two different things and skip it — so the
+  in-memory provider kept answering for a configuration that had just been
+  deleted, and health reported "connected" with nothing stored behind it.
+- **Redirects cannot move inference to another machine.** `fetch` follows
+  them by default and says nothing about it, so a 302 from the configured
+  address could have sent prompts to a server the user never chose. Every
+  request to a self-hosted server is now pinned to the destination that
+  was configured: same protocol, same host, same port. A path rewrite on
+  the same server is fine, which is what reverse proxies do; a
+  cross-host hop, a cross-port hop, an HTTPS-to-HTTP downgrade or a loop
+  is refused and named. This is a *pin*, and deliberately not the existing
+  SSRF deny list, which would refuse the loopback and LAN addresses that
+  are supported deployments here.
+
+Cloud providers remain available as explicit fallbacks at the bottom of
+Settings. They are never selected automatically, and AURA never silently
+sends a prompt to one because a self-hosted server is unavailable.
 
 Still required from the machine: **Node.js**. AURA runs its local service
 on the Node it finds rather than a bundled copy, deliberately — it also

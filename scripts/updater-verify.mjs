@@ -777,7 +777,9 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * environment backend's source and expected the user to have installed
    * Starlette, uvicorn and Pydantic already; 0.1.10 on Arch showed
    * "0 installed" until the user ran pacman and pip by hand. This one
-   * carries the packages AND the interpreter.
+   * carries the packages AND the interpreter — and asks for a model
+   * server on first run instead of an API key, so a fresh install needs
+   * nothing bought and nothing configured.
    */
    const RELEASE_CANDIDATE = '0.1.11';
   check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);
