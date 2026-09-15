@@ -34,7 +34,7 @@ export function App() {
   const booted = useAppStore((s) => s.booted);
   const setBooted = useAppStore((s) => s.setBooted);
   const onboarded = useAppStore((s) => s.onboarded);
-  const providerGate = useProviderGate(onboarded);
+  const { gate: providerGate, markReady: markProviderReady } = useProviderGate(onboarded);
   const completeOnboarding = useAppStore((s) => s.completeOnboarding);
   const recentCommandIds = useAppStore((s) => s.recentCommandIds);
   const pushRecentCommand = useAppStore((s) => s.pushRecentCommand);
@@ -133,7 +133,15 @@ export function App() {
         not flashed before the answer arrives.
       */}
       {!onboarded || providerGate === 'needs-setup' ? (
-        <OnboardingFlow onComplete={completeOnboarding} />
+        <OnboardingFlow
+          onComplete={() => {
+            // Tell the gate directly. Completing onboarding does not always
+            // change `onboarded` — a user sent back through setup already
+            // had it set — and an inferred signal is missed exactly then.
+            markProviderReady();
+            completeOnboarding();
+          }}
+        />
       ) : (
         providerGate === 'ready' && !booted && <BootSequence onComplete={completeBoot} />
       )}
