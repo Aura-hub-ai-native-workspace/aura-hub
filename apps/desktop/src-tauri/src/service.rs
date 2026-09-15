@@ -490,9 +490,26 @@ fn augmented_path(node_dir: Option<&PathBuf>) -> String {
         parts.extend(std::env::split_paths(&existing));
     }
 
-    // Whatever interpreter we resolved must itself stay reachable: `node`
-    // and `npm` are catalogue entries and SAFE_BINARIES members, so the
-    // service is expected to be able to run them.
+    /*
+     * The resolved interpreter's directory — but ONLY when it came from the
+     * machine.
+     *
+     * The purpose is real: a Node from nvm or a Python from pyenv lives
+     * beside the `npm` and `pip` that belong to it, and those are catalogue
+     * entries the service is expected to be able to run.
+     *
+     * A runtime AURA ships is the opposite case, and putting its directory
+     * here corrupts the one thing the Connected Environment exists to
+     * report. Observed, not theorised: with every Node on the machine made
+     * unrunnable, the inventory still announced "Found Node.js 22.23.2 on
+     * this machine" — it had found AURA's private copy on the PATH AURA
+     * itself had seeded. The scan is meant to describe the user's machine,
+     * and it was describing the application.
+     *
+     * So a bundled runtime stays off this PATH. AURA still executes it by
+     * absolute path; it is simply not offered to anything looking for what
+     * is installed here.
+     */
     if let Some(dir) = node_dir {
         parts.push(dir.clone());
     }
@@ -570,18 +587,39 @@ fn augmented_path(node_dir: Option<&PathBuf>) -> String {
 
 /// Find a Node interpreter without trusting the launcher's environment.
 ///
-/// The packaged application does not ship Node: AURA already treats it as
-/// an external execution node (it is in the catalogue and in
-/// `SAFE_BINARIES`), so requiring the real thing is consistent with how
-/// every other tool is handled — and bundling a second copy would mean the
-/// app runs on a different Node than the one it reports detecting.
-fn resolve_node() -> Result<PathBuf, String> {
+/// The packaged application now ships one, and it is preferred over
+/// anything on the machine. This reverses a decision documented here for
+/// good reasons, so the reasoning deserves to be answered rather than
+/// deleted: bundling a second copy does mean AURA runs on a different Node
+/// than the one it reports detecting.
+///
+/// That objection is right about the INVENTORY and wrong about the
+/// application. The Connected Environment still reports the machine's
+/// Node, truthfully, because that is what a user's own project would run
+/// on — and this copy is never added to it. What changed is only what AURA
+/// itself executes. A user installing a desktop application has not agreed
+/// to install a JavaScript runtime first, and on a machine without one
+/// AURA did not degrade politely: it failed to start at all.
+///
+/// A source checkout stages no runtime, so development still resolves
+/// through the search below. `AURA_NODE` still wins, because an explicit
+/// instruction should.
+fn resolve_node(bundled: Option<&std::path::Path>) -> Result<PathBuf, String> {
     if let Some(explicit) = std::env::var_os("AURA_NODE") {
         let p = PathBuf::from(explicit);
         if p.is_file() {
             return Ok(p);
         }
         return Err(format!("AURA_NODE points at {}, which is not a file", p.display()));
+    }
+
+    // The one candidate known in advance to work: it is the exact Node this
+    // build was compiled and tested against, and it cannot be upgraded or
+    // removed out from under the application.
+    if let Some(shipped) = bundled {
+        if shipped.is_file() {
+            return Ok(shipped.to_path_buf());
+        }
     }
 
     let home = home_dir();
@@ -639,8 +677,10 @@ fn resolve_node() -> Result<PathBuf, String> {
         .into_iter()
         .find(|c| c.is_file())
         .ok_or_else(|| {
-            "AURA needs Node.js to run its local service, and none was found. \
-             Install Node 18 or newer, or set AURA_NODE to its full path."
+            "AURA could not start its local service with any Node, including the one it \
+             ships. A packaged installation should never reach this, so the installation is \
+             probably damaged — reinstalling is the fastest fix. You can also install Node 18 \
+             or newer, or set AURA_NODE to its full path."
                 .to_string()
         })
 }
@@ -679,8 +719,19 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
         ));
     }
 
-    let node = resolve_node()?;
-    let node_dir = node.parent().map(PathBuf::from);
+    /*
+     * The shipped Node sits beside the service bundle it runs, so the
+     * script's own location finds it without another resolver. In a
+     * source checkout there is no such directory and this is None.
+     */
+    let bundled_node = script.parent().map(|resources| {
+        resources.join("runtime").join("node").join(if cfg!(windows) { "node.exe" } else { "bin/node" })
+    });
+    let node = resolve_node(bundled_node.as_deref())?;
+    // Only a machine-provided interpreter is advertised on PATH; see
+    // `augmented_path`.
+    let node_is_bundled = bundled_node.as_deref().is_some_and(|b| b == node.as_path());
+    let node_dir = if node_is_bundled { None } else { node.parent().map(PathBuf::from) };
 
     // Logs belong with the rest of the user's AURA state, never inside the
     // installed application — which may well be read-only.
@@ -1138,6 +1189,13 @@ pub fn ensure_python_running(
         ));
     };
 
+    // Only a machine-provided interpreter is advertised on PATH; see
+    // `augmented_path`.
+    let python_is_bundled = backend_root
+        .parent()
+        .map(|resources| resources.join("runtime").join(if cfg!(windows) { "python.exe" } else { "bin/python3" }))
+        .is_some_and(|bundled| bundled == *python);
+
     let home = aura_home();
     let log_dir = home.join("logs");
     std::fs::create_dir_all(&log_dir)
@@ -1161,7 +1219,12 @@ pub fn ensure_python_running(
         .arg(&entry)
         .arg(port.to_string())
         .current_dir(&home)
-        .env("PATH", augmented_path(python.parent().map(PathBuf::from).as_ref()))
+        // Same rule as the Node service: a bundled interpreter is used by
+        // absolute path and never seeded into the PATH the environment
+        // scan reads, or AURA would inventory itself.
+        .env("PATH", augmented_path(
+            if python_is_bundled { None } else { python.parent().map(PathBuf::from) }.as_ref(),
+        ))
         .env("PYTHONPATH", &backend_root)
         // Same reason as in `python_can_import`: a PYTHONHOME inherited
         // from the AppImage runtime points at a mount with no stdlib, and

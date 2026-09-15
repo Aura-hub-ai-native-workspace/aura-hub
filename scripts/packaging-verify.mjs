@@ -283,6 +283,32 @@ check('1h. the backend\'s third-party dependencies are packaged with it',
       : `site-packages + ${vendoredAbi.length} ABI build(s) of pydantic_core`);
 
 /*
+ * 1l. Node ships too, and runs.
+ *
+ * AURA's own service is JavaScript, so a machine without Node could not
+ * start the application at all — not a degraded Environment screen, a
+ * dead launch. Checked by EXECUTING the packaged binary rather than
+ * finding it, because a file at the right path that will not run is the
+ * failure a relocated binary is most likely to have.
+ */
+const packagedNode = existsSync(squash)
+  ? spawnSync('find', [squash, '-path', `*/resources/runtime/node/*`, '-name', process.platform === 'win32' ? 'node.exe' : 'node', '-type', 'f'], { encoding: 'utf8' })
+      .stdout.trim().split('\n').filter(Boolean)
+  : [];
+let nodeDetail = 'no Node under resources/runtime/node/';
+let nodeOk = false;
+if (packagedNode.length) {
+  const v = spawnSync(packagedNode[0], ['--version'], { encoding: 'utf8', timeout: 60000, env: PROBE_ENV });
+  const version = (v.stdout ?? '').trim();
+  const major = Number(/^v(\d+)/.exec(version)?.[1] ?? 0);
+  nodeOk = v.status === 0 && major >= 18;
+  nodeDetail = v.status === 0
+    ? `Node ${version}, packaged and executable`
+    : `the packaged Node would not run: ${(v.stderr ?? '').trim().slice(0, 120)}`;
+}
+check('1l. a Node runtime is packaged inside the artifact', nodeOk, nodeDetail);
+
+/*
  * 1j. The interpreter ships too.
  *
  * Vendoring the dependencies removed the need for a CONFIGURED Python; it
@@ -551,6 +577,19 @@ check('3g. the packaged backend serves its own health endpoint',
 const pythonLine = (appOut.match(/^\[aura\] python\s*:\s*(.+)$/m) ?? [])[1]?.trim() ?? '';
 const usesBundled = /[/\\]resources[/\\]python[/\\]runtime[/\\]/.test(pythonLine)
   && !pythonLine.startsWith(REPO);
+/*
+ * 3i. And the service ran on the Node AURA ships.
+ *
+ * Same reasoning as 3h: on a developer's machine the service would start
+ * just as happily on a system Node, which is the arrangement that worked
+ * here and failed for users who had none.
+ */
+const nodeLine = (appOut.match(/^\[aura\] node\s*:\s*(.+)$/m) ?? [])[1]?.trim() ?? '';
+const usesBundledNode = /[/\\]resources[/\\]runtime[/\\]node[/\\]/.test(nodeLine) && !nodeLine.startsWith(REPO);
+check('3i. the service ran on the Node AURA ships, not one from the machine',
+  nodeLine !== '' && usesBundledNode,
+  nodeLine || 'the app never reported which Node it used');
+
 check('3h. the backend ran on the interpreter AURA ships, not one from the machine',
   pythonLine !== '' && usesBundled,
   pythonLine || 'the app never reported which interpreter it used');

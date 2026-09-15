@@ -33,7 +33,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync,
-  lstatSync, rmSync, statSync, writeFileSync,
+  chmodSync, lstatSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -172,6 +172,142 @@ const staged = stagePython(pyPackageFrom, path.join(PY_OUT, PY_PACKAGE_REL));
  * Still NOT vendored: an interpreter. AURA goes on using a Python from the
  * machine. This removes the requirement to have *configured* one.
  */
+/*
+ * The Node runtime, bundled.
+ *
+ * `resolve_node` used to argue against this: AURA treats Node as an
+ * external execution node, it is in the catalogue, and bundling a second
+ * copy would mean the app runs on a different Node than the one it
+ * reports detecting. That reasoning is sound about the INVENTORY and
+ * wrong about the application. A user installing a desktop app has not
+ * agreed to install a JavaScript runtime first, and on a machine without
+ * one AURA did not degrade — it failed to start at all.
+ *
+ * The tension it names is real and is resolved by keeping the two
+ * separate: the Connected Environment still reports the machine's Node,
+ * truthfully, because that is what a user's own project would run on.
+ * This copy is AURA's own plumbing and is never reported as a detected
+ * tool. The app runs on a known Node; the inventory describes the
+ * machine. Both statements stay true.
+ *
+ * Pinned to the version CI builds and tests with, and verified by digest
+ * before anything is unpacked — a release URL says where bytes live, not
+ * what they are.
+ */
+const NODE_RUNTIME_VERSION = 'v22.23.2';
+const NODE_RUNTIME_BUILDS = {
+  'linux-x64': {
+    archive: `node-${'v22.23.2'}-linux-x64.tar.xz`,
+    member: `node-${'v22.23.2'}-linux-x64/bin/node`,
+    sha256: 'd60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307',
+  },
+  'darwin-arm64': {
+    archive: `node-${'v22.23.2'}-darwin-arm64.tar.xz`,
+    member: `node-${'v22.23.2'}-darwin-arm64/bin/node`,
+    sha256: '5eff7a9011895aae3f29d06f167b84a62b028a591370c7cafb59103559fd26e1',
+  },
+  'darwin-x64': {
+    archive: `node-${'v22.23.2'}-darwin-x64.tar.xz`,
+    member: `node-${'v22.23.2'}-darwin-x64/bin/node`,
+    sha256: '96dff79f4e19a78715da559ec7cac2028f4985a175ea0c3454625a269c21deb7',
+  },
+  'win32-x64': {
+    archive: `node-${'v22.23.2'}-win-x64.zip`,
+    member: `node-${'v22.23.2'}-win-x64/node.exe`,
+    sha256: '1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97',
+  },
+};
+
+/** Where the bundled interpreter lands, relative to OUT_DIR. */
+const NODE_RUNTIME_EXE = process.platform === 'win32'
+  ? 'runtime/node/node.exe'
+  : 'runtime/node/bin/node';
+
+/**
+ * Fetch, verify and unpack the single file we need: the `node` binary.
+ *
+ * A Node distribution is ~110 MB of interpreter, npm, headers and docs.
+ * `ai-service.mjs` is a bundle and the one runtime dependency it keeps
+ * (`typescript`) is already staged beside it, so npm is never invoked and
+ * nothing resolves out of the distribution's own `lib`. Taking only the
+ * binary is the difference between shipping a runtime and shipping a
+ * toolchain.
+ */
+async function stageNodeRuntime() {
+  const key = `${process.platform}-${process.arch}`;
+  const build = NODE_RUNTIME_BUILDS[key];
+  if (!build) {
+    throw new Error(
+      `No Node runtime is pinned for ${key}. Add its archive and SHA-256 to `
+      + 'NODE_RUNTIME_BUILDS, or the application cannot ship a runtime for this platform.',
+    );
+  }
+  const url = `https://nodejs.org/dist/${NODE_RUNTIME_VERSION}/${build.archive}`;
+  const cacheDir = path.join(REPO, 'node_modules/.cache/aura-node-runtime');
+  mkdirSync(cacheDir, { recursive: true });
+  const cached = path.join(cacheDir, `${build.sha256}${build.archive.endsWith('.zip') ? '.zip' : '.tar.xz'}`);
+
+  const verify = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  if (!existsSync(cached)) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Could not download ${build.archive}: HTTP ${res.status} from ${url}`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    const got = verify(bytes);
+    if (got !== build.sha256) {
+      throw new Error(`${build.archive} does not match its pinned digest.\n  expected ${build.sha256}\n  received ${got}\nRefusing to unpack it.`);
+    }
+    writeFileSync(cached, bytes);
+  } else if (verify(readFileSync(cached)) !== build.sha256) {
+    // A file that sits on disk between builds is one anything on this
+    // machine could have edited.
+    rmSync(cached, { force: true });
+    throw new Error(`The cached copy of ${build.archive} no longer matches its digest; it has been deleted. Re-run the build.`);
+  }
+
+  const outDir = path.join(OUT_DIR, 'runtime', 'node');
+  const tmp = path.join(OUT_DIR, '.node-unpack');
+  rmSync(tmp, { recursive: true, force: true });
+  mkdirSync(tmp, { recursive: true });
+
+  if (build.archive.endsWith('.zip')) {
+    /*
+     * Windows only. GNU tar — which is what `tar` resolves to on a runner
+     * with Git installed — cannot read a zip at all, and bsdtar's ability
+     * to do so depends on which of the two is first on PATH. PowerShell is
+     * always present and always reads zip, so the format decides the tool
+     * rather than PATH order deciding it for us.
+     */
+    execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command',
+      `Expand-Archive -LiteralPath '${cached}' -DestinationPath '${tmp}' -Force`],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+  } else {
+    // Archive on stdin and destination as cwd, so tar is handed no path —
+    // see the note on the Python runtime for why that matters.
+    execFileSync('tar', ['-xJf', '-', build.member], {
+      cwd: tmp,
+      input: readFileSync(cached),
+      maxBuffer: 512 * 1024 * 1024,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  }
+
+  const extracted = path.join(tmp, build.member);
+  if (!existsSync(extracted)) {
+    throw new Error(`${build.archive} did not contain ${build.member}.`);
+  }
+  mkdirSync(path.dirname(path.join(OUT_DIR, NODE_RUNTIME_EXE)), { recursive: true });
+  copyFileSync(extracted, path.join(OUT_DIR, NODE_RUNTIME_EXE));
+  if (process.platform !== 'win32') chmodSync(path.join(OUT_DIR, NODE_RUNTIME_EXE), 0o755);
+  rmSync(tmp, { recursive: true, force: true });
+
+  // It has to run here before anything is built around it.
+  const reported = execFileSync(path.join(OUT_DIR, NODE_RUNTIME_EXE), ['--version'], { encoding: 'utf8' }).trim();
+  if (reported !== NODE_RUNTIME_VERSION) {
+    throw new Error(`The staged Node reports ${reported}, not the pinned ${NODE_RUNTIME_VERSION}.`);
+  }
+  return path.join(OUT_DIR, NODE_RUNTIME_EXE);
+}
+
 const PY_ABI_TAGS = ['cp312', 'cp313', 'cp314'];
 
 /*
@@ -383,6 +519,7 @@ function dirBytes(dir) {
  * right answer, and using it removes a whole class of mismatch: the wheel
  * is built for this CPython because this CPython asked for it.
  */
+const nodeRuntime = await stageNodeRuntime();
 const stagingPython = await stagePythonRuntime();
 if (spawnSync(stagingPython, ['-c', 'import pip'], { stdio: 'ignore' }).status !== 0) {
   throw new Error(
@@ -617,6 +754,7 @@ try {
 
 const mb = (p) => (statSync(p).size / 1024 / 1024).toFixed(1);
 console.log(`  ai-service.mjs        ${mb(path.join(OUT_DIR, 'ai-service.mjs'))} MB`);
+console.log(`  node runtime          ${mb(nodeRuntime)} MB (Node ${NODE_RUNTIME_VERSION}, ${process.platform}-${process.arch})`);
 console.log(`  typescript/lib        ${mb(path.join(TS_OUT, 'lib/typescript.js'))} MB`);
 console.log(
   `  python backend        ${(staged.bytes / 1024 / 1024).toFixed(1)} MB`
