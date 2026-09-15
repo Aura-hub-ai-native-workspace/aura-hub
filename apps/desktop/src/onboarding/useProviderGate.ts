@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { aiClient } from '../ai/aiClient';
+import { providerGate, type ProviderGate } from './gateRules';
 
 /**
  * Does the saved provider configuration still work?
@@ -18,13 +19,25 @@ import { aiClient } from '../ai/aiClient';
  * `checking` is its own state so the workspace is not flashed before the
  * answer arrives.
  */
-export type ProviderGate = 'checking' | 'ready' | 'needs-setup';
+export type { ProviderGate };
 
 export function useProviderGate(enabled: boolean): ProviderGate {
+  /*
+   * Only a configuration that predates this session is re-challenged.
+   *
+   * The check exists for the NEXT launch, when the saved server may be
+   * gone. Running it again the instant onboarding completes asks the same
+   * question that was just answered by a real streamed generation — and if
+   * the service's health had not caught up yet, it answered "no" and threw
+   * the user back onto the screen they had just finished. That reads as
+   * the setup refusing to end.
+   */
+  const [checkedAtStart] = useState(enabled);
   const [gate, setGate] = useState<ProviderGate>(enabled ? 'checking' : 'needs-setup');
 
   useEffect(() => {
-    if (!enabled) { setGate('needs-setup'); return; }
+    const decision = providerGate(enabled, checkedAtStart);
+    if (decision !== 'checking') { setGate(decision); return; }
     let alive = true;
     setGate('checking');
     (async () => {
@@ -46,7 +59,7 @@ export function useProviderGate(enabled: boolean): ProviderGate {
       }
     })();
     return () => { alive = false; };
-  }, [enabled]);
+  }, [enabled, checkedAtStart]);
 
   return gate;
 }

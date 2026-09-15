@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { Icon } from '@aura/ui';
 import { aiClient, type ProviderInfo } from '../ai/aiClient';
 import { detectConnection } from './detectConnection';
+import { canVerify, type SetupPhase } from './gateRules';
 
 /**
  * The first screen: where Ollama is, and which model to use.
@@ -27,7 +28,7 @@ import { detectConnection } from './detectConnection';
  * AURA read back — it never restricts what may be entered, and a hostname
  * whose location cannot be known from the URL says exactly that.
  */
-type Phase = 'idle' | 'verifying' | 'failed' | 'passed';
+type Phase = SetupPhase;
 
 /** The steps the gate walks, in the order the user sees them. */
 const STEPS = [
@@ -52,23 +53,59 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
   const [models, setModels] = useState<{ id: string; name: string }[]>([]);
   const [sample, setSample] = useState<string>();
 
+  /*
+   * Keep asking until the service answers.
+   *
+   * This screen is rendered the moment the window appears, and AURA's own
+   * service takes a few seconds to come up behind it — longer on a first
+   * run, and longer still on a slow disk. A single attempt at mount lost
+   * that race, left `provider` null, and disabled "Verify and Continue"
+   * permanently: the user could type an address and a model and simply
+   * never be allowed to continue. Nothing on screen explained why,
+   * because from the screen's point of view nothing had gone wrong.
+   *
+   * So it retries, and says which of the two states it is in. The prefill
+   * only ever lands in an untouched field — a late answer must not
+   * overwrite an address the user has already started typing.
+   */
   useEffect(() => {
     let alive = true;
-    aiClient.getProviders()
-      .then((r) => {
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const ask = async () => {
+      if (!alive) return;
+      try {
+        const r = await aiClient.getProviders();
         if (!alive) return;
         const served = (r.providers ?? []).find((x) => x.selfHosted) ?? null;
-        setProvider(served);
-        setBaseUrl(served?.defaultBaseUrl ?? '');
-      })
-      .catch(() => {
-        if (alive) setServiceError('Could not reach AURA’s local service. Give it a moment to finish starting, or continue offline.');
-      });
-    return () => { alive = false; };
+        if (served) {
+          setProvider(served);
+          setServiceError(null);
+          setBaseUrl((current) => current || served.defaultBaseUrl || '');
+          return;
+        }
+        throw new Error('no self-hosted provider offered');
+      } catch {
+        if (!alive) return;
+        attempt += 1;
+        setServiceError('Waiting for AURA’s local service to finish starting…');
+        // Backs off, but never stops: the service arriving late is the
+        // normal case, not an error state to give up in.
+        timer = setTimeout(ask, Math.min(500 * attempt, 3000));
+      }
+    };
+    void ask();
+    return () => { alive = false; clearTimeout(timer); };
   }, []);
 
   // Recomputed as the address is typed; no network, no commitment.
   const detected = useMemo(() => detectConnection(baseUrl), [baseUrl]);
+
+  // `ollama` is the id of the self-hosted provider whether or not the
+  // listing has arrived; see `gateRules.canVerify` for why the button does
+  // not wait on it.
+  const providerId = provider?.id ?? 'ollama';
 
   /**
    * Offer the server's own model list once an address looks plausible.
@@ -77,24 +114,23 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
    * minute ago will not be in a list fetched before that.
    */
   useEffect(() => {
-    if (!provider || detected.kind === 'invalid' || !baseUrl.trim()) { setModels([]); return; }
+    if (detected.kind === 'invalid' || !baseUrl.trim()) { setModels([]); return; }
     let alive = true;
     const t = setTimeout(() => {
-      aiClient.discoverServerModels(provider.id, baseUrl.trim())
+      aiClient.discoverServerModels(providerId, baseUrl.trim())
         .then((r) => { if (alive) setModels(r?.models ?? []); })
         .catch(() => { if (alive) setModels([]); });
     }, 700);
     return () => { alive = false; clearTimeout(t); };
-  }, [baseUrl, provider, detected.kind]);
+  }, [baseUrl, providerId, detected.kind]);
 
   const verify = async () => {
-    if (!provider) return;
     setPhase('verifying');
     setError(undefined);
     setFailedAt(null);
     setSample(undefined);
     try {
-      const r = await aiClient.verifyServerProvider(provider.id, baseUrl.trim(), model.trim());
+      const r = await aiClient.verifyServerProvider(providerId, baseUrl.trim(), model.trim());
       if (r?.ok) {
         setPhase('passed');
         setSample(r.sample);
@@ -130,8 +166,7 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
     return 'active';
   };
 
-  const canVerify = Boolean(provider) && baseUrl.trim().length > 0 && model.trim().length > 0
-    && detected.kind !== 'invalid' && phase !== 'verifying' && phase !== 'passed';
+  const readyToVerify = canVerify({ baseUrl, model, detectedKind: detected.kind, phase });
 
   return (
     <motion.div
@@ -242,7 +277,7 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
         </button>
         <button
           type="button"
-          disabled={!canVerify}
+          disabled={!readyToVerify}
           onClick={verify}
           className="rounded-xl bg-white px-6 py-3 text-[13.5px] font-medium text-black transition disabled:cursor-not-allowed disabled:bg-white/20 disabled:text-white/40"
         >

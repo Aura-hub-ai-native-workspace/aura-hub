@@ -54,6 +54,50 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
+## [0.1.12] - 2026-09-15 — Nothing Left To Install
+
+0.1.11 bundled a Python interpreter and still took Node from the machine.
+A computer without one could not launch AURA at all — not a degraded
+screen, a dead start. And the first screen could stall: it is drawn the
+instant the window appears, while AURA's own service is still coming up
+behind it, and a single lost race left "Verify and Continue" permanently
+disabled. A user could type a correct address and a correct model and
+never be allowed past, with nothing on screen explaining why.
+
+Both are fixed. Installing the application is now the whole of the setup.
+
+### Added
+
+- **The Node runtime ships with the application.** Node 22.23.2 — the
+  version AURA is built and tested against — pinned by SHA-256 and
+  verified before it is unpacked. Only the binary is taken: npm, headers
+  and documentation are left behind, because the service is a bundle and
+  never invokes them. Together with the Python interpreter from 0.1.11, a
+  fresh install needs no runtime, no package manager and no administrator.
+
+### Fixed
+
+- **The first screen no longer stalls waiting for a service that has not
+  started yet.** It retries until AURA's service answers, says which state
+  it is in while waiting, and no longer makes the Continue button depend
+  on a request the user cannot see or retry. A late answer never
+  overwrites an address already being typed.
+- **Setup does not re-ask a question it has just answered.** The check
+  that revalidates a saved server on launch was also running the moment
+  onboarding finished, and could throw the user back onto the screen they
+  had completed. It now only challenges a configuration that predates the
+  session.
+- **A bundled runtime is no longer reported as installed on the machine.**
+  This is the objection the code raised against bundling Node, and it was
+  right: with every Node on the machine made unrunnable, the Connected
+  Environment still announced "Found Node.js 22.23.2 on this machine" — it
+  had found AURA's private copy on the PATH AURA itself seeds. The
+  inventory describes the machine; the application runs on its own
+  runtimes; the two no longer contaminate each other.
+
+The artifacts grow again — the AppImage by roughly 60 MB — which is the
+remaining cost of an application that runs when it is installed.
+
 ## [0.1.11] - 2026-09-15 — Batteries Included
 
 The first release that installs into a working application on a machine
