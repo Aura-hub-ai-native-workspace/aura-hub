@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { aiClient } from '../ai/aiClient';
 import { providerGate, type ProviderGate } from './gateRules';
 
@@ -21,7 +21,7 @@ import { providerGate, type ProviderGate } from './gateRules';
  */
 export type { ProviderGate };
 
-export function useProviderGate(enabled: boolean): ProviderGate {
+export function useProviderGate(enabled: boolean): { gate: ProviderGate; markReady: () => void } {
   /*
    * Only a configuration that predates this session is re-challenged.
    *
@@ -34,6 +34,23 @@ export function useProviderGate(enabled: boolean): ProviderGate {
    */
   const [checkedAtStart] = useState(enabled);
   const [gate, setGate] = useState<ProviderGate>(enabled ? 'checking' : 'needs-setup');
+
+  /*
+   * Onboarding finishing must be able to SAY so.
+   *
+   * The first version inferred it: the effect below watched `enabled` and
+   * treated a false→true flip as "just verified". That inference is wrong
+   * for the one case it most needed to handle — a user who had onboarded
+   * before, whose saved server no longer validated, and who was therefore
+   * sent back through setup. For them `enabled` was already true, nothing
+   * in the dependency list changed when they finished, the effect never
+   * re-ran, and the gate stayed on `needs-setup` while the flow sat on
+   * its final screen. The workspace never opened, and the screen showed a
+   * completed progress bar because nothing was stuck except the decision.
+   *
+   * An explicit signal cannot be missed the way a dependency change can.
+   */
+  const markReady = useCallback(() => setGate('ready'), []);
 
   useEffect(() => {
     const decision = providerGate(enabled, checkedAtStart);
@@ -61,5 +78,5 @@ export function useProviderGate(enabled: boolean): ProviderGate {
     return () => { alive = false; };
   }, [enabled, checkedAtStart]);
 
-  return gate;
+  return { gate, markReady };
 }
