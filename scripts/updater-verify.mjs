@@ -772,15 +772,15 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * at each release — that edit IS the check, and `bump-version.mjs`
    * deliberately does not touch it.
    *
-   * 0.1.12 finishes what 0.1.11 started. That release bundled a Python
-   * interpreter and still required Node from the machine, so a computer
-   * without one could not launch AURA at all — and its first screen could
-   * stall: the local service starting a moment late left "Verify and
-   * Continue" disabled for the rest of the session, with nothing on screen
-   * explaining why. This one ships both runtimes and recovers from a slow
-   * start, so installing the application is the whole of the setup.
+   * 0.1.13 repairs 0.1.12. That release could trap anyone who had set up
+   * AURA before: if their saved model server no longer answered they were
+   * returned to setup, and finishing it changed nothing the launch gate
+   * was watching, so the flow sat on its final screen indefinitely. It
+   * affected Windows, macOS and Linux identically — the gate is plain
+   * TypeScript compiled once into every installer — and no CI job ran the
+   * tests that covered it. Both are fixed here.
    */
-   const RELEASE_CANDIDATE = '0.1.12';
+   const RELEASE_CANDIDATE = '0.1.13';
   check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);
 }
 

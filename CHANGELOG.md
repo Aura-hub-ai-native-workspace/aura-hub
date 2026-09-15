@@ -54,6 +54,42 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
+## [0.1.13] - 2026-09-15 — Setup That Ends
+
+0.1.12 could trap you on the last screen of setup. Not briefly — the flow
+sat on "Your AI Workspace is Ready" until the application was killed, with
+a completed progress bar and no error, because nothing was actually stuck
+except a decision that had no reason to be made again.
+
+It needed a particular shape of user: someone who had set AURA up before.
+A returning user whose saved model server no longer answered was sent back
+through setup, and finishing it did not change the one thing the launch
+gate was watching, so the gate never reconsidered. Anyone installing for
+the first time sailed through, which is why it survived testing.
+
+It affected Windows, macOS and Linux identically. The gate is ordinary
+TypeScript, compiled once into every installer; a mistake there is a
+mistake everywhere.
+
+### Fixed
+
+- **Finishing setup opens the workspace, every time.** Completion now tells
+  the launch gate directly instead of the gate inferring it from a flag
+  that a returning user had already set. An explicit signal cannot be
+  missed the way a changed value can.
+
+### Changed
+
+- **The test suites run in CI, on all four platforms.** They never had.
+  Two hundred and thirty tests existed — including ones written for this
+  exact gate — and no job executed any of them, which is how a fault
+  reachable on every platform reached every platform. They now run once
+  for fast failure and again on each platform that gets packaged, because
+  "platform-independent" is a claim worth checking rather than assuming.
+
+Nothing else changed: same bundled Node and Python runtimes, same
+onboarding, same artifacts as 0.1.12 apart from this fix.
+
 ## [0.1.12] - 2026-09-15 — Nothing Left To Install
 
 0.1.11 bundled a Python interpreter and still took Node from the machine.
