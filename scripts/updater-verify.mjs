@@ -772,16 +772,15 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * at each release — that edit IS the check, and `bump-version.mjs`
    * deliberately does not touch it.
    *
-   * 0.1.11 is the first release that installs into a working application
-   * on a machine with no Python set up. 0.1.9 and 0.1.10 packaged the
-   * environment backend's source and expected the user to have installed
-   * Starlette, uvicorn and Pydantic already; 0.1.10 on Arch showed
-   * "0 installed" until the user ran pacman and pip by hand. This one
-   * carries the packages AND the interpreter — and asks for a model
-   * server on first run instead of an API key, so a fresh install needs
-   * nothing bought and nothing configured.
+   * 0.1.12 finishes what 0.1.11 started. That release bundled a Python
+   * interpreter and still required Node from the machine, so a computer
+   * without one could not launch AURA at all — and its first screen could
+   * stall: the local service starting a moment late left "Verify and
+   * Continue" disabled for the rest of the session, with nothing on screen
+   * explaining why. This one ships both runtimes and recovers from a slow
+   * start, so installing the application is the whole of the setup.
    */
-   const RELEASE_CANDIDATE = '0.1.11';
+   const RELEASE_CANDIDATE = '0.1.12';
   check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);
 }
 

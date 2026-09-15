@@ -224,6 +224,42 @@ const NODE_RUNTIME_EXE = process.platform === 'win32'
   : 'runtime/node/bin/node';
 
 /**
+ * Download a runtime archive, with the network's ordinary rudeness handled.
+ *
+ * These are 30–50 MB files fetched from a public CDN, and a dropped socket
+ * part-way through is a normal event, not a broken build. Unretried, it
+ * surfaced as an undici `UND_ERR_SOCKET` object dumped through three
+ * layers of npm lifecycle scripts, which says nothing about what failed or
+ * what to do. Retried, with the reason stated plainly on the way past, it
+ * is a few seconds' delay.
+ *
+ * The digest is checked by the caller either way — a retry makes the build
+ * more patient, never less careful about what it unpacks.
+ */
+async function downloadArchive(url, label, attempts = 3) {
+  let last;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
+    } catch (e) {
+      last = e;
+      const why = e?.cause?.code ?? e?.code ?? e?.message ?? 'unknown error';
+      if (attempt < attempts) {
+        console.warn(`  ${label}: download attempt ${attempt} failed (${why}); retrying`);
+        await new Promise((r) => { setTimeout(r, 1500 * attempt); });
+      }
+    }
+  }
+  throw new Error(
+    `Could not download ${label} from ${url} after ${attempts} attempts `
+    + `(${last?.cause?.code ?? last?.code ?? last?.message ?? 'unknown error'}). `
+    + 'The build needs network access to fetch the runtimes it bundles.',
+  );
+}
+
+/**
  * Fetch, verify and unpack the single file we need: the `node` binary.
  *
  * A Node distribution is ~110 MB of interpreter, npm, headers and docs.
@@ -249,9 +285,7 @@ async function stageNodeRuntime() {
 
   const verify = (bytes) => createHash('sha256').update(bytes).digest('hex');
   if (!existsSync(cached)) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Could not download ${build.archive}: HTTP ${res.status} from ${url}`);
-    const bytes = Buffer.from(await res.arrayBuffer());
+    const bytes = await downloadArchive(url, build.archive);
     const got = verify(bytes);
     if (got !== build.sha256) {
       throw new Error(`${build.archive} does not match its pinned digest.\n  expected ${build.sha256}\n  received ${got}\nRefusing to unpack it.`);
@@ -392,11 +426,7 @@ async function stagePythonRuntime() {
   const cached = path.join(cacheDir, `${build.sha256}.tar.gz`);
 
   if (!existsSync(cached)) {
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`Could not download ${asset}: HTTP ${res.status} from ${url}`);
-    }
-    const bytes = Buffer.from(await res.arrayBuffer());
+    const bytes = await downloadArchive(url, asset);
     const got = createHash('sha256').update(bytes).digest('hex');
     if (got !== build.sha256) {
       throw new Error(
