@@ -65,6 +65,46 @@ class TestMatchWorker:
         assert node_satisfies_role(_nodes()[0], "code") is True
 
 
+class TestAgenticWorkspaceRoles:
+    """The six-role worker architecture: research/planning/testing/
+    documentation resolve to a coding-agent worker (the role narrows the
+    prompt, not the tool) and fail closed when only terminal nodes exist.
+    """
+
+    @pytest.mark.parametrize("role", [
+        "research", "planning", "testing", "documentation"])
+    def test_role_resolves_to_coding_agent(self, role):
+        assert match_worker(role, _nodes())["id"] == "codex"
+
+    @pytest.mark.parametrize("role", [
+        "research", "planning", "testing", "documentation"])
+    def test_role_fails_closed_without_coding_agent(self, role):
+        terminal_only = [{"id": "sh", "name": "Shell",
+                          "capabilities": ["terminal"]}]
+        assert match_worker(role, terminal_only) is None
+
+    @pytest.mark.parametrize("role", [
+        "research", "planning", "testing", "documentation"])
+    def test_required_capability(self, role):
+        assert required_node_capability(role) == "coding-agent"
+
+    @pytest.mark.parametrize("role", [
+        "research", "planning", "testing", "documentation"])
+    def test_node_satisfies_new_roles(self, role):
+        assert node_satisfies_role(_nodes()[0], role) is True
+        assert node_satisfies_role(
+            {"id": "sh", "name": "Shell", "capabilities": ["terminal"]},
+            role) is False
+
+    def test_distinct_worker_exclusion_still_applies(self):
+        """A review by a second opinion stays available for the new
+        roles too: excluding the first worker can leave nothing eligible,
+        which is still None — never a fallback to a barred worker."""
+        nodes = [{"id": "a", "name": "A",
+                  "capabilities": ["coding-agent"]}]
+        assert match_worker("review", nodes, exclude={"a"}) is None
+
+
 # ── controller integration ────────────────────────────────────────────
 
 class _Host:
@@ -212,3 +252,15 @@ class TestProposalRole:
                            "workerRole": " cheapest ",
                            "verificationKind": "exit-code",
                            "verification": "exit 0"}]})
+
+    @pytest.mark.parametrize("role", [
+        "research", "planning", "testing", "documentation"])
+    def test_agentic_workspace_roles_accepted(self, role):
+        plan = self._planner().plan_from_model(_intent(), "s", "now", {
+            "tasks": [{"description": f"{role} work",
+                       "capabilityId": "agent.delegate",
+                       "input": {"task": role},
+                       "workerRole": role,
+                       "verificationKind": "audit-only",
+                       "verification": "answer recorded"}]})
+        assert plan.tasks[0].workerRole == role

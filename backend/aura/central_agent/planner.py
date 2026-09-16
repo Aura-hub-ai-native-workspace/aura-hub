@@ -44,9 +44,13 @@ _MODEL_TASK_KEYS = {
 #: value would silently become "always".
 _MODEL_RUN_WHEN = {"always", "upstream-reports-findings"}
 
-#: Closed worker-role vocabulary a model may propose (Phase G).
-#: Anything else is rejected; the role only narrows routing.
-_MODEL_WORKER_ROLES = {"code", "review", "execute"}
+#: Closed worker-role vocabulary a model may propose (Phase G, extended
+#: for the agentic workspace). Anything else is rejected; the role only
+#: narrows routing.
+_MODEL_WORKER_ROLES = {
+    "code", "review", "execute",
+    "research", "planning", "testing", "documentation",
+}
 
 #: inputFrom values a model may propose. "compiled-workflow" is
 #: compiler-owned and never model-proposable.
