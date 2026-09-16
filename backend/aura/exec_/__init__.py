@@ -242,6 +242,57 @@ async def git(args: list[str], cwd: str, timeout_ms: int | None = None,
     return await run_file(["git", *args], cwd, timeout_ms or GIT_TIMEOUT_MS, cancel)
 
 
+#: Message returned when Git is installed but the directory is not a repo.
+#: Kept identical to environment.gitstatus.NOT_A_REPO_MESSAGE so both layers
+#: report the same structured answer.
+GIT_NOT_A_REPO_MESSAGE = (
+    "Git is installed, but the selected directory is not a Git repository."
+)
+
+
+async def git_is_repo(cwd: str, timeout_ms: int | None = None) -> bool:
+    """True when ``cwd`` is inside a Git working tree.
+
+    Never raises for machine state — missing Git, missing directory, and
+    non-repositories all answer False. Repository commands must call this
+    before ``status``/``log``/``diff`` so a scan from an arbitrary directory
+    (e.g. the inventory home-directory cwd) can never surface
+    ``fatal: not a git repository`` as an installation failure.
+    """
+    import os as _os
+
+    if not cwd or not isinstance(cwd, str):
+        return False
+    try:
+        if not _os.path.isdir(cwd):
+            return False
+    except OSError:
+        return False
+    try:
+        res = await run_file(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd,
+            timeout_ms or 5000,
+        )
+    except Exception:
+        return False
+    return res.code == 0 and (res.out or "").strip().lower() == "true"
+
+
+def git_not_a_repo() -> dict:
+    """Structured non-repository answer shared by all git.* executors."""
+    message = GIT_NOT_A_REPO_MESSAGE
+    return {
+        "ok": False,
+        "detail": message,
+        "output": {
+            "installed": True,
+            "repository": False,
+            "message": message,
+        },
+    }
+
+
 async def safe_shell_with_code(command: str, cwd: str,
                                timeout_ms: int | None = None,
                                cancel: asyncio.Event | None = None) -> ProcessOutput:

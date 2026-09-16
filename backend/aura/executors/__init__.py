@@ -802,22 +802,36 @@ def _required_change_verdict(inv: dict, output: dict) -> dict | None:
 
 
 async def git_status(inv: dict) -> dict:
-    res = await run_git(["status", "--short", "--branch"], cwd_of(inv))
+    from ..exec_ import git_is_repo, git_not_a_repo
+
+    cwd = cwd_of(inv)
+    if not await git_is_repo(cwd):
+        return git_not_a_repo()
+    res = await run_git(["status", "--short", "--branch"], cwd)
     return _ok("Working tree has changes." if res.out else "Working tree is clean.",
                res.out or "clean")
 
 
 async def git_diff(inv: dict) -> dict:
+    from ..exec_ import git_is_repo, git_not_a_repo
+
+    cwd = cwd_of(inv)
+    if not await git_is_repo(cwd):
+        return git_not_a_repo()
     args = ["diff", "--stat", "-p", "--no-color"]
     if _b(inv["input"].get("staged")):
         args.insert(1, "--cached")
-    res = await run_git(args, cwd_of(inv))
+    res = await run_git(args, cwd)
     text = res.out if len(res.out) <= 60_000 else res.out[:60_000] + "\n…(truncated)"
     return _ok("Diff produced." if res.out else "No changes.", text or "no changes")
 
 
 async def git_branch(inv: dict) -> dict:
+    from ..exec_ import git_is_repo, git_not_a_repo
+
     cwd = cwd_of(inv)
+    if not await git_is_repo(cwd):
+        return git_not_a_repo()
     name = _s(inv["input"].get("name")).strip()
     if not name:
         res = await run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
@@ -840,7 +854,11 @@ async def git_branch_verify(inv: dict, _last: dict) -> dict:
 
 
 async def git_commit(inv: dict) -> dict:
+    from ..exec_ import git_is_repo, git_not_a_repo
+
     cwd = cwd_of(inv)
+    if not await git_is_repo(cwd):
+        return git_not_a_repo()
     message = _s(inv["input"].get("message")).split("\n")[0].strip()
     if not message:
         return _no("A commit message is required.")
@@ -864,7 +882,11 @@ async def git_commit_verify(inv: dict, result: dict) -> dict:
 
 
 async def git_push(inv: dict) -> dict:
+    from ..exec_ import git_is_repo, git_not_a_repo
+
     cwd = cwd_of(inv)
+    if not await git_is_repo(cwd):
+        return git_not_a_repo()
     remote = _s(inv["input"].get("remote"), "origin")
     branch = _s(inv["input"].get("branch")) or (await run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)).out
     res = await run_git(["push", remote, branch], cwd)

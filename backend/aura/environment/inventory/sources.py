@@ -1545,7 +1545,14 @@ def _is_program(entry: os.DirEntry) -> bool:
     except OSError:
         return False
     if is_windows():
-        return True
+        # Windows GUI fix: only real executable extensions count. The old
+        # `return True` treated every file in a PATH directory — including
+        # `cupti64_*.dll`, `.txt`, `.ps1` — as a runnable program, which fed
+        # DLLs and scripts into the verification queue. `.ps1` is never
+        # executed during inventory (see safeprobe).
+        from ..safeprobe import is_windows_probeable_file
+
+        return is_windows_probeable_file(entry.name)
     try:
         return os.access(entry.path, os.X_OK)
     except OSError:
