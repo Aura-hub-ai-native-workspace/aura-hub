@@ -229,10 +229,19 @@ def expects_change(worker_role: str | None, run_when: str | None) -> bool:
 
 
 def _delegate_input(task_text: str, scope: list[str],
-                    expect_change: bool = False) -> dict:
+                    expect_change: bool = False,
+                    worker_role: str | None = None) -> dict:
     payload: dict = {"task": task_text[:MAX_DELEGATE_CHARS]}
     if scope:
         payload["scopePaths"] = list(scope)
+    if worker_role:
+        # AURA-OWNED echo of the task's validated role, like expectChange
+        # below: deliberately absent from _DELEGATE_INPUT_KEYS so a model
+        # proposal can never set or clear it. The executor composes the
+        # role's instruction block around the task from this key and the
+        # worker output echoes it, so what the human approved (role,
+        # scope, requirement) is exactly what runs.
+        payload["role"] = worker_role
     if expect_change:
         # AURA-OWNED, and deliberately absent from _DELEGATE_INPUT_KEYS so
         # a model proposal can never set or clear it. It rides the input,
@@ -281,7 +290,8 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
         description="Carry out the requested change",
         capabilityId="agent.delegate",
         input=_delegate_input(text + build_note, scope,
-                              expect_change=expects_change("code", "always")),
+                              expect_change=expects_change("code", "always"),
+                              worker_role="code"),
         workerRole="code",
         risk="high", reversible=False,
         verification=VerificationRequirement(
@@ -300,7 +310,7 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
                 "above. Report correctness, security and quality problems "
                 "you find, and say plainly whether the change is "
                 "acceptable. Do not modify any file."
-                + verdict_instruction(), scope),
+                + verdict_instruction(), scope, worker_role="review"),
             inputFrom="upstream-output",
             dependsOn=["implement"],
             workerRole="review",
@@ -321,7 +331,7 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
                 "The review above lists problems with the change. Fix "
                 "exactly those problems and nothing else. If the review "
                 "reports no problems, change nothing and say so."
-                + build_note, scope),
+                + build_note, scope, worker_role="code"),
             inputFrom="upstream-output",
             dependsOn=["review"],
             workerRole="code",
@@ -571,6 +581,14 @@ class TaskPlanner:
                     # changing nothing either. AURA sets this, never the
                     # proposal — "expectChange" is not an accepted key.
                     task_input = {**task_input, "expectChange": True}
+                if s["cap"] == "agent.delegate" and rt.get("workerRole"):
+                    # AURA-owned echo of the VALIDATED role (Pass 1
+                    # rejected anything outside _MODEL_WORKER_ROLES): the
+                    # executor composes the role contract from this key
+                    # and the output echoes it. A model cannot smuggle a
+                    # role through input — "role" is not an accepted key.
+                    task_input = {**task_input,
+                                  "role": rt["workerRole"]}
                 ver_kind = rt.get("verificationKind") or "audit-only"
                 ver_desc = str(rt.get("verification") or "")
                 if s["cap"] == "agent.delegate" and not ver_desc.strip():

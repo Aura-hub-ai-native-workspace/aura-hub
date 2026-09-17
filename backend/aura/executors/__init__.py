@@ -31,6 +31,11 @@ from ..exec_ import (
     safe_shell_with_code,
 )
 from ..governance.opencode import SELF_KILL_CODE as _SELF_KILL_CODE
+from ..central_agent.role_prompts import (
+    compose_role_prompt,
+    contract_for,
+    role_echo,
+)
 from ..workers.adapters import (
     GOV_CLAUDE_HOOK,
     GOV_NONE,
@@ -472,7 +477,20 @@ async def agent_delegate_run(inv: dict) -> dict:
     if not task:
         return _no("No task was given for the agent to carry out.")
     model = _s(inv["input"].get("model")).strip() or None
-    brief = with_context(task, _s(inv["input"].get("context")))
+    role = _s(inv["input"].get("role")).strip() or None
+    # Role contract (agentic workspace): the task's role frames the
+    # brief with its AURA-authored instruction block and is echoed in
+    # the output. Roleless legacy calls keep today's byte-identical
+    # behaviour; an UNKNOWN role fails closed here — nothing runs under
+    # a contract this executor cannot state. The brief itself is
+    # composed after scope validation (below) so its runtime context
+    # states the scope that will actually be enforced, not a guess.
+    try:
+        contract_for(role)
+    except KeyError:
+        return _no(
+            f"The task names worker role {role!r}, which AURA does not "
+            "recognize, so nothing was run.")
 
     # Optional task contract: deterministic scope boundaries for the run.
     # Validated BEFORE anything spawns; malformed scope is a refusal, and
@@ -500,6 +518,12 @@ async def agent_delegate_run(inv: dict) -> dict:
     scope_snapshot = None
     if scope_paths:
         scope_snapshot = await snapshot_worktree(cwd)
+
+    # The role-framed brief: AURA-authored role instructions around the
+    # fenced task text, with the validated scope in the runtime context.
+    brief = compose_role_prompt(role, task, scope_paths=scope_paths,
+                                approval_state="granted")
+    brief = with_context(brief, _s(inv["input"].get("context")))
 
     node = inv.get("node")
     if not node:
@@ -540,7 +564,8 @@ async def agent_delegate_run(inv: dict) -> dict:
             "detail": (f"{node['name']} was not run: {net.detail}"),
             "output": {"nodeId": node["id"], "agent": node["name"],
                        "network": net.to_dict(), "exitCode": None,
-                       "stdout": ""},
+                       "stdout": "",
+                       **({"role": role} if role else {})},
         }
     # Real-time action governance: per-invocation, AURA-authored runtime
     # enforcement compiled from the task contract (opencode permission
@@ -562,7 +587,8 @@ async def agent_delegate_run(inv: dict) -> dict:
             "detail": (f"{node['name']} was not started: the run was "
                        "cancelled before it could be dispatched."),
             "output": {"nodeId": node["id"], "agent": node["name"],
-                       "cancelled": True, "exitCode": None, "stdout": ""},
+                       "cancelled": True, "exitCode": None, "stdout": "",
+                       **({"role": role} if role else {})},
         }
     try:
         res = await _run_governed(
@@ -585,6 +611,12 @@ async def agent_delegate_run(inv: dict) -> dict:
         "timedOut": bool(res.timedOut), "signal": res.signal,
         "network": network_record,
     }
+    # Role echo: the result records which role contract the worker ran
+    # under, so the workspace, the audit trail and the tests can show
+    # it. Roleless legacy runs keep roleless outputs.
+    role_out = role_echo(role)
+    if role_out is not None:
+        output["role"] = role_out
     if network_decisions:
         # Every destination the worker asked for, and what AURA decided.
         # Evidence of the same kind as the governed file actions: what

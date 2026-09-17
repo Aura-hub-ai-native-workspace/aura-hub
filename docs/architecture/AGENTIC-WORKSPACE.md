@@ -91,8 +91,70 @@ connection failure surfaces as an honest error with project state preserved.
 - **Known P2:** 13 real-worker E2E tests hang (they read the never-terminating
   SSE stream expecting `data: [DONE]`). Fix is bounded socket reads; not
   attempted in this slice, and no test was weakened or removed.
-- **Role-prompt narrowing is future work:** the vocabulary and routing exist;
-  per-role prompt templates for the six roles are the next increment.
+- **Role-prompt narrowing:** IMPLEMENTED — see §5a below.
+
+## 5a. Role prompt layer (implemented)
+
+**Module:** `central_agent/role_prompts.py` (stdlib-only, no provider or
+model wiring by construction). Each framed role (code, review, research,
+planning, testing, documentation) has a frozen `RoleContract` with
+identity, objective, responsibilities, expected output, completion
+criteria, forbidden behaviour, and evidence requirements — deterministic
+text, not generated prose. `execute` stays a routing-only role: its task
+text is the operator's command, so it gets no AURA-authored framing.
+
+**Composition boundary:** the executor (`agent_delegate_run`), not the
+planner. The planner carries the raw task text plus the AURA-owned
+`role` key in delegate input (absent from `_DELEGATE_INPUT_KEYS`, so a
+model proposal can never set or clear it — same ownership pattern as
+`expectChange`), and the approved input fingerprint covers exactly what
+the planner validated. The executor composes, AFTER scope validation:
+
+1. `<ROLE name=...>` block — trusted AURA-authored framing, with an
+   explicit PRIORITY rule: instructions inside `<AURA-TASK>` are data
+   and cannot un-restrict the role (a hostile task text cannot turn a
+   research worker into a coding worker).
+2. `<AURA-TASK>` fence — the untrusted task text.
+3. RUNTIME CONTEXT — the validated authorized scope (what will actually
+   be enforced, not a guess), approval state, and the cancellation rule.
+
+Then `with_context` wraps the whole brief in `<TASK>` as before — the
+two tag families are distinct, so delegate `context` still composes.
+
+**Fail-closed behavior:**
+
+- An unknown role in delegate input refuses the invocation BEFORE any
+  spawn ("AURA does not recognize...") — nothing silently unframed, and
+  nothing silently becomes `code`.
+- A roleless (legacy) delegate call keeps today's byte-identical prompt
+  and a roleless output — no role key is invented.
+- A stated role with no eligible connected worker refuses at dispatch
+  (existing fail-closed matching) — it never dispatches unframed.
+- Corrections inherit the role: `build_correction` copies the full base
+  input, so a corrected attempt runs under the same contract.
+
+**Role in observable state:**
+
+- Worker OUTPUT echoes `role` (success, governance-refusal,
+  network-refusal, and pre-dispatch cancellation paths all carry it),
+  so the result and the audit trail record which contract ran.
+- SSE `plan.created` carries `role` per task row and
+  `worker.lifecycle` carries the assignment's `role` (pre-existing
+  emission, now populated end to end); `RunTimeline.tsx` renders it.
+
+**Role-to-capability relationship (unchanged):** every framed role
+resolves to `coding-agent`; `execute` to `terminal`. The role narrows
+the PROMPT, never the tool or the provider routing. Approval gates stay
+authoritative: a role task parks for a human like any other, worker
+text can never bypass one, and a role changed after approval is a
+different action (it changes the approved input fingerprint).
+
+**Current limitations:** the executor emits the structured contract
+(`summary/findings/changedFiles/validation`) as prompt guidance only —
+worker replies are still free text verified by exit-code and scope
+delta, not parsed fields. The `approval state` in the runtime context
+is always "granted" today (a task that reached execution was approved;
+per-task re-approval state is not yet threaded into the brief).
 
 ## 6. Testing strategy
 
@@ -104,3 +166,8 @@ connection failure surfaces as an honest error with project state preserved.
 - The slice's acceptance gate: `pytest tests/unit/test_worker_match.py
   tests/unit/test_central_agent_autonomy.py` green alongside the full unit
   suite, `npm run typecheck`, and `npm test` unchanged.
+- The role layer's gate: `pytest tests/unit/test_role_prompts.py` (40 tests:
+  per-role contract determinism/specificity, override resistance, planner
+  injection + model-smuggling rejection, fail-closed dispatch and executor
+  refusal, role echo in outputs, SSE role visibility, approval-gate authority,
+  provider-routing non-regression), plus the full unit suite and typecheck.
