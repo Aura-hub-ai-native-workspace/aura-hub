@@ -190,16 +190,19 @@ def _probe_target(item: InventoryItem) -> tuple[str | None, list[str]]:
     version, not Rust's. Where AURA has a catalog definition it names the
     right command explicitly, so that wins.
 
-    Safety boundary (Windows GUI fix): non-catalog items are only probed
-    when their basename has an allowlisted version probe (see safeprobe).
-    Anything else — GUI apps, NVIDIA profilers, unlisted helpers — returns
-    ``(None, [])`` so the caller verifies nothing and the item stays
-    ``installed`` from metadata rather than ``verified`` by execution.
+    Safety boundary (Windows GUI fix): on Windows, non-catalog items are
+    only probed when their basename has an allowlisted version probe (see
+    safeprobe). Anything else — GUI apps, NVIDIA profilers, unlisted
+    helpers — returns ``(None, [])`` so the caller verifies nothing and the
+    item stays ``installed`` from metadata rather than ``verified`` by
+    execution. On POSIX the historical ``--version`` probe applies, except
+    for known GUI launchers, which are refused on every platform.
     """
     from ..catalog import catalog_entry
+    from ..hostplatform import is_windows
     from ..pathsec import effective_path as _path
     from ..pathsec import resolve_executable
-    from ..safeprobe import safe_probe_args
+    from ..safeprobe import is_never_probe, safe_probe_args
 
     if item.catalog_id:
         entry = catalog_entry(item.catalog_id)
@@ -211,9 +214,9 @@ def _probe_target(item: InventoryItem) -> tuple[str | None, list[str]]:
     if not item.executable_path:
         return None, []
     args = safe_probe_args(item.executable_path)
-    if args is None:
+    if args is None and (is_windows() or is_never_probe(item.executable_path)):
         return None, []
-    return item.executable_path, args
+    return item.executable_path, args or ["--version"]
 
 
 def _verify(items: list[InventoryItem], index: ProvenanceIndex, budget: int) -> int:
@@ -223,7 +226,8 @@ def _verify(items: list[InventoryItem], index: ProvenanceIndex, budget: int) -> 
     from ..procexec import ExecStatus, run_argv
 
     def verify_one(item: InventoryItem) -> bool:
-        from ..safeprobe import allowed_to_probe
+        from ..hostplatform import is_windows
+        from ..safeprobe import allowed_to_probe, is_never_probe
 
         path, args = _probe_target(item)
         if path is None:
@@ -232,8 +236,10 @@ def _verify(items: list[InventoryItem], index: ProvenanceIndex, budget: int) -> 
         # Defense in depth: even a catalog-adjacent item must not launch a
         # known GUI application. Catalog probes themselves are reviewed data
         # and bypass this only when item.catalog_id names them (handled in
-        # _probe_target); everything else re-checks the allowlist here.
-        if item.catalog_id is None:
+        # _probe_target); everything else re-checks the allowlist here. On
+        # POSIX the re-check is limited to known GUI launchers — unlisted
+        # CLIs keep the historical trusted probe.
+        if item.catalog_id is None and (is_windows() or is_never_probe(path)):
             allowed, reason = allowed_to_probe(path)
             if not allowed:
                 item.execution_allowed = False

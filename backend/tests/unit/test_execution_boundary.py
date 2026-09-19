@@ -168,6 +168,15 @@ class TestOneExecutionBoundary:
                             offenders.append(f"{_relative(source)} builds {needle!r}")
         assert offenders == [], "\n  ".join(offenders)
 
+    def test_windows_cmd_shim_routing_is_the_one_reviewed_argv_form(self):
+        """The Windows command-interpreter routing for .cmd/.bat shims exists
+        only as procexec's reviewed argv prefix — separate argv items, never
+        a shell string — mirroring the TS reference
+        ``packages/ai-service/src/exec/which.ts`` (``quoteForCmd``)."""
+        from aura.environment.procexec import CMD_SHIM_ARGV
+
+        assert CMD_SHIM_ARGV == ("cmd.exe", "/d", "/s", "/c")
+
     def test_every_exemption_still_exists_and_is_justified(self):
         """An exemption for a deleted or reformed module must not linger."""
         for rel, reason in EXECUTION_EXEMPTIONS.items():

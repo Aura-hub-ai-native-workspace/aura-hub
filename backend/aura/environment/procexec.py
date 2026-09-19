@@ -293,12 +293,21 @@ def _pin_executable(argv: list[str], pin: FileIdentity) -> tuple[str | None, int
     return f"/proc/self/fd/{fd}", fd, "pinned"
 
 
+#: The one reviewed way a Windows ``.cmd``/``.bat`` shim may be executed:
+#: through the command interpreter as an argv array — never a shell string —
+#: with per-argument quoting from :func:`_quote_for_cmd`. Mirrors the TS
+#: reference in ``packages/ai-service/src/exec/which.ts`` (``quoteForCmd``
+#: plus the ``/d /s /c`` flags); the execution-boundary test pins this form.
+CMD_SHIM_ARGV = ("cmd.exe", "/d", "/s", "/c")
+
+
 def _quote_for_cmd(arg: str) -> str:
-    """Quote one argument so ``cmd.exe`` passes it through unchanged.
+    """Quote one argument so the Windows command interpreter passes it through unchanged.
 
     Mirrors ``packages/ai-service/src/exec/which.ts`` ``quoteForCmd``: ``%``
-    and ``"`` cannot be escaped reliably through ``cmd /c`` (``%FOO%``
-    expands inside quotes), so they are refused rather than guessed at.
+    and ``"`` cannot be escaped reliably through the command interpreter
+    (``%FOO%`` expands inside quotes), so they are refused rather than
+    guessed at.
     """
     if not arg:
         return '""'
@@ -325,12 +334,12 @@ def _windows_cmd_wrapper(argv: list[str]) -> list[str] | None:
         return None
     if not (lowered.endswith(".cmd") or lowered.endswith(".bat")):
         return None
-    comspec = os.environ.get("ComSpec") or os.environ.get("COMSPEC") or "cmd.exe"
+    comspec = os.environ.get("ComSpec") or os.environ.get("COMSPEC") or CMD_SHIM_ARGV[0]
     try:
         quoted = [_quote_for_cmd(target), *(_quote_for_cmd(a) for a in argv[1:])]
     except ValueError:
         return None
-    return [comspec, "/d", "/s", "/c", *quoted]
+    return [comspec, *CMD_SHIM_ARGV[1:], *quoted]
 
 
 def run_argv(

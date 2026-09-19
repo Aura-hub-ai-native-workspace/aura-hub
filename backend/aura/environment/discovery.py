@@ -44,7 +44,7 @@ from .pathsec import (
 )
 from .procexec import ExecOutcome, ExecStatus, run_argv
 from .provenance import Origin, Provenance, ProvenanceIndex, build_index
-from .safeprobe import allowed_to_probe, safe_probe_args
+from .safeprobe import allowed_to_probe, is_never_probe, safe_probe_args
 
 #: How many trusted candidates may be executed in one scan.
 MAX_UNKNOWN_PROBE = 60
@@ -360,20 +360,31 @@ def extract_version(output: str) -> str | None:
 def _probe_tool(candidate: _Candidate, path: str, cwd: str) -> DiscoveredTool:
     """Run one trusted candidate's version check and interpret the result.
 
-    Safety boundary (Windows GUI fix): only allowlisted CLI basenames are
-    ever executed, with their exact allowlisted arguments. Anything else —
-    GUI launchers, IDE starters, NVIDIA profilers, unlisted helpers — is
-    reported from package metadata without launching it. This is what stops
-    a scan from opening Git GUI / Nsight Compute merely to learn a version.
+    Safety boundary (Windows GUI fix): on Windows, only allowlisted CLI
+    basenames are executed, with their exact allowlisted arguments. Anything
+    else — GUI launchers, IDE starters, NVIDIA profilers, unlisted helpers —
+    is reported from package metadata without launching it. This is what
+    stops a scan from opening Git GUI / Nsight Compute merely to learn a
+    version. On POSIX the historical trusted-claimed probe applies (GUI
+    names are still refused everywhere, since those GUIs exist there too).
     """
     safe_args = safe_probe_args(candidate.path)
-    if safe_args is None:
+    if safe_args is None and is_windows():
         allowed, reason = allowed_to_probe(candidate.path)
         return _unexecuted_tool(
             candidate,
             f"{candidate.name} was found at {candidate.path} but AURA did not run it: "
             f"{reason or 'no allowlisted version probe'}.",
         )
+    if safe_args is None:
+        if is_never_probe(candidate.path):
+            allowed, reason = allowed_to_probe(candidate.path)
+            return _unexecuted_tool(
+                candidate,
+                f"{candidate.name} was found at {candidate.path} but AURA did not run it: "
+                f"{reason}.",
+            )
+        safe_args = ["--version"]
 
     def attempt() -> ExecOutcome:
         return run_argv(
@@ -707,7 +718,11 @@ def discover_tools(
             )
         else:
             allowed, reason = allowed_to_probe(candidate.path)
-            if not allowed:
+            if not allowed and not is_windows() and not is_never_probe(candidate.path):
+                # POSIX: an unlisted-but-claimed CLI keeps the historical
+                # trusted probe; only known GUI names are refused here.
+                runnable.append(candidate)
+            elif not allowed:
                 log_refusal(
                     name=candidate.name,
                     executable=candidate.path,
