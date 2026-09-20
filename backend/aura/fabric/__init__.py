@@ -563,6 +563,13 @@ class CapabilityFabric:
                     **({"projectId": context["projectId"]} if context.get("projectId") is not None else {}),
                     **({"missionId": context["missionId"]} if context.get("missionId") else {}),
                     **({"taskId": context["taskId"]} if context.get("taskId") else {}),
+                    # The unified approvals inbox routes agent decisions to
+                    # /agent/sessions/{sid}/approve, which needs the owning
+                    # session. The context already carries it (execution sets
+                    # sessionId); the parked record just never copied it, so
+                    # the inbox had nothing to route with. Mirrors the audit
+                    # record below, which already carries sessionId.
+                    **({"sessionId": context["sessionId"]} if context.get("sessionId") else {}),
                     **({"workflowId": context["workflowId"]} if context.get("workflowId") else {}),
                     **({"runId": context["runId"]} if context.get("runId") else {}),
                     **({"workflowNodeId": context["workflowNodeId"]} if context.get("workflowNodeId") else {}),
