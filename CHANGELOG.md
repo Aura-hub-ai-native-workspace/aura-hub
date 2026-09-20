@@ -54,6 +54,64 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
+## [0.1.14] - 2026-09-20 — Ask AURA / Workspace Separation
+
+Ask AURA advises; the Workspace executes. The two surfaces shared one
+conversation engine, so every project question arrived with the
+execution pipeline attached (intent strip, plan review, approval gate,
+"needs-clarification"). They are now separate product boundaries over
+the same provider, with an explicit handoff between them.
+
+### Added
+
+- **Advisory-only Ask AURA** — project conversations stream answers
+  from the configured provider with project context. No sessions, no
+  plans, no approvals, no workers, no file or command execution. The
+  surface has no code path to the execution engine.
+- **Explicit Ask AURA → Workspace handoff** — each answer offers "Send
+  to Workspace", which stages an in-memory banner carrying the question
+  and suggestion. Starting it sends one execution objective; dismissing
+  it executes nothing.
+- **Workspace execution scope** — the Central Agent transcript persists
+  in its own workspace-scoped file with per-turn working-project
+  tracking; a project switch mid-thread starts a fresh session rather
+  than continuing another scope's conversation.
+- **Self-hosted Ollama provider persistence** — verify-then-save
+  onboarding (reach, model list, exact-model match, real streamed
+  generation) against any reachable server, validated live with
+  `qwen3.8:27b`; the save stage performs no second network validation.
+- **Scope identity in conversation records** — every thread carries
+  exactly one scope (`workspace` or `project`).
+
+### Unchanged
+
+- Central Agent execution engine (intent, planner, workers, approvals,
+  verification, evidence, SSE) is intact and untouched.
+
+### Validation
+
+- Typecheck clean across all three projects.
+- Frontend + AI-service suites: 235/235.
+- Backend suites (provider bridge, autonomy, streaming, correlation,
+  handoff, worker match, role prompts): 186/186.
+- Real-machine browser E2E over Tauri/Vite against live Ollama
+  (`qwen3.8:27b`): 19/19 — advisory streaming with no execution
+  chrome, explicit handoff, model-backed execution to a real result,
+  project isolation, restart restoration, provider persistence.
+
+### Known non-blocking notes (not fixed in this release)
+
+1. Console `ERR_CONNECTION_REFUSED` noise seen in one intermediate
+   browser run did not reproduce in the final clean instrumented run
+   (zero failed requests); no product behavior was affected.
+2. Closing the application window mid-turn can orphan that turn's
+   frontend assistant persistence while the server-side session
+   continues. Pre-existing architecture; out of scope for v0.1.14.
+3. `scripts/ui-agent-events.mjs` retains expectations from before the
+   separation (agent spine inside Ask AURA) and is marked superseded;
+   `scripts/ui-ask-workspace-split.mjs` is the current GUI acceptance.
+   It was deliberately not rewritten to chase the old contract.
+
 ## [0.1.6] - 2026-09-13 — Central Agent
 
 The Central Agent becomes the one path a request travels: it reads what
