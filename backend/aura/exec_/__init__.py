@@ -81,8 +81,13 @@ def _install_subcommand(binary: str, args: list[str]) -> str | None:
         return None
     verb = f"{binary} {sub}"
     if binary == "npm":
-        return f"{verb} --global" if re.fullmatch(r"(install|i|add)", sub) and any(
-            a in ("-g", "--global") for a in args) else None
+        # Any package installation changes what is on the machine — local
+        # installs included (package.json, node_modules). The old check
+        # only caught -g/--global, so `npm install foo` sailed through
+        # terminal.execute while the contract above promises installs go
+        # through system.install. All install verbs route there instead.
+        return verb if re.fullmatch(
+            r"(install|i|add|ci|clean-install)", sub) else None
     if binary in ("cargo", "go"):
         return verb if sub == "install" else None
     if binary == "python3":
@@ -147,13 +152,32 @@ def _signal_tree(proc, which: str) -> None:
     """
     import signal as _signal
 
-    sig = _signal.SIGKILL if which == "KILL" else _signal.SIGTERM
     if os.name != "nt":
+        # SIGKILL/SIGTERM exist only on POSIX — resolving them up front
+        # raised AttributeError on Windows before any branch ran.
+        sig = _signal.SIGKILL if which == "KILL" else _signal.SIGTERM
         try:
             os.killpg(os.getpgid(proc.pid), sig)
             return
         except (ProcessLookupError, PermissionError, OSError):
             pass
+    else:
+        # Windows has no process groups for killpg: taskkill /T reaches the
+        # whole tree (mirrors environment.procexec._terminate_tree). Without
+        # it only the direct child dies and forked workers survive timeouts
+        # and cancellations holding ports and file locks.
+        import subprocess as _sp
+
+        try:
+            _sp.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=5, check=False)
+        except Exception:
+            pass
+        try:
+            proc.kill() if which == "KILL" else proc.terminate()
+        except Exception:
+            pass
+        return
     try:
         proc.kill() if which == "KILL" else proc.terminate()
     except Exception:
@@ -168,13 +192,28 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
     path = _which(exe)
     if path is None:
         raise RuntimeError(f"{exe} is not installed")   # ENOENT parity
+    launch = [path, *argv[1:]]
+    if os.name == "nt" and path.lower().endswith((".cmd", ".bat")):
+        # CreateProcess cannot run .cmd/.bat shims (npm, agents) directly
+        # (WinError 193). Route through the interpreter with per-argument
+        # quoting — the same boundary environment.procexec enforces.
+        # Lazy import: aura.environment.__init__ pulls in modules that
+        # import this one back.
+        from ..environment.procexec import _windows_cmd_wrapper
+
+        wrapped = _windows_cmd_wrapper([path, *argv[1:]])
+        if wrapped is None:
+            raise RuntimeError(
+                f"{exe} has arguments that cannot be passed safely "
+                "through cmd.exe.")
+        launch = wrapped
     merged_env = dict(os.environ)
     if env:
         for key, value in env.items():
             if isinstance(key, str) and isinstance(value, str):
                 merged_env[key] = value
     proc = await asyncio.create_subprocess_exec(
-        path, *argv[1:], cwd=cwd,
+        *launch, cwd=cwd,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.DEVNULL, env=merged_env,
         # Its own session, so a build tool that forks workers can be stopped
