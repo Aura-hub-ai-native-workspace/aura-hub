@@ -486,3 +486,110 @@ class TestCorrectionCompat:
         assert verdict.status == TASK_PARKED_DEVIATION
         assert verdict.correctable is True
         assert "rogue.py" in " ".join(verdict.reasons)
+
+
+# ── 14. scopePaths → input.path binding for file tasks ──────────────
+# Regression: model-planned filesystem.read/write reached dispatch with
+# no input.path (the contract carries the file in scopePaths) and died
+# with "path is required". Binding happens at plan time; missing or
+# invalid paths fail the plan closed instead.
+
+
+def _fs_planner():
+    return TaskPlanner(
+        known_capabilities=lambda: {
+            "agent.delegate", "filesystem.read", "filesystem.write",
+        },
+        known_nodes=lambda: set(),
+    )
+
+
+def _read_task(**kw):
+    base = {
+        "id": "read",
+        "description": "read main.py",
+        "capabilityId": "filesystem.read",
+        "scopePaths": ["main.py"],
+        "verificationKind": "audit-only",
+        "verification": "content returned",
+    }
+    base.update(kw)
+    return base
+
+
+class TestFilesystemReadBinding:
+    def test_scope_binds_path(self):
+        plan = _fs_planner().plan_from_model(
+            _intent(), "ses-1", "now", {"tasks": [_read_task()]})
+        assert plan.tasks[0].input["path"] == "main.py"
+        assert plan.tasks[0].input["scopePaths"] == ["main.py"]
+
+    def test_model_path_preserved(self):
+        plan = _fs_planner().plan_from_model(
+            _intent(), "ses-1", "now",
+            {"tasks": [_read_task(
+                input={"path": "src/other.py"},
+                scopePaths=["main.py"])]})
+        assert plan.tasks[0].input["path"] == "src/other.py"
+
+    def test_multi_scope_without_path_rejected(self):
+        with pytest.raises(PlanningError):
+            _fs_planner().plan_from_model(
+                _intent(), "ses-1", "now",
+                {"tasks": [_read_task(scopePaths=["a.py", "b.py"])]})
+
+    def test_absolute_path_rejected(self):
+        with pytest.raises(PlanningError):
+            _fs_planner().plan_from_model(
+                _intent(), "ses-1", "now",
+                {"tasks": [_read_task(
+                    input={"path": "/etc/passwd"},
+                    scopePaths=["main.py"])]})
+
+    def test_escaping_path_rejected(self):
+        with pytest.raises(PlanningError):
+            _fs_planner().plan_from_model(
+                _intent(), "ses-1", "now",
+                {"tasks": [_read_task(
+                    input={"path": "../secret.py"},
+                    scopePaths=["main.py"])]})
+
+    def test_non_file_caps_untouched(self):
+        plan = _fs_planner().plan_from_model(
+            _intent(), "ses-1", "now",
+            {"tasks": [_delegate("fix", scopePaths=["src/auth"])]})
+        assert "path" not in plan.tasks[0].input
+
+
+class TestFilesystemWriteBinding:
+    def _write(self, **kw):
+        base = {
+            "id": "write",
+            "description": "write main.py",
+            "capabilityId": "filesystem.write",
+            "input": {"content": "print('hi')\n"},
+            "scopePaths": ["main.py"],
+            "verificationKind": "read-back",
+            "verification": "reads back identical",
+        }
+        base.update(kw)
+        return base
+
+    def test_write_binds_path_and_keeps_content(self):
+        plan = _fs_planner().plan_from_model(
+            _intent(), "ses-1", "now", {"tasks": [self._write()]})
+        assert plan.tasks[0].input["path"] == "main.py"
+        assert plan.tasks[0].input["content"] == "print('hi')\n"
+
+    def test_write_missing_content_rejected(self):
+        with pytest.raises(PlanningError):
+            _fs_planner().plan_from_model(
+                _intent(), "ses-1", "now",
+                {"tasks": [self._write(input={})]})
+
+    def test_write_oversized_content_rejected(self):
+        with pytest.raises(PlanningError):
+            _fs_planner().plan_from_model(
+                _intent(), "ses-1", "now",
+                {"tasks": [self._write(
+                    input={"content": "x" * (64 * 1024 + 1)})]})
