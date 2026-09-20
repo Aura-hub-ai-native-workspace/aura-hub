@@ -24,8 +24,15 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const REPO = '/home/Groot/aura-hub';
+// Derived from this file's own location, the way every sibling script does
+// it. It was a hardcoded absolute path to one developer's checkout, which
+// meant the suite reported "no packaged artifact to test" — and exited 0
+// on the assertions it never reached — anywhere else, CI included. A
+// packaging suite that cannot find the package on the machine that built
+// it is the one thing it must never be.
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.AURA_VERIFY_PORT ?? 4319);
 const BUNDLE_DIR = `${REPO}/apps/desktop/src-tauri/target/release/bundle`;
 
@@ -36,6 +43,25 @@ const check = (n, ok, extra = '') => {
 };
 const info = (m) => console.log(`      ${m}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * The Python environment backend's port, kept separate from the Node
+ * service's: they are two supervised processes and a check that conflates
+ * them proves nothing about either.
+ */
+const PYTHON_PORT = Number(process.env.AURA_ENVIRONMENT_PORT ?? 4320);
+const pyApi = async (p, ms = 4000) => {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), ms);
+  try {
+    const r = await fetch(`http://127.0.0.1:${PYTHON_PORT}${p}`, { signal: ac.signal });
+    return { status: r.status, body: await r.json().catch(() => null) };
+  } catch (e) {
+    return { status: 0, body: null, error: e.message };
+  } finally {
+    clearTimeout(t);
+  }
+};
 
 const api = async (p, ms = 4000) => {
   const ac = new AbortController();
@@ -147,6 +173,242 @@ const stagedPkgs = existsSync(`${squash}/usr/lib/AURA Hub/resources/node_modules
 check('1e. only the declared runtime dependency is staged',
   stagedPkgs.length === 1 && stagedPkgs[0] === 'typescript', stagedPkgs.join(', ') || 'none');
 
+/*
+ * The Python environment backend, and the specific way it was once absent.
+ *
+ * v0.1.8 shipped a shell that supervised this backend correctly and still
+ * could not start it: `resolve_python_backend` located it through
+ * `env!("CARGO_MANIFEST_DIR")`, a COMPILE-TIME constant, so the published
+ * binary looked for the backend under the CI runner's checkout. That path
+ * exists on the machine that built the artifact and on no machine that
+ * installs it — which is why building and testing on one workstation
+ * passed while every user saw "0 installed".
+ *
+ * 1f and 1g are the pair that catches a regression: the files have to be
+ * IN the artifact, and the binary must not be depending on a build-machine
+ * path to find them.
+ */
+const packagedPyEntry = existsSync(squash) ? findIn(squash, 'serve_central_agent_api.py') : [];
+const packagedPyPkg = existsSync(squash)
+  ? spawnSync('find', [squash, '-path', '*/resources/python/backend/aura/api/server.py'], { encoding: 'utf8' })
+      .stdout.trim().split('\n').filter(Boolean)
+  : [];
+check('1f. the Python environment backend is packaged inside the artifact',
+  packagedPyEntry.length > 0 && packagedPyPkg.length > 0,
+  packagedPyEntry.length && packagedPyPkg.length
+    ? `${packagedPyEntry[0].replace(squash, '…')} + aura package`
+    : `entry: ${packagedPyEntry.length}, aura.api.server: ${packagedPyPkg.length}`);
+
+/*
+ * Resolution ORDER, read from the source that does the resolving.
+ *
+ * This used to grep the binary for `/home/runner/work/...` and fail if the
+ * string was present at all. That is the wrong invariant twice over. The
+ * string is `env!("CARGO_MANIFEST_DIR")`, which every build bakes in as
+ * the DEVELOPMENT fallback — a correct CI artifact contains it and never
+ * consults it, so the check failed the very artifacts it was written to
+ * protect, while passing locally only because a developer's build path
+ * does not start with `/home/runner`. Presence was never the question;
+ * precedence is.
+ *
+ * So this asserts the order directly: inside `resolve_python_backend`,
+ * the `BaseDirectory::Resource` lookup must appear before the
+ * `CARGO_MANIFEST_DIR` fallback. A packaged build that consulted the
+ * build-machine path first — the v0.1.8 defect — fails here.
+ *
+ * The runtime half of the same invariant is checked after launch (3f/3g):
+ * where the backend was ACTUALLY resolved from, and whether it answered.
+ * Reading the order is cheap and precise; proving the behaviour needs the
+ * app running.
+ */
+const libRsSrc = readFileSync(`${REPO}/apps/desktop/src-tauri/src/lib.rs`, 'utf8');
+const resolveFn = libRsSrc.slice(libRsSrc.indexOf('fn resolve_python_backend'));
+const fnBody = resolveFn.slice(0, resolveFn.indexOf('\n}\n') + 1);
+const resourceAt = fnBody.indexOf('BaseDirectory::Resource');
+const manifestAt = fnBody.indexOf('CARGO_MANIFEST_DIR');
+check('1g. the packaged resource directory outranks the development fallback',
+  resourceAt !== -1 && manifestAt !== -1 && resourceAt < manifestAt,
+  resourceAt === -1
+    ? 'resolve_python_backend never consults BaseDirectory::Resource'
+    : manifestAt === -1
+      ? 'no development fallback found — expected one after the resource lookup'
+      : resourceAt < manifestAt
+        ? 'resource lookup precedes the CARGO_MANIFEST_DIR fallback'
+        : 'CARGO_MANIFEST_DIR is consulted BEFORE the packaged resources');
+
+/*
+ * 1h/1i. The backend's dependencies ship WITH it.
+ *
+ * v0.1.10 packaged the backend's source and nothing else, so the first
+ * thing a new user saw was an empty Machine Inventory and "backend is not
+ * answering" — the application was complete except for the packages it
+ * imports, which it expected the machine to have installed already. 1h
+ * asserts the files are in the artifact; 1i proves they are sufficient, by
+ * running the packaged entry point on an interpreter that has nothing.
+ *
+ * The empty virtualenv is the whole point. Every other check here runs on
+ * a development machine where starlette is installed three times over, and
+ * would pass on an artifact that silently depends on that. A venv built
+ * `--without-pip` has no third-party package at all, which is the state of
+ * the machine this is meant to protect.
+ */
+/*
+ * The environment for every probe that runs the PACKAGED entry script.
+ *
+ * `PYTHONDONTWRITEBYTECODE` matters as much here as it does in the shell:
+ * importing from the extracted tree without it leaves `__pycache__`
+ * directories behind, and check 6b would then report the application as
+ * having written inside itself — a finding this suite would have caused.
+ * The inherited PYTHONPATH and PYTHONHOME go for the opposite reason: a
+ * developer's shell must not be able to supply a package the artifact
+ * failed to ship.
+ */
+const PROBE_ENV = { ...process.env, PYTHONDONTWRITEBYTECODE: '1' };
+delete PROBE_ENV.PYTHONPATH;
+delete PROBE_ENV.PYTHONHOME;
+
+const pyRes = (rel) => (existsSync(squash)
+  ? spawnSync('find', [squash, '-path', `*/resources/python/${rel}`], { encoding: 'utf8' })
+      .stdout.trim().split('\n').filter(Boolean)
+  : []);
+const vendoredPure = ['starlette/__init__.py', 'uvicorn/__init__.py', 'pydantic/version.py']
+  .filter((rel) => pyRes(`site-packages/${rel}`).length === 0);
+const vendoredAbi = pyRes('abi/cp3*/pydantic_core/_pydantic_core*.so');
+check('1h. the backend\'s third-party dependencies are packaged with it',
+  vendoredPure.length === 0 && vendoredAbi.length > 0,
+  vendoredPure.length
+    ? `missing from resources/python/site-packages: ${vendoredPure.join(', ')}`
+    : vendoredAbi.length === 0
+      ? 'no pydantic_core extension under resources/python/abi/cp3NN/'
+      : `site-packages + ${vendoredAbi.length} ABI build(s) of pydantic_core`);
+
+/*
+ * 1l. Node ships too, and runs.
+ *
+ * AURA's own service is JavaScript, so a machine without Node could not
+ * start the application at all — not a degraded Environment screen, a
+ * dead launch. Checked by EXECUTING the packaged binary rather than
+ * finding it, because a file at the right path that will not run is the
+ * failure a relocated binary is most likely to have.
+ */
+const packagedNode = existsSync(squash)
+  ? spawnSync('find', [squash, '-path', `*/resources/runtime/node/*`, '-name', process.platform === 'win32' ? 'node.exe' : 'node', '-type', 'f'], { encoding: 'utf8' })
+      .stdout.trim().split('\n').filter(Boolean)
+  : [];
+let nodeDetail = 'no Node under resources/runtime/node/';
+let nodeOk = false;
+if (packagedNode.length) {
+  const v = spawnSync(packagedNode[0], ['--version'], { encoding: 'utf8', timeout: 60000, env: PROBE_ENV });
+  const version = (v.stdout ?? '').trim();
+  const major = Number(/^v(\d+)/.exec(version)?.[1] ?? 0);
+  nodeOk = v.status === 0 && major >= 18;
+  nodeDetail = v.status === 0
+    ? `Node ${version}, packaged and executable`
+    : `the packaged Node would not run: ${(v.stderr ?? '').trim().slice(0, 120)}`;
+}
+check('1l. a Node runtime is packaged inside the artifact', nodeOk, nodeDetail);
+
+/*
+ * 1j. The interpreter ships too.
+ *
+ * Vendoring the dependencies removed the need for a CONFIGURED Python; it
+ * did not remove the need for a Python, and that is most of the problem.
+ * Windows ships none, macOS ships 3.9 through the Command Line Tools,
+ * Ubuntu 22.04 ships 3.10 — all below the 3.12 the backend requires, so on
+ * those machines AURA installed and then reported an empty inventory.
+ *
+ * The check runs the packaged interpreter rather than merely finding it: a
+ * file at the right path that cannot execute is the failure worth catching,
+ * and it is the one a relocatable build is most likely to have.
+ */
+const packagedRuntime = pyRes(process.platform === 'win32' ? 'runtime/python.exe' : 'runtime/bin/python3');
+let runtimeDetail = 'no interpreter under resources/python/runtime/';
+let runtimeOk = false;
+if (packagedRuntime.length) {
+  const v = spawnSync(packagedRuntime[0],
+    ['-c', 'import sys; print("%d.%d.%d" % sys.version_info[:3])'],
+    { encoding: 'utf8', timeout: 60000, env: PROBE_ENV });
+  const version = (v.stdout ?? '').trim();
+  const [maj, min] = version.split('.').map(Number);
+  runtimeOk = v.status === 0 && maj === 3 && min >= 12;
+  runtimeDetail = v.status === 0
+    ? `CPython ${version}, packaged and executable`
+    : `the packaged interpreter would not run: ${(v.stderr ?? '').trim().slice(0, 120)}`;
+}
+check('1j. a Python interpreter is packaged inside the artifact', runtimeOk, runtimeDetail);
+
+/*
+ * 1k. And it is sufficient on its own.
+ *
+ * The packaged interpreter runs the packaged entry point with the machine's
+ * environment stripped out. Passing means an installed AURA needs nothing
+ * from the host: no interpreter, no pip, no package manager, no admin.
+ */
+let selfContainedDetail = 'no packaged interpreter to test';
+let selfContained = false;
+if (packagedRuntime.length && packagedPyEntry.length) {
+  const probe = spawnSync(packagedRuntime[0], [packagedPyEntry[0], '--check'],
+    { encoding: 'utf8', timeout: 120000, env: PROBE_ENV });
+  selfContained = probe.status === 0;
+  selfContainedDetail = selfContained
+    ? 'the shipped interpreter imports the shipped backend'
+    : (probe.stderr ?? '').trim().split('\n').filter(Boolean).pop() ?? 'no output';
+}
+check('1k. the packaged interpreter alone can import the packaged backend',
+  selfContained, selfContainedDetail);
+
+/*
+ * A base interpreter for 1i: new enough for the backend (3.12+, per
+ * `backend/pyproject.toml`) and otherwise unremarkable. What it has
+ * installed does not matter, because the virtualenv built from it keeps
+ * none of it.
+ */
+const pythonSearch = [
+  ...(process.env.PATH ?? '').split(':').filter(Boolean),
+  '/usr/local/bin', '/usr/bin', '/bin', '/opt/homebrew/bin',
+];
+let venvBase = null;
+for (const dir of pythonSearch) {
+  for (const exe of ['python3', 'python']) {
+    const candidate = path.join(dir, exe);
+    if (!existsSync(candidate)) continue;
+    const v = spawnSync(candidate, ['-c', 'import sys; print(sys.version_info >= (3, 12))'],
+      { encoding: 'utf8', timeout: 20000 });
+    if (v.status === 0 && v.stdout.trim() === 'True') { venvBase = candidate; break; }
+  }
+  if (venvBase) break;
+}
+
+let cleanRoomDetail = 'no Python 3.12+ on this machine to build an empty virtualenv from';
+let cleanRoomOk = false;
+if (venvBase && packagedPyEntry.length > 0) {
+  const venvDir = path.join(mkdtempSync(path.join(tmpdir(), 'aura-cleanroom-')), 'venv');
+  const made = spawnSync(venvBase, ['-m', 'venv', '--without-pip', venvDir],
+    { encoding: 'utf8', timeout: 120000 });
+  const venvPython = existsSync(path.join(venvDir, 'bin/python'))
+    ? path.join(venvDir, 'bin/python')
+    : path.join(venvDir, 'Scripts/python.exe');
+  if (made.status !== 0 || !existsSync(venvPython)) {
+    cleanRoomDetail = `could not build a virtualenv from ${venvBase}: `
+      + `${(made.stderr ?? '').trim().slice(0, 160)}`;
+  } else {
+    // Confirm the room really is empty first — otherwise a `--check` that
+    // passes proves nothing about the bundle.
+    const bare = spawnSync(venvPython, ['-c', 'import starlette'],
+      { encoding: 'utf8', timeout: 60000, env: PROBE_ENV });
+    const probe = spawnSync(venvPython, [packagedPyEntry[0], '--check'],
+      { encoding: 'utf8', timeout: 120000, env: PROBE_ENV });
+    cleanRoomOk = bare.status !== 0 && probe.status === 0;
+    cleanRoomDetail = bare.status === 0
+      ? 'the virtualenv was not empty — this machine cannot prove the claim'
+      : probe.status === 0
+        ? `imports on ${venvBase} with nothing installed`
+        : (probe.stderr ?? '').trim().split('\n').filter(Boolean).pop() ?? 'no output';
+  }
+}
+check('1i. the packaged backend imports on an interpreter with no packages installed',
+  cleanRoomOk, cleanRoomDetail);
+
 /* ── 2. launch from outside the repo, with a hostile environment ──── */
 
 console.log('\n=== 2. LAUNCH OUTSIDE THE REPOSITORY ===');
@@ -168,19 +430,58 @@ const auraHome = mkdtempSync(path.join(tmpdir(), 'aura-home-'));
  * in the shell works; if it only worked from a developer shell, this is
  * where that shows.
  */
+/*
+ * One deliberate concession to the minimal PATH: the directory of a Python
+ * that can actually run the backend, if one exists on this machine.
+ *
+ * This suite tests the PACKAGE, not the host's Python installation. The
+ * candidate is asked the question the shell itself asks — the packaged
+ * entry point with `--check` — so what counts as capable here is exactly
+ * what will count at launch, vendored dependencies included.
+ *
+ * Since the artifact now carries those dependencies, a plain `/usr/bin`
+ * interpreter normally qualifies and nothing is added. The search survives
+ * because the version requirement has not gone away: on a machine whose
+ * only 3.12+ Python lives somewhere non-standard (pyenv, conda), a bare
+ * `/usr/bin:/bin` makes the app refuse — correctly, and for a reason that
+ * says nothing about whether the package is built right.
+ *
+ * Only that one directory is added, and only when the interpreter there
+ * genuinely imports what the backend needs. Everything else stays hostile,
+ * so the PATH-seeding claim 4e makes is still tested against a launcher's
+ * environment rather than a developer's shell.
+ */
+let capablePythonDir = null;
+for (const dir of pythonSearch) {
+  for (const exe of ['python3', 'python']) {
+    const candidate = path.join(dir, exe);
+    if (!existsSync(candidate)) continue;
+    const probe = packagedPyEntry.length
+      ? spawnSync(candidate, [packagedPyEntry[0], '--check'],
+        { encoding: 'utf8', timeout: 60000, env: PROBE_ENV })
+      : spawnSync(candidate, ['-c', 'import starlette, uvicorn, pydantic'],
+        { encoding: 'utf8', timeout: 20000 });
+    if (probe.status === 0) { capablePythonDir = dir; break; }
+  }
+  if (capablePythonDir) break;
+}
+
 const launchEnv = {
   HOME: process.env.HOME,
   USER: process.env.USER,
   DISPLAY: process.env.DISPLAY ?? ':0',
   XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid()}`,
   XAUTHORITY: process.env.XAUTHORITY ?? '',
-  PATH: '/usr/bin:/bin',
+  PATH: capablePythonDir && !['/usr/bin', '/bin'].includes(capablePythonDir)
+    ? `/usr/bin:/bin:${capablePythonDir}`
+    : '/usr/bin:/bin',
   AURA_HOME: auraHome,
   AI_PORT: String(PORT),
 };
 
 info(`cwd     : ${runDir} (outside the repository)`);
 info(`PATH    : ${launchEnv.PATH} (deliberately minimal)`);
+info(`python  : ${capablePythonDir ?? 'none on this machine can import starlette/uvicorn/pydantic'}`);
 info(`AURA_HOME: ${auraHome}`);
 
 const app = spawn(APPIMAGE, [], {
@@ -223,6 +524,75 @@ const servicePids = pidsOnPort();
 check('3b. the service is a child of the packaged app, not a leftover',
   servicePids.length > 0 && !servicePids.some((p) => before.includes(p)),
   `pid ${servicePids.join(',')}`);
+
+/*
+ * The Python environment backend, checked where it actually matters.
+ *
+ * Nothing in this suite exercised it before: 3a, 4a and 4c all talk to the
+ * Node service. That is how v0.1.8 shipped an application whose machine
+ * inventory could never work — every packaging assertion passed while the
+ * backend it supervises was not in the package at all.
+ *
+ * The app reports both resolutions on stdout as it starts them. This reads
+ * that line rather than inferring: the entry script it chose must live
+ * inside the mounted application, not in a source checkout. It is running
+ * from `runDir` with a minimal PATH, so a build that depended on the
+ * developer's or CI's tree has nothing to fall back to and is caught here.
+ *
+ * It has to answer, too: a path that resolves but never serves would leave
+ * the Machine Inventory exactly as empty as no path at all. So the health
+ * gate is awaited FIRST — the backend starts after the Node service, and
+ * reading stdout before it comes up would report "no backend path" for a
+ * backend that was merely still starting.
+ */
+let pythonReady = false;
+const pyDeadline = Date.now() + 120000;
+while (Date.now() < pyDeadline) {
+  const h = await pyApi('/health');
+  if (h.status === 200 && h.body?.health?.backend === 'python') { pythonReady = true; break; }
+  if (appExited !== null) break;
+  await sleep(1000);
+}
+
+const backendLine = (appOut.match(/^\[aura\] backend\s*:\s*(.+)$/m) ?? [])[1]?.trim() ?? '';
+const inPackagedResources = /\/resources\/python\/scripts\/serve_central_agent_api\.py$/.test(backendLine)
+  && !backendLine.startsWith(REPO)
+  && !/\/home\/runner\/work\//.test(backendLine);
+check('3f. the backend was resolved from the packaged resources, not a source tree',
+  backendLine !== '' && inPackagedResources,
+  backendLine || 'the app never reported a backend path');
+
+check('3g. the packaged backend serves its own health endpoint',
+  pythonReady, pythonReady ? `backend=python on ${PYTHON_PORT}` : `no python backend on ${PYTHON_PORT}`);
+
+/*
+ * 3h. It ran on the interpreter AURA ships, not one it found.
+ *
+ * 3g only proves the backend answered, and on a developer's machine it
+ * would answer just as happily using a pyenv Python — which is precisely
+ * the arrangement that worked here and failed for users. This reads the
+ * interpreter line the shell printed and requires it to be inside the
+ * mounted application.
+ */
+const pythonLine = (appOut.match(/^\[aura\] python\s*:\s*(.+)$/m) ?? [])[1]?.trim() ?? '';
+const usesBundled = /[/\\]resources[/\\]python[/\\]runtime[/\\]/.test(pythonLine)
+  && !pythonLine.startsWith(REPO);
+/*
+ * 3i. And the service ran on the Node AURA ships.
+ *
+ * Same reasoning as 3h: on a developer's machine the service would start
+ * just as happily on a system Node, which is the arrangement that worked
+ * here and failed for users who had none.
+ */
+const nodeLine = (appOut.match(/^\[aura\] node\s*:\s*(.+)$/m) ?? [])[1]?.trim() ?? '';
+const usesBundledNode = /[/\\]resources[/\\]runtime[/\\]node[/\\]/.test(nodeLine) && !nodeLine.startsWith(REPO);
+check('3i. the service ran on the Node AURA ships, not one from the machine',
+  nodeLine !== '' && usesBundledNode,
+  nodeLine || 'the app never reported which Node it used');
+
+check('3h. the backend ran on the interpreter AURA ships, not one from the machine',
+  pythonLine !== '' && usesBundled,
+  pythonLine || 'the app never reported which interpreter it used');
 
 /**
  * The window is configured hidden and shown only after the health gate,
@@ -412,12 +782,61 @@ check('7b. no renderer-invokable command can spawn a process',
   spawnInExposed.length === 0,
   spawnInExposed.length ? 'a #[tauri::command] contains a spawn' : `${commandBlocks.length} commands, none spawn`);
 
-// And the one spawn that does exist must run a resolved interpreter, never
-// something a caller supplied.
-const spawnsResolvedOnly = /Command::new\(&node\)/.test(serviceRs)
-  && (serviceRs.match(/Command::new/g) ?? []).length === 1;
-check('7b2. the only process the shell starts is the resolved Node interpreter',
-  spawnsResolvedOnly, `${(serviceRs.match(/Command::new/g) ?? []).length} spawn site(s) in service.rs`);
+/*
+ * Every spawn must run an interpreter this code RESOLVED, never a string a
+ * caller supplied.
+ *
+ * This counted spawn sites and required exactly one, which described the
+ * shell when it supervised only the Node service. It now supervises the
+ * Python environment backend too (two more sites: one import check, one
+ * long-lived server), so the count was failing on a system that had not
+ * become less safe — and a count is the weaker claim anyway. A second
+ * `Command::new(&node)` would have passed it while doubling the spawns.
+ *
+ * The invariant is therefore stated directly: the executable of every
+ * `Command::new` in service.rs is a bare variable holding a resolved path.
+ * It fails if any spawn takes a literal, a caller argument, a formatted
+ * string, or anything else that could carry user or model input.
+ */
+const spawnExecutables = [...serviceRs.matchAll(/Command::new\(([^)]*)\)/g)].map((m) => m[1].trim());
+const RESOLVED_INTERPRETER = /^&?(node|python)$/;
+const unresolvedSpawns = spawnExecutables.filter((e) => !RESOLVED_INTERPRETER.test(e));
+check('7b2. every process the shell starts is a resolved interpreter',
+  spawnExecutables.length > 0 && unresolvedSpawns.length === 0,
+  unresolvedSpawns.length
+    ? `not resolved: ${unresolvedSpawns.join(', ')}`
+    : `${spawnExecutables.length} spawn site(s), all resolved: ${spawnExecutables.join(', ')}`);
+
+/*
+ * No shell, ever. A shell would make every argument below a potential
+ * command, so the absence is worth asserting separately from what the
+ * spawns receive.
+ */
+const shellSpawns = spawnExecutables.filter((e) => /"(sh|bash|zsh|cmd|powershell|.*\/(sh|bash))"/.test(e));
+check('7b3. the shell never spawns a shell',
+  shellSpawns.length === 0, shellSpawns.join(', ') || 'no sh/bash/cmd/powershell spawn');
+
+/*
+ * `-c` hands an interpreter code to execute, so it is the one argument
+ * that must never be variable.
+ *
+ * There are currently none: the import probe used to pass `-c "import
+ * starlette, ..."` and now runs the packaged entry script with `--check`
+ * instead, so the shell hands Python file paths it resolved and nothing
+ * else. Zero is the strongest result this check can report, not a gap in
+ * it — the guard stays because the next person to need a quick probe will
+ * reach for `-c`, and a payload built from a variable is the one form of
+ * it that must not survive review.
+ */
+const dashCArgs = [...serviceRs.matchAll(/\.arg\("-c"\)\s*\n\s*\.arg\(([^)]*)\)/g)].map((m) => m[1].trim());
+const dynamicCode = dashCArgs.filter((a) => !a.startsWith('"'));
+check('7b4. any -c payload is a fixed literal, never composed at runtime',
+  dynamicCode.length === 0,
+  dynamicCode.length
+    ? `dynamic: ${dynamicCode.join(', ')}`
+    : dashCArgs.length === 0
+      ? 'no -c payload at all; the shell only runs resolved script paths'
+      : `${dashCArgs.length} literal -c payload(s)`);
 
 // Every filesystem command must pass through the confinement guard —
 // checked per command body, not by asking whether the guard exists at all.
@@ -426,9 +845,45 @@ const unguarded = fsCommands.filter((b) => !/resolve_within_root/.test(b));
 check('7c. every filesystem command is root-confined',
   fsCommands.length > 0 && unguarded.length === 0,
   `${fsCommands.length} fs command(s), ${unguarded.length} unguarded`);
-check('7d. the capability ACL grants only core defaults',
-  JSON.stringify(capsFile.permissions) === JSON.stringify(['core:default']),
+/*
+ * The renderer's capability ACL, pinned as an exact set.
+ *
+ * This required `['core:default']` alone, which stopped being true when
+ * the updater landed and has been failing since. The fix is NOT to relax
+ * it to "contains core:default" — a subset test would let any future
+ * permission in silently. Each grant is listed here with the reason it
+ * exists, and anything else fails:
+ *
+ *   core:default       — the baseline Tauri window/event surface.
+ *   updater:default    — check and download a signed update. The signature
+ *                        is verified against the pubkey in tauri.conf.json
+ *                        (see the S-group checks in release-gate-verify).
+ *   process:allow-restart
+ *                      — relaunch AURA itself after an update is staged.
+ *                        Used in exactly one place, `updater/tauriAdapter.ts`,
+ *                        which imports `relaunch` from the process plugin.
+ *                        This permits restarting THIS application and
+ *                        nothing else: it is not `allow-exit`, and it
+ *                        grants no ability to spawn, exec, or run a shell.
+ *                        An update that cannot restart the app cannot be
+ *                        applied, so removing it would break the updater
+ *                        rather than tighten it.
+ *
+ * Deliberately absent, and asserted as absent below: every `shell:`
+ * permission, `process:allow-exit`, and anything granting arbitrary
+ * execution. Those are what would actually widen the renderer's reach.
+ */
+const APPROVED_PERMISSIONS = ['core:default', 'updater:default', 'process:allow-restart'];
+check('7d. the capability ACL grants exactly the approved, justified set',
+  JSON.stringify(capsFile.permissions) === JSON.stringify(APPROVED_PERMISSIONS),
   JSON.stringify(capsFile.permissions));
+
+const dangerousPermissions = (capsFile.permissions ?? []).filter(
+  (p) => /^shell:/.test(p) || /allow-(exit|execute|spawn)/.test(p),
+);
+check('7d2. no permission grants arbitrary execution',
+  dangerousPermissions.length === 0,
+  dangerousPermissions.join(', ') || 'no shell/exec/spawn/exit grant');
 check('7e. the window is not shown before the service is ready',
   conf.app.windows[0].visible === false, `visible=${conf.app.windows[0].visible}`);
 

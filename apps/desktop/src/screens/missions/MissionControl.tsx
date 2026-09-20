@@ -72,7 +72,9 @@ export function MissionControl() {
   const filtered = missions.missions.filter((m) => {
     if (needle && !m.text.toLowerCase().includes(needle) && !CATEGORY_LABEL[m.category].toLowerCase().includes(needle)) return false;
     if (cat !== 'all' && m.category !== cat) return false;
-    if (exec !== 'all' && m.execution?.status !== exec) return false;
+    // Never-started missions carry no execution record: they ARE the idle
+    // set, so coalesce null rather than filtering them out of it.
+    if (exec !== 'all' && (m.execution?.status ?? 'idle') !== exec) return false;
     return true;
   });
   const categories = Array.from(new Set(missions.missions.map((m) => m.category)));

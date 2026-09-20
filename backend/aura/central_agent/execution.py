@@ -21,6 +21,22 @@ from ..fabric import FabricConfig, invoke_fabric
 from ..workflow import EngineConfig, WorkflowEngine
 from .planner import topo_order
 
+#: Fabric outcome → leg state. Unknown outcomes fail closed as "failed":
+#: a new outcome string must never crash the leg with KeyError (the
+#: engine path already defaults this way).
+_OUTCOME_STATES = {
+    "succeeded": "done",
+    "unverified": "done",       # ran; verification reported separately
+    "denied": "denied",
+    "awaiting-approval": "awaiting-approval",
+    "failed": "failed",
+    "unsupported": "blocked",
+}
+
+
+def _outcome_state(outcome: str) -> str:
+    return _OUTCOME_STATES.get(outcome, "failed")
+
 
 @dataclass
 class ExecutionOutcome:
@@ -85,6 +101,10 @@ _WORKER_LIFECYCLE = {
 class ExecutionController:
     def __init__(self, fabric_cfg: FabricConfig, engine: WorkflowEngine | None = None) -> None:
         self._cfg = fabric_cfg
+        #: Last worker-registry read failure, if any. A broken registry
+        #: must not read as "no workers connected" — the refusal reason
+        #: below names it instead.
+        self._nodes_error: str | None = None
         self.engine = engine or WorkflowEngine(
             fabric_cfg,
             *(_default_stores()),
@@ -260,8 +280,10 @@ class ExecutionController:
             host = getattr(getattr(self._cfg, "fabric", None), "host", None)
             present = getattr(host, "present_nodes", None)
             nodes = present() if callable(present) else []
+            self._nodes_error = None
             return [n for n in nodes if isinstance(n, dict)]
-        except Exception:
+        except Exception as exc:
+            self._nodes_error = str(exc)[:200]
             return []
 
     def _role_usable(self, capability_id: str):
@@ -515,9 +537,14 @@ class ExecutionController:
             excluded = self._excluded_workers(task, result)
             matched = self._match_role(task, role, node_id, excluded)
             if matched is None:
-                why = (f"no connected worker satisfies role '{role}' for "
-                       "this task; refusing rather than dispatching an "
-                       "unsuitable worker.")
+                if self._nodes_error:
+                    why = (f"the worker registry could not be read "
+                           f"({self._nodes_error}); refusing rather than "
+                           "reporting no workers on broken evidence.")
+                else:
+                    why = (f"no connected worker satisfies role '{role}' for "
+                           "this task; refusing rather than dispatching an "
+                           "unsuitable worker.")
                 if excluded:
                     why = (f"no SECOND connected worker satisfies role "
                            f"'{role}': this task must not reuse "
@@ -590,14 +617,7 @@ class ExecutionController:
         )
         outcome = invocation["outcome"]
         performed = outcome in ("succeeded", "unverified")
-        state = {
-            "succeeded": "done",
-            "unverified": "done",       # ran; verification reported separately
-            "denied": "denied",
-            "awaiting-approval": "awaiting-approval",
-            "failed": "failed",
-            "unsupported": "blocked",
-        }[outcome]
+        state = _outcome_state(outcome)
         # The executor reports a stopped worker as a failed invocation,
         # because from its side that is what a terminated process looks
         # like. Only the run knows the difference, and it records the

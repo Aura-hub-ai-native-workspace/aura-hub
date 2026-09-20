@@ -32,6 +32,13 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      # Nothing ran these until now. 230 tests existed and CI executed none
+      # of them, which is how a gate able to trap a user on the setup screen
+      # shipped to every platform at once: it is plain TypeScript, identical
+      # in all four installers, and no job ever asked it a question.
+      - name: Unit tests
+        run: npm run test:front && npm run test:service
+
       - name: Build
         run: npm run build
 
@@ -84,6 +91,15 @@ jobs:
           node-version: 22
           cache: npm
 
+      # The packaging step vendors the Python backend's dependencies into the
+      # artifact, and the interpreter that resolves them decides which
+      # versions ship. Pinned rather than left to the runner image so a
+      # Linux, macOS and Windows build of the same commit carry the same
+      # packages, and an image update cannot change them underneath us.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - uses: dtolnay/rust-toolchain@stable
 
       # Linux apt has stalled for up to 6 hours in CI (observed 21s … 85m39s
@@ -115,6 +131,14 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      # The same suites on the platform being packaged. What they cover is
+      # platform-independent, but that is a claim worth checking rather than
+      # assuming — path handling and URL parsing are exactly where a "passes
+      # on Linux" test quietly stops being true on Windows.
+      - name: Unit tests
+        shell: bash
+        run: npm run test:front && npm run test:service
 
       # Retried because Tauri fetches its bundler tooling at build time —
       # AppRun and linuxdeploy on Linux, the NSIS binaries on Windows — and

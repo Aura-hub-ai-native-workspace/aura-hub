@@ -44,7 +44,17 @@ function save(store: PersistedStore): void {
   writeJsonFile(STORE_PATH, store);
 }
 
-export function storeKey(providerId: string, apiKey: string): { fingerprint: string } {
+/**
+ * `display` overrides the masked fingerprint.
+ *
+ * Masking exists so a key can be recognised without being readable —
+ * `sk-a…9f2c` is the most you can safely show of a secret. A local
+ * provider's stored value is an ADDRESS, and masking it produces
+ * `loca…1434`, which identifies nothing and helps no one debugging why
+ * their server is not answering. The caller knows which kind it holds, so
+ * the caller says.
+ */
+export function storeKey(providerId: string, apiKey: string, display?: string): { fingerprint: string } {
   const key = deriveKey();
   const iv = crypto.randomBytes(16);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
@@ -52,7 +62,8 @@ export function storeKey(providerId: string, apiKey: string): { fingerprint: str
   encrypted += cipher.final('hex');
   const tag = cipher.getAuthTag().toString('hex');
   const store = load();
-  const fingerprint = apiKey.length >= 8 ? `${apiKey.slice(0, 4)}…${apiKey.slice(-4)}` : '****';
+  const fingerprint = display
+    ?? (apiKey.length >= 8 ? `${apiKey.slice(0, 4)}…${apiKey.slice(-4)}` : '****');
   store.credentials[providerId] = {
     encryptedKey: encrypted, iv: iv.toString('hex'), tag, fingerprint,
     createdAt: new Date().toISOString(), lastValidated: null,

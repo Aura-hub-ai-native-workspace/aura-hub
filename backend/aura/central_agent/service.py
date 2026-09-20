@@ -65,7 +65,7 @@ def _connected_node_ids(fabric_cfg) -> set[str]:
 
 
 _PLAN_PROPOSAL_SYSTEM = """You are AURA's task planner. Propose ONLY a JSON object shaped {"tasks": [...]} — a proposal, never authority. AURA validates everything and owns task identity, ordering, workers, and approval.
-One task: {"id": "short-label (optional)", "description": "what must be done", "capabilityId": "one of ALLOWED CAPABILITIES", "nodeId": "one of CONNECTED NODES, or omit for AURA routing", "dependsOn": ["labels of prerequisite tasks"], "inputFrom": "literal" (default) or "upstream-output", "input": {"task": "plain-language brief (agent tasks)"}, "scopePaths": ["repo-relative dirs, same or narrower downstream"], "verificationKind": "read-back" | "exit-code" | "schema-match" | "audit-only", "verification": "how success is confirmed (required for agent tasks)"}.
+One task: {"id": "short-label (optional)", "description": "what must be done", "capabilityId": "one of ALLOWED CAPABILITIES", "nodeId": "one of CONNECTED NODES, or omit for AURA routing", "dependsOn": ["labels of prerequisite tasks"], "inputFrom": "literal" (default) or "upstream-output", "input": {"task": "plain-language brief (agent tasks)", "path": "repo-relative file for filesystem.read/write", "content": "file bytes for filesystem.write"}, "scopePaths": ["repo-relative dirs, same or narrower downstream"], "verificationKind": "read-back" | "exit-code" | "schema-match" | "audit-only", "verification": "how success is confirmed (required for agent tasks)"}.
 Agent work uses capabilityId "agent.delegate". A task may state "workerRole": "code" | "review" | "execute" to require a suitable worker (omit for default routing), "distinctWorkerFrom": ["labels"] so a reviewer is never the worker that produced the work, and "runWhen": "upstream-reports-findings" for remediation that should only run when a dependency's verified result reports something to address. A task with inputFrom "upstream-output" MUST name dependsOn and receives verified upstream evidence as data. Optionally add top-level "acceptance": [{"kind": ..., "description": "objective proof required", "tasks": ["labels"]}] — objective criteria beyond per-task success. Rules, no exceptions: no shell commands, no binaries, no approval/policy/secret/credential fields, no absolute or escaping paths, no invented capabilities or nodes."""
 
 
@@ -340,7 +340,15 @@ class CentralAgent:
             try:
                 bundle.items.extend(self._mcp_context_provider()[:8])
             except Exception:  # noqa: BLE001 — context must never break intent
-                pass
+                # ...but its absence must be visible, not silent: the model
+                # plans against this context, and missing MCP context it
+                # does not know is missing produces confidently wrong plans.
+                from .context import PROVENANCE_SYSTEM, ContextItem
+
+                bundle.items.append(ContextItem(
+                    kind="message",
+                    text="[MCP context unavailable: provider failed]",
+                    provenance=PROVENANCE_SYSTEM))
         # Intent is compiled on the INSTRUCTION alone: keywords inside
         # the fenced editor block must not steer classification. The
         # block still reaches model-backed compilation through the
@@ -1753,14 +1761,8 @@ class CentralAgent:
         if session is None:
             raise ValueError(f"no such session: {session_id}")
         # A resumed leg is a NEW leg with its own request id; the parked
-        # record is never mutated (see docstring above).
-        from .correlation import is_request_id, new_request_id
-
-        if request_id is None:
-            request_id = new_request_id()
-        elif not is_request_id(request_id):
-            raise ValueError(
-                f"malformed request_id: {str(request_id)[:60]}")
+        # record is never mutated (see docstring above). request_id was
+        # validated above and cannot be None here.
         session.lastRequestId = request_id  # extra field, persisted
         request_map = getattr(self, "_request_ids", None)
         if request_map is None:

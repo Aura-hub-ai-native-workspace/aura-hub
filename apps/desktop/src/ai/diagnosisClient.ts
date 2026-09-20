@@ -124,12 +124,35 @@ export interface DiagnosisRequest {
   selectionRange: { startLine: number; startColumn: number; endLine: number; endColumn: number } | null;
 }
 
+/**
+ * Parse a diagnosis JSON body without ever throwing transport noise as
+ * data. Error payloads the service sends as 200+{error} still flow
+ * through — only unreadable bodies and HTTP errors throw, into every
+ * caller's existing catch.
+ */
+async function readJson<T>(res: Response, what = 'Diagnosis request'): Promise<T> {
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`${what} failed: the service answered ${res.status} with no readable body.`);
+  }
+  if (!res.ok) {
+    const detail =
+      body && typeof body === 'object' && body !== null && 'error' in body
+        ? String((body as { error: unknown }).error)
+        : null;
+    throw new Error(detail ?? `${what} failed (${res.status}).`);
+  }
+  return body as T;
+}
+
 export const diagnosisClient = {
   list: (projectId: string): Promise<{ diagnoses: DiagnosisSummary[] }> =>
-    fetch(`${BASE}/projects/${projectId}/diagnose`).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/diagnose`).then((r) => readJson(r, 'Listing diagnoses')),
 
   get: (projectId: string, id: string): Promise<DiagnosisRecord | { error: string }> =>
-    fetch(`${BASE}/projects/${projectId}/diagnose/${id}`).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/diagnose/${id}`).then((r) => readJson(r, 'Reading diagnosis')),
 
   accept: async (projectId: string, id: string, candidateId: 'A' | 'B' | 'C'): Promise<{ ok: boolean; error?: string }> => {
     try {
@@ -163,6 +186,15 @@ export const diagnosisClient = {
       onEvent({ type: 'error', message: (e as Error).message || 'Service unreachable' });
       return;
     }
+    if (!res.ok) {
+      let message = `Diagnosis stream failed (${res.status})`;
+      try {
+        const body = (await res.json()) as { error?: unknown };
+        if (body && typeof body.error === 'string' && body.error) message = body.error;
+      } catch { /* unreadable error body; keep the status */ }
+      onEvent({ type: 'error', message });
+      return;
+    }
     if (!res.body) { onEvent({ type: 'error', message: 'No stream body' }); return; }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -179,7 +211,14 @@ export const diagnosisClient = {
           if (!line.startsWith('data:')) continue;
           const d = line.slice(5).trim();
           if (d === '[DONE]') return;
-          onEvent(JSON.parse(d) as DiagnosisEvent);
+          let ev: DiagnosisEvent;
+          try {
+            ev = JSON.parse(d) as DiagnosisEvent;
+          } catch {
+            onEvent({ type: 'error', message: 'Received malformed data from the server.' });
+            continue;
+          }
+          onEvent(ev);
         }
       }
     } catch (e) {

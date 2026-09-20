@@ -38,8 +38,12 @@ def _requested_node_denial(task, cfg) -> str | None:
         if isinstance(result, dict) and result.get("ok") is False:
             return str(result.get("reason") or result.get("code"))
         return None
-    except Exception:
-        return None
+    except Exception as exc:
+        # Fail closed: a host error while checking the pin must deny the
+        # pin, not wave it through. The run then parks for a decision
+        # with this reason instead of failing later at dispatch — or
+        # worse, running somewhere unverified.
+        return f"worker pin could not be verified ({exc}); refusing it"
 
 
 class AuthorityChecker:

@@ -44,6 +44,7 @@ from .pathsec import (
 )
 from .procexec import ExecOutcome, ExecStatus, run_argv
 from .provenance import Origin, Provenance, ProvenanceIndex, build_index
+from .safeprobe import allowed_to_probe, safe_probe_args
 
 #: How many trusted candidates may be executed in one scan.
 MAX_UNKNOWN_PROBE = 60
@@ -294,7 +295,12 @@ def _strip_windows_ext(name: str) -> str:
     return name
 
 
-_VERSION_BODY = r"\d+\.\d+(?:\.\d+)*(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?"
+#: The trailing qualifier accepts ``-``/``+`` (semver) *and* ``.`` because
+#: Windows Git reports ``2.53.0.windows.2`` — a dot-separated build tag the
+#: old class rejected, leaving Git "unverified" on every Windows machine.
+#: The qualifier still requires an alphanumeric opener, so a sentence-ending
+#: period or a bare ``1.2.`` cannot match.
+_VERSION_BODY = r"\d+\.\d+(?:\.\d+)*(?:[-+.][0-9A-Za-z][0-9A-Za-z.\-]*)?"
 
 #: The version must begin a token. Without this, the "2.5-Coder" inside a
 #: model name like "Qwen2.5-Coder" printed in a banner reads as a version.
@@ -357,10 +363,26 @@ def extract_version(output: str) -> str | None:
 
 
 def _probe_tool(candidate: _Candidate, path: str, cwd: str) -> DiscoveredTool:
-    """Run one trusted candidate's version check and interpret the result."""
+    """Run one trusted candidate's version check and interpret the result.
+
+    Safety boundary (Windows GUI fix): only allowlisted CLI basenames are
+    ever executed, with their exact allowlisted arguments. Anything else —
+    GUI launchers, IDE starters, NVIDIA profilers, unlisted helpers — is
+    reported from package metadata without launching it. This is what stops
+    a scan from opening Git GUI / Nsight Compute merely to learn a version.
+    """
+    safe_args = safe_probe_args(candidate.path)
+    if safe_args is None:
+        allowed, reason = allowed_to_probe(candidate.path)
+        return _unexecuted_tool(
+            candidate,
+            f"{candidate.name} was found at {candidate.path} but AURA did not run it: "
+            f"{reason or 'no allowlisted version probe'}.",
+        )
+
     def attempt() -> ExecOutcome:
         return run_argv(
-            [candidate.path, "--version"],
+            [candidate.path, *safe_args],
             timeout_ms=UNKNOWN_TIMEOUT_MS,
             cwd=cwd,
             path=path,
@@ -416,7 +438,7 @@ def _probe_tool(candidate: _Candidate, path: str, cwd: str) -> DiscoveredTool:
         package=candidate.provenance.package,
         manager=candidate.provenance.manager,
         package_version=candidate.package_version,
-        probe_command=f"{name} --version",
+        probe_command=f"{name} {' '.join(safe_args)}".strip(),
         shadowed=list(candidate.shadowed),
         aliases=sorted(candidate.aliases),
         executed=True,
@@ -689,7 +711,22 @@ def discover_tools(
                 )
             )
         else:
-            runnable.append(candidate)
+            allowed, reason = allowed_to_probe(candidate.path)
+            if not allowed:
+                log_refusal(
+                    name=candidate.name,
+                    executable=candidate.path,
+                    reason=reason,
+                )
+                blocked.append(
+                    _unexecuted_tool(
+                        candidate,
+                        f"{candidate.name} was found at {candidate.path} but AURA did not run it: "
+                        f"{reason}.",
+                    )
+                )
+            else:
+                runnable.append(candidate)
 
     # Provenance first, then name, so the budget is spent on the most
     # strongly attested tools rather than on whatever sorts earliest.

@@ -35,7 +35,11 @@ export function AiBuilderPanel() {
     setMessages((m) => [...m, { role: 'user', text }]);
     setPending(true);
     try {
-      if (wf.dirty) await wf.save();
+      if (wf.dirty && !(await wf.save())) {
+        const reason = useWorkflows.getState().lastError;
+        setMessages((m) => [...m, { role: 'assistant', text: `Couldn't save the current workflow first${reason ? `: ${reason}` : ''} — not overwriting it with a new build.`, tone: 'error' }]);
+        return;
+      }
       const result = await aiClient.generateWorkflow(text);
       if (!('id' in result)) {
         setMessages((m) => [...m, { role: 'assistant', text: `Couldn't build that: ${result.error}`, tone: 'error' }]);
@@ -48,7 +52,10 @@ export function AiBuilderPanel() {
           text: `Built **${result.name}** — ${result.nodes.length} node${result.nodes.length === 1 ? '' : 's'}, ${result.edges.length} connection${result.edges.length === 1 ? '' : 's'}. Edit any node on the canvas, or ask for changes.`,
         },
       ]);
-      await wf.open(result.id);
+      if (!(await wf.open(result.id))) {
+        const reason = useWorkflows.getState().lastError;
+        setMessages((m) => [...m, { role: 'assistant', text: `Built **${result.name}** but couldn't open it${reason ? `: ${reason}` : ''}.`, tone: 'error' }]);
+      }
     } catch (e) {
       setMessages((m) => [...m, { role: 'assistant', text: `Couldn't reach the workflow builder: ${(e as Error).message}`, tone: 'error' }]);
     } finally {

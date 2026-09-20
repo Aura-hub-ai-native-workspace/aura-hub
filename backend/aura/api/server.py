@@ -371,12 +371,12 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse(wf)
 
     async def workflow_create(request: Request):
-        body = await request.json()
+        body = await _json_body(request)
         wf = wf_store.create(body)
         return JSONResponse(wf)
 
     async def workflow_save(request: Request):
-        body = await request.json()
+        body = await _json_body(request)
         result = wf_store.save(request.path_params["wid"], body)
         if not result:
             return _err("not found", 404)
@@ -387,7 +387,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         existing = wf_store.get(wid)
         if not existing:
             return _err(f'No workflow stored under "{wid}".', 404)
-        body = await request.json()
+        body = await _json_body(request)
         merged = {**existing, **{k: v for k, v in body.items()
                                  if k in ("name", "favorite", "category", "description")}}
         result = wf_store.save(wid, merged)
@@ -409,7 +409,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse(copy)
 
     async def workflow_import(request: Request):
-        body = await request.json()
+        body = await _json_body(request)
         definition = body.get("def") if isinstance(body, dict) else None
         if not isinstance(definition, dict):
             return _err("body must be {\"def\": <workflow>}")
@@ -569,7 +569,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         wf = wf_store.get(request.path_params["wid"])
         if not wf:
             return _err("not found", 404)
-        body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        body = await _json_body(request)
         version = ver_store.ensure_version_for_run(wf, str((body or {}).get("note") or "published"))
         return JSONResponse(version)
 
@@ -645,7 +645,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         wf = wf_store.get(wid)
         if not wf:
             return _err(f'No workflow stored under "{wid}".', 404)
-        body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        body = await _json_body(request)
 
         def coro_factory(emit):
             return runner.start_workflow_run(
@@ -662,7 +662,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         wf = wf_store.get(p["wid"])
         if not wf:
             return _err("not found", 404)
-        body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        body = await _json_body(request)
 
         def coro_factory(emit):
             return runner.resume(wf, p["rid"], emit,
@@ -732,8 +732,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
         tokens_file = aura_home() / "webhook-tokens.json"
         tokens = read_json_file(tokens_file, {})
-        rotate = bool((await request.json() or {}).get("rotate")) \
-            if request.headers.get("content-type") == "application/json" else False
+        rotate = bool((await _json_body(request)).get("rotate"))
         if rotate or wid not in tokens:
             tokens[wid] = pysecrets.token_urlsafe(24)
             write_json_atomic(tokens_file, tokens)
@@ -748,8 +747,8 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             entries = [r for r in entries if r["state"] == query["state"]]
         if query.get("projectId"):
             entries = [r for r in entries if r["projectId"] == query["projectId"]]
-        offset = max(0, int(query.get("offset", 0)))
-        limit = max(1, min(200, int(query.get("limit", 50))))
+        offset = _positive_int(query.get("offset"), 0)
+        limit = max(1, min(200, _positive_int(query.get("limit"), 50)))
         return JSONResponse({"runs": entries[offset:offset + limit],
                              "total": total, "offset": offset, "limit": limit})
 
@@ -812,7 +811,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             return None
 
     async def agent_submit(request: Request):
-        body = await request.json()
+        body = await _json_body(request)
         message = str(body.get("message") or "").strip()
         if not message:
             return _err("message is required")
@@ -840,7 +839,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
                             headers={"X-Aura-Request": rid})
 
     async def agent_message(request: Request):
-        body = await request.json()
+        body = await _json_body(request)
         message = str(body.get("message") or "").strip()
         if not message:
             return _err("message is required")
@@ -877,7 +876,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse(_model_dump(session))
 
     async def agent_approve(request: Request):
-        body = await request.json()
+        body = await _json_body(request)
         approval_id = str(body.get("approvalId") or "")
         granted = bool(body.get("granted"))
         reason = body.get("reason")
@@ -968,7 +967,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         sid = request.path_params["sid"]
         body = {}
         try:
-            body = await request.json()
+            body = await _json_body(request)
         except Exception:  # noqa: BLE001 — a bare STOP carries no body
             body = {}
         reason = str(body.get("reason") or "")[:400]
@@ -1097,7 +1096,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse({"approvals": S["ledger"].pending()})
 
     async def fabric_approvals_decide(request: Request):
-        body = await request.json()
+        body = await _json_body(request)
         decided = S["ledger"].decide(
             request.path_params["aid"], bool(body.get("granted")),
             "user", body.get("reason"))
@@ -1114,13 +1113,18 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse({"approval": decided})
 
     async def fabric_invoke(request: Request):
-        body = await request.json()
+        body = await _json_body(request)
         capability_id = str(body.get("capabilityId") or "")
         if not capability_id:
             return _err("capabilityId is required")
+        input = body.get("input") or {}
+        if not isinstance(input, dict):
+            return _err("input must be an object")
         context = body.get("context") or {}
+        if not isinstance(context, dict):
+            return _err("context must be an object")
         context.setdefault("actor", {"kind": "human", "id": "user"})
-        result = await S["fabric"].invoke(capability_id, body.get("input") or {}, context)
+        result = await S["fabric"].invoke(capability_id, input, context)
         return JSONResponse(result)
 
     async def fabric_capabilities(request: Request):
@@ -1159,7 +1163,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             "file": str(aura_home() / "fabric-policy.json")})
 
     async def fabric_policy_set(request: Request):
-        patch = await request.json()
+        patch = await _json_body(request)
         file_path = aura_home() / "fabric-policy.json"
         from ..policy import DEFAULT_POLICY
 
@@ -1189,7 +1193,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         # Local connector-configuration seam (until a live connector lands):
         # registering a node makes it ROUTABLE, never authorized — policy,
         # approval floors and single-use grants are unchanged.
-        body = await request.json()
+        body = await _json_body(request)
         try:
             record = S["nodes"].register(
                 str(body.get("id") or ""), str(body.get("name") or ""),
@@ -1226,7 +1230,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     async def workers_connect(request: Request):
         from ..workers import connect_worker
 
-        body = await request.json()
+        body = await _json_body(request)
         worker_id = str(body.get("id") or body.get("workerId") or "").strip()
         if not worker_id:
             return _err("No worker id was provided.", 400)
@@ -1272,7 +1276,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     async def projects_add(request: Request):
         import anyio
 
-        body = await request.json()
+        body = await _json_body(request)
         try:
             record = await anyio.to_thread.run_sync(
                 lambda: S["registry"].add({
@@ -1429,7 +1433,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse(rule)
 
     async def automation_rule_create(request: Request):
-        body = await request.json()
+        body = await _json_body(request)
         if isinstance(body.get("template"), str):
             template = next((t for t in AUTOMATION_TEMPLATE_INFOS
                              if t["id"] == body["template"]), None)
@@ -1442,7 +1446,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse(S["auto_store"].create_rule(body))
 
     async def automation_rule_save(request: Request):
-        body = await request.json()
+        body = await _json_body(request)
         rid = request.path_params["rid"]
         existing = S["auto_store"].get_rule(rid)
         if existing is None:
@@ -1458,7 +1462,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         existing = S["auto_store"].get_rule(rid)
         if existing is None:
             return _err("not found", 404)
-        body = await request.json()
+        body = await _json_body(request)
         saved = S["auto_store"].save_rule(rid, body)
         return JSONResponse(saved or existing)
 
@@ -1475,7 +1479,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         # EXECUTES through WorkflowRunner — this route changes neither.
         import anyio
 
-        body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        body = await _json_body(request)
         rid = request.path_params["rid"]
         rule = S["auto_store"].get_rule(rid)
         if rule is None:
@@ -1542,7 +1546,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         rule = S["auto_store"].get_rule(rid)
         if rule is None:
             return _err("not found", 404)
-        body = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        body = await _json_body(request)
 
         def resolve_workflow(workflow_id: str):
             return wf_store.get(workflow_id)
@@ -1784,17 +1788,22 @@ async def automation_validate_route(request: Request):
     """The service's own verdict on a draft rule."""
     from ..automation.dryrun import validate_rule
 
-    body = await request.json()
+    body = await _json_body(request)
     return JSONResponse({"issues": validate_rule(body)})
 
 
-async def _environment_body(request: Request) -> dict:
-    """Parse an /environment request body defensively.
+async def _json_body(request: Request) -> dict:
+    """Parse a JSON request body defensively.
 
     A malformed payload is a client mistake, not a server fault: it must not
-    surface as an unhandled JSONDecodeError and a 500.
+    surface as an unhandled JSONDecodeError and a 500. Non-object JSON
+    (a list, string or number) is likewise not a body — callers use
+    ``body.get(...)`` unconditionally, so anything else would raise
+    AttributeError into another 500.
     """
     try:
+        # Raw parse: this is the ONE place allowed to touch request.json()
+        # directly, inside the try that makes it safe.
         body = await request.json()
     except Exception:
         return {}
@@ -1829,7 +1838,7 @@ async def environment_scan(request: Request):
 
     from ..environment import scan_environment, scan_result_to_dict
 
-    body = await _environment_body(request)
+    body = await _json_body(request)
     node_ids = _environment_ids(body.get("ids"))
     refresh = bool(body.get("refresh", False))
     result = await anyio.to_thread.run_sync(
@@ -1861,7 +1870,7 @@ async def environment_search(request: Request):
 
     from ..environment.software.resolve import DEFAULT_LIMIT, search
 
-    body = await _environment_body(request)
+    body = await _json_body(request)
     query = str(body.get("query") or "").strip()
     if not query:
         return _err("query is required")
@@ -1891,7 +1900,7 @@ async def environment_inventory(request: Request):
 
     from ..environment.inventory import get_inventory, inventory_to_dict
 
-    body = await _environment_body(request)
+    body = await _json_body(request)
     refresh = bool(body.get("refresh", False))
     verify = bool(body.get("verify", True))
     offset = _positive_int(body.get("offset"), 0)
@@ -1945,7 +1954,7 @@ async def environment_probe(request: Request):
 
     from ..environment import probe_node, probe_result_to_dict
 
-    body = await _environment_body(request)
+    body = await _json_body(request)
     node_id = str(body.get("id") or "").strip()
     if not node_id:
         return JSONResponse({"result": {"present": False, "status": "unsupported", "detail": "No node id was provided."}})
@@ -1968,7 +1977,7 @@ async def environment_install(request: Request):
     from ..environment import catalog_entry, is_plan, plan_install, probe_node, probe_result_to_dict
     from ..exec_ import INSTALL_TIMEOUT_MS, resolve_installer_binary
 
-    body = await _environment_body(request)
+    body = await _json_body(request)
     node_id = str(body.get("id") or body.get("nodeId") or "").strip()
     if not node_id:
         return JSONResponse({"error": "No node id was provided.", "installOutcome": "failed", "detail": "No node id was provided."}, status_code=400)
@@ -2110,7 +2119,7 @@ async def environment_uninstall(request: Request):
     )
     from ..exec_ import INSTALL_TIMEOUT_MS, resolve_installer_binary
 
-    body = await _environment_body(request)
+    body = await _json_body(request)
     node_id = str(body.get("id") or body.get("nodeId") or "").strip()
     if not node_id:
         return JSONResponse({"error": "No node id was provided.", "uninstallOutcome": "failed", "detail": "No node id was provided."}, status_code=400)
@@ -2237,7 +2246,7 @@ async def environment_connect(request: Request):
     """
     from ..environment import catalog_entry, probe_node, probe_result_to_dict
 
-    body = await _environment_body(request)
+    body = await _json_body(request)
     node_id = str(body.get("id") or body.get("nodeId") or "").strip()
     if not node_id:
         return JSONResponse({"error": "No node id was provided.", "connected": False}, status_code=400)

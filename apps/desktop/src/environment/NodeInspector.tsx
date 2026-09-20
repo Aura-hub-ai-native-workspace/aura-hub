@@ -30,6 +30,20 @@ const TRANSPORT_EXPLAINER: Record<EnvironmentNode['entry']['transport'], string>
   oauth: 'Would need an account connection. No connector has been built for this service yet.',
 };
 
+/**
+ * Homepage host for display. Catalog data arrives over HTTP and must be
+ * treated as untrusted: a missing or malformed homepage must degrade to
+ * plain text, never throw inside render and blank the panel.
+ */
+function homepageHost(homepage: string | undefined): string {
+  if (!homepage) return 'homepage';
+  try {
+    return new URL(homepage).host || homepage;
+  } catch {
+    return homepage;
+  }
+}
+
 export function NodeInspector({
   node,
   busy,
@@ -99,7 +113,7 @@ export function NodeInspector({
           className="flex items-center gap-1 rounded-lg border border-line px-2 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-line-strong hover:text-text"
         >
           <Icon name="link" size={11} />
-          {new URL(node.entry.homepage).host}
+          {homepageHost(node.entry.homepage)}
         </a>
       </div>
 
@@ -347,9 +361,15 @@ function UninstallPanel({ node }: { node: EnvironmentNode }) {
   const [confirming, setConfirming] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [guided, setGuided] = useState<{ command?: string; why?: string } | null>(null);
   const rescan = useEnvironmentStore((s) => s.scan);
   const uninstallDirect = useEnvironmentStore((s) => s.uninstall);
 
+  // Offered whenever the node is not verifiably absent: 'failed' and
+  // 'unverified' mean "might still be here" (probe flakiness, partial
+  // removal), and removing remnants is exactly what this panel is for.
+  // Only 'not-installed' (verified absent) and mid-transition states
+  // hide it.
   const isInstalled = node.health.status !== 'not-installed' && node.health.status !== 'installing' && node.health.status !== 'uninstalling';
   if (!isInstalled || !node.entry.install || node.entry.transport === 'internal') return null;
   if (node.health.status === 'uninstalling') {
@@ -364,17 +384,23 @@ function UninstallPanel({ node }: { node: EnvironmentNode }) {
     setBusy(true);
     setError(null);
     setResult(null);
+    setGuided(null);
     try {
       const res = await uninstallDirect(node.id);
-      const output = res.output as { uninstallOutcome?: string } | undefined;
+      const output = res.output as { uninstallOutcome?: string; command?: string; why?: string } | undefined;
       if (output?.uninstallOutcome === 'uninstalled') {
         setResult(`${node.entry.name} was removed.`);
         void rescan(true);
+      } else if (output?.uninstallOutcome === 'guided') {
+        // A handoff, not a failure: AURA ran nothing (usually needs
+        // administrator rights). Render the command like InstallPanel
+        // does instead of a red error.
+        setGuided({ command: output.command, why: output.why });
       } else {
         setError(res.detail || 'Removal could not be verified.');
       }
     } catch (e) {
-      setError((e as Error).message);
+      setError(e instanceof Error && e.message ? e.message : 'Removal did not complete.');
     } finally {
       setBusy(false);
       setConfirming(false);
@@ -383,7 +409,20 @@ function UninstallPanel({ node }: { node: EnvironmentNode }) {
 
   return (
     <section data-testid="node-uninstall" className="rounded-xl border border-line bg-surface-active p-2.5">
-      {!confirming && !result && !error && (
+      {guided && (
+        <div data-testid="node-uninstall-guided">
+          <p className="text-[11.5px] font-semibold text-attention">Your action required</p>
+          <p className="mt-1 text-[11.5px] leading-relaxed text-text-muted">
+            {guided.why ?? `${node.entry.name} needs administrator rights to remove.`} AURA did not run anything.
+          </p>
+          {guided.command && (
+            <code className="mt-1.5 block overflow-x-auto rounded-lg border border-line bg-surface px-2 py-1 font-mono text-[11px] text-text">
+              {guided.command}
+            </code>
+          )}
+        </div>
+      )}
+      {!confirming && !result && !error && !guided && (
         <div className="flex items-center gap-2">
           <button
             onClick={() => setConfirming(true)}

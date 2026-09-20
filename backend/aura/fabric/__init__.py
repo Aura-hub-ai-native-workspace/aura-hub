@@ -298,8 +298,20 @@ class CapabilityFabric:
         try:
             if self._audit_store_append:
                 self._audit_store_append(entry)
-        except Exception:
-            pass  # never fail an action on a logging failure
+        except Exception as exc:
+            # Never fail an action on a logging failure — but never lose
+            # it silently either. The in-memory log keeps the record and
+            # the entry is marked, so a degraded journal is visible to
+            # operators instead of a gap nobody can explain.
+            entry["auditPersisted"] = False
+            entry["auditError"] = str(exc)[:200]
+            try:
+                self._emit({"type": "audit.persist-failed",
+                            "at": entry.get("at"),
+                            "invocationId": entry.get("invocationId"),
+                            "error": str(exc)[:200]})
+            except Exception:
+                pass
 
     def _persist_approvals(self) -> None:
         if self._approval_store_save:
@@ -563,6 +575,13 @@ class CapabilityFabric:
                     **({"projectId": context["projectId"]} if context.get("projectId") is not None else {}),
                     **({"missionId": context["missionId"]} if context.get("missionId") else {}),
                     **({"taskId": context["taskId"]} if context.get("taskId") else {}),
+                    # The unified approvals inbox routes agent decisions to
+                    # /agent/sessions/{sid}/approve, which needs the owning
+                    # session. The context already carries it (execution sets
+                    # sessionId); the parked record just never copied it, so
+                    # the inbox had nothing to route with. Mirrors the audit
+                    # record below, which already carries sessionId.
+                    **({"sessionId": context["sessionId"]} if context.get("sessionId") else {}),
                     **({"workflowId": context["workflowId"]} if context.get("workflowId") else {}),
                     **({"runId": context["runId"]} if context.get("runId") else {}),
                     **({"workflowNodeId": context["workflowNodeId"]} if context.get("workflowNodeId") else {}),
@@ -758,6 +777,13 @@ class CapabilityFabric:
             record["executedNodeId"] = executed_node
 
         self._record(record)
+        # A journal write this _record could not persist is marked on the
+        # record itself; mirror it here so callers never assert an audit
+        # trail that is not there. Absent when healthy, so exact-shape
+        # differential assertions are unaffected.
+        if record.get("auditPersisted") is False:
+            result["auditDegraded"] = True
+            result["auditError"] = record.get("auditError")
         self._emit({"type": "invocation.completed", "at": ended_at, "result": result})
         return result
 

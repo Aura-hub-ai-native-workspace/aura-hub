@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from typing import Any
@@ -56,6 +57,33 @@ def _b(v: Any) -> bool:
     return v is True
 
 
+def _timeout_ms(ctx: object, default: int) -> int:
+    """Invocation timeout as bounded milliseconds.
+
+    A non-numeric, zero, negative or huge timeoutMs in the context must not
+    become a TypeError, an instant timeout, or an unbounded wait.
+    """
+    raw = ctx.get("timeoutMs") if isinstance(ctx, dict) else None
+    try:
+        ms = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        return default
+    return max(1_000, min(ms, 3_600_000))
+
+
+def _flag_value_error(value: str, field: str) -> str | None:
+    """Refuse git name/remote/branch values that parse as flags.
+
+    `git push --upload-pack=x` style injection needs no shell — the value
+    alone is the attack — so leading-dash values are refused outright
+    rather than quoted. `--` separators are avoided because they change
+    `checkout` semantics (path form vs branch form).
+    """
+    if value.startswith("-"):
+        return f"That {field} looks like a command flag, so it was refused."
+    return None
+
+
 def _node_fs_error(e: OSError, verb: str, path_str: str) -> RuntimeError:
     """Node-style fs error text so user-visible details match byte-for-byte."""
     import errno as _e
@@ -74,7 +102,12 @@ def inside(root: str, rel: str) -> str:
         raise ValueError(f"That path leaves the project directory: {rel}")
     root = os.path.realpath(os.path.abspath(root))
     abs_ = os.path.realpath(os.path.abspath(os.path.join(root, rel)))
-    if abs_ != root and not abs_.startswith(root + os.sep):
+    # normcase is identity on POSIX and folds case on Windows, whose
+    # filesystem is case-insensitive: without it two spellings of the
+    # same directory compare as different and legitimate paths are
+    # refused. Confinement still fails closed on real escapes.
+    if os.path.normcase(abs_) != os.path.normcase(root) and not \
+            os.path.normcase(abs_).startswith(os.path.normcase(root + os.sep)):
         raise ValueError(f"That path leaves the project directory: {rel}")
     return abs_
 
@@ -177,7 +210,8 @@ async def terminal_execute(inv: dict) -> dict:
     parsed = parse_command(command)
     if not parsed.ok:
         return _no(parsed.reason)
-    res = await safe_shell_with_code(command, cwd, inv["context"].get("timeoutMs"))
+    res = await safe_shell_with_code(
+        command, cwd, _timeout_ms(inv.get("context"), 30_000))
     out_trimmed = res.out[:400]
     if res.code == 0:
         return _ok("Exit code 0.", {"stdout": res.out, "exitCode": 0})
@@ -319,9 +353,15 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
             if staged.get("settingsPath"):
                 extra += ["--settings", staged["settingsPath"]]
             bundle["extraArgs"] = extra
-    except Exception:
+    except Exception as exc:
+        # A crashed staging is not "unsupported by design": mark it so the
+        # run record distinguishes the two instead of silently proceeding
+        # under legacy boundaries.
         return {"args": None, "env": {}, "logPath": "",
-                "supports": {}, "worker": bin_name}
+                "supports": {"NOTE": "governance staging failed "
+                             f"({exc}); proceeding under pre-existing "
+                             "boundaries only"},
+                "worker": bin_name}
     return bundle
 
 
@@ -592,7 +632,8 @@ async def agent_delegate_run(inv: dict) -> dict:
         }
     try:
         res = await _run_governed(
-            bin_name, args, cwd, inv["context"].get("timeoutMs"),
+            bin_name, args, cwd,
+            _timeout_ms(inv.get("context"), 10 * 60_000),
             governance, action_events, cancel_token=cancel_token,
             argv_prefix=net.argv_prefix)
     except Exception as e:  # noqa: BLE001 — TS catches all too
@@ -834,26 +875,43 @@ def _required_change_verdict(inv: dict, output: dict) -> dict | None:
 
 
 async def git_status(inv: dict) -> dict:
-    res = await run_git(["status", "--short", "--branch"], cwd_of(inv))
+    from ..exec_ import git_is_repo, git_not_a_repo
+
+    cwd = cwd_of(inv)
+    if not await git_is_repo(cwd):
+        return git_not_a_repo()
+    res = await run_git(["status", "--short", "--branch"], cwd)
     return _ok("Working tree has changes." if res.out else "Working tree is clean.",
                res.out or "clean")
 
 
 async def git_diff(inv: dict) -> dict:
+    from ..exec_ import git_is_repo, git_not_a_repo
+
+    cwd = cwd_of(inv)
+    if not await git_is_repo(cwd):
+        return git_not_a_repo()
     args = ["diff", "--stat", "-p", "--no-color"]
     if _b(inv["input"].get("staged")):
         args.insert(1, "--cached")
-    res = await run_git(args, cwd_of(inv))
+    res = await run_git(args, cwd)
     text = res.out if len(res.out) <= 60_000 else res.out[:60_000] + "\n…(truncated)"
     return _ok("Diff produced." if res.out else "No changes.", text or "no changes")
 
 
 async def git_branch(inv: dict) -> dict:
+    from ..exec_ import git_is_repo, git_not_a_repo
+
     cwd = cwd_of(inv)
+    if not await git_is_repo(cwd):
+        return git_not_a_repo()
     name = _s(inv["input"].get("name")).strip()
     if not name:
         res = await run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
         return _ok(f"On branch {res.out}.", res.out)
+    refused = _flag_value_error(name, "branch name")
+    if refused:
+        return _no(refused)
     existing = await run_git(["rev-parse", "--verify", name], cwd)
     args = ["checkout", name] if existing.code == 0 else ["checkout", "-b", name]
     res = await run_git(args, cwd)
@@ -872,7 +930,11 @@ async def git_branch_verify(inv: dict, _last: dict) -> dict:
 
 
 async def git_commit(inv: dict) -> dict:
+    from ..exec_ import git_is_repo, git_not_a_repo
+
     cwd = cwd_of(inv)
+    if not await git_is_repo(cwd):
+        return git_not_a_repo()
     message = _s(inv["input"].get("message")).split("\n")[0].strip()
     if not message:
         return _no("A commit message is required.")
@@ -896,8 +958,16 @@ async def git_commit_verify(inv: dict, result: dict) -> dict:
 
 
 async def git_push(inv: dict) -> dict:
+    from ..exec_ import git_is_repo, git_not_a_repo
+
     cwd = cwd_of(inv)
+    if not await git_is_repo(cwd):
+        return git_not_a_repo()
     remote = _s(inv["input"].get("remote"), "origin")
+    refused = _flag_value_error(remote, "remote") or _flag_value_error(
+        _s(inv["input"].get("branch")), "branch")
+    if refused:
+        return _no(refused)
     branch = _s(inv["input"].get("branch")) or (await run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)).out
     res = await run_git(["push", remote, branch], cwd)
     if res.code == 0:
@@ -914,14 +984,34 @@ async def git_push_verify(_inv: dict, result: dict) -> dict:
 # ── network ──────────────────────────────────────────────────────────────────
 
 
+#: Methods http.request may use. Anything else (TRACE, CONNECT, …) is
+#: refused rather than passed to urllib, which would happily send it.
+_ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"})
+
+#: Hosts that serve cloud instance metadata. Never legitimate agent
+#: targets; a model-proposed URL naming one is refused outright.
+#: Loopback stays allowed — local model servers are a supported setup.
+_BLOCKED_HOSTS = frozenset({
+    "169.254.169.254", "100.100.100.200", "fd00:ec2::254",
+    "[fd00:ec2::254]",
+})
+
+
 async def http_request(inv: dict) -> dict:
     url = _s(inv["input"].get("url"))
     if not url.lower().startswith(("http://", "https://")):
         return _no("Only http(s) URLs are allowed.")
-    timeout_ms = min(inv["context"].get("timeoutMs") or 10_000, 30_000)
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host in _BLOCKED_HOSTS:
+        return _no("That address serves cloud instance metadata, so it is refused.")
+    timeout_ms = min(_timeout_ms(inv.get("context"), 10_000), 30_000)
     method = (_s(inv["input"].get("method"), "GET")).upper()
+    if method not in _ALLOWED_METHODS:
+        return _no(f"HTTP method {method} is not allowed.")
     body = inv["input"].get("body")
-    data = _s(body).encode() if body is not None else None
+    if body is not None and not isinstance(body, (str, bytes)):
+        return _no("HTTP body must be text.")
+    data = body.encode() if isinstance(body, str) else body
     req = urllib.request.Request(url, data=data, method=method)
 
     class _BoundedReader:

@@ -772,13 +772,15 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * at each release — that edit IS the check, and `bump-version.mjs`
    * deliberately does not touch it.
    *
-   * 0.1.3 is the first release from the unified mainline: the first to
-   * carry the Workflow Engine, Workspace 2.0 and the AppImage desktop
-   * integration alongside the updater, and the first whose updater can
-   * actually finish a check — 0.1.2 shipped without the OS plugin, so
-   * `platform()` threw and the state machine parked in `checking`.
+   * 0.1.13 repairs 0.1.12. That release could trap anyone who had set up
+   * AURA before: if their saved model server no longer answered they were
+   * returned to setup, and finishing it changed nothing the launch gate
+   * was watching, so the flow sat on its final screen indefinitely. It
+   * affected Windows, macOS and Linux identically — the gate is plain
+   * TypeScript compiled once into every installer — and no CI job ran the
+   * tests that covered it. Both are fixed here.
    */
-   const RELEASE_CANDIDATE = '0.1.5';
+   const RELEASE_CANDIDATE = '0.1.13';
   check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);
 }
 

@@ -192,6 +192,62 @@ class TestApprovalGate:
         assert decisions and decisions[-1]["approvalDecision"] == "denied"
 
 
+class TestParkedSessionLinkage:
+    """A parked request carries the owning sessionId when the invocation
+    context has one, so the unified approvals inbox can route the
+    decision to /agent/sessions/{sid}/approve. Absent context → absent
+    field (never an empty or guessed value)."""
+
+    POLICY = {"byRisk": {"low": "require-approval", "medium": "ask-user",
+                         "high": "deny"}}
+    PAYLOAD = {"name": "g", "description": "", "nodes": NODES, "edges": []}
+
+    def test_parked_request_carries_session_id(self, home):
+        cfg = make_cfg(home, policy=self.POLICY)
+        r = invoke_fabric("workflow.create", self.PAYLOAD,
+                          {"taskId": "t", "sessionId": "ses-9"}, cfg)
+        assert r["outcome"] == "awaiting-approval"
+        pending = cfg.ledger.pending()
+        assert len(pending) == 1
+        assert pending[0]["sessionId"] == "ses-9"
+
+    def test_no_session_context_means_no_session_field(self, home):
+        cfg = make_cfg(home, policy=self.POLICY)
+        r = invoke_fabric("workflow.create", self.PAYLOAD,
+                          {"taskId": "t"}, cfg)
+        assert r["outcome"] == "awaiting-approval"
+        assert "sessionId" not in cfg.ledger.pending()[0]
+
+
+class TestAuditDegradation:
+    """A lost journal write degrades visibly instead of silently.
+
+    The execution still succeeds (liveness over logging), but the
+    record is marked and the result carries the degradation — no code
+    downstream can assert an audit trail that is not there.
+    """
+
+    def test_failed_append_marks_record_and_result(self, home, monkeypatch):
+        cfg = make_cfg(home)
+
+        def boom(_record):
+            raise OSError("disk read-only")
+
+        # The fabric captured the store's append at attach time: patch
+        # the stored callable, not the store attribute.
+        monkeypatch.setattr(cfg.fabric, "_audit_store_append", boom)
+        r = invoke_fabric("workflow.list", {}, {"taskId": "t"}, cfg)
+        assert r["outcome"] == "succeeded"
+        assert r.get("auditDegraded") is True
+        assert r.get("auditError") == "disk read-only"
+
+    def test_healthy_append_leaves_no_markers(self, home):
+        cfg = make_cfg(home)
+        r = invoke_fabric("workflow.list", {}, {"taskId": "t"}, cfg)
+        assert r["outcome"] == "succeeded"
+        assert "auditDegraded" not in r
+
+
 class TestPreflight:
     def test_describe_authority_matches_invoke(self, home):
         cfg = make_cfg(home)

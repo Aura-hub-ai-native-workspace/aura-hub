@@ -4,21 +4,25 @@
  * This is a *placement*, not a second approval system. Each item renders
  * through `missions/ApprovalGate` — the same component Mission Control
  * uses, with the same five required facts — and every decision goes to
- * `POST /fabric/approvals/:id/decide` (Fabric) or the Agent's approve
- * endpoint, which derives the grant from the request the service stored.
- * Nothing here can name a capability.
+ * `POST /fabric/approvals/:id/decide` (Fabric) or
+ * `POST /agent/sessions/{sid}/approve` (Agent, routed by the owning
+ * sessionId the service parks on the request). Nothing here can name a
+ * capability, and an agent item with no session is refused rather than
+ * guessed.
  *
  * Ordering is by consequence, not by arrival: irreversible first, then
  * high risk, then the rest. Someone with ten pending requests must be
  * able to find the one that matters in about a second.
  */
 
-import { useEffect, useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Badge, Icon } from '@aura/ui';
+import { centralAgentClient } from '../../ai/centralAgentClient';
 import type { ApprovalRequest, RiskLevel } from '../../ai/fabricClient';
 import { pendingApprovals, useFabric } from '../../data/useFabric';
 import { useAgentApprovals } from '../../data/useAgentApprovals';
 import { ApprovalGate } from '../missions/ApprovalGate';
+import { decisionTarget } from './approvalRouting';
 
 const RISK_WEIGHT: Record<RiskLevel, number> = { high: 3, medium: 2, low: 1 };
 
@@ -36,14 +40,40 @@ export function ApprovalsInbox() {
   const fabricApprovals = useFabric((s) => s.approvals);
   const fabricDeciding = useFabric((s) => s.deciding);
   const fabricDecideError = useFabric((s) => s.decideError);
+  const fabricDecide = useFabric((s) => s.decide);
   const fabricReachable = useFabric((s) => s.reachable);
-  const { approvals: agentApprovals, loading: agentLoading, error: agentError } = useAgentApprovals();
+  const { approvals: agentApprovals, loading: agentLoading, error: agentError, refetch: refetchAgent } = useAgentApprovals();
+  const [agentDeciding, setAgentDeciding] = useState<string | null>(null);
+  const [agentDecideError, setAgentDecideError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const stop = () => {};
-    // Note: Agent approvals are polled internally by useAgentApprovals
-    return stop;
-  }, []);
+  /** Decide through the owning ledger. Agent items need their session —
+   * answering against a hardcoded or guessed session could spend another
+   * session's grant, so unroutable items fail closed with a reason. */
+  async function decideItem(
+    a: ApprovalRequest & { source: ApprovalSource },
+    granted: boolean,
+    reason?: string,
+  ): Promise<void> {
+    const target = decisionTarget(a);
+    if (target.kind === 'fabric') {
+      await fabricDecide(a.id, granted, reason);
+      return;
+    }
+    if (target.kind === 'unroutable') {
+      setAgentDecideError(target.reason);
+      return;
+    }
+    setAgentDeciding(a.id);
+    setAgentDecideError(null);
+    try {
+      await centralAgentClient.approve(target.sessionId, a.id, granted, reason);
+      await refetchAgent();
+    } catch (e) {
+      setAgentDecideError(e instanceof Error ? e.message : 'Agent decision failed.');
+    } finally {
+      setAgentDeciding(null);
+    }
+  }
 
   // Unify approvals from both sources
   const fabricPending = useMemo(
@@ -77,9 +107,6 @@ export function ApprovalsInbox() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {(/* fabricReachable === false || */ false) && (
-              <span className="text-[11px] text-attention">Fabric offline</span>
-            )}
             {agentLoading && <span className="text-[11px] text-text-muted">Loading agent approvals…</span>}
             {agentError && <span className="text-[11px] text-danger">Agent approvals unavailable</span>}
           </div>
@@ -89,6 +116,11 @@ export function ApprovalsInbox() {
       {fabricDecideError && (
         <div className="mb-4 rounded-xl border border-danger/40 bg-danger/5 px-4 py-2.5 text-[12px] text-danger">
           {fabricDecideError}
+        </div>
+      )}
+      {agentDecideError && (
+        <div className="mb-4 rounded-xl border border-danger/40 bg-danger/5 px-4 py-2.5 text-[12px] text-danger">
+          {agentDecideError}
         </div>
       )}
 
@@ -144,19 +176,11 @@ export function ApprovalsInbox() {
                   {new Date(a.requestedAt).toLocaleString()}
                 </span>
               </div>
-              <ApprovalGate request={a} busy={fabricDeciding === a.id} onDecide={async (id, granted) => {
-                if (a.source === 'agent') {
-                  await fetch(`/agent-api/agent/sessions/0/approve`, {
-                    method: 'POST',
-                    headers: { 'content-type': 'application/json' },
-                    body: JSON.stringify({ approvalId: id, granted }),
-                  });
-                } else {
-                  // Fabric approval uses existing fabric decide
-                  // This would need a proper API endpoint
-                  console.warn('Fabric approval not yet wired for unified inbox');
-                }
-              }} />
+              <ApprovalGate
+                request={a}
+                busy={a.source === 'fabric' ? fabricDeciding === a.id : agentDeciding === a.id}
+                onDecide={(_id, granted, reason) => void decideItem(a, granted, reason)}
+              />
             </div>
           ))}
         </div>

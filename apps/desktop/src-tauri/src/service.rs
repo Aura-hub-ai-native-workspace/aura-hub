@@ -30,18 +30,44 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// The pid of the service THIS process started, or 0.
+/// The pids of the services THIS process started, one slot each, or 0.
 ///
 /// Duplicated out of `ServiceHandle` because a signal handler may not lock
 /// a mutex or allocate — an atomic read is one of the few things it may
-/// safely do. It is only ever set for a service we spawned, so a reused
-/// one is never signalled from here.
-static SERVICE_PID: AtomicI32 = AtomicI32::new(0);
+/// safely do. A slot is only ever set for a service we spawned, so a
+/// reused one is never signalled from here.
+///
+/// Two slots because the shell supervises two backends (see `PYTHON_PORT`).
+/// A single global would mean the second `adopt` overwrote the first, and
+/// a termination signal would orphan whichever service started earlier —
+/// the exact failure `install_termination_handlers` exists to prevent.
+static SERVICE_PIDS: [AtomicI32; SLOT_COUNT] = [AtomicI32::new(0), AtomicI32::new(0)];
+
+const SLOT_COUNT: usize = 2;
+
+/// Slot of the Node AI service.
+pub const SLOT_AI: usize = 0;
+/// Slot of the canonical Python backend.
+pub const SLOT_PYTHON: usize = 1;
 
 /// The port AURA's service and the renderer both agree on. The renderer
 /// has this baked in at build time (`aiClient.ts`), so this is not a
 /// preference — the two must match or the UI talks to nothing.
 pub const DEFAULT_PORT: u16 = 4319;
+
+/// The port the canonical Python backend listens on.
+///
+/// The Python backend is the sole authority on machine state: discovery,
+/// the inventory, the safe-probe boundary, install and connect all live
+/// there and nowhere else. The renderer has this baked in the same way
+/// (`environmentClient.ts` → `ENVIRONMENT_BASE`), so the two must agree.
+///
+/// It is a SECOND port rather than a replacement because the Node AI
+/// service still owns the workflow, provider and knowledge surfaces on
+/// `DEFAULT_PORT`. Migrating those is a separate piece of work; making
+/// the machine-state surface reachable is not, and it does not need to
+/// wait for them.
+pub const PYTHON_PORT: u16 = 4320;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 const READ_TIMEOUT: Duration = Duration::from_millis(4000);
@@ -75,15 +101,18 @@ pub struct ServiceHandle {
     /// request on platforms without POSIX signals (Windows).
     #[cfg_attr(not(windows), allow(dead_code))]
     port: u16,
+    /// Which `SERVICE_PIDS` slot this handle owns.
+    slot: usize,
 }
 
 impl ServiceHandle {
-    pub fn new(port: u16) -> Self {
-        Self { child: Mutex::new(None), port }
+    pub fn new(port: u16, slot: usize) -> Self {
+        assert!(slot < SLOT_COUNT, "service slot out of range");
+        Self { child: Mutex::new(None), port, slot }
     }
 
     fn adopt(&self, child: Child) {
-        SERVICE_PID.store(child.id() as i32, Ordering::SeqCst);
+        SERVICE_PIDS[self.slot].store(child.id() as i32, Ordering::SeqCst);
         *self.child.lock().unwrap() = Some(child);
     }
 
@@ -119,7 +148,7 @@ impl ServiceHandle {
     /// spawning.
     pub fn shutdown(&self) {
         let mut guard = self.child.lock().unwrap();
-        SERVICE_PID.store(0, Ordering::SeqCst);
+        SERVICE_PIDS[self.slot].store(0, Ordering::SeqCst);
         let Some(mut child) = guard.take() else { return };
 
         // Already gone — nothing to signal, and no zombie to leave behind
@@ -161,7 +190,7 @@ impl ServiceHandle {
 
 impl Default for ServiceHandle {
     fn default() -> Self {
-        Self::new(DEFAULT_PORT)
+        Self::new(DEFAULT_PORT, SLOT_AI)
     }
 }
 
@@ -277,9 +306,11 @@ mod job {
 /// still dies from the original signal rather than silently absorbing it.
 #[cfg(unix)]
 extern "C" fn on_terminating_signal(sig: libc::c_int) {
-    let pid = SERVICE_PID.swap(0, Ordering::SeqCst);
-    if pid > 0 {
-        unsafe { libc::kill(pid, libc::SIGTERM) };
+    for slot in SERVICE_PIDS.iter() {
+        let pid = slot.swap(0, Ordering::SeqCst);
+        if pid > 0 {
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
     }
     unsafe {
         libc::signal(sig, libc::SIG_DFL);
@@ -459,9 +490,26 @@ fn augmented_path(node_dir: Option<&PathBuf>) -> String {
         parts.extend(std::env::split_paths(&existing));
     }
 
-    // Whatever interpreter we resolved must itself stay reachable: `node`
-    // and `npm` are catalogue entries and SAFE_BINARIES members, so the
-    // service is expected to be able to run them.
+    /*
+     * The resolved interpreter's directory — but ONLY when it came from the
+     * machine.
+     *
+     * The purpose is real: a Node from nvm or a Python from pyenv lives
+     * beside the `npm` and `pip` that belong to it, and those are catalogue
+     * entries the service is expected to be able to run.
+     *
+     * A runtime AURA ships is the opposite case, and putting its directory
+     * here corrupts the one thing the Connected Environment exists to
+     * report. Observed, not theorised: with every Node on the machine made
+     * unrunnable, the inventory still announced "Found Node.js 22.23.2 on
+     * this machine" — it had found AURA's private copy on the PATH AURA
+     * itself had seeded. The scan is meant to describe the user's machine,
+     * and it was describing the application.
+     *
+     * So a bundled runtime stays off this PATH. AURA still executes it by
+     * absolute path; it is simply not offered to anything looking for what
+     * is installed here.
+     */
     if let Some(dir) = node_dir {
         parts.push(dir.clone());
     }
@@ -539,18 +587,39 @@ fn augmented_path(node_dir: Option<&PathBuf>) -> String {
 
 /// Find a Node interpreter without trusting the launcher's environment.
 ///
-/// The packaged application does not ship Node: AURA already treats it as
-/// an external execution node (it is in the catalogue and in
-/// `SAFE_BINARIES`), so requiring the real thing is consistent with how
-/// every other tool is handled — and bundling a second copy would mean the
-/// app runs on a different Node than the one it reports detecting.
-fn resolve_node() -> Result<PathBuf, String> {
+/// The packaged application now ships one, and it is preferred over
+/// anything on the machine. This reverses a decision documented here for
+/// good reasons, so the reasoning deserves to be answered rather than
+/// deleted: bundling a second copy does mean AURA runs on a different Node
+/// than the one it reports detecting.
+///
+/// That objection is right about the INVENTORY and wrong about the
+/// application. The Connected Environment still reports the machine's
+/// Node, truthfully, because that is what a user's own project would run
+/// on — and this copy is never added to it. What changed is only what AURA
+/// itself executes. A user installing a desktop application has not agreed
+/// to install a JavaScript runtime first, and on a machine without one
+/// AURA did not degrade politely: it failed to start at all.
+///
+/// A source checkout stages no runtime, so development still resolves
+/// through the search below. `AURA_NODE` still wins, because an explicit
+/// instruction should.
+fn resolve_node(bundled: Option<&std::path::Path>) -> Result<PathBuf, String> {
     if let Some(explicit) = std::env::var_os("AURA_NODE") {
         let p = PathBuf::from(explicit);
         if p.is_file() {
             return Ok(p);
         }
         return Err(format!("AURA_NODE points at {}, which is not a file", p.display()));
+    }
+
+    // The one candidate known in advance to work: it is the exact Node this
+    // build was compiled and tested against, and it cannot be upgraded or
+    // removed out from under the application.
+    if let Some(shipped) = bundled {
+        if shipped.is_file() {
+            return Ok(shipped.to_path_buf());
+        }
     }
 
     let home = home_dir();
@@ -608,8 +677,10 @@ fn resolve_node() -> Result<PathBuf, String> {
         .into_iter()
         .find(|c| c.is_file())
         .ok_or_else(|| {
-            "AURA needs Node.js to run its local service, and none was found. \
-             Install Node 18 or newer, or set AURA_NODE to its full path."
+            "AURA could not start its local service with any Node, including the one it \
+             ships. A packaged installation should never reach this, so the installation is \
+             probably damaged — reinstalling is the fastest fix. You can also install Node 18 \
+             or newer, or set AURA_NODE to its full path."
                 .to_string()
         })
 }
@@ -648,8 +719,19 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
         ));
     }
 
-    let node = resolve_node()?;
-    let node_dir = node.parent().map(PathBuf::from);
+    /*
+     * The shipped Node sits beside the service bundle it runs, so the
+     * script's own location finds it without another resolver. In a
+     * source checkout there is no such directory and this is None.
+     */
+    let bundled_node = script.parent().map(|resources| {
+        resources.join("runtime").join("node").join(if cfg!(windows) { "node.exe" } else { "bin/node" })
+    });
+    let node = resolve_node(bundled_node.as_deref())?;
+    // Only a machine-provided interpreter is advertised on PATH; see
+    // `augmented_path`.
+    let node_is_bundled = bundled_node.as_deref().is_some_and(|b| b == node.as_path());
+    let node_dir = if node_is_bundled { None } else { node.parent().map(PathBuf::from) };
 
     // Logs belong with the rest of the user's AURA state, never inside the
     // installed application — which may well be read-only.
@@ -719,18 +801,32 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
 /// distinct outcome from "start timed out": a process that exits during
 /// startup is detected immediately instead of costing the full timeout.
 fn wait_healthy(handle: &ServiceHandle, port: u16, timeout: Duration) -> Result<(), String> {
+    wait_ready(handle, port, timeout, identify, "AURA's local service")
+}
+
+/// The same wait, for any backend and any fingerprint.
+///
+/// `what` names the backend in the two messages a caller can receive, so a
+/// failed Python start does not report itself as the Node service dying.
+fn wait_ready(
+    handle: &ServiceHandle,
+    port: u16,
+    timeout: Duration,
+    fingerprint: fn(u16) -> PortState,
+    what: &str,
+) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if let PortState::Aura = identify(port) {
+        if let PortState::Aura = fingerprint(port) {
             return Ok(());
         }
         if !handle.is_alive() {
-            return Err("AURA's local service stopped while starting up.".to_string());
+            return Err(format!("{what} stopped while starting up."));
         }
         std::thread::sleep(Duration::from_millis(250));
     }
     Err(format!(
-        "AURA's local service did not become ready within {}s.",
+        "{what} did not become ready within {}s.",
         timeout.as_secs()
     ))
 }
@@ -738,4 +834,436 @@ fn wait_healthy(handle: &ServiceHandle, port: u16, timeout: Duration) -> Result<
 /// Public probe used by the readiness command and the crash watcher.
 pub fn is_healthy(port: u16) -> bool {
     matches!(identify(port), PortState::Aura)
+}
+
+/// The same, for the canonical Python backend.
+pub fn is_python_healthy(port: u16) -> bool {
+    matches!(identify_python(port), PortState::Aura)
+}
+
+/* ── the canonical Python backend ────────────────────────────────── */
+//
+// The Node service above owns workflows, providers and the knowledge
+// index. It does NOT own machine state: discovery, the machine inventory,
+// the safe-probe boundary, install and connect live only in the Python
+// backend (`backend/aura/environment/**`, routed by `aura/api/server.py`).
+//
+// Nothing used to start that backend. The renderer asked
+// `127.0.0.1:4320/environment/inventory` for the machine inventory, found
+// nobody listening, and the Machine Inventory panel read "0 installed" on
+// a machine with thousands of packages on it. Supervising it here is what
+// makes the authoritative answer reachable — and it is supervised exactly
+// like the Node service, under the same two rules: never attach to a
+// process we cannot identify, and never fake readiness.
+
+/// Is the thing on this port the canonical Python backend?
+///
+/// Two questions, both of which have to be answered yes.
+///
+/// *Is it AURA?* — `/health` in AURA's shape plus a Capability Fabric on
+/// `/fabric/capabilities`, the same pair `identify` requires, for the same
+/// reason: `/health` alone is a path any local dev server might answer.
+///
+/// *Is it the PYTHON one?* — `/health` reports `"backend":"python"`. The
+/// Node service answers `/health` and `/fabric/capabilities` in shapes
+/// close enough to pass the first test, and adopting it as the Environment
+/// backend is the specific mistake that produced an empty inventory that
+/// looked like a working one. A backend that does not say it is Python is
+/// reported as foreign rather than used.
+fn identify_python(port: u16) -> PortState {
+    let health = match http_get(port, "/health", CONNECT_TIMEOUT) {
+        Ok(v) => v,
+        Err(_) => return PortState::Free,
+    };
+
+    if health.0 != 200 {
+        return PortState::Foreign(format!("answered /health with HTTP {}", health.0));
+    }
+    if !(health.1.contains("\"health\"") && health.1.contains("\"index\"")) {
+        return PortState::Foreign("answered /health, but not in AURA's shape".into());
+    }
+    if !health.1.contains("\"python\"") {
+        return PortState::Foreign(
+            "is an AURA backend, but not the Python one — it cannot serve the machine inventory"
+                .into(),
+        );
+    }
+
+    match http_get(port, "/fabric/capabilities", CONNECT_TIMEOUT) {
+        Ok((200, body)) if body.contains("\"capabilities\"") && body.contains("\"policy\"") => {
+            PortState::Aura
+        }
+        Ok((code, _)) => PortState::Foreign(format!(
+            "has no Capability Fabric (/fabric/capabilities → HTTP {code})"
+        )),
+        Err(e) => PortState::Foreign(format!("has no Capability Fabric ({e})")),
+    }
+}
+
+/// A Python interpreter that can actually run the backend.
+///
+/// Order matters, and it is deliberately not "whatever `python3` resolves
+/// to first". The backend imports Starlette, uvicorn and Pydantic; a bare
+/// system interpreter usually has none of them, so preferring the project
+/// venv is what makes the common developer case work without configuration.
+///
+///   1. `AURA_PYTHON` — an explicit answer always wins.
+///   2. the interpreter of an ACTIVE environment (`VIRTUAL_ENV`,
+///      `CONDA_PREFIX`) — someone chose it for this shell, so it is the
+///      best guess after an explicit one.
+///   3. the virtualenv beside the backend, if one was created.
+///   4. `python3`, then `python`, from PATH.
+///   5. version managers and per-user installs: pyenv (its shims and each
+///      installed version), conda/mamba roots, `~/.local/bin`.
+///   6. the conventional system locations.
+///
+/// Steps 2 and 5 exist because of a real failure, not for completeness. A
+/// desktop launcher hands the application a PATH like `/usr/bin:/bin`,
+/// which sees the system interpreter and nothing else. On a machine whose
+/// working Python lives in pyenv or conda — an ordinary setup, not an
+/// exotic one — every candidate lacked Starlette and the Machine Inventory
+/// read "0 installed" on a machine full of software. The interpreter that
+/// would have worked was one directory away and never looked at.
+///
+/// Candidates are returned in order; `ensure_python_running` picks the
+/// first that can import the application, because a path existing is not
+/// evidence that it can run this program.
+fn python_candidates(backend_root: &std::path::Path) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Some(explicit) = std::env::var_os("AURA_PYTHON") {
+        candidates.push(PathBuf::from(explicit));
+    }
+
+    /*
+     * The interpreter AURA ships, ranked above everything on the machine.
+     *
+     * It is the only candidate known in advance to work: it is the exact
+     * CPython the vendored wheels were built for, it cannot be upgraded out
+     * from under the application, and it is there on machines that have no
+     * other Python at all — Windows ships none, macOS ships 3.9 through the
+     * Command Line Tools, Ubuntu 22.04 ships 3.10. Those are the machines
+     * where AURA used to install and then report an empty inventory.
+     *
+     * It outranks an activated virtualenv deliberately. That rule exists
+     * for a user's own project work; this is AURA's internal plumbing, and
+     * borrowing whatever environment happened to be active is how the same
+     * build behaves differently on two machines. A source checkout stages
+     * no runtime, so development still falls through to the search below.
+     *
+     * `AURA_PYTHON` still wins, because an explicit instruction should.
+     */
+    let runtime_exe = if cfg!(windows) { "python.exe" } else { "bin/python3" };
+    if let Some(resources) = backend_root.parent() {
+        candidates.push(resources.join("runtime").join(runtime_exe));
+    }
+
+    let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };
+    let venv_exe = if cfg!(windows) { "python.exe" } else { "python" };
+
+    // An environment someone activated is a deliberate choice, so it ranks
+    // directly below an explicit `AURA_PYTHON`.
+    for active in ["VIRTUAL_ENV", "CONDA_PREFIX"] {
+        if let Some(root) = std::env::var_os(active) {
+            candidates.push(PathBuf::from(root).join(venv_bin).join(venv_exe));
+        }
+    }
+
+    candidates.push(backend_root.join(".venv").join(venv_bin).join(venv_exe));
+    if let Some(parent) = backend_root.parent() {
+        candidates.push(parent.join(".venv").join(venv_bin).join(venv_exe));
+    }
+
+    let names: &[&str] = if cfg!(windows) {
+        &["python.exe", "python3.exe"]
+    } else {
+        &["python3", "python"]
+    };
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for name in names {
+                candidates.push(dir.join(name));
+            }
+        }
+    }
+
+    /*
+     * Version managers and per-user installs.
+     *
+     * These are searched by LOCATION rather than through PATH because the
+     * PATH a desktop launcher provides does not contain them — that is the
+     * whole point. `pyenv` is listed by its shims first (the interpreter
+     * the user selected) and then by each installed version, so a machine
+     * with pyenv but no global shim still resolves.
+     */
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        let home = PathBuf::from(home);
+        let pyenv_root = std::env::var_os("PYENV_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".pyenv"));
+
+        for name in names {
+            candidates.push(pyenv_root.join("shims").join(name));
+        }
+        // Newest first: a version manager's later installs are the ones a
+        // user is likely to have provisioned for current work.
+        if let Ok(entries) = std::fs::read_dir(pyenv_root.join("versions")) {
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_dir())
+                .collect();
+            versions.sort();
+            for version in versions.into_iter().rev() {
+                candidates.push(version.join(venv_bin).join(venv_exe));
+                candidates.push(version.join(venv_bin).join("python3"));
+            }
+        }
+
+        for root in ["miniconda3", "anaconda3", "miniforge3", "mambaforge"] {
+            candidates.push(home.join(root).join(venv_bin).join(venv_exe));
+        }
+        for name in names {
+            candidates.push(home.join(".local").join("bin").join(name));
+        }
+    }
+
+    #[cfg(unix)]
+    for fixed in ["/usr/local/bin/python3", "/usr/bin/python3", "/opt/homebrew/bin/python3"] {
+        candidates.push(PathBuf::from(fixed));
+    }
+
+    let mut seen: Vec<PathBuf> = Vec::new();
+    candidates.retain(|c| {
+        if seen.contains(c) {
+            return false;
+        }
+        seen.push(c.clone());
+        c.is_file()
+    });
+    /*
+     * Each candidate costs one interpreter start-up to test, so the list is
+     * capped rather than exhaustive.
+     *
+     * The cap used to be small enough to be the bug: a machine with several
+     * Pythons on PATH could exhaust it before reaching the pyenv or conda
+     * interpreter that was the only one able to run the backend, and the
+     * application reported that no Python on the machine could work while
+     * one sat a directory away. The limit now sits past the version-manager
+     * locations for that reason.
+     *
+     * The cost of raising it is bounded and paid only on failure: a probe
+     * that cannot import exits in tens of milliseconds, and the search
+     * stops at the first interpreter that works — which on a machine with a
+     * usable Python is near the front. The cost of the old value was an
+     * application that did not function at all.
+     */
+    candidates.truncate(MAX_PYTHON_CANDIDATES);
+    candidates
+}
+
+/// How many interpreters are worth testing before giving up.
+const MAX_PYTHON_CANDIDATES: usize = 24;
+
+/// Can this interpreter import the backend, right now?
+///
+/// A one-shot import check before the long-lived spawn. Without it a
+/// missing dependency shows up as "the backend did not become ready within
+/// 90s" — ninety seconds of waiting for a process that died on its first
+/// import — instead of the one line that says which import failed.
+///
+/// The check runs the REAL entry script with `--check` rather than a
+/// `-c` snippet listing the imports. A packaged AURA carries its own
+/// Starlette, uvicorn and Pydantic, and the entry script is what puts them
+/// on `sys.path` — including picking the `pydantic_core` built for this
+/// interpreter's exact CPython version. A snippet here would have to
+/// restate those rules, and any drift between the two copies rejects every
+/// interpreter on the machine while the backend would have started fine.
+/// Asking the script is the only way to test the conditions it will run
+/// under.
+fn python_can_import(
+    python: &std::path::Path,
+    entry: &std::path::Path,
+    backend_root: &std::path::Path,
+) -> Result<(), String> {
+    let output = Command::new(python)
+        .arg(entry)
+        .arg("--check")
+        .env("PYTHONPATH", backend_root)
+        // The AppImage runtime exports PYTHONHOME pointing INTO its own
+        // mount, which holds no stdlib. An interpreter that inherits it
+        // dies before it runs a line of user code — "No module named
+        // 'encodings'", whose last stderr line is "<no Python frame>".
+        // Every candidate then reports that same meaningless string and a
+        // perfectly good Python looks broken. The interpreter we are
+        // testing knows its own home; inheriting anyone else's is never
+        // right, so it is removed here rather than overridden.
+        .env_remove("PYTHONHOME")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("{} could not be run: {e}", python.display()))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+    // The last line of a traceback is the ImportError itself, which is the
+    // only part a user can act on.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = stderr
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("no output")
+        .trim()
+        .to_string();
+    Err(format!("{}: {reason}", python.display()))
+}
+
+/// Bring the Python backend up, or explain precisely why we did not.
+///
+/// `entry` is the resolved launcher script and `backend_root` the
+/// directory holding the `aura` package — the caller owns finding both,
+/// because they differ between a dev tree and a packaged resource
+/// directory and the shell should not guess.
+///
+/// A failure here is NOT fatal to the application: the shell reports it and
+/// carries on, and the Environment screen says the backend is not answering
+/// instead of showing an empty machine. Silently degrading to "0 installed"
+/// is the one outcome that is not allowed.
+pub fn ensure_python_running(
+    handle: &ServiceHandle,
+    entry: PathBuf,
+    backend_root: PathBuf,
+    port: u16,
+) -> Result<Startup, String> {
+    match identify_python(port) {
+        // Already there — a developer's `npm run environment:api`, or a
+        // second window. Reuse it and leave its lifecycle to its owner.
+        PortState::Aura => return Ok(Startup::Reused),
+        PortState::Foreign(why) => {
+            return Err(format!(
+                "Port {port} is in use by another program ({why}). AURA will not take over a port \
+                 it does not own, and will not read machine state from a service it cannot \
+                 identify. Stop that program, or free port {port}, then start AURA again."
+            ))
+        }
+        PortState::Free => {}
+    }
+
+    if !entry.is_file() {
+        return Err(format!(
+            "AURA's Python environment backend was not found at {}. \
+             The machine inventory needs it; the installation looks incomplete.",
+            entry.display()
+        ));
+    }
+
+    let candidates = python_candidates(&backend_root);
+    if candidates.is_empty() {
+        return Err(
+            "AURA needs Python 3.12 or newer to read this machine's inventory, and none was \
+             found. Install Python, or set AURA_PYTHON to its full path."
+                .to_string(),
+        );
+    }
+
+    let mut rejected: Vec<String> = Vec::new();
+    let mut chosen: Option<PathBuf> = None;
+    for candidate in &candidates {
+        match python_can_import(candidate, &entry, &backend_root) {
+            Ok(()) => {
+                chosen = Some(candidate.clone());
+                break;
+            }
+            Err(why) => rejected.push(why),
+        }
+    }
+    let Some(python) = chosen else {
+        return Err(format!(
+            "AURA could not start its environment backend with any interpreter, including the \
+             one it ships. A packaged installation should never reach this, so the installation \
+             is probably damaged — reinstalling is the fastest fix. Tried:\n  {}",
+            rejected.join("\n  ")
+        ));
+    };
+
+    // Only a machine-provided interpreter is advertised on PATH; see
+    // `augmented_path`.
+    let python_is_bundled = backend_root
+        .parent()
+        .map(|resources| resources.join("runtime").join(if cfg!(windows) { "python.exe" } else { "bin/python3" }))
+        .is_some_and(|bundled| bundled == *python);
+
+    let home = aura_home();
+    let log_dir = home.join("logs");
+    std::fs::create_dir_all(&log_dir)
+        .map_err(|e| format!("Could not create {}: {e}", log_dir.display()))?;
+    let log_path = log_dir.join("environment-backend.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("Could not open {}: {e}", log_path.display()))?;
+    let log_err = log.try_clone().map_err(|e| e.to_string())?;
+
+    eprintln!("[aura] python : {}", python.display());
+    eprintln!("[aura] backend: {}", entry.display());
+
+    // The PATH matters here more than anywhere else in this file: PATH
+    // discovery IS the inventory. A GUI launcher hands its child a minimal
+    // PATH, and under that the backend would report a machine with almost
+    // nothing installed — confidently, and wrongly.
+    let child = Command::new(&python)
+        .arg(&entry)
+        .arg(port.to_string())
+        .current_dir(&home)
+        // Same rule as the Node service: a bundled interpreter is used by
+        // absolute path and never seeded into the PATH the environment
+        // scan reads, or AURA would inventory itself.
+        .env("PATH", augmented_path(
+            if python_is_bundled { None } else { python.parent().map(PathBuf::from) }.as_ref(),
+        ))
+        .env("PYTHONPATH", &backend_root)
+        // Same reason as in `python_can_import`: a PYTHONHOME inherited
+        // from the AppImage runtime points at a mount with no stdlib, and
+        // the backend would die on startup instead of at the import check.
+        .env_remove("PYTHONHOME")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        // Unbuffered: the log is the only account of a backend that dies
+        // during startup, and a buffered one loses the traceback.
+        .env("PYTHONUNBUFFERED", "1")
+        .env("AURA_HOME", &home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .spawn()
+        .map_err(|e| {
+            format!("Could not start AURA's environment backend using {}: {e}", python.display())
+        })?;
+
+    #[cfg(windows)]
+    if !job::attach(child.id()) {
+        eprintln!(
+            "[aura] warning: could not put the environment backend in a job object; it may \
+             survive an abnormal termination of this process and keep port {port} open."
+        );
+    }
+
+    handle.adopt(child);
+
+    match wait_ready(
+        handle,
+        port,
+        Duration::from_secs(60),
+        identify_python,
+        "AURA's environment backend",
+    ) {
+        Ok(()) => Ok(Startup::Spawned),
+        Err(e) => {
+            handle.shutdown();
+            Err(format!("{e} The backend log is at {}.", log_path.display()))
+        }
+    }
 }

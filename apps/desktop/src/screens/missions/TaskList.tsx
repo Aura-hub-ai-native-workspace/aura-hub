@@ -91,13 +91,16 @@ function TaskRow({
   const runtime = node?.status ?? 'waiting';
   const depsMet = (node?.blockedBy.length ?? 0) === 0;
   const isManualKind = ['manual-operation', 'review', 'approval', 'documentation', 'research'].includes(task.kind);
-  const [original, setOriginal] = useState<string>('');
+  // undefined = still loading, null = load failed, string = loaded.
+  const [original, setOriginal] = useState<string | null | undefined>(undefined);
   const busy = busyTaskId === task.id;
 
   useEffect(() => {
     if (run?.status !== 'proposed' || task.mode !== 'diff' || !task.targetFile) return;
     let alive = true;
-    fsReadFile(projectPath, task.targetFile).then((c) => { if (alive) setOriginal(c); }).catch(() => {});
+    // A failed read must not masquerade as an empty file: DiffEditor
+    // with original='' would render the whole proposal as an insertion.
+    fsReadFile(projectPath, task.targetFile).then((c) => { if (alive) setOriginal(c); }).catch(() => { if (alive) setOriginal(null); });
     return () => { alive = false; };
   }, [run?.status, task.mode, task.targetFile, projectPath]);
 
@@ -157,7 +160,10 @@ function TaskRow({
             )}
           </div>
           <p className="text-[11.5px] text-text-muted">{run.proposal.explanation}</p>
-          {run.proposal.newCode != null && task.targetFile && (
+          {run.proposal.newCode != null && task.targetFile && original === null && (
+            <p className="text-[11px] text-text-subtle">Could not load the current file for comparison — the proposal below stands alone.</p>
+          )}
+          {run.proposal.newCode != null && task.targetFile && original !== undefined && original !== null && (
             <div className="overflow-hidden rounded-lg border border-line">
               <DiffEditor
                 height="240px"

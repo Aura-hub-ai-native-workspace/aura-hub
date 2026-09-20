@@ -164,6 +164,9 @@ export function classifyNativeError(
  */
 const PROGRESS_NOTIFY_MS = 100;
 
+/** Bound for relaunch: success exits the process, so only a hang can hit it. */
+const RESTART_TIMEOUT_MS = 30_000;
+
 export type UpdateListener = (state: UpdateState) => void;
 
 export class UpdateService {
@@ -194,7 +197,20 @@ export class UpdateService {
   /** Set by `cancel()`; consulted at every await boundary. */
   private cancelRequested = false;
 
-  constructor(private readonly adapter: UpdaterAdapter) {}
+  constructor(private adapter: UpdaterAdapter) {}
+
+  /**
+   * Swap the adapter on the live instance (browser stand-in → native).
+   *
+   * Replacing the whole service would orphan every subscriber holding
+   * the old instance: their listeners stay registered on a service that
+   * never changes again, so the UI goes deaf after the swap. Swapping
+   * just the adapter keeps listeners, state and in-flight guards on the
+   * one instance the UI is bound to.
+   */
+  setAdapter(adapter: UpdaterAdapter): void {
+    this.adapter = adapter;
+  }
 
   /* ── observation ───────────────────────────────────────────────── */
 
@@ -318,9 +334,16 @@ export class UpdateService {
       try {
         pending = await this.adapter.check();
       } catch (e) {
+        if (this.cancelRequested) return this.state;
         this.fail(classifyNativeError(e, 'CHECK_FAILED'));
         return this.state;
       }
+
+      // A cancel that landed mid-check wins over the check's answer: the
+      // answer is stale by definition (the user withdrew the question),
+      // and settling it now would overwrite the cancellation with a
+      // result that looks like cancel was ignored.
+      if (this.cancelRequested) return this.state;
 
       this.lastSuccessfulCheckAt = this.lastCheckAt;
 
@@ -361,7 +384,9 @@ export class UpdateService {
       /* The backstop. Anything unexpected between here and the top —
          a missing native plugin, an adapter that rejects, a
          renderer-side TypeError — becomes a visible failure with a
-         retry, not a spinner nobody can clear. */
+         retry, not a spinner nobody can clear. A concurrent cancel
+         still wins: its state stands, not this failure. */
+      if (this.cancelRequested) return this.state;
       this.fail(classifyNativeError(e, 'CHECK_FAILED'));
       return this.state;
     } finally {
@@ -460,8 +485,17 @@ export class UpdateService {
     }
     const candidate = this.candidate;
     this.set({ kind: 'restarting', candidate });
+    // A hung relaunch must not pin the panel on `restarting` forever: a
+    // successful relaunch exits the process (this state never renders
+    // again), so the timeout can only ever fire when nothing happened.
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await this.adapter.relaunch();
+      await Promise.race([
+        this.adapter.relaunch().finally(() => { if (timer !== undefined) clearTimeout(timer); }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Restart did not begin within 30s.')), RESTART_TIMEOUT_MS);
+        }),
+      ]);
       return this.state;
     } catch (e) {
       this.fail(err('RESTART_FAILED', e instanceof Error ? e.message : String(e)));

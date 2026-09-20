@@ -56,6 +56,15 @@ _MODEL_WORKER_ROLES = {
 #: compiler-owned and never model-proposable.
 _MODEL_INPUT_FROM = {"literal", "upstream-output"}
 
+#: Capabilities whose dispatch input requires a repo-relative file path.
+#: Model proposals carry the file in scopePaths (the documented contract);
+#: dispatch reads input.path — without this binding every model-planned
+#: file task died at the executor with "path is required".
+_FILE_PATH_CAPS = frozenset({"filesystem.read", "filesystem.write"})
+
+#: Executor's own write bound (executors/__init__.py filesystem_write).
+_MAX_WRITE_BYTES = 64 * 1024
+
 _TASK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
 _MAX_SCOPE_PATHS = 16
 _MAX_SCOPE_LEN = 256
@@ -573,6 +582,8 @@ class TaskPlanner:
                 scope = self._model_scope(rt, task_input, s["label"], tid)
                 if scope is not None:
                     task_input = {**task_input, "scopePaths": scope}
+                task_input = self._bind_filesystem_input(
+                    task_input, scope, s["cap"], tid)
                 run_when = rt.get("runWhen") or "always"
                 if (s["cap"] == "agent.delegate"
                         and expects_change(rt.get("workerRole"), run_when)):
@@ -734,6 +745,58 @@ class TaskPlanner:
                     raise PlanningError(
                         f"task {tid} delegate input '{key}' exceeds its bound")
                 out[key] = val
+        return out
+
+    @staticmethod
+    def _bounded_repo_path(value: object, tid: str, field: str) -> str:
+        """A repo-relative file path, or PlanningError.
+
+        Mirrors the executor's confinement (_confine refuses absolute,
+        escaping and empty paths) so a bad path fails at plan time —
+        where the correction loop can fix it — instead of at dispatch.
+        """
+        if not isinstance(value, str) or not value.strip():
+            raise PlanningError(
+                f"task {tid} needs {field} to name a file "
+                "(or a single-file scopePaths to bind it from)")
+        p = value.strip().replace("\\", "/")
+        if (len(p) > _MAX_SCOPE_LEN or p.startswith("/")
+                or p.startswith("~") or ".." in p.split("/")
+                or p in (".", "")):
+            raise PlanningError(
+                f"task {tid} {field} {value!r} is not a bounded "
+                "repo-relative path")
+        return p
+
+    @classmethod
+    def _bind_filesystem_input(cls, task_input: dict,
+                               scope: list[str] | None,
+                               cap: str | None, tid: str) -> dict:
+        """Bind scopePaths to the dispatch input file tasks require.
+
+        Non-delegate proposals pass `input` through verbatim while the
+        documented contract carries the file in `scopePaths` — so a
+        model-planned filesystem.read/write otherwise reaches the
+        executor with no `path` and dies with "path is required". A
+        single-file scope binds unambiguously; anything else (multi-file
+        scope, directory scope, model-supplied path) is validated, never
+        guessed, and a missing/invalid path fails the plan closed.
+        """
+        if cap not in _FILE_PATH_CAPS:
+            return task_input
+        out = dict(task_input)
+        if not out.get("path") and scope is not None and len(scope) == 1:
+            out["path"] = scope[0]
+        out["path"] = cls._bounded_repo_path(out.get("path"), tid,
+                                             "input.path")
+        if cap == "filesystem.write":
+            content = out.get("content")
+            if not isinstance(content, str) or not content:
+                raise PlanningError(
+                    f"task {tid} filesystem.write needs input.content")
+            if len(content.encode("utf-8")) > _MAX_WRITE_BYTES:
+                raise PlanningError(
+                    f"task {tid} input.content exceeds 64KB")
         return out
 
     @staticmethod

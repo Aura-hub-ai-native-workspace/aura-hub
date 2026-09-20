@@ -108,7 +108,21 @@ class FileIdentity:
         )
 
     def matches(self, other: FileIdentity | None) -> bool:
-        return other is not None and (self.device, self.inode) == (other.device, other.inode)
+        # Full identity, not just the file number: truncating and
+        # rewriting a file in place keeps its inode while changing its
+        # bytes, so (device, inode) alone blesses a swapped binary. This
+        # is the check Windows' detect-after-run verification rests on
+        # (no /proc pinning there), so it must be exact. A legitimate
+        # system binary does not change size, mtime or mode in the
+        # seconds between vetting and execution; a mismatch refuses with
+        # TAMPERED, which a rescan clears if the machine settled.
+        return (
+            other is not None
+            and (self.device, self.inode, self.mode, self.size,
+                 self.mtime_ns)
+            == (other.device, other.inode, other.mode, other.size,
+                other.mtime_ns)
+        )
 
 
 @dataclass(frozen=True)

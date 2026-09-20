@@ -73,8 +73,11 @@ export const useFabric = create<FabricState>((set, get) => ({
 
   async refreshApprovals() {
     try {
-      const { approvals } = await fabricClient.approvals();
-      set({ approvals: Array.isArray(approvals) ? approvals : [], reachable: true });
+      const res = await fabricClient.approvals();
+      // An error shape ({error} with no list) must not blank the last
+      // known inbox: keep what was actually measured and stay reachable.
+      if (!res || !Array.isArray(res.approvals)) return;
+      set({ approvals: res.approvals, reachable: true });
     } catch {
       set({ reachable: false });
     }

@@ -293,6 +293,46 @@ def _pin_executable(argv: list[str], pin: FileIdentity) -> tuple[str | None, int
     return f"/proc/self/fd/{fd}", fd, "pinned"
 
 
+def _quote_for_cmd(arg: str) -> str:
+    """Quote one argument so ``cmd.exe`` passes it through unchanged.
+
+    Mirrors ``packages/ai-service/src/exec/which.ts`` ``quoteForCmd``: ``%``
+    and ``"`` cannot be escaped reliably through ``cmd /c`` (``%FOO%``
+    expands inside quotes), so they are refused rather than guessed at.
+    """
+    if not arg:
+        return '""'
+    if any(c in arg for c in ('%', '"', '\r', '\n')):
+        raise ValueError(
+            "refused to pass an argument through cmd.exe that contains "
+            "'%', a quote, or a line break"
+        )
+    if any(c in arg for c in (' ', '\t', '&', '|', '<', '>', '^', '(', ')')):
+        return f'"{arg}"'
+    return arg
+
+
+def _windows_cmd_wrapper(argv: list[str]) -> list[str] | None:
+    """Route a ``.cmd``/``.bat`` shim through the command interpreter.
+
+    Returns the replacement argv, or ``None`` when no wrapper is needed.
+    ``.ps1`` is never wrapped — PowerShell scripts are not executed during
+    inventory probing.
+    """
+    target = argv[0]
+    lowered = target.lower()
+    if lowered.endswith(".ps1"):
+        return None
+    if not (lowered.endswith(".cmd") or lowered.endswith(".bat")):
+        return None
+    comspec = os.environ.get("ComSpec") or os.environ.get("COMSPEC") or "cmd.exe"
+    try:
+        quoted = [_quote_for_cmd(target), *(_quote_for_cmd(a) for a in argv[1:])]
+    except ValueError:
+        return None
+    return [comspec, "/d", "/s", "/c", *quoted]
+
+
 def run_argv(
     argv: list[str],
     *,
@@ -309,6 +349,12 @@ def run_argv(
     against. When supplied, the command either runs that exact file or does
     not run at all.
 
+    Windows safety (GUI-fix): ``.ps1`` targets are refused outright, and
+    ``.cmd``/``.bat`` shims (npm, etc.) are routed through
+    ``cmd.exe /d /s /c`` with per-argument quoting — ``CreateProcess`` cannot
+    run them directly, and a shell string must never be built. ``%``/quote
+    arguments that cannot survive ``cmd`` parsing are refused.
+
     Never raises for anything the child does; failure modes come back as an
     :class:`ExecStatus`.
     """
@@ -316,6 +362,23 @@ def run_argv(
         return ExecOutcome(status=ExecStatus.ERROR, error="empty argv")
 
     started = time.monotonic()
+    if is_windows() and argv[0].lower().endswith(".ps1"):
+        return ExecOutcome(
+            status=ExecStatus.ERROR,
+            duration_ms=0,
+            error="refused to execute a PowerShell script during inventory probing",
+        )
+    if is_windows():
+        wrapped = _windows_cmd_wrapper(argv)
+        if wrapped is None and argv[0].lower().endswith((".cmd", ".bat")):
+            # Quoting refused (e.g. `%` in an argument): do not guess.
+            return ExecOutcome(
+                status=ExecStatus.ERROR,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error="refused to pass an unsafe argument through cmd.exe",
+            )
+        if wrapped is not None:
+            argv = wrapped
     env = sanitized_env(path=path, extra=env_extra)
 
     pinned_fd: int | None = None

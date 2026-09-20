@@ -11,10 +11,22 @@ import { KimiAdapter } from './adapters/kimi';
 import { NovitaAdapter } from './adapters/novita';
 import { QwenAdapter } from './adapters/qwen';
 import { Kage7Adapter } from './adapters/kage7';
+import { OllamaAdapter } from './adapters/ollama';
 
-// Bring-your-own-key providers. There is NO built-in default — the hub has
-// no AI until the user connects one of these with their own API key.
+/*
+ * Local first, cloud as a fallback.
+ *
+ * AURA's default is a model server the user runs: nothing leaves the
+ * machine, nothing needs an account, and the only thing AURA cannot guess
+ * is the address. The bring-your-own-key providers below it still work and
+ * are still reachable from Settings — they are simply no longer the thing
+ * a new user is asked for before the hub will do anything.
+ *
+ * There is still NO built-in hosted default. The hub has no AI until the
+ * user points it at their own server or connects their own key.
+ */
 const ALL: ProviderAdapter[] = [
+  new OllamaAdapter(),
   new GroqAdapter(),
   new OpenAIAdapter(),
   new AnthropicAdapter(),

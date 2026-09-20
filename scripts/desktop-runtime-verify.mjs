@@ -217,8 +217,18 @@ try {
   // Node and Git are the two the runner is guaranteed to have.
   check('3b. Node is detected with its REAL version on this OS',
     r.node?.present === true && !!r.node.version, `node=${r.node?.version} · ${r.node?.detail ?? ''}`);
+  /*
+   * The detail carries the probe's own status when it failed.
+   *
+   * `git=undefined` on its own sent someone hunting through four runs to
+   * learn that a loaded Windows runner could not start git inside the
+   * probe's timeout — the result said "may be installed but not on PATH",
+   * which was a guess, and the wrong one. The status distinguishes a tool
+   * that is absent from one that never answered, so print it.
+   */
   check('3c. Git is detected with its REAL version on this OS',
-    r.git?.present === true && !!r.git.version, `git=${r.git?.version}`);
+    r.git?.present === true && !!r.git.version,
+    r.git?.present ? `git=${r.git.version}` : `git=${r.git?.version} status=${r.git?.status ?? 'none'} — ${r.git?.detail ?? 'no detail'}`);
 
   // Whatever else is genuinely here — reported, never asserted.
   const present = Object.entries(r).filter(([, v]) => v.present);

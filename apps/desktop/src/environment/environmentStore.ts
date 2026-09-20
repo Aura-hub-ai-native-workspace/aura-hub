@@ -213,7 +213,7 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
         nodes: s.nodes.map((n) => (n.id === id ? applyConnect(n, probeResult) : n)),
         busy: s.busy.filter((b) => b !== id),
       }));
-    } catch {
+    } catch (e) {
       // Fallback to probe-only if direct endpoint unavailable
       try {
         const { transportFor } = await import('./transports');
@@ -223,11 +223,22 @@ export const useEnvironmentStore = create<EnvironmentState>((set, get) => ({
           set((s) => ({
             nodes: s.nodes.map((x) => (x.id === id ? applyConnect(x, result) : x)),
             busy: s.busy.filter((b) => b !== id),
+            scanError: null,
           }));
           return;
         }
-      } catch {}
-      set((s) => ({ busy: s.busy.filter((b) => b !== id) }));
+      } catch {
+        /* fall through to the honest failure below */
+      }
+      // Both paths failed: say so in the header error slot instead of
+      // clearing busy and looking like nothing happened.
+      set((s) => ({
+        busy: s.busy.filter((b) => b !== id),
+        scanError:
+          e instanceof Error && e.message
+            ? `Could not connect ${node.entry.name}: ${e.message}`
+            : `Could not connect ${node.entry.name}.`,
+      }));
     }
   },
 
@@ -804,6 +815,22 @@ export function normalizeInventory(input: InventoryInputs): NormalizedInventory 
   }
 }
 
+/**
+ * Drop `/environment/inventory` entries that duplicate an already-merged
+ * card. The merge above dedupes catalog/PATH/package items by identity
+ * (real path, owning package); inventory entries appended afterwards
+ * skipped that index, so one tool appeared twice — once `verified`, once
+ * `unverified` — and Machine Environment counts doubled with it.
+ */
+export function dedupeInventoryItems(
+  merged: Pick<NormalizedInventory, 'verified' | 'unverified'>,
+  candidates: InventoryItem[],
+): InventoryItem[] {
+  const seen = new Map<string, InventoryItem>();
+  for (const item of [...merged.verified, ...merged.unverified]) claim(seen, item);
+  return candidates.filter((item) => !findExisting(seen, item));
+}
+
 export function useNormalizedInventory(): NormalizedInventory {
   const nodes = useEnvironmentStore((s) => s.nodes);
   const discovered = useEnvironmentStore((s) => s.discovered);
@@ -858,7 +885,10 @@ export function useNormalizedInventory(): NormalizedInventory {
 
   return {
     ...normalized,
-    unverified: [...normalized.unverified, ...inventoryItems.filter((item) => !item.verified)],
+    unverified: [
+      ...normalized.unverified,
+      ...dedupeInventoryItems(normalized, inventoryItems.filter((item) => !item.verified)),
+    ],
   };
 }
 
