@@ -207,6 +207,7 @@ export function ConversationPane({
   onRegenerate,
   onDecide,
   projectName,
+  scope,
 }: {
   messages: AgentChatMessage[];
   activity: AgentActivity;
@@ -222,6 +223,12 @@ export function ConversationPane({
   onDecide: (messageId: string, granted: boolean, reason?: string) => void;
   /** Shown only so the user knows what AURA is working on. */
   projectName: string | null;
+  /**
+   * Which surface this pane is. The transcript looks the same either
+   * way, so the header names it: the user must always know whether
+   * this thread is the global Workspace Chat or one project's Ask AURA.
+   */
+  scope: 'workspace' | 'project';
 }) {
   const [text, setText] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -252,9 +259,18 @@ export function ConversationPane({
     <section aria-label="Conversation with AURA" className="flex min-h-0 flex-1 flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b border-[rgba(125,146,255,0.22)] px-6 py-3.5">
         <span className="min-w-0 flex-1">
-          <h2 className="truncate text-[15px] font-semibold tracking-[-0.01em] text-text">AURA</h2>
+          <h2 className="flex items-center gap-2 truncate text-[15px] font-semibold tracking-[-0.01em] text-text">
+            AURA Workspace
+            <span
+              data-testid="chat-scope"
+              title={scope === 'workspace' ? 'Workspace execution — objectives become plans, approvals and governed work' : 'Project Ask AURA — this project’s context only'}
+              className="shrink-0 rounded-full border border-[rgba(125,146,255,0.32)] bg-[rgba(13,19,38,0.7)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-text-muted"
+            >
+              {scope === 'workspace' ? 'Execution' : 'Project chat'}
+            </span>
+          </h2>
           <p className="truncate text-[11.5px] text-text-subtle">
-            {projectName ? `Working in ${projectName}` : 'Ask anything, or tell me what to build'}
+            {projectName ? `Working in ${projectName}` : 'Give me an objective — I plan, request approval, and execute'}
           </p>
         </span>
         {agentUp === false && (
@@ -275,9 +291,9 @@ export function ConversationPane({
               <Icon name="spark" size={26} />
             </span>
             <div>
-              <p className="text-[16px] font-semibold text-text">How can I help?</p>
+              <p className="text-[16px] font-semibold text-text">What should get done?</p>
               <p className="mt-1 text-[12.5px] text-text-muted">
-                I can answer questions, or use the tools you have connected to do real work.
+                State an objective. I will plan it, ask for approval where it matters, execute with the tools you connected, and verify the result.
               </p>
             </div>
             <div className="flex flex-wrap justify-center gap-2">

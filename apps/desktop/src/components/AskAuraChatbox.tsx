@@ -331,7 +331,7 @@ export function AskAuraChatbox({ isOpen, onClose }: { isOpen: boolean; onClose: 
                     Send
                   </Button>
                 </div>
-                <div className="mt-1.5 px-1 text-[10.5px] text-text-subtle">Enter to send · Shift+Enter for a new line · local preview responses</div>
+                <div className="mt-1.5 px-1 text-[10.5px] text-text-subtle">Enter to send · Shift+Enter for a new line · answers stream from the configured provider</div>
               </div>
             </div>
           </motion.div>

@@ -52,8 +52,10 @@ export interface ProjectProfile {
 }
 
 export interface ConvMessage { id: string; role: 'user' | 'assistant'; content: string; at: string; meta?: unknown; error?: boolean }
-export interface Conversation { id: string; title: string; createdAt: string; updatedAt: string; messages: ConvMessage[] }
-export interface ConversationSummary { id: string; title: string; createdAt: string; updatedAt: string; messageCount: number; preview: string }
+/** Exactly one scope per conversation: the global Workspace Chat, or one project's Ask AURA. Scopes never share threads. */
+export type ConversationScope = 'workspace' | 'project';
+export interface Conversation { id: string; title: string; scope?: ConversationScope; createdAt: string; updatedAt: string; messages: ConvMessage[] }
+export interface ConversationSummary { id: string; title: string; scope?: ConversationScope; createdAt: string; updatedAt: string; messageCount: number; preview: string }
 
 export interface KGNode { id: string; type: string; label: string; group: string; relPath?: string; line?: number; detail?: string }
 export interface KGEdge { from: string; to: string; kind: string }
@@ -848,6 +850,15 @@ export const aiClient = {
   removeConversation: (id: string, cid: string) => jsend<{ ok: boolean }>('DELETE', `/projects/${id}/conversations/${cid}`),
   appendMessage: (id: string, cid: string, msg: { role: 'user' | 'assistant'; content: string; meta?: unknown; error?: boolean }) => jpost<ConvMessage>(`/projects/${id}/conversations/${cid}/message`, msg),
   removeLastAssistantMessage: (id: string, cid: string) => jsend<{ ok: boolean }>('DELETE', `/projects/${id}/conversations/${cid}/message/last`),
+
+  /* workspace chat (global scope) — same store, disjoint file, disjoint routes */
+  listWorkspaceConversations: () => jget<{ conversations: ConversationSummary[] }>('/workspace/conversations'),
+  getWorkspaceConversation: (cid: string) => jget<Conversation>(`/workspace/conversations/${cid}`),
+  createWorkspaceConversation: (title?: string) => jpost<Conversation>('/workspace/conversations', { title }),
+  renameWorkspaceConversation: (cid: string, title: string) => jsend<Conversation>('PATCH', `/workspace/conversations/${cid}`, { title }),
+  removeWorkspaceConversation: (cid: string) => jsend<{ ok: boolean }>('DELETE', `/workspace/conversations/${cid}`),
+  appendWorkspaceMessage: (cid: string, msg: { role: 'user' | 'assistant'; content: string; meta?: unknown; error?: boolean }) => jpost<ConvMessage>(`/workspace/conversations/${cid}/message`, msg),
+  removeLastWorkspaceAssistantMessage: (cid: string) => jsend<{ ok: boolean }>('DELETE', `/workspace/conversations/${cid}/message/last`),
 
   /* memory */
   listMemory: (id: string) => jget<{ items: MemoryItem[] }>(`/projects/${id}/memory`),
