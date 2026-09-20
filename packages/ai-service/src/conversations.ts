@@ -14,6 +14,24 @@
 import type { ConversationTurn } from '@aura/intelligence';
 import { homePath, readJsonFile, writeJsonFile } from './persist';
 
+/**
+ * Which conversational surface a conversation belongs to. Every message
+ * belongs to exactly one conversation, and every conversation has exactly
+ * one scope — `workspace` (the global AURA chat) or `project` (one
+ * project's Ask AURA). Scopes never share files, history, or sessions.
+ */
+export type ConversationScope = 'workspace' | 'project';
+
+/**
+ * The conversation file id of the global Workspace Chat.
+ *
+ * Reserved: project ids are slugs (`[^a-z0-9]+` → `-`), so no project can
+ * ever own this id. The workspace chat persists exactly like a project's
+ * threads — same class, same file format — but in its own file, so
+ * project threads and the workspace thread can never mix.
+ */
+export const WORKSPACE_SCOPE_ID = '__workspace__';
+
 export interface ConvMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -27,6 +45,8 @@ export interface ConvMessage {
 export interface Conversation {
   id: string;
   title: string;
+  /** Exactly one scope per conversation. Absent on records written before scopes existed — read as `scopeOfFile`. */
+  scope?: ConversationScope;
   createdAt: string;
   updatedAt: string;
   messages: ConvMessage[];
@@ -35,6 +55,7 @@ export interface Conversation {
 export interface ConversationSummary {
   id: string;
   title: string;
+  scope: ConversationScope;
   createdAt: string;
   updatedAt: string;
   messageCount: number;
@@ -46,8 +67,11 @@ const genId = (p: string) => `${p}_${Date.now().toString(36)}_${Math.random().to
 
 export class ProjectConversations {
   private items: Conversation[];
+  /** The scope of every conversation in this file. Derived from the file id — one file, one scope, no exceptions. */
+  readonly scope: ConversationScope;
 
   constructor(private readonly projectId: string) {
+    this.scope = projectId === WORKSPACE_SCOPE_ID ? 'workspace' : 'project';
     this.items = readJsonFile<Conversation[]>(FILE(projectId), []);
   }
 
@@ -60,6 +84,8 @@ export class ProjectConversations {
     return {
       id: c.id,
       title: c.title,
+      // Old records predate scopes; the file they live in is the scope.
+      scope: c.scope ?? this.scope,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
       messageCount: c.messages.length,
@@ -78,7 +104,7 @@ export class ProjectConversations {
 
   create(title?: string): Conversation {
     const now = new Date().toISOString();
-    const conv: Conversation = { id: genId('conv'), title: (title?.trim() || 'New conversation').slice(0, 120), createdAt: now, updatedAt: now, messages: [] };
+    const conv: Conversation = { id: genId('conv'), title: (title?.trim() || 'New conversation').slice(0, 120), scope: this.scope, createdAt: now, updatedAt: now, messages: [] };
     this.items.unshift(conv);
     this.save();
     return conv;

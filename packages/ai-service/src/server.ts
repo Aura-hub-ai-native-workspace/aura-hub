@@ -547,6 +547,22 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         return json(res, 200, manager.missionDashboard());
       }
 
+      /* ── workspace chat (global scope) ────────────────────────────
+         The SAME conversation store as projects, under the reserved
+         workspace file. Project routes below can never address these
+         threads (their id is not a project id), and these routes can
+         never address project threads. One store, two disjoint files. */
+      if (seg[0] === 'workspace' && seg[1] === 'conversations') {
+        if (seg.length === 2 && method === 'GET') return json(res, 200, { conversations: manager.listWorkspaceConversations() });
+        if (seg.length === 2 && method === 'POST') { const b = await readJson(req); return json(res, 200, manager.createWorkspaceConversation(b.title as string | undefined)); }
+        const cid = seg[2];
+        if (seg.length === 3 && method === 'GET') { const c = manager.getWorkspaceConversation(cid); return c ? json(res, 200, c) : json(res, 404, { error: 'no such conversation' }); }
+        if (seg.length === 3 && (method === 'PATCH' || method === 'POST')) { const b = await readJson(req); const c = manager.renameWorkspaceConversation(cid, String(b.title ?? '')); return c ? json(res, 200, c) : json(res, 404, { error: 'no such conversation' }); }
+        if (seg.length === 3 && method === 'DELETE') return json(res, 200, { ok: manager.removeWorkspaceConversation(cid) });
+        if (seg[3] === 'message' && method === 'POST') { const b = await readJson(req); return json(res, 200, manager.appendWorkspaceMessage(cid, { role: b.role === 'assistant' ? 'assistant' : 'user', content: String(b.content ?? ''), meta: b.meta, error: Boolean(b.error) }) ?? { error: 'no such conversation' }); }
+        if (seg[3] === 'message' && seg[4] === 'last' && method === 'DELETE') return json(res, 200, { ok: manager.removeLastWorkspaceAssistantMessage(cid) });
+      }
+
       /* ── projects ─────────────────────────────────────────────── */
       if (seg[0] === 'projects') {
         if (seg.length === 1) {

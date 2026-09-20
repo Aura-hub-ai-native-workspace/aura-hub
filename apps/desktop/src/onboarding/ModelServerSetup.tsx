@@ -52,22 +52,14 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
   const [error, setError] = useState<string>();
   const [models, setModels] = useState<{ id: string; name: string }[]>([]);
   const [sample, setSample] = useState<string>();
-
-  /*
-   * Keep asking until the service answers.
-   *
-   * This screen is rendered the moment the window appears, and AURA's own
-   * service takes a few seconds to come up behind it — longer on a first
-   * run, and longer still on a slow disk. A single attempt at mount lost
-   * that race, left `provider` null, and disabled "Verify and Continue"
-   * permanently: the user could type an address and a model and simply
-   * never be allowed to continue. Nothing on screen explained why,
-   * because from the screen's point of view nothing had gone wrong.
-   *
-   * So it retries, and says which of the two states it is in. The prefill
-   * only ever lands in an untouched field — a late answer must not
-   * overwrite an address the user has already started typing.
+  /**
+   * True when a server configuration was saved on an earlier run but is
+   * not healthy now. The fields are prefilled from it and the copy says
+   * "unavailable" rather than "configure" — and nothing here erases the
+   * saved configuration: a failed health check edits no store.
    */
+  const [hadSaved, setHadSaved] = useState(false);
+
   useEffect(() => {
     let alive = true;
     let attempt = 0;
@@ -82,7 +74,18 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
         if (served) {
           setProvider(served);
           setServiceError(null);
-          setBaseUrl((current) => current || served.defaultBaseUrl || '');
+          // A self-hosted entry is fingerprinted by its address, so a
+          // saved address reads back out of the connected list. Prefer
+          // it over the default — returning to this screen must show
+          // what was configured, not a blank form — but only ever into
+          // an untouched field, never over the user's typing.
+          const saved = (r.connected ?? []).find((c) => c.id === served.id) ?? null;
+          const savedAddr = saved?.fingerprint || '';
+          const savedModel = (r.activeModel && r.activeModel !== 'none' ? r.activeModel : '')
+            || (saved?.activeModel && saved.activeModel !== 'none' ? saved.activeModel : '');
+          if (savedAddr || savedModel) setHadSaved(true);
+          setBaseUrl((current) => current || savedAddr || served.defaultBaseUrl || '');
+          if (savedModel) setModel((current) => current || savedModel);
           return;
         }
         throw new Error('no self-hosted provider offered');
@@ -187,6 +190,13 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
       {serviceError && (
         <div className="mt-6 rounded-xl border border-amber-400/25 bg-amber-400/10 px-4 py-3 text-[13px] text-amber-200/90">
           {serviceError}
+        </div>
+      )}
+
+      {hadSaved && !serviceError && (
+        <div className="mt-6 rounded-xl border border-amber-400/25 bg-amber-400/10 px-4 py-3 text-[13px] leading-relaxed text-amber-200/90">
+          Saved server unavailable — the address and model below are your saved configuration, kept as-is.
+          Edit them and verify again.
         </div>
       )}
 
