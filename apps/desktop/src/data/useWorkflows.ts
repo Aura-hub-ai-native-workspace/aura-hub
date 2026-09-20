@@ -73,7 +73,9 @@ export interface RunState {
   states: Record<string, NodeRunInfo>;
   logs: RunLogLine[];
   outputs: { nodeId: string; title: string; text: string }[];
-  status: 'running' | 'completed' | 'failed' | null;
+  // 'cancelled' is a terminal state of its own: a cancelled run must
+  // never inflate failure counts or read as a crash.
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | null;
   ms: number;
   error?: string;
   /**
@@ -129,9 +131,19 @@ interface WorkflowsState {
   editingId: string | null;
   def: Workflow | null;
   dirty: boolean;
+  /** Content-revision counter. Bumped by content edits (mutate/undo/redo)
+   * so the Permissions tab can re-read the service envelope whose input
+   * changed. Position-only drags (nudge) are excluded on purpose: moving
+   * a node re-fires a service round-trip per mousemove for an answer that
+   * cannot change. Never persisted; the server owns updatedAt. */
+  graphRev: number;
   undoStack: string[];
   redoStack: string[];
   run: RunState | null;
+  /** Last library/editor mutation failure. Mutations report instead of
+   * silently no-opping: without this a failed click looks identical to
+   * a working one. Cleared when the next mutation starts. */
+  lastError: string | null;
   /** Ids the service assigned this run, from its own `start` event. */
   runId: string | null;
   versionId: string | null;
@@ -145,11 +157,11 @@ interface WorkflowsState {
   loadMeta: (id: string) => Promise<void>;
   refresh: () => Promise<void>;
   create: (input: { name?: string; template?: string }) => Promise<Workflow | null>;
-  open: (id: string) => Promise<void>;
+  open: (id: string) => Promise<boolean>;
   close: () => void;
-  patchMeta: (id: string, partial: { name?: string; favorite?: boolean; category?: string; description?: string }) => Promise<void>;
-  duplicate: (id: string) => Promise<void>;
-  remove: (id: string) => Promise<void>;
+  patchMeta: (id: string, partial: { name?: string; favorite?: boolean; category?: string; description?: string }) => Promise<boolean>;
+  duplicate: (id: string) => Promise<boolean>;
+  remove: (id: string) => Promise<boolean>;
   importDef: (raw: string) => Promise<{ ok: boolean; error?: string }>;
 
   /** Graph mutation with an undo snapshot. */
@@ -159,7 +171,7 @@ interface WorkflowsState {
   beginGesture: () => void;
   undo: () => void;
   redo: () => void;
-  save: () => Promise<void>;
+  save: () => Promise<boolean>;
 
   runFlow: (inputs: Record<string, string>) => Promise<void>;
   resumeRun: (runId: string) => Promise<void>;
@@ -233,9 +245,11 @@ export const useWorkflows = create<WorkflowsState>((set, get) => ({
   editingId: null,
   def: null,
   dirty: false,
+  graphRev: 0,
   undoStack: [],
   redoStack: [],
   run: null,
+  lastError: null,
   runId: null,
   versionId: null,
   serverRun: null,
@@ -307,45 +321,73 @@ export const useWorkflows = create<WorkflowsState>((set, get) => ({
   },
 
   async create(input) {
+    set({ lastError: null });
     try {
       const wf = await aiClient.createWorkflow(input);
       await get().refresh();
       return wf;
-    } catch {
+    } catch (e) {
+      set({ lastError: (e as Error).message || 'Could not create the workflow.' });
       return null;
     }
   },
 
   async open(id) {
-    const def = await aiClient.getWorkflow(id).catch(() => null);
-    if (!def || !('id' in def)) return;
-    set({ editingId: id, def, dirty: false, undoStack: [], redoStack: [], run: null, runId: null, versionId: null, serverRun: null, defs: { ...get().defs, [def.id]: def } });
+    set({ lastError: null });
+    const def = await aiClient.getWorkflow(id).catch((e: unknown) => {
+      set({ lastError: e instanceof Error && e.message ? e.message : 'Could not open the workflow.' });
+      return null;
+    });
+    if (!def || !('id' in def)) {
+      if (!get().lastError) set({ lastError: 'The service returned no workflow to open.' });
+      return false;
+    }
+    set({ editingId: id, def, dirty: false, undoStack: [], redoStack: [], run: null, runId: null, versionId: null, serverRun: null, graphRev: 0, defs: { ...get().defs, [def.id]: def } });
+    return true;
   },
 
   close() {
     abortRun?.abort();
     // Only the live view is dropped. The run itself is persisted by the
     // service, so leaving the editor never loses history.
-    set({ editingId: null, def: null, dirty: false, undoStack: [], redoStack: [], run: null, runId: null, versionId: null, serverRun: null });
+    set({ editingId: null, def: null, dirty: false, undoStack: [], redoStack: [], run: null, runId: null, versionId: null, serverRun: null, graphRev: 0 });
     void get().refresh();
   },
 
   async patchMeta(id, partial) {
-    await aiClient.patchWorkflow(id, partial).catch(() => null);
+    set({ lastError: null });
+    const res = await aiClient.patchWorkflow(id, partial).catch((e: unknown) => {
+      set({ lastError: e instanceof Error && e.message ? e.message : 'Could not update the workflow.' });
+      return null;
+    });
+    if (!res) return false;
     const { def } = get();
     if (def && def.id === id) set({ def: { ...def, ...partial } });
     await get().refresh();
+    return true;
   },
 
   async duplicate(id) {
-    await aiClient.duplicateWorkflow(id).catch(() => null);
+    set({ lastError: null });
+    const res = await aiClient.duplicateWorkflow(id).catch((e: unknown) => {
+      set({ lastError: e instanceof Error && e.message ? e.message : 'Could not duplicate the workflow.' });
+      return null;
+    });
+    if (!res) return false;
     await get().refresh();
+    return true;
   },
 
   async remove(id) {
-    await aiClient.removeWorkflow(id).catch(() => null);
+    set({ lastError: null });
+    const res = await aiClient.removeWorkflow(id).catch((e: unknown) => {
+      set({ lastError: e instanceof Error && e.message ? e.message : 'Could not delete the workflow.' });
+      return null;
+    });
+    if (!res) return false;
     if (get().editingId === id) get().close();
     await get().refresh();
+    return true;
   },
 
   async importDef(raw) {
@@ -361,12 +403,12 @@ export const useWorkflows = create<WorkflowsState>((set, get) => ({
   },
 
   mutate(fn) {
-    const { def, undoStack } = get();
+    const { def, undoStack, graphRev } = get();
     if (!def) return;
     const before = snap(def);
     const next: Workflow = { ...def, nodes: def.nodes.map((n) => ({ ...n, config: { ...n.config } })), edges: [...def.edges] };
     fn(next);
-    set({ def: next, dirty: true, undoStack: [...undoStack.slice(-MAX_UNDO), before], redoStack: [] });
+    set({ def: next, dirty: true, undoStack: [...undoStack.slice(-MAX_UNDO), before], redoStack: [], graphRev: graphRev + 1 });
   },
 
   nudge(fn) {
@@ -384,34 +426,47 @@ export const useWorkflows = create<WorkflowsState>((set, get) => ({
   },
 
   undo() {
-    const { def, undoStack, redoStack } = get();
+    const { def, undoStack, redoStack, graphRev } = get();
     if (!def || !undoStack.length) return;
     const prev = JSON.parse(undoStack[undoStack.length - 1]) as Snapshot;
-    set({ def: { ...def, ...prev }, dirty: true, undoStack: undoStack.slice(0, -1), redoStack: [...redoStack, snap(def)] });
+    set({ def: { ...def, ...prev }, dirty: true, undoStack: undoStack.slice(0, -1), redoStack: [...redoStack, snap(def)], graphRev: graphRev + 1 });
   },
 
   redo() {
-    const { def, undoStack, redoStack } = get();
+    const { def, undoStack, redoStack, graphRev } = get();
     if (!def || !redoStack.length) return;
     const next = JSON.parse(redoStack[redoStack.length - 1]) as Snapshot;
-    set({ def: { ...def, ...next }, dirty: true, redoStack: redoStack.slice(0, -1), undoStack: [...undoStack, snap(def)] });
+    set({ def: { ...def, ...next }, dirty: true, redoStack: redoStack.slice(0, -1), undoStack: [...undoStack, snap(def)], graphRev: graphRev + 1 });
   },
 
   async save() {
     const { def } = get();
-    if (!def) return;
-    const saved = await aiClient.saveWorkflow(def.id, def).catch(() => null);
+    if (!def) return true;
+    set({ lastError: null });
+    const saved = await aiClient.saveWorkflow(def.id, def).catch((e: unknown) => {
+      set({ lastError: e instanceof Error && e.message ? e.message : 'Could not save the workflow.' });
+      return null;
+    });
     if (saved && 'id' in saved) {
       const next = { ...def, updatedAt: saved.updatedAt };
       set({ def: next, dirty: false, defs: { ...get().defs, [next.id]: next } });
     }
     await get().refresh();
+    // Streaming a run against the last-saved graph while the editor
+    // shows a dirty one runs the wrong graph: refuse instead.
+    return get().dirty === false;
   },
 
   async runFlow(inputs) {
     const { def, dirty } = get();
     if (!def || get().run?.active) return;
-    if (dirty) await get().save();
+    if (dirty && !(await get().save())) {
+      const reason = get().lastError ?? 'The graph could not be saved, so nothing ran.';
+      set({
+        run: { active: false, states: {}, logs: [], outputs: [], status: 'failed', ms: 0, beats: {}, error: reason },
+      });
+      return;
+    }
 
     abortRun = new AbortController();
     const base: RunState = { active: true, states: {}, logs: [], outputs: [], status: 'running', ms: 0, beats: {} };
@@ -451,7 +506,9 @@ export const useWorkflows = create<WorkflowsState>((set, get) => ({
     if (def && runId) await aiClient.cancelWorkflowRun(def.id, runId).catch(() => null);
     abortRun?.abort();
     const run = get().run;
-    if (run) set({ run: { ...run, active: false, status: 'failed', error: 'cancelled' } });
+    // Cancelled is terminal but not failed: failure counts and danger
+    // styling must keep meaning "something went wrong".
+    if (run) set({ run: { ...run, active: false, status: 'cancelled', error: undefined } });
     if (def && runId) {
       const rec = await aiClient.workflowRun(def.id, runId).catch(() => null);
       if (rec && 'id' in rec) set({ serverRun: rec });

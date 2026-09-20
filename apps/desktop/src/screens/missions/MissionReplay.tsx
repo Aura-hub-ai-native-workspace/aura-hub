@@ -42,8 +42,9 @@ export function MissionReplay({ replay, loadReplay }: { replay: MissionReplayPay
     );
   }
 
-  const frame = frames[Math.min(idx, frames.length - 1)];
   const total = frames.length;
+  // An empty replay must not index frames[-1]: undefined frame, honest count.
+  const frame = total ? frames[Math.min(idx, total - 1)] : undefined;
   const counts = new Map<ExecutionTaskStatus, number>(TASK_STATUSES.map((s) => [s, 0]));
   if (frame) for (const s of Object.values(frame.snapshot.taskStates)) counts.set(s, (counts.get(s) ?? 0) + 1);
 
@@ -65,7 +66,7 @@ export function MissionReplay({ replay, loadReplay }: { replay: MissionReplayPay
         <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} className="rounded-lg border border-line bg-surface px-2 py-1 text-[11px] text-text outline-none focus:border-accent">
           {[0.5, 1, 2, 4].map((s) => <option key={s} value={s}>{s}×</option>)}
         </select>
-        <span className="ml-auto whitespace-nowrap text-[11px] text-text-muted">frame {idx + 1}/{total}</span>
+        <span className="ml-auto whitespace-nowrap text-[11px] text-text-muted">{total ? `frame ${idx + 1}/${total}` : 'no frames'}</span>
       </div>
       <input
         type="range" min={0} max={Math.max(0, frames.length - 1)} value={idx}

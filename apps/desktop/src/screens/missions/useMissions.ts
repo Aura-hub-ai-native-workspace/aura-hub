@@ -64,6 +64,8 @@ export function useMissions(projectId: string | null) {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const batchAbortRef = useRef<AbortController | null>(null);
+  /** Monotonic run id: a superseded batch must not clear a newer one's spinner. */
+  const batchGenRef = useRef(0);
 
   const refreshList = useCallback(async () => {
     if (!projectId) return;
@@ -84,8 +86,10 @@ export function useMissions(projectId: string | null) {
     setReplay(null);
     try {
       const mission = await missionClient.get(projectId, id);
-      if ('error' in mission && mission.error) setError(mission.error);
-      else if (!('error' in mission)) setActive(mission);
+      // An {error:''} shape must not fall through both branches leaving
+      // stale content with no error: an empty message still reports.
+      if ('error' in mission) setError(mission.error || 'The service reported an error with no message.');
+      else setActive(mission);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -103,7 +107,15 @@ export function useMissions(projectId: string | null) {
 
     const STAGE_NAMES = new Set(['classify', 'signals', 'intent', 'strategy', 'goal-graph', 'risk', 'review', 'quality']);
 
+    // Collected out-of-band: state updaters must stay pure (StrictMode
+    // double-invokes them), so cross-store effects happen after the await.
+    let doneMission: MissionRecord | null = null;
     await missionClient.create(projectId, text, (e: MissionEvent) => {
+      if (e.type === 'done') {
+        doneMission = e.mission;
+        setCreation((s) => ({ ...s, stage: 'done' }));
+        return;
+      }
       setCreation((s) => {
         switch (e.type) {
           case 'stage':
@@ -124,10 +136,6 @@ export function useMissions(projectId: string | null) {
             return { ...s, review: e.review };
           case 'quality':
             return { ...s, quality: e.quality };
-          case 'done':
-            setActive(e.mission);
-            void refreshList();
-            return { ...s, stage: 'done' };
           case 'error':
             return { ...s, errorMessage: e.message, stage: 'error' };
           default:
@@ -135,6 +143,10 @@ export function useMissions(projectId: string | null) {
         }
       });
     }, ac.signal);
+    if (doneMission && !ac.signal.aborted) {
+      setActive(doneMission);
+      void refreshList();
+    }
   }, [projectId, creation.stage, refreshList]);
 
   const approve = useCallback(async () => {
@@ -142,8 +154,13 @@ export function useMissions(projectId: string | null) {
     setError(null);
     try {
       const mission = await missionClient.approve(projectId, active.id);
-      setActive(mission);
-      void refreshList();
+      // The service answers errors as 200+{error}: rendering that as the
+      // active mission crashes MissionDetail on the wrong shape.
+      if ('error' in mission && mission.error) setError(mission.error);
+      else if (!('error' in mission)) {
+        setActive(mission);
+        void refreshList();
+      }
     } catch (e) {
       setError((e as Error).message || 'Could not approve the mission plan.');
     }
@@ -154,8 +171,11 @@ export function useMissions(projectId: string | null) {
     setError(null);
     try {
       const mission = await missionClient.reject(projectId, active.id);
-      setActive(mission);
-      void refreshList();
+      if ('error' in mission && mission.error) setError(mission.error);
+      else if (!('error' in mission)) {
+        setActive(mission);
+        void refreshList();
+      }
     } catch (e) {
       setError((e as Error).message || 'Could not reject the mission plan.');
     }
@@ -182,15 +202,21 @@ export function useMissions(projectId: string | null) {
     batchAbortRef.current?.abort();
     const ac = new AbortController();
     batchAbortRef.current = ac;
+    const gen = batchGenRef.current + 1;
+    batchGenRef.current = gen;
     setBatchBusy(true);
     setError(null);
     await missionClient.execute(projectId, active.id, (e) => {
+      if (batchGenRef.current !== gen) return;
       if (e.type === 'execution') {
         setActive((prev) => (prev ? { ...prev, execution: e.record.execution } : prev));
       } else if (e.type === 'error') {
         setError(e.message);
       }
     }, { signal: ac.signal });
+    // A superseded batch resolves after its replacement started: it must
+    // not clear the newer run's spinner or refresh over its state.
+    if (batchGenRef.current !== gen) return;
     setBatchBusy(false);
     void refreshList();
   }, [projectId, active, refreshList]);
@@ -205,7 +231,10 @@ export function useMissions(projectId: string | null) {
   const refreshApprovals = useCallback(async () => {
     try {
       const res = await fabricClient.approvals();
-      setApprovals(res.approvals ?? []);
+      // Keep the last known list on an error shape: blanking the inbox
+      // on a failed poll hides pending grants instead of reporting them.
+      if (!res || !Array.isArray(res.approvals)) return;
+      setApprovals(res.approvals);
     } catch {
       /* the gate is service-side; a failed poll just means no update */
     }

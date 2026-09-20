@@ -152,6 +152,8 @@ export function useAiAction(projectId: string, projectPath?: string) {
   const abortRef = useRef<AbortController | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const cancelRetryRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const cancelFallbackRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const submitIdRef = useRef(0);
   const settledRef = useRef(false);
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -166,10 +168,16 @@ export function useAiAction(projectId: string, projectPath?: string) {
     unsubscribeRef.current = null;
   };
 
+  const clearCancelFallback = () => {
+    if (cancelFallbackRef.current) clearTimeout(cancelFallbackRef.current);
+    cancelFallbackRef.current = undefined;
+  };
+
   useEffect(() => () => {
     stopTimer();
     stopStream();
     if (cancelRetryRef.current) clearTimeout(cancelRetryRef.current);
+    clearCancelFallback();
     abortRef.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -247,9 +255,14 @@ export function useAiAction(projectId: string, projectPath?: string) {
     opts: { followUpSid?: string } = {},
   ) => {
     settledRef.current = false;
+    clearCancelFallback();
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    // Supersede marker: the previous run's AbortError catch must not
+    // settle 'cancelled' over this run's fresh 'generating' state.
+    const submitId = submitIdRef.current + 1;
+    submitIdRef.current = submitId;
     stopStream();
     unsubscribeRef.current = centralAgentClient.events(sessionId, (frame) => {
       if (settledRef.current && frame.type !== 'run.cancelled') return;
@@ -277,11 +290,14 @@ export function useAiAction(projectId: string, projectPath?: string) {
       setState((s) => ({ ...s, sessionId: finalSid, requestId: res.requestId }));
       await routeResult(res.result, finalSid);
     } catch (e) {
+      // A superseded run's abort must not settle over its replacement.
+      // A user-cancelled wait settles via the server's run.cancelled
+      // verdict (or the cancel fallback), never optimistically here.
+      if (submitId !== submitIdRef.current) return;
       if ((e as Error)?.name === 'AbortError') {
-        settle({ phase: 'cancelled', errorMessage: null });
-      } else {
-        settle({ phase: 'error', errorMessage: honestError(e) });
+        return;
       }
+      settle({ phase: 'error', errorMessage: honestError(e) });
     }
   }, [onFrame, projectId, projectPath, routeResult, settle]);
 
@@ -369,8 +385,10 @@ export function useAiAction(projectId: string, projectPath?: string) {
   }, [routeResult, settle]);
 
   /** REAL cancellation: the STOP is recorded server-side (retried while
-   *  the session is still appearing), the stream is closed, and the run
-   *  settles to `cancelled` — never a frontend-only state change. */
+   *  the session is still appearing). The local wait stops, but the run
+   *  settles only on the server's `run.cancelled` verdict — never as a
+   *  frontend-only state change. If no verdict lands, the request was
+   *  still sent, so a bounded fallback settles rather than hanging. */
   const cancel = useCallback(() => {
     const { phase } = snapshot();
     if (phase !== 'generating' && phase !== 'context-resolved' && phase !== 'awaiting-approval') return;
@@ -380,22 +398,24 @@ export function useAiAction(projectId: string, projectPath?: string) {
       if (!sid) return;
       try {
         await centralAgentClient.cancel(sid, 'cancelled from the code editor');
-        return; // recorded — the run settles itself to `cancelled`
+        return; // recorded — the SSE verdict settles the run itself
       } catch (e) {
         const msg = (e as Error)?.message ?? '';
         if (/no such session/i.test(msg) && triesLeft > 0) {
           await new Promise((r) => { cancelRetryRef.current = setTimeout(r, 400); });
           return attempt(triesLeft - 1);
         }
-        // Any other failure still stops the LOCAL wait; the run keeps
-        // its server-side state honestly (no fake `cancelled` claim —
-        // the SSE `run.cancelled` event settles it when it lands).
+        // Any other failure still stops the LOCAL wait; the fallback
+        // below settles the UI while the run keeps its server-side
+        // state honestly.
       }
     };
     void attempt(25);
     abortRef.current?.abort();
-    stopStream();
-    settle({ phase: 'cancelled', errorMessage: null });
+    clearCancelFallback();
+    cancelFallbackRef.current = setTimeout(() => {
+      if (!settledRef.current) settle({ phase: 'cancelled', errorMessage: null });
+    }, 10_000);
   }, [pushProgress, settle, snapshot]);
 
   const reset = useCallback(() => {
@@ -410,6 +430,7 @@ export function useAiAction(projectId: string, projectPath?: string) {
       stopStream();
       abortRef.current?.abort();
     }
+    clearCancelFallback();
     setState(IDLE_STATE);
   }, [cancel, snapshot]);
 

@@ -372,13 +372,30 @@ async function probe(id: string, refresh = true): Promise<ProbeResult> {
   }
 }
 
+/**
+ * Parse an install-family JSON body. These routes answer 400 *with* a
+ * payload (guided/unavailable/unverified), so the status alone never
+ * decides — but an unreadable body still throws an honest error instead
+ * of surfacing as `undefined` fields downstream.
+ */
+async function readBody<T>(res: Response, what: string): Promise<T> {
+  try {
+    return (await res.json()) as T;
+  } catch {
+    throw new Error(`${what} failed: the backend answered ${res.status} with no readable body.`);
+  }
+}
+
 async function install(id: string): Promise<InstallResponse> {
+  // No client-side abort: installers run up to the server's own budget
+  // and aborting here would report failure while the server keeps
+  // installing. The store's busy flag clears when the call settles.
   const res = await fetch(`${ENVIRONMENT_BASE}/environment/install`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id }),
   });
-  const body = (await res.json()) as InstallResponse & { error?: string };
+  const body = await readBody<InstallResponse & { error?: string }>(res, 'Install');
   if (!res.ok) {
     // Guided/unavailable still come with 400 but carry payload
     if (body.installOutcome) return body;
@@ -388,12 +405,13 @@ async function install(id: string): Promise<InstallResponse> {
 }
 
 async function uninstall(id: string): Promise<UninstallResponse> {
+  // Same no-abort reasoning as install: the server owns the deadline.
   const res = await fetch(`${ENVIRONMENT_BASE}/environment/uninstall`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id }),
   });
-  const body = (await res.json()) as UninstallResponse & { error?: string };
+  const body = await readBody<UninstallResponse & { error?: string }>(res, 'Uninstall');
   if (!res.ok) {
     // Guided/unavailable still come with 400 but carry payload
     if (body.uninstallOutcome) return body;
@@ -407,8 +425,12 @@ async function connectDirect(id: string): Promise<ConnectResponse> {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id }),
+    // A connect is a probe with the user waiting: bound it well above
+    // the backend's own probe budget so a wedged call cannot pin the
+    // card on "Checking…" for the rest of the session.
+    signal: AbortSignal.timeout(PROBE_TIMEOUT_MS * 2),
   });
-  const body = (await res.json()) as ConnectResponse & { error?: string };
+  const body = await readBody<ConnectResponse & { error?: string }>(res, 'Connect');
   if (!res.ok) {
     if (body.result) return body as ConnectResponse;
     throw new Error(body.error || `Connect failed (${res.status})`);

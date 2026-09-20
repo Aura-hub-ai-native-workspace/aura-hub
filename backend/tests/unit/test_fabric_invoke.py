@@ -192,6 +192,33 @@ class TestApprovalGate:
         assert decisions and decisions[-1]["approvalDecision"] == "denied"
 
 
+class TestParkedSessionLinkage:
+    """A parked request carries the owning sessionId when the invocation
+    context has one, so the unified approvals inbox can route the
+    decision to /agent/sessions/{sid}/approve. Absent context → absent
+    field (never an empty or guessed value)."""
+
+    POLICY = {"byRisk": {"low": "require-approval", "medium": "ask-user",
+                         "high": "deny"}}
+    PAYLOAD = {"name": "g", "description": "", "nodes": NODES, "edges": []}
+
+    def test_parked_request_carries_session_id(self, home):
+        cfg = make_cfg(home, policy=self.POLICY)
+        r = invoke_fabric("workflow.create", self.PAYLOAD,
+                          {"taskId": "t", "sessionId": "ses-9"}, cfg)
+        assert r["outcome"] == "awaiting-approval"
+        pending = cfg.ledger.pending()
+        assert len(pending) == 1
+        assert pending[0]["sessionId"] == "ses-9"
+
+    def test_no_session_context_means_no_session_field(self, home):
+        cfg = make_cfg(home, policy=self.POLICY)
+        r = invoke_fabric("workflow.create", self.PAYLOAD,
+                          {"taskId": "t"}, cfg)
+        assert r["outcome"] == "awaiting-approval"
+        assert "sessionId" not in cfg.ledger.pending()[0]
+
+
 class TestPreflight:
     def test_describe_authority_matches_invoke(self, home):
         cfg = make_cfg(home)

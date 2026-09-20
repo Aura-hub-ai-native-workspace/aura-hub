@@ -70,7 +70,7 @@ export function getUpdateService(): UpdateService {
     if (isDesktopRuntime()) {
       void import('./tauriAdapter')
         .then(({ createTauriUpdaterAdapter }) => {
-          service = new UpdateService(createTauriUpdaterAdapter());
+          service!.setAdapter(createTauriUpdaterAdapter());
           adapterKind = 'native';
           for (const l of pendingListeners) l(service!.getState());
         })

@@ -311,6 +311,29 @@ export type MissionEvent =
   | { type: 'done'; mission: MissionRecord }
   | { type: 'error'; message: string };
 
+/**
+ * Parse a mission JSON body without ever throwing transport noise as data.
+ * Error payloads the service sends as 200+{error} still flow through —
+ * only unreadable bodies and HTTP errors throw, into every caller's
+ * existing catch.
+ */
+async function readJson<T>(res: Response, what = 'Mission request'): Promise<T> {
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`${what} failed: the service answered ${res.status} with no readable body.`);
+  }
+  if (!res.ok) {
+    const detail =
+      body && typeof body === 'object' && body !== null && 'error' in body
+        ? String((body as { error: unknown }).error)
+        : null;
+    throw new Error(detail ?? `${what} failed (${res.status}).`);
+  }
+  return body as T;
+}
+
 export const missionClient = {
   list: (projectId: string): Promise<{ missions: MissionSummary[] }> =>
     fetch(`${BASE}/projects/${projectId}/missions`).then(async (r) => {
@@ -319,31 +342,31 @@ export const missionClient = {
     }),
 
   get: (projectId: string, mid: string): Promise<MissionRecord | { error: string }> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}`).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}`).then((r) => readJson(r)),
 
   approve: (projectId: string, mid: string): Promise<MissionRecord> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/approve`, { method: 'POST' }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/approve`, { method: 'POST' }).then((r) => readJson(r)),
 
   reject: (projectId: string, mid: string, reason?: string): Promise<MissionRecord> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/reject`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/reject`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) }).then((r) => readJson(r)),
 
   start: (projectId: string, mid: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/start`, { method: 'POST' }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/start`, { method: 'POST' }).then((r) => readJson(r)),
 
   pause: (projectId: string, mid: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/pause`, { method: 'POST' }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/pause`, { method: 'POST' }).then((r) => readJson(r)),
 
   resume: (projectId: string, mid: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/resume`, { method: 'POST' }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/resume`, { method: 'POST' }).then((r) => readJson(r)),
 
   cancel: (projectId: string, mid: string, reason?: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/cancel`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/cancel`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) }).then((r) => readJson(r)),
 
   review: (projectId: string, mid: string, pass: boolean, note?: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pass, note }) }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pass, note }) }).then((r) => readJson(r)),
 
   replay: (projectId: string, mid: string): Promise<MissionReplayPayload | { error: string }> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/replay`).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/replay`).then((r) => readJson(r)),
 
   dashboard: (): Promise<MissionDashboard> =>
     fetch(`${BASE}/missions/dashboard`).then(async (r) => {
@@ -359,19 +382,19 @@ export const missionClient = {
     }),
 
   runTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/run`, { method: 'POST' }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/run`, { method: 'POST' }).then((r) => readJson(r)),
 
   acceptTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/accept`, { method: 'POST' }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/accept`, { method: 'POST' }).then((r) => readJson(r)),
 
   rejectTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/reject`, { method: 'POST' }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/reject`, { method: 'POST' }).then((r) => readJson(r)),
 
   completeManualTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/complete`, { method: 'POST' }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/complete`, { method: 'POST' }).then((r) => readJson(r)),
 
   retryTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/retry`, { method: 'POST' }).then((r) => r.json()),
+    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/retry`, { method: 'POST' }).then((r) => readJson(r)),
 
   /** Stream the current ready wave (SSE) — emits ExecutionEvents as the engine advances. */
   async execute(projectId: string, mid: string, onEvent: (e: ExecutionEvent) => void, opts: { maxParallel?: number; signal?: AbortSignal } = {}): Promise<void> {
@@ -384,6 +407,15 @@ export const missionClient = {
       });
     } catch (e) {
       onEvent({ type: 'error', message: (e as Error).message || 'Service unreachable' });
+      return;
+    }
+    if (!res.ok) {
+      let message = `Execution stream failed (${res.status})`;
+      try {
+        const body = (await res.json()) as { error?: unknown };
+        if (body && typeof body.error === 'string' && body.error) message = body.error;
+      } catch { /* unreadable error body; keep the status */ }
+      onEvent({ type: 'error', message });
       return;
     }
     if (!res.body) { onEvent({ type: 'error', message: 'No stream body' }); return; }
@@ -402,7 +434,14 @@ export const missionClient = {
           if (!line.startsWith('data:')) continue;
           const d = line.slice(5).trim();
           if (d === '[DONE]') return;
-          onEvent(JSON.parse(d) as ExecutionEvent);
+          let ev: ExecutionEvent;
+          try {
+            ev = JSON.parse(d) as ExecutionEvent;
+          } catch {
+            onEvent({ type: 'error', message: 'Received malformed data from the server.' });
+            continue;
+          }
+          onEvent(ev);
         }
       }
     } catch (e) {
@@ -422,6 +461,15 @@ export const missionClient = {
       onEvent({ type: 'error', message: (e as Error).message || 'Service unreachable' });
       return;
     }
+    if (!res.ok) {
+      let message = `Mission stream failed (${res.status})`;
+      try {
+        const body = (await res.json()) as { error?: unknown };
+        if (body && typeof body.error === 'string' && body.error) message = body.error;
+      } catch { /* unreadable error body; keep the status */ }
+      onEvent({ type: 'error', message });
+      return;
+    }
     if (!res.body) { onEvent({ type: 'error', message: 'No stream body' }); return; }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
@@ -438,7 +486,14 @@ export const missionClient = {
           if (!line.startsWith('data:')) continue;
           const d = line.slice(5).trim();
           if (d === '[DONE]') return;
-          onEvent(JSON.parse(d) as MissionEvent);
+          let ev: MissionEvent;
+          try {
+            ev = JSON.parse(d) as MissionEvent;
+          } catch {
+            onEvent({ type: 'error', message: 'Received malformed data from the server.' });
+            continue;
+          }
+          onEvent(ev);
         }
       }
     } catch (e) {

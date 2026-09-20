@@ -46,6 +46,10 @@ const IDLE_STATE: DiagnosisState = {
 export function useDiagnosis(projectId: string) {
   const [state, setState] = useState<DiagnosisState>(IDLE_STATE);
   const abortRef = useRef<AbortController | null>(null);
+  /** Buffer length when the run started. Patch ranges address that exact
+   * text; applying them to a longer/shorter buffer writes to the wrong
+   * lines and then persists the corruption. */
+  const snapshotLengthRef = useRef<number | null>(null);
 
   const run = useCallback(async () => {
     const { activePath, openFiles } = useEditorStore.getState();
@@ -55,6 +59,7 @@ export function useDiagnosis(projectId: string) {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
+    snapshotLengthRef.current = file.content.length;
 
     setState({ ...IDLE_STATE, phase: 'analyzing', filePath: file.path });
 
@@ -79,7 +84,10 @@ export function useDiagnosis(projectId: string) {
             case 'done':
               return { ...s, diagnosis: e.diagnosis, phase: 'done' };
             case 'error':
-              return { ...s, errorMessage: e.message, phase: s.phase === 'idle' || s.phase === 'analyzing' ? 'error' : s.phase };
+              // An error ends the run wherever it lands: leaving a
+              // mid-pipeline phase shows a spinner beside the error and
+              // the done-gated footer never opens.
+              return { ...s, errorMessage: e.message, phase: 'error' };
             default:
               return s;
           }
@@ -104,6 +112,13 @@ export function useDiagnosis(projectId: string) {
       // explicitly rather than assumed away.
       let resyncWarning: string | undefined;
       if (candidate && file) {
+        const snap = snapshotLengthRef.current;
+        if (snap !== null && file.content.length !== snap) {
+          return {
+            ok: false,
+            error: 'The file changed since this diagnosis ran, so the patch range no longer addresses the same text. Re-run the diagnosis first.',
+          };
+        }
         const patched = splicePatch(file.content, candidate.targetRange, candidate.newText);
         updateContent(file.path, patched);
         await saveFile(file.path);
