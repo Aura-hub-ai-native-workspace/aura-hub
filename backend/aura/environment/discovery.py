@@ -295,7 +295,12 @@ def _strip_windows_ext(name: str) -> str:
     return name
 
 
-_VERSION_BODY = r"\d+\.\d+(?:\.\d+)*(?:[-+][0-9A-Za-z][0-9A-Za-z.\-]*)?"
+#: The trailing qualifier accepts ``-``/``+`` (semver) *and* ``.`` because
+#: Windows Git reports ``2.53.0.windows.2`` — a dot-separated build tag the
+#: old class rejected, leaving Git "unverified" on every Windows machine.
+#: The qualifier still requires an alphanumeric opener, so a sentence-ending
+#: period or a bare ``1.2.`` cannot match.
+_VERSION_BODY = r"\d+\.\d+(?:\.\d+)*(?:[-+.][0-9A-Za-z][0-9A-Za-z.\-]*)?"
 
 #: The version must begin a token. Without this, the "2.5-Coder" inside a
 #: model name like "Qwen2.5-Coder" printed in a banner reads as a version.

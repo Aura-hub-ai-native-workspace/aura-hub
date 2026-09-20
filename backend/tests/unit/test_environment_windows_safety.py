@@ -337,6 +337,18 @@ def test_windows_is_program_filter(tmp_path):
     assert is_windows_probeable_file(".hidden") is False
 
 
+def test_windows_git_dot_suffix_version_parses():
+    """`git version 2.53.0.windows.2` must yield a version, not UNVERIFIED."""
+    from aura.environment.discovery import extract_version
+
+    assert extract_version("git version 2.53.0.windows.2\n") == "2.53.0.windows.2"
+    # Pre-existing behavior is unchanged for all other shapes.
+    assert extract_version("git version 2.45.1\n") == "2.45.1"
+    assert extract_version("go version go1.22.0 linux/amd64\n") == "1.22.0"
+    assert extract_version("v24.7.0\n") == "24.7.0"
+    assert extract_version("Usage: sometool <cmd>\n") is None
+
+
 # 10. Linux and macOS inventory behavior remains intact.
 def test_linux_macos_behavior_intact():
     from aura.environment.hostplatform import Platform, simulate
