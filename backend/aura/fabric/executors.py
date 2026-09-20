@@ -130,7 +130,16 @@ def _confine(root: Path, relative: str) -> Path:
     if Path(relative).is_absolute() or relative.startswith("~"):
         raise ValueError("path must be relative to the project root")
     target = (root / relative).resolve()
-    if target != root and root not in target.parents:
+    # normcase is identity on POSIX and folds case on Windows, whose
+    # filesystem is case-insensitive: without it two spellings of the
+    # same directory compare as different and legitimate paths are
+    # refused. Confinement still fails closed on real escapes.
+    import os as _os
+
+    same = _os.path.normcase(str(target)) == _os.path.normcase(str(root))
+    inside = any(_os.path.normcase(str(p)) == _os.path.normcase(str(root))
+                 for p in target.parents)
+    if not same and not inside:
         raise ValueError("path escapes the project root")
     return target
 

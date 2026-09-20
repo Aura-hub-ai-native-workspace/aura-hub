@@ -97,7 +97,8 @@ class WorkerDescriptor:
 #: provides. Mirrors central_agent.worker_match.ROLE_NODE_CAPABILITY;
 #: that module stays the authority for matching, this is presentation.
 _ROLE_FOR_CAPABILITY = {
-    "coding-agent": ("code", "review"),
+    "coding-agent": ("code", "review", "research", "planning",
+                     "testing", "documentation"),
     "terminal": ("execute",),
 }
 

@@ -30,14 +30,30 @@ export function WorkflowLibrary() {
       .sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.updatedAt.localeCompare(a.updatedAt));
   }, [wf.list, q, cat]);
 
+  const failToast = (action: string) =>
+    toast.push({
+      title: `${action} failed`,
+      // Read fresh: the `wf` snapshot above predates the awaited call.
+      description: useWorkflows.getState().lastError ?? undefined,
+      tone: 'critical',
+    });
+
   const createBlank = async () => {
     const created = await wf.create({ name: 'Untitled workflow' });
-    if (created) await wf.open(created.id);
+    if (!created) {
+      failToast('Create workflow');
+      return;
+    }
+    if (!(await wf.open(created.id))) failToast('Open workflow');
   };
 
   const fromTemplate = async (id: string) => {
     const created = await wf.create({ template: id });
-    if (created) await wf.open(created.id);
+    if (!created) {
+      failToast('Create workflow');
+      return;
+    }
+    if (!(await wf.open(created.id))) failToast('Open workflow');
   };
 
   const exportOne = async (w: WorkflowSummary) => {
@@ -91,7 +107,7 @@ export function WorkflowLibrary() {
           {filtered.map((w, i) => (
             <motion.div key={w.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i * 0.03, 0.2) }}>
               <Card className="group relative cursor-pointer transition-shadow hover:shadow-lg" padding="md">
-                <div onClick={() => void wf.open(w.id)}>
+                <div onClick={() => void (async () => { if (!(await wf.open(w.id))) failToast('Open workflow'); })()}>
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex items-center gap-2.5">
                       <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/10 text-accent"><Icon name="workflows" size={17} /></span>
@@ -109,16 +125,16 @@ export function WorkflowLibrary() {
                   </div>
                 </div>
                 <div className="absolute right-3 top-3 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
-                  <IconButton icon="pin" label={w.favorite ? 'Unfavorite' : 'Favorite'} size="sm" className={w.favorite ? 'text-accent' : ''} onClick={() => void wf.patchMeta(w.id, { favorite: !w.favorite })} />
+                  <IconButton icon="pin" label={w.favorite ? 'Unfavorite' : 'Favorite'} size="sm" className={w.favorite ? 'text-accent' : ''} onClick={() => void (async () => { if (!(await wf.patchMeta(w.id, { favorite: !w.favorite }))) failToast('Update workflow'); })()} />
                   <Menu
                     align="end"
                     trigger={<IconButton icon="more" label="Workflow actions" size="sm" />}
                     items={[
                       { id: 'rename', label: 'Rename', icon: 'note', onSelect: () => { setRenaming(w); setRenameText(w.name); } },
-                      { id: 'duplicate', label: 'Duplicate', icon: 'plus', onSelect: () => void wf.duplicate(w.id) },
+                      { id: 'duplicate', label: 'Duplicate', icon: 'plus', onSelect: () => void (async () => { if (!(await wf.duplicate(w.id))) failToast('Duplicate workflow'); })() },
                       { id: 'export', label: 'Export JSON', icon: 'doc', onSelect: () => void exportOne(w) },
                       'separator',
-                      { id: 'delete', label: 'Delete', icon: 'close', tone: 'danger', onSelect: () => void wf.remove(w.id) },
+                      { id: 'delete', label: 'Delete', icon: 'close', tone: 'danger', onSelect: () => void (async () => { if (!(await wf.remove(w.id))) failToast('Delete workflow'); })() },
                     ]}
                   />
                 </div>
@@ -148,10 +164,10 @@ export function WorkflowLibrary() {
         footer={
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setRenaming(null)}>Cancel</Button>
-            <Button onClick={() => { if (renaming && renameText.trim()) void wf.patchMeta(renaming.id, { name: renameText.trim() }); setRenaming(null); }}>Rename</Button>
+            <Button onClick={() => void (async () => { if (renaming && renameText.trim() && !(await wf.patchMeta(renaming.id, { name: renameText.trim() }))) failToast('Rename workflow'); setRenaming(null); })}>Rename</Button>
           </div>
         }>
-        <Input value={renameText} onChange={(e) => setRenameText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && renaming && renameText.trim()) { void wf.patchMeta(renaming.id, { name: renameText.trim() }); setRenaming(null); } }} autoFocus />
+        <Input value={renameText} onChange={(e) => setRenameText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && renaming && renameText.trim()) { void (async () => { if (!(await wf.patchMeta(renaming.id, { name: renameText.trim() }))) failToast('Rename workflow'); setRenaming(null); })(); } }} autoFocus />
       </Dialog>
     </div>
   );

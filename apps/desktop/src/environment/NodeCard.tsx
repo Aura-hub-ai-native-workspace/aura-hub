@@ -43,10 +43,16 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
   const [uninstalling, setUninstalling] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
+  /** One-line outcome of the last install/uninstall attempt. A silent
+   * spinner stop with an unchanged card is indistinguishable from "did
+   * nothing" — the detail (or at least its first sentence) belongs here.
+   * The Inspector still owns the full guided/unverified explanations. */
+  const [actionNote, setActionNote] = useState<string | null>(null);
 
   const handleInstall = async () => {
     if (installing || busy) return;
     setInstalling(true);
+    setActionNote(null);
     try {
       // Direct human path — bypasses the AI approval gate. The click itself
       // is the authorization. Security (allow-list, argv-only, probe) still
@@ -55,9 +61,12 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
       const output = res.output as { installOutcome?: string } | undefined;
       if (output?.installOutcome === 'installed') {
         await rescan(true);
+      } else if (res.detail) {
+        setActionNote(res.detail.split('.')[0] + '.');
       }
-    } catch {
-      /* remain honest — a throw keeps the node not-installed */
+    } catch (e) {
+      // A throw keeps the node not-installed — and now says so.
+      setActionNote(e instanceof Error && e.message ? e.message : 'Install did not complete.');
     } finally {
       setInstalling(false);
     }
@@ -68,14 +77,18 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
     setConfirmUninstall(false);
     setMenuOpen(false);
     setUninstalling(true);
+    setActionNote(null);
     try {
       const res = await uninstallDirect(node.id);
       const output = res.output as { uninstallOutcome?: string } | undefined;
       if (output?.uninstallOutcome === 'uninstalled') {
         await rescan(true);
+      } else if (res.detail) {
+        setActionNote(res.detail.split('.')[0] + '.');
       }
-    } catch {
-      /* remain honest — a throw keeps the current state */
+    } catch (e) {
+      // A throw keeps the current state — and now says so.
+      setActionNote(e instanceof Error && e.message ? e.message : 'Removal did not complete.');
     } finally {
       setUninstalling(false);
     }
@@ -110,6 +123,9 @@ export const NodeCard = memo(function NodeCard({ node, busy, onConnect, onDiscon
       </button>
 
       <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-text-muted">{phrase.nextStep}</p>
+      {actionNote && (
+        <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-attention">{actionNote}</p>
+      )}
 
       {running.length > 0 && (
         <div className="mt-2 space-y-1.5 rounded-xl border border-accent/25 bg-accent/5 p-2">

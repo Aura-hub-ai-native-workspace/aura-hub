@@ -49,6 +49,9 @@ export interface ApprovalRequest {
   projectId?: string;
   missionId?: string;
   taskId?: string;
+  /** Owning agent session, when parked by the central agent. The unified
+   * inbox routes the decision to /agent/sessions/{sessionId}/approve. */
+  sessionId?: string;
   rule?: string;
   onAccept?: string;
   onDecline?: string;
@@ -206,9 +209,34 @@ export interface InvocationResultView {
   policy?: { decision: PolicyDecision; rule: string; risk: RiskLevel; reason: string };
 }
 
+/**
+ * Parse a Fabric JSON body without ever throwing transport noise as data.
+ *
+ * An unreadable body (proxy HTML, empty reset) becomes a thrown Error with
+ * the HTTP status, which every caller already catches. Accepted statuses
+ * (notably decide's 409 "already decided") return their bodies untouched —
+ * the callers that understand those shapes keep owning them.
+ */
+async function readJson<T>(res: Response, what: string, acceptStatuses: number[] = []): Promise<T> {
+  let body: unknown = null;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`${what} failed: the service answered ${res.status} with no readable body.`);
+  }
+  if (!res.ok && !acceptStatuses.includes(res.status)) {
+    const detail =
+      body && typeof body === 'object' && body !== null && 'error' in body
+        ? String((body as { error: unknown }).error)
+        : null;
+    throw new Error(detail ?? `${what} failed (${res.status}).`);
+  }
+  return body as T;
+}
+
 export const fabricClient = {
   approvals: (): Promise<{ approvals: ApprovalRequest[] }> =>
-    fetch(`${BASE}/fabric/approvals`).then((r) => r.json()),
+    fetch(`${BASE}/fabric/approvals`).then((r) => readJson(r, 'Reading approvals')),
 
   /**
    * Run a capability through the Fabric.
@@ -227,7 +255,7 @@ export const fabricClient = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ capabilityId, input, context }),
-    }).then((r) => r.json()),
+    }).then((r) => readJson(r, 'Running capability')),
 
   /**
    * Run a capability *because the user just asked for it here*.
@@ -252,7 +280,7 @@ export const fabricClient = {
       headers: { 'content-type': 'application/json', ...(await userActionHeaders()) },
       body: JSON.stringify({ capabilityId, input, context }),
     });
-    return res.json();
+    return readJson(res, 'Running capability');
   },
 
   /**
@@ -268,10 +296,10 @@ export const fabricClient = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ granted, reason }),
-    }).then((r) => r.json()),
+    }).then((r) => readJson(r, 'Recording decision', [409])),
 
   policy: (): Promise<{ policy: PolicyConfig }> =>
-    fetch(`${BASE}/fabric/capabilities`).then((r) => r.json()),
+    fetch(`${BASE}/fabric/capabilities`).then((r) => readJson(r, 'Reading policy')),
 
   /**
    * The full manifest as the running service holds it, including each
@@ -284,20 +312,17 @@ export const fabricClient = {
    * this architecture avoids.
    */
   capabilities: (): Promise<CapabilityCatalogue> =>
-    fetch(`${BASE}/fabric/capabilities`).then(async (r) => {
-      if (!r.ok) throw new Error(`Capability catalogue failed (${r.status})`);
-      return r.json();
-    }),
+    fetch(`${BASE}/fabric/capabilities`).then((r) => readJson(r, 'Capability catalogue')),
 
   setPolicy: (patch: Partial<PolicyConfig>): Promise<{ policy: PolicyConfig; file: string }> =>
     fetch(`${BASE}/fabric/policy`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(patch),
-    }).then((r) => r.json()),
+    }).then((r) => readJson(r, 'Saving policy')),
 
   audit: (): Promise<{ audit: unknown[] }> =>
-    fetch(`${BASE}/fabric/audit`).then((r) => r.json()),
+    fetch(`${BASE}/fabric/audit`).then((r) => readJson(r, 'Reading audit')),
 
   /**
    * What a planned mission will actually need, and what is missing.
@@ -311,5 +336,5 @@ export const fabricClient = {
     projectId: string,
     missionId: string,
   ): Promise<MissionCapabilityAnnotation | { error: string }> =>
-    fetch(`${BASE}/fabric/mission/${projectId}/${missionId}`).then((r) => r.json()),
+    fetch(`${BASE}/fabric/mission/${projectId}/${missionId}`).then((r) => readJson(r, 'Reading mission capabilities')),
 };

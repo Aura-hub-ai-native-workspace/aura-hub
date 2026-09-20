@@ -44,13 +44,26 @@ _MODEL_TASK_KEYS = {
 #: value would silently become "always".
 _MODEL_RUN_WHEN = {"always", "upstream-reports-findings"}
 
-#: Closed worker-role vocabulary a model may propose (Phase G).
-#: Anything else is rejected; the role only narrows routing.
-_MODEL_WORKER_ROLES = {"code", "review", "execute"}
+#: Closed worker-role vocabulary a model may propose (Phase G, extended
+#: for the agentic workspace). Anything else is rejected; the role only
+#: narrows routing.
+_MODEL_WORKER_ROLES = {
+    "code", "review", "execute",
+    "research", "planning", "testing", "documentation",
+}
 
 #: inputFrom values a model may propose. "compiled-workflow" is
 #: compiler-owned and never model-proposable.
 _MODEL_INPUT_FROM = {"literal", "upstream-output"}
+
+#: Capabilities whose dispatch input requires a repo-relative file path.
+#: Model proposals carry the file in scopePaths (the documented contract);
+#: dispatch reads input.path — without this binding every model-planned
+#: file task died at the executor with "path is required".
+_FILE_PATH_CAPS = frozenset({"filesystem.read", "filesystem.write"})
+
+#: Executor's own write bound (executors/__init__.py filesystem_write).
+_MAX_WRITE_BYTES = 64 * 1024
 
 _TASK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
 _MAX_SCOPE_PATHS = 16
@@ -225,10 +238,19 @@ def expects_change(worker_role: str | None, run_when: str | None) -> bool:
 
 
 def _delegate_input(task_text: str, scope: list[str],
-                    expect_change: bool = False) -> dict:
+                    expect_change: bool = False,
+                    worker_role: str | None = None) -> dict:
     payload: dict = {"task": task_text[:MAX_DELEGATE_CHARS]}
     if scope:
         payload["scopePaths"] = list(scope)
+    if worker_role:
+        # AURA-OWNED echo of the task's validated role, like expectChange
+        # below: deliberately absent from _DELEGATE_INPUT_KEYS so a model
+        # proposal can never set or clear it. The executor composes the
+        # role's instruction block around the task from this key and the
+        # worker output echoes it, so what the human approved (role,
+        # scope, requirement) is exactly what runs.
+        payload["role"] = worker_role
     if expect_change:
         # AURA-OWNED, and deliberately absent from _DELEGATE_INPUT_KEYS so
         # a model proposal can never set or clear it. It rides the input,
@@ -277,7 +299,8 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
         description="Carry out the requested change",
         capabilityId="agent.delegate",
         input=_delegate_input(text + build_note, scope,
-                              expect_change=expects_change("code", "always")),
+                              expect_change=expects_change("code", "always"),
+                              worker_role="code"),
         workerRole="code",
         risk="high", reversible=False,
         verification=VerificationRequirement(
@@ -296,7 +319,7 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
                 "above. Report correctness, security and quality problems "
                 "you find, and say plainly whether the change is "
                 "acceptable. Do not modify any file."
-                + verdict_instruction(), scope),
+                + verdict_instruction(), scope, worker_role="review"),
             inputFrom="upstream-output",
             dependsOn=["implement"],
             workerRole="review",
@@ -317,7 +340,7 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
                 "The review above lists problems with the change. Fix "
                 "exactly those problems and nothing else. If the review "
                 "reports no problems, change nothing and say so."
-                + build_note, scope),
+                + build_note, scope, worker_role="code"),
             inputFrom="upstream-output",
             dependsOn=["review"],
             workerRole="code",
@@ -559,6 +582,8 @@ class TaskPlanner:
                 scope = self._model_scope(rt, task_input, s["label"], tid)
                 if scope is not None:
                     task_input = {**task_input, "scopePaths": scope}
+                task_input = self._bind_filesystem_input(
+                    task_input, scope, s["cap"], tid)
                 run_when = rt.get("runWhen") or "always"
                 if (s["cap"] == "agent.delegate"
                         and expects_change(rt.get("workerRole"), run_when)):
@@ -567,6 +592,14 @@ class TaskPlanner:
                     # changing nothing either. AURA sets this, never the
                     # proposal — "expectChange" is not an accepted key.
                     task_input = {**task_input, "expectChange": True}
+                if s["cap"] == "agent.delegate" and rt.get("workerRole"):
+                    # AURA-owned echo of the VALIDATED role (Pass 1
+                    # rejected anything outside _MODEL_WORKER_ROLES): the
+                    # executor composes the role contract from this key
+                    # and the output echoes it. A model cannot smuggle a
+                    # role through input — "role" is not an accepted key.
+                    task_input = {**task_input,
+                                  "role": rt["workerRole"]}
                 ver_kind = rt.get("verificationKind") or "audit-only"
                 ver_desc = str(rt.get("verification") or "")
                 if s["cap"] == "agent.delegate" and not ver_desc.strip():
@@ -712,6 +745,58 @@ class TaskPlanner:
                     raise PlanningError(
                         f"task {tid} delegate input '{key}' exceeds its bound")
                 out[key] = val
+        return out
+
+    @staticmethod
+    def _bounded_repo_path(value: object, tid: str, field: str) -> str:
+        """A repo-relative file path, or PlanningError.
+
+        Mirrors the executor's confinement (_confine refuses absolute,
+        escaping and empty paths) so a bad path fails at plan time —
+        where the correction loop can fix it — instead of at dispatch.
+        """
+        if not isinstance(value, str) or not value.strip():
+            raise PlanningError(
+                f"task {tid} needs {field} to name a file "
+                "(or a single-file scopePaths to bind it from)")
+        p = value.strip().replace("\\", "/")
+        if (len(p) > _MAX_SCOPE_LEN or p.startswith("/")
+                or p.startswith("~") or ".." in p.split("/")
+                or p in (".", "")):
+            raise PlanningError(
+                f"task {tid} {field} {value!r} is not a bounded "
+                "repo-relative path")
+        return p
+
+    @classmethod
+    def _bind_filesystem_input(cls, task_input: dict,
+                               scope: list[str] | None,
+                               cap: str | None, tid: str) -> dict:
+        """Bind scopePaths to the dispatch input file tasks require.
+
+        Non-delegate proposals pass `input` through verbatim while the
+        documented contract carries the file in `scopePaths` — so a
+        model-planned filesystem.read/write otherwise reaches the
+        executor with no `path` and dies with "path is required". A
+        single-file scope binds unambiguously; anything else (multi-file
+        scope, directory scope, model-supplied path) is validated, never
+        guessed, and a missing/invalid path fails the plan closed.
+        """
+        if cap not in _FILE_PATH_CAPS:
+            return task_input
+        out = dict(task_input)
+        if not out.get("path") and scope is not None and len(scope) == 1:
+            out["path"] = scope[0]
+        out["path"] = cls._bounded_repo_path(out.get("path"), tid,
+                                             "input.path")
+        if cap == "filesystem.write":
+            content = out.get("content")
+            if not isinstance(content, str) or not content:
+                raise PlanningError(
+                    f"task {tid} filesystem.write needs input.content")
+            if len(content.encode("utf-8")) > _MAX_WRITE_BYTES:
+                raise PlanningError(
+                    f"task {tid} input.content exceeds 64KB")
         return out
 
     @staticmethod

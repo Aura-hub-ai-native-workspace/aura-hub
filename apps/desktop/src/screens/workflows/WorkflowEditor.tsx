@@ -99,6 +99,20 @@ export function WorkflowEditor() {
   const [runStartedAt, setRunStartedAt] = useState<string>(() => new Date().toISOString());
   const dragSpec = useRef<NodeSpecInfo | null>(null);
 
+  /** Save with feedback: the Save button and Ctrl+S fire-and-forget
+   * today, so a failed save looks identical to a working one. */
+  const saveWithFeedback = useCallback(async (): Promise<boolean> => {
+    const ok = await wf.save();
+    if (!ok) {
+      toast.push({
+        title: 'Save failed',
+        description: useWorkflows.getState().lastError ?? undefined,
+        tone: 'critical',
+      });
+    }
+    return ok;
+  }, [wf, toast]);
+
   /* ── governance state, read from the service ───────────────────── */
   const catalogue = useFabric((s) => s.catalogue);
   const catalogueReachable = useFabric((s) => s.reachable);
@@ -226,14 +240,14 @@ export function WorkflowEditor() {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); wf.undo(); }
       else if ((mod && e.key.toLowerCase() === 'y') || (mod && e.shiftKey && e.key.toLowerCase() === 'z')) { e.preventDefault(); wf.redo(); }
-      else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); void wf.save(); }
+      else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); void saveWithFeedback(); }
       else if (mod && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicateSelection(); }
       else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(); }
       else if (e.key === 'Escape') { setSelection([]); setSelEdge(null); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [wf, deleteSelection, duplicateSelection]);
+  }, [wf, deleteSelection, duplicateSelection, saveWithFeedback]);
 
   /* ── palette add ────────────────────────────────────────────────── */
   const addNode = (spec: NodeSpecInfo, at?: { x: number; y: number }) => {
@@ -268,7 +282,13 @@ export function WorkflowEditor() {
     setDryRunError(null);
     setTab('preview');
     try {
-      if (wf.dirty) await wf.save();
+      // A preview of the last-saved graph while looking at a dirty one
+      // would describe something the user is not seeing: refuse instead.
+      if (wf.dirty && !(await saveWithFeedback())) {
+        setDryRun(null);
+        setDryRunError('The preview needs the current graph saved first — saving failed, so nothing was previewed.');
+        return;
+      }
       const res = await aiClient.dryRunWorkflow(def.id, { projectId: ws.openId ?? undefined });
       if ('error' in res) { setDryRun(null); setDryRunError(res.error); }
       else setDryRun(res);
@@ -278,7 +298,7 @@ export function WorkflowEditor() {
     } finally {
       setDryRunBusy(false);
     }
-  }, [def.id, ws.openId, wf]);
+  }, [def.id, ws.openId, wf, saveWithFeedback]);
 
   /** Bring a node into view and select it — used by validation and runs. */
   const focusNode = useCallback((nodeId: string) => {
@@ -362,8 +382,11 @@ export function WorkflowEditor() {
   );
 
   // The envelope is the service's answer, so it is re-read whenever the
-  // graph that produced it changes.
-  useEffect(() => { void wf.loadMeta(def.id); }, [def.id, def.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  // graph that produced it changes: server saves (updatedAt), local
+  // content edits (graphRev), or a different workflow. Position-only
+  // drags deliberately do not refire this — coordinates cannot change
+  // what the graph is permitted to do.
+  useEffect(() => { void wf.loadMeta(def.id); }, [def.id, def.updatedAt, wf.graphRev]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The run to render: the service's persisted record once it exists,
@@ -396,7 +419,20 @@ export function WorkflowEditor() {
           <Input
             value={nameEdit} inputSize="sm" autoFocus className="w-64"
             onChange={(e) => setNameEdit(e.target.value)}
-            onBlur={() => { if (nameEdit.trim()) void wf.patchMeta(def.id, { name: nameEdit.trim() }); setNameEdit(null); }}
+            onBlur={() => {
+              if (nameEdit.trim()) {
+                void wf.patchMeta(def.id, { name: nameEdit.trim() }).then((ok) => {
+                  if (!ok) {
+                    toast.push({
+                      title: 'Rename failed',
+                      description: useWorkflows.getState().lastError ?? undefined,
+                      tone: 'critical',
+                    });
+                  }
+                });
+              }
+              setNameEdit(null);
+            }}
             onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setNameEdit(null); }}
           />
         )}
@@ -409,7 +445,7 @@ export function WorkflowEditor() {
           )}
           <IconButton icon="command" label="Undo (Ctrl+Z)" size="sm" onClick={() => wf.undo()} className={wf.undoStack.length ? '' : 'opacity-40'} />
           <IconButton icon="activity" label="Redo (Ctrl+Shift+Z)" size="sm" onClick={() => wf.redo()} className={wf.redoStack.length ? '' : 'opacity-40'} />
-          <Button variant="secondary" size="sm" icon="check" onClick={() => void wf.save()} disabled={!wf.dirty}>Save</Button>
+          <Button variant="secondary" size="sm" icon="check" onClick={() => void saveWithFeedback()} disabled={!wf.dirty}>Save</Button>
           <Button
             variant="secondary"
             size="sm"
@@ -517,7 +553,17 @@ export function WorkflowEditor() {
         <div className="min-h-0 flex-1 overflow-y-auto">
           <WorkflowVersions
             workflowId={def.id}
-            onRestored={() => { void wf.open(def.id); }}
+            onRestored={() => {
+              void wf.open(def.id).then((ok) => {
+                if (!ok) {
+                  toast.push({
+                    title: 'Reopen failed',
+                    description: useWorkflows.getState().lastError ?? undefined,
+                    tone: 'critical',
+                  });
+                }
+              });
+            }}
           />
         </div>
       )}
@@ -698,8 +744,9 @@ export function WorkflowEditor() {
           {run && (
             <button onClick={() => setShowPanel((s) => !s)} className="absolute left-3 top-3 flex items-center gap-2 rounded-xl border border-line bg-surface/90 px-3 py-1.5 text-[11.5px] font-medium backdrop-blur-md">
               {run.active ? <motion.span animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1.1, ease: 'linear' }} className="text-accent"><Icon name="activity" size={12} /></motion.span>
-                : run.status === 'completed' ? <Icon name="check" size={12} className="text-positive" /> : <Icon name="close" size={12} className="text-danger" />}
-              <span className="text-text">{run.active ? 'Running…' : run.status === 'completed' ? `Completed in ${(run.ms / 1000).toFixed(1)}s` : `Failed${run.error ? ` — ${run.error}` : ''}`}</span>
+                : run.status === 'completed' ? <Icon name="check" size={12} className="text-positive" />
+                : run.status === 'cancelled' ? <Icon name="bell" size={12} className="text-text-subtle" /> : <Icon name="close" size={12} className="text-danger" />}
+              <span className="text-text">{run.active ? 'Running…' : run.status === 'completed' ? `Completed in ${(run.ms / 1000).toFixed(1)}s` : run.status === 'cancelled' ? 'Cancelled' : `Failed${run.error ? ` — ${run.error}` : ''}`}</span>
               <span className="text-text-subtle">{showPanel ? 'hide' : 'details'}</span>
             </button>
           )}
@@ -820,11 +867,17 @@ function WebhookTrigger({ workflowId }: { workflowId: string }) {
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  const [webhookError, setWebhookError] = useState<string | null>(null);
+
   const reveal = async (rotate: boolean) => {
     setBusy(true);
+    setWebhookError(null);
     try {
       const res = rotate ? await aiClient.rotateWorkflowWebhook(workflowId) : await aiClient.ensureWorkflowWebhook(workflowId);
       if ('path' in res) setPath(`${aiClient.base}${res.path}`);
+      else setWebhookError(res.error || 'The service did not return a trigger URL.');
+    } catch (e) {
+      setWebhookError(e instanceof Error && e.message ? e.message : 'Could not reach the service.');
     } finally {
       setBusy(false);
     }
@@ -839,7 +892,14 @@ function WebhookTrigger({ workflowId }: { workflowId: string }) {
           <div className="flex gap-1.5">
             <Button
               variant="secondary" size="sm" icon={copied ? 'check' : 'clipboard'}
-              onClick={() => { void navigator.clipboard.writeText(path); setCopied(true); setTimeout(() => setCopied(false), 1200); }}
+              onClick={() => {
+                // Clipboard denial (permissions, insecure context) must
+                // not reject unhandled: the URL stays visible to copy by hand.
+                navigator.clipboard.writeText(path).then(
+                  () => { setCopied(true); setTimeout(() => setCopied(false), 1200); },
+                  () => { setCopied(false); },
+                );
+              }}
             >
               {copied ? 'Copied' : 'Copy'}
             </Button>
@@ -849,6 +909,7 @@ function WebhookTrigger({ workflowId }: { workflowId: string }) {
       ) : (
         <>
           <p className="mb-2 text-[11px] leading-relaxed text-text-subtle">Point an external system's own webhook (e.g. a GitHub repo's Settings → Webhooks) at a URL here to start a run — no AURA-side setup needed on their end.</p>
+          {webhookError && <p className="mb-2 text-[11px] text-danger">{webhookError}</p>}
           <Button variant="secondary" size="sm" icon="link" onClick={() => void reveal(false)} disabled={busy}>{busy ? 'Generating…' : 'Show trigger URL'}</Button>
         </>
       )}

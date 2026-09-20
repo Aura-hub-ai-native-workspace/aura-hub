@@ -118,7 +118,9 @@ export function RunView({
 }: RunViewProps) {
   const [tab, setTab] = useState<Tab>('steps');
   const [now, setNow] = useState(() => Date.now());
-  const live = run.state === 'running' || run.state === 'queued';
+  // A parked run is still live from the operator's perspective: the clock
+  // is running on their answer, so freezing the timer misreports the wait.
+  const live = run.state === 'running' || run.state === 'queued' || run.state === 'awaiting-approval';
 
   useEffect(() => {
     if (!live) return;
@@ -138,6 +140,12 @@ export function RunView({
   const parkedRequests = parked
     .map((n) => approvals.find((a) => a.id === n.approval!.requestId))
     .filter((a): a is ApprovalRequest => Boolean(a) && a!.state === 'pending');
+  // A parked node whose request is gone from the pending list (expired,
+  // decided in another window, consumed) must not render as merely
+  // "waiting": without a gate the run looks stuck with no recourse.
+  const parkedStale = parked.filter(
+    (n) => !approvals.some((a) => a.id === n.approval!.requestId && a.state === 'pending'),
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-canvas">
@@ -277,6 +285,14 @@ export function RunView({
               <ApprovalGate key={a.id} request={a} busy={decidingId === a.id} onDecide={onDecideApproval} />
             ))}
           </div>
+        </div>
+      )}
+      {parkedRequests.length === 0 && parkedStale.length > 0 && !run.supersededBy && (
+        <div className="border-b border-line px-4 py-2.5">
+          <p className="text-[12px] text-text-muted">
+            {parkedStale.length === 1 ? 'An authorization for this run' : `${parkedStale.length} authorizations for this run`} is no longer
+            pending — it expired, was decided elsewhere, or was consumed. Re-run the step if it still needs doing.
+          </p>
         </div>
       )}
 

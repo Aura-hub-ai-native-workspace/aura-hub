@@ -692,6 +692,15 @@ async function streamRun(
     onEvent({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message || 'Service unreachable' });
     return;
   }
+  if (!res.ok) {
+    let message = `Workflow stream failed (${res.status})`;
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (body && typeof body.error === 'string' && body.error) message = body.error;
+    } catch { /* unreadable error body; keep the status */ }
+    onEvent({ type: 'done', status: 'failed', ms: 0, error: message });
+    return;
+  }
   if (!res.body) { onEvent({ type: 'done', status: 'failed', ms: 0, error: 'No stream body' }); return; }
   const reader = res.body.getReader();
   const dec = new TextDecoder();
@@ -708,7 +717,13 @@ async function streamRun(
         if (!line.startsWith('data:')) continue;
         const d = line.slice(5).trim();
         if (d === '[DONE]') return;
-        onEvent(JSON.parse(d) as WfRunEvent);
+        // One malformed line must not kill the run: skip it and keep
+        // reading. A transport failure still ends in a terminal `done`.
+        try {
+          onEvent(JSON.parse(d) as WfRunEvent);
+        } catch {
+          continue;
+        }
       }
     }
   } catch (e) {
