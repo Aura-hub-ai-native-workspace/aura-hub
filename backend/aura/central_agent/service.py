@@ -340,7 +340,15 @@ class CentralAgent:
             try:
                 bundle.items.extend(self._mcp_context_provider()[:8])
             except Exception:  # noqa: BLE001 — context must never break intent
-                pass
+                # ...but its absence must be visible, not silent: the model
+                # plans against this context, and missing MCP context it
+                # does not know is missing produces confidently wrong plans.
+                from .context import PROVENANCE_SYSTEM, ContextItem
+
+                bundle.items.append(ContextItem(
+                    kind="message",
+                    text="[MCP context unavailable: provider failed]",
+                    provenance=PROVENANCE_SYSTEM))
         # Intent is compiled on the INSTRUCTION alone: keywords inside
         # the fenced editor block must not steer classification. The
         # block still reaches model-backed compilation through the
@@ -1753,14 +1761,8 @@ class CentralAgent:
         if session is None:
             raise ValueError(f"no such session: {session_id}")
         # A resumed leg is a NEW leg with its own request id; the parked
-        # record is never mutated (see docstring above).
-        from .correlation import is_request_id, new_request_id
-
-        if request_id is None:
-            request_id = new_request_id()
-        elif not is_request_id(request_id):
-            raise ValueError(
-                f"malformed request_id: {str(request_id)[:60]}")
+        # record is never mutated (see docstring above). request_id was
+        # validated above and cannot be None here.
         session.lastRequestId = request_id  # extra field, persisted
         request_map = getattr(self, "_request_ids", None)
         if request_map is None:

@@ -97,7 +97,12 @@ def inside(root: str, rel: str) -> str:
         raise ValueError(f"That path leaves the project directory: {rel}")
     root = os.path.realpath(os.path.abspath(root))
     abs_ = os.path.realpath(os.path.abspath(os.path.join(root, rel)))
-    if abs_ != root and not abs_.startswith(root + os.sep):
+    # normcase is identity on POSIX and folds case on Windows, whose
+    # filesystem is case-insensitive: without it two spellings of the
+    # same directory compare as different and legitimate paths are
+    # refused. Confinement still fails closed on real escapes.
+    if os.path.normcase(abs_) != os.path.normcase(root) and not \
+            os.path.normcase(abs_).startswith(os.path.normcase(root + os.sep)):
         raise ValueError(f"That path leaves the project directory: {rel}")
     return abs_
 
@@ -343,9 +348,15 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
             if staged.get("settingsPath"):
                 extra += ["--settings", staged["settingsPath"]]
             bundle["extraArgs"] = extra
-    except Exception:
+    except Exception as exc:
+        # A crashed staging is not "unsupported by design": mark it so the
+        # run record distinguishes the two instead of silently proceeding
+        # under legacy boundaries.
         return {"args": None, "env": {}, "logPath": "",
-                "supports": {}, "worker": bin_name}
+                "supports": {"NOTE": "governance staging failed "
+                             f"({exc}); proceeding under pre-existing "
+                             "boundaries only"},
+                "worker": bin_name}
     return bundle
 
 

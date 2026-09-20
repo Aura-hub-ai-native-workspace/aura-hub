@@ -176,8 +176,13 @@ def _settle(
     }
     try:
         cfg.audit_store.append(record)
-    except Exception:
-        pass  # a lost log write must never fail an execution that happened
+    except Exception as exc:
+        # A lost log write must never fail an execution that happened —
+        # but it must be visible. Mark the in-memory record and carry the
+        # degradation on the result, so callers can surface it instead of
+        # asserting an audit trail that is not there.
+        record["auditPersisted"] = False
+        record["auditError"] = str(exc)[:200]
     result = {
         "invocationId": invocation_id,
         "capabilityId": capability_id,
@@ -191,6 +196,9 @@ def _settle(
         result["output"] = output
     if approval_id:
         result["approvalId"] = approval_id
+    if record.get("auditPersisted") is False:
+        result["auditDegraded"] = True
+        result["auditError"] = record.get("auditError")
     return result
 
 

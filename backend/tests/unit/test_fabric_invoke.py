@@ -219,6 +219,35 @@ class TestParkedSessionLinkage:
         assert "sessionId" not in cfg.ledger.pending()[0]
 
 
+class TestAuditDegradation:
+    """A lost journal write degrades visibly instead of silently.
+
+    The execution still succeeds (liveness over logging), but the
+    record is marked and the result carries the degradation — no code
+    downstream can assert an audit trail that is not there.
+    """
+
+    def test_failed_append_marks_record_and_result(self, home, monkeypatch):
+        cfg = make_cfg(home)
+
+        def boom(_record):
+            raise OSError("disk read-only")
+
+        # The fabric captured the store's append at attach time: patch
+        # the stored callable, not the store attribute.
+        monkeypatch.setattr(cfg.fabric, "_audit_store_append", boom)
+        r = invoke_fabric("workflow.list", {}, {"taskId": "t"}, cfg)
+        assert r["outcome"] == "succeeded"
+        assert r.get("auditDegraded") is True
+        assert r.get("auditError") == "disk read-only"
+
+    def test_healthy_append_leaves_no_markers(self, home):
+        cfg = make_cfg(home)
+        r = invoke_fabric("workflow.list", {}, {"taskId": "t"}, cfg)
+        assert r["outcome"] == "succeeded"
+        assert "auditDegraded" not in r
+
+
 class TestPreflight:
     def test_describe_authority_matches_invoke(self, home):
         cfg = make_cfg(home)
