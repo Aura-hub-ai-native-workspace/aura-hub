@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 
 import pytest
 
@@ -56,20 +57,32 @@ class TestCmdShimRouting:
             pid = 4242
             returncode = 0
 
-            async def communicate(self):
+            def communicate(self):
                 return (b"10.0.0\n", b"")
 
-        async def fake_spawn(*argv, **kw):
-            seen["argv"] = list(argv)
-            assert kw["stdin"] is asyncio.subprocess.DEVNULL
+            def kill(self):
+                pass
+
+            def terminate(self):
+                pass
+
+        def fake_popen(cmdline, **kw):
+            # The whole pre-quoted line goes to CreateProcess verbatim:
+            # a list would re-escape cmd's quotes and truncate paths.
+            assert isinstance(cmdline, str), type(cmdline)
+            assert "call " in cmdline, cmdline
+            seen["cmdline"] = cmdline
+            assert kw["stdin"] is subprocess.DEVNULL
             return FakeProc()
 
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
         out = asyncio.run(
             execmod.run_file(["npm", "--version"], str(tmp_path), 5000))
         assert out.code == 0
-        assert seen["argv"][0].lower().endswith("cmd.exe")
-        assert seen["argv"][1:4] == ["/d", "/s", "/c"]
+        assert "/d /s /c call " in seen["cmdline"], seen["cmdline"]
+        # Spaceless target goes unquoted; the remainder still starts
+        # with `call`, so cmd strips nothing.
+        assert f"{shim} --version" in seen["cmdline"], seen["cmdline"]
 
     def test_unsafe_cmd_arg_refused(self, monkeypatch, tmp_path):
         shim = tmp_path / "npm.cmd"

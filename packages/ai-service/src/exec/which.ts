@@ -181,6 +181,11 @@ export function quoteForCmd(arg: string): string {
  * `windowsVerbatimArguments` is set by the caller so Node hands our quoting
  * to Windows untouched instead of applying a second, C-runtime-shaped one
  * on top of it.
+ *
+ * The `call` builtin is load-bearing: with `/s`, cmd.exe strips the first
+ * and last quote of a remainder that *starts* with one, so a spaced shim
+ * path arrived as `C:\Program` and every such tool reported broken. `call`
+ * makes the remainder start with a letter, so no stripping happens.
  */
 export function spawnTargetFor(resolved: string, args: string[], platform: Platform): SpawnTarget {
   if (platform !== 'win32') return { file: resolved, args };
@@ -188,7 +193,7 @@ export function spawnTargetFor(resolved: string, args: string[], platform: Platf
   if (!lower.endsWith('.cmd') && !lower.endsWith('.bat')) return { file: resolved, args };
   return {
     file: process.env.ComSpec || 'cmd.exe',
-    args: ['/d', '/s', '/c', quoteForCmd(resolved), ...args.map(quoteForCmd)],
+    args: ['/d', '/s', '/c', 'call', quoteForCmd(resolved), ...args.map(quoteForCmd)],
   };
 }
 

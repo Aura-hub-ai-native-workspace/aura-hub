@@ -156,8 +156,13 @@ def self_runtime_dirs() -> set[str]:
     A backend launched from its own virtualenv has that venv's ``bin`` first
     on PATH, so ``python3`` resolves to AURA's interpreter and the scan
     reports AURA's own version as the machine's Python. The scan measures the
-    machine, not the scanner, so these are excluded from both resolution and
-    enumeration.
+    machine, not the scanner, so virtual environments are excluded from
+    both resolution and enumeration.
+
+    A *system* interpreter is not excluded: it is the machine's Python
+    too, and excluding it made Python unverifiable on every machine
+    whose only Python runs AURA. Venvs are recognized by pyvenv.cfg
+    beside (or above) the executable, plus VIRTUAL_ENV.
     """
     dirs: set[str] = set()
 
@@ -165,7 +170,11 @@ def self_runtime_dirs() -> set[str]:
         if raw:
             dirs.add(os.path.normcase(os.path.normpath(raw)))
 
-    add(os.path.dirname(sys.executable))
+    exe_dir = os.path.dirname(sys.executable)
+    if (os.path.isfile(os.path.join(exe_dir, "pyvenv.cfg"))
+            or os.path.isfile(
+                os.path.join(os.path.dirname(exe_dir), "pyvenv.cfg"))):
+        add(exe_dir)
     venv = os.environ.get("VIRTUAL_ENV")
     if venv:
         add(os.path.join(venv, "Scripts" if is_windows() else "bin"))
@@ -251,7 +260,20 @@ def resolve_executable(command: str, path: str | None = None) -> str | None:
         candidate = os.path.abspath(_expand(command))
         return candidate if _is_runnable_file(candidate) else None
 
-    exts = [""] + _pathext() if is_windows() else [""]
+    if is_windows():
+        # A bare name can never name a directly-executable file on
+        # Windows: CreateProcess and cmd.exe only run PATHEXT-suffixed
+        # files. Trying "" first picked npm's extensionless shims
+        # (opencode, npm, code, flutter) over their .cmd/.bat twins and
+        # every probe died with WinError 193. A name that already ends
+        # in an executable extension is still tried literally first.
+        if command.lower().endswith((".exe", ".cmd", ".bat", ".com",
+                                     ".ps1")):
+            exts = [""] + _pathext()
+        else:
+            exts = _pathext()
+    else:
+        exts = [""]
     for directory in search.split(path_sep()):
         if not directory:
             continue
