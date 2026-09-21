@@ -622,7 +622,11 @@ class ExecutionController:
         # because from its side that is what a terminated process looks
         # like. Only the run knows the difference, and it records the
         # difference: a cancelled task is never corrected or retried.
-        if (invocation.get("output") or {}).get("cancelled"):
+        # Output is Any by contract (file text, stdout, structured
+        # results) — only a dict can carry the flag, so a text output
+        # must not reach .get (it crashed every direct-path read here).
+        _output = invocation.get("output")
+        if isinstance(_output, dict) and _output.get("cancelled"):
             state = "cancelled"
             performed = False
         result.outcomes.append(TaskOutcome(
@@ -638,7 +642,7 @@ class ExecutionController:
             task, result, invocation.get("output"), handoff_consumed)
 
     def _note_task_closed(self, task: Any, result: ExecutionOutcome,
-                            output: dict[str, Any] | None,
+                            output: Any,
                             handoff_consumed: list[str]) -> None:
         """Attach handoff lineage and file verified evidence, if any.
 
@@ -653,7 +657,11 @@ class ExecutionController:
         outcome = result.outcomes[-1]
         if outcome.taskId != task.id:
             return  # defensive: only annotate this task's own outcome
-        output = output or {}
+        # Executor output is Any by contract (file text, stdout,
+        # structured results). The metadata reads below assume a mapping;
+        # text carries none, so normalize once here instead of at every
+        # .get — a second instance of the crash fixed above.
+        output = output if isinstance(output, dict) else {}
         assignment = result.worker_assignments.get(task.id)
         if assignment is not None:
             if output.get("nodeId"):

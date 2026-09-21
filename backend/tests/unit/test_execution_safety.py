@@ -6,6 +6,7 @@ silent success, or an indistinguishable "no workers" answer.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -74,6 +75,55 @@ class TestAuthorityFailClosed:
             self._cfg(lambda _cap, _req: {"ok": False,
                                           "reason": "node retired"}))
         assert reason == "node retired"
+
+
+class TestDirectTextOutput:
+    """A successful direct-path task whose executor returns TEXT output
+    (filesystem.read, terminal stdout) must settle done — never crash
+    the leg with AttributeError on .get.
+
+    Live-reproduced: binding input.path (correctly) let t1 reach
+    dispatch, where the cancelled-flag check called .get on the file
+    text and the whole session failed as 'Unexpected failure'.
+    """
+
+    def test_filesystem_read_text_output_settles_done(
+            self, tmp_path, monkeypatch):
+        import tempfile
+
+        from test_fabric_invoke import make_cfg
+
+        from aura.central_agent.execution import ExecutionController
+        from aura.central_agent.planner import TaskPlanner
+        from aura.contracts import AgentIntent
+
+        home = Path(tempfile.mkdtemp(prefix="exec-text-"))
+        monkeypatch.setenv("AURA_HOME", str(home))
+        target = tmp_path / "main.py"
+        target.write_text("print('hi')\n")
+        cfg = make_cfg(home)
+        planner = TaskPlanner(
+            known_capabilities=lambda: {"filesystem.read"},
+            known_nodes=lambda: set())
+        intent = AgentIntent(goal="read main.py",
+                             expectedOutcome="contents")
+        plan = planner.plan_from_model(
+            intent, "ses-text", "now",
+            {"tasks": [{
+                "id": "t1",
+                "description": "Read main.py",
+                "capabilityId": "filesystem.read",
+                "scopePaths": ["main.py"],
+                "verificationKind": "audit-only",
+                "verification": "content returned",
+            }]})
+        assert plan.tasks[0].input["path"] == "main.py"
+        ctrl = ExecutionController(cfg)
+        out = ctrl.execute(
+            plan, None, project_cwd=str(tmp_path),
+            correlation={"session_id": "s", "request_id": "r"})
+        assert [o.taskId for o in out.outcomes] == ["t1"]
+        assert out.outcomes[0].state == "done", out.outcomes[0].detail
 
 
 class TestFileIdentity:
