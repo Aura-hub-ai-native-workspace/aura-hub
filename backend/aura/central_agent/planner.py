@@ -284,6 +284,32 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
     wants_review = bool(getattr(intent, "delegateReview", False))
     wants_remediation = bool(getattr(intent, "delegateRemediate", False))
     prove = bool(getattr(intent, "delegateProve", False))
+    if bool(getattr(intent, "delegateReadOnly", False)):
+        # Read-only investigation ("Do not modify source files", "Review
+        # this project for security problems"): ONE research task, never
+        # an implementation task. No expectChange — a review verifies by
+        # reporting, not by changing — and the research role contract
+        # forbids the worker from modifying anything. High risk because
+        # a worker still runs; reversible because nothing may change.
+        return TaskPlan(
+            planId=_plan_id(), sessionId=session_id, intent=intent,
+            tasks=[TaskSpecification(
+                id="investigate",
+                description="Investigate the request and report findings with evidence",
+                capabilityId="agent.delegate",
+                input=_delegate_input(text, scope, worker_role="research"),
+                workerRole="research",
+                risk="high", reversible=True,
+                verification=VerificationRequirement(
+                    kind="exit-code",
+                    description=("The worker exits 0 having stayed inside "
+                                 "the declared scope and reported its "
+                                 "findings with evidence.")))],
+            acceptance=[_accept(
+                "exit-code",
+                "The investigation was carried out, verified and reported.",
+                tasks=["investigate"])],
+            createdAt=now)
 
     build_note = (
         " Before finishing, check that the project still builds and that "

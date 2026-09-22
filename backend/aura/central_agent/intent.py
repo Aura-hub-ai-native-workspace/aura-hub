@@ -361,6 +361,46 @@ _REMEDIATE_RE = re.compile(
     r"\b(?:fix|address|resolve|correct)\s+what(?:ever)?\b",
     re.IGNORECASE)
 
+#: Read-only investigation stated outright. When the user says the work
+#: must not change anything, the plan must not ask for a change: the
+#: delegation below becomes a research task (no expectChange) instead
+#: of an implementation task. Narrow on purpose — a vague "be careful"
+#: is not a contract, but "do not modify" is.
+_NO_MODIFY_RE = re.compile(
+    r"\b(do not|don't|dont|never)\s+"
+    r"(modify|modifying|change|changing|edit|editing|write|writing|"
+    r"touch|touching|alter|altering)\b"
+    r"|\bwithout\s+"
+    r"(modify|modifying|change|changing|edit|editing|write|writing)\b"
+    r"|\b(change|modify|edit|write|alter|touch)\s+nothing\b"
+    r"|\bread[-\s]?only\b",
+    re.IGNORECASE)
+
+#: A standalone review of the project itself, with a stated purpose.
+#: "Review this project for security problems" names a target AND what
+#: the review is for, so a worker can inspect and report. "review the
+#: code please" names neither an outcome nor a purpose and stays a
+#: clarification (pinned by test_review_alone_never_plans_a_dispatch):
+#: the `for <purpose>` clause is the difference between an objective
+#: and a vague wish. Bare "code" is a target here only with a purpose;
+#: without one it is as vague as the pinned case.
+_REVIEW_WORK_RE = re.compile(
+    r"\b(review|audit)\b[^.?]{0,60}?\b(project|codebase|repository|repo|code)\b"
+    r"[^.?]{0,40}?\bfor\b\s+\w+"
+    r"|\bsecurity\s+(review|audit)\b[^.?]{0,40}?\b(of|for)\b\s+\w+",
+    re.IGNORECASE)
+
+#: Verbs that CHANGE the project, as opposed to verbs that only LOOK at
+#: it (inspect, check, analyse, debug, investigate, …). A delegation
+#: carrying one of these is implementation work even when it also asks
+#: for a review; only a delegation with none of them can be read-only.
+_CHANGE_RE = re.compile(
+    r"\b(implement|refactor|rewrite|migrate|optimi[sz]e|fix|repair|"
+    r"build|create|add|write|extend|improve|clean\s*up|harden|"
+    r"instrument|document|speed\s*up|"
+    r"make\s+[\w\s.\-/]{0,30}?(?:faster|safer|testable|simpler))\b",
+    re.IGNORECASE)
+
 #: The user asked for proof beyond "the worker exited zero".
 _PROVE_RE = re.compile(
     r"\b(?:make sure|ensure|verify|confirm|check)\b[^.]{0,60}?"
@@ -504,14 +544,37 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
     # does — someone to go and look — so it survives the question-word
     # veto that keeps ordinary questions off the dispatch path.
     diagnosing = _DIAGNOSE_RE.search(user_message) is not None
-    delegating = ((_WORK_RE.search(user_message) is not None or diagnosing)
-                  and (diagnosing or _NOT_WORK_RE.match(user_message.strip()) is None)
-                  # A known direct capability is not investigation. This
-                  # yields to the `git.status` branch below rather than
-                  # answering here: one route, one executor, no second
-                  # copy of the capability intent.
-                  and not direct_git_status
-                  and not authoring and not running_wf and not file_write)
+    # A standalone review with a target and a purpose ("Review this
+    # project for security problems") is investigation work, but only
+    # when no CHANGE or effect verb is present: "review and fix" is
+    # implementation with a review step, not a review. Inspection verbs
+    # ("audit" itself is one) are allowed — looking is what a review
+    # is. The checks run on the message with the no-modify contract
+    # blanked out, because that contract itself names effect verbs
+    # ("do not MODIFY"): without this, "Review … Do not modify" would
+    # veto its own review. A bare "review the code please" (no
+    # purpose) never matches _REVIEW_WORK_RE at all.
+    denuded = _NO_MODIFY_RE.sub(" ", user_message)
+    review_work = (
+        _REVIEW_WORK_RE.search(denuded) is not None
+        and _CHANGE_RE.search(denuded) is None
+        and _EFFECT_RE.search(denuded) is None)
+    delegating = ((_WORK_RE.search(user_message) is not None or diagnosing or review_work)
+                   and (diagnosing or review_work or _NOT_WORK_RE.match(user_message.strip()) is None)
+                   # A known direct capability is not investigation. This
+                   # yields to the `git.status` branch below rather than
+                   # answering here: one route, one executor, no second
+                   # copy of the capability intent.
+                   and not direct_git_status
+                   and not authoring and not running_wf and not file_write)
+    # Read-only investigation: an explicitly stated no-modify contract,
+    # or a standalone review (which by construction above carries no
+    # change verb). The planner turns this into a research task instead
+    # of an implementation task. A contradictory "fix it but change
+    # nothing" honours the constraint — the safe direction — rather
+    # than the verb.
+    read_only = bool(delegating) and (
+        _NO_MODIFY_RE.search(user_message) is not None or review_work)
     if delegating:
         wants_review = _REVIEW_RE.search(user_message) is not None
         # Remediation only means something when someone reviewed first;
@@ -529,6 +592,9 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "goal": user_message.strip(),
             "surface": "project",
             "expectedOutcome": (
+                "The requested investigation is carried out by a worker "
+                "and reported with evidence."
+                if read_only else
                 "The requested work is carried out by a worker, verified "
                 "against its task contract, and followed by "
                 + " then ".join(shape[1:]) + "."
@@ -542,6 +608,8 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
                   if wants_review else []),
                 *(["The worker must show that the project still builds "
                    "and its tests pass"] if wants_proof else []),
+                *(["Read-only investigation: the worker must not modify "
+                   "any file"] if read_only else []),
             ],
             "requiredCapabilities": ["agent.delegate"],
             "urgency": "immediate",
@@ -555,6 +623,7 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "delegateRemediate": wants_remediation,
             "delegateProve": wants_proof,
             "delegateScope": scope,
+            "delegateReadOnly": read_only,
         })
     if git_status and not authoring and not running_wf:
         return AgentIntent(
@@ -603,6 +672,12 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             approvalLikely=False,
         )
     if fixing:
+        # A fix-shaped question with no actionable target ("which tests
+        # should I fix?"). The old question here claimed this
+        # installation has no process-backed executors; it does
+        # (agent.delegate runs real worker binaries under governance),
+        # so the honest move is one precise question about the target,
+        # not a false limitation.
         return AgentIntent(
             goal=f"{user_message.strip()}",
             surface="project",
@@ -613,9 +688,8 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             approvalLikely=True,
             needsClarification=True,
             clarificationQuestion=(
-                "Test-and-repair needs process-backed executors that this "
-                "installation does not have yet. Should I prepare a plan "
-                "without executing it?"
+                "Which failing tests should I work on, and what should "
+                "passing look like when they are fixed?"
             ),
         )
     return AgentIntent.model_validate({

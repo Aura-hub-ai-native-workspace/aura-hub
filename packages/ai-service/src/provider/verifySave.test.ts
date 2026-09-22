@@ -33,10 +33,24 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { WorkspaceManager } from '../workspace';
-import { getActive, getAllProviderStores, getKey } from './credentialStore';
+/**
+ * ISOLATION (do not regress): the credential store resolves its file
+ * path ONCE at module import, so AURA_HOME must be set BEFORE the
+ * workspace modules load — hence the fresh dynamic imports per test
+ * below. Without them this suite reads and writes the developer's real
+ * `~/.aura/providers.json`.
+ */
+let WorkspaceManager: typeof import('../workspace').WorkspaceManager;
+let store: typeof import('./credentialStore');
+
+async function freshModules(): Promise<void> {
+  process.env.AURA_HOME = mkdtempSync(join(tmpdir(), 'aura-verify-save-test-'));
+  vi.resetModules();
+  ({ WorkspaceManager } = await import('../workspace'));
+  store = await import('./credentialStore');
+}
 
 const MODEL = 'test-model:latest';
 
@@ -87,9 +101,7 @@ function startStub(tagsHitsAllowed: number): Promise<Stub> {
   });
 }
 
-beforeEach(() => {
-  process.env.AURA_HOME = mkdtempSync(join(tmpdir(), 'aura-verify-save-test-'));
-});
+beforeEach(freshModules);
 
 describe('verifySelfHosted save stage', () => {
   it('verifies, saves, and persists the exact verified URL and model', async () => {
@@ -107,13 +119,13 @@ describe('verifySelfHosted save stage', () => {
 
       // The persisted address is byte-identical to the verified one —
       // not a re-normalised equivalent that names a different route.
-      expect(getKey('ollama')).toBe(input);
+      expect(store.getKey('ollama')).toBe(input);
       // The fingerprint (the UI-visible identity) is the address.
-      expect(getAllProviderStores().find((s) => s.id === 'ollama')?.fingerprint).toBe(stub.base);
+      expect(store.getAllProviderStores().find((s) => s.id === 'ollama')?.fingerprint).toBe(stub.base);
       // The stored model list is the verified one.
-      expect(getAllProviderStores().find((s) => s.id === 'ollama')?.models.map((m) => m.id)).toContain(MODEL);
+      expect(store.getAllProviderStores().find((s) => s.id === 'ollama')?.models.map((m) => m.id)).toContain(MODEL);
       // Active pointer: this provider, exactly this model — never swapped.
-      expect(getActive()).toEqual({ providerId: 'ollama', model: MODEL });
+      expect(store.getActive()).toEqual({ providerId: 'ollama', model: MODEL });
       expect(manager.pipeline.runtimeManager.getProviderId()).toBe('ollama');
       expect(manager.pipeline.runtimeManager.getModel()).toBe(MODEL);
     } finally {
@@ -135,8 +147,8 @@ describe('verifySelfHosted save stage', () => {
       expect(r).toEqual(expect.objectContaining({ ok: true }));
       expect(r.stage).toBeUndefined();
 
-      expect(getKey('ollama')).toBe(input);
-      expect(getActive()).toEqual({ providerId: 'ollama', model: MODEL });
+      expect(store.getKey('ollama')).toBe(input);
+      expect(store.getActive()).toEqual({ providerId: 'ollama', model: MODEL });
       expect(manager.pipeline.runtimeManager.getProviderId()).toBe('ollama');
     } finally {
       stub.server.close();

@@ -10,6 +10,7 @@ import { CerebrasAdapter } from './adapters/cerebras';
 import { KimiAdapter } from './adapters/kimi';
 import { NovitaAdapter } from './adapters/novita';
 import { QwenAdapter } from './adapters/qwen';
+import { ScaleMaxAdapter } from './adapters/scalemax';
 import { Kage7Adapter } from './adapters/kage7';
 import { OllamaAdapter } from './adapters/ollama';
 
@@ -38,6 +39,7 @@ const ALL: ProviderAdapter[] = [
   new KimiAdapter(),
   new NovitaAdapter(),
   new QwenAdapter(),
+  new ScaleMaxAdapter(),
   new Kage7Adapter(),
 ];
 
@@ -55,6 +57,12 @@ export const ENV_VAR_BY_PROVIDER: Record<string, string> = {
   // adapter) — only the key belongs here, and only ever from the
   // environment: it is encrypted into the credential store on connect and
   // never written to source, config or logs.
+  // ScaleMax issues `sm_live_…` keys; the billing surface (token-budget
+  // `/token/v1` vs credit `/v1`) is separate configuration
+  // (SCALEMAX_BASE_URL, read by the adapter) — only the key belongs here,
+  // and only ever from the environment: it is encrypted into the
+  // credential store on connect and never written to source, config or logs.
+  scalemax: 'SCALEMAX_API_KEY',
   kage7: 'KAGE7_API_KEY',
 };
 

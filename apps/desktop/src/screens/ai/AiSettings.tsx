@@ -13,18 +13,36 @@ interface DialogState {
   providerName: string;
   /** The chosen provider is addressed by URL, not authenticated by key. */
   addressed: boolean;
+  /** Prefilled address for a self-hosted entry; the key field otherwise. */
   apiKey: string;
+  /** Placeholder shown in the address/key field. */
+  placeholder: string;
   showKey: boolean;
   error: string;
 }
 
-const EMPTY_DIALOG: DialogState = { open: false, step: 'provider', providerId: '', providerName: '', addressed: false, apiKey: '', showKey: false, error: '' };
+const EMPTY_DIALOG: DialogState = { open: false, step: 'provider', providerId: '', providerName: '', addressed: false, apiKey: '', placeholder: '', showKey: false, error: '' };
+
+/**
+ * PRIMARY vs FALLBACK, from the service's own `selfHosted` flag.
+ *
+ * Self-hosted entries (addressed servers) are the primary inference
+ * path; every key-based cloud provider is fallback-only. The dialog
+ * renders the two groups under those exact headings, so a cloud
+ * provider can never visually pass as the primary path.
+ */
+export function splitProviders(known: ProviderInfo[]): { served: ProviderInfo[]; cloud: ProviderInfo[] } {
+  return {
+    served: known.filter((p) => p.selfHosted === true),
+    cloud: known.filter((p) => p.selfHosted !== true),
+  };
+}
 
 function providerIcon(id: string): 'spark' | 'cpu' {
   const icons: Record<string, 'spark' | 'cpu'> = {
     openai: 'spark', anthropic: 'spark', groq: 'cpu', gemini: 'spark',
     mistral: 'spark', kimi: 'spark', openrouter: 'cpu', nvidia: 'cpu', cerebras: 'cpu',
-    novita: 'cpu', qwen: 'spark', kage7: 'cpu',
+    novita: 'cpu', qwen: 'spark', scalemax: 'spark', kage7: 'cpu',
   };
   return icons[id] ?? 'cpu';
 }
@@ -40,6 +58,9 @@ export function AiSettings() {
   const [activeProvider, setActiveProvider] = useState<string | null>(null);
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [dialog, setDialog] = useState<DialogState>(EMPTY_DIALOG);
+  /** The FALLBACK catalog is a single collapsed entry until opened: cloud
+      providers are reachable, never presented alongside the primary path. */
+  const [fallbackOpen, setFallbackOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [switchingProvider, setSwitchingProvider] = useState<string | null>(null);
@@ -102,21 +123,24 @@ export function AiSettings() {
     setReindexing(false);
   }, []);
 
-  const openConnect = () => { setActionError(null); setDialog({ ...EMPTY_DIALOG, open: true }); };
-  const closeDialog = () => setDialog(EMPTY_DIALOG);
+  const openConnect = () => { setActionError(null); setFallbackOpen(false); setDialog({ ...EMPTY_DIALOG, open: true }); };
+  const closeDialog = () => { setFallbackOpen(false); setDialog(EMPTY_DIALOG); };
 
-  const selectProvider = (id: string) => {
+  const selectProvider = (id: string, opts?: { addressPrefill?: string; name?: string; placeholder?: string }) => {
     const p = knownProviders.find((k) => k.id === id);
+    const addressed = p?.selfHosted === true;
     // A self-hosted provider is configured by address, so the field starts
     // from whatever default the deployment configured rather than waiting
-    // for a secret that does not exist.
+    // for a secret that does not exist. Local prefills the loopback (or
+    // deployment) default; Remote starts empty for a private address.
     setDialog((d) => ({
       ...d,
       step: 'key',
       providerId: id,
-      providerName: p?.name ?? id,
-      addressed: p?.selfHosted === true,
-      apiKey: p?.selfHosted ? (p.defaultBaseUrl ?? '') : '',
+      providerName: opts?.name ?? p?.name ?? id,
+      addressed,
+      apiKey: addressed ? (opts?.addressPrefill ?? p?.defaultBaseUrl ?? '') : '',
+      placeholder: opts?.placeholder ?? (addressed ? 'http://gpu-server.example.edu:11434' : 'Paste your API key…'),
       error: '',
     }));
   };
@@ -198,13 +222,13 @@ export function AiSettings() {
   }
 
   return (
-    <PageContainer title="AI Provider" subtitle="AURA has no built-in model. Connect your own AI provider with an API key to enable the assistant.">
+    <PageContainer title="AI Provider" subtitle="AURA has no built-in model. Connect your own model server — a cloud key is only ever an explicitly activated fallback.">
       <div className="grid grid-cols-12 gap-5">
         {/* Providers — the primary section */}
         <PageBlock className="col-span-12 lg:col-span-8">
           <Card>
             <div className="flex items-center justify-between">
-              <CardHeader title="Providers" subtitle="Bring your own key — OpenAI, Anthropic, Groq, Gemini, and more." />
+              <CardHeader title="Providers" subtitle="Your own server first — cloud keys live under Fallback." />
               <Button icon="plus" variant="secondary" onClick={openConnect} disabled={dialog.open}>Connect Provider</Button>
             </div>
             {actionError && <div className="mt-3 rounded-xl border border-danger/30 bg-danger/5 px-4 py-2.5 text-[12px] text-danger">{actionError}</div>}
@@ -214,7 +238,7 @@ export function AiSettings() {
                 <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-accent/10 text-accent"><Icon name="spark" size={22} /></span>
                 <p className="mt-3 text-[14px] font-semibold text-text">Connect a provider to enable AURA</p>
                 <p className="mx-auto mt-1 max-w-md text-[12.5px] leading-relaxed text-text-muted">
-                  The assistant, project intelligence and workflows all need a model. Add your own API key to get started — Groq offers a free tier if you don't have one.
+                  The assistant, project intelligence and workflows all need a model. Point AURA at your own server address to get started — a cloud fallback key can be added later under Fallback.
                 </p>
                 <Button icon="plus" className="mt-4" onClick={openConnect}>Connect your first provider</Button>
               </div>
@@ -232,6 +256,7 @@ export function AiSettings() {
                           <div className="flex items-center gap-2">
                             <span className="text-[13.5px] font-semibold text-text">{c.name ?? c.id}</span>
                             <Badge tone={isActive ? 'positive' : 'neutral'} dot={isActive}>{isActive ? 'Active' : 'Inactive'}</Badge>
+                            <Badge tone="neutral">{c.selfHosted ? 'Primary · Self-hosted' : 'Fallback · Cloud'}</Badge>
                           </div>
                           <p className="truncate text-[11.5px] text-text-muted">Key: {c.fingerprint ?? '…'}</p>
                         </div>
@@ -251,6 +276,7 @@ export function AiSettings() {
             <CardHeader title="Status" action={<Badge tone={hasProvider && health?.ok ? 'positive' : hasProvider ? 'attention' : 'neutral'} dot>{!hasProvider ? 'No provider' : health?.ok ? 'Online' : 'Offline'}</Badge>} />
             <div className="mt-3 space-y-2 rounded-xl bg-surface-active/50 px-4 py-3 text-[12px]">
               <div className="flex items-center justify-between"><span className="text-text-muted">Provider</span><span className="font-medium text-text">{status?.label ?? 'Not connected'}</span></div>
+              <div className="flex items-center justify-between"><span className="text-text-muted">Source</span><span className="font-medium text-text">{!activeInfo ? '—' : activeInfo.selfHosted ? 'Self-hosted · primary' : 'Cloud · fallback'}</span></div>
               <div className="flex items-center justify-between"><span className="text-text-muted">Model</span><span className="font-medium text-text">{status?.model || '—'}</span></div>
               <div className="flex items-center justify-between"><span className="text-text-muted">Latency</span><span className="font-medium text-text">{hasProvider && health ? `${health.latencyMs ?? '—'}ms` : '—'}</span></div>
               <div className="flex items-center justify-between"><span className="text-text-muted">Last validation</span><span className="font-medium text-text">{activeInfo?.health?.lastChecked ? new Date(activeInfo.health.lastChecked).toLocaleString() : '—'}</span></div>
@@ -347,14 +373,14 @@ export function AiSettings() {
                 by default; it does not remove them.
               */}
               {(() => {
-                const served = knownProviders.filter((p) => p.selfHosted);
-                const cloud = knownProviders.filter((p) => !p.selfHosted);
-                const row = (p: ProviderInfo) => (
-                  <button key={p.id} onClick={() => selectProvider(p.id)}
+                const { served, cloud } = splitProviders(knownProviders);
+                const selfHosted = served[0] ?? null;
+                const row = (p: ProviderInfo, name?: string, prefill?: { addressPrefill?: string; placeholder?: string }) => (
+                  <button key={`${p.id}-${name ?? p.name}`} onClick={() => selectProvider(p.id, { ...prefill, name })}
                     className="flex w-full items-center gap-3 rounded-xl border border-line px-3.5 py-3 text-left transition-colors hover:border-accent/40 hover:bg-accent/5">
                     <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-active text-text-muted"><Icon name={providerIcon(p.id)} size={16} /></span>
                     <div className="min-w-0 flex-1">
-                      <span className="block text-[13px] font-medium text-text">{p.name ?? p.id}</span>
+                      <span className="block text-[13px] font-medium text-text">{name ?? p.name ?? p.id}</span>
                       {p.description && <span className="block text-[11.5px] text-text-subtle">{p.description}</span>}
                     </div>
                     <Icon name="arrow-right" size={16} className="text-text-subtle" />
@@ -362,28 +388,51 @@ export function AiSettings() {
                 );
                 return (
                   <>
-                    {served.length > 0 && (
-                      <>
-                        <p className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-text-subtle">
-                          Your own server
-                        </p>
-                        <p className="px-1 pb-2 text-[11.5px] leading-relaxed text-text-subtle">
-                          Addressed by URL. This machine or another — a lab or GPU server works the same way.
-                        </p>
-                        {served.map(row)}
-                      </>
+                    {/*
+                      SELF-HOSTED is the primary inference path: a model
+                      server somebody runs, on this machine (Local) or
+                      another (Remote — a lab, college or private GPU box
+                      is still self-hosted, never "cloud"). Both entries
+                      drive the same addressed connect flow; only the
+                      starting address differs.
+                    */}
+                    <p className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-text-subtle">
+                      Self-hosted · Primary
+                    </p>
+                    <p className="px-1 pb-2 text-[11.5px] leading-relaxed text-text-subtle">
+                      Primary inference. Your prompts stay on hardware you control.
+                    </p>
+                    {selfHosted ? (
+                      <div className="space-y-2">
+                        {row(selfHosted, 'Local Server', { addressPrefill: selfHosted.defaultBaseUrl ?? '', placeholder: 'http://127.0.0.1:11434' })}
+                        {row(selfHosted, 'Remote Server', { addressPrefill: '', placeholder: 'http://gpu-server.example.edu:11434' })}
+                      </div>
+                    ) : (
+                      <p className="px-1 pb-2 text-[11.5px] text-text-subtle">No self-hosted provider offered by the service.</p>
                     )}
                     {cloud.length > 0 && (
                       <>
                         <p className="px-1 pb-1 pt-4 text-[11px] font-medium uppercase tracking-wide text-text-subtle">
-                          Fallback — hosted providers
+                          Fallback · Optional
                         </p>
                         <p className="px-1 pb-2 text-[11.5px] leading-relaxed text-text-subtle">
-                          These need an API key and send your prompts to a third party.
+                          Optional cloud inference when explicitly enabled. Connecting a key never activates it — activation is always your choice, and nothing is sent to a third party until then.
                         </p>
-                        <div className="space-y-2 opacity-70 transition-opacity hover:opacity-100">
-                          {cloud.map(row)}
-                        </div>
+                        <button onClick={() => setFallbackOpen((v) => !v)}
+                          aria-expanded={fallbackOpen}
+                          className="flex w-full items-center gap-3 rounded-xl border border-line px-3.5 py-3 text-left transition-colors hover:border-accent/40 hover:bg-accent/5">
+                          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-active text-text-muted"><Icon name="spark" size={16} /></span>
+                          <div className="min-w-0 flex-1">
+                            <span className="block text-[13px] font-medium text-text">Add Fallback Provider</span>
+                            <span className="block text-[11.5px] text-text-subtle">{cloud.length} cloud providers · API key · used only if activated</span>
+                          </div>
+                          <Icon name={fallbackOpen ? 'chevron-down' : 'arrow-right'} size={16} className="text-text-subtle" />
+                        </button>
+                        {fallbackOpen && (
+                          <div className="space-y-2 pt-2 opacity-70 transition-opacity hover:opacity-100">
+                            {cloud.map((p) => row(p))}
+                          </div>
+                        )}
                       </>
                     )}
                   </>
@@ -408,7 +457,7 @@ export function AiSettings() {
                   // hiding it would only stop the user checking their own
                   // typing on the one field most likely to have a typo.
                   type={dialog.addressed || dialog.showKey ? 'text' : 'password'}
-                  placeholder={dialog.addressed ? 'http://gpu-server.example.edu:11434' : 'Paste your API key…'}
+                  placeholder={dialog.placeholder || (dialog.addressed ? 'http://gpu-server.example.edu:11434' : 'Paste your API key…')}
                   value={dialog.apiKey}
                   onChange={(e) => setDialog((d) => ({ ...d, apiKey: (e as React.ChangeEvent<HTMLInputElement>).target.value, error: '' }))}
                   className="flex-1"

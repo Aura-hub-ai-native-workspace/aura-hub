@@ -82,6 +82,25 @@ const json = (res: http.ServerResponse, code: number, body: unknown) => {
   res.end(JSON.stringify(body));
 };
 
+/**
+ * Which project an advisory request is about, resolved through the
+ * registry — the single project authority. Absent means "no claim":
+ * the pipeline answers from the mounted project as before. Present
+ * but unresolvable is a 404, never a silent answer about whichever
+ * project happens to be mounted — that misattribution is exactly how
+ * Ask AURA came to describe the wrong project.
+ */
+function resolveRequestScope(
+  manager: WorkspaceManager,
+  b: Record<string, unknown>,
+): { project: { id: string; path: string; name: string } } | { error: string; status: 404 } | null {
+  const pid = typeof b.projectId === 'string' && b.projectId ? b.projectId : null;
+  if (!pid) return null;
+  const record = manager.registry.get(pid);
+  if (!record) return { error: `no project is registered with id "${pid}"`, status: 404 };
+  return { project: { id: record.id, path: record.path, name: record.name } };
+}
+
 function resolveHistory(manager: WorkspaceManager, b: Record<string, unknown>) {
   if (Array.isArray(b.history)) return b.history as { role: 'user' | 'assistant' | 'system'; content: string }[];
   const pid = typeof b.projectId === 'string' ? b.projectId : null;
@@ -582,6 +601,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           const prof = manager.profile(id);
           return prof ? json(res, 200, prof) : json(res, 404, { error: 'no profile' });
         }
+        if (seg[2] === 'reindex' && method === 'POST') {
+          // Index the NAMED project, mounted or not. Unknown ids are
+          // refused; the mount is never moved as a side effect. (This
+          // route was called by the UI but never existed — refreshes
+          // fell through to 404.)
+          try { return json(res, 200, await manager.indexProjectById(id)); }
+          catch (e) { return json(res, 404, { error: (e as Error).message }); }
+        }
         if (seg[2] === 'conversations') {
           if (seg.length === 3 && method === 'GET') return json(res, 200, { conversations: manager.listConversations(id) });
           if (seg.length === 3 && method === 'POST') { const b = await readJson(req); return json(res, 200, manager.createConversation(id, b.title as string | undefined)); }
@@ -613,6 +640,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           }
 
           if (seg.length === 3 && method === 'GET') {
+            // `?prompt=1` is the legacy spelling of the contract read
+            // (see aiClient.projectContext) — same authority, same shape
+            // as `/contract`, so old callers are answered, not stranded.
+            if (url.searchParams.get('prompt') === '1') {
+              const contract = await manager.contextContract(id, opts);
+              if (contract === null) return json(res, 404, { error: `no project is registered with id "${id}"` });
+              return json(res, 200, { projectId: id, surface, contract });
+            }
             const view = await manager.contextView(id, opts);
             // An unresolvable project is 404, never an empty view — a
             // caller must not be able to read "no such project" as "a
@@ -1405,7 +1440,11 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         const ac = new AbortController();
         res.on('close', () => ac.abort());
         const history = resolveHistory(manager, b);
-        return json(res, 200, await p.ask(String(b.text ?? ''), ac.signal, history));
+        const scope = resolveRequestScope(manager, b);
+        if (scope && 'error' in scope) return json(res, scope.status, { error: scope.error });
+        const project = scope?.project ?? null;
+        const auraContext = project ? await manager.contextContract(project.id, { surface: 'general', environment: environmentSnapshot }) : null;
+        return json(res, 200, await p.ask(String(b.text ?? ''), ac.signal, history, auraContext, undefined, project));
       }
       if (method === 'POST' && seg[0] === 'stream') {
         const b = await readJson(req);
@@ -1413,8 +1452,17 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         const ac = new AbortController();
         res.on('close', () => ac.abort());
         const history = resolveHistory(manager, b);
+        const scope = resolveRequestScope(manager, b);
+        if (scope && 'error' in scope) {
+          const emit = (e: StreamEmit) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
+          emit({ type: 'error', error: { type: 'unknown-project', message: scope.error, retryable: false } });
+          if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+          return;
+        }
+        const project = scope?.project ?? null;
+        const auraContext = project ? await manager.contextContract(project.id, { surface: 'general', environment: environmentSnapshot }) : null;
         const emit = (e: StreamEmit) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
-        await p.streamEvents(String(b.text ?? ''), emit, ac.signal, history);
+        await p.streamEvents(String(b.text ?? ''), emit, ac.signal, history, auraContext, undefined, project);
         if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
         return;
       }

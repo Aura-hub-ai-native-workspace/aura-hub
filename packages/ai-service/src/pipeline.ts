@@ -54,6 +54,18 @@ interface Mount {
   profile: ProjectProfile | null;
 }
 
+/**
+ * An explicitly requested project for one request. The advisory routes
+ * resolve this from the registry (unknown ids are refused there, never
+ * here) so generation is grounded in the project that was asked about —
+ * not in whichever project happens to be mounted.
+ */
+export interface ProjectScope {
+  id: string;
+  path: string;
+  name?: string;
+}
+
 export interface NormalizedError { type: string; message: string; retryable: boolean }
 
 /**
@@ -194,6 +206,16 @@ export class PipelineManager {
   private readonly enhancer = new TemplatePromptEnhancer();
   private status: IndexStatus = emptyStatus();
   private indexing: Promise<void> | null = null;
+  /**
+   * Read-only engine handles per project, built on demand. The mounted
+   * project keeps using its live instances; every other requested
+   * project reads through a cached handle here instead — so inspection
+   * never depends on (or disturbs) the mount. Entries hold loaded
+   * on-disk state only; indexing still happens exclusively through
+   * mount/index flows. Dropped whenever that project is (re)mounted or
+   * (re)indexed, so a refresh can never leave stale handles behind.
+   */
+  private scopedEngines = new Map<string, Omit<Mount, 'profile'> & { profile: ProjectProfile | null }>();
 
   constructor(_opts: PipelineOptions = {}) {
     this.runtimeManager = new RuntimeManager();
@@ -232,6 +254,7 @@ export class PipelineManager {
 
   mount(target: MountTarget): void {
     if (this.mounted?.id === target.id) return;
+    this.scopedEngines.delete(target.id);
     const coding = new CodingKnowledgeEngine(target.path, {
       indexDir: homePath('index', target.id, 'coding'),
       projectName: target.name ?? target.id,
@@ -254,6 +277,46 @@ export class PipelineManager {
     this.status = emptyStatus();
   }
 
+  /**
+   * Read handles for an explicitly requested project. The mounted
+   * project resolves to its live instances; anything else gets a cached
+   * handle built the same way mount builds them, with the persisted
+   * index loaded best-effort. Never indexes, never mounts, never touches
+   * shared status — a request about project B must not disturb project A
+   * in any observable way. A project with no index on disk simply yields
+   * empty retrieval (and downstream generation fills in lazily), never
+   * another project's facts.
+   */
+  async scopedEnginesFor(scope: ProjectScope): Promise<Omit<Mount, 'profile'> & { profile: ProjectProfile | null }> {
+    const m = this.mounted;
+    if (m && m.id === scope.id) {
+      return { id: m.id, path: m.path, coding: m.coding, fullstack: m.fullstack, memory: m.memory, profile: m.profile };
+    }
+    const cached = this.scopedEngines.get(scope.id);
+    if (cached) return cached;
+    const coding = new CodingKnowledgeEngine(scope.path, {
+      indexDir: homePath('index', scope.id, 'coding'),
+      projectName: scope.name ?? scope.id,
+    });
+    const fullstack = new FullStackKnowledgeEngine(scope.path, {
+      indexDir: homePath('index', scope.id, 'fullstack'),
+      projectName: scope.name ?? scope.id,
+    });
+    try { await coding.load(); } catch { /* absent index reads as empty */ }
+    try { await fullstack.load(); } catch { /* absent index reads as empty */ }
+    const handle = {
+      id: scope.id, path: scope.path, coding, fullstack,
+      memory: new ProjectMemory(scope.id), profile: loadProfile(scope.id),
+    };
+    this.scopedEngines.set(scope.id, handle);
+    return handle;
+  }
+
+  /** Drop a cached read handle (after reindex / remount of that project). */
+  dropScopedEngines(projectId: string): void {
+    this.scopedEngines.delete(projectId);
+  }
+
   async whenIndexed(): Promise<IndexStatus> {
     if (this.indexing) await this.indexing;
     return this.indexStatus();
@@ -271,6 +334,91 @@ export class PipelineManager {
     this.indexing = this.runIndex(true);
     await this.indexing;
     return this.indexStatus();
+  }
+
+  /** One in-flight background index per project, coalesced like `reindex`. */
+  private backgroundIndexes = new Map<string, Promise<IndexStatus>>();
+
+  /**
+   * Index a project WITHOUT mounting it. Engines are built the same way
+   * `mount` builds them and write to the same per-project on-disk store,
+   * but `this.mounted` and the shared mount `status` are never touched —
+   * indexing project B must not disturb project A in any observable way.
+   * The scoped read cache for the id is dropped first, so handles created
+   * earlier can never serve pre-refresh retrieval afterwards.
+   *
+   * Used when a project is added (context should exist without forcing
+   * the user to open it) and by explicit per-project reindex requests.
+   * Never throws: a project whose files cannot be read reports `error`,
+   * it does not take down the caller.
+   */
+  async indexProject(scope: ProjectScope, force = false): Promise<IndexStatus> {
+    const running = this.backgroundIndexes.get(scope.id);
+    if (running) return running;
+    const run = this.runProjectIndex(scope, force).finally(() => {
+      if (this.backgroundIndexes.get(scope.id) === run) this.backgroundIndexes.delete(scope.id);
+    });
+    this.backgroundIndexes.set(scope.id, run);
+    return run;
+  }
+
+  private async runProjectIndex(scope: ProjectScope, force: boolean): Promise<IndexStatus> {
+    const at = new Date().toISOString();
+    const status: IndexStatus = {
+      ...emptyStatus(), projectId: scope.id, phase: 'indexing',
+      message: 'Preparing index…', startedAt: at,
+    };
+    try {
+      this.dropScopedEngines(scope.id);
+      const coding = new CodingKnowledgeEngine(scope.path, {
+        indexDir: homePath('index', scope.id, 'coding'),
+        projectName: scope.name ?? scope.id,
+      });
+      const fullstack = new FullStackKnowledgeEngine(scope.path, {
+        indexDir: homePath('index', scope.id, 'fullstack'),
+        projectName: scope.name ?? scope.id,
+      });
+      status.message = 'Indexing code…';
+      if (force || !(await coding.load())) {
+        await coding.index({
+          onProgress: (p) => { status.coding.processed = p.processed; status.coding.total = p.total ?? status.coding.total; },
+        });
+      }
+      status.coding.chunks = coding.stats().chunks;
+      status.message = 'Analyzing system graph…';
+      if (force || !(await fullstack.load())) {
+        await fullstack.analyze({
+          onProgress: (p) => { status.fullstack.processed = p.processed; status.fullstack.total = p.total ?? status.fullstack.total; },
+        });
+      }
+      const g = fullstack.stats();
+      status.fullstack.entities = g.entities;
+      status.fullstack.relations = g.relations;
+      status.message = 'Understanding repository…';
+      // Project understanding uses the SAME load-or-generate rules as a
+      // chat-time request (see runIntelligencePipeline): identity, module
+      // summary, repository profile, glossary and health are generated
+      // when absent and persisted by the generators themselves. A neutral
+      // seed query drives it — the persisted artifacts are
+      // query-independent; only the ephemeral assembly varies with the
+      // question. Never fails the index: understanding is best-effort
+      // here and regenerates lazily on demand either way.
+      try {
+        runIntelligencePipeline(
+          scope.id, scope.path, 'Summarize this repository for project understanding.',
+          loadProfile(scope.id), '', '', '', [],
+        );
+      } catch { /* understanding regenerates lazily; the index stands alone */ }
+      status.phase = 'ready';
+      status.message = 'Knowledge ready';
+      status.finishedAt = new Date().toISOString();
+    } catch (e) {
+      status.phase = 'error';
+      status.message = 'Indexing failed';
+      status.error = (e as Error)?.message ?? String(e);
+      status.finishedAt = new Date().toISOString();
+    }
+    return status;
   }
 
   private async runIndex(force: boolean): Promise<void> {
@@ -367,8 +515,17 @@ export class PipelineManager {
    * the Context Fabric composes a view before this runs, and both need the
    * same answer to "what changed?".
    */
-  async inspect(text: string, _scan?: TreeScan): Promise<InspectResult> {
+  async inspect(text: string, _scan?: TreeScan, project?: ProjectScope | null): Promise<InspectResult> {
+    // Scope rule: an explicitly requested project is inspected — never the
+    // mount by default. Without a requested project the mount answers as
+    // before, so workspace-global callers are unaffected. `meta.projectId`
+    // below always names the project that was actually read.
     const m = this.mounted;
+    const eng = project ? await this.scopedEnginesFor(project) : null;
+    const src = eng ?? (m ? {
+      id: m.id, path: m.path, coding: m.coding, fullstack: m.fullstack,
+      memory: m.memory, profile: m.profile,
+    } : null);
     const req = createRequest(text);
     const intent = await this.classifier.classify(req);
     const prompt = await this.enhancer.enhance(req, intent);
@@ -376,8 +533,8 @@ export class PipelineManager {
     // Single retrieval pass — coding engine
     let coding = { files: [] as string[], chunks: 0, tokens: 0 };
     let codingContextText = '';
-    if (m) {
-      const c = m.coding.getContext({ text: prompt.enhanced, limit: 24 }, { limit: 6, neighbors: 1, maxTokens: 3000 });
+    if (src) {
+      const c = src.coding.getContext({ text: prompt.enhanced, limit: 24 }, { limit: 6, neighbors: 1, maxTokens: 3000 });
       coding = { files: c.entries.map((e) => e.source), chunks: c.entries.reduce((s, e) => s + e.chunks.length, 0), tokens: c.totalTokens };
       if (c.entries.length > 0) {
         codingContextText = c.entries.map((e) => {
@@ -391,8 +548,8 @@ export class PipelineManager {
     let fullstack = { hits: [] as string[], paths: [] as string[] };
     let fsTokens = 0;
     let graphContextText = '';
-    if (m) {
-      const a = m.fullstack.search({ text: prompt.enhanced, limit: 8 });
+    if (src) {
+      const a = src.fullstack.search({ text: prompt.enhanced, limit: 8 });
       fullstack = {
         hits: a.hits.map((h) => `${h.entity.kind}: ${h.entity.name}`),
         paths: a.paths.filter((p) => p.entities.length >= 2).slice(0, 6).map((p) => {
@@ -415,8 +572,8 @@ export class PipelineManager {
     // Single retrieval pass — memory
     let memory = { items: [] as { id: string; kind: string; title: string }[], tokens: 0 };
     let memoryContextText = '';
-    if (m) {
-      const hits = m.memory.recall(prompt.enhanced || text, 4);
+    if (src) {
+      const hits = src.memory.recall(prompt.enhanced || text, 4);
       memory = {
         items: hits.map((h) => ({ id: h.id, kind: h.kind, title: h.title })),
         tokens: hits.reduce((s, h) => s + h.body.length / 4, 0),
@@ -428,12 +585,12 @@ export class PipelineManager {
 
     // Run intelligence engine (identity, summary, profile, glossary, health, context assembly)
     let intelResult: IntelligenceEngineResult | null = null;
-    if (m) {
+    if (src) {
       intelResult = runIntelligencePipeline(
-        m.id,
-        m.path,
+        src.id,
+        src.path,
         text,
-        m.profile,
+        src.profile,
         codingContextText,
         graphContextText,
         memoryContextText,
@@ -446,12 +603,12 @@ export class PipelineManager {
       intentConfidence: intelResult?.intent.confidence ?? intent.confidence,
       enhancedPrompt: prompt.enhanced,
       systemHints: prompt.systemHints,
-      engines: [...(m && coding.files.length ? ['coding'] : []), ...(m && fullstack.hits.length ? ['fullstack'] : []), ...(memory.items.length ? ['memory'] : [])],
+      engines: [...(src && coding.files.length ? ['coding'] : []), ...(src && fullstack.hits.length ? ['fullstack'] : []), ...(memory.items.length ? ['memory'] : [])],
       coding,
       fullstack,
       memory,
       contextTokens: coding.tokens + fsTokens + memory.tokens + (intelResult?.context.totalTokens ?? 0),
-      projectId: m?.id ?? null,
+      projectId: src?.id ?? null,
       identity: intelResult?.identity ?? null,
       summary: intelResult?.summary ?? null,
       repoProfile: intelResult?.profile ?? null,
@@ -498,6 +655,20 @@ export class PipelineManager {
        before the facts it qualifies. */
     if (auraContext) {
       messages.push({ role: 'system', content: auraContext });
+    } else if (meta.projectId && meta.engines.length === 0) {
+      // A project was explicitly requested but NOTHING project-specific
+      // was found for it — no contract, no retrieval, no memory. Say so
+      // to the model directly: without this, an advisor confidently
+      // invents project facts ("your auth module…") for a project it has
+      // never seen. The note fires only for an explicitly requested
+      // project; workspace-global requests keep the legacy behavior.
+      messages.push({
+        role: 'system',
+        content: 'No indexed context was found for the requested project. '
+          + 'Answer from the conversation and general knowledge only. '
+          + 'Do not invent project-specific facts, files, or modules. '
+          + 'If the question needs project knowledge, say what is missing.',
+      });
     }
 
     // Use the intelligence engine's assembled context as the system message
@@ -519,8 +690,8 @@ export class PipelineManager {
 
   /* ── generation ─────────────────────────────────────────────────── */
 
-  async ask(text: string, signal?: AbortSignal, history?: ConversationTurn[], auraContext?: string | null, scan?: TreeScan) {
-    const meta = await this.inspect(text, scan);
+  async ask(text: string, signal?: AbortSignal, history?: ConversationTurn[], auraContext?: string | null, scan?: TreeScan, project?: ProjectScope | null) {
+    const meta = await this.inspect(text, scan, project);
     const runtime = this.runtimeManager.runtime;
     if (!runtime) return { ok: false as const, error: NO_PROVIDER, meta };
     if (!isModelValidForProvider(this.runtimeManager.getProviderId(), this.runtimeManager.getModel())) {
@@ -603,10 +774,10 @@ export class PipelineManager {
     }
   }
 
-  async streamEvents(text: string, emit: (e: StreamEmit) => void, signal?: AbortSignal, history?: ConversationTurn[], auraContext?: string | null, scan?: TreeScan): Promise<void> {
+  async streamEvents(text: string, emit: (e: StreamEmit) => void, signal?: AbortSignal, history?: ConversationTurn[], auraContext?: string | null, scan?: TreeScan, project?: ProjectScope | null): Promise<void> {
     let meta: InspectResult;
     try {
-      meta = await this.inspect(text, scan);
+      meta = await this.inspect(text, scan, project);
       emit({ type: 'meta', meta });
     } catch (e) {
       emit({ type: 'error', error: normalize(e) });

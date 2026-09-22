@@ -20,6 +20,7 @@
  */
 
 import { FrameDeduper, parseBlock, splitBlocks } from './agentEventStream';
+import type { AgentApprovalRow } from './agentApprovals';
 
 const ENV = import.meta.env as unknown as Record<string, string | undefined>;
 /**
@@ -285,7 +286,7 @@ export const centralAgentClient = {
    * requests; `aiClient`/useFabric read the workflow service's (:4319).
    * An agent-parked id must be resolved HERE, never through useFabric.
    */
-  pendingApprovals: () => jget<{ approvals: Array<{ id: string; state: string; summary: string; items: Array<{ capabilityId: string; title: string; detail: string; risk: string; irreversible: boolean }> }> }>('/fabric/approvals'),
+  pendingApprovals: () => jget<{ approvals: AgentApprovalRow[] }>('/fabric/approvals'),
 
   /**
    * Record THIS human decision through the same single-use ledger the
@@ -293,7 +294,7 @@ export const centralAgentClient = {
    * refused by the backend with 409 — surfaced here as a thrown Error.
    */
   approve: (sessionId: string, approvalId: string, granted: boolean, reason?: string) =>
-    jpost<{ approval: ApprovalDecision; result: AgentResult; requestId?: string | null }>(
+    jpost<{ approval: AgentApprovalRow; result: AgentResult; requestId?: string | null }>(
       `/agent/sessions/${encodeURIComponent(sessionId)}/approve`,
       { approvalId, granted, reason },
     ),

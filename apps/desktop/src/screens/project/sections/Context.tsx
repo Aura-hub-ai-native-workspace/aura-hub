@@ -21,7 +21,7 @@ import { cn } from '@aura/core';
 import { Badge, Button, Icon } from '@aura/ui';
 import { SectionView, Block } from '../components/kit';
 import { EmptyState } from '../../../components/EmptyState';
-import { aiClient, type ContextView, type ContextFreshness } from '../../../ai/aiClient';
+import { aiClient, contextUnavailable, type ContextView, type ContextFreshness } from '../../../ai/aiClient';
 
 function relTime(iso: string | null): string {
   if (!iso) return 'never';
@@ -43,8 +43,13 @@ export function Context({ projectId }: { projectId: string }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await aiClient.projectContext(projectId);
-      setView(res.view);
+      const res = await aiClient.contextView(projectId);
+      if (contextUnavailable(res)) {
+        setView(null);
+        setError(res.reason);
+        return;
+      }
+      setView(res);
       setError(null);
     } catch (e) {
       setError((e as Error).message);
@@ -55,14 +60,10 @@ export function Context({ projectId }: { projectId: string }) {
 
   useEffect(() => { void load(); }, [load]);
 
-  /* Refresh goes through the EXISTING re-index authority, but names its
-     project. The generic re-index acts on whatever is mounted, so this
-     panel — which is scoped to `projectId` — could refresh project A and
-     re-index project B. The service refuses that mismatch; the button is
-     disabled below so the user meets an explanation rather than an error.
-
-     This panel deliberately has no indexing mechanism of its own —
-     inventing a second one is how two notions of "up to date" start. */
+  /* Refresh re-indexes THIS project by id — mounted or not, the mount
+     is never moved as a side effect. This panel deliberately has no
+     indexing mechanism of its own — inventing a second one is how two
+     notions of "up to date" start. */
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -105,18 +106,14 @@ export function Context({ projectId }: { projectId: string }) {
       hint={`Everything below is what AURA can tell an agent about ${view.project.name}.`}
       actions={
         <div className="flex items-center gap-2.5">
-          {/* Re-indexing only works on the open project, and AURA will not
-              switch projects behind the user's back to make a refresh
-              possible. Say so rather than offering a button that fails. */}
-          {!view.project.mounted && (
-            <span className="text-[11.5px] text-text-subtle">Open this project to refresh</span>
-          )}
+          {/* Re-indexing addresses this project by id and never moves the
+              mount, so it is always safe to offer. */}
           <Button
             size="sm"
             variant="secondary"
             icon="refresh"
             onClick={() => void refresh()}
-            disabled={refreshing || !view.project.mounted}
+            disabled={refreshing}
           >
             {refreshing ? 'Re-indexing…' : 'Refresh context'}
           </Button>
