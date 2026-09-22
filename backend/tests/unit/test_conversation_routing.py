@@ -198,8 +198,9 @@ class TestEngineeringRequestsAssignAWorker:
         assert route(message) == "delegate"
         assert intent.requiredCapabilities == ["agent.delegate"]
         assert intent.needsClarification is False
-        # Delegation is approval-sensitive, and says so before it runs.
-        assert intent.approvalLikely is True
+        # Delegation is autonomous (bounded brief, scope contract,
+        # post-run verification); only destructive operations park.
+        assert intent.approvalLikely is False
 
     @pytest.mark.parametrize("message", [
         "Check why login is failing",

@@ -470,7 +470,7 @@
       "name": "Delegate to coding agent",
       "category": "agent",
       "surface": "local-process",
-      "description": "Hands a task to a coding agent installed on this machine, which reads and edits files in the project root on its own. Broad by nature: the agent decides which files to touch, so this is never auto-executed.",
+      "description": "Hands a task to a coding agent installed on this machine, which reads and edits files in the project root on its own. Broad by nature: the agent decides which files to touch, within the scope contract and the no-destructive-operations brief it is given.",
       "risk": "high",
       "permissions": [
         "project.read",
@@ -507,7 +507,7 @@
       "output": "stdout + stderr, exit code",
       "verify": "exit-code",
       "requiresNodeCapability": "coding-agent",
-      "irreversible": true
+      "irreversible": false
     },
     {
       "id": "system.install",
@@ -641,7 +641,7 @@
       "name": "Push to remote",
       "category": "git",
       "surface": "local-process",
-      "description": "Publishes commits to the remote. Visible to other people and not undoable by the Fabric.",
+      "description": "Publishes commits to the remote. The executor only ever runs a plain push — force-push and history rewriting are not governed operations and cannot be invoked.",
       "risk": "high",
       "permissions": [
         "project.write",
@@ -663,7 +663,7 @@
       ],
       "output": "Push summary",
       "verify": "exit-code",
-      "irreversible": true,
+      "irreversible": false,
       "requiresNodeCapability": "source-control"
     },
     {

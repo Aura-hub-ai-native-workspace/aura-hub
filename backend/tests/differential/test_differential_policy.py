@@ -93,6 +93,16 @@ def _rand_raw_config(rng: random.Random) -> dict:
             raw["allowAutonomous"] = "yes"                # hostile → False (cautious)
         elif style < 0.85:
             raw["allowAutonomous"] = None                 # explicit null → cautious False? TS: not boolean → false
+    if rng.random() < 0.6:
+        style = rng.random()
+        pool = ["agent.delegate", "filesystem.write", "filesystem.delete",
+                "git.push", "terminal.execute", "", 42, None]
+        if style < 0.5:
+            raw["autonomy"] = rng.sample(pool, k=rng.randint(0, 4))  # junk filtered both sides
+        elif style < 0.7:
+            raw["autonomy"] = "not-a-list"                # malformed → [] (fail closed)
+        elif style < 0.85:
+            raw["autonomy"] = None                        # explicit null → [] (fail closed)
     if rng.random() < 0.15:
         raw["unknownJunk"] = {"deep": [1, 2, 3]}         # unknown keys dropped silently
     return raw

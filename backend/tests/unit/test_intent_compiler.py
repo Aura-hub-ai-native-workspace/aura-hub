@@ -41,12 +41,12 @@ class TestHeuristic:
         question, because this installation had no way to act on it.
         It does now: the request becomes a delegated task under a task
         contract. What must NOT change is that it stays governed —
-        agent.delegate is high risk, so it still parks for a human
-        before any worker runs, and "silently" was always the operative
-        word in the old name."""
+        agent.delegate keeps risk high with a bounded brief, scope
+        contract and post-run verification; but the delegation itself
+        no longer parks for a human. Only destructive operations do."""
         intent = heuristic_interpret("fix my tests")
         assert intent.requiredCapabilities == ["agent.delegate"]
-        assert intent.approvalLikely is True
+        assert intent.approvalLikely is False
         assert intent.needsClarification is False
 
 

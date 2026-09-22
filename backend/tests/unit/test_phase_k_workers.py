@@ -828,6 +828,12 @@ class TestApprovalSurvivesARestart:
                 return {"passed": True, "kind": "exit-code", "detail": "0"}
 
         fabric.executors["agent.delegate"] = _Exec()
+        # Delegation is autonomous now, so restart-persistence of grants
+        # is proven against a capability that still parks: governed
+        # file deletion. Same single-use spend semantics, same ledger.
+        from aura.executors import EXECUTOR_TABLE, ExecutorAdapter
+        fabric.executors["filesystem.delete"] = ExecutorAdapter(
+            "filesystem.delete", EXECUTOR_TABLE["filesystem.delete"])
         cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
                            permissions={"read": True, "write": True})
         return cfg, ledger, ran
@@ -837,12 +843,13 @@ class TestApprovalSurvivesARestart:
         from aura.fabric import invoke_fabric
 
         monkeypatch.setenv("AURA_HOME", str(tmp_path))
-        payload = {"task": "do the thing", "scopePaths": ["src"]}
+        (tmp_path / "victim.txt").write_text("remove me\n")
+        payload = {"path": "victim.txt"}
         context = {"actor": {"kind": "agent", "id": "central-agent"},
                    "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
 
         cfg, _ledger, _ran = self._stack(tmp_path)
-        parked = invoke_fabric("agent.delegate", payload, dict(context), cfg)
+        parked = invoke_fabric("filesystem.delete", payload, dict(context), cfg)
         assert parked["outcome"] == "awaiting-approval"
         approval_id = parked["approvalId"]
 
@@ -851,10 +858,10 @@ class TestApprovalSurvivesARestart:
         assert ledger2.decide(approval_id, True, "user", "ok") is not None
 
         spent = invoke_fabric(
-            "agent.delegate", payload,
+            "filesystem.delete", payload,
             {**context, "approvalId": approval_id}, cfg2)
         assert spent["outcome"] == "succeeded", spent["detail"]
-        assert len(ran2) == 1
+        assert not (tmp_path / "victim.txt").exists()
 
     def test_the_refusal_reason_distinguishes_the_three_causes(self):
         """The user-facing sentence is frozen by the TS oracle and says
@@ -881,22 +888,23 @@ class TestApprovalSurvivesARestart:
         from aura.fabric import invoke_fabric
 
         monkeypatch.setenv("AURA_HOME", str(tmp_path))
-        payload = {"task": "do the thing", "scopePaths": ["src"]}
+        (tmp_path / "victim.txt").write_text("remove me\n")
+        payload = {"path": "victim.txt"}
         context = {"actor": {"kind": "agent", "id": "central-agent"},
                    "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
         cfg, ledger, _ = self._stack(tmp_path)
         approval_id = invoke_fabric(
-            "agent.delegate", payload, dict(context), cfg)["approvalId"]
+            "filesystem.delete", payload, dict(context), cfg)["approvalId"]
 
         cfg2, ledger2, ran2 = self._stack(tmp_path)
         ledger2.decide(approval_id, True, "user", "ok")
         assert invoke_fabric(
-            "agent.delegate", payload,
+            "filesystem.delete", payload,
             {**context, "approvalId": approval_id},
             cfg2)["outcome"] == "succeeded"
 
         cfg3, _l3, ran3 = self._stack(tmp_path)
-        replay = invoke_fabric("agent.delegate", payload,
+        replay = invoke_fabric("filesystem.delete", payload,
                                {**context, "approvalId": approval_id}, cfg3)
         assert replay["outcome"] == "awaiting-approval"
         assert ran3 == [], "a spent grant must not run anything again"

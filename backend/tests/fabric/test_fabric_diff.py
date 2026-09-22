@@ -50,6 +50,9 @@ EXEC_TERM = {"capabilityId": "terminal.execute",
              "verify": {"passed": True, "kind": "exit-code", "detail": "exit 0"}}
 EXEC_LIST = {"capabilityId": "filesystem.list",
              "steps": [{"throw": "socket hang up"}]}
+EXEC_DELETE = {"capabilityId": "filesystem.delete",
+               "steps": [{"ok": True, "detail": "deleted", "output": {"path": "x"}}],
+               "verify": {"passed": True, "kind": "absence", "detail": "gone"}}
 EXEC_INSPECT = {"capabilityId": "project.inspect",
                 "steps": [{"ok": False, "detail": "exited 1"}]}
 EXEC_NAV = {"capabilityId": "browser.navigate",
@@ -64,25 +67,25 @@ EXEC_SHOT = {"capabilityId": "browser.screenshot",
 
 def base_executors() -> list[dict]:
     return [EXEC_WRITE, EXEC_READ, EXEC_TERM, EXEC_LIST, EXEC_INSPECT,
-            EXEC_NAV, EXEC_BREAD, EXEC_SHOT]
+            EXEC_NAV, EXEC_BREAD, EXEC_SHOT, EXEC_DELETE]
 
 
 def scenario_park_decide() -> tuple[dict, list[dict]]:
     cfg = {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
            "executors": base_executors()}
     ops = [
-        {"op": "invoke", "capabilityId": "filesystem.write",
-         "input": {"path": "src/a.ts", "content": "hi"},
+        {"op": "invoke", "capabilityId": "filesystem.delete",
+         "input": {"path": "src/a.ts"},
          "context": MISSION_CTX},                                                    # r0 parked
         {"op": "pending"},                                                           # r1 request shape
         {"op": "decide", "id": "$r0.approvalId", "granted": True},                   # r2 grant + audit record
         {"op": "audit"},                                                             # r3 [decision record]
-        {"op": "invoke", "capabilityId": "filesystem.write",
-         "input": {"path": "src/a.ts", "content": "hi"},
+        {"op": "invoke", "capabilityId": "filesystem.delete",
+         "input": {"path": "src/a.ts"},
          "context": MISSION_CTX},                                                    # r4 spends open grant → runs
         {"op": "pending"},                                                           # r5 empty again
-        {"op": "invoke", "capabilityId": "filesystem.write",
-         "input": {"path": "src/a.ts", "content": "hi2"},
+        {"op": "invoke", "capabilityId": "filesystem.delete",
+         "input": {"path": "src/b.ts"},
          "context": MISSION_CTX},                                                    # r6 consumed → NEW pending
         {"op": "pending"},                                                           # r7 fresh question
     ]
@@ -109,11 +112,11 @@ def scenario_named_mismatch() -> tuple[dict, list[dict]]:
     cfg = {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
            "executors": base_executors()}
     ops = [
-        {"op": "invoke", "capabilityId": "filesystem.write",
-         "input": {"path": "src/a.ts", "content": "hi"}, "context": PLAIN_CTX},      # r0
+        {"op": "invoke", "capabilityId": "filesystem.delete",
+         "input": {"path": "src/a.ts"}, "context": PLAIN_CTX},                       # r0
         {"op": "decide", "id": "$r0.approvalId", "granted": True},
-        {"op": "invoke", "capabilityId": "filesystem.write",
-         "input": {"path": "src/EVIL.ts", "content": "hi"},
+        {"op": "invoke", "capabilityId": "filesystem.delete",
+         "input": {"path": "src/EVIL.ts"},
          "context": {**PLAIN_CTX, "approvalId": "$r0.approvalId"}},                  # r2 mismatch parks
         {"op": "pending"},                                                           # r3 standing question intact
     ]
@@ -136,7 +139,8 @@ SCENARIOS: list[tuple[str, dict, list[dict]]] = [
        "input": {"path": 7}, "context": PLAIN_CTX}]),
 
     ("contract-string-array",
-     {"permissions": {}, "nodeAvailable": {}, "approvals": "park", "executors": []},
+     {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
+      "executors": base_executors()},
      [{"op": "evaluate", "capabilityId": "terminal.execute",
        "context": PLAIN_CTX},
       {"op": "invoke", "capabilityId": "terminal.execute",
@@ -181,8 +185,8 @@ def _build_all() -> list[tuple[str, dict, list[dict]]]:
     out.append(("named-missing-approval",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
                  "executors": base_executors()},
-                [{"op": "invoke", "capabilityId": "filesystem.write",
-                  "input": {"path": "a", "content": "b"},
+                [{"op": "invoke", "capabilityId": "filesystem.delete",
+                  "input": {"path": "a"},
                   "context": {**PLAIN_CTX, "approvalId": "apr-gone"}}]))
     out.append(("transient-retry-success",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
@@ -228,8 +232,8 @@ def _build_all() -> list[tuple[str, dict, list[dict]]]:
     out.append(("host-throws-on-request",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "throw",
                  "executors": base_executors()},
-                [{"op": "invoke", "capabilityId": "filesystem.write",
-                  "input": {"path": "a", "content": "b"}, "context": PLAIN_CTX}]))
+                [{"op": "invoke", "capabilityId": "filesystem.delete",
+                  "input": {"path": "a"}, "context": PLAIN_CTX}]))
     out.append(("preflight-evaluate",
                 {"permissions": {}, "nodeAvailable": {}, "approvals": "park",
                  "executors": base_executors()},
@@ -291,4 +295,4 @@ def test_audit_snapshots_identical_in_park_flow(ran_scenarios):
     ts_decision_audit = ts_out["results"][3]
     py_decision_audit = py_out["results"][3]
     assert ts_decision_audit == py_decision_audit
-    assert ts_decision_audit[0]["decisionRule"] == "risk-default:medium"
+    assert ts_decision_audit[0]["decisionRule"] == "irreversible-floor"

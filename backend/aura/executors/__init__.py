@@ -264,14 +264,37 @@ AGENT_INVOCATIONS = verified_invocations()
 MAX_CONTEXT_CHARS = 12_000
 
 
+#: What a delegated worker may never do on AURA's behalf.
+#:
+#: Delegation is autonomous, but the authorization it carries is
+#: bounded: destructive operations are outside it. This block travels
+#: in every delegated brief. It is an instruction, not the enforcement
+#: — enforcement is the scope contract (pre-spawn validation +
+#: post-run delta check, which parks deviations) and the governed
+#: delete capability (which parks before anything is removed). A
+#: worker that deletes anyway has exceeded its authorization, and the
+#: post-run verification surfaces the deviation as a review item
+#: rather than a success.
+DELEGATION_BOUNDS = """<OPERATING-BOUNDS>
+You are authorized for normal reversible engineering work only: reading,
+creating and editing files, running commands, tests and builds, and
+version-control operations except force-push and history rewriting.
+You are NOT authorized for destructive operations: do not delete files
+or directories, do not drop or delete databases or data, do not
+force-push, and do not rewrite published history. If the task you were
+given requires one of these, stop and report that it needs a human
+decision instead of performing it.
+</OPERATING-BOUNDS>"""
+
+
 def with_context(task: str, raw_context: str) -> str:
     context = raw_context.strip()
     if not context:
-        return task
+        return f"{task}\n\n{DELEGATION_BOUNDS}"
     body = (context[:MAX_CONTEXT_CHARS]
             + f"\n[context truncated by AURA at {MAX_CONTEXT_CHARS} characters]"
             if len(context) > MAX_CONTEXT_CHARS else context)
-    return f"{body}\n\n<TASK>\n{task}\n</TASK>"
+    return f"{body}\n\n<TASK>\n{task}\n</TASK>\n\n{DELEGATION_BOUNDS}"
 
 
 def _node_readiness_proved(node: dict) -> bool:

@@ -12,13 +12,14 @@ tests/fabric keeps it honest).
 from __future__ import annotations
 
 import asyncio
+import copy
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from ..approvals import ApprovalLedger, usable_pending
-from ..policy import grants_for
+from ..policy import DEFAULT_POLICY, grants_for
 
 MAX_ATTEMPTS = 3
 BASE_BACKOFF_MS = 400
@@ -212,9 +213,11 @@ class CapabilityFabric:
         self.executors: dict[str, Any] = {}
         self.listeners: list[Callable[[dict], None]] = []
         self.audit_log: list[dict] = []
-        self.policy: dict = {"byRisk": {"low": "auto-execute", "medium": "ask-user", "high": "require-approval"},
-                             "overrides": {}, "nodeOverrides": {}, "nodeAllowlists": {},
-                             "allowAutonomous": True}
+        # Single source: aura.policy.DEFAULT_POLICY. The autonomy
+        # overrides there (delegation, mission, writes, terminal, git)
+        # are product behavior — duplicating them here would let the
+        # two copies disagree silently.
+        self.policy: dict = copy.deepcopy(DEFAULT_POLICY)
         self._approvals_by_key: dict[str, dict] = {}
         self._approval_store_save: Callable | None = None
         self._audit_store_append: Callable | None = None
@@ -817,12 +820,7 @@ class FabricConfig:
     def sanitized_policy(self) -> dict:
         import copy
 
-        base = self.fabric.policy if self.fabric is not None else {
-            "byRisk": {"low": "auto-execute", "medium": "ask-user",
-                       "high": "require-approval"},
-            "overrides": {}, "nodeOverrides": {}, "nodeAllowlists": {},
-            "allowAutonomous": True,
-        }
+        base = self.fabric.policy if self.fabric is not None else copy.deepcopy(DEFAULT_POLICY)
         merged = copy.deepcopy(base)
         for k, v in (self.policy_config or {}).items():
             if isinstance(v, dict) and isinstance(merged.get(k), dict):

@@ -193,11 +193,18 @@ const LOCAL: CapabilityDescriptor[] = [
     id: 'agent.delegate', name: 'Delegate to coding agent', category: 'agent', surface: 'local-process',
     description:
       'Hands a task to a coding agent installed on this machine, which reads and edits files in the project root on its own. '
-      + 'Broad by nature: the agent decides which files to touch, so this is never auto-executed.',
+      + 'Broad by nature: the agent decides which files to touch, within the scope contract and the no-destructive-operations brief it is given.',
     // High is the honest reading: the blast radius is "whatever the agent
-    // decides to change". The default policy maps high → require-approval,
-    // so this needs no override to be gated.
-    risk: 'high', permissions: ['project.read', 'project.write', 'process.execute', 'network.outbound'],
+    // decides to change". Delegation is nevertheless autonomous: the
+    // default policy carries an explicit override to auto-execute, and
+    // the safety boundary moves to where it belongs — the delegated
+    // brief forbids destructive operations, scopePaths confines the run,
+    // governed deletes stay behind the irreversible-floor, and milestone
+    // commits keep every file change recoverable. `irreversible` is
+    // false because the Fabric CAN undo the effects (git), not because
+    // the blast radius shrank: risk stays high so any future reviewer
+    // sees what this capability is.
+    risk: 'high', irreversible: false, permissions: ['project.read', 'project.write', 'process.execute', 'network.outbound'],
     input: [
       f('task', 'string', true, 'What the agent should do, in plain language'),
       f('model', 'string', false, 'Optional provider/model override, e.g. "anthropic/claude-sonnet-4"'),
@@ -221,17 +228,9 @@ const LOCAL: CapabilityDescriptor[] = [
     // codex-cli, gemini-cli, qwen-cli and opencode — and by nothing else,
     // which is what keeps activity attributable to the agent that ran.
     requiresNodeCapability: 'coding-agent',
-    /**
-     * Irreversible *by the Fabric*, which is the precise claim this flag
-     * makes. `filesystem.write` touches one path the Fabric could read
-     * back and restore; an agent decides its own edit set across files
-     * nobody named in advance, so there is nothing here to undo it with.
-     *
-     * This also puts it behind the `irreversible-floor`, which no policy
-     * configuration can lower — so delegation stays gated even on a
-     * machine whose operator has set high risk to auto-execute.
-     */
-    irreversible: true,
+    // Delegation used to be irreversible-by-the-Fabric (and therefore
+    // floor-gated). It is autonomous now — see the note on `risk` above
+    // for where the boundary moved instead.
   }),
 
   cap({
@@ -328,10 +327,10 @@ const LOCAL: CapabilityDescriptor[] = [
   }),
   cap({
     id: 'git.push', name: 'Push to remote', category: 'git', surface: 'local-process',
-    description: 'Publishes commits to the remote. Visible to other people and not undoable by the Fabric.',
+    description: 'Publishes commits to the remote. The executor only ever runs a plain push — force-push and history rewriting are not governed operations and cannot be invoked.',
     risk: 'high', permissions: ['project.write', 'network.outbound'],
     input: [f('remote', 'string', false, 'Remote name, defaults to origin'), f('branch', 'string', false, 'Branch, defaults to current')],
-    output: 'Push summary', verify: 'exit-code', irreversible: true,
+    output: 'Push summary', verify: 'exit-code', irreversible: false,
     requiresNodeCapability: 'source-control',
   }),
 

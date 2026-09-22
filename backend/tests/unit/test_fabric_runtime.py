@@ -28,19 +28,22 @@ class Host:
         return False  # always park; decisions come from decide_approval()
 
 
-class WriteExecutor:
-    capabilityId = "filesystem.write"
+class DeleteExecutor:
+    # The runtime story proves persistence for a capability that still
+    # parks. Writes are autonomous now, so the story runs on governed
+    # file deletion — same single-use spend semantics, same ledger.
+    capabilityId = "filesystem.delete"
 
     async def run(self, _inv):
-        return {"ok": True, "detail": "wrote", "output": {"bytes": 2}}
+        return {"ok": True, "detail": "deleted", "output": {"path": "src/gone.ts"}}
 
     async def verify(self, _inv, _last):
-        return {"passed": True, "kind": "read-back", "detail": "matches"}
+        return {"passed": True, "kind": "absence", "detail": "gone"}
 
 def _build(home, events):
     f = CapabilityFabric(Host())
     f.listen(events.append)
-    f.register(WriteExecutor())
+    f.register(DeleteExecutor())
 
     ap_file = home / "fabric-approvals.json"
     au_file = home / "fabric-audit.jsonl"
@@ -81,7 +84,7 @@ def test_full_runtime_story(tmp_path):
     # ── process 1: invoke parks; nothing ran yet ────────────────────────────
     fabric = _build(tmp_path, events)
     r1 = asyncio.run(fabric.invoke(
-        "filesystem.write", {"path": "src/a.ts", "content": "hi"}, dict(CTX)))
+        "filesystem.delete", {"path": "src/gone.ts"}, dict(CTX)))
     assert r1["outcome"] == "awaiting-approval" and "attempts" in r1
     assert r1["attempts"] == 0                      # nothing executed
     assert all(e["type"] != "invocation.started" for e in events)
@@ -117,7 +120,7 @@ def test_full_runtime_story(tmp_path):
     assert len(decision_records) == 1
 
     r2 = asyncio.run(fabric2.invoke(
-        "filesystem.write", {"path": "src/a.ts", "content": "hi"},
+        "filesystem.delete", {"path": "src/gone.ts"},
         {**CTX, "approvalId": aid}))
     assert r2["outcome"] == "succeeded"
     assert r2["verification"]["passed"] is True
@@ -130,14 +133,14 @@ def test_full_runtime_story(tmp_path):
 
     # audit trail carries: parked-leg record, human decision, execution record
     exec_records = [r for r in fabric2.audit_log
-                    if r.get("capabilityId") == "filesystem.write"
+                    if r.get("capabilityId") == "filesystem.delete"
                     and r.get("approvalDecision") is None
                     and r.get("outcome") == "succeeded"]
     assert len(exec_records) == 1
     rec = exec_records[0]
-    assert rec["decision"] == "ask-user"                     # gate that opened it
-    assert rec["decisionRule"] == "risk-default:medium"
+    assert rec["decision"] == "require-approval"              # gate that opened it
+    assert rec["decisionRule"] == "irreversible-floor"
     assert rec["verified"] is True
-    assert rec["inputSummary"] == "path=src/a.ts content=hi"
+    assert rec["inputSummary"] == "path=src/gone.ts"
 
-    assert rec["inputSummary"] == "path=src/a.ts content=hi"
+    assert rec["inputSummary"] == "path=src/gone.ts"

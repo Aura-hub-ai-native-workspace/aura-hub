@@ -36,11 +36,28 @@ export const DEFAULT_POLICY: PolicyConfig = {
     high: 'require-approval',
   },
   overrides: {
-    // Human gates by definition — approving a plan or authorizing an
-    // account is the moment the human is *supposed* to be present.
-    'mission.approve': 'ask-user',
+    // Human gates by definition — authorizing an account is the moment
+    // the human is *supposed* to be present.
     'provider.connect': 'require-approval',
   },
+  // Explicit autonomy grants. Each listed capability runs without
+  // interrupting the user — delegation, mission control, writes,
+  // terminal use and git. Every one is reversible through the
+  // project's own version control or bounded by allow-lists and fixed
+  // argument vectors. This list CANNOT authorize destruction: floors
+  // fire first and the grant is skipped whenever one did, so listing
+  // filesystem.delete here would change nothing. Operators can still
+  // re-gate any entry with an override (overrides only escalate), and
+  // allowAutonomous=false suppresses every grant.
+  autonomy: [
+    'agent.delegate',
+    'filesystem.write',
+    'git.commit',
+    'git.push',
+    'mission.approve',
+    'mission.start',
+    'terminal.execute',
+  ],
   allowAutonomous: true,
 };
 
@@ -109,7 +126,19 @@ export function sanitizePolicy(raw: unknown): PolicyConfig {
     ? DEFAULT_POLICY.allowAutonomous
     : typeof rawAutonomy === 'boolean' ? rawAutonomy : false;
 
-  return { byRisk, overrides, nodeOverrides, nodeAllowlists, allowAutonomous };
+  // Autonomy grants get the same hostile-input treatment as every other
+  // list: non-string and empty entries are dropped, duplicates collapse,
+  // and the result is sorted so sanitized configs compare equal. A
+  // malformed value is an absent list, never a wildcard — there is no
+  // spelling of "everything" here.
+  const rawGrants = (input as Record<string, unknown>).autonomy;
+  const autonomy = rawGrants === undefined
+    ? [...DEFAULT_POLICY.autonomy].sort()
+    : Array.isArray(rawGrants)
+      ? [...new Set(rawGrants.filter((x): x is string => typeof x === 'string' && !!x))].sort()
+      : [];
+
+  return { byRisk, overrides, nodeOverrides, nodeAllowlists, allowAutonomous, autonomy };
 }
 
 const RANK: Record<PolicyDecision, number> = {
@@ -240,7 +269,9 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
   let rule = userDirect ? 'user-direct' : `risk-default:${risk}`;
   let reason = userDirect ? 'You asked for this directly, so AURA is doing it now.' : '';
 
+  let floored = false;
   const floor = (name: string, why: string) => {
+    floored = true;
     decision = stricter(decision, 'require-approval');
     rule = name;
     reason = why;
@@ -272,6 +303,20 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
     // from an attested channel, not read from the request body.
     floor('system-floor',
       `${capability.name} changes software on this machine, so it always needs your go-ahead.`);
+  }
+
+  /* Autonomy grants — the one layer allowed to relax, and only down to
+     auto-execute, never past a floor or a deny. A grant fires only when
+     no floor fired above: destruction, account authorization and system
+     modification stay gated no matter what this list contains (listing
+     filesystem.delete here changes nothing — prove it in
+     destructive.test.ts). Operator overrides and node rules below still
+     escalate, so any grant can be re-gated per deployment, and
+     allowAutonomous=false still suppresses every grant. */
+  if (!floored && decision !== 'deny' && (config.autonomy ?? []).includes(capability.id)) {
+    decision = 'auto-execute';
+    rule = `autonomy:${capability.id}`;
+    reason = `${capability.name} is covered by the autonomy grant: normal reversible work that runs without interrupting you.`;
   }
 
   /* 2–6. Configurable layers, each only able to escalate. */

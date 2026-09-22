@@ -363,6 +363,13 @@ export interface PolicyConfig {
    * `ask-user`. The single switch a cautious user reaches for.
    */
   allowAutonomous: boolean;
+  /**
+   * Capability ids granted autonomous execution. The one configurable
+   * layer allowed to relax a decision — and only down to
+   * `auto-execute`, never past a floor or a deny. Floors fire first;
+   * a listed destructive capability still parks.
+   */
+  autonomy: string[];
 }
 
 export type ApprovalState = 'pending' | 'granted' | 'denied' | 'expired';

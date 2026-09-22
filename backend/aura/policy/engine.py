@@ -40,12 +40,31 @@ RANK: dict[str, int] = {
 DEFAULT_POLICY: dict[str, Any] = {
     "byRisk": {"low": "auto-execute", "medium": "ask-user", "high": "require-approval"},
     "overrides": {
-        "mission.approve": "ask-user",
+        # Human gates by definition — authorizing an account is the
+        # moment the human is *supposed* to be present.
         "provider.connect": "require-approval",
     },
     "nodeOverrides": {},
     "nodeAllowlists": {},
     "allowAutonomous": True,
+    # Explicit autonomy grants. Each listed capability runs without
+    # interrupting the user — delegation, mission control, writes,
+    # terminal use and git. Every one is reversible through the
+    # project's own version control or bounded by allow-lists and fixed
+    # argument vectors. This list CANNOT authorize destruction: floors
+    # fire first and the grant is skipped whenever one did, so listing
+    # filesystem.delete here would change nothing. Operators can still
+    # re-gate any entry with an override (overrides only escalate), and
+    # allowAutonomous=False suppresses every grant.
+    "autonomy": [
+        "agent.delegate",
+        "filesystem.write",
+        "git.commit",
+        "git.push",
+        "mission.approve",
+        "mission.start",
+        "terminal.execute",
+    ],
 }
 
 HUMAN_ONLY_SCOPES = frozenset({"account.authorize", "resource.destroy", "system.modify"})
@@ -104,12 +123,28 @@ def sanitize_policy(raw: Any) -> dict[str, Any]:
     else:
         allow_autonomous = False
 
+    # Autonomy grants get the same hostile-input treatment as every
+    # other list: non-string and empty entries are dropped, duplicates
+    # collapse, and the result is sorted so sanitized configs compare
+    # equal. Absent means the shipped default; present-but-malformed
+    # means no grants (fail closed — there is no spelling of
+    # "everything" here).
+    raw_grants = inp.get("autonomy")
+    if raw_grants is None and "autonomy" not in inp:
+        autonomy = sorted(DEFAULT_POLICY["autonomy"])
+    elif isinstance(raw_grants, list):
+        autonomy = sorted({x for x in raw_grants
+                           if isinstance(x, str) and x})
+    else:
+        autonomy = []
+
     return {
         "byRisk": by_risk,
         "overrides": overrides,
         "nodeOverrides": node_overrides,
         "nodeAllowlists": node_allowlists,
         "allowAutonomous": allow_autonomous,
+        "autonomy": autonomy,
     }
 
 
@@ -190,8 +225,11 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
     rule = f"risk-default:{risk}"
     reason = ""
 
+    floored = False
+
     def floor(name: str, why: str) -> None:
-        nonlocal decision, rule, reason
+        nonlocal decision, rule, reason, floored
+        floored = True
         decision = _stricter(decision, "require-approval")
         rule = name
         reason = why
@@ -207,6 +245,20 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
     elif "system.modify" in cap.permissions:
         floor("system-floor",
               f"{cap.name} changes software on this machine, so it always needs your go-ahead.")
+
+    # Autonomy grants — the one layer allowed to relax, and only down
+    # to auto-execute, never past a floor or a deny. A grant fires only
+    # when no floor fired above: destruction, account authorization and
+    # system modification stay gated no matter what the autonomy list
+    # contains. Operator overrides and node rules below still escalate,
+    # so any grant can be re-gated per deployment, and allowAutonomous
+    # = False still suppresses every grant.
+    if (not floored and decision != "deny"
+            and cap.id in (cfg.get("autonomy") or [])):
+        decision = "auto-execute"
+        rule = f"autonomy:{cap.id}"
+        reason = (f"{cap.name} is covered by the autonomy grant: normal "
+                  "reversible work that runs without interrupting you.")
 
     # Configurable layers — each may escalate and claim the rule when it does,
     # or when it restates the current level more specifically. A weaker

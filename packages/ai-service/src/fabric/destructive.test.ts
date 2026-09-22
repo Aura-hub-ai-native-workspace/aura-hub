@@ -84,6 +84,7 @@ describe('filesystem.delete executor confinement', () => {
     writeFileSync(join(root, 'doomed.txt'), 'bye\n');
     const out = await exe.run({ input: { path: 'doomed.txt' }, context: { cwd: root } } as never);
     expect(out.ok).toBe(true);
+    if (!exe.verify) throw new Error('filesystem.delete must verify absence');
     const check = await exe.verify(
       { input: { path: 'doomed.txt' }, context: { cwd: root } } as never,
       out,

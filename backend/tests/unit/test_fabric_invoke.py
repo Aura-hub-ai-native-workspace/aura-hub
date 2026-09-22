@@ -192,6 +192,72 @@ class TestApprovalGate:
         assert decisions and decisions[-1]["approvalDecision"] == "denied"
 
 
+class TestAutonomyOverrides:
+    """Normal operations run without parking; destruction still parks.
+
+    The shipped default policy carries explicit auto-execute overrides
+    for delegation, mission control, writes, terminal use and git —
+    each reversible through version control or bounded by allow-lists.
+    The irreversible-floor (filesystem.delete) is not listed and could
+    not be lowered by listing it.
+    """
+
+    AUTO = ["agent.delegate", "mission.approve", "mission.start",
+            "filesystem.write", "terminal.execute", "git.commit", "git.push"]
+    FULL_PERMS = {"read": True, "write": True, "execute": True}
+
+    def _connected(self, cfg):
+        # Capabilities that need a node (delegation, terminal) deny
+        # without one — correctly. Connect a node so the test measures
+        # policy, not routing.
+        cfg.fabric.host.node_available = lambda _cap: {"id": "opencode"}
+        return cfg
+
+    def test_normal_operations_are_auto_execute(self, home):
+        cfg = self._connected(make_cfg(home, permissions=self.FULL_PERMS))
+        for cap in self.AUTO:
+            pre = describe_authority(cap, {"taskId": "t"}, cfg)
+            assert pre is not None, cap
+            assert pre["decision"] == "auto-execute", (cap, pre)
+
+    def test_delegation_runs_without_creating_an_approval(self, home, tmp_path):
+        ran = []
+
+        class _Delegate:
+            capabilityId = "agent.delegate"
+
+            async def run(self, invocation):
+                ran.append(invocation)
+                return {"ok": True, "detail": "delegated",
+                        "output": {"stdout": "ok", "exitCode": 0}}
+
+            async def verify(self, _inv, _res):
+                return {"passed": True, "kind": "exit-code", "detail": "0"}
+
+        cfg = self._connected(make_cfg(
+            home, executors={"agent.delegate": _Delegate()},
+            permissions=self.FULL_PERMS))
+        r = invoke_fabric("agent.delegate", {"task": "do the thing"},
+                          {"taskId": "t", "cwd": str(tmp_path)}, cfg)
+        assert r["outcome"] == "succeeded", r["detail"]
+        assert len(ran) == 1
+        assert cfg.ledger.pending() == []
+
+    def test_destructive_operations_still_park(self, home):
+        cfg = self._connected(make_cfg(home, permissions=self.FULL_PERMS))
+        for cap in ("filesystem.delete", "system.install", "provider.connect"):
+            pre = describe_authority(cap, {"taskId": "t"}, cfg)
+            assert pre is not None, cap
+            assert pre["decision"] == "require-approval", (cap, pre)
+
+    def test_floors_beat_grants(self, home):
+        cfg = self._connected(make_cfg(home, permissions=self.FULL_PERMS))
+        cfg.fabric.policy["autonomy"] = [
+            *cfg.fabric.policy.get("autonomy", []), "filesystem.delete"]
+        pre = describe_authority("filesystem.delete", {"taskId": "t"}, cfg)
+        assert pre["decision"] == "require-approval"
+
+
 class TestParkedSessionLinkage:
     """A parked request carries the owning sessionId when the invocation
     context has one, so the unified approvals inbox can route the

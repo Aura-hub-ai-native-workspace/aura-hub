@@ -536,7 +536,10 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "requiredCapabilities": ["filesystem.write"],
             "urgency": "immediate",
             "complexity": "single",
-            "approvalLikely": True,
+            # Writes are autonomous (policy override); only a destructive
+            # payload would park, and the intent layer cannot see one —
+            # the Fabric decides that per invocation.
+            "approvalLikely": False,
             "writePath": path,
             "writeContent": content,
         })
@@ -614,7 +617,9 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "requiredCapabilities": ["agent.delegate"],
             "urgency": "immediate",
             "complexity": "multi-step" if len(shape) > 1 else "single",
-            "approvalLikely": True,
+            # Delegation is autonomous (policy override + bounded brief);
+            # destructive sub-operations park at their own boundary.
+            "approvalLikely": False,
             # AURA-owned planning inputs, not authority: the planner
             # reads these to build the task contract, and every one of
             # them is re-validated there.
