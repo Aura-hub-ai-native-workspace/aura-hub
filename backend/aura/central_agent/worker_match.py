@@ -18,9 +18,20 @@ from collections.abc import Callable
 
 #: Role → node-capability the worker must provide. Closed on both ends:
 #: unknown roles never reach here (contract literal + planner rejection).
+#
+#: The agentic-workspace roles (research/planning/testing/documentation)
+#: all resolve to "coding-agent" because a connected coding-agent worker
+#: is the only node that can read a repository and report on it; the role
+#: narrows the PROMPT the worker receives, not the tool it is allowed to
+#: touch. Routing failure is loud: an unmatched role leaves the task
+#: unmatched rather than silently reusing an execute-role node.
 ROLE_NODE_CAPABILITY = {
     "code": "coding-agent",
     "review": "coding-agent",
+    "research": "coding-agent",
+    "planning": "coding-agent",
+    "testing": "coding-agent",
+    "documentation": "coding-agent",
     "execute": "terminal",
 }
 

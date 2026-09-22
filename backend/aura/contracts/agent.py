@@ -34,9 +34,13 @@ ExecutionRoute = Literal["single-invocation", "workflow-run", "external-tool"]
 VerificationKind = Literal["read-back", "exit-code", "schema-match", "audit-only"]
 ToolSource = Literal["aura-manifest", "mcp", "plugin"]
 TrustLevel = Literal["verified", "known", "unknown", "untrusted"]
-#: Closed worker-role vocabulary for task requirements (Phase G).
+#: Closed worker-role vocabulary for task requirements (Phase G, extended
+#: for the agentic workspace with research/planning/testing/documentation).
 #: Advisory for routing only — Fabric/policy/allow-list stay authoritative.
-WorkerRole = Literal["code", "review", "execute"]
+WorkerRole = Literal[
+    "code", "review", "execute",
+    "research", "planning", "testing", "documentation",
+]
 
 # Mirrors the RunEvent-adjacent observability surface (mission §21).
 AgentEventType = Literal[

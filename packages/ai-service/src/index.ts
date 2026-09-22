@@ -2,7 +2,7 @@ export { PipelineManager, type PipelineOptions, type InspectResult, type StreamE
 export { WorkspaceManager, type OpenResult } from './workspace';
 export { ProjectRegistry, type ProjectRecord } from './projects';
 export { ProjectMemory, type MemoryItem, type MemoryKind } from './memory';
-export { ProjectConversations, type Conversation, type ConvMessage, type ConversationSummary } from './conversations';
+export { ProjectConversations, WORKSPACE_SCOPE_ID, type Conversation, type ConvMessage, type ConversationSummary, type ConversationScope } from './conversations';
 export { buildKnowledgeGraph, type KnowledgeGraph, type GraphNode, type GraphEdge } from './knowledgeGraph';
 export { buildProfile, getOrBuildProfile, loadProfile, type ProjectProfile, type FolderNode } from './profile';
 export { configHome, homePath } from './persist';

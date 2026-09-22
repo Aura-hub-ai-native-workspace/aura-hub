@@ -5,7 +5,7 @@ import { extractArchitectureLayers, layersFromFullstack, type LayerStack } from 
 import { graphifyJsonPath } from './graphify';
 import { ProjectMemory, type MemoryItem, type MemoryKind } from './memory';
 import { engineeringMemory, decisionMemory, missionMemory, type BaseMemoryRecord, type DecisionAlternative } from '@aura/engineering-memory';
-import { ProjectConversations, type Conversation, type ConversationSummary } from './conversations';
+import { ProjectConversations, WORKSPACE_SCOPE_ID, type Conversation, type ConversationSummary } from './conversations';
 import { buildKnowledgeGraph, type KnowledgeGraph } from './knowledgeGraph';
 import { runProjectIntelligence, runWorkspaceIntelligence, type ProjectIntelligenceReport, type WorkspaceIntelligenceReport } from './intelligence';
 import { loadChangeLog, analyzeChangePatterns, getChangeVelocity, detectHotspots, type ChangeEntry, type ChangePattern } from './intelligence/changeIntelligence';
@@ -342,6 +342,34 @@ export class WorkspaceManager {
   }
   conversationHistory(id: string, cid: string) {
     return this.conversationsOf(id).history(cid);
+  }
+
+  /* ── workspace chat (global scope) ────────────────────────────────
+     The SAME conversation store as projects, pointed at the reserved
+     workspace file. No second implementation: the scope is the file id,
+     and the two scopes can never share threads because they never share
+     a file. The working project (if any) travels per-request to the
+     Central Agent; it is never part of the workspace thread's identity. */
+  listWorkspaceConversations(): ConversationSummary[] {
+    return this.conversationsOf(WORKSPACE_SCOPE_ID).list();
+  }
+  getWorkspaceConversation(cid: string): Conversation | undefined {
+    return this.conversationsOf(WORKSPACE_SCOPE_ID).get(cid);
+  }
+  createWorkspaceConversation(title?: string): Conversation {
+    return this.conversationsOf(WORKSPACE_SCOPE_ID).create(title);
+  }
+  renameWorkspaceConversation(cid: string, title: string): Conversation | undefined {
+    return this.conversationsOf(WORKSPACE_SCOPE_ID).rename(cid, title);
+  }
+  removeWorkspaceConversation(cid: string): boolean {
+    return this.conversationsOf(WORKSPACE_SCOPE_ID).remove(cid);
+  }
+  appendWorkspaceMessage(cid: string, msg: { role: 'user' | 'assistant'; content: string; meta?: unknown; error?: boolean }) {
+    return this.conversationsOf(WORKSPACE_SCOPE_ID).append(cid, msg);
+  }
+  removeLastWorkspaceAssistantMessage(cid: string): boolean {
+    return this.conversationsOf(WORKSPACE_SCOPE_ID).removeLastAssistant(cid);
   }
 
   /* ── knowledge graph ────────────────────────────────────────────── */
@@ -1392,6 +1420,45 @@ export class WorkspaceManager {
   }
 
   /**
+   * Persist an ALREADY-VERIFIED self-hosted configuration. Local disk
+   * writes only — no network precondition.
+   *
+   * `verifySelfHosted` proved reachability, identity, the model list and
+   * a real streamed generation with THIS address seconds earlier.
+   * Re-running `validate` here as a precondition to saving re-proves
+   * nothing and fails the whole onboarding whenever the next identical
+   * request does not get an identical answer — a recycled keep-alive
+   * socket torn down by the stream that just finished, an ngrok edge
+   * churning connections, a tunnel hiccup. The symptom is always the
+   * same paradox: every verification step green, then "Cannot reach the
+   * server" at "Configuration saved".
+   *
+   * So this writes down exactly what verification proved: the raw
+   * address byte-identical to the verified one, the verified model
+   * list (never a re-fetch that could disagree), and verified health.
+   * Activation goes through the same `RuntimeManager` path as a manual
+   * connect — whose discovery is best-effort and can never fail the
+   * save — resolving against the just-stored list.
+   *
+   * The interactive Settings path keeps using `connectProvider`, where
+   * validating an untested address before storing it is the job.
+   */
+  async connectVerifiedProvider(providerId: string, baseUrl: string, models: DiscoveredModel[]): Promise<{ ok: boolean; fingerprint?: string; models?: DiscoveredModel[]; error?: string }> {
+    const adapter = getAdapter(providerId);
+    if (!adapter) return { ok: false, error: 'Unknown provider' };
+    if (!baseUrl.trim() || models.length === 0) return { ok: false, error: 'Nothing verified to save.' };
+    const addressed = (adapter.metadata as { selfHosted?: boolean }).selfHosted === true;
+    const { fingerprint } = storeKey(providerId, baseUrl, addressed ? normaliseOllamaUrl(baseUrl) : undefined);
+    storeModels(providerId, models);
+    // Verified by a real generation moments ago — that IS the health
+    // evidence. No separate probe: one more request is exactly the
+    // failure mode this path exists to avoid.
+    storeHealth(providerId, { ok: true, latencyMs: 0, lastChecked: new Date().toISOString() });
+    await this.pipeline.runtimeManager.switchToProvider(providerId, models[0]?.id);
+    return { ok: true, fingerprint, models };
+  }
+
+  /**
    * Disconnect, and mean it.
    *
    * The active pointer had to be read BEFORE the credential was removed.
@@ -1557,8 +1624,11 @@ export class WorkspaceManager {
       return { ok: false, stage: 'generate', error: 'The model connected but returned no response.' };
     }
 
-    // Only now is any of this written down.
-    const connected = await this.connectProvider(providerId, baseUrl);
+
+    // Only now is any of this written down — and the write re-proves
+    // nothing over the network. Verification already did the proving;
+    // persistence is local disk writes plus best-effort activation.
+    const connected = await this.connectVerifiedProvider(providerId, baseUrl, models);
     if (!connected.ok) return { ok: false, stage: 'save', error: connected.error ?? 'Could not save the connection.' };
     const switched = await this.switchToProvider(providerId, model);
     if (!switched.ok) return { ok: false, stage: 'save', error: switched.error ?? 'Could not select the model.' };
