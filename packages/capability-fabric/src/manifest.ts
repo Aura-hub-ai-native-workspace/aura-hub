@@ -168,6 +168,19 @@ const LOCAL: CapabilityDescriptor[] = [
     output: 'Bytes written', verify: 'read-back',
   }),
   cap({
+    id: 'filesystem.delete', name: 'Delete file', category: 'filesystem', surface: 'local-process',
+    description: 'Deletes one file inside the project root. Destructive by nature: deletion is the one governed file operation that always needs a human decision first.',
+    // High is not high enough to express this alone — the irreversible
+    // flag is what matters: it puts deletion behind the
+    // irreversible-floor, which no policy configuration can lower. A
+    // machine with high risk set to auto-execute still parks deletes.
+    // `resource.destroy` states the same rule in permission terms, so
+    // both floor readings agree.
+    risk: 'high', irreversible: true, permissions: ['project.write', 'resource.destroy'],
+    input: [f('path', 'string', true, 'Relative path inside the project')],
+    output: 'Deleted path', verify: 'absence',
+  }),
+  cap({
     id: 'terminal.execute', name: 'Run command', category: 'terminal', surface: 'local-process',
     description: 'Runs an allow-listed binary with plain arguments in the project root. No shell, no operators.',
     risk: 'medium', permissions: ['process.execute', 'project.read'],

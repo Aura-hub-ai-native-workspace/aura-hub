@@ -101,6 +101,8 @@ export type VerificationKind =
   | 'exit-code'
   /** An HTTP response confirms the effect. */
   | 'http-status'
+  /** Re-read state and confirm the target is gone. */
+  | 'absence'
   /** No mechanical check exists. */
   | null;
 

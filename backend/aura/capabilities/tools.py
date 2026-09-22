@@ -42,9 +42,28 @@ def _des(name: str, description: str) -> dict:
             "argv": [], "requires_approval": True}
 
 
+#: Project files. The planner reads this the way it reads every other
+#: entry: creation and edits are ordinary reversible operations, while
+#: deletion is destructive and always needs a human decision first —
+#: the same rule the Fabric enforces (filesystem.delete sits behind
+#: the irreversible-floor, which no policy configuration can lower).
+_FILESYSTEM_SPEC: dict = {
+    "name": "Project files", "category": "development",
+    "description": "Files inside the project root.",
+    "nodes": [],
+    "actions": [
+        _ro("list", "Directory listing inside the project root."),
+        _ro("read", "Read a file inside the project root."),
+        _low("write", "Create or replace a file inside the project root."),
+        _des("delete", "Delete a file inside the project root."),
+    ],
+}
+
+
 #: capability id → spec. ``nodes`` are python-catalog node ids probed
 #: in order; the first that verifies wins.
 TOOL_SPECS: dict[str, dict] = {
+    "filesystem": _FILESYSTEM_SPEC,
     "git": {
         "name": "Git", "category": "version-control",
         "description": "Distributed version control.",

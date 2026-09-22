@@ -16,7 +16,7 @@
  * rather than a pass.
  */
 
-import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, readdir, mkdir, stat, rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
 import { git, parseCommand, resolveAgentBinary, runAgent, safeShellWithCode } from '../exec/process';
@@ -110,6 +110,38 @@ const filesystemWrite: Executor = {
         : fail('read-back', 'The file exists but its contents differ from what was written.');
     } catch {
       return fail('read-back', 'The file could not be read back after writing.');
+    }
+  },
+};
+
+const filesystemDelete: Executor = {
+  capabilityId: 'filesystem.delete',
+  async run(inv) {
+    const root = cwdOf(inv);
+    const target = inside(root, s(inv.input.path));
+    let info;
+    try {
+      info = await stat(target);
+    } catch {
+      return no(`'${s(inv.input.path)}' does not exist in this project, so there is nothing to delete.`);
+    }
+    if (info.isDirectory()) {
+      return no(`'${s(inv.input.path)}' is a directory. Governed deletion removes files; empty the directory first or remove it yourself.`);
+    }
+    // The approval gate lives in policy, not here: by the time this runs,
+    // a human has granted this exact deletion. This executor only confines
+    // it (inside(), above) and reports it.
+    await rm(target, { force: false });
+    return ok(`Deleted ${path.relative(root, target)}.`, { path: target });
+  },
+  async verify(inv) {
+    const root = cwdOf(inv);
+    const target = inside(root, s(inv.input.path));
+    try {
+      await stat(target);
+      return fail('absence', 'The file is still present after deletion.');
+    } catch {
+      return pass('absence', 'The file is gone.');
     }
   },
 };
@@ -878,7 +910,7 @@ export function registerWorkflowRunHook(hook: WorkflowRunHook): void {
  */
 export function allExecutors(manager: WorkspaceManager): Executor[] {
   return [
-    filesystemList, filesystemRead, filesystemWrite,
+    filesystemList, filesystemRead, filesystemWrite, filesystemDelete,
     terminalExecute,
     agentDelegate,
     systemInstall,

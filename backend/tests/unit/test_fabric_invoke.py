@@ -274,3 +274,81 @@ class TestPreflight:
         cap = {"id": "t.x", "name": "T", "description": "", "category": "t", "surface": "aura-internal", "risk": "low", "input": [{"name": "name", "type": "string", "required": False, "description": ""}]}
         s = summarize_input(cap, {"name": "x" * 500})
         assert len(s) < 80 and "…" in s
+
+
+class TestFilesystemDeleteGate:
+    """Deletion always parks, under every policy.
+
+    filesystem.delete sits behind two independent floors (irreversible
+    + resource.destroy), so even a machine configured with every risk
+    level at auto-execute still parks deletes. The executor itself only
+    confines the granted deletion and proves the absence afterwards.
+    """
+
+    PERMISSIVE = {"byRisk": {"low": "auto-execute", "medium": "auto-execute",
+                             "high": "auto-execute"}}
+
+    def _proj(self, home, tmp_path):
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        target = proj / "doomed.txt"
+        target.write_text("bye\n")
+        return proj, target
+
+    def test_parks_without_grant_and_deletes_nothing(self, home, tmp_path):
+        cfg = make_cfg(home)
+        proj, target = self._proj(home, tmp_path)
+        r = invoke_fabric("filesystem.delete", {"path": "doomed.txt"},
+                          {"taskId": "t", "cwd": str(proj)}, cfg)
+        assert r["outcome"] == "awaiting-approval"
+        assert r.get("approvalId")
+        assert target.exists()
+
+    def test_floor_holds_under_fully_permissive_policy(self, home, tmp_path):
+        cfg = make_cfg(home, policy=self.PERMISSIVE)
+        proj, target = self._proj(home, tmp_path)
+        pre = describe_authority(
+            "filesystem.delete", {"taskId": "t", "cwd": str(proj)}, cfg)
+        assert pre["decision"] == "require-approval"
+        r = invoke_fabric("filesystem.delete", {"path": "doomed.txt"},
+                          {"taskId": "t", "cwd": str(proj)}, cfg)
+        assert r["outcome"] == "awaiting-approval"
+        assert target.exists()
+
+    def test_granted_delete_removes_and_verifies_absence(self, home, tmp_path):
+        cfg = make_cfg(home)
+        proj, target = self._proj(home, tmp_path)
+        ctx = {"taskId": "t", "cwd": str(proj)}
+        apr = invoke_fabric("filesystem.delete", {"path": "doomed.txt"},
+                            ctx, cfg)["approvalId"]
+        cfg.ledger.decide(apr, True, "user")
+        ok = invoke_fabric("filesystem.delete", {"path": "doomed.txt"},
+                           {**ctx, "approvalId": apr}, cfg)
+        assert ok["outcome"] == "succeeded"
+        assert not target.exists()
+
+    def test_traversal_is_refused_not_parked(self, home, tmp_path):
+        from aura.executors import EXECUTOR_TABLE, ExecutorAdapter
+        import asyncio
+
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        adapter = ExecutorAdapter(
+            "filesystem.delete", EXECUTOR_TABLE["filesystem.delete"])
+        inv = {"input": {"path": "../escape.txt"},
+               "context": {"cwd": str(proj)}}
+        out = asyncio.run(adapter.run(inv))
+        assert out["ok"] is False
+        assert "leaves the project" in out["detail"]
+
+    def test_directories_are_never_removed(self, home, tmp_path):
+        from aura.executors import EXECUTOR_TABLE
+        import asyncio
+
+        proj = tmp_path / "proj"
+        (proj / "subdir").mkdir(parents=True)
+        inv = {"input": {"path": "subdir"},
+               "context": {"cwd": str(proj)}}
+        out = asyncio.run(EXECUTOR_TABLE["filesystem.delete"]["run"](inv))
+        assert out["ok"] is False
+        assert (proj / "subdir").exists()

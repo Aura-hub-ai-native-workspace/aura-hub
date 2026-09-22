@@ -420,6 +420,29 @@
       "verify": "read-back"
     },
     {
+      "id": "filesystem.delete",
+      "name": "Delete file",
+      "category": "filesystem",
+      "surface": "local-process",
+      "description": "Deletes one file inside the project root. Destructive by nature: deletion is the one governed file operation that always needs a human decision first.",
+      "risk": "high",
+      "permissions": [
+        "project.write",
+        "resource.destroy"
+      ],
+      "input": [
+        {
+          "name": "path",
+          "type": "string",
+          "required": true,
+          "description": "Relative path inside the project"
+        }
+      ],
+      "output": "Deleted path",
+      "verify": "absence",
+      "irreversible": true
+    },
+    {
       "id": "terminal.execute",
       "name": "Run command",
       "category": "terminal",

@@ -201,6 +201,34 @@ async def filesystem_write_verify(inv: dict, _last: dict) -> dict:
         return _fail("read-back", "The file could not be read back after writing.")
 
 
+async def filesystem_delete(inv: dict) -> dict:
+    # The approval gate lives in policy, not here: the irreversible-floor
+    # parks filesystem.delete before it ever reaches an executor, and no
+    # policy configuration can lower that floor. This executor only
+    # confines the granted deletion and reports it. Directories are never
+    # removed: emptying a directory is a separate human decision, and
+    # recursive removal is not a governed operation.
+    root = cwd_of(inv)
+    rel = _s(inv["input"].get("path"))
+    target = inside(root, rel)
+    if not os.path.exists(target):
+        return _no(f"'{rel}' does not exist in this project, so there is nothing to delete.")
+    if os.path.isdir(target):
+        return _no(f"'{rel}' is a directory. Governed deletion removes files; empty the directory first or remove it yourself.")
+    os.remove(target)
+    return _ok(f"Deleted {os.path.relpath(target, root)}.", {"path": target})
+
+
+async def filesystem_delete_verify(inv: dict, _last: dict) -> dict:
+    try:
+        target = inside(cwd_of(inv), _s(inv["input"].get("path")))
+    except ValueError as exc:
+        return _fail("absence", f"Cannot verify: {exc}")
+    if os.path.exists(target):
+        return _fail("absence", "The file is still present after deletion.")
+    return _pass("absence", "The file is gone.")
+
+
 # ── terminal ─────────────────────────────────────────────────────────────────
 
 
@@ -1188,6 +1216,7 @@ EXECUTOR_TABLE: dict[str, dict] = {
     "filesystem.list": {"run": filesystem_list},
     "filesystem.read": {"run": filesystem_read},
     "filesystem.write": {"run": filesystem_write, "verify": filesystem_write_verify},
+    "filesystem.delete": {"run": filesystem_delete, "verify": filesystem_delete_verify},
     "terminal.execute": {"run": terminal_execute, "verify": terminal_execute_verify},
     "agent.delegate": {"run": agent_delegate_run, "verify": agent_delegate_verify,
                        "supportsNode": agent_delegate_supports_node},
