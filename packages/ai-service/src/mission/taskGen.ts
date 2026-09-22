@@ -9,9 +9,9 @@
  * contents, grounded in the task's own description and the goal's
  * rationale — never a wider rewrite. Same single-shot JSON-mode
  * convention as every other AI call in this app. Never writes anything
- * — the caller (`workspace.ts#acceptMissionTask`) is the only place a
- * task's proposal is ever written to disk, and only after an explicit
- * human Accept.
+ * — the caller applies the proposal through governed
+ * `filesystem.write` (autonomous for creates/overwrites, which cannot
+ * delete), while destructive capability calls park by policy.
  */
 import fs from 'node:fs';
 import path from 'node:path';

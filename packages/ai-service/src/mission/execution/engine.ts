@@ -236,7 +236,18 @@ export class MissionExecutionEngine {
     // checkpoints existed) is repaired exactly like a missing one — it is
     // not a usable v3 execution block, and every read path must survive
     // it rather than crash on missing checkpoints.
-    if (record.execution?.checkpoints) return record;
+    if (record.execution?.checkpoints) {
+      // Reconcile a decision that landed after creation: approval granted
+      // later must unlock planning on the existing block, or missions
+      // approved-then-run (the normal order) could never start.
+      if (record.approval.status === 'approved'
+        && record.execution.status === 'idle'
+        && checkpointStatus(record.execution.checkpoints, 'planning') !== 'passed') {
+        record.execution.checkpoints = setCheckpoint(record.execution.checkpoints, 'planning', 'passed', 'Plan approved');
+        record.execution.status = 'approved';
+      }
+      return record;
+    }
     if (!record.goalGraph?.tasks?.length) return record;
     const approved = record.approval.status === 'approved';
     const checkpoints = emptyCheckpoints();
@@ -276,7 +287,28 @@ export class MissionExecutionEngine {
     return record;
   }
 
-  /* ── Approval gate ──────────────────────────────────────────────── */
+  /* ── Approval gate ────────────────────────────────────────────────
+   *
+   * Planning is autonomous: the checkpoint auto-passes at creation
+   * (system actor, recorded as such). Destructive work still parks —
+   * not here, but per task at execution, where the capability that
+   * would actually do it is evaluated. `approve()` remains for an
+   * explicit human confirmation and for missions created before this
+   * change; `rejectPlan()` remains the way to stop a plan.
+   */
+
+  autoApprovePlanning(record: MissionRecord): MissionRecord {
+    if (!record.execution) this.hydrate(record);
+    if (!record.execution) return record;
+    if (checkpointStatus(record.execution.checkpoints, 'planning') === 'passed') return record;
+    record.execution.checkpoints = setCheckpoint(record.execution.checkpoints, 'planning', 'passed', 'Plan auto-approved by AURA — destructive tasks will still park individually');
+    record.execution.status = 'approved';
+    record.execution.timeline.push(timeline('approved', 'system', 'Planning auto-passed', { checkpoint: 'planning' }));
+    record.execution.activity.push(activity('system', 'approved', 'Plan auto-approved — execution unlocked; destructive tasks park on their own'));
+    record.approval = { status: 'approved', at: new Date().toISOString() };
+    this.commit(record);
+    return record;
+  }
 
   approve(record: MissionRecord): MissionRecord {
     if (!record.execution) this.hydrate(record);
@@ -363,19 +395,19 @@ export class MissionExecutionEngine {
    * completed, bounded by `maxParallel`. The wave's hooks (LLM
    * proposal generation, git preflight) run CONCURRENTLY, bounded by
    * `maxParallel`; per-task bookkeeping commits and the result
-   * application stay serial, and the wave commits once. Proposals only:
-   * nothing is written until each task is Accepted, which then unlocks
-   * the next wave. This is what makes ordering automated while the two
-   * human gates (plan approval, per-task Accept) stay intact.
+   * application stay serial, and the wave commits once. Non-destructive
+   * results apply autonomously inside the hook; destructive capability
+   * calls park with `pending` and rejoin the wave once granted.
    */
   /**
-   * Task kinds that resolve to the MANUAL node — no governed executor, no
-   * proposal generation. They can only be resolved by a human via
-   * `completeManualTask`, and must never be auto-run by a wave (auto-running
-   * them would fabricate a failure). Matches the fabric's capability map:
-   * every one of these kinds resolves to `manual`.
+   * Task kinds with no autonomous resolution — genuinely human work
+   * (a manual operation only a person can perform, or an explicit
+   * approval checkpoint the planner asked a human to own). Everything
+   * else runs in waves: file work through proposals, research /
+   * documentation / review through the reporting path in the runTask
+   * hook. `completeManualTask` remains their only resolution.
    */
-  static MANUAL_KINDS: ReadonlySet<MissionTask['kind']> = new Set(['manual-operation', 'approval', 'review', 'documentation', 'research']);
+  static MANUAL_KINDS: ReadonlySet<MissionTask['kind']> = new Set(['manual-operation', 'approval']);
 
   async runReadyTasks(record: MissionRecord, opts: RunReadyOptions = {}): Promise<MissionRecord> {
     if (!record.execution) return record;

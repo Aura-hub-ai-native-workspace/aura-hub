@@ -894,10 +894,11 @@ export class WorkspaceManager {
    * gathering → deterministic strategy-scaffold selection → one LLM
    * Goal Graph call → deterministic risk analysis → one adversarial LLM
    * mission review (bounded to at most one revision pass) → deterministic
-   * quality scoring. Execution remains human-gated exactly as in v1: the
-   * whole plan must be explicitly approved before any task can run, and
-   * each task's AI-generated proposal must be explicitly accepted before
-   * it is ever written to disk. No unattended execution.
+   * quality scoring. Planning auto-passes at creation (system actor):
+   * the whole plan no longer waits for an explicit approval, and each
+   * task's AI-generated proposal applies autonomously when it only
+   * creates or overwrites one confined path. Destructive capability
+   * calls still park individually at execution, gated by policy.
    *
    * ── Mission Control v3 ──────────────────────────────────────────────
    * The `MissionExecutionEngine` (see `mission/execution/`) turns the
@@ -1009,13 +1010,29 @@ export class WorkspaceManager {
         const goal = record.goalGraph?.goals.find((g) => g.id === task.goalId);
         if (!project || !goal) return { ok: false, error: 'invalid mission state' };
 
+        if (task.kind === 'research' || task.kind === 'documentation' || task.kind === 'review') {
+          // A governed execution beats a generated report wherever one
+          // exists (memory search, diff review): it carries policy,
+          // verification and audit. The report path below is the
+          // fallback for kinds no executor covers — investigation and
+          // judgment recorded as the task's result, with no disk write.
+          // A missing provider fails the task loudly instead of
+          // fabricating a report — an unverified answer the operator
+          // believes is worse than one they know to re-check.
+          const reportPlan = planTaskInvocation(task, id);
+          if (reportPlan.kind === 'invoke' && this.fabric?.isSupported(reportPlan.capabilityId)) {
+            const viaFabric = await this.runTaskThroughFabric(id, record, task, approvedCapabilities);
+            if (viaFabric) return viaFabric;
+          }
+          return this.runReportTask(project.path, record, task, goal);
+        }
+
         // Fabric first: a task it can execute is executed under policy,
         // approval, verification, recovery and audit. Nothing bypasses it
         // for convenience — the proposal path below is reached only for
         // tasks the Fabric genuinely cannot express as a call.
         const viaFabric = await this.runTaskThroughFabric(id, record, task, approvedCapabilities);
         if (viaFabric) return viaFabric;
-
         if (task.kind !== 'file-operation' || !task.targetFile) {
           // The planner's own words for why this is not a capability call —
           // a specific next step instead of a generic refusal.
@@ -1023,12 +1040,34 @@ export class WorkspaceManager {
           return { ok: false, error: plan.kind === 'unbound' ? plan.reason : 'This task has no single target file — complete it manually instead of running it.' };
         }
         const result = await generateTaskProposal(this.pipeline, project.path, task, goal, record.text, signal);
-        return {
-          ok: result.ok,
-          error: result.ok ? undefined : result.proposal.error?.message,
-          proposal: result.proposal,
-          mode: result.isNewFile ? 'new-file' : 'diff',
-        };
+        if (!result.ok || !result.proposal.newCode) {
+          return {
+            ok: result.ok,
+            error: result.ok ? undefined : result.proposal.error?.message,
+            proposal: result.proposal,
+            mode: result.isNewFile ? 'new-file' : 'diff',
+          };
+        }
+        // Autonomous apply: a file proposal only ever creates or
+        // overwrites one confined path — it cannot delete — so the
+        // write rides the autonomy grant with the agent as actor and
+        // no per-call grant. Destructive work never flows through
+        // here: it is a Fabric capability call, evaluated and parked
+        // by policy before anything runs.
+        const applied = await this.writeProposalToDisk(
+          id, project.path, task.targetFile as string, result.proposal.newCode,
+          { kind: 'agent', id: `mission:${record.id}` }, undefined,
+        );
+        if (!applied.ok) {
+          const pending = applied.outcome === 'awaiting-approval';
+          return {
+            ok: false, pending: pending || undefined,
+            status: pending ? 'pending' : 'error',
+            error: pending ? undefined : applied.error,
+            proposal: result.proposal, mode: result.isNewFile ? 'new-file' : 'diff',
+          };
+        }
+        return { ok: true, status: 'done', detail: `Applied proposal for ${task.targetFile}.`, proposal: result.proposal, mode: result.isNewFile ? 'new-file' : 'diff', executedNode: 'aura-ai' };
       },
       persist: (rec) => { this.missions.save(id, rec); },
       emit,
@@ -1040,6 +1079,15 @@ export class WorkspaceManager {
     if (!project) throw new Error(`no such project: ${id}`);
     await this.pipeline.whenIndexed();
     const result = await runMissionCreation(this, this.missions, id, project.path, text, emit, signal);
+
+    // Planning is autonomous: a successfully created plan auto-passes
+    // its checkpoint (system actor) so execution can start without a
+    // human gate. Destructive tasks still park individually at
+    // execution. Failed creations stay untouched — there is no plan
+    // to approve.
+    if (!result.error && (result.goalGraph?.tasks.length ?? 0) > 0) {
+      this.missionEngine(id).autoApprovePlanning(result);
+    }
 
     this.recordMissionMemory(id, result, 'created');
 
@@ -1098,21 +1146,91 @@ export class WorkspaceManager {
   }
 
   /**
-   * The only place a mission task's proposal is ever written to disk —
-   * requires an explicit human Accept.
+   * The only place a mission task's proposal is ever written to disk.
    *
    * The write itself goes through the Capability Fabric's
    * `filesystem.write`, not a direct `fs` call. That is what subjects the
    * single most consequential action in the mission system to policy, to
    * read-back verification, to bounded recovery and to the audit trail.
    *
-   * The operator's Accept **is** the authorization, so it is passed as the
-   * per-invocation grant. That is not a bypass: policy still evaluates,
-   * the hard floors still apply, the path is still resolved inside the
-   * project by the executor, and the write is still verified afterwards.
-   * Without the grant the Fabric parks the write at `awaiting-approval`
-   * and nothing reaches disk.
+   * Writes from a human Accept carry the operator's authorization as the
+   * per-invocation grant; autonomous writes ride the autonomy grant with
+   * the mission agent as actor and no per-call grant. Either way policy
+   * still evaluates, the hard floors still apply, the path is still
+   * resolved inside the project by the executor, and the write is still
+   * verified afterwards.
    */
+  private async writeProposalToDisk(
+    projectId: string,
+    projectPath: string,
+    targetFile: string,
+    newCode: string,
+    actor: { kind: 'human' | 'agent'; id: string },
+    approvedCapabilities?: string[],
+  ): Promise<{ ok: boolean; error?: string; outcome?: string }> {
+    if (this.fabric) {
+      const result = await this.fabric.invoke(
+        'filesystem.write',
+        { path: targetFile, content: newCode },
+        {
+          actor,
+          projectId,
+          cwd: projectPath,
+          ...(approvedCapabilities ? { approvedCapabilities } : {}),
+        },
+      );
+      if (result.outcome !== 'succeeded') {
+        return { ok: false, error: result.detail, outcome: result.outcome };
+      }
+      return { ok: true };
+    }
+    // No Fabric attached (library use without a host) — the original
+    // direct write, kept so the manager is never left unable to accept.
+    let abs: string;
+    try {
+      abs = resolveInsideProject(projectPath, targetFile);
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+    fs.writeFileSync(abs, newCode);
+    return { ok: true };
+  }
+
+  /**
+   * Resolve a research / documentation / review task with no target file.
+   *
+   * These kinds produce judgment, not patches: the model investigates
+   * and the report IS the task result — nothing reaches disk. A
+   * missing provider fails the task loudly instead of fabricating a
+   * report.
+   */
+  private async runReportTask(
+    projectPath: string,
+    record: MissionRecord,
+    task: MissionTask,
+    goal: { title: string; rationale: string },
+  ): Promise<{ ok: boolean; error?: string; status?: 'done'; detail?: string; executedNode?: 'aura-ai' }> {
+    const kinds: Record<string, string> = {
+      research: 'Investigate and report findings',
+      documentation: 'Write clear documentation of what you find',
+      review: 'Review carefully and report findings and verdict',
+    };
+    const res = await this.pipeline.generate({
+      system: 'You are AURA, an engineering agent resolving one mission task. Be concrete and specific; never invent files, results or facts you did not observe.',
+      user: [
+        `Mission: ${record.text}`,
+        `Goal: ${goal.title} — ${goal.rationale}`,
+        `Task (${task.kind}): ${task.title}`,
+        `Task description: ${task.description}`,
+        `Project: ${projectPath}`,
+        `${kinds[task.kind] ?? 'Complete the task'}. Respond in plain text.`,
+      ].join('\n'),
+    });
+    if (!res.ok) {
+      return { ok: false, error: `report generation failed: ${res.error.message ?? res.error}` };
+    }
+    return { ok: true, status: 'done', detail: res.text.slice(0, 2000), executedNode: 'aura-ai' };
+  }
   async acceptMissionTask(id: string, mid: string, taskId: string, approvedCapabilities: string[] = ['filesystem.write']): Promise<{ ok: boolean; error?: string; mission?: MissionRecord }> {
     const mission = this.missions.get(id, mid);
     if (!mission) return { ok: false, error: 'no such mission' };
@@ -1122,36 +1240,16 @@ export class WorkspaceManager {
     const project = this.registry.get(id);
     if (!project) return { ok: false, error: 'no such project' };
 
-    if (this.fabric) {
-      const result = await this.fabric.invoke(
-        'filesystem.write',
-        { path: task.targetFile as string, content: run.proposal.newCode },
-        {
-          actor: { kind: 'human', id: 'user' },
-          projectId: id,
-          cwd: project.path,
-          missionId: mission.id,
-          taskId,
-          approvedCapabilities,
-        },
-      );
-      if (result.outcome !== 'succeeded') {
-        // Nothing was written, or it was written and failed its read-back.
-        // Either way the task must not be marked accepted. `result.detail`
-        // already carries the verification reason — appending it again
-        // would print the same sentence twice to the operator.
-        return { ok: false, error: result.detail, mission };
-      }
-    } else {
-      // No Fabric attached (library use without a host) — the original
-      // direct write, kept so the manager is never left unable to accept.
-      let abs: string;
-      try {
-        abs = resolveInsideProject(project.path, task.targetFile as string);
-      } catch (e) {
-        return { ok: false, error: (e as Error).message };
-      }
-      fs.writeFileSync(abs, run.proposal.newCode);
+    const written = await this.writeProposalToDisk(
+      id, project.path, task.targetFile as string, run.proposal.newCode,
+      { kind: 'human', id: 'user' }, approvedCapabilities,
+    );
+    if (!written.ok) {
+      // Nothing was written, or it was written and failed its read-back.
+      // Either way the task must not be marked accepted. `written.error`
+      // already carries the verification reason — appending it again
+      // would print the same sentence twice to the operator.
+      return { ok: false, error: written.error, mission };
     }
 
     const updated = this.missionEngine(id).acceptTask(mission, taskId);
