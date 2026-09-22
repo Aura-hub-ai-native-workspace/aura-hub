@@ -151,7 +151,8 @@ export class MissionExecutionEngine {
   }
 
   /** Runtime status per task, derived from the plan's own status + runs. */
-  private taskStatuses(record: MissionRecord): Record<string, ExecutionTaskStatus> {
+  /** Read-only wave-progress snapshot, also used by the creation drain loop. */
+  taskStatuses(record: MissionRecord): Record<string, ExecutionTaskStatus> {
     const out: Record<string, ExecutionTaskStatus> = {};
     for (const t of record.goalGraph?.tasks ?? []) out[t.id] = this.statusForTask(record, t.id);
     return out;
@@ -634,7 +635,37 @@ private finishTask(record: MissionRecord, task: MissionTask, result: RunTaskResu
         exec.timeline.push(timeline('checkpoint', 'system', 'Review checkpoint opened', { checkpoint: 'review' }));
         exec.activity.push(activity('system', 'checkpoint', 'All tasks complete — mission review required'));
       }
+      this.autoReview(record);
     }
+  }
+
+  /**
+   * AURA's own review pass. When every task completed with a recorded
+   * result and none failed, the review checkpoint passes as system and
+   * the mission completes — no human click required. Anything else
+   * (failed tasks, missing runs) leaves the review open for a human:
+   * self-review may confirm success, never excuse failure.
+   */
+  autoReview(record: MissionRecord): MissionRecord {
+    const exec = record.execution;
+    if (!exec || exec.status !== 'reviewing') return record;
+    if (checkpointStatus(exec.checkpoints, 'review') !== 'pending') return record;
+    const statuses = this.taskStatuses(record);
+    const ids = Object.keys(statuses);
+    if (ids.length === 0 || !ids.every((id) => statuses[id] === 'completed')) return record;
+    // Every completed task must have a run record: completion without
+    // evidence is exactly what self-review must not bless. (Failed
+    // tasks never reach 'completed' in the status map above, so
+    // reaching this line already means nothing failed.)
+    const runs = new Map((record.taskRuns ?? []).map((r) => [r.taskId, r]));
+    const clean = ids.every((id) => !!runs.get(id));
+    if (!clean) return record;
+    exec.checkpoints = setCheckpoint(exec.checkpoints, 'review', 'passed', `Self-review passed: all ${ids.length} tasks completed with recorded results`);
+    exec.timeline.push(timeline('review-passed', 'system', 'Mission self-review passed', { checkpoint: 'review' }));
+    exec.activity.push(activity('system', 'review-passed', `Self-review passed — ${ids.length} tasks verified complete`));
+    this.completeMission(record);
+    this.commit(record);
+    return record;
   }
 
   /** Human decision on the mission-review checkpoint. */

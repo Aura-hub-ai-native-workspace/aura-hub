@@ -293,7 +293,7 @@ export function ConversationPane({
             <div>
               <p className="text-[16px] font-semibold text-text">What should get done?</p>
               <p className="mt-1 text-[12.5px] text-text-muted">
-                State an objective. I will plan it, ask for approval where it matters, execute with the tools you connected, and verify the result.
+                State an objective. I will plan it, execute with the tools you connected, and verify the result — interrupting you only for destructive actions.
               </p>
             </div>
             <div className="flex flex-wrap justify-center gap-2">

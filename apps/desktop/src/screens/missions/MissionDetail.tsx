@@ -129,7 +129,7 @@ export function MissionDetail({
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-canvas px-4 py-2.5">
           {status === 'approved' && (
             <>
-              <span className="mr-auto text-[12px] text-text-muted">Plan approved — ready to execute wave by wave.</span>
+              <span className="mr-auto text-[12px] text-text-muted">Plan auto-approved — ready to execute wave by wave.</span>
               <Button size="sm" variant="primary" icon="activity" loading={missions.batchBusy} onClick={handleAction.start}>Start Execution</Button>
             </>
           )}
@@ -157,7 +157,7 @@ export function MissionDetail({
           {status === 'completed' && <span className="mr-auto text-[12px] text-positive">Mission completed {ex.completedAt ? `· ${relTime(ex.completedAt)}` : ''}</span>}
           {status === 'cancelled' && <span className="mr-auto text-[12px] text-text-muted">Mission cancelled.</span>}
           {status === 'failed' && <span className="mr-auto text-[12px] text-danger">Execution failed — review the timeline for what went wrong.</span>}
-          {status === 'idle' && mission.approval.status === 'approved' && <span className="mr-auto text-[12px] text-text-muted">Plan approved — start execution when ready.</span>}
+          {status === 'idle' && mission.approval.status === 'approved' && <span className="mr-auto text-[12px] text-text-muted">Plan auto-approved — start execution when ready.</span>}
           {running && metrics && (
             <span className="text-[11px] tabular-nums text-text-muted">{metrics.tasksCompleted}/{metrics.tasksTotal} done</span>
           )}
@@ -229,7 +229,7 @@ export function MissionDetail({
 
       {!ex && mission.goalGraph && (
         <div className="rounded-xl border border-line bg-canvas p-4 text-[12px] text-text-muted">
-          Plan built — approve it in the checkpoints panel to unlock execution.
+          Plan built — it auto-approves and execution starts on its own. Only destructive tasks will pause for a decision.
         </div>
       )}
       {!ex && !mission.goalGraph && !mission.error && (

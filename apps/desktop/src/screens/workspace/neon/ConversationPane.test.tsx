@@ -324,11 +324,11 @@ describe('ConversationPane — approvals', () => {
       id: 'apr-1',
       state: 'pending',
       requestedAt: '2026-01-01T00:00:00Z',
-      summary: 'Write the migration file',
+      summary: 'Delete the obsolete migration file',
       items: [{
         invocationId: 'inv-1',
-        capabilityId: 'filesystem.write',
-        title: 'Write a file',
+        capabilityId: 'filesystem.delete',
+        title: 'Delete file',
         detail: 'db/migrations/0004.sql',
         risk: 'high',
         irreversible: true,
@@ -338,7 +338,7 @@ describe('ConversationPane — approvals', () => {
 
     expect(markup).toContain('Authorization required');
     expect(markup).toContain('Approve and run');
-    expect(markup).toContain('Write the migration file');
+    expect(markup).toContain('Delete the obsolete migration file');
     expect(markup).not.toContain('Loading the authorization details');
   });
 

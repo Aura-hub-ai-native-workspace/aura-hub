@@ -1,9 +1,12 @@
 /**
- * CheckpointPanel — the mission's four human gates, drawn as a stepper:
+ * CheckpointPanel — the mission's four checkpoints, drawn as a stepper:
  *   planning → execution → review → completion.
- * The planning gate owns the Approve/Reject Plan controls; the review
- * gate owns the Pass/Reject mission review controls. Nothing proceeds
- * past a gate until a human passes it.
+ * Planning auto-passes at creation and review self-passes when every
+ * task completes cleanly; the Approve/Reject and Pass/Return controls
+ * remain for plans created earlier, for missions with human-resolved
+ * work, and for stopping something that should not run. Destructive
+ * task gates render separately, inline on the task, with the reason
+ * policy opened them.
  */
 import { useState } from 'react';
 import { Button, Icon } from '@aura/ui';

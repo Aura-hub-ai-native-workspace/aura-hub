@@ -1,5 +1,5 @@
 /**
- * TaskList — the human-gated per-task execution surface.
+ * TaskList — the live per-task execution surface.
  * ------------------------------------------------------------------
  * One task per row, grouped by goal. Each row fuses three sources of
  * real state:
@@ -8,8 +8,11 @@
  *   • execution result — `MissionTaskRun` (the generated proposal)
  *
  * Actions follow the state machine: Run a task once its dependencies are
- * met, Accept/Reject once it lands in `review`, Retry when it fails, and
- * Mark Done for manual work. Nothing is ever written until Accept.
+ * met (no plan approval needed — planning auto-passes), Retry when it
+ * fails, and Mark Done for manual work. Non-destructive results apply
+ * autonomously; a task parked at a real destructive gate shows that
+ * gate inline with Approve/Decline. Accept/Reject remain for the rare
+ * proposal that lands in `review` without auto-applying.
  */
 import { useEffect, useState } from 'react';
 import { DiffEditor } from '@monaco-editor/react';
@@ -90,7 +93,7 @@ function TaskRow({
   const run = runs.find((r) => r.taskId === task.id);
   const runtime = node?.status ?? 'waiting';
   const depsMet = (node?.blockedBy.length ?? 0) === 0;
-  const isManualKind = ['manual-operation', 'review', 'approval', 'documentation', 'research'].includes(task.kind);
+  const isManualKind = ['manual-operation', 'approval'].includes(task.kind);
   // undefined = still loading, null = load failed, string = loaded.
   const [original, setOriginal] = useState<string | null | undefined>(undefined);
   const busy = busyTaskId === task.id;
@@ -187,7 +190,7 @@ function TaskRow({
             itself — offering Run as well would present two ways to say yes,
             only one of which is authorized. */}
         {runtime === 'queued' && !isManualKind && !gate && (
-          <Button size="sm" variant="primary" disabled={!approved || !depsMet} loading={busy} onClick={() => onRun(task.id)}>
+          <Button size="sm" variant="primary" disabled={!depsMet} loading={busy} onClick={() => onRun(task.id)}>
             {depsMet ? 'Run Task' : 'Waiting on deps'}
           </Button>
         )}

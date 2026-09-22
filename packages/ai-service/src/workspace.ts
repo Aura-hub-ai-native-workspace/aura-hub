@@ -1085,8 +1085,32 @@ export class WorkspaceManager {
     // human gate. Destructive tasks still park individually at
     // execution. Failed creations stay untouched — there is no plan
     // to approve.
+    //
+    // Ownership means starting, not just planning: execution starts
+    // and ready waves drain (bounded) before creation returns, so the
+    // first thing the user sees is work in progress, not a plan
+    // waiting for a click. The loop stops at the first park, failure
+    // stall or iteration bound — it never spins, and cancellation via
+    // signal stops it between waves.
     if (!result.error && (result.goalGraph?.tasks.length ?? 0) > 0) {
-      this.missionEngine(id).autoApprovePlanning(result);
+      const engine = this.missionEngine(id, signal);
+      engine.autoApprovePlanning(result);
+      engine.startExecution(result);
+      for (let wave = 0; wave < 25; wave++) {
+        if (signal?.aborted) break;
+        if (result.execution?.status !== 'running') break;
+        const before = JSON.stringify(engine.taskStatuses(result));
+        await engine.runReadyTasks(result);
+        const after = JSON.stringify(engine.taskStatuses(result));
+        // A freshly parked approval means the next wave would only
+        // re-park: stop and wait for the grant instead of spinning.
+        // No status movement at all means stall: stop as well.
+        const freshPark = (result.taskRuns ?? []).some(
+          (r) => r.status === 'pending' && !(r as { proposal?: unknown }).proposal,
+        );
+        if (freshPark || before === after) break;
+      }
+      this.missions.save(id, result);
     }
 
     this.recordMissionMemory(id, result, 'created');
