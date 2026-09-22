@@ -7,71 +7,88 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
-## [0.1.15] - 2026-09-22 — Windows Execution Hardening
+## [0.1.15] - 2026-09-22 — Windows Hardening + Project Context
 
-Windows machines reported healthy tools as broken or missing: npm-shimmed
-CLIs died with `WinError 193`, spaced install paths arrived truncated at
-`C:\Program`, Store alias stubs answered instead of real interpreters,
-and PowerShell 5.1 failed the version probe. This release routes Windows
-execution through the same governed boundary on every layer (Python scan
-path, agent command path, AI-service mirror) and fixes two backend defects
-found alongside it. No product behavior changes on Linux or macOS; no
-provider routing changes — self-hosted Local/Remote remain primary, cloud
-adapters remain explicit opt-in fallback.
+Two tracks. Windows machines reported healthy tools as broken or
+missing (npm shims dying with `WinError 193`, spaced paths truncated
+at `C:\Program`, Store stubs answering for real interpreters,
+PowerShell 5.1 failing its probe); execution is now routed through the
+same governed boundary on every layer. Separately, planning and
+advisory surfaces stop guessing about the machine and the project: a
+capability registry reports one measured, fail-closed view, and project
+context resolves through the registry with honest 404s for unknown ids.
+No provider routing changes — self-hosted Local/Remote remain primary,
+new cloud adapters are explicit opt-in fallback only.
 
 ### Fixed
 
-- **Windows `.cmd`/`.bat` shim routing** — shims now go through one
-  pre-quoted `cmd /d /s /c call …` command line in
+- **Windows `.cmd`/`.bat` shim routing** — shims go through one
+  pre-quoted `cmd /d /s /c call …` line in
   `aura.environment.procexec`, `aura.exec_` and the `ai-service`
-  `spawnTargetFor` mirror. A bare `cmd /c` with a quoted spaced path
-  strips to `C:\Program`; the `call` builtin keeps the remainder intact.
-- **PATHEXT resolution order** — a bare name (e.g. `opencode`) now
-  prefers the runnable `.cmd`/`.exe` twin over an extensionless shim
-  instead of probing the unrunnable file and reporting the tool broken.
-- **WindowsApps Store-alias stubs skipped** — `python3`/`bash` reparse
-  points no longer trigger Store popups or false failures when a real
-  candidate (real interpreter, Git Bash) resolves; a stub with no real
-  alternative reports its honest failure, never "not on PATH".
-- **Git Bash fallback probes** — `bash` falls back to
-  `%ProgramFiles%/Git/bin/bash.exe` outside `PATH`.
-- **PowerShell 5.1 probe** — version is read via
-  `$PSVersionTable.PSVersion` instead of `--version`, which 5.1 rejects,
-  so 5.1-only machines verify instead of reporting broken.
-- **npm global prefix** — `APPDATA`/`LOCALAPPDATA` are kept in the
-  sanitized probe environment so `npm config get prefix` resolves;
-  without them every npm-global plan silently demoted to root/guided.
+  `spawnTargetFor` mirror (a quoted spaced path under bare `cmd /c`
+  strips to `C:\Program`).
+- **PATHEXT resolution order** — a bare name prefers the runnable
+  `.cmd`/`.exe` twin over an extensionless shim instead of probing an
+  unrunnable file and reporting the tool broken.
+- **WindowsApps Store-alias stubs skipped** — reparse points no longer
+  trigger Store popups or false failures when a real candidate
+  resolves; a stub with no alternative reports honest failure, never
+  "not on PATH".
+- **Git Bash fallback probes** and a **PowerShell 5.1-compatible
+  probe** (`$PSVersionTable.PSVersion` instead of `--version`).
+- **npm global prefix** — `APPDATA`/`LOCALAPPDATA` kept in the
+  sanitized probe environment; without them every npm-global plan
+  silently demoted to root/guided.
 - **Venv-only self-runtime exclusion** — a system interpreter running
-  AURA is the machine's Python and is no longer excluded from the scan;
-  only real virtualenvs (marked by `pyvenv.cfg`) are.
-- **Direct-path text output crash** — a successful task whose executor
-  returns text (file reads, terminal stdout) crashed task close with
-  `AttributeError` on `.get` and failed the session as "Unexpected
-  failure". Output is now normalized before the cancelled-flag check.
+  AURA is the machine's Python and is scanned; only real virtualenvs
+  are excluded.
+- **Direct-path text output crash** — executor text output crashed
+  task close with `AttributeError` and failed the session as
+  "Unexpected failure"; output is normalized before the
+  cancelled-flag check.
 - **Per-provider custom headers** — operator-written `headers` in
-  `providers.json` (e.g. `ngrok-skip-browser-warning`) ride stream and
-  non-stream completions; non-dict shapes are refused, secrets still
-  belong in `apiKeyEnv`.
+  `providers.json` ride stream and non-stream completions; secrets
+  still belong in `apiKeyEnv`.
+
+### Added
+
+- **Capability registry** (`backend/aura/capabilities`) — one measured
+  view uniting catalog probes, connected worker records and the tool
+  table. Fail-closed throughout: unknown capabilities, actions and
+  unmeasured tools resolve to `unavailable` with a reason, never a
+  guessed command. Memory-only TTL cache; `refresh()` re-measures.
+- **Project-scoped context plumbing** — advisory and execution paths
+  resolve the working project through the registry; an unregistered id
+  returns an honest 404 (`no project is registered with id`), never
+  another project's context.
+- **Agent approvals surface** — approval requests render with full
+  context and approve/deny through the existing ledger.
+- **Provider groups with PRIMARY/FALLBACK distinction** — the Settings
+  UI renders the category from each adapter's `selfHosted` flag; new
+  **ScaleMax** fallback adapter (`sm_` key detection, env-supplied
+  key) joins the opt-in list behind Ollama. No auto-failover, no
+  racing, no default switching.
+- **Ctrl-I editor context and read-only investigation support** with
+  project-artifact and provider-agnostic coverage tests.
 
 ### Validation
 
 - Typecheck clean across all three projects (CI).
 - Frontend + AI-service suites green on all four platform legs (CI).
-- New tests: Windows shim/PATHEXT/stub/prefix coverage
-  (`test_environment_windows_safety.py`), agent-boundary parity
-  (`test_exec_windows_parity.py`), provider headers
-  (`test_provider_headers.py`), direct text-output settle
-  (`test_execution_safety.py`).
+- New tests: Windows shim/PATHEXT/stub/prefix coverage, agent-boundary
+  parity, provider headers, direct text-output settle, capability
+  registry, project context artifacts, provider architecture,
+  project scoping.
 - Native runtime verification on all four installers, including the
   Windows NSIS install-and-launch leg.
 
 ### Known non-blocking notes (not fixed in this release)
 
 1. Three Windows-simulation tests fail when run on Linux
-   (`CREATE_NEW_PROCESS_GROUP` attribute under a mocked `os.name`,
-   `;`-vs-`:` PATH join, one outdated extensionless-match assertion):
-   test-harness-only issues, green on real Windows runners. Fix prepared
-   on a follow-up branch, deliberately not bundled into this release.
+   (`CREATE_NEW_PROCESS_GROUP` under mocked `os.name`, `;`-vs-`:`
+   PATH join, one outdated extensionless-match assertion):
+   test-harness-only, green on real Windows runners. Fix prepared on
+   a follow-up branch, deliberately not bundled here.
 2. Pre-existing `tests/unit` failures also present on `main`
    (discovery/adversarial execution decisions, hygiene caches,
    `cmd /c` docstring needle) are unchanged by this release.

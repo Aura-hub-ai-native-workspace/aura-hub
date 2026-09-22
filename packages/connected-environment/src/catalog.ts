@@ -257,6 +257,7 @@ const AI: CatalogEntry[] = [
   make('ai', { id: 'cerebras', name: 'Cerebras', caps: ['llm-inference'], transport: 'api-key', auth: 'api-key', license: 'free-tier', summary: 'High-throughput inference.', homepage: 'https://cerebras.ai' }),
   make('ai', { id: 'nvidia-nim', name: 'NVIDIA NIM', caps: ['llm-inference', 'embeddings'], transport: 'api-key', auth: 'api-key', license: 'free-tier', summary: 'Hosted inference microservices.', homepage: 'https://build.nvidia.com' }),
   make('ai', { id: 'novita', name: 'Novita AI', caps: ['llm-inference'], transport: 'api-key', auth: 'api-key', license: 'free-tier', summary: 'Hosted open-model inference.', homepage: 'https://novita.ai' }),
+  make('ai', { id: 'scalemax', name: 'ScaleMax', caps: ['llm-inference'], transport: 'api-key', auth: 'api-key', license: 'commercial', summary: 'OpenAI-compatible gateway — token-budget and credit keys.', homepage: 'https://scalemax.pro' }),
   make('ai', { id: 'siliconflow', name: 'SiliconFlow', caps: ['llm-inference'], transport: 'api-key', auth: 'api-key', license: 'free-tier', summary: 'Hosted open-model inference.', homepage: 'https://siliconflow.cn' }),
 
   make('ai', { id: 'ollama', name: 'Ollama', caps: ['local-llm', 'embeddings'], transport: 'http', endpoint: 'http://127.0.0.1:11434/api/version', license: 'open-source', summary: 'Runs open models on this machine.', homepage: 'https://ollama.com' }),

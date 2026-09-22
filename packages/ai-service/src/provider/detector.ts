@@ -11,6 +11,7 @@ const KEY_PREFIX_RULES: { prefix: string; providerId: string }[] = [
   { prefix: 'sk-ant-', providerId: 'anthropic' },
   { prefix: 'sk-', providerId: 'openai' },
   { prefix: 'csk_', providerId: 'cerebras' },
+  { prefix: 'sm_', providerId: 'scalemax' },
 ];
 
 export function detectByKeyPrefix(apiKey: string): string | null {

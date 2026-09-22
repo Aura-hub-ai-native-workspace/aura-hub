@@ -38,6 +38,16 @@ npm-debug.log*
 coverage
 *.lcov
 
+# Python bytecode and caches — regenerable, never tracked. (A handful of
+# .pyc files were committed accidentally; they were untracked via
+# `git rm --cached` in Phase 1. graphify-out/ live deliverables stay
+# tracked by convention — see the graphify section below.)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # Local AI/agent tooling state — never publish agent config or session state
 .claude
 .openharness

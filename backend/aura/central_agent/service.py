@@ -136,11 +136,31 @@ class CentralAgent:
                 known_capabilities=lambda: {
                     c.id for c in all_capabilities()},
                 known_nodes=lambda: _connected_node_ids(self.fabric_cfg))
-        self.discovery = discovery or CapabilityDiscovery()
+        # ONE measured capability registry for this agent: what the
+        # machine can actually do, cached in memory with a TTL and
+        # never persisted as truth. Discovery grounds governed
+        # capabilities in it, context summarises it for planning, and
+        # execution reports unmet worker needs from it. The agent stays
+        # the only orchestrator — this is evidence, not a second one.
+        from ..capabilities import CapabilityRegistry, inspect_project_environment
+
+        def _connected_ids() -> set[str]:
+            try:
+                host = getattr(getattr(self.fabric_cfg, "fabric", None), "host", None)
+                present = getattr(host, "present_nodes", None)
+                nodes = present() if callable(present) else []
+            except Exception:
+                return set()
+            return {str(n.get("id")) for n in nodes
+                    if isinstance(n, dict) and n.get("id")}
+        self.capabilities = CapabilityRegistry(connected_fn=_connected_ids)
+        self.discovery = discovery or CapabilityDiscovery(
+            capability_registry=self.capabilities)
         self.authority = AuthorityChecker(fabric_cfg)
         self.compiler = compiler or WorkflowCompiler()
         self.controller = ExecutionController(
-            fabric_cfg, engine=getattr(self, "engine", None))
+            fabric_cfg, engine=getattr(self, "engine", None),
+            capability_registry=self.capabilities)
         self.verifier = VerificationEngine()
         self._active_plans: dict[str, Any] = {}
         # Live request correlation: session id -> the request id of the
@@ -156,6 +176,7 @@ class CentralAgent:
         # untrusted external content before it can reach a model prompt.
         from .context import scan_project
 
+        registry = self.capabilities
         self.context = ContextAssembler(
             project_scanner=scan_project,
             workflow_lister=(lambda: store.list()[:20]) if store else None,
@@ -165,6 +186,8 @@ class CentralAgent:
                 for c in all_capabilities()],
             approval_lister=(lambda: ledger.pending()) if ledger else None,
             session_loader=self.sessions.load if hasattr(self.sessions, "load") else None,
+            capability_summary=(lambda: registry.summary(10)),
+            project_inspect=inspect_project_environment,
         )
 
     # ── helpers ──────────────────────────────────────────────────────────
@@ -190,6 +213,20 @@ class CentralAgent:
             # caller value authoritative over the ambient leg.
             payload.setdefault("requestId", request_id)
         self.bus.emit(AgentEvent(type=etype, at=_now(), sessionId=session_id, payload=payload))  # type: ignore[arg-type]
+
+    def _machine_counts(self) -> dict:
+        """Measured machine capabilities for the discovery event: how
+        many tools are available vs not. Best-effort — a registry that
+        cannot measure reports nothing rather than breaking the leg.
+        Additive payload keys only; existing consumers are unaffected."""
+        try:
+            caps = self.capabilities.discover()
+        except Exception:
+            return {}
+        return {
+            "machineAvailable": sum(1 for c in caps if c.availability == "available"),
+            "machineUnavailable": sum(1 for c in caps if c.availability != "available"),
+        }
 
     # ── the loop ─────────────────────────────────────────────────────────
     def submit(
@@ -335,7 +372,8 @@ class CentralAgent:
         bundle = self.context.assemble(
             session_id=session.sessionId,
             project_path=getattr(session, "projectPath", None),
-            editor_block=editor_block)
+            editor_block=editor_block,
+            project_id=getattr(session, "projectId", None))
         if self._mcp_context_provider is not None:
             try:
                 bundle.items.extend(self._mcp_context_provider()[:8])
@@ -411,9 +449,11 @@ class CentralAgent:
 
         # 3. discovery — what exists for these tasks (read-only)
         tools = self.discovery.available_for([t.capabilityId for t in plan.tasks if t.capabilityId])
+        machine = self._machine_counts()
         self._emit("capability.discovery", sid,
                    tools=[{"id": t.id, "available": t.available, "source": t.source}
-                          for t in tools])
+                          for t in tools],
+                   **machine)
         missing = sorted({t.capabilityId for t in plan.tasks if t.capabilityId}
                          - {t.id for t in tools})
         if missing:

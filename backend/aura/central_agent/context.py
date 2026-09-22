@@ -61,6 +61,53 @@ class ContextBundle:
 MAX_PROJECT_PATHS = 40
 PROJECT_SCAN_TIMEOUT_MS = 8_000
 
+#: Cap on one artifact file read. Identity/summary files are small JSON;
+#: anything larger is not what this loader is for, and is skipped
+#: rather than parsed.
+_MAX_ARTIFACT_BYTES = 256 * 1024
+
+
+def load_project_artifacts(project_id: str, home=None) -> dict | None:
+    """Project understanding the TS service already derived, read-only.
+
+    The Ask AURA pipeline persists per-project identity
+    (`identity/<id>.json`: purpose, type, language, entry points) and a
+    module summary (`summaries/<id>.json`) under the shared AURA home.
+    This loads both, bounded, without ever touching the mount: the
+    requested id is the key, so a turn can never read another project's
+    understanding. Anything unreadable or misshapen yields None, and
+    the assembler then says grounding is unavailable rather than
+    guessing. Never raises.
+    """
+    if not project_id or not isinstance(project_id, str):
+        return None
+    try:
+        from ..config import aura_home
+
+        base = home if home is not None else aura_home()
+    except Exception:
+        return None
+    try:
+        import json
+        import os
+
+        out: dict = {}
+        for key, name in (("identity", "identity"),
+                          ("summary", "summaries")):
+            path = os.path.join(str(base), name, f"{project_id}.json")
+            try:
+                if os.path.getsize(path) > _MAX_ARTIFACT_BYTES:
+                    continue
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict):
+                out[key] = data
+        return out or None
+    except Exception:
+        return None
+
 
 def scan_project(path: str) -> list[str]:
     """A cheap, read-only look at a project, through the ONE exec boundary.
@@ -102,19 +149,71 @@ def scan_project(path: str) -> list[str]:
     return out
 
 
+def _artifact_texts(project_id: str, artifacts: dict | None) -> list[str]:
+    """Bounded identity/summary lines for the bundle. Misshapen values
+    are skipped field by field — one bad field never costs the rest."""
+    if not isinstance(artifacts, dict):
+        return []
+    out: list[str] = []
+    ident = artifacts.get("identity")
+    if isinstance(ident, dict):
+        bits = [f"project identity for '{project_id}'"]
+        purpose = ident.get("purpose")
+        if isinstance(purpose, str) and purpose.strip():
+            bits.append("purpose: " + purpose.strip()[:200])
+        meta = [str(ident.get(k)) for k in ("repositoryType", "primaryLanguage")
+                if ident.get(k)]
+        if meta:
+            bits.append("type/language: " + ", ".join(meta)[:120])
+        entries = ident.get("entryPoints")
+        if isinstance(entries, list):
+            named = [str(e) for e in entries[:3] if e]
+            if named:
+                bits.append("entry points: " + ", ".join(named)[:160])
+        if len(bits) > 1:
+            out.append("; ".join(bits))
+    summary = artifacts.get("summary")
+    if isinstance(summary, dict):
+        bits = [f"project summary for '{project_id}'"]
+        purpose = summary.get("purpose")
+        if isinstance(purpose, str) and purpose.strip():
+            bits.append(str(purpose.strip()[:200]))
+        modules = summary.get("modules")
+        if isinstance(modules, list):
+            named = [str(m.get("name")) for m in modules[:8]
+                     if isinstance(m, dict) and m.get("name")]
+            if named:
+                bits.append("modules: " + ", ".join(named)[:200])
+        total = summary.get("totalFiles")
+        if isinstance(total, int):
+            bits.append(f"files: {total}")
+        if len(bits) > 1:
+            out.append("; ".join(bits))
+    return out
+
+
 class ContextAssembler:
     def __init__(self, workflow_lister=None, capability_lister=None,
                  approval_lister=None, session_loader=None,
-                 project_scanner=None) -> None:
+                 project_scanner=None, project_artifacts=None,
+                 capability_summary=None, project_inspect=None) -> None:
         self._workflows = workflow_lister or (lambda: [])
         self._capabilities = capability_lister or (lambda: [])
         self._approvals = approval_lister or (lambda: [])
         self._sessions = session_loader or (lambda sid: None)
         self._project_scan = project_scanner or (lambda path: [])
+        self._artifacts = (project_artifacts
+                           or (lambda pid: load_project_artifacts(pid)))
+        # Machine capabilities, measured — bounded lines for planning
+        # prompts, never an inventory dump. Project inspection reads
+        # the working project's own markers (unexecuted data).
+        self._capability_summary = capability_summary
+        self._project_inspect = project_inspect
 
     def assemble(self, session_id: str | None = None,
                  project_path: str | None = None,
-                 editor_block: str | None = None) -> ContextBundle:
+                 editor_block: str | None = None,
+                 project_id: str | None = None) -> ContextBundle:
         bundle = ContextBundle()
         caps = self._capabilities()[:MAX_ITEMS_PER_SOURCE]
         for c in caps:
@@ -143,11 +242,60 @@ class ContextAssembler:
                     bundle.items.append(ContextItem(
                         kind="message", text=f"{m.role}: {m.content[:300]}",
                         provenance=PROVENANCE_SESSION))
+        grounded = False
         if project_path:
             for entry in self._project_scan(project_path)[:MAX_ITEMS_PER_SOURCE]:
                 bundle.items.append(ContextItem(
                     kind="project", text=str(entry)[:300],
                     provenance=PROVENANCE_EXTERNAL, untrusted=True))
+                grounded = True
+        if project_id:
+            try:
+                artifacts = self._artifacts(project_id)
+            except Exception:
+                artifacts = None
+            for text in _artifact_texts(project_id, artifacts):
+                bundle.items.append(ContextItem(
+                    kind="project", text=text[:300],
+                    provenance=PROVENANCE_EXTERNAL, untrusted=True))
+                grounded = True
+        if (project_id or project_path) and not grounded:
+            # The turn names a project AURA knows nothing about. The
+            # model must hear that explicitly, or it will fill the gap
+            # with invented project facts.
+            bundle.items.append(ContextItem(
+                kind="message",
+                text=(f"Project grounding is unavailable for "
+                      f"'{project_id or project_path}'. Answer from "
+                      f"session context only; do not invent project "
+                      f"facts."),
+                provenance=PROVENANCE_SYSTEM))
+        if project_path and self._project_inspect is not None:
+            # What THIS project needs (its own markers, read not run).
+            # Kept separate from global machine capabilities on purpose:
+            # the planner joins "project needs X" with "machine has X".
+            try:
+                from ..capabilities.project import project_summary
+
+                report = self._project_inspect(project_path)
+                line = project_summary(report) if report is not None else None
+            except Exception:
+                line = None
+            if line:
+                bundle.items.append(ContextItem(
+                    kind="project", text=line[:300],
+                    provenance=PROVENANCE_EXTERNAL, untrusted=True))
+        if self._capability_summary is not None:
+            # What THIS machine can do (measured, bounded). Global
+            # capabilities only — project needs ride above, separately.
+            try:
+                lines = self._capability_summary() or []
+            except Exception:
+                lines = []
+            for entry in list(lines)[:6]:
+                bundle.items.append(ContextItem(
+                    kind="capability", text=str(entry)[:200],
+                    provenance=PROVENANCE_SYSTEM))
         if editor_block:
             # Ephemeral editor snapshot (Ctrl+I and siblings): fenced
             # untrusted content, chunked to the item bound, capped so one

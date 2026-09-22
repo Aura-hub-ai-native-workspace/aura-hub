@@ -50,7 +50,7 @@ import os
 import re
 import socket
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 #: Where the relay listens INSIDE the sandbox. The namespace is fresh and
 #: empty, so nothing can already hold it.
