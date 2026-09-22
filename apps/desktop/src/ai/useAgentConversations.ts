@@ -46,6 +46,7 @@ import {
   type ConversationSummary,
 } from './aiClient';
 import { eventPhrase, toolName } from './agentNarration';
+import type { AgentApprovalRow } from './agentApprovals';
 
 export type AgentConvPhase = 'idle' | 'working';
 
@@ -138,7 +139,7 @@ interface AgentConvState {
   send: (text: string, opts?: { editorContext?: EditorContext }) => Promise<void>;
   /** Answer a needs-clarification prompt on the thread's live session. */
   answer: (text: string) => Promise<void>;
-  decide: (messageId: string, granted: boolean, reason?: string) => Promise<void>;
+  decide: (messageId: string, granted: boolean, reason?: string) => Promise<AgentApprovalRow | null>;
   stop: () => void;
   regenerate: () => Promise<void>;
   /**
@@ -762,16 +763,45 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
         const msg = get().messages.find((m) => m.id === messageId);
         const sessionId = msg?.agent?.sessionId;
         const approvalId = msg?.agent?.approvalId;
-        if (!sessionId || !approvalId || !msg?.agent) return;
+        const cid = get().activeId;
+        if (!sessionId || !approvalId || !msg?.agent || !cid) return null;
+        // A resumed run is a live run: it is registered as the
+        // in-flight turn so Stop reaches it (phase 'working' swaps the
+        // composer for the stop control) and so a stop during the
+        // approve call settles the message as cancelled instead of
+        // adopting a result nobody is waiting for.
+        const controller = new AbortController();
+        const flight: Inflight = {
+          seq: (inflight?.seq ?? 0) + 1, sessionId, convId: cid,
+          assistantId: messageId, controller, unsubscribe: null,
+          settled: false,
+        };
+        inflight = flight;
+        const myEpoch = epoch;
+        const alive = () => inflight === flight && !flight.settled && epoch === myEpoch;
+        set({ phase: 'working' });
+        const finish = () => {
+          if (inflight === flight) {
+            flight.settled = true;
+            inflight = null;
+            set({ phase: 'idle', activity: { ...get().activity, phase: null, workers: {} } });
+          }
+        };
         pushEvent(messageId, 'approval.required', granted ? 'Approval granted — resuming' : 'Approval denied');
         patchMsg(messageId, (m) => ({ ...m, status: 'streaming' }));
         try {
-          const { result } = await centralAgentClient.approve(sessionId, approvalId, granted, reason);
-          const cid = get().activeId;
-          if (!cid) return;
+          const { result, approval } = await centralAgentClient.approve(sessionId, approvalId, granted, reason);
+          if (!alive()) return null;
           await adoptResult(cid, messageId, result, sessionId);
+          // The ledger's own decided record, so the gate renders the
+          // outcome instead of an actionable prompt for a spent request.
+          return approval ?? null;
         } catch (e) {
+          if (!alive()) return null;
           patchMsg(messageId, (m) => ({ ...m, status: 'error', error: errorText(e) }));
+          return null;
+        } finally {
+          finish();
         }
       },
 
