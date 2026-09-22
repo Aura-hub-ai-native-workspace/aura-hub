@@ -21,6 +21,13 @@ from ..fabric import FabricConfig, invoke_fabric
 from ..workflow import EngineConfig, WorkflowEngine
 from .planner import topo_order
 
+#: The checkpoint path always uses the real governed invoke, even when
+#: tests replace dispatch-time invoke_fabric with a fake: a checkpoint
+#: is a safety mechanism, and a test that silently disables it proves
+#: nothing about recoverability. Bound at import so later monkeypatching
+#: of the dispatch name cannot divert it.
+_REAL_INVOKE = invoke_fabric
+
 #: Fabric outcome → leg state. Unknown outcomes fail closed as "failed":
 #: a new outcome string must never crash the leg with KeyError (the
 #: engine path already defaults this way).
@@ -32,6 +39,39 @@ _OUTCOME_STATES = {
     "failed": "failed",
     "unsupported": "blocked",
 }
+
+
+def _git_checkpoint(cfg: Any, context: dict[str, Any], task_id: str,
+                    phase: str) -> str | None:
+    """Commit pending work before/after a delegated worker runs.
+
+    A delegated worker edits files on its own authority, so the tree
+    must be recoverable before it starts (checkpoint) and its completed
+    work must be attributable afterwards (milestone). Both go through
+    the governed git.commit — autonomous like any normal operation,
+    audited like everything else. A clean tree is a no-op; a failure
+    (not a repo, no git identity) never blocks dispatch — it is
+    reported loudly in the outcome instead, so a run without
+    recoverability never looks like one with it.
+    """
+    if not context.get("cwd"):
+        return None
+    message = (f"AURA checkpoint: before worker task {task_id}" if phase == "before"
+               else f"AURA milestone: worker task {task_id} complete")
+    try:
+        settled = _REAL_INVOKE(
+            "git.commit", {"message": message},
+            {**context, "taskId": f"{task_id}-checkpoint"},
+            cfg)
+    except Exception as exc:
+        return f"checkpoint unavailable ({exc}); dispatching without a recoverable baseline"
+    if settled.get("outcome") not in ("succeeded",):
+        return (f"checkpoint unavailable ({settled.get('detail') or settled.get('outcome')}); "
+                "dispatching without a recoverable baseline")
+    output = settled.get("output") or {}
+    if isinstance(output, dict) and output.get("committed") is False:
+        return None  # clean tree: nothing to record
+    return f"{phase} commit recorded"
 
 
 def _outcome_state(outcome: str) -> str:
@@ -633,6 +673,16 @@ class ExecutionController:
                 result.parked_runs[task.id] = result.run_id
             self._note_task_closed(task, result, None, handoff_consumed)
             return
+        # Delegation recoverability: a worker edits files on its own
+        # authority, so checkpoint the tree before it starts and record
+        # a milestone when it finishes. Both are governed git.commit
+        # invocations (autonomous, audited); neither ever blocks
+        # dispatch — an unavailable checkpoint is loud evidence, not a
+        # silent gap.
+        checkpoint_note: str | None = None
+        if task.capabilityId == "agent.delegate" and project_cwd:
+            checkpoint_note = _git_checkpoint(
+                self._cfg, context, task.id, "before")
         invocation = invoke_fabric(
             task.capabilityId, payload, context, self._cfg,
         )
@@ -650,6 +700,16 @@ class ExecutionController:
         if isinstance(_output, dict) and _output.get("cancelled"):
             state = "cancelled"
             performed = False
+        detail = invocation["detail"]
+        notes = [n for n in [checkpoint_note] if n]
+        if (task.capabilityId == "agent.delegate" and project_cwd
+                and outcome == "succeeded"):
+            milestone = _git_checkpoint(
+                self._cfg, context, task.id, "after")
+            if milestone:
+                notes.append(milestone)
+        if notes:
+            detail = f"{detail} ({'; '.join(notes)})"
         result.outcomes.append(TaskOutcome(
             taskId=task.id,
             state=state,  # type: ignore[arg-type]
@@ -657,7 +717,7 @@ class ExecutionController:
             verified=invocation["verification"]["passed"],
             invocationIds=[invocation["invocationId"]],
             approvalId=invocation.get("approvalId"),
-            detail=invocation["detail"],
+            detail=detail,
         ))
         self._note_task_closed(
             task, result, invocation.get("output"), handoff_consumed)
