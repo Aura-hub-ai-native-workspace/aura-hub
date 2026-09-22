@@ -7,6 +7,75 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.15] - 2026-09-22 — Windows Execution Hardening
+
+Windows machines reported healthy tools as broken or missing: npm-shimmed
+CLIs died with `WinError 193`, spaced install paths arrived truncated at
+`C:\Program`, Store alias stubs answered instead of real interpreters,
+and PowerShell 5.1 failed the version probe. This release routes Windows
+execution through the same governed boundary on every layer (Python scan
+path, agent command path, AI-service mirror) and fixes two backend defects
+found alongside it. No product behavior changes on Linux or macOS; no
+provider routing changes — self-hosted Local/Remote remain primary, cloud
+adapters remain explicit opt-in fallback.
+
+### Fixed
+
+- **Windows `.cmd`/`.bat` shim routing** — shims now go through one
+  pre-quoted `cmd /d /s /c call …` command line in
+  `aura.environment.procexec`, `aura.exec_` and the `ai-service`
+  `spawnTargetFor` mirror. A bare `cmd /c` with a quoted spaced path
+  strips to `C:\Program`; the `call` builtin keeps the remainder intact.
+- **PATHEXT resolution order** — a bare name (e.g. `opencode`) now
+  prefers the runnable `.cmd`/`.exe` twin over an extensionless shim
+  instead of probing the unrunnable file and reporting the tool broken.
+- **WindowsApps Store-alias stubs skipped** — `python3`/`bash` reparse
+  points no longer trigger Store popups or false failures when a real
+  candidate (real interpreter, Git Bash) resolves; a stub with no real
+  alternative reports its honest failure, never "not on PATH".
+- **Git Bash fallback probes** — `bash` falls back to
+  `%ProgramFiles%/Git/bin/bash.exe` outside `PATH`.
+- **PowerShell 5.1 probe** — version is read via
+  `$PSVersionTable.PSVersion` instead of `--version`, which 5.1 rejects,
+  so 5.1-only machines verify instead of reporting broken.
+- **npm global prefix** — `APPDATA`/`LOCALAPPDATA` are kept in the
+  sanitized probe environment so `npm config get prefix` resolves;
+  without them every npm-global plan silently demoted to root/guided.
+- **Venv-only self-runtime exclusion** — a system interpreter running
+  AURA is the machine's Python and is no longer excluded from the scan;
+  only real virtualenvs (marked by `pyvenv.cfg`) are.
+- **Direct-path text output crash** — a successful task whose executor
+  returns text (file reads, terminal stdout) crashed task close with
+  `AttributeError` on `.get` and failed the session as "Unexpected
+  failure". Output is now normalized before the cancelled-flag check.
+- **Per-provider custom headers** — operator-written `headers` in
+  `providers.json` (e.g. `ngrok-skip-browser-warning`) ride stream and
+  non-stream completions; non-dict shapes are refused, secrets still
+  belong in `apiKeyEnv`.
+
+### Validation
+
+- Typecheck clean across all three projects (CI).
+- Frontend + AI-service suites green on all four platform legs (CI).
+- New tests: Windows shim/PATHEXT/stub/prefix coverage
+  (`test_environment_windows_safety.py`), agent-boundary parity
+  (`test_exec_windows_parity.py`), provider headers
+  (`test_provider_headers.py`), direct text-output settle
+  (`test_execution_safety.py`).
+- Native runtime verification on all four installers, including the
+  Windows NSIS install-and-launch leg.
+
+### Known non-blocking notes (not fixed in this release)
+
+1. Three Windows-simulation tests fail when run on Linux
+   (`CREATE_NEW_PROCESS_GROUP` attribute under a mocked `os.name`,
+   `;`-vs-`:` PATH join, one outdated extensionless-match assertion):
+   test-harness-only issues, green on real Windows runners. Fix prepared
+   on a follow-up branch, deliberately not bundled into this release.
+2. Pre-existing `tests/unit` failures also present on `main`
+   (discovery/adversarial execution decisions, hygiene caches,
+   `cmd /c` docstring needle) are unchanged by this release.
+
 ## [Unreleased]
 
 Committed to `presentation-v0.1`, pending review before any merge to
