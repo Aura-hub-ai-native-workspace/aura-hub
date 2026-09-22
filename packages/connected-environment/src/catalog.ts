@@ -142,7 +142,7 @@ const DEVELOPMENT: CatalogEntry[] = [
 
   make('development', { id: 'bash', name: 'Bash', caps: ['terminal'], probe: 'bash', summary: 'POSIX shell.', homepage: 'https://www.gnu.org/software/bash' }),
   make('development', { id: 'zsh', name: 'Zsh', caps: ['terminal'], probe: 'zsh', summary: 'Z shell.', homepage: 'https://zsh.sourceforge.io' }),
-  make('development', { id: 'powershell', name: 'PowerShell', caps: ['terminal'], probe: ['pwsh', '--version'], summary: 'Cross-platform object shell.', homepage: 'https://microsoft.com/powershell' }),
+  make('development', { id: 'powershell', name: 'PowerShell', caps: ['terminal'], probe: ['pwsh', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], summary: 'Cross-platform object shell.', homepage: 'https://microsoft.com/powershell' }),
   // Warp is a GUI terminal with no dependable cross-platform CLI on PATH —
   // catalogued for planning, honestly reported as having no connector.
   make('development', { id: 'warp', name: 'Warp', caps: ['terminal'], license: 'free-tier', summary: 'Modern GPU-accelerated terminal.', homepage: 'https://warp.dev' }),

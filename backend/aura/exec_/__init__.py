@@ -193,34 +193,53 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
     if path is None:
         raise RuntimeError(f"{exe} is not installed")   # ENOENT parity
     launch = [path, *argv[1:]]
+    win_cmdline: str | None = None
     if os.name == "nt" and path.lower().endswith((".cmd", ".bat")):
         # CreateProcess cannot run .cmd/.bat shims (npm, agents) directly
-        # (WinError 193). Route through the interpreter with per-argument
-        # quoting — the same boundary environment.procexec enforces.
+        # (WinError 193). Route through the interpreter as one pre-quoted
+        # command line — the same boundary environment.procexec enforces.
+        # A list is not expressible here: joining re-escapes cmd's quotes
+        # C-runtime-style and spaced shim paths arrive truncated.
         # Lazy import: aura.environment.__init__ pulls in modules that
         # import this one back.
         from ..environment.procexec import _windows_cmd_wrapper
 
-        wrapped = _windows_cmd_wrapper([path, *argv[1:]])
-        if wrapped is None:
+        win_cmdline = _windows_cmd_wrapper([path, *argv[1:]])
+        if win_cmdline is None:
             raise RuntimeError(
                 f"{exe} has arguments that cannot be passed safely "
                 "through cmd.exe.")
-        launch = wrapped
     merged_env = dict(os.environ)
     if env:
         for key, value in env.items():
             if isinstance(key, str) and isinstance(value, str):
                 merged_env[key] = value
-    proc = await asyncio.create_subprocess_exec(
-        *launch, cwd=cwd,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        stdin=asyncio.subprocess.DEVNULL, env=merged_env,
-        # Its own session, so a build tool that forks workers can be stopped
-        # as a group rather than leaving them running after a timeout.
-        **({"start_new_session": True} if os.name != "nt" else {}),
-    )
-    waiter = asyncio.ensure_future(proc.communicate())
+    if win_cmdline is not None:
+        import subprocess as _sp
+
+        # Synchronous spawn of the pre-quoted line (asyncio only joins
+        # argv lists, which would re-mangle the quoting); output is still
+        # drained off-loop below, so timeouts and cancellation keep working.
+        # NO_WINDOW: background agents must not pop consoles on the desktop.
+        proc = _sp.Popen(
+            win_cmdline, cwd=cwd,
+            stdout=_sp.PIPE, stderr=_sp.PIPE, stdin=_sp.DEVNULL,
+            env=merged_env,
+            creationflags=(_sp.CREATE_NEW_PROCESS_GROUP
+                           | getattr(_sp, "CREATE_NO_WINDOW", 0)))
+        loop = asyncio.get_running_loop()
+        waiter = asyncio.ensure_future(
+            loop.run_in_executor(None, proc.communicate))
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            *launch, cwd=cwd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL, env=merged_env,
+            # Its own session, so a build tool that forks workers can be stopped
+            # as a group rather than leaving them running after a timeout.
+            **({"start_new_session": True} if os.name != "nt" else {}),
+        )
+        waiter = asyncio.ensure_future(proc.communicate())
     cancel_task = asyncio.ensure_future(cancel.wait()) if cancel else None
     tasks = [waiter] + ([cancel_task] if cancel_task else [])
     # return_when is explicit: some interpreters do not default to

@@ -33,6 +33,7 @@ from .discovery import (
     discovered_to_dict,
     extract_version,
 )
+from .hostplatform import is_windows
 from .observability import log_probe_failure, log_scan, redact, scan_logger
 from .ospackages import (
     OsInventory,
@@ -211,30 +212,56 @@ def _clear_cache(*, forget_last_good: bool = True) -> None:
 # ── catalog probes ──────────────────────────────────────────────────────
 
 
+def _is_store_alias_stub(resolved: str) -> bool:
+    """True when this is a Windows app-execution alias, not a program.
+
+    `%LOCALAPPDATA%\\Microsoft\\WindowsApps` holds 0-byte reparse-point
+    stubs (python3, bash→WSL) that fail or open Store pages instead of
+    running. A real program never lives there.
+    """
+    if not is_windows():
+        return False
+    local = os.environ.get("LOCALAPPDATA", "")
+    if not local:
+        return False
+    prefix = os.path.normcase(os.path.normpath(
+        os.path.join(local, "Microsoft", "WindowsApps"))) + os.sep
+    return os.path.normcase(os.path.abspath(resolved)).startswith(prefix)
+
+
 def _run_probe(entry: CatalogEntry) -> ProbeResult:
     assert entry.probe is not None  # guarded by the caller
     path = effective_path()
-    command = entry.probe.command
 
     # Each candidate in turn: the platform-appropriate one is whichever
-    # actually exists here (see ProbeSpec.fallbacks).
-    resolved: str | None = None
-    for candidate in entry.probe.candidates:
+    # actually exists here (see ProbeSpec.fallbacks). A Store alias stub
+    # is skipped without executing it when a later candidate resolves —
+    # launching it risks a Store popup for zero information, and the real
+    # program (Git Bash, a real interpreter) answers instead.
+    candidates = list(entry.probe.candidates)
+    for index, candidate in enumerate(candidates):
         resolved = resolve_executable(candidate, path)
-        if resolved is not None:
-            command = candidate
-            break
+        if resolved is None:
+            continue
+        if _is_store_alias_stub(resolved) and any(
+                resolve_executable(later, path) is not None
+                for later in candidates[index + 1:]):
+            continue
+        return _probe_resolved(entry, candidate, resolved, path)
 
-    if resolved is None:
-        return ProbeResult(
-            present=False,
-            status=ProbeStatus.NOT_FOUND,
-            detail=(
-                f"{entry.probe.command} is not on PATH. Install {entry.name}, or connect "
-                "something else that provides the same capability."
-            ),
-        )
+    return ProbeResult(
+        present=False,
+        status=ProbeStatus.NOT_FOUND,
+        detail=(
+            f"{entry.probe.command} is not on PATH. Install {entry.name}, or connect "
+            "something else that provides the same capability."
+        ),
+    )
 
+
+def _probe_resolved(entry: CatalogEntry, command: str, resolved: str,
+                    path: str) -> ProbeResult:
+    """Probe one resolved executable to a final answer."""
     verdict = location_trust(resolved)
     if verdict.trust is not LocationTrust.TRUSTED:
         return ProbeResult(
@@ -266,6 +293,9 @@ def _run_probe(entry: CatalogEntry) -> ProbeResult:
         # attention" on an unchanged machine. Definitive outcomes
         # (NOT_FOUND, BLOCKED, TAMPERED) are never retried, and neither is a
         # timeout, which has already spent its whole budget.
+        # A Store alias stub reached here is the last resort (no later
+        # candidate resolved): its failure is reported honestly below,
+        # never translated into "not on PATH".
         outcome = attempt()
 
     if outcome.status is ExecStatus.TAMPERED:

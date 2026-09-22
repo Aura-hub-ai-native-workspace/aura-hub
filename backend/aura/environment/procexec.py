@@ -62,6 +62,13 @@ _ENV_ALLOW = (
     "USERPROFILE",
     "HOMEDRIVE",
     "HOMEPATH",
+    # Windows tools locate user state through these (npm's global prefix
+    # is %APPDATA%\npm). Same sensitivity class as USERPROFILE: profile
+    # paths, not secrets. Withholding APPDATA makes `npm config get prefix`
+    # return a literal `${APPDATA}` segment, which silently demotes every
+    # npm-global plan to root/guided.
+    "APPDATA",
+    "LOCALAPPDATA",
     "TEMP",
     "TMP",
 )
@@ -312,12 +319,22 @@ def _quote_for_cmd(arg: str) -> str:
     return arg
 
 
-def _windows_cmd_wrapper(argv: list[str]) -> list[str] | None:
-    """Route a ``.cmd``/``.bat`` shim through the command interpreter.
+def _windows_cmd_wrapper(argv: list[str]) -> str | None:
+    """Full command line routing a ``.cmd``/``.bat`` shim through cmd.exe.
 
-    Returns the replacement argv, or ``None`` when no wrapper is needed.
-    ``.ps1`` is never wrapped — PowerShell scripts are not executed during
-    inventory probing.
+    Returns a single command-line STRING, or ``None`` when no wrapper is
+    needed. A string — never argv — because cmd.exe's quote stripping
+    makes the correct line unrepresentable as a list: ``subprocess`` joins
+    lists with C-runtime quoting (inner quotes become backslashes), and
+    with ``/s``, cmd strips the first and last quote of a remainder that
+    *starts* with one, so ``"C:\\Program Files\\…\\npm.CMD" --version``
+    arrived as ``C:\\Program`` (every spaced shim reported broken). The
+    ``call`` builtin makes the remainder start with a letter, so no
+    stripping happens and the quoted path survives intact; the string
+    passes to ``CreateProcess`` verbatim.
+
+    ``.ps1`` is never wrapped — PowerShell scripts are not executed
+    during inventory probing.
     """
     target = argv[0]
     lowered = target.lower()
@@ -327,10 +344,11 @@ def _windows_cmd_wrapper(argv: list[str]) -> list[str] | None:
         return None
     comspec = os.environ.get("ComSpec") or os.environ.get("COMSPEC") or "cmd.exe"
     try:
-        quoted = [_quote_for_cmd(target), *(_quote_for_cmd(a) for a in argv[1:])]
+        inner = " ".join([_quote_for_cmd(target),
+                          *(_quote_for_cmd(a) for a in argv[1:])])
     except ValueError:
         return None
-    return [comspec, "/d", "/s", "/c", *quoted]
+    return f"{_quote_for_cmd(comspec)} /d /s /c call {inner}"
 
 
 def run_argv(
@@ -368,24 +386,29 @@ def run_argv(
             duration_ms=0,
             error="refused to execute a PowerShell script during inventory probing",
         )
+    # The vetted file: cmd-shim wrapping below routes through the
+    # interpreter, but identity pinning must name the file that was
+    # actually vetted — pinning cmd.exe against the shim's identity
+    # reported every shimmed tool TAMPERED.
+    vetted_argv = argv
+    win_cmdline: str | None = None
     if is_windows():
-        wrapped = _windows_cmd_wrapper(argv)
-        if wrapped is None and argv[0].lower().endswith((".cmd", ".bat")):
+        win_cmdline = _windows_cmd_wrapper(argv)
+        if win_cmdline is None and argv[0].lower().endswith((".cmd", ".bat")):
             # Quoting refused (e.g. `%` in an argument): do not guess.
             return ExecOutcome(
                 status=ExecStatus.ERROR,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 error="refused to pass an unsafe argument through cmd.exe",
             )
-        if wrapped is not None:
-            argv = wrapped
     env = sanitized_env(path=path, extra=env_extra)
 
     pinned_fd: int | None = None
     pin_mode = "unpinned"
     executable_override: str | None = None
     if pin is not None:
-        executable_override, pinned_fd, pin_mode = _pin_executable(argv, pin)
+        executable_override, pinned_fd, pin_mode = _pin_executable(
+            vetted_argv, pin)
         if pin_mode == "changed":
             return ExecOutcome(
                 status=ExecStatus.TAMPERED,
@@ -426,7 +449,13 @@ def run_argv(
                 pass
 
     try:
-        proc = subprocess.Popen(argv, **popen_kwargs)  # type: ignore[arg-type]
+        # A wrapped shim goes as one pre-quoted command line: joining an
+        # argv list would re-escape cmd's quotes C-runtime-style and
+        # reintroduce the C:\Program truncation this wrapper exists to fix.
+        proc = subprocess.Popen(
+            win_cmdline if win_cmdline is not None else argv,
+            **popen_kwargs,  # type: ignore[arg-type]
+        )
     except FileNotFoundError:
         _close_pin()
         return ExecOutcome(
@@ -487,8 +516,9 @@ def run_argv(
     if pin is not None and pin_mode == "verified":
         # No /proc to pin through, so the best available guarantee is to
         # notice. If the file moved under us, the output describes some other
-        # program and must not be believed.
-        if not pin.matches(file_identity(argv[0])):
+        # program and must not be believed. Checked against the vetted
+        # file, never the cmd.exe wrapper.
+        if not pin.matches(file_identity(vetted_argv[0])):
             return ExecOutcome(
                 status=ExecStatus.TAMPERED,
                 duration_ms=duration_ms,

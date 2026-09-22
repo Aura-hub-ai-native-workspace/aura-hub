@@ -311,7 +311,14 @@ DEVELOPMENT: list[CatalogEntry] = [
         maintained=True,
         summary="POSIX shell.",
         homepage="https://www.gnu.org/software/bash",
-        probe=ProbeSpec("bash", ["--version"]),
+        # On Windows the PATH `bash` is usually the WSL launcher stub in
+        # WindowsApps (fails, or opens Store pages), while Git Bash sits
+        # outside PATH. The stub is skipped automatically when this
+        # fallback resolves (see _is_store_alias_stub).
+        probe=ProbeSpec("bash", ["--version"], fallbacks=(
+            "%ProgramFiles%/Git/bin/bash.exe",
+            "%ProgramFiles(x86)%/Git/bin/bash.exe",
+        )),
     ),
     CatalogEntry(
         id="zsh",
@@ -339,7 +346,13 @@ DEVELOPMENT: list[CatalogEntry] = [
         maintained=True,
         summary="Cross-platform object shell.",
         homepage="https://microsoft.com/powershell",
-        probe=ProbeSpec("pwsh", ["--version"], fallbacks=("powershell",)),
+        # `--version` is not a PowerShell flag: Windows PowerShell 5.1
+        # exits 1 on it, so probing `powershell` that way reported every
+        # 5.1-only machine as broken. Asking the engine its own version
+        # works identically on 5.1 and 7+.
+        probe=ProbeSpec("pwsh", ["-NoProfile", "-Command",
+                                 "$PSVersionTable.PSVersion.ToString()"],
+                        fallbacks=("powershell",)),
     ),
     CatalogEntry(
         id="node",

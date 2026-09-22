@@ -39,6 +39,11 @@ class ProviderSpec:
     max_context_chars: int = 24_000
     supports_json_mode: bool = True
     enabled: bool = True
+    #: Extra HTTP headers for this endpoint only (e.g.
+    #: {"ngrok-skip-browser-warning": "true"} for tunnels that gate
+    #: browser traffic behind an interstitial page). Never secrets:
+    #: anything secret-shaped belongs in api_key_env.
+    headers: tuple = ()
 
 
 @dataclass
@@ -89,13 +94,18 @@ def load_providers(path: str | None = None) -> list[ProviderSpec]:
         if not isinstance(e, dict):
             continue
         try:
+            raw_headers = e.get("headers") or {}
+            headers = tuple(
+                (str(k), str(v)) for k, v in raw_headers.items()) \
+                if isinstance(raw_headers, dict) else ()
             spec = ProviderSpec(
                 id=str(e["id"]), base_url=str(e["baseUrl"]).rstrip("/"),
                 model=str(e["model"]), api_key_env=str(e["apiKeyEnv"]),
                 timeout_s=float(e.get("timeoutS", 30)),
                 max_context_chars=int(e.get("maxContextChars", 24_000)),
-                enabled=e.get("enabled", True) is not False)
-        except (KeyError, TypeError, ValueError):
+                enabled=e.get("enabled", True) is not False,
+                headers=headers)
+        except (KeyError, TypeError, ValueError, AttributeError):
             continue
         out.append(spec)
     return [s for s in out if s.enabled]
@@ -304,7 +314,8 @@ class RoutedModelPort(ModelPort):
             }
             headers = {"authorization": f"Bearer {key}",
                        "content-type": "application/json",
-                       "accept": "text/event-stream"}
+                       "accept": "text/event-stream",
+                       **dict(spec.headers)}
             started = time.monotonic()
             try:
                 return self._stream_one(spec, payload, headers,
@@ -412,7 +423,8 @@ class RoutedModelPort(ModelPort):
                 "temperature": 0,
             }
             headers = {"authorization": f"Bearer {key}",
-                       "content-type": "application/json"}
+                       "content-type": "application/json",
+                       **dict(spec.headers)}
             attempt = 0
             while attempt <= spec.max_retries:
                 attempt += 1

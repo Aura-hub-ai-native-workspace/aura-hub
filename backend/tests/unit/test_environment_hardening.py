@@ -609,7 +609,7 @@ class TestCatalogIntegrity:
 
         import re
 
-        text = catalog_ts.read_text()
+        text = catalog_ts.read_text(encoding="utf-8")
         scannable_ts = set()
         for line in text.splitlines():
             match = re.search(r"id:\s*'([^']+)'", line)
