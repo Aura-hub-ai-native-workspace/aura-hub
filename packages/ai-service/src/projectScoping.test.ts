@@ -52,15 +52,23 @@ describe('inspect follows the requested project, not the mount', () => {
     manager.open(a.id);
     await manager.pipeline.whenIndexed();
 
+    // Mounting A persists A's own understanding by design (the
+    // "Understanding repository…" index step load-or-generates). Snapshot
+    // it so the assertions below measure what the B-request adds.
+    const identityOfAAtMount = loadIdentity(a.id);
+
     const meta = await manager.pipeline.inspect('what does this project do', undefined, {
       id: b.id, path: b.path, name: b.name,
     });
 
     // The report names the project that was actually read.
     expect(meta.projectId).toBe(b.id);
-    // Identity was generated for B — and only for B.
+    // Identity was generated for B...
     expect(loadIdentity(b.id)).not.toBeNull();
-    expect(loadIdentity(a.id)).toBeNull();
+    // ...and the B-request added nothing to A: whatever the mount
+    // persisted is identical afterwards (this still fails if the
+    // request reads, generates, or attributes anything to A).
+    expect(loadIdentity(a.id)).toEqual(identityOfAAtMount);
   });
 
   it('falls back to the mount when no project is requested (legacy path)', async () => {
