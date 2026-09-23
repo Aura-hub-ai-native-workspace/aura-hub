@@ -217,6 +217,23 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         from ..policy import DEFAULT_POLICY
 
         fabric.policy = read_json_file(H / "fabric-policy.json", DEFAULT_POLICY)
+        # Phase 7: explicit per-capability policy defaults for governed agentic ops.
+        # Applied AFTER loading the user's fabric-policy.json so any explicit choice
+        # there always wins.  We only fill gaps — never clobber an existing override.
+        # Safety invariant: every default here is at most as restrictive as the
+        # capability's byRisk tier (low→auto-execute, medium→ask-user).  We never
+        # lower a risk floor.
+        _P7_DEFAULTS: dict[str, str] = {
+            "knowledge.search":  "auto-execute",   # low-risk KB read
+            "document.ingest":   "auto-execute",   # low-risk write to KB
+            "artifact.generate": "auto-execute",   # low-risk write to artifacts dir
+            "sandbox.execute":   "ask-user",        # medium-risk subprocess
+            "terminal.execute":  "ask-user",        # medium-risk subprocess
+        }
+        _cur = fabric.policy.setdefault("overrides", {})
+        for _cap, _act in _P7_DEFAULTS.items():
+            if _cap not in _cur:
+                _cur[_cap] = _act
     if hasattr(fabric, "attach_approval_store"):
         fabric.attach_approval_store(_ap_load, _ap_save)
         fabric.attach_audit_store(audit.load, audit.append)

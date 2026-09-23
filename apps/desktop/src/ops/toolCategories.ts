@@ -34,4 +34,5 @@ export const TOOL_CATEGORIES: ToolCategory[] = [
   { id: 'git', label: 'Git', kinds: [] },
   { id: 'automation', label: 'Automation', kinds: [] },
   { id: 'utilities', label: 'Utilities', kinds: ['search'] },
+  { id: 'sovereign', label: 'Sovereign', kinds: ['documents', 'artifacts', 'sovereign-monitor'] },
 ];
