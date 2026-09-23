@@ -1,0 +1,13 @@
+{
+  "providers": [
+    {
+      "id": "ollama-local",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "model": "qwen3-coder:30b",
+      "apiKeyEnv": "AURA_OLLAMA_NO_KEY",
+      "timeoutS": 120,
+      "maxContextChars": 24000,
+      "enabled": true
+    }
+  ]
+}

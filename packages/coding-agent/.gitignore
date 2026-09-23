@@ -1,0 +1,7 @@
+# node_modules
+# bun
+dist/
+.aura/
+auth.json
+*.log
+.DS_Store

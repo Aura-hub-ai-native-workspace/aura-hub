@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "ollama/qwen3-coder:30b",
+  "small_model": "ollama/qwen3:4b",
+  "share": "disabled",
+  "autoupdate": false,
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
+        "baseURL": "http://127.0.0.1:11434/v1"
+      },
+      "models": {
+        "qwen3-coder:30b": {
+          "name": "Qwen3-Coder 30B (local, default)"
+        },
+        "qwen3:4b": {
+          "name": "Qwen3 4B (local, small)"
+        },
+        "qwen2.5-coder:14b": {
+          "name": "Qwen2.5-Coder 14B (local, fallback)"
+        }
+      }
+    }
+  }
+}
