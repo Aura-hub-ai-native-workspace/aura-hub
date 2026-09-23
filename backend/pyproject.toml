@@ -18,6 +18,29 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Multimodal document ingestion (S6-S7).  Install with:
+#   pip install aura-backend[multimodal]
+# All dependencies are local-only; no cloud service is contacted during
+# document processing.
+multimodal = [
+    "pypdf>=4",            # PDF text and metadata extraction (pure Python)
+    "python-docx>=1.1",    # DOCX text extraction (pure Python)
+    "pillow>=10",          # image loading and pre-processing
+    # pytesseract is NOT listed here: it requires the Tesseract system binary
+    # (tesseract-ocr package) which pip cannot install. Users who want OCR
+    # must install Tesseract separately. AURA detects it at runtime and
+    # enables the OCR path automatically if it is present.
+]
+
+# Real artifact generation (S10).  Install with:
+#   pip install aura-backend[artifacts]
+# All generation runs locally — no cloud rendering service.
+artifacts = [
+    "python-docx>=1.1",     # DOCX generation
+    "openpyxl>=3.1",        # XLSX generation
+    "reportlab>=4.2",       # PDF generation (pure Python, no LaTeX)
+]
+
 test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
