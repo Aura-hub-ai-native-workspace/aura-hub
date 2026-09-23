@@ -73,8 +73,17 @@ export function ApprovalRequestCard({
       .then((res) => {
         if (cancelled) return;
         const row = (res.approvals ?? []).find((a) => a.id === approvalId);
-        setItems(row ? row.items ?? [] : []);
-        setSummary(row?.summary ?? '');
+        // The ledger owns these strings; absent ones render empty
+        // rather than crashing the card. Nothing here is authority —
+        // the decision names the approval id, never these fields.
+        setItems((row?.items ?? []).map((it) => ({
+          capabilityId: it.capabilityId,
+          title: it.title ?? '',
+          detail: it.detail ?? '',
+          risk: it.risk ?? '',
+          irreversible: it.irreversible === true,
+        })));
+        setSummary(typeof row?.summary === 'string' ? row.summary : '');
       })
       .catch(() => {
         if (!cancelled) setItems([]);

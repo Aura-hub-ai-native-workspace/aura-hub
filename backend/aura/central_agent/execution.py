@@ -99,8 +99,13 @@ _WORKER_LIFECYCLE = {
 
 
 class ExecutionController:
-    def __init__(self, fabric_cfg: FabricConfig, engine: WorkflowEngine | None = None) -> None:
+    def __init__(self, fabric_cfg: FabricConfig, engine: WorkflowEngine | None = None,
+                 capability_registry=None) -> None:
         self._cfg = fabric_cfg
+        # Optional measured registry, used ONLY to enrich refusal
+        # messages with which machine tools a role is missing. Matching
+        # and dispatch are unchanged: connected worker nodes decide.
+        self._registry = capability_registry
         #: Last worker-registry read failure, if any. A broken registry
         #: must not read as "no workers connected" — the refusal reason
         #: below names it instead.
@@ -312,6 +317,18 @@ class ExecutionController:
             if callable(fn):
                 return fn
         return None
+
+    def _unmet_role_tools(self, role: str) -> list[str]:
+        """Machine tools a role wants but the machine lacks, for refusal
+        messages. Empty without a registry or without needs — reporting
+        only, never authority."""
+        registry = getattr(self, "_registry", None)
+        if registry is None or not role:
+            return []
+        try:
+            return list(registry.unmet_tool_needs(role) or [])
+        except Exception:
+            return []
 
     def _match_role(self, task: Any, role: str, pinned_id: str | None,
                     exclude: set[str] | None = None) -> str | None:
@@ -545,6 +562,10 @@ class ExecutionController:
                     why = (f"no connected worker satisfies role '{role}' for "
                            "this task; refusing rather than dispatching an "
                            "unsuitable worker.")
+                    needs = self._unmet_role_tools(role)
+                    if needs:
+                        why += (f" The machine also lacks tools role '{role}' "
+                                f"wants available: {', '.join(needs)}.")
                 if excluded:
                     why = (f"no SECOND connected worker satisfies role "
                            f"'{role}': this task must not reuse "

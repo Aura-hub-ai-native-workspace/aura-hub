@@ -30,6 +30,13 @@ export interface ConnectedProvider {
   models: { id: string; name: string; capabilities?: ModelCapabilities }[];
   health: ProviderHealth | null;
   active: boolean;
+  /**
+   * PRIMARY vs FALLBACK, from the adapter's own metadata. The Settings
+   * UI renders the category from this flag so a cloud provider can
+   * never visually pass as the primary self-hosted path, and the
+   * active-source line can state where inference actually goes.
+   */
+  selfHosted: boolean;
 }
 
 export interface ActiveProvider {
@@ -126,6 +133,7 @@ export function getConnectedProviders(): ConnectedProvider[] {
       models: s.models ?? [],
       health: s.health,
       active: s.id === activeInfo.providerId,
+      selfHosted: (adapter?.metadata as { selfHosted?: boolean } | undefined)?.selfHosted === true,
     };
   });
 }

@@ -21,6 +21,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: 'workflows', label: 'Automation', icon: 'workflows', group: 'primary' },
   { key: 'workspace', label: 'Workspace', icon: 'layout', group: 'primary' },
   { key: 'environment', label: 'Connected Environment', icon: 'link', group: 'primary' },
+  { key: 'ai-runtime', label: 'AI Runtime', icon: 'cpu', group: 'primary' },
   { key: 'settings', label: 'Settings', icon: 'settings', group: 'system' },
 ];
 
@@ -56,5 +57,6 @@ export const NAV_TITLES: Record<NavKey, string> = {
   workflows: 'Automation',
   workspace: 'Workspace',
   environment: 'Connected Environment',
+  'ai-runtime': 'AI Runtime',
   settings: 'Settings',
 };

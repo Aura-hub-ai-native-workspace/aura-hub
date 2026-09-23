@@ -294,6 +294,14 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
          "save": (lambda s: write_json_atomic(H / "automation-schedule-state.json", s))},
         lambda project_id: str(H), auto_engine)
 
+    from ..agent_runtime import AgentRuntimeService
+
+    sovereign_policy = getattr(agent, "sovereign_policy", None)
+    agent_runtime_svc = AgentRuntimeService(
+        store_dir=H / "agent-runtime-backups",
+        sovereign_policy=sovereign_policy,
+    )
+
     return {
         "home": H, "fabric": fabric, "ledger": ledger, "audit": audit,
         "registry": registry,
@@ -306,6 +314,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         "scheduler": scheduler, "auto_emit": _auto_emit,
         "auto_events": auto_events, "auto_subs": auto_subscribers,
         "model_port": model_port,
+        "agent_runtime": agent_runtime_svc,
     }
 
 
@@ -1637,6 +1646,92 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"cache-control": "no-cache"})
 
+    # ── agent runtime control plane ─────────────────────────────────
+    ar_svc = S["agent_runtime"]
+
+    async def agent_runtime_discover(request: Request):
+        import anyio
+        records = await anyio.to_thread.run_sync(ar_svc.discover)
+        return JSONResponse({"agents": [r.to_dict() for r in records]})
+
+    async def agent_runtime_summary(request: Request):
+        import anyio
+        summary = await anyio.to_thread.run_sync(ar_svc.runtime_summary)
+        return JSONResponse(summary)
+
+    async def agent_runtime_apply_all(request: Request):
+        import anyio
+        from ..agent_runtime.model import AuthType, RuntimeConfig
+        body = await _json_body(request)
+        if not body.get("baseUrl") or not body.get("modelId"):
+            return _err("baseUrl and modelId are required")
+        try:
+            runtime = RuntimeConfig(
+                base_url=str(body["baseUrl"]),
+                model_id=str(body["modelId"]),
+                auth_type=AuthType(body.get("authType", "keyless")),
+                network_class=str(body.get("networkClass", "local")),
+                api_key_env=str(body.get("apiKeyEnv", "")),
+            )
+        except (ValueError, KeyError) as exc:
+            return _err(f"invalid runtime config: {exc}")
+        try:
+            changes = await anyio.to_thread.run_sync(
+                lambda: ar_svc.apply_all(runtime))
+        except ValueError as exc:
+            return _err(str(exc), 403)
+        return JSONResponse({"changes": [c.to_dict() for c in changes]})
+
+    async def agent_runtime_apply_agent(request: Request):
+        import anyio
+        from ..agent_runtime.model import AuthType, RuntimeConfig
+        agent_id = request.path_params["agent_id"]
+        body = await _json_body(request)
+        if not body.get("baseUrl") or not body.get("modelId"):
+            return _err("baseUrl and modelId are required")
+        try:
+            runtime = RuntimeConfig(
+                base_url=str(body["baseUrl"]),
+                model_id=str(body["modelId"]),
+                auth_type=AuthType(body.get("authType", "keyless")),
+                network_class=str(body.get("networkClass", "local")),
+                api_key_env=str(body.get("apiKeyEnv", "")),
+            )
+        except (ValueError, KeyError) as exc:
+            return _err(f"invalid runtime config: {exc}")
+        try:
+            change = await anyio.to_thread.run_sync(
+                lambda: ar_svc.apply_agent(agent_id, runtime))
+        except ValueError as exc:
+            return _err(str(exc), 403)
+        return JSONResponse(change.to_dict())
+
+    async def agent_runtime_restore(request: Request):
+        import anyio
+        agent_id = request.path_params["agent_id"]
+        change = await anyio.to_thread.run_sync(
+            lambda: ar_svc.restore_agent(agent_id))
+        return JSONResponse(change.to_dict())
+
+    async def agent_runtime_drift(request: Request):
+        import anyio
+        from ..agent_runtime.model import AuthType, RuntimeConfig
+        body = await _json_body(request)
+        if not body.get("baseUrl") or not body.get("modelId"):
+            return _err("baseUrl and modelId are required")
+        try:
+            runtime = RuntimeConfig(
+                base_url=str(body["baseUrl"]),
+                model_id=str(body["modelId"]),
+                auth_type=AuthType(body.get("authType", "keyless")),
+                network_class=str(body.get("networkClass", "local")),
+            )
+        except (ValueError, KeyError) as exc:
+            return _err(f"invalid runtime config: {exc}")
+        drifts = await anyio.to_thread.run_sync(
+            lambda: ar_svc.check_drift(runtime))
+        return JSONResponse({"drift": [d.to_dict() for d in drifts]})
+
     # helpers ---------------------------------------------------------
     def _validate_rule_issues(rule: dict) -> list[dict]:
         from ..automation.dryrun import validate_rule
@@ -1744,6 +1839,12 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/environment/install", environment_install, methods=["POST"]),
         Route("/environment/uninstall", environment_uninstall, methods=["POST"]),
         Route("/environment/connect", environment_connect, methods=["POST"]),
+        Route("/agent-runtime/discover", agent_runtime_discover, methods=["GET"]),
+        Route("/agent-runtime/summary", agent_runtime_summary, methods=["GET"]),
+        Route("/agent-runtime/apply", agent_runtime_apply_all, methods=["POST"]),
+        Route("/agent-runtime/apply/{agent_id}", agent_runtime_apply_agent, methods=["POST"]),
+        Route("/agent-runtime/restore/{agent_id}", agent_runtime_restore, methods=["POST"]),
+        Route("/agent-runtime/drift", agent_runtime_drift, methods=["POST"]),
     ]
 
     app = Starlette(

@@ -1,7 +1,9 @@
 # AURA Central Agent — HTTP API
 
 > Backend surface for the React frontend. All routes are served by
-> `backend/aura/api.py` (default `127.0.0.1:4320`, see `build_default_api`).
+> the canonical factory `aura.api.server.create_app`
+> (default `127.0.0.1:4320`, see `scripts/serve_central_agent_api.py`).
+> The legacy `build_default_api` stdlib host is deprecated.
 > Errors are always exactly `{"error": string}` with an appropriate status
 > (wire-contracts §1). No route duplicates governance: approvals are decided
 > through the same ledger the Fabric spends.
@@ -15,7 +17,22 @@ Submit one user intent. Creates a session and drives it synchronously.
 { "message": "create a file called demo.txt containing hello",
   "projectId": "optional", "projectPath": "/abs/path/optional" }
 ```
-→ `{ "result": AgentResult, "sessionId": "agt-…" }`
+→ `{ "result": AgentResult, "sessionId": "agt-…", "requestId": "req-…" }`
+
+Every leg-creating or leg-resuming route (`/agent/sessions`,
+`/message`, `/approve`, `/resume`, `/resume-cancelled`, `/cancel`)
+generates one server-side `requestId` (`req-` + 12 hex), returns it in
+the body and (Starlette host) in the `X-Aura-Request` header. The id
+propagates into session events (`payload.requestId`), Fabric audit
+records, worker assignments, and `evidence.requestIds` — see
+`docs/architecture/OBSERVABILITY-CONTRACT.md`. Malformed ids are
+refused with 409 before any state is touched.
+
+### `GET /agent/model`
+
+Secret-free model routing observability: `{configured, providers[],
+lastCall}`. Unconfigured → `configured: false`, `lastCall: null`.
+Unknown identity is reported as `"unknown"`, never fabricated.
 
 `AgentResult.outcome` is honest and closed:
 `completed | failed | blocked | awaiting-approval | cancelled | denied | timeout`.

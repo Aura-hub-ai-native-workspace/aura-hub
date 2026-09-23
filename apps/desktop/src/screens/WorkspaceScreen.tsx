@@ -35,6 +35,8 @@ import { ACTIVE_TOOL_SLOTS, useHubStore } from '../workspace/hubStore';
 import { deriveToolSlots } from '../workspace/toolSlots';
 import { deriveWorkerSlots } from '../workspace/workerSlots';
 import { fabricClient, type ApprovalRequest } from '../ai/fabricClient';
+import { centralAgentClient } from '../ai/centralAgentClient';
+import { agentApprovalToRequest, type AgentApprovalRow } from '../ai/agentApprovals';
 import { AddNodeDialog } from '../workspace/AddNodeDialog';
 import { NodeInspector } from '../environment/NodeInspector';
 import { FloatingSurface } from '../environment/windows/FloatingSurface';
@@ -222,10 +224,16 @@ export function WorkspaceScreen() {
     [conv.activity.workers],
   );
 
-  /* Pending approvals, read from the existing ledger by id. A parked
-     message names its approval; this resolves that id to the real
-     request so the existing gate can render it. Never guessed: an id
-     with no match stays null and the gate is not shown. */
+  /* Pending approvals, read from the ledgers by id. A parked message
+     names its approval; this resolves that id to the real request so
+     the existing gate can render it. The Central Agent parks on its
+     OWN ledger (:4320), so that ledger is authoritative for a parked
+     id — resolving it through the workflow ledger (:4319) left the
+     gate on "Loading the authorization details…" with a working
+     Approve path underneath that nobody could reach. The workflow
+     ledger remains as a fallback for ids parked outside the agent.
+     Never guessed: an id with no match stays null and the gate is
+     not shown. */
   const [approvals, setApprovals] = useState<Record<string, ApprovalRequest | null>>({});
   const [deciding, setDeciding] = useState(false);
   const parkedIds = useMemo(
@@ -235,26 +243,54 @@ export function WorkspaceScreen() {
   useEffect(() => {
     const missing = parkedIds.filter((id) => approvals[id] === undefined);
     if (!missing.length) return;
-    let cancelled = false;
     setApprovals((prev) => {
       const next = { ...prev };
       for (const id of missing) next[id] = null;
       return next;
     });
-    void fabricClient.approvals().then(({ approvals: list }) => {
-      if (cancelled) return;
+    // Ledger reads are idempotent: a response only ever fills the ids
+    // it was asked for, from the ledger that owns them, so overlapping
+    // resolutions converge instead of corrupting. There is deliberately
+    // NO cancellation guard here — render churn (every message patch
+    // re-runs this effect) used to discard every in-flight resolution,
+    // and the pre-marked null above then blocked all retries, leaving
+    // the gate on "Loading…" forever with a working Approve underneath.
+    void (async () => {
+      let agentRows: AgentApprovalRow[] = [];
+      try {
+        ({ approvals: agentRows } = await centralAgentClient.pendingApprovals());
+      } catch { /* the fallback below still gets its chance */ }
+      const agentById = new Map(agentRows.map((r) => [r.id, r]));
+      const needFallback = missing.filter((id) => !agentById.has(id));
+      let fabricList: ApprovalRequest[] = [];
+      if (needFallback.length) {
+        try {
+          ({ approvals: fabricList } = await fabricClient.approvals());
+        } catch { /* the gate stays unrendered rather than guessing */ }
+      }
+      const fabricById = new Map(fabricList.map((a) => [a.id, a]));
       setApprovals((prev) => {
         const next = { ...prev };
-        for (const id of missing) next[id] = list.find((a) => a.id === id) ?? null;
+        for (const id of missing) {
+          const agentRow = agentById.get(id);
+          next[id] = (agentRow ? agentApprovalToRequest(agentRow) : null)
+            ?? fabricById.get(id)
+            ?? null;
+        }
         return next;
       });
-    }).catch(() => { /* the gate stays unrendered rather than guessing */ });
-    return () => { cancelled = true; };
+    })();
   }, [parkedIds, approvals]);
 
   const decide = useCallback(async (messageId: string, granted: boolean, reason?: string) => {
     setDeciding(true);
-    try { await conv.decide(messageId, granted, reason); }
+    try {
+      const decided = await conv.decide(messageId, granted, reason);
+      if (decided && typeof decided.id === 'string') {
+        const settled = agentApprovalToRequest(decided);
+        if (settled) setApprovals((prev) => ({ ...prev, [settled.id]: settled }));
+      }
+    }
     finally { setDeciding(false); }
   }, [conv]);
 

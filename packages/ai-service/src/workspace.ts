@@ -99,7 +99,25 @@ export class WorkspaceManager {
       language: profile.primaryLanguage,
       icon: input.icon ?? record.icon,
     });
+    // Context should exist without forcing the user to open the project:
+    // index in the background, without mounting (the mount — and whatever
+    // project the user is working in — is untouched). Fire-and-forget on
+    // purpose: adding stays fast, and an indexing failure must never fail
+    // the add. Retrieval, identity and the Context Fabric read the
+    // artifacts this produces.
+    void this.indexProjectById(record.id).catch(() => {});
     return { project, profile };
+  }
+
+  /**
+   * Index a REGISTERED project by id, mounted or not. Unknown ids are
+   * refused rather than indexed into a stranger's store — the id in the
+   * path is the only project this describes.
+   */
+  async indexProjectById(id: string, force = false): Promise<IndexStatus> {
+    const record = this.registry.get(id);
+    if (!record) throw new Error(`no such project: ${id}`);
+    return this.pipeline.indexProject({ id: record.id, path: record.path, name: record.name }, force);
   }
 
   /**
