@@ -172,7 +172,7 @@ export interface HealthResult {
 }
 
 /* ── Mission Control types now live in `missionClient.ts` (its own file, mirroring `diagnosisClient.ts`'s split from this one) ── */
-export interface AiSettings { streaming: boolean; temperature: number; maxTokens: number; timeoutMs: number; maxRetries: number }
+export interface AiSettings { streaming: boolean; temperature: number; maxTokens: number; timeoutMs: number; maxRetries: number; sovereignMode: boolean }
 export interface SettingsResult { settings: AiSettings; key: { configured: boolean; fingerprint: string } }
 
 export interface InspectResult {
@@ -218,6 +218,8 @@ export interface ConnectedProvider {
   models: { id: string; name: string }[];
   activeModel: string;
   health?: { ok: boolean; latencyMs: number; error?: string; lastChecked: string } | null;
+  /** PRIMARY (self-hosted server) vs FALLBACK (cloud API) — rendered as the provider's category. Absent on older services: treated as cloud. */
+  selfHosted?: boolean;
 }
 export interface ProviderStatus {
   type: 'byoak' | 'none';
@@ -822,9 +824,16 @@ export const aiClient = {
    * project" — the caller passes the canonical `activeProjectId`, so this
    * client can never become a competing answer to which project is active.
    * `prompt: true` additionally returns the rendered agent contract.
+   *
+   * NOTE: the service answers the plain read with the view itself (same
+   * shape as `contextView`), and the `prompt` read with the contract
+   * envelope — this mirrors that exactly, so neither shape can be
+   * misread as the other.
    */
   projectContext: (id: string, opts?: { prompt?: boolean }) =>
-    jget<{ view: ContextView; contract?: string }>(`/projects/${id}/context${opts?.prompt ? '?prompt=1' : ''}`),
+    opts?.prompt
+      ? jget<{ projectId: string; surface: ContextSurface; contract: string }>(`/projects/${id}/context?prompt=1`)
+      : jget<ContextView | ContextUnavailable>(`/projects/${id}/context`),
   workspaceIntelligence: () => jget<WorkspaceIntelligence>('/workspace/intelligence'),
   retrieve: (text: string) => jpost<RetrieveResult>('/retrieve', { text }),
 
