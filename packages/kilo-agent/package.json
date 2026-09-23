@@ -1,0 +1,12 @@
+{
+  "name": "@aura/kilo-agent",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AURA offline coding agent — Kilo Code vendored as offline-first, local-provider-only. Default: Ollama at http://127.0.0.1:11434/v1. No cloud.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "strip-cloud": "node scripts/strip-cloud.cjs",
+    "verify-offline": "node scripts/verify-offline.cjs"
+  }
+}

@@ -1,0 +1,6 @@
+# node_modules
+# bun / pnpm
+dist/
+.aura/
+*.log
+.DS_Store
