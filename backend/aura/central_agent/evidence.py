@@ -23,6 +23,7 @@ class EvidenceCollector:
         summary: str,
         now: str,
         request_ids: list[str] | None = None,
+        artifact_paths: list[str] | None = None,
     ) -> EvidenceBundle:
         wanted: set[str] = set()
         approvals: set[str] = set()
@@ -43,4 +44,5 @@ class EvidenceCollector:
             summary=summary,
             createdAt=now,
             requestIds=[r for r in (request_ids or []) if r],
+            artifactPaths=[p for p in (artifact_paths or []) if p],
         )

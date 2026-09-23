@@ -268,6 +268,99 @@ class TestClaudeCodeAdapter:
         assert settings_path.read_text() == original
 
 
+# ── ClaudeCodeAdapter write guard ───────────────────────────────────────────
+# Root-cause regression tests (2026-09-23): AURA runs on the same machine —
+# often inside Claude Code itself — so apply()/restore() must NEVER rewrite
+# the developer's own live ~/.claude/settings.json without explicit opt-in.
+# These tests read the live file (allowed) but never write it.
+
+class TestClaudeCodeWriteGuard:
+    def _live_path_and_bytes(self):
+        import aura.agent_runtime.adapters.claude_code as mod
+        live = Path(os.path.expanduser("~/.claude/settings.json"))
+        assert Path(mod._REAL_SETTINGS_PATH) == live  # guard watches true path
+        return live, (live.read_bytes() if live.exists() else None)
+
+    def _live_base_url(self):
+        live = Path(os.path.expanduser("~/.claude/settings.json"))
+        if not live.exists():
+            return None
+        try:
+            return json.loads(live.read_text(encoding="utf-8")).get(
+                "env", {}).get("ANTHROPIC_BASE_URL")
+        except Exception:
+            return None
+
+    def test_apply_refuses_live_config_by_default(self, monkeypatch):
+        from aura.agent_runtime.adapters.claude_code import ClaudeCodeAdapter
+        monkeypatch.delenv("AURA_MANAGE_EXTERNAL_CLAUDE", raising=False)
+        live, before = self._live_path_and_bytes()
+        change = ClaudeCodeAdapter().apply(_runtime())
+        assert change.status == ConfigStatus.ERROR
+        assert "efus" in change.note
+        assert change.fields_changed == []
+        assert change.previous_checksum == change.new_checksum
+        _, after = self._live_path_and_bytes()
+        assert after == before  # byte-for-byte unchanged (or still absent)
+
+    def test_refused_apply_preserves_current_base_url(self, monkeypatch):
+        from aura.agent_runtime.adapters.claude_code import ClaudeCodeAdapter
+        monkeypatch.delenv("AURA_MANAGE_EXTERNAL_CLAUDE", raising=False)
+        before = self._live_base_url()
+        ClaudeCodeAdapter().apply(_runtime())
+        assert self._live_base_url() == before
+
+    def test_apply_isolated_path_still_modifiable(self, tmp_path, monkeypatch):
+        from aura.agent_runtime.adapters.claude_code import ClaudeCodeAdapter
+        monkeypatch.delenv("AURA_MANAGE_EXTERNAL_CLAUDE", raising=False)
+        isolated = tmp_path / "isolated-settings.json"
+        isolated.write_text('{"theme": "dark"}', encoding="utf-8")
+        change = ClaudeCodeAdapter(settings_path=isolated).apply(_runtime())
+        assert change.status == ConfigStatus.OK
+        written = json.loads(isolated.read_text())
+        assert written["env"]["ANTHROPIC_BASE_URL"] == "http://localhost:11434/v1"
+        assert written["theme"] == "dark"  # other keys preserved
+
+    def test_restore_refuses_live_config_by_default(self, monkeypatch):
+        from aura.agent_runtime.adapters.claude_code import ClaudeCodeAdapter
+        monkeypatch.delenv("AURA_MANAGE_EXTERNAL_CLAUDE", raising=False)
+        live, before = self._live_path_and_bytes()
+        change = ClaudeCodeAdapter().restore(b'{"theme": "planted"}')
+        assert change.status == ConfigStatus.ERROR
+        _, after = self._live_path_and_bytes()
+        assert after == before
+
+    def test_restore_isolated_path_works(self, tmp_path, monkeypatch):
+        from aura.agent_runtime.adapters.claude_code import ClaudeCodeAdapter
+        monkeypatch.delenv("AURA_MANAGE_EXTERNAL_CLAUDE", raising=False)
+        isolated = tmp_path / "isolated-settings.json"
+        isolated.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "x"}}))
+        original = '{"theme": "light"}'
+        change = ClaudeCodeAdapter(settings_path=isolated).restore(
+            original.encode())
+        assert change.status == ConfigStatus.OK
+        assert isolated.read_text() == original
+
+    def test_opt_in_unlocks_guarded_path(self, tmp_path, monkeypatch):
+        # Exercises the opt-in branch against a FAKE live path — the real
+        # ~/.claude is never touched by this test.
+        import aura.agent_runtime.adapters.claude_code as mod
+        fake_live = tmp_path / "live-settings.json"
+        fake_live.write_text('{"theme": "dark"}', encoding="utf-8")
+        monkeypatch.setattr(mod, "_REAL_SETTINGS_PATH", fake_live)
+        monkeypatch.setattr(mod, "_SETTINGS_PATH", fake_live)
+        from aura.agent_runtime.adapters.claude_code import ClaudeCodeAdapter
+        monkeypatch.delenv("AURA_MANAGE_EXTERNAL_CLAUDE", raising=False)
+        refused = ClaudeCodeAdapter().apply(_runtime())
+        assert refused.status == ConfigStatus.ERROR
+        assert fake_live.read_text() == '{"theme": "dark"}'
+        monkeypatch.setenv("AURA_MANAGE_EXTERNAL_CLAUDE", "1")
+        allowed = ClaudeCodeAdapter().apply(_runtime())
+        assert allowed.status == ConfigStatus.OK
+        assert json.loads(fake_live.read_text())["env"][
+            "ANTHROPIC_BASE_URL"] == "http://localhost:11434/v1"
+
+
 # ── QwenCodeAdapter ───────────────────────────────────────────────────────────
 
 class TestQwenCodeAdapter:

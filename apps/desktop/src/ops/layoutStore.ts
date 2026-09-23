@@ -32,7 +32,10 @@ export type PanelKind =
   | 'ai-chat'
   | 'dashboard'
   | 'twin'
-  | 'governance';
+  | 'governance'
+  | 'documents'
+  | 'sovereign-monitor'
+  | 'artifacts';
 
 export interface WindowState {
   id: string;
@@ -454,6 +457,9 @@ export const PANEL_META: Record<PanelKind, PanelMeta> = {
   dashboard: { label: 'Engineering Dashboard', icon: 'activity', hint: 'Global mission execution control plane' },
   twin: { label: 'Engineering Twin', icon: 'cpu', hint: 'Live digital twin of the repository' },
   governance: { label: 'Engineering Governance', icon: 'shield', hint: 'Health scorecard, risks, audits and council reviews' },
+  documents: { label: 'Documents', icon: 'doc', hint: 'Upload and manage documents in the knowledge base' },
+  'sovereign-monitor': { label: 'Sovereign Monitor', icon: 'shield', hint: 'Live view of AI network calls — local vs. cloud' },
+  artifacts: { label: 'Artifacts', icon: 'folder', hint: 'Generated files — DOCX, XLSX, PDF' },
 };
 
 function allowsMultiple(kind: PanelKind): boolean {

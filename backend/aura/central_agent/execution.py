@@ -100,12 +100,16 @@ _WORKER_LIFECYCLE = {
 
 class ExecutionController:
     def __init__(self, fabric_cfg: FabricConfig, engine: WorkflowEngine | None = None,
-                 capability_registry=None) -> None:
+                 capability_registry=None, model_registry=None) -> None:
         self._cfg = fabric_cfg
         # Optional measured registry, used ONLY to enrich refusal
         # messages with which machine tools a role is missing. Matching
         # and dispatch are unchanged: connected worker nodes decide.
         self._registry = capability_registry
+        # Sovereign model registry: when present, ModelRouter uses it to
+        # select a local/private model for agent.delegate tasks. Never
+        # blocks dispatch — absent or empty means no model preference.
+        self._model_registry = model_registry
         #: Last worker-registry read failure, if any. A broken registry
         #: must not read as "no workers connected" — the refusal reason
         #: below names it instead.
@@ -588,12 +592,44 @@ class ExecutionController:
             context["cancelToken"] = cancel_token
             cancel_token.note_dispatch(
                 task.id, worker_node_id=context.get("nodeId") or "")
+        # Phase 2: TaskClassifier + ModelRouter for agent.delegate tasks.
+        # Both are local heuristics — no model calls, no network. Never
+        # block dispatch; failures are silent and the worker runs without
+        # a model preference. Sovereign guarantee: ModelRouter only ever
+        # selects local/private models — cloud never enters this path.
+        _task_type: str | None = None
+        _routing_record = None
+        _routing_reason: str | None = None
+        if task.capabilityId == "agent.delegate":
+            _task_desc = (getattr(task, "description", None) or
+                          (task.input or {}).get("task") or "")
+            try:
+                from ..sovereign.model_router import (TaskClassifier as _TC,
+                                                       ModelRouter as _MR)
+                if _task_desc:
+                    _task_type = _TC().classify(_task_desc)
+                if self._model_registry is not None:
+                    _decision = _MR(self._model_registry).route(
+                        _task_desc or "", task_type=_task_type)
+                    _routing_record = _decision.record
+                    _routing_reason = _decision.reason
+                    if _routing_record is not None:
+                        payload["model"] = _routing_record.model_name
+            except Exception:
+                pass
+
         result.worker_assignments[task.id] = {
             "taskId": task.id,
             "nodeId": context.get("nodeId") or "",
             "role": role or "",
             "capabilityId": task.capabilityId,
             "lifecycle": "ACTIVE",
+            **({"taskType": _task_type} if _task_type else {}),
+            **({"modelId": _routing_record.id,
+                "modelName": _routing_record.model_name,
+                "networkClass": _routing_record.network_class,
+                "routingReason": _routing_reason}
+               if _routing_record is not None else {}),
             **({"sessionId": correlation["session_id"]}
                if correlation.get("session_id") else {}),
             **({"requestId": correlation["request_id"]}

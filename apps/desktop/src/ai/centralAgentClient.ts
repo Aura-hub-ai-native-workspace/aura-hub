@@ -542,4 +542,43 @@ export const centralAgentClient = {
     };
   },
 
+  /* ── Documents / Knowledge ──────────────────────────────────────── */
+
+  /** Upload a file for ingestion into the knowledge base. */
+  ingestDocument: async (file: File): Promise<{ status: string; chunk_count: number; extraction_status: string; path: string }> => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${BASE}/documents/ingest`, { method: 'POST', body: form });
+    if (!res.ok) {
+      let msg = `request failed (${res.status})`;
+      try { const b = await res.json() as { error?: string }; if (b.error) msg = b.error; } catch { /* keep */ }
+      throw new Error(msg);
+    }
+    return res.json() as Promise<{ status: string; chunk_count: number; extraction_status: string; path: string }>;
+  },
+
+  /** Search the knowledge base. */
+  searchKnowledge: (query: string, topK = 5) =>
+    jget<{ results: Array<{ text: string; score: number; source: string | null }> }>(
+      `/knowledge/search?q=${encodeURIComponent(query)}&top_k=${topK}`),
+
+  /** List documents in the knowledge base. */
+  listDocuments: () =>
+    jget<{ documents: Array<{ path: string; chunk_count: number; extraction_status: string; ingested_at: string }> }>(
+      '/documents/list'),
+
+  /* ── Artifacts ──────────────────────────────────────────────────── */
+
+  /** List artifacts generated during missions. */
+  listArtifacts: () =>
+    jget<{ artifacts: Array<{ name: string; path: string; size_bytes: number; created_at: string }> }>(
+      '/artifacts'),
+
+  /* ── Sovereign Network Monitor ──────────────────────────────────── */
+
+  /** Snapshot of the EgressGateway inference journal. */
+  networkJournal: () =>
+    jget<{ total: number; blocked: number; entries: Array<{ host: string; decision: string; sovereign_block: boolean; timestamp: string }> }>(
+      '/network/journal'),
+
 };

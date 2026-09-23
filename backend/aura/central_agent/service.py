@@ -107,6 +107,8 @@ class CentralAgent:
         run_store: WorkflowRunStore | None = None,
         mcp_context_provider: Any | None = None,
         sovereign_policy: Any | None = None,
+        agent_runtime: Any | None = None,
+        model_registry: Any | None = None,
     ) -> None:
         self.fabric_cfg = fabric_cfg
         self.sessions = session_store
@@ -123,6 +125,8 @@ class CentralAgent:
             except Exception:
                 pass
         self.sovereign_policy = sovereign_policy
+        self.agent_runtime = agent_runtime
+        self._model_registry = model_registry
         # Model port: built with the sovereign policy so cloud endpoints are
         # blocked at the routing layer when sovereign_mode is enabled.
         # Falls back to heuristic IntentCompiler when no providers.json is
@@ -186,7 +190,8 @@ class CentralAgent:
         self.compiler = compiler or WorkflowCompiler()
         self.controller = ExecutionController(
             fabric_cfg, engine=getattr(self, "engine", None),
-            capability_registry=self.capabilities)
+            capability_registry=self.capabilities,
+            model_registry=self._model_registry)
         self.verifier = VerificationEngine()
         self._active_plans: dict[str, Any] = {}
         # Live request correlation: session id -> the request id of the
