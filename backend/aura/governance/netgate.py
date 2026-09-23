@@ -51,6 +51,77 @@ import re
 import socket
 import threading
 from dataclasses import dataclass, field
+from typing import Optional
+
+# ---------------------------------------------------------------------------
+# AI inference classification (S5)
+# ---------------------------------------------------------------------------
+
+#: Hostname suffixes that identify known cloud AI inference APIs.
+#: Used to classify CONNECT requests as AI inference events in the journal.
+#: Matching is suffix-based on domain labels — "openai.com" matches
+#: "api.openai.com" but not "fakopenai.com".
+AI_INFERENCE_HOSTS: tuple[str, ...] = (
+    "openai.com",
+    "api.anthropic.com",
+    "generativelanguage.googleapis.com",
+    "api.mistral.ai",
+    "api.groq.com",
+    "api.cohere.ai",
+    "api.together.xyz",
+    "api.fireworks.ai",
+    "api.deepinfra.com",
+    "openrouter.ai",
+    "api.cerebras.ai",
+    "api.novita.ai",
+    "inference.qwen.ai",
+    "api.kimi.ai",
+    "api.nvidia.com",
+    "integrate.api.nvidia.com",
+    "api.scalemax.ai",
+)
+
+
+def _is_ai_inference_host(host: str) -> bool:
+    """True when the destination hostname looks like a cloud AI API."""
+    h = host.lower().rstrip(".")
+    for suffix in AI_INFERENCE_HOSTS:
+        if h == suffix or h.endswith("." + suffix):
+            return True
+    return False
+
+
+@dataclass
+class InferenceJournalEntry:
+    """A single AI inference call observed at the gateway.
+
+    Records are created for every CONNECT/request targeting a known AI
+    inference hostname, regardless of whether it was allowed or denied.
+    Payload content is NEVER recorded — only the destination and outcome.
+    """
+
+    at: str               # ISO-8601 timestamp
+    host: str             # destination hostname (no port — not a secret)
+    port: int             # destination port
+    decision: str         # "ALLOW" | "DENY"
+    reason: str           # policy decision reason (no secrets)
+    sovereign_block: bool = False  # True when denied by sovereign policy
+
+    def to_dict(self) -> dict:
+        return {
+            "at": self.at,
+            "host": self.host,
+            "port": self.port,
+            "decision": self.decision,
+            "reason": self.reason,
+            "sovereignBlock": self.sovereign_block,
+            "actionType": "AI_INFERENCE",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Gateway configuration
+# ---------------------------------------------------------------------------
 
 #: Where the relay listens INSIDE the sandbox. The namespace is fresh and
 #: empty, so nothing can already hold it.
@@ -151,7 +222,8 @@ class EgressGateway:
 
     def __init__(self, socket_path: str, domains: tuple[str, ...],
                  ports: tuple[int, ...] = DEFAULT_PORTS,
-                 max_events: int = 500) -> None:
+                 max_events: int = 500,
+                 sovereign_policy=None) -> None:
         self.socket_path = socket_path
         self.domains = tuple(d.lower() for d in domains)
         self.ports = tuple(ports or DEFAULT_PORTS)
@@ -160,7 +232,11 @@ class EgressGateway:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._max_events = max_events
+        self._sovereign_policy = sovereign_policy
         self.decisions: list[GatewayDecision] = []
+        #: Journal of every AI inference attempt seen at this gateway.
+        #: Includes both allowed and sovereign-blocked calls.
+        self.inference_journal: list[InferenceJournalEntry] = []
 
     # ── lifecycle ────────────────────────────────────────────────────
     def start(self) -> None:
@@ -200,6 +276,19 @@ class EgressGateway:
     def __exit__(self, *_exc) -> None:
         self.stop()
 
+    def inference_journal_snapshot(self) -> dict:
+        """Secret-free summary of AI inference events for monitoring UI."""
+        with self._lock:
+            entries = list(self.inference_journal)
+        total = len(entries)
+        blocked = sum(1 for e in entries if e.sovereign_block)
+        return {
+            "total": total,
+            "blocked": blocked,
+            "allowed": total - blocked,
+            "entries": [e.to_dict() for e in entries],
+        }
+
     # ── serving ──────────────────────────────────────────────────────
     def _serve(self) -> None:
         while not self._stop.is_set():
@@ -216,6 +305,11 @@ class EgressGateway:
         with self._lock:
             if len(self.decisions) < self._max_events:
                 self.decisions.append(decision)
+
+    def _record_inference(self, entry: InferenceJournalEntry) -> None:
+        with self._lock:
+            if len(self.inference_journal) < self._max_events:
+                self.inference_journal.append(entry)
 
     def _handle(self, conn: socket.socket) -> None:
         upstream: socket.socket | None = None
@@ -253,6 +347,27 @@ class EgressGateway:
                 return
 
             ok, why = host_allowed(host, port, self.domains, self.ports)
+
+            # AI inference classification (S5): detect and journal AI API calls;
+            # enforce sovereign block as defence-in-depth even if the domain
+            # were accidentally in the allowlist.
+            is_ai = _is_ai_inference_host(host)
+            sovereign_block = False
+            if is_ai and self._sovereign_policy is not None:
+                if self._sovereign_policy.sovereign_mode:
+                    ok = False
+                    why = (
+                        f"AURA sovereign mode: AI inference to {host} is blocked."
+                        " Only local/private inference endpoints are permitted."
+                    )
+                    sovereign_block = True
+
+            if is_ai:
+                self._record_inference(InferenceJournalEntry(
+                    at=_now(), host=host, port=port,
+                    decision="ALLOW" if ok else "DENY",
+                    reason=why, sovereign_block=sovereign_block))
+
             self._record(GatewayDecision(
                 _now(), host, port, "ALLOW" if ok else "DENY", why, method))
             if not ok:
@@ -442,4 +557,5 @@ class StagedGateway:
 
 __all__ = ["DEFAULT_PORTS", "LAUNCHER_SOURCE", "SANDBOX_PROXY_PORT",
            "EgressGateway", "GatewayDecision", "StagedGateway",
-           "host_allowed"]
+           "InferenceJournalEntry", "AI_INFERENCE_HOSTS",
+           "host_allowed", "_is_ai_inference_host"]

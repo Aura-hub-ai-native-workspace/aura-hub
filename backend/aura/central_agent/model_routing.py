@@ -11,6 +11,12 @@ Design rules (mission §8):
 - Timeouts are hard; retries are capped.
 
 Wire shape assumed: OpenAI-compatible POST {baseUrl}/chat/completions.
+
+Sovereign extensions:
+- api_key_env may be "" (empty) for keyless local/private servers (Ollama etc.)
+- network_class classifies each endpoint: "local" | "private" | "cloud" | "unknown"
+- Sovereign policy loaded from ~/.aura/sovereign.json blocks cloud endpoints
+  when sovereign_mode is enabled — no silent fallback.
 """
 
 from __future__ import annotations
@@ -20,25 +26,39 @@ import os
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .intent import ModelPort
 
+#: Network classification for sovereignty enforcement.
+#: "local"   — loopback or LAN address under operator control
+#: "private" — remote but privately operated (VPN/LAN GPU server)
+#: "cloud"   — external commercial API endpoint
+#: "unknown" — not classified; treated as cloud in sovereign mode
+NETWORK_CLASSES = frozenset({"local", "private", "cloud", "unknown"})
+
 
 @dataclass(frozen=True)
 class ProviderSpec:
-    """Operator-declared endpoint. NEVER carries secrets."""
+    """Operator-declared endpoint. NEVER carries secrets.
+
+    api_key_env: env var NAME resolved fresh each call.
+      Set to "" (empty string) for keyless servers such as Ollama — the
+      Authorization header is omitted entirely rather than sent blank.
+    network_class: sovereignty classification used by SovereignPolicy.
+    """
 
     id: str
     base_url: str
     model: str
-    api_key_env: str          # env var NAME; resolved fresh each call
+    api_key_env: str = ""       # "" = keyless (Ollama, private servers)
     timeout_s: float = 30.0
     max_retries: int = 2
     max_context_chars: int = 24_000
     supports_json_mode: bool = True
     enabled: bool = True
+    network_class: str = "unknown"   # "local" | "private" | "cloud" | "unknown"
 
 
 @dataclass
@@ -48,7 +68,8 @@ class ProviderHealth:
     calls: int = 0
 
 
-def default_model_port(path: str | None = None):
+def default_model_port(path: str | None = None,
+                       sovereign_policy=None):
     """The Central Agent's reasoning model, or None when unconfigured.
 
     AURA's own reasoning is a SEPARATE concern from the worker runtimes:
@@ -62,19 +83,31 @@ def default_model_port(path: str | None = None):
     mode — never a fabricated plan and never a hidden default endpoint.
     Keys are read from the environment at call time by the port itself
     and are never persisted here.
+
+    sovereign_policy: optional SovereignPolicy; when supplied, providers
+    whose network_class is blocked are excluded BEFORE building the port.
     """
     specs = [s for s in load_providers(path) if s.enabled]
+    if sovereign_policy is not None:
+        specs = [s for s in specs
+                 if sovereign_policy.allows(s.network_class)]
     if not specs:
         return None
-    return RoutedModelPort(specs)
+    return RoutedModelPort(specs, sovereign_policy=sovereign_policy)
 
 
 def load_providers(path: str | None = None) -> list[ProviderSpec]:
     """Read the operator's provider file (~/.aura/agent/providers.json).
 
-    Unknown fields are ignored; entries missing id/baseUrl/model/apiKeyEnv
-    are skipped rather than guessed. An absent/empty file means NO model
-    routing — the deterministic fallback remains the honest default.
+    Unknown fields are ignored; entries missing id/baseUrl/model are
+    skipped rather than guessed. apiKeyEnv is now optional — omitting it
+    (or setting it to "") marks the provider as keyless (e.g. Ollama,
+    private GPU servers). An absent/empty file means NO model routing —
+    the deterministic fallback remains the honest default.
+
+    New field: networkClass ("local" | "private" | "cloud" | "unknown").
+    Defaults to "local" when baseUrl is a loopback/LAN address, otherwise
+    "cloud". Operators SHOULD set this explicitly for private GPU servers.
     """
     from ..config import aura_path
 
@@ -89,16 +122,51 @@ def load_providers(path: str | None = None) -> list[ProviderSpec]:
         if not isinstance(e, dict):
             continue
         try:
+            base_url = str(e["baseUrl"]).rstrip("/")
+            # api_key_env is optional — keyless providers (Ollama, private
+            # servers) omit it or set it to "".
+            api_key_env = str(e.get("apiKeyEnv") or "")
+            # networkClass: infer from URL when not declared.
+            raw_class = str(e.get("networkClass") or "").lower()
+            if raw_class not in NETWORK_CLASSES:
+                raw_class = _infer_network_class(base_url)
             spec = ProviderSpec(
-                id=str(e["id"]), base_url=str(e["baseUrl"]).rstrip("/"),
-                model=str(e["model"]), api_key_env=str(e["apiKeyEnv"]),
+                id=str(e["id"]), base_url=base_url,
+                model=str(e["model"]),
+                api_key_env=api_key_env,
                 timeout_s=float(e.get("timeoutS", 30)),
                 max_context_chars=int(e.get("maxContextChars", 24_000)),
-                enabled=e.get("enabled", True) is not False)
+                enabled=e.get("enabled", True) is not False,
+                network_class=raw_class)
         except (KeyError, TypeError, ValueError):
             continue
         out.append(spec)
     return [s for s in out if s.enabled]
+
+
+def _infer_network_class(base_url: str) -> str:
+    """Best-effort classification when the operator does not declare one.
+
+    Loopback → local.  RFC-1918 / link-local ranges → private.
+    Everything else → cloud (conservative — unknown treated as cloud
+    so sovereign mode is fail-closed, never accidentally permissive).
+    """
+    try:
+        import ipaddress
+        import urllib.parse as _up
+        host = _up.urlparse(base_url).hostname or ""
+        if host in ("localhost", "127.0.0.1", "::1") or host.startswith("127."):
+            return "local"
+        addr = ipaddress.ip_address(host)
+        if addr.is_loopback:
+            return "local"
+        if addr.is_private:
+            return "private"
+        return "cloud"
+    except (ValueError, Exception):
+        # Not an IP — hostname could be internal or external. Without
+        # explicit classification we treat it as unknown (= cloud).
+        return "unknown"
 
 
 class RoutingError(Exception):
@@ -193,18 +261,23 @@ CIRCUIT_COOLDOWN_S = 60.0
 
 
 class RoutedModelPort(ModelPort):
-    """ModelPort over a provider chain, tried in order."""
+    """ModelPort over a provider chain, tried in order.
+
+    sovereign_policy: when set, providers whose network_class is blocked
+    are skipped with an honest error — never silently routed to cloud.
+    """
 
     def __init__(self, providers: list[ProviderSpec],
-                 post=None) -> None:
+                 post=None, sovereign_policy=None) -> None:
         self.providers = providers
         self.health: dict[str, ProviderHealth] = {
             p.id: ProviderHealth() for p in providers}
         self._post = post or _http_post_json
         self._circuit_opened_at: dict[str, float] = {}
+        self._sovereign_policy = sovereign_policy
         #: Last model call metadata (P1-D observability). Metadata only:
-        #: provider id, model name, latency, outcome — never keys,
-        #: headers, prompts, or completions.
+        #: provider id, model name, latency, network_class, outcome —
+        #: never keys, headers, prompts, or completions.
         self._last_call: dict | None = None
 
     def health_snapshot(self) -> dict:
@@ -214,6 +287,8 @@ class RoutedModelPort(ModelPort):
         now = time.monotonic()
         return {"providers": [
             {"id": p.id, "baseUrl": p.base_url, "model": p.model,
+             "networkClass": p.network_class,
+             "keyless": not p.api_key_env,
              "calls": self.health[p.id].calls,
              "consecutiveFailures": self.health[p.id].consecutive_failures,
              "lastError": self.health[p.id].last_error,
@@ -224,15 +299,21 @@ class RoutedModelPort(ModelPort):
     def telemetry(self) -> dict:
         """Secret-free snapshot of routing state for operators.
 
-        Provider ids, model names, call counts, failures, circuits, and
-        the last call's metadata. API keys, headers, prompts, and
-        completions NEVER appear here — there is no code path that
-        could place them in this structure.
+        Provider ids, model names, network classification, call counts,
+        failures, circuits, and the last call's metadata. API keys,
+        headers, prompts, and completions NEVER appear here.
         """
+        sovereign = self._sovereign_policy
         return {
             "configured": bool(self.providers),
+            "sovereignMode": getattr(sovereign, "sovereign_mode", False),
             "providers": [
                 {"id": p.id, "model": p.model,
+                 "networkClass": p.network_class,
+                 "keyless": not p.api_key_env,
+                 "sovereignAllowed": (
+                     sovereign.allows(p.network_class)
+                     if sovereign is not None else True),
                  "calls": self.health[p.id].calls,
                  "consecutiveFailures":
                      self.health[p.id].consecutive_failures,
@@ -273,6 +354,10 @@ class RoutedModelPort(ModelPort):
         just the UI). Mid-stream failure raises RoutingError: partial
         tokens already emitted stay visible and the caller falls back
         to its deterministic record — never a fabricated completion.
+
+        Keyless providers (api_key_env == "") skip the Authorization
+        header entirely — this is the normal case for Ollama and other
+        self-hosted servers that authenticate by network location, not key.
         """
         last_error = "no providers configured"
         last_exc: BaseException | None = None
@@ -281,15 +366,28 @@ class RoutedModelPort(ModelPort):
             health = self.health[spec.id]
             if self._circuit_open(spec):
                 continue
+            if self._sovereign_policy is not None:
+                if not self._sovereign_policy.allows(spec.network_class):
+                    health.last_error = (
+                        f"blocked by sovereign policy"
+                        f" (network_class={spec.network_class!r})")
+                    last_exc = _SovereignBlocked(
+                        f"{spec.id}: network_class {spec.network_class!r}"
+                        f" not permitted in sovereign mode")
+                    continue
             if not spec.model:
                 health.last_error = "entry has no model configured"
                 last_exc = ValueError(f"{spec.id}: no model configured")
                 continue
-            key = os.environ.get(spec.api_key_env, "")
-            if not key:
-                health.last_error = f"env {spec.api_key_env} not set"
-                last_exc = ValueError(f"{spec.id}: provider key not configured")
-                continue
+            # Keyless check: api_key_env="" means no key required.
+            if spec.api_key_env:
+                key = os.environ.get(spec.api_key_env, "")
+                if not key:
+                    health.last_error = f"env {spec.api_key_env} not set"
+                    last_exc = ValueError(f"{spec.id}: provider key not configured")
+                    continue
+            else:
+                key = ""  # keyless — no Authorization header
             attempted = True
             payload = {
                 "model": spec.model,
@@ -302,9 +400,12 @@ class RoutedModelPort(ModelPort):
                 "temperature": 0.2,
                 "stream": True,
             }
-            headers = {"authorization": f"Bearer {key}",
-                       "content-type": "application/json",
-                       "accept": "text/event-stream"}
+            headers: dict[str, str] = {
+                "content-type": "application/json",
+                "accept": "text/event-stream",
+            }
+            if key:
+                headers["authorization"] = f"Bearer {key}"
             started = time.monotonic()
             try:
                 return self._stream_one(spec, payload, headers,
@@ -393,15 +494,28 @@ class RoutedModelPort(ModelPort):
             health = self.health[spec.id]
             if self._circuit_open(spec):
                 continue  # cooling down; re-enters rotation after the window
+            if self._sovereign_policy is not None:
+                if not self._sovereign_policy.allows(spec.network_class):
+                    health.last_error = (
+                        f"blocked by sovereign policy"
+                        f" (network_class={spec.network_class!r})")
+                    last_exc = _SovereignBlocked(
+                        f"{spec.id}: network_class {spec.network_class!r}"
+                        f" not permitted in sovereign mode")
+                    continue
             if not spec.model:
                 health.last_error = "entry has no model configured"
                 last_exc = ValueError(f"{spec.id}: no model configured")
                 continue
-            key = os.environ.get(spec.api_key_env, "")
-            if not key:
-                health.last_error = f"env {spec.api_key_env} not set"
-                last_exc = ValueError(f"{spec.id}: provider key not configured")
-                continue
+            # Keyless check: api_key_env="" means no key required (Ollama etc.)
+            if spec.api_key_env:
+                key = os.environ.get(spec.api_key_env, "")
+                if not key:
+                    health.last_error = f"env {spec.api_key_env} not set"
+                    last_exc = ValueError(f"{spec.id}: provider key not configured")
+                    continue
+            else:
+                key = ""  # keyless server
             attempted = True
             payload = {
                 "model": spec.model,
@@ -411,8 +525,9 @@ class RoutedModelPort(ModelPort):
                 ],
                 "temperature": 0,
             }
-            headers = {"authorization": f"Bearer {key}",
-                       "content-type": "application/json"}
+            headers: dict[str, str] = {"content-type": "application/json"}
+            if key:
+                headers["authorization"] = f"Bearer {key}"
             attempt = 0
             while attempt <= spec.max_retries:
                 attempt += 1
@@ -454,10 +569,10 @@ def _routing_category(providers: list[ProviderSpec], attempted: bool,
                       last_exc: BaseException | None) -> str:
     """Final category when the whole chain yields nothing.
 
-    Nothing attempted means configuration, not outage: an empty chain
-    or entries skipped for missing keys/models is PROVIDER_NOT_CONFIGURED
-    (MODEL_NOT_CONFIGURED when every enabled entry lacks a model).
-    Otherwise the last transport/model failure decides.
+    Nothing attempted means configuration, not outage: an empty chain,
+    entries skipped for missing keys/models, or all providers blocked by
+    sovereign policy → PROVIDER_NOT_CONFIGURED (MODEL_NOT_CONFIGURED when
+    every enabled entry lacks a model).  Otherwise the last failure decides.
     """
     if not attempted:
         if providers and all(not p.model for p in providers if p.enabled):
@@ -465,7 +580,13 @@ def _routing_category(providers: list[ProviderSpec], attempted: bool,
         return "PROVIDER_NOT_CONFIGURED"
     if last_exc is None:
         return "PROVIDER_UNAVAILABLE"
+    if isinstance(last_exc, _SovereignBlocked):
+        return "PROVIDER_NOT_CONFIGURED"
     return classify_failure(last_exc)
+
+
+class _SovereignBlocked(Exception):
+    """Raised internally when sovereign policy rejects a provider."""
 
 
 def _http_post_json(url: str, payload: dict, headers: dict,
