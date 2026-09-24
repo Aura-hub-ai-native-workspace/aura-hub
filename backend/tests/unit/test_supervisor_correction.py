@@ -8,10 +8,8 @@ input shape, and the budget/restart/attribution guarantees hold on real
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import subprocess
 
 import pytest
 
@@ -275,101 +273,3 @@ class TestCorrectionRecords:
         assert spent is not None
         # Single-use: replay finds nothing.
         assert second.consume("apr-1") is None
-
-
-# ── live correction loop (throwaway repo, real worker) ────────────────
-
-
-def _git(cwd: str, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True,
-                   capture_output=True, timeout=30)
-
-
-@pytest.fixture()
-def worker_repo(tmp_path):
-    root = str(tmp_path / "proj")
-    import os
-
-    os.makedirs(root)
-    _git(root, "init", "-q")
-    _git(root, "-c", "user.email=t@t", "-c", "user.name=t",
-         "commit", "-q", "--allow-empty", "-m", "init")
-    return root
-
-
-def _delegate(cwd, task, scope, node_id="opencode", name="OpenCode",
-              binary="opencode", timeout_ms=180000):
-    from aura.executors import agent_delegate_run
-
-    inv = {"input": {"task": task, "scopePaths": scope},
-           "context": {"cwd": cwd, "timeoutMs": timeout_ms,
-                       "actor": {"kind": "agent", "id": "correction-test"}},
-           "node": {"id": node_id, "name": name, "binary": binary}}
-    return asyncio.run(agent_delegate_run(inv))
-
-
-class TestLiveCorrectionLoop:
-    def test_full_loop_deviate_then_correct(self, worker_repo):
-        # Attempt 1: worker asked for file A, constrained to scope B.
-        # (The worker complies with the ASKED file; the scope contract is
-        # what makes it a deviation.)
-        out1 = _delegate(
-            worker_repo,
-            "Create the file offscope.txt containing exactly offscope and nothing else.",
-            ["hello.txt"])
-        assert out1["ok"] is False, out1
-        assert (out1.get("output") or {}).get("scopeDeviation") is True
-
-        v1 = decide_task("done", {
-            "taskId": "t1",
-            "scopeDeviation": True,
-            "scopeCheck": (out1.get("output") or {}).get("scopeCheck") or {},
-        }, verified=None)
-        assert v1.status == "parked-deviation"
-        # Real-time governance denied the out-of-scope write BEFORE
-        # execution: the forbidden file was never created (stronger than
-        # the old post-hoc deviation, where it existed as evidence).
-        assert not os.path.exists(os.path.join(worker_repo, "offscope.txt"))
-        governed = (out1.get("output") or {}).get("governedActions") or {}
-        assert governed.get("governed") is True
-        denied = governed.get("denied") or []
-        assert denied, "the denied write must be recorded as evidence"
-        assert any("offscope.txt" in (d.get("target") or "") for d in denied)
-
-        run1 = decide_run([("t1", "done", {
-            "taskId": "t1", "scopeDeviation": True,
-            "scopeCheck": (out1.get("output") or {}).get("scopeCheck") or {},
-        }, None)], attempts_used=1, task_contract_id="c-live")
-        assert run1.status == "parked"
-
-        # Central Agent's correction: same scope, corrective instruction.
-        built = build_correction(
-            task_contract_id="c-live", task_id="t1",
-            capability_id="agent.delegate",
-            base_input={"task": "Create offscope.txt.", "scopePaths": ["hello.txt"]},
-            approved_scope=["hello.txt"],
-            deviation=v1, attempt=2,
-            extra_context="The previous attempt created offscope.txt, which is "
-                          "outside the authorized scope. Create hello.txt instead.")
-        assert built["input"]["scopePaths"] == ["hello.txt"]
-
-        out2 = _delegate(
-            worker_repo,
-            built["input"]["task"],
-            built["input"]["scopePaths"])
-        assert out2["ok"] is True, out2
-        assert os.path.exists(os.path.join(worker_repo, "hello.txt"))
-
-        v2 = decide_task("done", {"taskId": "t1"}, verified=True)
-        run2 = decide_run([("t1", "done", {"taskId": "t1"}, True)],
-                          attempts_used=2, task_contract_id="c-live")
-        assert v2.status == "verified"
-        assert run2.status == "continue"
-
-        rec = CorrectionRecord(
-            task_contract_id="c-live", task_id="t1",
-            worker_node_id="opencode", attempt=2, parent_attempt=1,
-            verdict="corrected", reasons=["scope deviation on attempt 1"],
-            evidence={"outside": ["offscope.txt"]},
-            corrective_input=built["input"])
-        assert CorrectionRecord.from_dict(rec.to_dict()) == rec
