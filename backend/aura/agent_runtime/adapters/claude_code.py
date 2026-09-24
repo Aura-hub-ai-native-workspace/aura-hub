@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -191,8 +192,8 @@ class ClaudeCodeAdapter(AgentConfigurationAdapter):
         try:
             outcome = run_argv(["claude", "--version"], timeout_ms=5000)
             if outcome.status is ExecStatus.OK and outcome.stdout.strip():
-                parts = outcome.stdout.strip().split()
-                return parts[-1] if parts else None
+                m = re.search(r"(\d+\.\d+\.\d+[\w.-]*)", outcome.stdout)
+                return m.group(1) if m else None
             return None
         except Exception:
             return None

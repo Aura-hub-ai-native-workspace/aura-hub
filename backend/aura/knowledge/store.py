@@ -415,13 +415,16 @@ class KnowledgeBase:
         hits = self.search(query, top_k=top_k)
         expanded: list[SearchResult] = []
         for hit in hits:
-            context_ids = [
+            raw_ids = [
                 f"{hit.chunk.doc_id}:{max(0, hit.chunk.index - i)}"
                 for i in range(context_chunks, 0, -1)
             ] + [hit.chunk.id] + [
                 f"{hit.chunk.doc_id}:{hit.chunk.index + i}"
                 for i in range(1, context_chunks + 1)
             ]
+            seen: set[str] = set()
+            context_ids = [cid for cid in raw_ids
+                           if not (cid in seen or seen.add(cid))]  # type: ignore[func-returns-value]
             text_parts = []
             for cid in context_ids:
                 c = self._chunks.get(cid)
