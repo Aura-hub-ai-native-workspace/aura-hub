@@ -217,6 +217,58 @@ def plan_status(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
     )
 
 
+def plan_project_list(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
+    """Read-only project listing → one low-risk invocation."""
+    return TaskPlan(
+        planId=_plan_id(),
+        sessionId=session_id,
+        intent=intent,
+        tasks=[
+            _task(
+                "t1",
+                "List registered projects",
+                capability_id="project.list",
+                verification=VerificationRequirement(
+                    kind="audit-only",
+                    description="Invocation recorded in the audit trail.",
+                ),
+            ),
+        ],
+        acceptance=[_accept(
+            "audit-only",
+            "The registered project list was returned.",
+            tasks=["t1"])],
+        createdAt=now,
+    )
+
+
+def plan_knowledge_search(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
+    """Knowledge base search → one low-risk invocation."""
+    query = intent.goal.strip()
+    return TaskPlan(
+        planId=_plan_id(),
+        sessionId=session_id,
+        intent=intent,
+        tasks=[
+            _task(
+                "t1",
+                "Search knowledge base",
+                capability_id="knowledge.search",
+                input={"query": query},
+                verification=VerificationRequirement(
+                    kind="audit-only",
+                    description="Invocation recorded in the audit trail.",
+                ),
+            ),
+        ],
+        acceptance=[_accept(
+            "audit-only",
+            "Knowledge base results were returned.",
+            tasks=["t1"])],
+        createdAt=now,
+    )
+
+
 #: Bounded task text handed to a worker. The worker gets AURA's task,
 #: never AURA's reasoning and never another worker's private context.
 MAX_DELEGATE_CHARS = 4000
@@ -919,6 +971,10 @@ class TaskPlanner:
             plan = plan_authoring(intent, session_id, now)
         elif "workflow.list" in required:
             plan = plan_status(intent, session_id, now)
+        elif "project.list" in required:
+            plan = plan_project_list(intent, session_id, now)
+        elif "knowledge.search" in required:
+            plan = plan_knowledge_search(intent, session_id, now)
         else:
             raise PlanningError(
                 "no planned task maps to a capability this installation offers"
