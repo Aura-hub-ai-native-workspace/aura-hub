@@ -214,11 +214,13 @@ class TestExecutorChain:
         v_result = await by_id["artifact.generate"].verify(inv_artifact, r_artifact)
         assert v_result["passed"]
 
-        # STEP 6: security — no document text in any result
-        for result_dict in [r_ingest, r_search, r_artifact]:
+        # STEP 6: security — document text must NOT appear in metadata results.
+        # r_search intentionally returns document chunks (that is its contract).
+        # Only ingest and artifact outputs are metadata-only and must stay clean.
+        for result_dict in [r_ingest, r_artifact]:
             result_str = json.dumps(result_dict)
-            assert "CSI-4821" not in result_str, "inspector cert leaked into result"
-            assert "EL-3A" not in result_str, "finding detail leaked into result"
+            assert "CSI-4821" not in result_str, "inspector cert leaked into metadata result"
+            assert "EL-3A" not in result_str, "finding detail leaked into metadata result"
 
     async def test_ingest_verify_passes(self, tmp_path):
         from aura.executors import multimodal_executors

@@ -39,6 +39,8 @@ import os
 import shutil
 from pathlib import Path
 
+from aura.environment.procexec import ExecStatus, run_argv
+
 from aura.agent_runtime.adapters import AgentConfigurationAdapter
 from aura.agent_runtime.model import (
     AgentRecord,
@@ -187,10 +189,11 @@ class ClaudeCodeAdapter(AgentConfigurationAdapter):
 
     def _get_version(self) -> str | None:
         try:
-            import subprocess
-            r = subprocess.run(["claude", "--version"], capture_output=True,
-                               text=True, timeout=5)
-            return r.stdout.strip().split()[-1] if r.returncode == 0 else None
+            outcome = run_argv(["claude", "--version"], timeout_ms=5000)
+            if outcome.status is ExecStatus.OK and outcome.stdout.strip():
+                parts = outcome.stdout.strip().split()
+                return parts[-1] if parts else None
+            return None
         except Exception:
             return None
 

@@ -297,8 +297,8 @@ def _quote_for_cmd(arg: str) -> str:
     """Quote one argument so ``cmd.exe`` passes it through unchanged.
 
     Mirrors ``packages/ai-service/src/exec/which.ts`` ``quoteForCmd``: ``%``
-    and ``"`` cannot be escaped reliably through ``cmd /c`` (``%FOO%``
-    expands inside quotes), so they are refused rather than guessed at.
+    and ``"`` cannot be escaped reliably through the Windows command interpreter
+    (``%FOO%`` expands inside quotes), so they are refused rather than guessed at.
     """
     if not arg:
         return '""'

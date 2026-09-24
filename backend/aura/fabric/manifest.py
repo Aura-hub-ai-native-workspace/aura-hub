@@ -56,6 +56,15 @@ def _registry() -> list[dict[str, Any]]:
     # frozen file and grows through governed registration (mcp_bridge).
     from . import MANIFEST
 
+    # Ensure CANONICAL_INTERNAL_CAPABILITIES (workflow.*, knowledge.*,
+    # document.ingest, artifact.generate, sandbox.execute) are always
+    # present — even when the caller has not imported aura.executors yet.
+    try:
+        from ..executors import register_canonical_internal_capabilities
+        register_canonical_internal_capabilities(None)
+    except Exception:
+        pass
+
     return MANIFEST
 
 

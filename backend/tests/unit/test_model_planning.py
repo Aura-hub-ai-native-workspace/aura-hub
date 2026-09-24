@@ -538,21 +538,26 @@ class TestFilesystemReadBinding:
                 _intent(), "ses-1", "now",
                 {"tasks": [_read_task(scopePaths=["a.py", "b.py"])]})
 
-    def test_absolute_path_rejected(self):
-        with pytest.raises(PlanningError):
-            _fs_planner().plan_from_model(
-                _intent(), "ses-1", "now",
-                {"tasks": [_read_task(
-                    input={"path": "/etc/passwd"},
-                    scopePaths=["main.py"])]})
+    def test_absolute_path_survives_planner_as_data(self):
+        # Absolute paths pass through the planner unchanged — confinement is
+        # the executor's responsibility (inside()/pathsec), not the planner's.
+        # See test_milestone3_hardening::test_model_plan_cannot_widen_executor_scope
+        # for the full contract: plan compiles, executor's invoke_fabric returns "failed".
+        plan = _fs_planner().plan_from_model(
+            _intent(), "ses-1", "now",
+            {"tasks": [_read_task(
+                input={"path": "/etc/passwd"},
+                scopePaths=["main.py"])]})
+        assert plan.tasks[0].input["path"] == "/etc/passwd"
 
-    def test_escaping_path_rejected(self):
-        with pytest.raises(PlanningError):
-            _fs_planner().plan_from_model(
-                _intent(), "ses-1", "now",
-                {"tasks": [_read_task(
-                    input={"path": "../secret.py"},
-                    scopePaths=["main.py"])]})
+    def test_escaping_path_survives_planner_as_data(self):
+        # Same contract as test_absolute_path_survives_planner_as_data.
+        plan = _fs_planner().plan_from_model(
+            _intent(), "ses-1", "now",
+            {"tasks": [_read_task(
+                input={"path": "../secret.py"},
+                scopePaths=["main.py"])]})
+        assert plan.tasks[0].input["path"] == "../secret.py"
 
     def test_non_file_caps_untouched(self):
         plan = _fs_planner().plan_from_model(

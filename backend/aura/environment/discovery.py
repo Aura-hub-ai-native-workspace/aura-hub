@@ -44,7 +44,7 @@ from .pathsec import (
 )
 from .procexec import ExecOutcome, ExecStatus, run_argv
 from .provenance import Origin, Provenance, ProvenanceIndex, build_index
-from .safeprobe import allowed_to_probe, safe_probe_args
+from .safeprobe import allowed_to_probe, is_never_probe, safe_probe_args
 
 #: How many trusted candidates may be executed in one scan.
 MAX_UNKNOWN_PROBE = 60
@@ -371,14 +371,34 @@ def _probe_tool(candidate: _Candidate, path: str, cwd: str) -> DiscoveredTool:
     reported from package metadata without launching it. This is what stops
     a scan from opening Git GUI / Nsight Compute merely to learn a version.
     """
-    safe_args = safe_probe_args(candidate.path)
-    if safe_args is None:
-        allowed, reason = allowed_to_probe(candidate.path)
+    # GUI launchers must never be run headlessly. discover_tools() enforces
+    # this for the normal scan path, but _probe_tool may also be called
+    # directly (tests, targeted probes), so the check lives here too.
+    if is_never_probe(candidate.path):
         return _unexecuted_tool(
             candidate,
             f"{candidate.name} was found at {candidate.path} but AURA did not run it: "
-            f"{reason or 'no allowlisted version probe'}.",
+            "a GUI launcher or background profiler that must not be run headlessly.",
         )
+
+    safe_args = safe_probe_args(candidate.path)
+    if safe_args is None:
+        # Fall back to the conventional flag only for developer-focused package
+        # managers where '--version' is a near-universal CLI convention.
+        # OS-level packages (winget, apt, homebrew) and unknown provenance
+        # cover a much broader surface including GUI applications, services,
+        # and drivers where '--version' is not a safe no-op.
+        _DEVELOPER_ORIGINS = frozenset(
+            {Origin.NPM_GLOBAL, Origin.PIPX, Origin.CARGO, Origin.VENV}
+        )
+        if candidate.provenance.origin in _DEVELOPER_ORIGINS:
+            safe_args = ["--version"]
+        else:
+            return _unexecuted_tool(
+                candidate,
+                f"{candidate.name} was found at {candidate.path} but AURA did not run it: "
+                "no allowlisted version probe for this type of installation.",
+            )
 
     def attempt() -> ExecOutcome:
         return run_argv(
@@ -711,8 +731,11 @@ def discover_tools(
                 )
             )
         else:
-            allowed, reason = allowed_to_probe(candidate.path)
-            if not allowed:
+            # Location is tamper-resistant AND a package manager claims it.
+            # Only skip execution for headless-unsafe GUI launchers and
+            # background profilers; everything else is probed for a version.
+            if is_never_probe(candidate.path):
+                reason = "a GUI launcher or background profiler that must not be run headlessly"
                 log_refusal(
                     name=candidate.name,
                     executable=candidate.path,

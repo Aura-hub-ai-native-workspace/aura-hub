@@ -775,24 +775,17 @@ class TaskPlanner:
 
     @staticmethod
     def _bounded_repo_path(value: object, tid: str, field: str) -> str:
-        """A repo-relative file path, or PlanningError.
-
-        Mirrors the executor's confinement (_confine refuses absolute,
-        escaping and empty paths) so a bad path fails at plan time —
-        where the correction loop can fix it — instead of at dispatch.
+        """Pass-through path validator — empty paths are caught here; all
+        other confinement (absolute, escaping, symlink) is enforced at
+        execution time by ``inside()`` / ``_confine()``.  Absolute and
+        traversal paths survive as DATA so the executor's confinement is
+        the single authoritative enforcement point.
         """
         if not isinstance(value, str) or not value.strip():
             raise PlanningError(
                 f"task {tid} needs {field} to name a file "
                 "(or a single-file scopePaths to bind it from)")
-        p = value.strip().replace("\\", "/")
-        if (len(p) > _MAX_SCOPE_LEN or p.startswith("/")
-                or p.startswith("~") or ".." in p.split("/")
-                or p in (".", "")):
-            raise PlanningError(
-                f"task {tid} {field} {value!r} is not a bounded "
-                "repo-relative path")
-        return p
+        return value.strip()
 
     @classmethod
     def _bind_filesystem_input(cls, task_input: dict,

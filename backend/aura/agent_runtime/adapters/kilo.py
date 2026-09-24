@@ -22,6 +22,8 @@ import re
 import shutil
 from pathlib import Path
 
+from aura.environment.procexec import ExecStatus, run_argv
+
 from aura.agent_runtime.adapters import AgentConfigurationAdapter
 from aura.agent_runtime.model import (
     AgentRecord,
@@ -93,10 +95,8 @@ class KiloAdapter(AgentConfigurationAdapter):
         if not binary:
             return None
         try:
-            import subprocess
-            r = subprocess.run([binary, "--version"], capture_output=True,
-                               text=True, timeout=5)
-            return r.stdout.strip() if r.returncode == 0 else None
+            outcome = run_argv([binary, "--version"], timeout_ms=5000)
+            return outcome.stdout.strip() if outcome.status is ExecStatus.OK else None
         except Exception:
             return None
 
