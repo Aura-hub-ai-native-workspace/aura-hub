@@ -106,6 +106,8 @@ export interface AgentEvidenceBundle {
   /** Model behind model-backed synthesis; absent means heuristic. */
   modelProvider?: string | null;
   modelName?: string | null;
+  /** Paths of artifacts generated during this session (Phase 5 onwards). */
+  artifactPaths?: string[];
 }
 
 /** The backend's terminal report. See docs/AURA_CENTRAL_AGENT_API.md. */

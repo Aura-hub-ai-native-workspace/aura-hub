@@ -948,7 +948,8 @@ class CentralAgent:
         elif report.unverifiedActions:
             summary_bits.append("unverified: " + ", ".join(report.unverifiedActions))
         bundle = self._collect_evidence(sid, plan.planId, outcome.outcomes,
-                                       "; ".join(summary_bits), _now())
+                                       "; ".join(summary_bits), _now(),
+                                       artifact_paths=outcome.artifact_paths)
         self._emit("result.ready", sid, passed=report.passed)
         # Model-backed read-only answer synthesis, streamed as
         # answer.token frames. This path only REASONS OVER records the
@@ -1685,7 +1686,8 @@ class CentralAgent:
 
     def _collect_evidence(self, sid: str, plan_id: str,
                             outcomes: Any, summary: str,
-                            now: str) -> Any:
+                            now: str,
+                            artifact_paths: list[str] | None = None) -> Any:
         """Evidence collection with the ambient leg attached.
 
         The request id rides the bundle for correlation; model identity
@@ -1697,7 +1699,8 @@ class CentralAgent:
         rid = (getattr(self, "_request_ids", None) or {}).get(sid)
         bundle = self.evidence.collect(
             sid, plan_id, outcomes, summary, now,
-            request_ids=[rid] if rid else [])
+            request_ids=[rid] if rid else [],
+            artifact_paths=artifact_paths or [])
         try:
             session = self.sessions.load(sid)
         except Exception:
@@ -1933,7 +1936,8 @@ class CentralAgent:
                    unmet=report.unmetAcceptance)
         bundle = self._collect_evidence(session.sessionId, plan.planId,
                                        outcome.outcomes,
-                                       f"Resumed; {report.detail}", _now())
+                                       f"Resumed; {report.detail}", _now(),
+                                       artifact_paths=outcome.artifact_paths)
         if outcome.stopped and outcome.approval_id:
             # A resumed leg that parks AGAIN must record the same two
             # things the first leg records, or a multi-task plan can

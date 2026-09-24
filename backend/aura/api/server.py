@@ -1811,17 +1811,36 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         if upload is None:
             return _err("file field required", 400)
         import tempfile, os
-        suffix = os.path.splitext(upload.filename or "")[1] or ".bin"
+        # Use the original filename for the KB record; the temp path is
+        # extraction-only and is deleted immediately after ingestion so it
+        # must never be stored as the document's durable identity.
+        original_name = (upload.filename or "").strip() or "uploaded_document"
+        # Strip any path components the client may have included (security)
+        original_name = os.path.basename(original_name) or "uploaded_document"
+        suffix = os.path.splitext(original_name)[1] or ".bin"
+        _ALLOWED_SUFFIXES = {
+            ".pdf", ".docx", ".doc", ".txt", ".md", ".rst",
+            ".csv", ".json", ".yaml", ".yml",
+            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp",
+        }
+        if suffix.lower() not in _ALLOWED_SUFFIXES:
+            return _err(f"unsupported file type: {suffix!r}", 400)
+        _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+        data = await upload.read()
+        if len(data) > _MAX_UPLOAD_BYTES:
+            return _err("file exceeds 50 MB limit", 413)
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(await upload.read())
+            tmp.write(data)
             tmp_path = tmp.name
         try:
             from ..multimodal.ingestor import DocumentIngestor
             extraction = DocumentIngestor().ingest(tmp_path)
-            doc_record = kb.add_document(tmp_path, extraction)
+            # Store with original_name so the KB record is human-readable
+            # and stable even after the temp file is deleted.
+            doc_record = kb.add_document(original_name, extraction)
             return JSONResponse({
                 "ok": True,
-                "path": tmp_path,
+                "path": original_name,
                 "chunkCount": doc_record.chunk_count,
                 "charCount": doc_record.char_count,
                 "status": doc_record.extraction_status,
@@ -1877,14 +1896,15 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     async def network_journal(request: Request) -> Response:
         try:
             from ..governance.netgate import EgressGateway
-            gw = EgressGateway.instance() if hasattr(EgressGateway, "instance") else None
+            gw = EgressGateway.instance()
             if gw is None:
-                return JSONResponse({"ok": True, "total": 0, "blocked": 0, "entries": []})
-            journal = gw.inference_journal
-            snap = journal.snapshot() if hasattr(journal, "snapshot") else {"total": 0, "blocked": 0, "entries": []}
+                return JSONResponse({"ok": True, "total": 0, "blocked": 0,
+                                     "allowed": 0, "entries": []})
+            snap = gw.inference_journal_snapshot()
             return JSONResponse({"ok": True, **snap})
         except Exception as exc:
-            return JSONResponse({"ok": True, "total": 0, "blocked": 0, "entries": [], "error": str(exc)})
+            return JSONResponse({"ok": True, "total": 0, "blocked": 0,
+                                 "allowed": 0, "entries": [], "error": str(exc)})
 
     async def artifacts_generate(request: Request) -> Response:
         try:
@@ -1931,12 +1951,47 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             if p.is_file():
                 st = p.stat()
                 items.append({
-                    "path": str(p),
                     "name": p.name,
+                    "path": str(p),
                     "sizeBytes": st.st_size,
                     "modifiedAt": st.st_mtime,
+                    "createdAt": st.st_mtime,
                 })
         return JSONResponse({"ok": True, "artifacts": items})
+
+    async def artifacts_download(request: Request) -> Response:
+        """Serve an artifact file with path confinement.
+
+        The client supplies a ``path`` query param (absolute path from
+        artifacts_list).  We resolve it and verify it stays inside the
+        artifacts directory before reading — the client path is NEVER
+        used as authority; it is only a hint that we sanitise.
+        """
+        import mimetypes
+        artifacts_dir = (S["home"] / "artifacts").resolve()
+        raw = request.query_params.get("path", "").strip()
+        if not raw:
+            return _err("path parameter required", 400)
+        from pathlib import Path as _Path
+        try:
+            target = _Path(raw).resolve()
+        except Exception:
+            return _err("invalid path", 400)
+        # Confinement: must be inside artifacts_dir, no traversal
+        try:
+            target.relative_to(artifacts_dir)
+        except ValueError:
+            return _err("path outside artifacts directory", 403)
+        if not target.is_file():
+            return _err("artifact not found", 404)
+        content_type, _ = mimetypes.guess_type(target.name)
+        content_type = content_type or "application/octet-stream"
+        safe_name = target.name.replace('"', "_")
+        return Response(
+            content=target.read_bytes(),
+            media_type=content_type,
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
 
     # helpers ---------------------------------------------------------
     def _validate_rule_issues(rule: dict) -> list[dict]:
@@ -2057,6 +2112,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/network/journal", network_journal, methods=["GET"]),
         Route("/artifacts/generate", artifacts_generate, methods=["POST"]),
         Route("/artifacts", artifacts_list, methods=["GET"]),
+        Route("/artifacts/download", artifacts_download, methods=["GET"]),
     ]
 
     app = Starlette(

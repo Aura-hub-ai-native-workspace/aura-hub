@@ -574,6 +574,29 @@ async def agent_delegate_run(inv: dict) -> dict:
         return _no(f"{node['name']} has no executable recorded in the catalogue, so it cannot be run.")
     if not resolve_agent_binary(bin_name).ok:
         return _no(f"{node['name']} is not on the coding-agent allow-list, so it was not run.")
+    # GOV_NONE approval floor: workers whose runtime AURA cannot intercept
+    # at the action level require explicit human pre-approval, because no
+    # real-time enforcement is possible. An unapproved invocation is parked
+    # here before any spawn attempt.
+    _gov_adapter = adapter_for_binary(bin_name)
+    if (_gov_adapter is None or _gov_adapter.governance == GOV_NONE) and \
+            not (inv.get("context") or {}).get("approvalId"):
+        return {
+            "ok": False,
+            "requiresApproval": True,
+            "detail": (
+                f"{node['name']} requires explicit human approval before "
+                "running: AURA has no proven real-time interception point "
+                "for this runtime (GOV_NONE). Request approval and retry "
+                "with the issued approvalId."
+            ),
+            "output": {
+                "nodeId": node["id"], "agent": node["name"],
+                "exitCode": None, "stdout": "",
+                "governanceKind": "GOV_NONE",
+                **({"role": role} if role else {}),
+            },
+        }
     spec = agent_delegate_invocation(node)
     if not spec:
         return _no(

@@ -378,6 +378,73 @@ class TestExecutorWiring:
         assert out["output"].get("scopeDeviation") is True
         assert "stopped by AURA governance" in out["detail"]
 
+    def test_gov_none_worker_blocked_without_approval(
+            self, tmp_path, monkeypatch):
+        """GOV_NONE floor: a worker with no proven interception point is
+        refused before spawning when no approvalId is present."""
+        import asyncio
+
+        import aura.executors as ex
+
+        monkeypatch.setenv("AURA_HOME", str(tmp_path))
+
+        class _OkBin:
+            ok = True
+
+        monkeypatch.setattr(ex, "resolve_agent_binary", lambda _: _OkBin())
+        run_called = []
+
+        async def fake_run(*a, **kw):
+            run_called.append(True)
+            return _FakeOut(out="should not run", code=0)
+
+        monkeypatch.setattr(ex, "run_agent", fake_run)
+        inv = {
+            "id": "inv-gov-none",
+            "input": {"task": "do it", "scopePaths": ["src"]},
+            "context": {"cwd": str(tmp_path), "taskId": "t-gn",
+                        "actor": {"kind": "agent", "id": "t"}},
+            "node": {"id": "codex-cli", "name": "Codex CLI",
+                     "binary": "codex"},
+        }
+        out = asyncio.run(ex.agent_delegate_run(inv))
+        assert out["ok"] is False
+        assert out.get("requiresApproval") is True
+        assert run_called == [], "worker must not spawn without approval"
+        assert out["output"].get("governanceKind") == "GOV_NONE"
+
+    def test_gov_none_worker_passes_floor_with_approval_token(
+            self, tmp_path, monkeypatch):
+        """GOV_NONE floor: a pre-approved invocation (approvalId present)
+        passes the floor check and proceeds past the requiresApproval gate.
+
+        codex has no verified invocation spec in this env so the run ends
+        at the next check — but the key invariant is that requiresApproval
+        is NOT returned, confirming the floor itself was cleared.
+        """
+        import asyncio
+
+        import aura.executors as ex
+
+        monkeypatch.setenv("AURA_HOME", str(tmp_path))
+
+        class _OkBin:
+            ok = True
+
+        monkeypatch.setattr(ex, "resolve_agent_binary", lambda _: _OkBin())
+        inv = {
+            "id": "inv-gov-none-approved",
+            "input": {"task": "do it", "scopePaths": ["src"]},
+            "context": {"cwd": str(tmp_path), "taskId": "t-gn2",
+                        "actor": {"kind": "agent", "id": "t"},
+                        "approvalId": "apr-abc123"},
+            "node": {"id": "codex-cli", "name": "Codex CLI",
+                     "binary": "codex"},
+        }
+        out = asyncio.run(ex.agent_delegate_run(inv))
+        assert out.get("requiresApproval") is not True, (
+            "pre-approved run must pass the GOV_NONE floor")
+
 
 class TestProcessCleanup:
     def test_timeout_kills_process_group(self, tmp_path):

@@ -220,6 +220,16 @@ class EgressGateway:
     leave running, and nothing that outlives the run it belongs to.
     """
 
+    # Process-level singleton — set in __init__, read by instance().
+    # Only ONE EgressGateway is ever active per process; tests that create
+    # one will overwrite this, which is fine since they are serial.
+    _process_instance: "EgressGateway | None" = None
+
+    @classmethod
+    def instance(cls) -> "EgressGateway | None":
+        """Return the most recently constructed EgressGateway for this process."""
+        return cls._process_instance
+
     def __init__(self, socket_path: str, domains: tuple[str, ...],
                  ports: tuple[int, ...] = DEFAULT_PORTS,
                  max_events: int = 500,
@@ -237,6 +247,8 @@ class EgressGateway:
         #: Journal of every AI inference attempt seen at this gateway.
         #: Includes both allowed and sovereign-blocked calls.
         self.inference_journal: list[InferenceJournalEntry] = []
+        # Register as the process-level singleton for network_journal endpoint.
+        EgressGateway._process_instance = self
 
     # ── lifecycle ────────────────────────────────────────────────────
     def start(self) -> None:
