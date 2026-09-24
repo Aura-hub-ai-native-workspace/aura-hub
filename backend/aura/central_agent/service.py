@@ -949,7 +949,8 @@ class CentralAgent:
             summary_bits.append("unverified: " + ", ".join(report.unverifiedActions))
         bundle = self._collect_evidence(sid, plan.planId, outcome.outcomes,
                                        "; ".join(summary_bits), _now(),
-                                       artifact_paths=outcome.artifact_paths)
+                                       artifact_paths=outcome.artifact_paths,
+                                       worker_assignments=outcome.worker_assignments)
         self._emit("result.ready", sid, passed=report.passed)
         # Model-backed read-only answer synthesis, streamed as
         # answer.token frames. This path only REASONS OVER records the
@@ -1534,6 +1535,10 @@ class CentralAgent:
         takes as long as the worker takes to die, so the caller learns
         that the request landed — not that the process is already gone.
         The `run.cancelled` event says that.
+
+        For sessions parked with no active worker (awaiting-approval,
+        planning), the cancellation is settled immediately in this call
+        since there is nothing to signal.
         """
         session = self.sessions.load(session_id)
         if session is None:
@@ -1549,6 +1554,25 @@ class CentralAgent:
             session.cancellation = {**record, "settled": False}
             self.sessions.save(session)
             self._invalidate_pending(session, record)
+            # If no worker is actively running (session is parked waiting
+            # for approval or still in planning), settle immediately —
+            # there is no process to signal and the state would never
+            # advance to "cancelled" on its own.
+            token = self.runs.token_for(session_id)
+            parked = session.state in ("awaiting-approval", "planning")
+            if parked and (token is None or not getattr(token, "running", False)):
+                summary = self._cancellation_summary(record, [], [])
+                session.cancellation = {**record, "settled": True,
+                                        "at": _now(), "performedTasks": [],
+                                        "verifiedTasks": [], "neverStarted": [],
+                                        "summary": summary}
+                settled = AgentResult(
+                    status="cancelled", outcome="cancelled",
+                    summary=summary, performed=[], verified=[],
+                    failureReason="cancelled-by-user")
+                self.sessions.finish(session, settled)
+                self.sessions.save(session)
+                self._emit("run.cancelled", session_id, **session.cancellation)
         return record
 
     def _invalidate_pending(self, session: AgentSession,
@@ -1687,14 +1711,16 @@ class CentralAgent:
     def _collect_evidence(self, sid: str, plan_id: str,
                             outcomes: Any, summary: str,
                             now: str,
-                            artifact_paths: list[str] | None = None) -> Any:
+                            artifact_paths: list[str] | None = None,
+                            worker_assignments: dict | None = None) -> Any:
         """Evidence collection with the ambient leg attached.
 
         The request id rides the bundle for correlation; model identity
         rides it only when a model call verifiably happened on a
-        contributing leg (stashed by _stream_answer) — otherwise the
-        fields stay absent, which honestly means heuristic. Authority
-        stays with the referenced audit/approval records either way.
+        contributing leg (stashed by _stream_answer or carried by a
+        routing record in worker_assignments) — otherwise the fields stay
+        absent, which honestly means heuristic. Authority stays with the
+        referenced audit/approval records either way.
         """
         rid = (getattr(self, "_request_ids", None) or {}).get(sid)
         bundle = self.evidence.collect(
@@ -1708,6 +1734,19 @@ class CentralAgent:
         if session is not None:
             provider = getattr(session, "lastModelProvider", None)
             model = getattr(session, "lastModelName", None)
+            # Fallback: extract model identity from the routing record stored
+            # in worker_assignments when _stream_answer never ran (e.g. for
+            # delegated agent tasks that never call the synthesis path).
+            if (not isinstance(provider, str) or not isinstance(model, str)):
+                for wa in (worker_assignments or {}).values():
+                    wm = wa.get("modelName")
+                    if wm:
+                        # modelId is "<endpoint_id>/<model_name>" when set
+                        mid = wa.get("modelId", "")
+                        wp = mid.split("/")[0] if "/" in mid else wa.get(
+                            "networkClass", "unknown")
+                        provider, model = wp, wm
+                        break
             if isinstance(provider, str) and isinstance(model, str):
                 bundle = bundle.model_copy(update={"modelProvider": provider,
                                                    "modelName": model})

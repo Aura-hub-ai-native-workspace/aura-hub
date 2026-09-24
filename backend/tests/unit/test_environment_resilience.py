@@ -353,7 +353,9 @@ class TestApiResilience:
         response = client.post(
             "/environment/scan", content=raw, headers={"content-type": "application/json"}
         )
-        assert response.status_code == 200
+        # Malformed bodies return 400 since BUG-11 fix; the invariant is
+        # that malformed input never causes a 5xx server error.
+        assert response.status_code < 500
 
     def test_an_unknown_id_is_answered_not_executed(self, client):
         payload = client.post("/environment/probe", json={"id": "; rm -rf /"}).json()
@@ -412,7 +414,9 @@ class TestApiResilience:
         response = client.post(
             "/environment/inventory", content=raw, headers={"content-type": "application/json"}
         )
-        assert response.status_code == 200
+        # Malformed bodies return 400 since BUG-11 fix; the invariant is
+        # that malformed input never causes a 5xx server error.
+        assert response.status_code < 500
 
     def test_inventory_pagination_is_lossless_over_the_api(self, client):
         """Paging must reach every item exactly once."""

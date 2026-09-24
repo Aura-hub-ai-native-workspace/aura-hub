@@ -25,7 +25,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from ..config import aura_home
@@ -435,7 +435,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse({
             "ok": True, "service": "aura-hub-backend",
             "health": {"status": "ok", "backend": "python"},
-            "key": {"configured": bool(S["secrets"])},
+            # scope="aura-backend" distinguishes this from the per-agent key
+            # reported by /agent-runtime/discover (agents carry their own keys)
+            "key": {"configured": bool(S["secrets"]), "scope": "aura-backend"},
             "index": {"status": "ready"},
             "project": None,
         })
@@ -1177,8 +1179,21 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
     async def fabric_approvals_decide(request: Request):
         body = await _json_body(request)
+        # Accept canonical `granted` (bool) or alias `decision: "approve"/"deny"`
+        if "granted" in body:
+            granted = bool(body["granted"])
+        elif "decision" in body:
+            decision_str = str(body["decision"]).lower()
+            if decision_str == "approve":
+                granted = True
+            elif decision_str == "deny":
+                granted = False
+            else:
+                return _err('decision must be "approve" or "deny"', 400)
+        else:
+            return _err('body must include "granted" (boolean) or "decision" ("approve"/"deny")', 400)
         decided = S["ledger"].decide(
-            request.path_params["aid"], bool(body.get("granted")),
+            request.path_params["aid"], granted,
             "user", body.get("reason"))
         if decided is None:
             return _err("this request was already decided", 409)
@@ -1829,15 +1844,20 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         data = await upload.read()
         if len(data) > _MAX_UPLOAD_BYTES:
             return _err("file exceeds 50 MB limit", 413)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        upload_dir = S["home"] / "documents"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=suffix, dir=upload_dir
+        ) as tmp:
             tmp.write(data)
             tmp_path = tmp.name
         try:
             from ..multimodal.ingestor import DocumentIngestor
             extraction = DocumentIngestor().ingest(tmp_path)
-            # Store with original_name so the KB record is human-readable
-            # and stable even after the temp file is deleted.
-            doc_record = kb.add_document(original_name, extraction)
+            # Record the document under its original filename in the isolated
+            # documents directory so the KB path never resolves to CWD.
+            doc_path = upload_dir / original_name
+            doc_record = kb.add_document(doc_path, extraction)
             return JSONResponse({
                 "ok": True,
                 "path": original_name,
@@ -2115,13 +2135,17 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/artifacts/download", artifacts_download, methods=["GET"]),
     ]
 
+    async def _handle_malformed_body(req: Request, exc: _MalformedBody) -> JSONResponse:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
     app = Starlette(
         routes=routes,
         middleware=[Middleware(CORSMiddleware,
                                allow_origin_regex=ALLOWED_ORIGIN,
                                allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                                allow_headers=["Content-Type", "x-aura-shutdown",
-                                              "Last-Event-ID"])])
+                                              "Last-Event-ID"])],
+        exception_handlers={_MalformedBody: _handle_malformed_body})
     app.state.services = S
     app.state.runner = runner
     app.state.wf_store = wf_store
@@ -2161,22 +2185,23 @@ async def automation_validate_route(request: Request):
     return JSONResponse({"issues": validate_rule(body)})
 
 
-async def _json_body(request: Request) -> dict:
-    """Parse a JSON request body defensively.
+class _MalformedBody(Exception):
+    """Raised when a request body is not valid JSON or is not a JSON object."""
 
-    A malformed payload is a client mistake, not a server fault: it must not
-    surface as an unhandled JSONDecodeError and a 500. Non-object JSON
-    (a list, string or number) is likewise not a body — callers use
-    ``body.get(...)`` unconditionally, so anything else would raise
-    AttributeError into another 500.
+
+async def _json_body(request: Request) -> dict:
+    """Parse a JSON request body, raising _MalformedBody on invalid input.
+
+    A malformed payload is a client mistake (400), not a server fault (500).
+    Callers receive a plain dict and may use .get() unconditionally.
     """
     try:
-        # Raw parse: this is the ONE place allowed to touch request.json()
-        # directly, inside the try that makes it safe.
         body = await request.json()
     except Exception:
-        return {}
-    return body if isinstance(body, dict) else {}
+        raise _MalformedBody("request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise _MalformedBody("request body must be a JSON object")
+    return body
 
 
 def _environment_ids(raw: object) -> list[str] | None:
