@@ -19,8 +19,51 @@ Tesseract OCR (system binary, not a pip package):
     macOS:         brew install tesseract
     Windows:       https://github.com/UB-Mannheim/tesseract/wiki
 AURA detects the binary at runtime — no configuration needed.
+
+Document-intelligence subsystem (Docling-backed, optional):
+
+    pip install aura-backend[docling]
+    python scripts/provision-docling-models.py
+
+    from aura.multimodal.document_engine import DocumentEngine, EngineConfig
+
+    engine = DocumentEngine(EngineConfig.from_env())
+    result = engine.convert("report.pdf")   # never raises for bad input
 """
 
+from .doctypes import (
+    ConversionError,
+    DocumentCapabilities,
+    DocumentConversionRequest,
+    DocumentConversionResult,
+    DocumentEngineHealth,
+    DocumentStatus,
+    IsolationMode,
+    OcrEngine,
+    StructuredChunk,
+    StructuredDocument,
+    StructuredImage,
+    StructuredTable,
+)
+from .document_engine import DocumentEngine, EngineConfig
 from .ingestor import DocumentIngestor, ExtractionResult, ExtractionStatus
 
-__all__ = ["DocumentIngestor", "ExtractionResult", "ExtractionStatus"]
+__all__ = [
+    "ConversionError",
+    "DocumentCapabilities",
+    "DocumentConversionRequest",
+    "DocumentConversionResult",
+    "DocumentEngine",
+    "DocumentEngineHealth",
+    "DocumentIngestor",
+    "DocumentStatus",
+    "EngineConfig",
+    "ExtractionResult",
+    "ExtractionStatus",
+    "IsolationMode",
+    "OcrEngine",
+    "StructuredChunk",
+    "StructuredDocument",
+    "StructuredImage",
+    "StructuredTable",
+]

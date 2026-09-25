@@ -44,6 +44,25 @@ artifacts = [
     "reportlab>=4.2",       # PDF generation (pure Python, no LaTeX)
 ]
 
+# Docling document intelligence (document_engine subsystem).  Install with:
+#   pip install "aura-backend[docling]"
+# Install CPU-only torch FIRST to avoid the large CUDA wheel:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch
+# Then provision the model cache (one-time download, auditable manifest):
+#   python scripts/provision-docling-models.py
+# All conversion runs locally — no cloud OCR, VLM, or document service.
+# Pinned to the version the subsystem was built and tested against;
+# lifting the pin is a deliberate upgrade with its own test run.
+docling = [
+    "docling==2.130.0",     # pipeline, backends, chunking (MIT)
+    "rapidocr-onnxruntime", # default local OCR engine (Apache-2.0)
+    "odfdo",                # OpenDocument (.odt/.ods/.odp) backend
+    # (Apache-2.0, verified from installed dist-info licenses/LICENSE)
+    # NOTE: no easyocr (torch-heavy, Asian-language win only),
+    # no tesserocr (needs system Tesseract all the same; CLI path
+    # auto-detected at runtime when tesseract-ocr is installed).
+]
+
 test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
