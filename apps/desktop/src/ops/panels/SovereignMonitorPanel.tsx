@@ -3,15 +3,24 @@ import { centralAgentClient } from '../../ai/centralAgentClient';
 
 type JournalEntry = { host: string; decision: string; sovereign_block: boolean; timestamp: string };
 type Snapshot = { total: number; blocked: number; entries: JournalEntry[] };
+type EngineHealth = {
+  available: boolean; doclingInstalled: boolean; doclingVersion: string;
+  modelsCached: boolean; ocrReady: boolean; ocrEngines: string[];
+  offlineReady: boolean; missing: string[]; detail: string;
+};
 
 export default function SovereignMonitorPanel() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
+  const [engineHealth, setEngineHealth] = useState<EngineHealth | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const poll = () => {
     centralAgentClient.networkJournal()
       .then((s) => { setSnap(s); setError(null); })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'unavailable'));
+    centralAgentClient.getDocumentEngines()
+      .then((r) => setEngineHealth(r.health))
+      .catch(() => { /* non-critical — silently skip */ });
   };
 
   useEffect(() => {
@@ -43,6 +52,40 @@ export default function SovereignMonitorPanel() {
             <div className={`text-2xl font-semibold ${snap.blocked > 0 ? 'text-fg-danger' : 'text-fg-success'}`}>{snap.blocked}</div>
             <div className="text-xs text-fg-muted">Blocked</div>
           </div>
+        </div>
+      )}
+
+      {engineHealth && (
+        <div className="rounded-xl bg-surface-subtle px-3 py-2">
+          <div className="mb-1.5 flex items-center justify-between">
+            <span className="text-xs font-medium text-fg-muted">Document engine</span>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${engineHealth.available ? 'bg-fg-success text-white' : 'bg-surface-active text-fg-muted'}`}>
+              {engineHealth.available ? 'ready' : 'limited'}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-xs">
+            <span className="text-fg-muted">Docling</span>
+            <span className={engineHealth.doclingInstalled ? 'text-fg-success' : 'text-fg-muted'}>
+              {engineHealth.doclingInstalled ? `v${engineHealth.doclingVersion}` : 'not installed'}
+            </span>
+            <span className="text-fg-muted">Model cache</span>
+            <span className={engineHealth.modelsCached ? 'text-fg-success' : 'text-fg-warning'}>
+              {engineHealth.modelsCached ? 'ready' : 'missing'}
+            </span>
+            <span className="text-fg-muted">OCR</span>
+            <span className={engineHealth.ocrReady ? 'text-fg-success' : 'text-fg-muted'}>
+              {engineHealth.ocrReady ? engineHealth.ocrEngines.join(', ') : 'none'}
+            </span>
+            <span className="text-fg-muted">Offline</span>
+            <span className={engineHealth.offlineReady ? 'text-fg-success' : 'text-fg-muted'}>
+              {engineHealth.offlineReady ? 'yes' : 'no'}
+            </span>
+          </div>
+          {engineHealth.missing.length > 0 && (
+            <p className="mt-1.5 text-[10px] text-fg-muted leading-relaxed">
+              {engineHealth.missing[0]}
+            </p>
+          )}
         </div>
       )}
 

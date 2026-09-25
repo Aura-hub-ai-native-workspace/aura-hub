@@ -547,16 +547,24 @@ export const centralAgentClient = {
   /* ── Documents / Knowledge ──────────────────────────────────────── */
 
   /** Upload a file for ingestion into the knowledge base. */
-  ingestDocument: async (file: File): Promise<{ status: string; chunk_count: number; extraction_status: string; path: string }> => {
+  ingestDocument: async (file: File): Promise<{
+    ok: boolean; path: string; chunkCount: number; charCount: number;
+    status: string; documentStatus: string; engine: string;
+    ocrUsed: string | null; pageCount: number; mimeType: string | null;
+    note: string | null; warnings: string[]; timingsMs: Record<string, number>;
+  }> => {
     const form = new FormData();
     form.append('file', file);
     const res = await fetch(`${BASE}/documents/ingest`, { method: 'POST', body: form });
     if (!res.ok) {
       let msg = `request failed (${res.status})`;
-      try { const b = await res.json() as { error?: string }; if (b.error) msg = b.error; } catch { /* keep */ }
+      try {
+        const b = await res.json() as { error?: string; note?: string };
+        if (b.note) msg = b.note; else if (b.error) msg = b.error;
+      } catch { /* keep */ }
       throw new Error(msg);
     }
-    return res.json() as Promise<{ status: string; chunk_count: number; extraction_status: string; path: string }>;
+    return res.json();
   },
 
   /** Search the knowledge base. */
@@ -566,8 +574,25 @@ export const centralAgentClient = {
 
   /** List documents in the knowledge base. */
   listDocuments: () =>
-    jget<{ documents: Array<{ path: string; chunk_count: number; extraction_status: string; ingested_at: string }> }>(
+    jget<{ documents: Array<{ path: string; chunk_count: number; extraction_status: string; ingested_at: string; engine?: string; documentStatus?: string; ocrUsed?: string | null }> }>(
       '/documents/list'),
+
+  /** Query document-engine health and capabilities. */
+  getDocumentEngines: () =>
+    jget<{
+      ok: boolean;
+      health: {
+        available: boolean; doclingInstalled: boolean; doclingVersion: string;
+        modelsCached: boolean; ocrReady: boolean; ocrEngines: string[];
+        offlineReady: boolean; missing: string[]; detail: string;
+      };
+      capabilities: {
+        doclingInstalled: boolean; doclingVersion: string; formats: Record<string, string>;
+        ocrEngines: string[]; ocrRequested: string; libreofficeAvailable: boolean;
+        tesseractAvailable: boolean; modelsCached: boolean; modelCacheDir: string;
+        offlineReady: boolean;
+      };
+    }>('/documents/engines'),
 
   /* ── Artifacts ──────────────────────────────────────────────────── */
 

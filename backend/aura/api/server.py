@@ -1849,6 +1849,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             ".pdf", ".docx", ".doc", ".txt", ".md", ".rst",
             ".csv", ".json", ".yaml", ".yml",
             ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp",
+            ".xlsx", ".xls", ".pptx", ".ppt", ".odt", ".ods", ".odp",
         }
         if suffix.lower() not in _ALLOWED_SUFFIXES:
             return _err(f"unsupported file type: {suffix!r}", 400)
@@ -1864,18 +1865,44 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             tmp.write(data)
             tmp_path = tmp.name
         try:
-            from ..multimodal.ingestor import DocumentIngestor
-            extraction = DocumentIngestor().ingest(tmp_path)
+            from ..multimodal.document_engine import DocumentEngine, EngineConfig
+            from ..multimodal.doctypes import DocumentStatus
+            engine = DocumentEngine(EngineConfig.from_env())
+            result = engine.convert(tmp_path)
+            _NON_INDEXABLE = {
+                DocumentStatus.UNSUPPORTED,
+                DocumentStatus.CORRUPT,
+                DocumentStatus.OCR_REQUIRED,
+                DocumentStatus.SUPPORTED_DEPENDENCY_MISSING,
+            }
+            if result.document_status in _NON_INDEXABLE:
+                return JSONResponse({
+                    "ok": False,
+                    "documentStatus": result.document_status.value,
+                    "engine": result.engine,
+                    "note": result.note or None,
+                    "mimeType": result.mime_type or None,
+                }, status_code=422)
+            extraction = result.to_extraction_result()
             # Record the document under its original filename in the isolated
             # documents directory so the KB path never resolves to CWD.
             doc_path = upload_dir / original_name
             doc_record = kb.add_document(doc_path, extraction)
+            warnings = [e.message for e in result.errors] if result.errors else []
             return JSONResponse({
                 "ok": True,
                 "path": original_name,
                 "chunkCount": doc_record.chunk_count,
                 "charCount": doc_record.char_count,
                 "status": doc_record.extraction_status,
+                "documentStatus": result.document_status.value,
+                "engine": result.engine,
+                "ocrUsed": result.ocr_used or None,
+                "pageCount": result.page_count,
+                "mimeType": result.mime_type or None,
+                "note": result.note or None,
+                "warnings": warnings,
+                "timingsMs": dict(result.timings_ms),
             })
         except Exception as exc:
             return _err(str(exc), 500)
@@ -1884,6 +1911,18 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+    async def documents_engines(request: Request) -> Response:
+        try:
+            from ..multimodal.document_engine import DocumentEngine, EngineConfig
+            engine = DocumentEngine(EngineConfig.from_env())
+            return JSONResponse({
+                "ok": True,
+                "health": engine.health().to_dict(),
+                "capabilities": engine.capabilities().to_dict(),
+            })
+        except Exception as exc:
+            return _err(str(exc), 500)
 
     async def knowledge_search(request: Request) -> Response:
         kb = S["kb"]
@@ -2139,6 +2178,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/agent-runtime/restore/{agent_id}", agent_runtime_restore, methods=["POST"]),
         Route("/agent-runtime/drift", agent_runtime_drift, methods=["POST"]),
         Route("/documents/ingest", documents_ingest, methods=["POST"]),
+        Route("/documents/engines", documents_engines, methods=["GET"]),
         Route("/knowledge/search", knowledge_search, methods=["GET"]),
         Route("/documents/list", documents_list, methods=["GET"]),
         Route("/network/journal", network_journal, methods=["GET"]),

@@ -41,6 +41,12 @@ EXECUTION_EXEMPTIONS: dict[str, str] = {
         "environment is the point; stdin is closed and the whole process "
         "group is signalled, asserted separately"
     ),
+    "aura/multimodal/process_supervisor.py": (
+        "document-engine process isolation: spawns a single worker process with "
+        "a hard wall-clock timeout for Docling conversion so that a hung parser "
+        "cannot block the server; stdin is not inherited and the child is "
+        "terminated on timeout"
+    ),
 }
 
 #: Ways of starting a process that the boundary would otherwise miss.

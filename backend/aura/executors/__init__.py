@@ -1285,19 +1285,41 @@ def multimodal_executors(kb, artifacts_dir=None) -> "list[ExecutorAdapter]":
         path = params.get("path", "")
         if not path:
             return {"ok": False, "detail": "path is required"}
-        from ..multimodal.ingestor import DocumentIngestor
-        extraction = DocumentIngestor().ingest(path)
+        from ..multimodal.document_engine import DocumentEngine, EngineConfig
+        from ..multimodal.doctypes import DocumentStatus
+        engine = DocumentEngine(EngineConfig.from_env())
+        result = engine.convert(path)
+        _NON_INDEXABLE = {
+            DocumentStatus.UNSUPPORTED,
+            DocumentStatus.CORRUPT,
+            DocumentStatus.OCR_REQUIRED,
+            DocumentStatus.SUPPORTED_DEPENDENCY_MISSING,
+        }
+        if result.document_status in _NON_INDEXABLE:
+            return {
+                "ok": False,
+                "detail": result.note or result.document_status.value,
+                "documentStatus": result.document_status.value,
+                "engine": result.engine,
+            }
+        extraction = result.to_extraction_result()
         record = kb.add_document(path, extraction)
+        warnings = [e.message for e in result.errors] if result.errors else []
         # CRITICAL: document text is NOT included — only structural metadata
         return _ok(
             f"Ingested {_Path(path).name}: {record.chunk_count} chunk(s), "
             f"status={record.extraction_status}",
             {
                 "status": record.extraction_status,
+                "documentStatus": result.document_status.value,
+                "engine": result.engine,
+                "ocrUsed": result.ocr_used or None,
                 "chunkCount": record.chunk_count,
                 "charCount": record.char_count,
+                "pageCount": result.page_count,
                 "docId": record.doc_id,
-                "note": record.extraction_note or None,
+                "note": result.note or None,
+                "warnings": warnings,
             },
         )
 
