@@ -133,6 +133,7 @@ class TestA06toA10_ModelRouting:
         result = tc.classify("Implement a Python parser for the inspection report format")
         assert result == "coding"
 
+    @pytest.mark.skipif(_ollama_available(), reason="SKIP-INFRA: Ollama IS running; use test_a07_model_registry_populated_with_ollama instead")
     def test_a07_model_registry_empty_without_ollama(self):
         """A07: ModelRegistry.discover_from_ollama() silently returns empty when
         Ollama is not running. This is the correct behavior — no crash, no
