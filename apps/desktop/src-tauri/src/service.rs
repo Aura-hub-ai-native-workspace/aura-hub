@@ -4,9 +4,11 @@
 //! (`npm run ai`). In a packaged application there is no developer and no
 //! terminal, so the shell has to own that lifecycle itself:
 //!
-//!     look at the port → start if needed → wait for health → show window
-//!                                                    ↓
-//!                                          graceful shutdown on exit
+//! ```text
+//! look at the port → start if needed → wait for health → show window
+//!                                                ↓
+//!                                      graceful shutdown on exit
+//! ```
 //!
 //! Two rules shape everything here.
 //!

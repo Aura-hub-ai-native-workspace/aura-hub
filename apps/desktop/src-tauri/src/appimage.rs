@@ -13,10 +13,12 @@
  * So the application integrates itself, on request, using only the standard
  * XDG mechanisms every one of those desktops already reads:
  *
- *     ~/.local/lib/aura-hub/AURA-Hub.AppImage        the application
- *     ~/.local/share/applications/com.aura.hub.desktop   the launcher entry
- *     ~/.local/share/icons/hicolor/<size>/apps/aura-hub.png   the icon
- *     ~/.local/bin/aura-hub                          convenience symlink
+ * ```text
+ * ~/.local/lib/aura-hub/AURA-Hub.AppImage        the application
+ * ~/.local/share/applications/com.aura.hub.desktop   the launcher entry
+ * ~/.local/share/icons/hicolor/<size>/apps/aura-hub.png   the icon
+ * ~/.local/bin/aura-hub                          convenience symlink
+ * ```
  *
  * Everything is per-user. Nothing here needs root, writes outside $HOME, or
  * touches a system path — which is also why it works identically on all four

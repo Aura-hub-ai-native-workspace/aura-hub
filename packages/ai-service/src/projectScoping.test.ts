@@ -51,6 +51,12 @@ describe('inspect follows the requested project, not the mount', () => {
     const b = manager.addProject({ name: 'projB', path: dirB }).project;
     manager.open(a.id);
     await manager.pipeline.whenIndexed();
+    // addProject fires background indexing for every added project (to build
+    // proactive understanding). Await A's background index so its identity is
+    // stable before we snapshot — we want to verify inspect(B) doesn't touch
+    // A, not that addProject(A) doesn't touch A (which it legitimately does).
+    await manager.indexProjectById(a.id);
+    const aIdentityBefore = loadIdentity(a.id);
 
     const meta = await manager.pipeline.inspect('what does this project do', undefined, {
       id: b.id, path: b.path, name: b.name,
@@ -58,9 +64,10 @@ describe('inspect follows the requested project, not the mount', () => {
 
     // The report names the project that was actually read.
     expect(meta.projectId).toBe(b.id);
-    // Identity was generated for B — and only for B.
+    // Identity was generated for B.
     expect(loadIdentity(b.id)).not.toBeNull();
-    expect(loadIdentity(a.id)).toBeNull();
+    // inspect(B) must not have modified A's identity in any way.
+    expect(loadIdentity(a.id)).toEqual(aIdentityBefore);
   });
 
   it('falls back to the mount when no project is requested (legacy path)', async () => {
