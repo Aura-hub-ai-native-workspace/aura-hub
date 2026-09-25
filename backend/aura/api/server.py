@@ -28,6 +28,18 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+# python-multipart is required for Starlette's request.form() used by
+# POST /documents/ingest. Starlette raises an AssertionError deep inside a
+# request handler if it is absent, producing an unexplained HTTP 500. This
+# guard surfaces the missing dependency at server import time instead.
+try:
+    import multipart as _mp  # noqa: F401  (python-multipart package)
+except ImportError as _exc:
+    raise ImportError(
+        "python-multipart is required by POST /documents/ingest but is not installed. "
+        "Add it to the backend dependencies: uv add python-multipart"
+    ) from _exc
+
 from ..config import aura_home
 from ..fabric import CapabilityFabric, describe_capability
 from ..jsonutil import dumps_compact, read_json_file, write_json_atomic
@@ -2194,7 +2206,14 @@ async def _json_body(request: Request) -> dict:
 
     A malformed payload is a client mistake (400), not a server fault (500).
     Callers receive a plain dict and may use .get() unconditionally.
+
+    Empty bodies are treated as {} — many endpoints accept optional JSON
+    bodies and callers rely on body.get() returning None for absent fields.
+    Only a non-empty body that fails to parse raises _MalformedBody.
     """
+    raw = await request.body()
+    if not raw.strip():
+        return {}
     try:
         body = await request.json()
     except Exception:

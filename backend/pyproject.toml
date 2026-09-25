@@ -15,6 +15,9 @@ dependencies = [
     # deliberate upgrade with its own test run, not a resolver's decision.
     "starlette>=0.37,<1",
     "uvicorn>=0.30",
+    # Required by Starlette's request.form() for multipart/form-data uploads.
+    # Without it the server starts fine but POST /documents/ingest returns 500.
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
