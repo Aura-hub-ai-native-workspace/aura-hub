@@ -54,6 +54,138 @@ unshipped work as shipped): provider system hardening (centralized
 provider/model validation, error translation), the Novita AI adapter,
 and a window-manager rework (floating panels, workspace canvas).
 
+## [0.1.16] - 2026-09-26 — Local Document Intelligence & Private Remote Inference
+
+Documents that live on your machine, indexed on your machine, answered from
+your machine — through an OpenAI-compatible endpoint you choose. Nothing
+about a scanned PDF's contents leaves this laptop until you point the
+Central Agent at a private model server you already run.
+
+### Added
+
+- **Document intelligence via Docling 2.130.0** — scanned PDFs, DOCX,
+  XLSX, PPTX, ODT, images and other formats convert locally through the
+  `DocumentEngine` boundary. Uses RapidOCR for text extraction when no
+  text layer is present. Optional install (see below).
+- **Local Knowledge Base retrieval** — every ingested document is
+  chunked, indexed with BM25, and searchable through `knowledge.search`.
+  Search runs on chunk text plus per-chunk source citations; no chunk
+  content leaves the machine until you send it to a model.
+- **Source-grounded Central Agent answers** — the agent's answer
+  synthesizer now receives the retrieved chunks and cites them by
+  path/score. Chunk text is wrapped as `<untrusted-data>` in the model
+  prompt so instructions inside a document cannot override the user or
+  the system rules.
+- **OpenAI-compatible remote provider support** — the existing
+  provider registry already spoke `POST {baseUrl}/chat/completions`;
+  this release wires it end-to-end for private Ollama servers reached
+  over Tailscale or a LAN. Keyless authentication for servers that
+  authenticate by network location; `networkClass: "private"` skips
+  the sovereign-mode cloud block. Configure your endpoint in
+  `~/.aura/agent/providers.json` — no example carries a personal server
+  or credential.
+- **Document engine health endpoint** — `GET /documents/engines`
+  reports Docling install status, model cache readiness, OCR engines,
+  and offline readiness. The desktop surfaces this in the Sovereign
+  Monitor panel so a user knows before uploading whether their setup
+  will actually convert the file.
+- **`documents/ingest` API** — accepts 19 file types (PDF, DOCX, XLSX,
+  PPTX, ODT, TXT, MD, and image formats), maps `DocumentStatus` to
+  clean HTTP responses (200 for indexable outcomes, 422 for
+  `UNSUPPORTED` / `CORRUPT` / `OCR_REQUIRED` /
+  `SUPPORTED_DEPENDENCY_MISSING`), and reports engine, OCR engine
+  used, page count, warnings, timings.
+- **`DocumentsPanel` and `SovereignMonitorPanel` desktop UI** —
+  drag-and-drop upload with engine + OCR badges on the result,
+  extended accept types, live model-cache health card, offline-ready
+  flag, and a gap-list hint when a user needs to install a dependency
+  or provision models.
+- **Zero-network document conversion path** — regression test
+  (acceptance A12) monkeypatches `socket.socket.connect` during a
+  native conversion and asserts no calls were made. Docling
+  provisioning (`scripts/provision-docling-models.py`) is the only
+  time the document subsystem uses the network, and it runs only when
+  a user runs it deliberately.
+- **Grounded-answer regression suite** —
+  `backend/tests/unit/test_grounded_answer_wiring.py` locks five
+  seams: `knowledge.search` emits fenced-source stdout, empty results
+  render honestly, ContextAssembler exposes the whole capability
+  manifest, `audit-only` tasks promote their outcome to verified so
+  retrieved output reaches the synthesizer, and the source fence
+  survives even for prompt-injection strings inside documents.
+
+### Changed
+
+- **Answer synthesis reads retrieved chunks.** The Central Agent's
+  synthesizer already knew how to stream a model-composed answer over
+  `verified_outputs[task_id].stdout`; `knowledge.search` did not emit
+  that field, so the model saw an empty evidence bundle and wrote
+  "1 task executed, no content" instead of an answer. Fixed at the
+  executor: each retrieved chunk is rendered as
+  `[source=<path> score=X.XXX]\n<text>\n[/source]`, capped per-chunk
+  and overall.
+- **Intent compiler sees the full capability manifest.** The context
+  bundle was slicing `capabilities[:20]`, hiding `knowledge.search`
+  (position 36 in the canonical list) and `document.ingest` (37) from
+  the intent-compilation model prompt. The model then honestly
+  reported those capabilities as unavailable. Manifest is bounded
+  (~40 items); the bundle's `render()` still caps output by char
+  budget.
+- **`memory.search` and `knowledge.search` descriptions sharpened.**
+  The model was picking `memory.search` (project engineering-decision
+  log) for "search the knowledge base" because the two descriptions
+  competed for the same phrasing. Descriptions now name what each
+  capability is *not* for, so natural-language questions like
+  "search my documents" and "what does my PDF say" reliably reach
+  `knowledge.search`.
+- **Audit-only tasks stash their output.** Fabric read-back
+  verification returns `passed = None` for tasks with no mechanical
+  check (`knowledge.search`, `memory.search`). The old code copied
+  `None` into `TaskOutcome.verified`, causing `_note_task_closed` to
+  skip the evidence filing. For `audit-only + state=done + performed`,
+  `verified` is now promoted to `True` so retrieved output actually
+  reaches the synthesizer.
+
+### Fixed
+
+- **Empty-body regression on optional-body endpoints.** `POST
+  /workflows/{wid}/run` and siblings returned HTTP 400 when the caller
+  sent no body; empty bodies now parse as `{}`.
+- **`python-multipart` missing from install.** `POST
+  /documents/ingest` returned HTTP 500 because Starlette needs
+  `python-multipart` for multipart parsing; declared in
+  `pyproject.toml` with an explicit startup import guard so absence is
+  reported before the first upload rather than at request time.
+- **Test-suite environment guards.** Ollama-sensitive and TS-infra
+  tests now report skips honestly rather than silently timing out when
+  a dependency isn't present.
+
+### Known limitations
+
+- **Docling is optional.** The base v0.1.16 install carries the
+  runtime that would accept a document, not the Docling libraries
+  themselves. Enable with `pip install "aura-backend[docling]"` after
+  installing CPU-only torch first, then run
+  `python scripts/provision-docling-models.py` once (auditable
+  `MANIFEST.json`, ~2 GB download). When Docling is missing,
+  `documents/ingest` returns HTTP 422 with
+  `documentStatus="supported_dependency_missing"` and the desktop's
+  Sovereign Monitor panel names what to install.
+- **Remote inference is user-configured.** This release ships with no
+  default provider and no bundled credentials. To use a private
+  Ollama server (e.g. over Tailscale), write a `providers.json` under
+  `~/.aura/agent/providers.json` with your own `baseUrl` and `model`.
+  No public cloud provider is contacted as a fallback — if your
+  configured provider is unreachable the agent reports the failure
+  with a structured category, never a silent switch.
+- **OCR fidelity is model-boundary sensitive.** RapidOCR occasionally
+  truncates trailing characters on rendered images with unusual glyph
+  runs (observed: 20 of 28 characters recovered on one fixture; full
+  recovery on another). The agent is designed to quote what OCR
+  extracted verbatim and NOT invent the missing tail — the correct
+  behaviour is a partial answer with an honest note, not a fabricated
+  completion.
+
 ## [0.1.14] - 2026-09-20 — Ask AURA / Workspace Separation
 
 Ask AURA advises; the Workspace executes. The two surfaces shared one
