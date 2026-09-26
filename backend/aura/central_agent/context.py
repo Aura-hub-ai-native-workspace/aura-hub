@@ -196,7 +196,8 @@ class ContextAssembler:
     def __init__(self, workflow_lister=None, capability_lister=None,
                  approval_lister=None, session_loader=None,
                  project_scanner=None, project_artifacts=None,
-                 capability_summary=None, project_inspect=None) -> None:
+                 capability_summary=None, project_inspect=None,
+                 document_lister=None) -> None:
         self._workflows = workflow_lister or (lambda: [])
         self._capabilities = capability_lister or (lambda: [])
         self._approvals = approval_lister or (lambda: [])
@@ -209,6 +210,15 @@ class ContextAssembler:
         # the working project's own markers (unexecuted data).
         self._capability_summary = capability_summary
         self._project_inspect = project_inspect
+        # Knowledge-base document inventory (Phase 16). The intent
+        # compiler cannot pick knowledge.search for "what does my PDF
+        # say" if it has no evidence a document was ingested — so the
+        # model asks a clarifying question the user just answered by
+        # uploading a file. Surface a bounded list here so the model
+        # can decide without re-asking. NEVER carries document text —
+        # only filenames + counts — because content is untrusted data
+        # and belongs in verified_outputs, not planning context.
+        self._documents = document_lister or (lambda: [])
 
     def assemble(self, session_id: str | None = None,
                  project_path: str | None = None,
@@ -227,6 +237,29 @@ class ContextAssembler:
                 kind="capability",
                 text=f"{c.id}: {c.description} (risk {c.risk})",
                 provenance=PROVENANCE_SYSTEM))
+        # Ingested documents: filenames only, bounded. Lets the intent
+        # compiler pick knowledge.search for "what does my PDF say"
+        # without asking a clarifying question the user just answered
+        # by uploading. NEVER includes chunk text — content is untrusted
+        # data and reaches the model through verified_outputs after a
+        # governed retrieval, not through planning context.
+        try:
+            docs = list(self._documents() or [])[:MAX_ITEMS_PER_SOURCE]
+        except Exception:  # noqa: BLE001 — must not break intent
+            docs = []
+        for d in docs:
+            path = str(d.get("path") or d.get("filename") or "").strip()
+            if not path:
+                continue
+            filename = path.rsplit("/", 1)[-1][:200]
+            chunks = d.get("chunk_count") or d.get("chunkCount") or 0
+            mime = d.get("mime_type") or d.get("mimeType") or ""
+            bundle.items.append(ContextItem(
+                kind="document",
+                text=(f"{filename}"
+                      + (f" ({chunks} chunk(s))" if chunks else "")
+                      + (f" [{mime}]" if mime else "")),
+                provenance=PROVENANCE_STORE))
         wfs = self._workflows()[:MAX_ITEMS_PER_SOURCE]
         for w in wfs:
             bundle.items.append(ContextItem(

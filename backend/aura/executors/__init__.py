@@ -1196,9 +1196,9 @@ CANONICAL_INTERNAL_CAPABILITIES: list[dict] = [
         "input": [], "output": "Workflow inventory", "verify": None,
     },
     {
-        "id": "knowledge.search", "name": "Search knowledge base",
+        "id": "knowledge.search", "name": "Search uploaded documents / knowledge base",
         "category": "knowledge", "surface": "aura-internal",
-        "description": "BM25 full-text search over locally ingested documents.",
+        "description": "BM25 full-text search over locally ingested documents (PDFs, DOCX, images, TXT) and the knowledge base. Use this for questions about uploaded documents, scanned files, or 'what does the document say'. Not for engineering-decision history — use memory.search for that.",
         "risk": "low", "permissions": ["aura.read"],
         "input": [
             {"name": "query", "type": "string", "required": True,
