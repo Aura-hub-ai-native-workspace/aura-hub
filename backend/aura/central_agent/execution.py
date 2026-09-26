@@ -686,11 +686,24 @@ class ExecutionController:
         if (invocation.get("output") or {}).get("cancelled"):
             state = "cancelled"
             performed = False
+        # Audit-only tasks (knowledge.search, memory.search, ...) have no
+        # fabric-level read-back check — the invocation record IS the
+        # verification. When the fabric verifier reports None (no check
+        # configured) and the plan declares audit-only, treat the task as
+        # verified so its output reaches verified_outputs and downstream
+        # answer synthesis (Phase 15 fix: without this the model never
+        # sees retrieved knowledge chunks).
+        fabric_verified = invocation["verification"]["passed"]
+        task_verify_kind = getattr(
+            getattr(task, "verification", None), "kind", None)
+        if fabric_verified is None and state == "done" and \
+                performed and task_verify_kind == "audit-only":
+            fabric_verified = True
         result.outcomes.append(TaskOutcome(
             taskId=task.id,
             state=state,  # type: ignore[arg-type]
             performed=performed,
-            verified=invocation["verification"]["passed"],
+            verified=fabric_verified,
             invocationIds=[invocation["invocationId"]],
             approvalId=invocation.get("approvalId"),
             detail=invocation["detail"],

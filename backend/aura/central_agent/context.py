@@ -215,7 +215,13 @@ class ContextAssembler:
                  editor_block: str | None = None,
                  project_id: str | None = None) -> ContextBundle:
         bundle = ContextBundle()
-        caps = self._capabilities()[:MAX_ITEMS_PER_SOURCE]
+        # The fabric capability manifest is the model's action space —
+        # truncating it silently blinds the intent compiler to real,
+        # registered capabilities (bug found in Phase 15: knowledge.search
+        # and document.ingest were being cut off, causing the model to
+        # claim they were unavailable). The manifest is bounded to ~40
+        # items by design; render() still caps output by char budget.
+        caps = self._capabilities()
         for c in caps:
             bundle.items.append(ContextItem(
                 kind="capability",

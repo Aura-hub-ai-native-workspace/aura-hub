@@ -422,8 +422,11 @@ class CentralAgent:
         # the fenced editor block must not steer classification. The
         # block still reaches model-backed compilation through the
         # bundle (labelled data), and worker delegation below.
+        # 8k chars accommodates the full 40-capability manifest plus
+        # workflows/approvals/session/project items; the intent compiler
+        # must see the whole action space or it fabricates unavailability.
         intent = self.intents.compile(user_message,
-                                      context_summary=bundle.render(4000))
+                                      context_summary=bundle.render(8000))
         if editor_block and getattr(intent, "delegateTask", None):
             # AURA-owned composition, re-validated downstream by the
             # planner and the task contract — the worker sees the code

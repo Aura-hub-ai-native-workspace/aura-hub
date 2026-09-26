@@ -1274,9 +1274,36 @@ def multimodal_executors(kb, artifacts_dir=None) -> "list[ExecutorAdapter]":
         if not query:
             return {"ok": False, "detail": "query is required"}
         results = kb.search_with_context(query, top_k=top_k)
+        # Emit stdout so the Central Agent's answer-synthesizer can feed
+        # retrieved chunks to the model. Each excerpt is fenced with its
+        # source path so the synthesizer's prompt can treat it as untrusted
+        # data. Per-chunk cap keeps a single big doc from starving the
+        # context; overall cap matches other executors' stdout budget.
+        _PER_CHUNK_CHARS = 1_200
+        _MAX_STDOUT_CHARS = 8_000
+        lines: list[str] = []
+        for r in results:
+            data = r.to_dict() if hasattr(r, "to_dict") else r
+            text = (data.get("text") or "").strip()
+            if not text:
+                continue
+            src = data.get("source") or data.get("path") or "unknown"
+            score = data.get("score")
+            score_str = f" score={score:.3f}" if isinstance(score, (int, float)) else ""
+            excerpt = text[:_PER_CHUNK_CHARS]
+            if len(text) > _PER_CHUNK_CHARS:
+                excerpt += " …[truncated]"
+            lines.append(
+                f"[source={src}{score_str}]\n{excerpt}\n[/source]")
+            if sum(len(x) for x in lines) >= _MAX_STDOUT_CHARS:
+                lines.append("…[additional results omitted]")
+                break
+        stdout = "\n\n".join(lines) if lines else "(no results)"
         return _ok(
             f"{len(results)} result(s) for query: {query!r}",
-            {"results": [r.to_dict() for r in results], "query": query},
+            {"results": [r.to_dict() for r in results],
+             "query": query,
+             "stdout": stdout},
         )
 
     # ── document.ingest ─────────────────────────────────────────────────
