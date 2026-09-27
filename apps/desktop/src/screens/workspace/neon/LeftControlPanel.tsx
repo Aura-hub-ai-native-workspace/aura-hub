@@ -1,5 +1,6 @@
 import { Icon, IconButton, type IconName } from '@aura/ui';
 import type { ProjectRecord } from '../../../ai/aiClient';
+import { AutonomyToggle } from './AutonomyToggle';
 import type { WorkerDescriptor } from '../../../ai/workerClient';
 import type { ToolSlot } from '../../../workspace/toolSlots';
 import type { WorkerSlot } from '../../../workspace/workerSlots';
@@ -53,6 +54,8 @@ export function LeftControlPanel({
   onConnectWorker,
   onDisconnectWorker,
   agentBusy,
+  autonomyBusy,
+  onToggleAutonomy,
 }: {
   /** The workspace's three active tool slots, filled or empty. */
   toolSlots: ToolSlot[];
@@ -90,6 +93,10 @@ export function LeftControlPanel({
   onDisconnectWorker: (id: string) => void;
   /** True while AURA is working, so the graph can breathe. */
   agentBusy: boolean;
+  /** True while an autonomy opt-in/out round-trips. */
+  autonomyBusy: boolean;
+  /** Explicit per-project autonomous-mode opt-in/out. */
+  onToggleAutonomy: (enabled: boolean) => void;
 }) {
   const connected = workers.filter((w) => w.connected).length;
   const governed = workers.filter((w) => w.governance === 'FULLY_GOVERNED').length;
@@ -108,7 +115,7 @@ export function LeftControlPanel({
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-[17px] font-semibold tracking-[-0.01em] text-text">
-            AURA <span className="text-neon-blue">Hub</span>
+            AURA <span className="text-ws-ink-blue">Hub</span>
           </span>
           <span className="block truncate text-[11.5px] text-text-subtle">
             One Prompt. Multiple Minds.
@@ -121,7 +128,7 @@ export function LeftControlPanel({
         <p
           role="alert"
           data-testid="worker-error"
-          className="rounded-lg border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-2.5 py-1.5 text-[11px] text-neon-danger"
+          className="rounded-lg border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-2.5 py-1.5 text-[11px] text-ws-bad"
         >
           {workersError}
         </p>
@@ -151,12 +158,12 @@ export function LeftControlPanel({
         data-testid="worker-readiness"
         className="flex items-center justify-center gap-1.5 text-[10.5px] text-text-subtle"
       >
-        <span className="font-semibold text-neon-success">{connected}</span> of{' '}
+        <span className="font-semibold text-ws-ok">{connected}</span> of{' '}
         <span className="font-semibold">{workers.length}</span> connected
         {governed > 0 && (
           <>
             {' · '}
-            <span className="font-semibold text-neon-success">{governed}</span> governed live
+            <span className="font-semibold text-ws-ok">{governed}</span> governed live
           </>
         )}
         <button
@@ -190,6 +197,22 @@ export function LeftControlPanel({
         </label>
       )}
 
+      {/* Explicit autonomy opt-in, beside the project it governs. Off by
+          default; on, routine scoped work inside this project runs
+          without approval gates. Destructive and out-of-project actions
+          always still ask. */}
+      {hasProject && (
+        <div className="flex items-center">
+          <AutonomyToggle
+            projectId={projectId}
+            projectName={projects.find((p) => p.id === projectId)?.name ?? null}
+            autonomous={projects.find((p) => p.id === projectId)?.autonomous === true}
+            busy={autonomyBusy}
+            onToggle={onToggleAutonomy}
+          />
+        </div>
+      )}
+
       {/* The rail's own way into worker management, kept for the case a
           slot cannot serve: it says which surface it opens without
           claiming a slot, and the surface fills the first free one (or
@@ -203,7 +226,7 @@ export function LeftControlPanel({
         type="button"
         onClick={() => onAddWorker(null)}
         data-testid="add-worker-open"
-        className="neon-focus inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-xl border border-[rgba(122,92,255,0.4)] bg-[rgba(122,92,255,0.1)] text-[12px] font-semibold text-[#c9bcff] transition-colors hover:bg-[rgba(122,92,255,0.18)]"
+        className="neon-focus inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-xl border border-[rgba(122,92,255,0.4)] bg-[rgba(122,92,255,0.1)] text-[12px] font-semibold text-ws-ink transition-colors hover:bg-[rgba(122,92,255,0.18)]"
       >
         <Icon name="plus" size={14} />
         Add Worker

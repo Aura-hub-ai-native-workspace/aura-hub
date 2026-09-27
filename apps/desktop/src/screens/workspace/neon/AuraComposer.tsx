@@ -31,7 +31,7 @@ export function AuraComposer({
     <div className="mt-auto pt-3">
       <div
         className={cn(
-          'relative rounded-2xl border bg-[rgba(13,19,38,0.85)] p-3 transition-colors',
+          'relative rounded-2xl border bg-ws-pop p-3 transition-colors',
           busy
             ? 'border-[rgba(32,211,255,0.35)]'
             : 'border-[rgba(125,146,255,0.32)] focus-within:border-[rgba(125,146,255,0.6)]',

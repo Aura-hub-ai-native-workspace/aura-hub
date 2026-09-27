@@ -27,9 +27,9 @@ import type { WorkerDescriptor } from '../ai/workerClient';
  */
 
 const LIFECYCLE_TONE: Record<string, string> = {
-  CONNECTED: 'border-[rgba(31,211,138,0.5)] bg-[rgba(31,211,138,0.12)] text-neon-success',
-  DISCOVERED: 'border-[rgba(255,181,71,0.45)] bg-[rgba(255,181,71,0.1)] text-neon-warning',
-  NOT_CONNECTED: 'border-white/12 bg-white/5 text-text-muted',
+  CONNECTED: 'border-[rgba(31,211,138,0.5)] bg-[rgba(31,211,138,0.12)] text-ws-ok',
+  DISCOVERED: 'border-[rgba(255,181,71,0.45)] bg-[rgba(255,181,71,0.1)] text-ws-warn',
+  NOT_CONNECTED: 'border-line bg-white/5 text-text-muted',
 };
 
 const REASON_LABEL: Record<string, string> = {
@@ -70,10 +70,10 @@ function WorkerRow({
       data-testid="add-worker-row"
       data-worker-id={worker.id}
       data-connected={worker.connected}
-      className="rounded-xl border border-[rgba(125,146,255,0.22)] bg-[rgba(13,19,38,0.6)] px-4 py-3"
+      className="rounded-xl border border-[rgba(125,146,255,0.22)] bg-ws-soft px-4 py-3"
     >
       <div className="flex items-start gap-3">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[rgba(125,146,255,0.28)] bg-[rgba(10,16,34,0.9)] text-[13px] font-semibold text-[#8fb0ff]">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[rgba(125,146,255,0.28)] bg-ws-soft text-[13px] font-semibold text-ws-ink-blue">
           {worker.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
         </span>
         <span className="min-w-0 flex-1">
@@ -89,7 +89,7 @@ function WorkerRow({
 
       <ul className="mt-2 space-y-0.5 text-[11.5px]">
         <li className="flex items-baseline gap-1.5">
-          <span className={worker.installed ? 'text-neon-success' : 'text-text-subtle'}>
+          <span className={worker.installed ? 'text-ws-ok' : 'text-text-subtle'}>
             {worker.installed ? '✓' : '○'}
           </span>
           <span className="text-text-muted">
@@ -97,7 +97,7 @@ function WorkerRow({
           </span>
         </li>
         <li className="flex items-baseline gap-1.5">
-          <span className={worker.connected ? 'text-neon-success' : 'text-text-subtle'}>
+          <span className={worker.connected ? 'text-ws-ok' : 'text-text-subtle'}>
             {worker.connected ? '✓' : '○'}
           </span>
           <span className="text-text-muted">
@@ -130,7 +130,7 @@ function WorkerRow({
                     ? `Put ${worker.name} in the first free worker slot. Nothing is installed or connected.`
                     : 'All 6 workspace worker slots are occupied.'
             }
-            className="neon-focus rounded-lg border border-[rgba(122,92,255,0.5)] bg-[rgba(122,92,255,0.14)] px-3 py-1.5 text-[12px] font-semibold text-[#c9bcff] transition-colors hover:bg-[rgba(122,92,255,0.22)] disabled:cursor-not-allowed disabled:opacity-40"
+            className="neon-focus rounded-lg border border-[rgba(122,92,255,0.5)] bg-[rgba(122,92,255,0.14)] px-3 py-1.5 text-[12px] font-semibold text-ws-ink transition-colors hover:bg-[rgba(122,92,255,0.22)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             {placed
               ? 'In workspace'
@@ -145,7 +145,7 @@ function WorkerRow({
           <>
             <span
               data-testid="add-worker-added"
-              className="rounded-lg border border-[rgba(31,211,138,0.45)] bg-[rgba(31,211,138,0.1)] px-3 py-1.5 text-[12px] font-semibold text-neon-success"
+              className="rounded-lg border border-[rgba(31,211,138,0.45)] bg-[rgba(31,211,138,0.1)] px-3 py-1.5 text-[12px] font-semibold text-ws-ok"
             >
               Added
             </span>
@@ -166,7 +166,7 @@ function WorkerRow({
             onClick={onConnect}
             disabled={busy}
             data-testid="add-worker-connect"
-            className="neon-focus rounded-lg border border-[rgba(122,92,255,0.5)] bg-[rgba(122,92,255,0.14)] px-3 py-1.5 text-[12px] font-semibold text-[#c9bcff] transition-colors hover:bg-[rgba(122,92,255,0.22)] disabled:opacity-50"
+            className="neon-focus rounded-lg border border-[rgba(122,92,255,0.5)] bg-[rgba(122,92,255,0.14)] px-3 py-1.5 text-[12px] font-semibold text-ws-ink transition-colors hover:bg-[rgba(122,92,255,0.22)] disabled:opacity-50"
           >
             {busy ? 'Connecting…' : 'Connect'}
           </button>
@@ -229,7 +229,7 @@ export function AddWorkerPanel({
         </p>
       </div>
 
-      <label className="flex items-center gap-2 rounded-xl border border-[rgba(125,146,255,0.32)] bg-[rgba(13,19,38,0.85)] px-3 py-2.5 focus-within:border-[rgba(125,146,255,0.6)]">
+      <label className="flex items-center gap-2 rounded-xl border border-[rgba(125,146,255,0.32)] bg-ws-input px-3 py-2.5 focus-within:border-[rgba(125,146,255,0.6)]">
         <Icon name="search" size={15} className="shrink-0 text-text-subtle" />
         <span className="sr-only">Search workers</span>
         <input
@@ -244,7 +244,7 @@ export function AddWorkerPanel({
       {slot && (
         <p
           data-testid="add-worker-replacing"
-          className="rounded-lg border border-[rgba(122,92,255,0.4)] bg-[rgba(122,92,255,0.1)] px-3 py-2 text-[11.5px] text-[#c9bcff]"
+          className="rounded-lg border border-[rgba(122,92,255,0.4)] bg-[rgba(122,92,255,0.1)] px-3 py-2 text-[11.5px] text-ws-ink"
         >
           {slot.name
             ? `Choosing a worker puts it in slot ${slot.index + 1}, in place of ${slot.name}. Nothing is uninstalled or disconnected.`
@@ -255,7 +255,7 @@ export function AddWorkerPanel({
       {onPlace && !slot && !hasFreeSlot && (
         <p
           data-testid="add-worker-full"
-          className="rounded-lg border border-[rgba(255,181,71,0.42)] bg-[rgba(255,181,71,0.1)] px-3 py-2 text-[11.5px] text-neon-warning"
+          className="rounded-lg border border-[rgba(255,181,71,0.42)] bg-[rgba(255,181,71,0.1)] px-3 py-2 text-[11.5px] text-ws-warn"
         >
           All 6 workspace worker slots are occupied. Use Replace on a worker in the
           graph to swap one.
@@ -263,7 +263,7 @@ export function AddWorkerPanel({
       )}
 
       {error && (
-        <p role="alert" className="rounded-lg border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-3 py-2 text-[12px] text-neon-danger">
+        <p role="alert" className="rounded-lg border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-3 py-2 text-[12px] text-ws-bad">
           {error}
         </p>
       )}

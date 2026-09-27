@@ -33,7 +33,7 @@ export function GlassCard({
   return (
     <div
       className={cn(
-        'relative rounded-lg border bg-gradient-to-b from-[rgba(20,28,52,0.92)] to-[rgba(9,13,26,0.94)] shadow-card',
+        'relative rounded-lg border bg-gradient-to-b from-[var(--ws-grad-from)] to-[var(--ws-grad-to)] shadow-card',
         'before:pointer-events-none before:absolute before:inset-x-4 before:top-0 before:h-px before:bg-gradient-to-r before:from-transparent before:via-[rgba(160,180,255,0.5)] before:to-transparent',
         blur && 'backdrop-blur-md',
         TINT[tint],

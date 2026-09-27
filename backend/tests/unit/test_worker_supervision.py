@@ -49,10 +49,22 @@ class TestValidateScopePaths:
         assert reason
 
     def test_traversal_is_refused(self):
-        for hostile in (["../etc"], ["src/../../x"], ["a/../b"], [""], ["   "], ["."]):
+        for hostile in (["../etc"], ["src/../../x"], ["a/../b"], [""], ["   "]):
             ok, _, reason = validate_scope_paths(hostile)
             assert ok is False, f"{hostile} was accepted"
             assert reason
+
+    def test_root_marker_denotes_the_project_root(self):
+        # "." is the documented whole-project scope marker: it
+        # normalizes to "" and covers every repo-relative path, so
+        # autonomous dispatch can declare whole-project work as an
+        # explicit bounded contract instead of an absent one.
+        ok, paths, _ = validate_scope_paths(["."])
+        assert ok is True
+        assert paths == [""]
+        ok, paths, _ = validate_scope_paths(["./"])
+        assert ok is True
+        assert paths == [""]
 
     def test_absolute_and_backslash_are_refused_or_contained(self):
         # A leading slash is treated as a repo-relative typo; anything that

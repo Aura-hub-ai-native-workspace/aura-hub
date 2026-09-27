@@ -293,6 +293,42 @@ class CapabilityFabric:
         self._audit_store_append = append
         self.audit_log = [*load(), *self.audit_log]
 
+    def use_autonomy(self, store, project_root_resolver=None) -> None:
+        """Adopt workspace autonomy (policy.autonomy.AutonomyStore).
+
+        Both None (the default) preserves pre-autonomy behavior exactly:
+        no grants are ever built. With a store, the fabric builds a
+        per-invocation grant from the server-side opt-in plus path
+        confinement — the agent's input can never manufacture one.
+        """
+        self._autonomy_store = store
+        self._project_roots = project_root_resolver
+
+    def _autonomy_grant(self, capability_id: str,
+                        invocation_input: dict, context: dict) -> dict | None:
+        store = getattr(self, "_autonomy_store", None)
+        resolver = getattr(self, "_project_roots", None)
+        if store is None or resolver is None:
+            return None
+        project_id = context.get("projectId")
+        if not project_id:
+            return None
+        try:
+            if not store.is_enabled(project_id):
+                return None
+            root = resolver(project_id)
+        except Exception:
+            return None
+        try:
+            from ..policy.autonomy import build_grant
+        except Exception:
+            return None
+        try:
+            return build_grant(capability_id, invocation_input or {},
+                               context, project_root=root, autonomous=True)
+        except Exception:
+            return None
+
     def _record(self, entry: dict) -> None:
         self.audit_log.append(entry)
         try:
@@ -502,6 +538,7 @@ class CapabilityFabric:
                 missionId=subj.get("missionId"),
                 taskId=subj.get("taskId"),
             ),
+            autonomy_grant=self._autonomy_grant(capability_id, input, context),
         ))
 
         if evaluation["decision"] == "deny":
@@ -516,6 +553,18 @@ class CapabilityFabric:
             key = self.approval_key(capability_id, context, invocation["id"])
             fingerprint = self._fingerprint(capability_id, input, context)
             open_request = self._approvals_by_key.get(key)
+            # Same question, new attempt: session-scoped calls key by
+            # `inv:<invocation-id>`, so every retry used to mint ANOTHER
+            # pending card for the identical action. A pending request
+            # with the same fingerprint IS the same question — reuse it.
+            if (open_request is None or open_request.get("state") != "pending"):
+                for _cand in self._approvals_by_key.values():
+                    if _cand.get("state") != "pending":
+                        continue
+                    if any(isinstance(_it, dict) and _it.get("fingerprint") == fingerprint
+                           for _it in _cand.get("items") or []):
+                        open_request = _cand
+                        break
 
             if context.get("approvalId"):
                 named = self.approval_by_id(context["approvalId"])
@@ -805,7 +854,9 @@ class FabricConfig:
                  executors: dict | None = None,
                  audit_store=None,
                  ledger=None,
-                 secrets=None) -> None:
+                 secrets=None,
+                 autonomy_store=None,
+                 project_root_resolver=None) -> None:
         self.secrets = secrets
         self.fabric = fabric
         self.policy_config = policy_config or {}
@@ -813,6 +864,11 @@ class FabricConfig:
         self.executors = executors or {}
         self.audit_store = audit_store
         self.ledger = ledger
+        #: Workspace autonomy (policy.autonomy.AutonomyStore) + a
+        #: callable(project_id) -> project root path | None. Both None
+        #: preserves the pre-autonomy behavior exactly: no grants built.
+        self.autonomy_store = autonomy_store
+        self.project_root_resolver = project_root_resolver
 
     def sanitized_policy(self) -> dict:
         import copy
@@ -872,6 +928,19 @@ def describe_authority(capability_id: str, context: dict,
         node_available = bool(host.node_available(capability)) if host else True
     else:
         node_available = None
+    grant = None
+    _store = getattr(cfg, "autonomy_store", None)
+    _resolver = getattr(cfg, "project_root_resolver", None)
+    if _store is not None and _resolver is not None and context.get("projectId"):
+        try:
+            if _store.is_enabled(context["projectId"]):
+                from ..policy.autonomy import build_grant
+                grant = build_grant(
+                    capability_id, context.get("input") or {}, context,
+                    project_root=_resolver(context["projectId"]),
+                    autonomous=True)
+        except Exception:
+            grant = None
     return evaluate_policy(PolicyInput(
         capability=_as_descriptor(capability),
         config=cfg.sanitized_policy(),
@@ -883,6 +952,7 @@ def describe_authority(capability_id: str, context: dict,
             projectId=context.get("projectId"),
             taskId=context.get("taskId"),
         ),
+        autonomy_grant=grant,
     ))
 
 

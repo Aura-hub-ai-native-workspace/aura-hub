@@ -270,6 +270,36 @@ class TestMaybeCorrect:
         # No retry, no second dispatch: exactly one corrective execute ran.
         assert session.correctionChain[-1]["status"] == "failed"
 
+    def test_correction_carries_project_cwd(self, agent_env, monkeypatch):
+        # Regression: first-leg corrections were dispatched without
+        # project_cwd, so every correction leg died with "No project
+        # directory is set" even though the session knew its project.
+        *_, agent = agent_env
+        session = agent.sessions.create("proj")
+        session.projectPath = "/tmp/dress-shop"
+        agent.sessions.save(session)
+        plan = _deviation_plan()
+        outcome = _deviation_outcome()
+
+        seen = {}
+
+        def spy_execute(plan_arg, project_id, **kwargs):
+            seen["kwargs"] = kwargs
+            parked = ExecutionOutcome()
+            parked.outcomes.append(TaskOutcome(
+                taskId="t1-correction-2", state="awaiting-approval",
+                performed=False, approvalId="apr-corr-1",
+                detail="waiting"))
+            parked.approval_id = "apr-corr-1"
+            return parked
+
+        monkeypatch.setattr(agent.controller, "execute", spy_execute)
+        result = agent._maybe_correct(
+            session, plan, outcome,
+            project_cwd=getattr(session, "projectPath", None))
+        assert result is not None
+        assert seen["kwargs"].get("project_cwd") == "/tmp/dress-shop"
+
 
 class TestResumeCorrection:
     def _parked_session(self, agent, ledger, plan):

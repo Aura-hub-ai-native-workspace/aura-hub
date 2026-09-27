@@ -34,11 +34,11 @@ export function EvidencePanel({
     <section
       data-testid="evidence-panel"
       aria-label="Mission evidence"
-      className="rounded-xl border border-[rgba(31,211,138,0.25)] bg-[rgba(9,13,26,0.75)] px-4 py-3"
+      className="rounded-xl border border-[rgba(31,211,138,0.25)] bg-ws-evidence px-4 py-3"
     >
       <div className="mb-2.5 flex items-center gap-2">
-        <Icon name="shield" size={12} className="text-neon-success" />
-        <h3 className="text-[10.5px] font-semibold uppercase tracking-widest text-neon-success">
+        <Icon name="shield" size={12} className="text-ws-ok" />
+        <h3 className="text-[10.5px] font-semibold uppercase tracking-widest text-ws-ok">
           Evidence
         </h3>
       </div>

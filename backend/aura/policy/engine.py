@@ -145,6 +145,14 @@ class PolicyInput:
     granted: list[str]
     nodeAvailable: bool | None              # null when the capability needs no node
     subject: PolicySubject | None = None
+    autonomy_grant: dict[str, Any] | None = None
+    """Server-built workspace grant (policy.autonomy.build_grant) or None.
+
+    The grant is constructed from the autonomy store plus path checks —
+    never from agent input or user config — which is why the engine may
+    honor it below the floors. See autonomy.py for the confinement
+    argument; the engine re-checks identity here so a grant can never
+    leak across projects or capabilities."""
 
 
 # ── evaluation ───────────────────────────────────────────────────────────────
@@ -252,6 +260,35 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
         decision = "ask-user"
         rule = "autonomy-disabled"
         reason = ""
+
+    # Workspace autonomy — the ONE path below the floors, and it is
+    # narrow by construction. A grant only ever exists when the user
+    # explicitly enabled autonomous mode for THIS project and the
+    # invocation's scope was verified inside the project root (see
+    # policy.autonomy.build_grant). The engine re-checks identity
+    # (capability + project) so a grant cannot leak, and it never
+    # touches deny decisions or destructive / account / system floors:
+    # those stay exactly as strict as before, grant or no grant.
+    grant = inp.autonomy_grant
+    subject_project = inp.subject.projectId if inp.subject else None
+    if (
+        isinstance(grant, dict)
+        and decision != "deny"
+        and "resource.destroy" not in cap.permissions
+        and "account.authorize" not in cap.permissions
+        and "system.modify" not in cap.permissions
+        and cap.id in (grant.get("capabilities") or [])
+        and grant.get("projectId") and grant.get("projectId") == subject_project
+        and decision != "auto-execute"
+    ):
+        decision = "auto-execute"
+        rule = "workspace-autonomy"
+        reason = (
+            f"{cap.name} runs on its own inside this project's autonomous "
+            f"workspace ({grant.get('kind')}). You enabled autonomous mode "
+            f"for the project, so routine scoped work does not interrupt you — "
+            f"anything destructive or outside the project still asks."
+        )
 
     return {
         "decision": decision,

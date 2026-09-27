@@ -575,7 +575,9 @@ class CentralAgent:
                                performed=[o.taskId for o in outcome.outcomes if o.performed],
                                evidence=bundle, failureReason="timeout")
         if outcome.stopped:
-            corrected = self._maybe_correct(session, plan, outcome)
+            corrected = self._maybe_correct(
+                session, plan, outcome,
+                project_cwd=getattr(session, "projectPath", None))
             if corrected is not None:
                 return corrected
             return self._fail(session, outcome.stop_reason,
@@ -584,7 +586,9 @@ class CentralAgent:
         # Deviations that did not stop the run (done-but-unverified) still
         # go through the correction path before any success is reported.
         if getattr(outcome, "deviation_evidence", None):
-            corrected = self._maybe_correct(session, plan, outcome)
+            corrected = self._maybe_correct(
+                session, plan, outcome,
+                project_cwd=getattr(session, "projectPath", None))
             if corrected is not None:
                 return corrected
 

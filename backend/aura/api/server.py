@@ -214,6 +214,18 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         nodes = ConnectedNodeStore()
     registry = ProjectRegistry()
 
+    from ..policy.autonomy import AutonomyStore
+    autonomy = AutonomyStore(H)
+
+    def _project_root(pid: str) -> str | None:
+        try:
+            rec = registry.get(pid)
+        except Exception:
+            return None
+        if not rec or not isinstance(rec.get("path"), str):
+            return None
+        return rec["path"]
+
     if fabric is None:
         fabric = CapabilityFabric(_default_host(nodes))
         from ..executors import all_executors, register_canonical_internal_capabilities
@@ -255,6 +267,11 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         # adopting is what makes "one ledger" true across a restart
         # rather than only within a process.
         fabric.use_ledger(ledger)
+    if hasattr(fabric, "use_autonomy"):
+        # Workspace-scoped autonomous execution: the fabric builds
+        # per-invocation grants from this store plus the registry root.
+        # Absent opt-in (the default) no grant ever exists.
+        fabric.use_autonomy(autonomy, _project_root)
 
     wf_store = WorkflowStore()
     ver_store = WorkflowVersionStore()
@@ -293,7 +310,9 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     agent_bus = EventBus()
     agent_cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
                              permissions={"read": True, "write": True},
-                             executors={}, secrets=secrets_store)
+                             executors={}, secrets=secrets_store,
+                             autonomy_store=autonomy,
+                             project_root_resolver=_project_root)
     sessions = AgentSessionStore(H)
     engine = EngineFacade(
         agent_cfg, wf_store, ver_store, run_store,
@@ -386,7 +405,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
 
     return {
         "home": H, "fabric": fabric, "ledger": ledger, "audit": audit,
-        "registry": registry,
+        "registry": registry, "autonomy": autonomy,
         "nodes": nodes,
         "wf_store": wf_store, "ver_store": ver_store, "run_store": run_store,
         "auto_store": auto_store, "runner": runner, "secrets": secrets_store,
@@ -1187,7 +1206,17 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
     # ── governance: approvals + fabric ──────────────────────────────
     async def fabric_approvals(request: Request):
-        return JSONResponse({"approvals": S["ledger"].pending()})
+        # Pending AND decided: a card that named a spent request renders
+        # its final state (approved/denied) instead of hanging on
+        # "Loading the authorization details…" forever. `decided` is
+        # omitted when empty so the long-standing {"approvals": []}
+        # shape is untouched for the idle case.
+        pending = S["ledger"].pending()
+        decided = S["ledger"].decided()
+        body: dict = {"approvals": pending}
+        if decided:
+            body["decided"] = decided
+        return JSONResponse(body)
 
     async def fabric_approvals_decide(request: Request):
         body = await _json_body(request)
@@ -1377,7 +1406,14 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
     async def projects_list(request: Request):
         registry = S["registry"]
-        return JSONResponse({"projects": registry.list_projects(),
+        autonomy = S["autonomy"]
+        projects = registry.list_projects()
+        for p in projects:
+            try:
+                p["autonomous"] = autonomy.is_enabled(p["id"])
+            except Exception:
+                p["autonomous"] = False
+        return JSONResponse({"projects": projects,
                              "current": registry.current_project()})
 
     async def projects_add(request: Request):
@@ -1419,6 +1455,30 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         if not profile:
             return _err("no profile", 404)
         return JSONResponse(profile)
+
+    async def project_autonomy(request: Request):
+        """Explicit per-project autonomous-mode opt-in (or out).
+
+        Enabling lets routine scope-confined work (delegation with
+        project-bound scopePaths, in-project file writes, approved dev
+        commands) auto-execute inside THIS project. Destructive,
+        credential, out-of-project and publishing actions still ask —
+        the grant path cannot lift those. The record lives in
+        AURA_HOME/autonomy.json, never in the shared projects.json.
+        """
+        pid = request.path_params["pid"]
+        if S["registry"].get(pid) is None:
+            return _err(f'no project is registered with id "{pid}"', 404)
+        body = await _json_body(request)
+        if "enabled" not in body or not isinstance(body.get("enabled"), bool):
+            return _err('body must include "enabled" (boolean)', 400)
+        rec = S["registry"].get(pid)
+        try:
+            result = S["autonomy"].set_enabled(
+                pid, bool(body["enabled"]), (rec or {}).get("path"))
+        except Exception as exc:
+            return _err(str(exc), 500)
+        return JSONResponse(result)
 
     # ── missions (C: explicitly unsupported — no canonical engine) ───
     async def missions_unsupported(request: Request):
@@ -1830,6 +1890,58 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             lambda: ar_svc.check_drift(runtime))
         return JSONResponse({"drift": [d.to_dict() for d in drifts]})
 
+    async def agent_runtime_register(request: Request):
+        """Register a user-defined executable for a known agent id.
+        Discovery-only: grants no configuration permissions."""
+        import anyio
+        body = await _json_body(request)
+        agent_id = str(body.get("agentId") or "").strip()
+        path = str(body.get("path") or "").strip()
+        if not agent_id or not path:
+            return _err("agentId and path are required")
+        result = await anyio.to_thread.run_sync(
+            lambda: ar_svc.register_agent(agent_id, path))
+        if not result.get("ok"):
+            return _err(result.get("error", "registration failed"), 400)
+        return JSONResponse(result)
+
+    async def agent_runtime_unregister(request: Request):
+        import anyio
+        body = await _json_body(request)
+        agent_id = str(body.get("agentId") or "").strip()
+        if not agent_id:
+            return _err("agentId is required")
+        result = await anyio.to_thread.run_sync(
+            lambda: ar_svc.unregister_agent(agent_id))
+        if not result.get("ok"):
+            return _err(result.get("error", "unregister failed"), 404)
+        return JSONResponse(result)
+
+    async def agent_runtime_verify(request: Request):
+        """Read-only config match + endpoint probe (local/private only).
+        Connection is measured, never inferred from a configured URL."""
+        import anyio
+        from ..agent_runtime.model import AuthType, RuntimeConfig
+        agent_id = request.path_params["agent_id"]
+        body = await _json_body(request)
+        if not body.get("baseUrl") or not body.get("modelId"):
+            return _err("baseUrl and modelId are required")
+        try:
+            runtime = RuntimeConfig(
+                base_url=str(body["baseUrl"]),
+                model_id=str(body["modelId"]),
+                auth_type=AuthType(body.get("authType", "keyless")),
+                network_class=str(body.get("networkClass", "local")),
+            )
+        except (ValueError, KeyError) as exc:
+            return _err(f"invalid runtime config: {exc}")
+        try:
+            result = await anyio.to_thread.run_sync(
+                lambda: ar_svc.verify_agent(agent_id, runtime))
+        except ValueError as exc:
+            return _err(str(exc), 403)
+        return JSONResponse(result)
+
     # ------------------------------------------------------------------ Phase 3
     async def documents_ingest(request: Request) -> Response:
         kb = S["kb"]
@@ -2134,6 +2246,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/projects", projects_add, methods=["POST"]),
         Route("/projects/{pid}/open", project_open, methods=["POST"]),
         Route("/projects/{pid}/profile", project_profile, methods=["GET"]),
+        Route("/projects/{pid}/autonomy", project_autonomy, methods=["POST"]),
         Route("/missions/dashboard", missions_unsupported, methods=["GET"]),
         Route("/projects/{pid}/missions", missions_unsupported, methods=["GET"]),
         Route("/projects/{pid}/missions/{mid}", missions_unsupported, methods=["GET"]),
@@ -2177,6 +2290,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/agent-runtime/apply/{agent_id}", agent_runtime_apply_agent, methods=["POST"]),
         Route("/agent-runtime/restore/{agent_id}", agent_runtime_restore, methods=["POST"]),
         Route("/agent-runtime/drift", agent_runtime_drift, methods=["POST"]),
+        Route("/agent-runtime/register", agent_runtime_register, methods=["POST"]),
+        Route("/agent-runtime/unregister", agent_runtime_unregister, methods=["POST"]),
+        Route("/agent-runtime/verify/{agent_id}", agent_runtime_verify, methods=["POST"]),
         Route("/documents/ingest", documents_ingest, methods=["POST"]),
         Route("/documents/engines", documents_engines, methods=["GET"]),
         Route("/knowledge/search", knowledge_search, methods=["GET"]),

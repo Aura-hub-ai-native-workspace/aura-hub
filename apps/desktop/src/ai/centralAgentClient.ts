@@ -245,6 +245,69 @@ export interface AgentRuntimeConfig {
 export type AgentConfigStatus = 'ok' | 'partial' | 'incompatible' | 'not_installed' | 'error';
 export type AgentDriftStatus = 'in_sync' | 'drifted' | 'unknown';
 
+/* Raw wire shapes — the Python backend's dataclasses verbatim
+ * (`aura/agent_runtime/model.py` to_dict()). The backend is the
+ * authority; the view models below are DERIVED from these, never
+ * assumed. Field names were captured from a live
+ * `GET /agent-runtime/discover` response (2026-09-26) — the previous
+ * contract here named fields the backend has never serialized, which
+ * crashed the AI Runtime page at render. */
+
+export interface RawAgentRecord {
+  agentId: string;
+  displayName: string;
+  version: string | null;
+  binaryPath: string | null;
+  configPath: string | null;
+  detected: boolean;
+  currentBaseUrl: string | null;
+  currentModel: string | null;
+  configStatus: string;
+  notes: string[];
+  support?: {
+    integration: string;
+    readConfig: boolean;
+    apply: boolean;
+    backupRestore: boolean;
+    reason: string;
+  } | null;
+  connection?: string;
+  discoverySource?: string;
+  installPath?: string | null;
+  configEvidence?: string[];
+}
+
+export interface RawConfigurationChange {
+  agentId: string;
+  operation: string;
+  status: string;
+  fieldsChanged: string[];
+  previousChecksum: string | null;
+  newChecksum: string | null;
+  timestamp: string;
+  note: string;
+}
+
+export interface RawAgentRuntimeSummary {
+  installedCount?: number;
+  totalDiscovered?: number;
+  agents: RawAgentRecord[];
+  lastRuntime?: Record<string, unknown> | null;
+}
+
+/* View models — what the AI Runtime screen renders. */
+
+export type AgentIntegration = 'full' | 'detected';
+export type AgentConnection = 'verified' | 'unverified' | 'failed';
+
+export interface AgentSupport {
+  integration: AgentIntegration;
+  readConfig: boolean;
+  apply: boolean;
+  backupRestore: boolean;
+  reason: string;
+}
+
 export interface AgentRecord {
   id: string;
   name: string;
@@ -253,9 +316,20 @@ export interface AgentRecord {
   status: AgentConfigStatus;
   statusNote: string;
   currentConfig: Record<string, unknown>;
+  /** Always 'unknown' from discover/summary: drift is only computed by
+   *  POST /agent-runtime/drift, which this screen does not call.
+   *  'unknown' hides the drift row instead of implying a result. */
   drift: AgentDriftStatus;
   driftFields: string[];
   error: string | null;
+  /** Capability model: what AURA can honestly do for this agent. */
+  support: AgentSupport | null;
+  /** Measured reachability of the configured runtime — never inferred
+   *  from a configured URL alone. */
+  connection: AgentConnection;
+  discoverySource: string;
+  installPath: string | null;
+  configEvidence: string[];
 }
 
 export interface AgentConfigChange {
@@ -277,7 +351,116 @@ export interface AgentRuntimeSummary {
   agents: AgentRecord[];
   installedCount: number;
   configuredCount: number;
-  driftedCount: number;
+  /** Detected agents with a verified configuration adapter. */
+  supportedCount: number;
+  /** null means drift was never measured on this path — the Status
+   *  card then says "Not measured" instead of a fabricated count. */
+  driftedCount: number | null;
+}
+
+/* ── wire → view normalization ─────────────────────────────────────── */
+
+const CONFIG_STATUSES: readonly AgentConfigStatus[] = ['ok', 'partial', 'incompatible', 'not_installed', 'error'];
+
+function asConfigStatus(value: unknown): AgentConfigStatus {
+  return typeof value === 'string' && (CONFIG_STATUSES as readonly string[]).includes(value)
+    ? (value as AgentConfigStatus)
+    : 'error';
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+const CONNECTIONS: readonly AgentConnection[] = ['verified', 'unverified', 'failed'];
+const INTEGRATIONS: readonly AgentIntegration[] = ['full', 'detected'];
+
+function asConnection(value: unknown): AgentConnection {
+  return typeof value === 'string' && (CONNECTIONS as readonly string[]).includes(value)
+    ? (value as AgentConnection)
+    : 'unverified';
+}
+
+function asSupport(raw: RawAgentRecord['support']): AgentSupport | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const integration = typeof raw.integration === 'string'
+    && (INTEGRATIONS as readonly string[]).includes(raw.integration)
+    ? (raw.integration as AgentIntegration)
+    : 'detected';
+  return {
+    integration,
+    readConfig: raw.readConfig === true,
+    apply: raw.apply === true,
+    backupRestore: raw.backupRestore === true,
+    reason: typeof raw.reason === 'string' ? raw.reason : '',
+  };
+}
+
+/** Map one raw backend record to the render model. Every field is
+ *  defaulted — a partial or malformed record renders honestly ('—', an
+ *  empty note) and can never throw during render: this is the seam that
+ *  used to crash the page, when the card read `driftFields.length` off
+ *  a wire schema that never carried it. */
+export function normalizeAgentRecord(raw: RawAgentRecord | null | undefined): AgentRecord {
+  const id = asString(raw?.agentId) || 'unknown-agent';
+  const name = asString(raw?.displayName) || id;
+  const detected = raw?.detected === true;
+  const currentConfig: Record<string, unknown> = {};
+  const baseUrl = asString(raw?.currentBaseUrl);
+  const modelId = asString(raw?.currentModel);
+  if (baseUrl) currentConfig.baseUrl = baseUrl;
+  if (modelId) currentConfig.modelId = modelId;
+  const notes = Array.isArray(raw?.notes)
+    ? raw.notes.filter((n): n is string => typeof n === 'string')
+    : [];
+  return {
+    id,
+    name,
+    detected,
+    configPath: asString(raw?.configPath),
+    status: asConfigStatus(raw?.configStatus),
+    statusNote: notes.join(' · '),
+    currentConfig,
+    drift: 'unknown',
+    driftFields: [],
+    error: null,
+    support: asSupport(raw?.support),
+    connection: asConnection(raw?.connection),
+    discoverySource: asString(raw?.discoverySource) ?? '',
+    installPath: asString(raw?.installPath),
+    configEvidence: Array.isArray(raw?.configEvidence)
+      ? raw.configEvidence.filter((n): n is string => typeof n === 'string')
+      : [],
+  };
+}
+
+/** 'ok' and 'partial' both mean the apply reached the config file;
+ *  'partial' just carries manual follow-up work in its note. */
+export function normalizeConfigChange(raw: RawConfigurationChange | null | undefined): AgentConfigChange {
+  const status = asConfigStatus(raw?.status);
+  const note = asString(raw?.note) ?? '';
+  const ok = status === 'ok' || status === 'partial';
+  return {
+    agentId: asString(raw?.agentId) || 'unknown-agent',
+    status,
+    statusNote: note,
+    backupPath: null, // the wire shape has no path; the card shows the note
+    ok,
+    error: ok ? null : (note || `Operation ${asString(raw?.operation) || 'unknown'} failed`),
+  };
+}
+
+/** Counts are derived from the records themselves: discover and summary
+ *  payloads disagree on which counters they carry, and trusting them
+ *  rendered `undefined of undefined`. driftedCount is null here because
+ *  no drift is measured on either path. */
+export function normalizeRuntimeSummary(raw: RawAgentRuntimeSummary | null | undefined): AgentRuntimeSummary {
+  const agents = (Array.isArray(raw?.agents) ? raw.agents : []).map(normalizeAgentRecord);
+  const installedCount = agents.filter((a) => a.detected).length;
+  const configuredCount = agents.filter((a) => a.detected && a.status === 'ok').length;
+  const supportedCount = agents.filter(
+    (a) => a.detected && a.support?.integration === 'full').length;
+  return { agents, installedCount, configuredCount, supportedCount, driftedCount: null };
 }
 
 /** A client-proposed session id (`agt-` + 12 hex). The server accepts it
@@ -336,7 +519,22 @@ export const centralAgentClient = {
    * requests; `aiClient`/useFabric read the workflow service's (:4319).
    * An agent-parked id must be resolved HERE, never through useFabric.
    */
-  pendingApprovals: () => jget<{ approvals: AgentApprovalRow[] }>('/fabric/approvals'),
+  pendingApprovals: () => jget<{ approvals: AgentApprovalRow[]; decided?: AgentApprovalRow[] }>('/fabric/approvals'),
+
+  /**
+   * Project-scoped autonomous mode (Python backend, same ledger).
+   * Enabling lets routine scope-confined work inside THIS project
+   * auto-execute; destructive, credential, out-of-project and
+   * publishing actions still ask. Explicit opt-in per project.
+   */
+  listProjects: () => jget<{ projects: Array<{ id: string; name: string; path: string; autonomous?: boolean }>; current: unknown }>(
+    '/projects',
+  ),
+  setProjectAutonomy: (projectId: string, enabled: boolean) =>
+    jpost<{ projectId: string; autonomous: boolean; scopeRoot: string }>(
+      `/projects/${encodeURIComponent(projectId)}/autonomy`,
+      { enabled },
+    ),
 
   /**
    * Record THIS human decision through the same single-use ledger the
@@ -393,26 +591,56 @@ export const centralAgentClient = {
   /* Agent Runtime Control Plane ───────────────────────────────────── */
 
   /** Discover and return live status for all detected agents. */
-  agentRuntimeDiscover: () => jget<AgentRuntimeSummary>('/agent-runtime/discover'),
+  agentRuntimeDiscover: async () =>
+    normalizeRuntimeSummary(await jget<RawAgentRuntimeSummary>('/agent-runtime/discover')),
 
   /** Cached summary without re-probing the filesystem. */
-  agentRuntimeSummary: () => jget<AgentRuntimeSummary>('/agent-runtime/summary'),
+  agentRuntimeSummary: async () =>
+    normalizeRuntimeSummary(await jget<RawAgentRuntimeSummary>('/agent-runtime/summary')),
 
   /** Point every detected agent at the supplied runtime. */
-  agentRuntimeApplyAll: (runtime: AgentRuntimeConfig) =>
-    jpost<{ changes: AgentConfigChange[] }>('/agent-runtime/apply', runtime),
+  agentRuntimeApplyAll: async (runtime: AgentRuntimeConfig) => {
+    const body = await jpost<{ changes: RawConfigurationChange[] }>('/agent-runtime/apply', runtime);
+    return { changes: (Array.isArray(body?.changes) ? body.changes : []).map(normalizeConfigChange) };
+  },
 
   /** Point one specific agent at the supplied runtime. */
-  agentRuntimeApplyOne: (agentId: string, runtime: AgentRuntimeConfig) =>
-    jpost<AgentConfigChange>(`/agent-runtime/apply/${encodeURIComponent(agentId)}`, runtime),
+  agentRuntimeApplyOne: async (agentId: string, runtime: AgentRuntimeConfig) =>
+    normalizeConfigChange(await jpost<RawConfigurationChange>(`/agent-runtime/apply/${encodeURIComponent(agentId)}`, runtime)),
 
   /** Roll one agent back to its most recent backup. */
-  agentRuntimeRestore: (agentId: string) =>
-    jpost<AgentConfigChange>(`/agent-runtime/restore/${encodeURIComponent(agentId)}`),
+  agentRuntimeRestore: async (agentId: string) =>
+    normalizeConfigChange(await jpost<RawConfigurationChange>(`/agent-runtime/restore/${encodeURIComponent(agentId)}`)),
 
   /** Check how far each agent has drifted from the expected runtime. */
   agentRuntimeDrift: (runtime: AgentRuntimeConfig) =>
     jpost<{ drift: AgentDriftResult[] }>('/agent-runtime/drift', runtime),
+
+  /** Register a user-defined executable for a known agent id.
+   *  Discovery-only: grants no configuration permissions. */
+  agentRuntimeRegister: (agentId: string, path: string) =>
+    jpost<{ ok: boolean; agentId: string; path: string }>('/agent-runtime/register', { agentId, path }),
+
+  /** Remove a previously registered user-defined executable. */
+  agentRuntimeUnregister: (agentId: string) =>
+    jpost<{ ok: boolean; agentId: string }>('/agent-runtime/unregister', { agentId }),
+
+  /** Verify one agent: config match + endpoint probe (local/private). */
+  agentRuntimeVerify: async (agentId: string, runtime: AgentRuntimeConfig) => {
+    const body = await jpost<{
+      agentId: string;
+      connection: string;
+      probed: boolean;
+      detail: string;
+      change: unknown;
+    }>(`/agent-runtime/verify/${encodeURIComponent(agentId)}`, runtime);
+    return {
+      agentId: asString(body?.agentId) || agentId,
+      connection: asConnection(body?.connection),
+      probed: body?.probed === true,
+      detail: asString(body?.detail) ?? '',
+    };
+  },
 
   /**
    * The EvidenceBundle of the session's last result. The route returns the

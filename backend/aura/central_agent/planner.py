@@ -92,6 +92,12 @@ def _check_scope_paths(raw: object, task_label: str) -> list[str]:
             raise PlanningError(
                 f"task {task_label} has a non-string scope path")
         s = p.strip().replace("\\", "/")
+        # "." is the documented whole-project-root marker (it normalizes
+        # to "" in supervision and covers every repo-relative path).
+        # Everything else must be a bounded repo-relative path.
+        if s == ".":
+            out.append(".")
+            continue
         if (len(s) > _MAX_SCOPE_LEN or s.startswith("/")
                 or s.startswith("~") or ".." in s.split("/")
                 or s in (".", "")):

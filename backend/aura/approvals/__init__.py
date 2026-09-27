@@ -92,6 +92,18 @@ class ApprovalLedger:
     def pending(self) -> list[dict[str, Any]]:
         return [r for r in self._approvals.values() if r.get("state") == "pending"]
 
+    def decided(self) -> list[dict[str, Any]]:
+        """Granted/denied/consumed records, newest decision first.
+
+        Cards render their final state from these instead of hanging on
+        "loading" after the ledger spends the request they named. The
+        store only persists pending rows, so these are in-memory since
+        the last restart — a restart legitimately has none.
+        """
+        rows = [r for r in self._approvals.values() if r.get("state") != "pending"]
+        rows.sort(key=lambda r: str(r.get("decidedAt") or ""), reverse=True)
+        return rows
+
     def by_id(self, approval_id: str) -> dict[str, Any] | None:
         for r in self._approvals.values():
             if r.get("id") == approval_id:
@@ -100,6 +112,24 @@ class ApprovalLedger:
 
     def open_for_key(self, key: str) -> dict[str, Any] | None:
         return self._approvals.get(key)
+
+    def pending_with_fingerprint(self, fingerprint: str) -> dict[str, Any] | None:
+        """A pending request for the identical action, if one is already parked.
+
+        Identity here is the invocation fingerprint (capability + arguments
+        + scope), not the attempt: the same question asked twice parks once.
+        Decided/consumed records never match — a spent authorization is not
+        reusable, so a genuinely new attempt after a decision still parks.
+        """
+        if not fingerprint:
+            return None
+        for r in self._approvals.values():
+            if r.get("state") != "pending":
+                continue
+            for item in r.get("items") or []:
+                if isinstance(item, dict) and item.get("fingerprint") == fingerprint:
+                    return r
+        return None
 
     # ── mutations ────────────────────────────────────────────────────────
 

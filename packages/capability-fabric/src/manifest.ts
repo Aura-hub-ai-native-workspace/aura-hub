@@ -103,7 +103,7 @@ const INTERNAL: CapabilityDescriptor[] = [
   }),
   cap({
     id: 'memory.search', name: 'Search engineering memory', category: 'memory', surface: 'aura-internal',
-    description: 'Why past decisions were made, and what came of them.',
+    description: 'Search the engineering-decisions log: why past changes were made, what came of them, and which project owns them. Requires projectId. Not for uploaded documents or the knowledge base — use knowledge.search for those.',
     risk: 'low', permissions: ['aura.read'],
     input: [f('projectId', 'string', true, 'Project id'), f('query', 'string', false, 'Free-text query')],
     output: 'MemoryRecord[]', verify: null,

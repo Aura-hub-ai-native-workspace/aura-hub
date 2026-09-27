@@ -7,6 +7,7 @@ import type { CreationState } from '../../missions/useMissions';
 import type { HubProgress } from '../../../workspace/hubPhase';
 import { useWorkspace } from '../../../data/useWorkspace';
 import { AgentRunPanel } from './AgentRunPanel';
+import { AutonomyToggle } from './AutonomyToggle';
 import { TimelineStepCard } from './TimelineStepCard';
 import { toTimelineSteps } from './timelineSteps';
 import { GlowButton } from './GlowButton';
@@ -31,6 +32,9 @@ export function TimelineContainer({
   projects,
   projectId,
   onSelectProject,
+  autonomous,
+  autonomyBusy,
+  onToggleAutonomy,
   busy,
   error,
   mission,
@@ -45,6 +49,9 @@ export function TimelineContainer({
   projects: ProjectRecord[];
   projectId: string | null;
   onSelectProject: (id: string | null) => void;
+  autonomous: boolean;
+  autonomyBusy: boolean;
+  onToggleAutonomy: (enabled: boolean) => void;
   busy: boolean;
   error: string | null;
   mission: MissionRecord | null;
@@ -64,8 +71,8 @@ export function TimelineContainer({
 
   return (
     <section aria-label="Execution timeline" className="flex min-h-0 flex-1 flex-col">
-      <header className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b border-[rgba(125,146,255,0.22)] bg-[rgba(7,11,20,0.85)] px-6 py-4 backdrop-blur-md">
-        <span className="grid h-11 w-11 place-items-center rounded-xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-[#c9bcff]">
+      <header className="sticky top-0 z-10 flex flex-wrap items-center gap-3 border-b border-[rgba(125,146,255,0.22)] bg-ws-header px-6 py-4 backdrop-blur-md">
+        <span className="grid h-11 w-11 place-items-center rounded-xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-ws-ink">
           <Icon name="spark" size={22} />
         </span>
         <span className="min-w-0 flex-1">
@@ -77,7 +84,7 @@ export function TimelineContainer({
           </p>
         </span>
 
-        <label className="inline-flex items-center gap-2 rounded-xl border border-[rgba(125,146,255,0.3)] bg-[rgba(16,24,43,0.9)] px-3 py-2 text-[12.5px] text-text">
+        <label className="inline-flex items-center gap-2 rounded-xl border border-[rgba(125,146,255,0.3)] bg-ws-input px-3 py-2 text-[12.5px] text-text">
           <Icon name="folder" size={14} className="text-text-subtle" />
           <span className="sr-only">Select project</span>
           <span className="text-text-subtle">Project:</span>
@@ -95,11 +102,18 @@ export function TimelineContainer({
         </label>
 
         {/* Secondary: the older Mission engine, and a real refresh. */}
+        <AutonomyToggle
+          projectId={projectId}
+          projectName={projects.find((p) => p.id === projectId)?.name ?? null}
+          autonomous={autonomous}
+          busy={autonomyBusy}
+          onToggle={onToggleAutonomy}
+        />
         <button
           type="button"
           onClick={() => setView((v) => (v === 'agent' ? 'mission' : 'agent'))}
           data-testid={view === 'agent' ? 'workspace-tab-mission' : 'workspace-tab-agent'}
-          className="neon-focus rounded-xl border border-[rgba(125,146,255,0.3)] px-3 py-2 text-[11.5px] font-medium text-text-muted transition-colors hover:bg-white/5 hover:text-text"
+          className="neon-focus rounded-xl border border-[rgba(125,146,255,0.3)] px-3 py-2 text-[11.5px] font-medium text-text-muted transition-colors hover:bg-surface-hover hover:text-text"
         >
           {view === 'agent' ? 'Missions' : 'AURA Agent'}
         </button>
@@ -110,7 +124,7 @@ export function TimelineContainer({
           aria-label="Refresh projects"
           title="Refresh projects"
           data-testid="workspace-refresh-projects"
-          className="neon-focus grid h-9 w-9 place-items-center rounded-xl border border-[rgba(125,146,255,0.3)] text-text-muted transition-colors duration-150 hover:bg-white/5 hover:text-text disabled:opacity-50"
+          className="neon-focus grid h-9 w-9 place-items-center rounded-xl border border-[rgba(125,146,255,0.3)] text-text-muted transition-colors duration-150 hover:bg-surface-hover hover:text-text disabled:opacity-50"
         >
           <Icon name="refresh" size={16} />
         </button>
@@ -127,15 +141,15 @@ export function TimelineContainer({
             className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-4"
           >
             {error && (
-              <div role="alert" className="rounded-lg border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-3 py-2 text-[12px] text-neon-danger">
+              <div role="alert" className="rounded-lg border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-3 py-2 text-[12px] text-ws-bad">
                 {error}
               </div>
             )}
 
             {busy && !active && (
               <>
-                <SkeletonCard className="border-[rgba(125,146,255,0.25)] bg-[rgba(16,24,43,0.7)]" />
-                <SkeletonCard className="border-[rgba(125,146,255,0.25)] bg-[rgba(16,24,43,0.7)]" />
+                <SkeletonCard className="border-[rgba(125,146,255,0.25)] bg-ws-input-soft" />
+                <SkeletonCard className="border-[rgba(125,146,255,0.25)] bg-ws-input-soft" />
               </>
             )}
 
@@ -155,7 +169,7 @@ export function TimelineContainer({
                 />
                 <span
                   aria-hidden
-                  className="absolute left-1 top-5 h-[9px] w-[9px] rounded-full border border-[rgba(140,170,255,0.7)] bg-neon-base"
+                  className="absolute left-1 top-5 h-[9px] w-[9px] rounded-full border border-[rgba(140,170,255,0.7)] bg-ws-pop-strong"
                   style={{ boxShadow: i === 0 ? '0 0 12px rgba(122,92,255,0.8)' : undefined }}
                 />
                 <TimelineStepCard step={s} />
@@ -166,7 +180,7 @@ export function TimelineContainer({
           {/* The Mission composer lives with its own engine, not beside
               the AURA composer, so the two can never be mistaken. */}
           <div className="border-t border-[rgba(125,146,255,0.2)] px-6 py-3">
-            <div className="rounded-xl border border-[rgba(125,146,255,0.28)] bg-[rgba(13,19,38,0.8)] p-3">
+            <div className="rounded-xl border border-[rgba(125,146,255,0.28)] bg-ws-pop p-3">
               <label htmlFor="mission-composer" className="sr-only">Describe a mission</label>
               <textarea
                 id="mission-composer"

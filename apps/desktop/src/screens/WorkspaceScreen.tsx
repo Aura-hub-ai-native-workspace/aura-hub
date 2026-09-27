@@ -237,32 +237,50 @@ export function WorkspaceScreen() {
      Never guessed: an id with no match stays null and the gate is
      not shown. */
   const [approvals, setApprovals] = useState<Record<string, ApprovalRequest | null>>({});
+  const resolving = useRef<Set<string>>(new Set());
   const [deciding, setDeciding] = useState(false);
+  const [autonomyBusy, setAutonomyBusy] = useState(false);
+  const setAutonomy = useWorkspace((s) => s.setAutonomy);
+  const toggleAutonomy = useCallback(async (enabled: boolean) => {
+    if (!projectId) return;
+    setAutonomyBusy(true);
+    try {
+      await setAutonomy(projectId, enabled);
+    } finally {
+      setAutonomyBusy(false);
+    }
+  }, [projectId, setAutonomy]);
   const parkedIds = useMemo(
     () => conv.messages.map((m) => m.agent?.approvalId).filter((x): x is string => !!x),
     [conv.messages],
   );
   useEffect(() => {
-    const missing = parkedIds.filter((id) => approvals[id] === undefined);
+    const missing = parkedIds.filter((id) => approvals[id] === undefined && !resolving.current.has(id));
     if (!missing.length) return;
-    setApprovals((prev) => {
-      const next = { ...prev };
-      for (const id of missing) next[id] = null;
-      return next;
-    });
-    // Ledger reads are idempotent: a response only ever fills the ids
-    // it was asked for, from the ledger that owns them, so overlapping
-    // resolutions converge instead of corrupting. There is deliberately
-    // NO cancellation guard here — render churn (every message patch
-    // re-runs this effect) used to discard every in-flight resolution,
-    // and the pre-marked null above then blocked all retries, leaving
-    // the gate on "Loading…" forever with a working Approve underneath.
+    // Tri-state is the honesty mechanism: undefined = not yet asked
+    // (the card shows "Loading…"), null = asked and the ledger has no
+    // such record (the card says the record is gone instead of
+    // loading forever). In-flight ids are tracked in a ref so render
+    // churn can neither duplicate the fetch nor fake a resolution.
+    for (const id of missing) resolving.current.add(id);
     void (async () => {
       let agentRows: AgentApprovalRow[] = [];
+      let decidedRows: AgentApprovalRow[] = [];
+      let failed = false;
       try {
-        ({ approvals: agentRows } = await centralAgentClient.pendingApprovals());
-      } catch { /* the fallback below still gets its chance */ }
+        const res = await centralAgentClient.pendingApprovals();
+        agentRows = res.approvals ?? [];
+        // Spent requests stay readable: a card that named one renders
+        // its final state instead of "Loading…" forever.
+        decidedRows = res.decided ?? [];
+      } catch {
+        // Ledger unreachable: leave the ids undefined so the card
+        // keeps "Loading…" and a later pass retries — writing null
+        // here would misreport a dead backend as a settled record.
+        failed = true;
+      }
       const agentById = new Map(agentRows.map((r) => [r.id, r]));
+      const decidedById = new Map(decidedRows.map((r) => [r.id, r]));
       const needFallback = missing.filter((id) => !agentById.has(id));
       let fabricList: ApprovalRequest[] = [];
       if (needFallback.length) {
@@ -271,16 +289,19 @@ export function WorkspaceScreen() {
         } catch { /* the gate stays unrendered rather than guessing */ }
       }
       const fabricById = new Map(fabricList.map((a) => [a.id, a]));
-      setApprovals((prev) => {
-        const next = { ...prev };
-        for (const id of missing) {
-          const agentRow = agentById.get(id);
-          next[id] = (agentRow ? agentApprovalToRequest(agentRow) : null)
-            ?? fabricById.get(id)
-            ?? null;
-        }
-        return next;
-      });
+      if (!failed) {
+        setApprovals((prev) => {
+          const next = { ...prev };
+          for (const id of missing) {
+            const agentRow = agentById.get(id) ?? decidedById.get(id);
+            next[id] = (agentRow ? agentApprovalToRequest(agentRow) : null)
+              ?? fabricById.get(id)
+              ?? null;
+          }
+          return next;
+        });
+      }
+      for (const id of missing) resolving.current.delete(id);
     })();
   }, [parkedIds, approvals]);
 
@@ -323,7 +344,7 @@ export function WorkspaceScreen() {
           data-testid="handoff-banner"
           className="absolute inset-x-0 top-3 z-20 mx-auto w-[min(640px,calc(100%-2rem))]"
         >
-          <div className="rounded-2xl border border-[rgba(125,146,255,0.4)] bg-[rgba(9,13,26,0.97)] p-4 shadow-card">
+          <div className="rounded-2xl border border-[rgba(125,146,255,0.4)] bg-ws-dialog p-4 shadow-card">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-text-subtle">
               Suggested Workspace Task{handoff.sourceProjectName ? ` · from ${handoff.sourceProjectName}` : ''}
             </p>
@@ -382,6 +403,8 @@ export function WorkspaceScreen() {
             onDisconnectWorker={(id) => void disconnectWorker(id)}
             phase={agentPhase}
             agentBusy={conv.phase === 'working'}
+            autonomyBusy={autonomyBusy}
+            onToggleAutonomy={(enabled) => void toggleAutonomy(enabled)}
           />
         }
         right={
@@ -410,7 +433,7 @@ export function WorkspaceScreen() {
           aria-label={surface === 'worker' ? 'Add AI Worker' : 'AURA Everything'}
           onClick={(e) => { if (e.target === e.currentTarget) closeSurface(); }}
         >
-          <div className="flex w-full max-w-[560px] min-h-0 flex-col rounded-2xl border border-[rgba(125,146,255,0.3)] bg-[rgba(9,13,26,0.97)] p-4 shadow-card">
+          <div className="flex w-full max-w-[560px] min-h-0 flex-col rounded-2xl border border-[rgba(125,146,255,0.3)] bg-ws-dialog p-4 shadow-card">
             <div className="mb-3 flex items-start justify-end">
               <button
                 type="button"
@@ -472,7 +495,7 @@ export function WorkspaceScreen() {
           corresponding layoutStore floating window via openPanel(). */}
       <div
         data-testid="sovereign-panel-toolbar"
-        className="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-xl border border-[rgba(125,146,255,0.25)] bg-[rgba(9,13,26,0.85)] p-1 shadow-card backdrop-blur-sm"
+        className="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-xl border border-[rgba(125,146,255,0.25)] bg-ws-pop-soft p-1 shadow-card backdrop-blur-sm"
       >
         {(
           [

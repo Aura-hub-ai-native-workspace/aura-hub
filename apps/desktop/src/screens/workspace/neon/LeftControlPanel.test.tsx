@@ -101,6 +101,8 @@ function rail(toolSlots: ToolSlot[], workerIds: (string | null)[] = ['claude', '
       onConnectWorker={vi.fn()}
       onDisconnectWorker={vi.fn()}
       agentBusy={false}
+      autonomyBusy={false}
+      onToggleAutonomy={vi.fn()}
     />,
   );
 }

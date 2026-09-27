@@ -109,8 +109,8 @@ export function RunResultCard({
           className={cn(
             'grid h-6 w-6 place-items-center rounded-md border',
             good
-              ? 'border-[rgba(31,211,138,0.5)] bg-[rgba(31,211,138,0.12)] text-neon-success'
-              : 'border-[rgba(255,181,71,0.5)] bg-[rgba(255,181,71,0.12)] text-neon-warning',
+              ? 'border-[rgba(31,211,138,0.5)] bg-[rgba(31,211,138,0.12)] text-ws-ok'
+              : 'border-[rgba(255,181,71,0.5)] bg-[rgba(255,181,71,0.12)] text-ws-warn',
           )}
         >
           <Icon name="spark" size={13} />
@@ -125,7 +125,7 @@ export function RunResultCard({
       <p
         className={cn(
           'text-[13.5px] font-semibold',
-          good ? 'text-neon-success' : 'text-neon-warning',
+          good ? 'text-ws-ok' : 'text-ws-warn',
         )}
         data-testid="agent-result-headline"
       >
@@ -136,7 +136,7 @@ export function RunResultCard({
         <ul className="mt-2 space-y-1" data-testid="agent-result-checklist">
           {checks.map((c) => (
             <li key={c.text} className="flex items-baseline gap-2 text-[12px]" data-ok={c.ok}>
-              <span className={cn('shrink-0 font-semibold', c.ok ? 'text-neon-success' : 'text-neon-warning')}>
+              <span className={cn('shrink-0 font-semibold', c.ok ? 'text-ws-ok' : 'text-ws-warn')}>
                 {c.ok ? '✓' : '✕'}
               </span>
               <span className="min-w-0 flex-1 text-text-muted">{c.text}</span>
@@ -161,7 +161,7 @@ export function RunResultCard({
           type="button"
           onClick={onOpenProject}
           data-testid="agent-open-project"
-          className="neon-focus mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-[rgba(125,146,255,0.45)] px-2.5 py-1.5 text-[11.5px] font-semibold text-neon-blue transition-colors hover:bg-[rgba(125,146,255,0.12)]"
+          className="neon-focus mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-[rgba(125,146,255,0.45)] px-2.5 py-1.5 text-[11.5px] font-semibold text-ws-ink-blue transition-colors hover:bg-[rgba(125,146,255,0.12)]"
         >
           <Icon name="folder" size={13} />
           Open project

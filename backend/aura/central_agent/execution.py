@@ -466,6 +466,32 @@ class ExecutionController:
         }
 
     # ── single-invocation route ──────────────────────────────────────────
+    def _autonomous_project_scope(self, project_id: str) -> list[str] | None:
+        """Root scope for an opted-in project, else None.
+
+        Reads the server-side autonomy store through the fabric config —
+        the same source the policy grant reads, so dispatch and policy
+        can never disagree about whether this project is autonomous.
+        Returns ["."] (the project root itself) only when the project
+        is explicitly opted in AND its registered root is a real
+        directory; anything else refuses by returning None.
+        """
+        cfg = getattr(self, "_cfg", None)
+        store = getattr(cfg, "autonomy_store", None)
+        resolver = getattr(cfg, "project_root_resolver", None)
+        if store is None or resolver is None:
+            return None
+        try:
+            if not store.is_enabled(project_id):
+                return None
+            import os
+            root = resolver(project_id)
+        except Exception:
+            return None
+        if not root or not os.path.isdir(root):
+            return None
+        return ["."]
+
     def _invoke_single(
         self,
         task: Any,
@@ -485,6 +511,19 @@ class ExecutionController:
             return
 
         payload = dict(task.input)
+        if (task.capabilityId == "agent.delegate"
+                and not payload.get("scopePaths")
+                and project_id):
+            # Autonomous projects declare their own scope: an unscopable
+            # delegation task for an opted-in project is bound to the
+            # project root HERE — explicitly, by AURA, never by the
+            # model — so the autonomy grant can evaluate a bounded
+            # action instead of parking an unbounded one. Outside
+            # autonomous mode nothing is defaulted: unscoped delegation
+            # stays unscoped and the irreversible floor keeps parking it.
+            bound = self._autonomous_project_scope(project_id)
+            if bound is not None:
+                payload = {**payload, "scopePaths": bound}
         handoff_consumed: list[str] = []
         if task.inputFrom == "upstream-output":
             # The gate in execute() already ensured every dependency has

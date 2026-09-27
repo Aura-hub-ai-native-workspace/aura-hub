@@ -26,6 +26,8 @@ export interface ProjectRecord {
   favorite: boolean;
   createdAt: string;
   lastOpenedAt: string | null;
+  /** Workspace autonomous mode (overlaid from the agent backend; absent = off). */
+  autonomous?: boolean;
 }
 
 export interface FolderNode { name: string; files: number; dirs: number }

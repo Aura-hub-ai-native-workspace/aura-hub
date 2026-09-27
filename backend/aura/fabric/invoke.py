@@ -37,6 +37,39 @@ from ..policy.engine import (
 )
 from .manifest import describe_capability
 
+
+def _autonomy_grant_for(cfg: Any, capability_id: str,
+                        invocation_input: dict[str, Any],
+                        context: dict[str, Any]) -> dict[str, Any] | None:
+    """Workspace-scoped grant for this invocation, or None.
+
+    Reads the server-side autonomy store + project root; the agent's
+    input can influence the SCOPE under test but never manufacture a
+    grant (no opt-in or no confinement → None → floors hold).
+    """
+    store = getattr(cfg, "autonomy_store", None)
+    resolver = getattr(cfg, "project_root_resolver", None)
+    if store is None or resolver is None:
+        return None
+    project_id = context.get("projectId")
+    if not project_id:
+        return None
+    try:
+        if not store.is_enabled(project_id):
+            return None
+        root = resolver(project_id)
+    except Exception:
+        return None
+    try:
+        from ..policy.autonomy import build_grant
+    except Exception:
+        return None
+    try:
+        return build_grant(capability_id, invocation_input or {}, context,
+                           project_root=root, autonomous=True)
+    except Exception:
+        return None
+
 NO_VERIFICATION: dict[str, Any] = {
     "passed": None,
     "kind": None,
@@ -258,6 +291,7 @@ def invoke_fabric(
             projectId=context.get("projectId"),
             taskId=context.get("taskId"),
         ),
+        autonomy_grant=_autonomy_grant_for(cfg, capability_id, input, context),
     ))
     evaluation["_input_summary"] = summarize_input(capability, input)
 
@@ -276,6 +310,20 @@ def invoke_fabric(
         key = approval_key(capability_id, context, invocation_id)
         fingerprint = fingerprint_invocation(capability_id, input, context)
         open_request = ledger.open_for_key(key) if ledger else None
+        # Same question, new attempt: repeated user messages (or retried
+        # legs) arrive with fresh invocation ids, and the key above falls
+        # back to `inv:<id>` for session-scoped calls — so every retry
+        # used to mint ANOTHER pending card for the identical action.
+        # A pending request with the same fingerprint IS the same
+        # question; reuse it instead of stacking cards.
+        if (open_request is None or open_request.get("state") != "pending") \
+                and ledger is not None:
+            try:
+                twin = ledger.pending_with_fingerprint(fingerprint)
+            except Exception:
+                twin = None
+            if twin is not None:
+                open_request = twin
 
         named_id = context.get("approvalId")
         if named_id:
@@ -412,6 +460,8 @@ def describe_authority(
             projectId=context.get("projectId"),
             taskId=context.get("taskId"),
         ),
+        autonomy_grant=_autonomy_grant_for(
+            cfg, capability_id, context.get("input") or {}, context),
     ))
 
 

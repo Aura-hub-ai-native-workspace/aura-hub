@@ -71,6 +71,12 @@ class AuthorityChecker:
             preflight_ctx = {
                 "actor": {"kind": "agent", "id": "central-agent"},
                 "projectId": project_id, "taskId": task.id,
+                # The grant check reads the invocation scope from the
+                # input (scopePaths for delegation, path for writes,
+                # command for terminal) — without it the preflight
+                # would answer for the unbounded case and disagree
+                # with what dispatch actually decides.
+                "input": task.input if isinstance(task.input, dict) else {},
             }
             # Preflight sees the same worker pin dispatch will resolve:
             # an unknown/unusable node denies here, before anything parks.

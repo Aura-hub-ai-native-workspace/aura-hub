@@ -129,8 +129,21 @@ def _inside_scope(target: str, scope_paths: list[str],
         return False
     if not scope_paths:
         return True
-    return any(norm == s.rstrip("/") or norm.startswith(s.rstrip("/") + "/")
-               for s in scope_paths)
+    # The "." contract entry is the documented whole-project-root
+    # marker (supervision normalizes it to ""): it covers every
+    # in-cwd target. Anything else matches itself or its subtree.
+    # Note: "" arrives here only via that normalization — the contract
+    # layer refuses genuinely empty entries — so honoring it cannot
+    # widen a malformed contract.
+    cleaned: list[str] = []
+    for s in scope_paths:
+        t = s.strip()
+        if t in (".", "./", ""):
+            return True
+        t = t.rstrip("/")
+        if t:
+            cleaned.append(t)
+    return any(norm == s or norm.startswith(s + "/") for s in cleaned)
 
 
 def _sensitive(target: str) -> str | None:

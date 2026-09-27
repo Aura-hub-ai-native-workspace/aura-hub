@@ -33,9 +33,9 @@ interface ApprovalItem {
 }
 
 const RISK_TONE: Record<string, string> = {
-  high: 'text-neon-danger',
-  medium: 'text-neon-warning',
-  low: 'text-neon-success',
+  high: 'text-ws-bad',
+  medium: 'text-ws-warn',
+  low: 'text-ws-ok',
 };
 
 export function ApprovalRequestCard({
@@ -120,10 +120,10 @@ export function ApprovalRequestCard({
   return (
     <GlassCard className="p-3" tint="amber" data-testid="agent-approval" data-approval-id={approvalId}>
       <div className="mb-2 flex items-center gap-2">
-        <span className="grid h-6 w-6 place-items-center rounded-md border border-[rgba(255,181,71,0.5)] bg-[rgba(255,181,71,0.12)] text-neon-warning">
+        <span className="grid h-6 w-6 place-items-center rounded-md border border-[rgba(255,181,71,0.5)] bg-[rgba(255,181,71,0.12)] text-ws-warn">
           <Icon name="shield" size={13} />
         </span>
-        <p className="text-[11px] font-semibold uppercase tracking-widest text-neon-warning">
+        <p className="text-[11px] font-semibold uppercase tracking-widest text-ws-warn">
           Approval required
         </p>
       </div>
@@ -159,7 +159,7 @@ export function ApprovalRequestCard({
       {summary && <p className="mt-2 text-[11px] text-text-muted">{summary}</p>}
 
       {error && (
-        <p role="alert" className="mt-2 text-[11.5px] text-neon-danger" data-testid="agent-approval-error">
+        <p role="alert" className="mt-2 text-[11.5px] text-ws-bad" data-testid="agent-approval-error">
           {error}
         </p>
       )}
@@ -170,7 +170,7 @@ export function ApprovalRequestCard({
           onClick={() => void decide(true)}
           disabled={disabled}
           data-testid="agent-approve"
-          className="neon-focus flex-1 rounded-md border border-[rgba(31,211,138,0.5)] bg-[rgba(31,211,138,0.12)] px-3 py-1.5 text-[12px] font-semibold text-neon-success transition-colors hover:bg-[rgba(31,211,138,0.2)] disabled:opacity-50"
+          className="neon-focus flex-1 rounded-md border border-[rgba(31,211,138,0.5)] bg-[rgba(31,211,138,0.12)] px-3 py-1.5 text-[12px] font-semibold text-ws-ok transition-colors hover:bg-[rgba(31,211,138,0.2)] disabled:opacity-50"
         >
           {deciding ? 'Recording…' : 'Approve'}
         </button>
@@ -179,7 +179,7 @@ export function ApprovalRequestCard({
           onClick={() => void decide(false)}
           disabled={disabled}
           data-testid="agent-deny"
-          className="neon-focus flex-1 rounded-md border border-[rgba(255,93,122,0.5)] bg-[rgba(255,93,122,0.1)] px-3 py-1.5 text-[12px] font-semibold text-neon-danger transition-colors hover:bg-[rgba(255,93,122,0.18)] disabled:opacity-50"
+          className="neon-focus flex-1 rounded-md border border-[rgba(255,93,122,0.5)] bg-[rgba(255,93,122,0.1)] px-3 py-1.5 text-[12px] font-semibold text-ws-bad transition-colors hover:bg-[rgba(255,93,122,0.18)] disabled:opacity-50"
         >
           Deny
         </button>

@@ -54,7 +54,11 @@ def compile_config(scope_paths: list[str]) -> dict:
     allow_globs = []
     for scope in scope_paths:
         scope = scope.strip().rstrip("/")
-        if scope:
+        if scope in (".", ""):
+            # Whole-project-root marker: opencode permission globs are
+            # relative, so "**" is the spelling that covers the tree.
+            allow_globs.append("**")
+        elif scope:
             allow_globs.append(f"{scope}/**")
     edit_rules: dict[str, str] = {"*": "deny"}
     for glob in allow_globs:
@@ -133,6 +137,9 @@ export const AuraGovernance = async (ctx) => {
     const parts = t.split("/");
     if (parts.includes("..") || parts.includes(".") || parts.includes("")) return false;
     if (scopes.length === 0) return true;
+    // "." is the documented whole-project-root marker: it covers
+    // every in-cwd target (mirrors governance/actions.py).
+    if (scopes.some((s) => s === "." || s === "")) return true;
     return scopes.some((s) => t === s || t.startsWith(s + "/"));
   };
   const SENSITIVE = [".env", ".git/", ".ssh/", ".aws/", "secrets", ".gnupg", ".pki", "id_rsa", "id_ed25519", ".pem", ".key", "credentials"];

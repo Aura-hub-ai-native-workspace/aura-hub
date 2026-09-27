@@ -87,7 +87,7 @@ export function MissionStageStrip({
     <nav
       data-testid="mission-stage-strip"
       aria-label="Mission pipeline stages"
-      className="flex items-center gap-0.5 overflow-x-auto rounded-xl border border-[rgba(125,146,255,0.18)] bg-[rgba(9,13,26,0.55)] px-3 py-2"
+      className="flex items-center gap-0.5 overflow-x-auto rounded-xl border border-[rgba(125,146,255,0.18)] bg-ws-soft px-3 py-2"
     >
       {STAGES.map((stage, i) => {
         const state = stageMap[stage.id] ?? 'pending';
@@ -128,13 +128,13 @@ function StageNode({ stage, state }: { stage: Stage; state: StageState }) {
         className={cn(
           'grid h-6 w-6 place-items-center rounded-md border transition-all',
           state === 'done' &&
-            'border-[rgba(31,211,138,0.45)] bg-[rgba(31,211,138,0.12)] text-neon-success',
+            'border-[rgba(31,211,138,0.45)] bg-[rgba(31,211,138,0.12)] text-ws-ok',
           state === 'active' &&
-            'border-[rgba(32,211,255,0.55)] bg-[rgba(32,211,255,0.12)] text-neon-cyan',
+            'border-[rgba(32,211,255,0.55)] bg-[rgba(32,211,255,0.12)] text-ws-ink-cyan',
           state === 'failed' &&
-            'border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] text-neon-danger',
+            'border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] text-ws-bad',
           state === 'pending' &&
-            'border-[rgba(125,146,255,0.18)] bg-[rgba(13,19,38,0.4)] text-text-subtle',
+            'border-[rgba(125,146,255,0.18)] bg-ws-soft text-text-subtle',
         )}
       >
         <Icon name={stage.icon as never} size={11} />
@@ -142,9 +142,9 @@ function StageNode({ stage, state }: { stage: Stage; state: StageState }) {
       <span
         className={cn(
           'text-[9px] font-semibold tracking-wide',
-          state === 'done' && 'text-neon-success',
-          state === 'active' && 'text-neon-cyan',
-          state === 'failed' && 'text-neon-danger',
+          state === 'done' && 'text-ws-ok',
+          state === 'active' && 'text-ws-ink-cyan',
+          state === 'failed' && 'text-ws-bad',
           state === 'pending' && 'text-text-subtle',
         )}
       >

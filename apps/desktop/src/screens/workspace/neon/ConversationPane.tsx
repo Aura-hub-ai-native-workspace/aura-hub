@@ -40,9 +40,9 @@ import type { ApprovalRequest } from '../../../ai/fabricClient';
  */
 
 const TONE_CLASS: Record<OutcomeTone, string> = {
-  neutral: 'border-[rgba(125,146,255,0.3)] bg-[rgba(13,19,38,0.7)] text-text-muted',
-  attention: 'border-[rgba(255,181,71,0.4)] bg-[rgba(255,181,71,0.09)] text-neon-warning',
-  danger: 'border-[rgba(255,93,122,0.42)] bg-[rgba(255,93,122,0.09)] text-neon-danger',
+  neutral: 'border-[rgba(125,146,255,0.3)] bg-ws-soft text-text-muted',
+  attention: 'border-[rgba(255,181,71,0.4)] bg-[rgba(255,181,71,0.09)] text-ws-warn',
+  danger: 'border-[rgba(255,93,122,0.42)] bg-[rgba(255,93,122,0.09)] text-ws-bad',
 };
 
 const SUGGESTIONS = [
@@ -140,7 +140,7 @@ function MessageRow({
 
   return (
     <div className="flex gap-3" data-testid="chat-message" data-role="assistant">
-      <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-[#c9bcff]">
+      <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-ws-ink">
         <Icon name="spark" size={14} />
       </span>
       <div className="min-w-0 flex-1">
@@ -148,7 +148,7 @@ function MessageRow({
           <p
             role="alert"
             data-testid="chat-error"
-            className="rounded-xl border border-[rgba(255,93,122,0.42)] bg-[rgba(255,93,122,0.09)] px-3.5 py-2.5 text-[13px] text-neon-danger"
+            className="rounded-xl border border-[rgba(255,93,122,0.42)] bg-[rgba(255,93,122,0.09)] px-3.5 py-2.5 text-[13px] text-ws-bad"
           >
             {failureText(message.error)}
           </p>
@@ -181,9 +181,17 @@ function MessageRow({
                 onDecide={(_id, granted, reason) => onDecide(granted, reason)}
               />
             )}
-            {message.agent?.approvalId && approval === null && (
+            {message.agent?.approvalId && approval === undefined && (
               <p className="mt-2 text-[12px] text-text-subtle">
                 Loading the authorization details…
+              </p>
+            )}
+            {message.agent?.approvalId && approval === null && !streaming && (
+              <p className="mt-2 text-[12px] text-text-subtle" data-testid="approval-unavailable">
+                This authorization record is no longer available — it was
+                decided, consumed, or cleared by a restart. Nothing is
+                waiting on you here; send the request again if the work
+                still needs doing.
               </p>
             )}
 
@@ -264,7 +272,7 @@ export function ConversationPane({
             <span
               data-testid="chat-scope"
               title={scope === 'workspace' ? 'Workspace execution — objectives become plans, approvals and governed work' : 'Project Ask AURA — this project’s context only'}
-              className="shrink-0 rounded-full border border-[rgba(125,146,255,0.32)] bg-[rgba(13,19,38,0.7)] px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-text-muted"
+              className="shrink-0 rounded-full border border-[rgba(125,146,255,0.32)] bg-ws-soft px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-text-muted"
             >
               {scope === 'workspace' ? 'Execution' : 'Project chat'}
             </span>
@@ -277,7 +285,7 @@ export function ConversationPane({
           <span
             role="alert"
             data-testid="agent-offline"
-            className="shrink-0 rounded-full border border-[rgba(255,181,71,0.42)] bg-[rgba(255,181,71,0.1)] px-2.5 py-1 text-[11px] text-neon-warning"
+            className="shrink-0 rounded-full border border-[rgba(255,181,71,0.42)] bg-[rgba(255,181,71,0.1)] px-2.5 py-1 text-[11px] text-ws-warn"
           >
             AURA is not running
           </span>
@@ -287,7 +295,7 @@ export function ConversationPane({
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
         {empty ? (
           <div className="flex h-full flex-col items-center justify-center gap-5 text-center">
-            <span className="grid h-14 w-14 place-items-center rounded-2xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-[#c9bcff]">
+            <span className="grid h-14 w-14 place-items-center rounded-2xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-ws-ink">
               <Icon name="spark" size={26} />
             </span>
             <div>
@@ -303,7 +311,7 @@ export function ConversationPane({
                   type="button"
                   onClick={() => onSend(s)}
                   data-testid="chat-suggestion"
-                  className="neon-focus rounded-xl border border-[rgba(125,146,255,0.28)] bg-[rgba(13,19,38,0.7)] px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:border-[rgba(32,211,255,0.45)] hover:text-text"
+                  className="neon-focus rounded-xl border border-[rgba(125,146,255,0.28)] bg-ws-soft px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:border-[rgba(32,211,255,0.45)] hover:text-text"
                 >
                   {s}
                 </button>
@@ -315,7 +323,7 @@ export function ConversationPane({
             <MessageRow
               key={m.id}
               message={m}
-              approval={m.agent?.approvalId ? approvals[m.agent.approvalId] ?? null : undefined}
+              approval={m.agent?.approvalId ? approvals[m.agent.approvalId] : undefined}
               deciding={deciding}
               onDecide={(granted, reason) => onDecide(m.id, granted, reason)}
             />
@@ -327,7 +335,7 @@ export function ConversationPane({
         <ActivityLine activity={activity} />
         <div
           className={cn(
-            'relative rounded-2xl border bg-[rgba(13,19,38,0.85)] p-3 transition-colors',
+            'relative rounded-2xl border bg-ws-pop p-3 transition-colors',
             busy
               ? 'border-[rgba(32,211,255,0.35)]'
               : 'border-[rgba(125,146,255,0.32)] focus-within:border-[rgba(125,146,255,0.6)]',

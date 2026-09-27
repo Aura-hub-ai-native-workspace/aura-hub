@@ -145,13 +145,13 @@ function FilledWorkerSlot({
           'neon-focus relative grid h-[68px] w-[68px] place-items-center rounded-2xl border transition-all duration-150 disabled:cursor-not-allowed',
           on
             ? 'border-[rgba(122,92,255,0.55)] bg-[rgba(122,92,255,0.12)] shadow-glow-violet hover:border-[rgba(122,92,255,0.8)]'
-            : 'border-[rgba(125,146,255,0.22)] bg-[rgba(13,19,38,0.9)] hover:border-[rgba(125,146,255,0.45)]',
+            : 'border-[rgba(125,146,255,0.22)] bg-ws-pop hover:border-[rgba(125,146,255,0.45)]',
         )}
       >
         <span
           className={cn(
             'text-[20px] font-semibold tracking-tight',
-            on ? 'text-[#c9bcff]' : 'text-text-subtle',
+            on ? 'text-ws-ink' : 'text-text-subtle',
           )}
         >
           {monogram(name)}
@@ -169,7 +169,7 @@ function FilledWorkerSlot({
       <span
         className={cn(
           'w-full truncate text-[10.5px]',
-          on ? 'text-neon-success' : 'text-text-subtle',
+          on ? 'text-ws-ok' : 'text-text-subtle',
         )}
       >
         {caption}
@@ -186,7 +186,7 @@ function FilledWorkerSlot({
         data-worker-id={slot.workerId ?? undefined}
         aria-label={`Replace ${name} in this workspace`}
         title={`Replace ${name} in worker slot ${slot.index + 1}. Nothing is uninstalled.`}
-        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(122,92,255,0.4)] bg-[rgba(9,13,26,0.95)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-[#c9bcff] focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(122,92,255,0.4)] bg-ws-pop-strong text-text-subtle opacity-0 transition-opacity duration-150 hover:text-ws-ink focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="refresh" size={10} />
       </button>
@@ -202,7 +202,7 @@ function FilledWorkerSlot({
         data-worker-id={slot.workerId ?? undefined}
         aria-label={`Remove ${name} from workspace`}
         title={`Remove ${name} from this workspace. Nothing is uninstalled or disconnected.`}
-        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(125,146,255,0.32)] bg-[rgba(9,13,26,0.95)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(125,146,255,0.32)] bg-ws-pop-strong text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="close" size={10} />
       </button>
@@ -232,7 +232,7 @@ function EmptyWorkerSlot({ index, onAddWorker }: { index: number; onAddWorker: (
         title="Add an AI worker to this workspace"
         className="neon-focus flex min-w-0 flex-col items-center text-center"
       >
-        <span className="grid h-[68px] w-[68px] place-items-center rounded-2xl border border-dashed border-[rgba(125,146,255,0.28)] bg-[rgba(10,16,34,0.55)] text-text-subtle transition-colors duration-150 hover:border-[rgba(122,92,255,0.5)] hover:text-[#c9bcff]">
+        <span className="grid h-[68px] w-[68px] place-items-center rounded-2xl border border-dashed border-[rgba(125,146,255,0.28)] bg-ws-slot text-text-subtle transition-colors duration-150 hover:border-[rgba(122,92,255,0.5)] hover:text-ws-ink">
           <Icon name="plus" size={18} />
         </span>
         <span className="mt-2 w-full truncate text-[12px] font-medium text-text-subtle">
@@ -249,15 +249,15 @@ function EmptyWorkerSlot({ index, onAddWorker }: { index: number; onAddWorker: (
  * or readiness, and `SELECTED` deliberately makes no claim at all.
  */
 const SLOT_RING: Record<Exclude<ToolSlot['state'], 'EMPTY'>, string> = {
-  ACTIVE: 'border-[rgba(32,211,255,0.55)] bg-[rgba(10,26,36,0.92)] text-neon-cyan shadow-glow-cyan',
-  SELECTED: 'border-[rgba(32,211,255,0.28)] bg-[rgba(10,20,30,0.9)] text-neon-cyan',
-  UNAVAILABLE: 'border-[rgba(255,181,71,0.34)] bg-[rgba(26,20,10,0.85)] text-neon-warning',
+  ACTIVE: 'border-[rgba(32,211,255,0.55)] bg-ws-pop text-ws-ink-cyan shadow-glow-cyan',
+  SELECTED: 'border-[rgba(32,211,255,0.28)] bg-ws-pop text-ws-ink-cyan',
+  UNAVAILABLE: 'border-[rgba(255,181,71,0.34)] bg-ws-unavail text-ws-warn',
 };
 
 const SLOT_CAPTION: Record<Exclude<ToolSlot['state'], 'EMPTY'>, string> = {
-  ACTIVE: 'text-neon-success',
+  ACTIVE: 'text-ws-ok',
   SELECTED: 'text-text-subtle',
-  UNAVAILABLE: 'text-neon-warning',
+  UNAVAILABLE: 'text-ws-warn',
 };
 
 /** The slot's second line: the node's real status, or why it cannot answer. */
@@ -329,7 +329,7 @@ function FilledSlot({
         data-node-id={slot.nodeId ?? undefined}
         aria-label={`Replace ${name} in this workspace`}
         title={`Replace ${name} in slot ${slot.index + 1}. Nothing is installed or uninstalled.`}
-        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(32,211,255,0.34)] bg-[rgba(9,13,26,0.95)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-neon-cyan focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(32,211,255,0.34)] bg-ws-pop-strong text-text-subtle opacity-0 transition-opacity duration-150 hover:text-ws-ink-blue focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="refresh" size={10} />
       </button>
@@ -344,7 +344,7 @@ function FilledSlot({
         data-node-id={slot.nodeId ?? undefined}
         aria-label={`Remove ${name} from workspace`}
         title={`Remove ${name} from this workspace. Nothing is uninstalled.`}
-        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(125,146,255,0.32)] bg-[rgba(9,13,26,0.95)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(125,146,255,0.32)] bg-ws-pop-strong text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="close" size={10} />
       </button>
@@ -374,7 +374,7 @@ function EmptySlot({ index, onAddTool }: { index: number; onAddTool: () => void 
         title="Add a tool to this workspace"
         className="neon-focus flex min-w-0 flex-col items-center gap-1.5 text-center"
       >
-        <span className="grid h-[56px] w-[56px] place-items-center rounded-2xl border border-dashed border-[rgba(125,146,255,0.28)] bg-[rgba(10,16,34,0.55)] text-text-subtle transition-colors duration-150 hover:border-[rgba(32,211,255,0.45)] hover:text-neon-cyan">
+        <span className="grid h-[56px] w-[56px] place-items-center rounded-2xl border border-dashed border-[rgba(125,146,255,0.28)] bg-ws-slot text-text-subtle transition-colors duration-150 hover:border-[rgba(32,211,255,0.45)] hover:text-ws-ink-cyan">
           <Icon name="plus" size={18} />
         </span>
         <span className="w-full truncate text-[11.5px] font-medium text-text-subtle">
@@ -516,7 +516,7 @@ export function OrchestrationGraph({
         <span
           className={cn(
             'relative grid h-[104px] w-[104px] place-items-center rounded-full border-2 border-[rgba(122,92,255,0.6)]',
-            'bg-[radial-gradient(circle_at_50%_35%,rgba(122,92,255,0.35),rgba(10,16,34,0.98)_70%)] shadow-glow-violet',
+            'bg-[radial-gradient(circle_at_50%_35%,rgba(122,92,255,0.35),var(--ws-pop-strong)_70%)] shadow-glow-violet',
           )}
         >
           <AuraLogo size={52} />
@@ -531,7 +531,7 @@ export function OrchestrationGraph({
           AURA Agent
         </span>
         <span className="text-[11.5px] text-text-muted">Plan · Use Tools · Get Results</span>
-        <span className="mt-0.5 max-w-full truncate text-[11px] text-neon-cyan">{phase}</span>
+        <span className="mt-0.5 max-w-full truncate text-[11px] text-ws-ink-cyan">{phase}</span>
       </div>
 
       <Connectors count={ACTIVE_TOOL_SLOTS} direction="up" />

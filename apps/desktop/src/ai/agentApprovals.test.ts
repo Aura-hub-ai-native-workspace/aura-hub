@@ -60,4 +60,15 @@ describe('agentApprovalToRequest', () => {
     expect(agentApprovalToRequest(row({ state: 'granted' }))!.state).toBe('granted');
     expect(agentApprovalToRequest(row({ state: 'denied' }))!.state).toBe('denied');
   });
+
+  it('resolves decided-ledger rows exactly like pending ones (no loading hang)', () => {
+    // The backend returns spent requests under `decided`; the gate
+    // looks them up the same way, so a card that named a spent id
+    // renders its final state instead of "Loading…" forever.
+    const decided = row({ state: 'granted' });
+    const req = agentApprovalToRequest(decided);
+    expect(req).not.toBeNull();
+    expect(req!.id).toBe('apr-1');
+    expect(req!.items[0].capabilityId).toBe('agent.delegate');
+  });
 });

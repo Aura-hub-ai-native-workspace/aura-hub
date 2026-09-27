@@ -39,7 +39,7 @@ export function AgentRunPanel({ run }: { run: AgentRun }) {
         <p
           role="alert"
           data-testid="agent-error"
-          className="rounded-xl border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-4 py-3 text-[12.5px] text-neon-danger"
+          className="rounded-xl border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-4 py-3 text-[12.5px] text-ws-bad"
         >
           {error}
         </p>
@@ -52,7 +52,7 @@ export function AgentRunPanel({ run }: { run: AgentRun }) {
           className="flex min-h-0 flex-1 flex-col items-center justify-center px-8 text-center"
           data-testid="agent-empty"
         >
-          <span className="grid h-16 w-16 place-items-center rounded-2xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.12)] text-[#b7a6ff] shadow-glow-violet">
+          <span className="grid h-16 w-16 place-items-center rounded-2xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.12)] text-ws-ink-violet shadow-glow-violet">
             <Icon name="spark" size={30} />
           </span>
           <h3 className="mt-4 text-[19px] font-semibold tracking-[-0.01em] text-text">
@@ -92,10 +92,10 @@ export function AgentRunPanel({ run }: { run: AgentRun }) {
               data-state={runState}
               className={
                 runState === 'RUNNING'
-                  ? 'rounded-full border border-[rgba(32,211,255,0.45)] bg-[rgba(32,211,255,0.12)] px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wide text-neon-cyan'
+                  ? 'rounded-full border border-[rgba(32,211,255,0.45)] bg-[rgba(32,211,255,0.12)] px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wide text-ws-ink-cyan'
                   : runState === 'CANCELLED' || runState === 'STOPPING' || runState === 'STOP REQUESTED'
-                    ? 'rounded-full border border-[rgba(255,181,71,0.45)] bg-[rgba(255,181,71,0.1)] px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wide text-neon-warning'
-                    : 'rounded-full border border-white/10 px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wide text-text-subtle'
+                    ? 'rounded-full border border-[rgba(255,181,71,0.45)] bg-[rgba(255,181,71,0.1)] px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wide text-ws-warn'
+                    : 'rounded-full border border-line px-2.5 py-1 text-[10.5px] font-semibold uppercase tracking-wide text-text-subtle'
               }
             >
               {runState}
@@ -106,7 +106,7 @@ export function AgentRunPanel({ run }: { run: AgentRun }) {
                 onClick={() => void stop()}
                 disabled={stopRequested}
                 data-testid="agent-stop"
-                className="neon-focus rounded-lg border border-[rgba(255,181,71,0.5)] px-2.5 py-1 text-[11px] font-semibold text-neon-warning transition-colors hover:bg-[rgba(255,181,71,0.12)] disabled:opacity-60"
+                className="neon-focus rounded-lg border border-[rgba(255,181,71,0.5)] px-2.5 py-1 text-[11px] font-semibold text-ws-warn transition-colors hover:bg-[rgba(255,181,71,0.12)] disabled:opacity-60"
               >
                 {stopRequested ? 'Stopping…' : 'Stop'}
               </button>
@@ -117,7 +117,7 @@ export function AgentRunPanel({ run }: { run: AgentRun }) {
                 onClick={() => void resumeCancelled()}
                 disabled={busy}
                 data-testid="agent-resume-cancelled"
-                className="neon-focus rounded-lg border border-[rgba(125,146,255,0.45)] px-2.5 py-1 text-[11px] font-semibold text-neon-blue transition-colors hover:bg-[rgba(125,146,255,0.12)] disabled:opacity-60"
+                className="neon-focus rounded-lg border border-[rgba(125,146,255,0.45)] px-2.5 py-1 text-[11px] font-semibold text-ws-ink-blue transition-colors hover:bg-[rgba(125,146,255,0.12)] disabled:opacity-60"
               >
                 Resume
               </button>
@@ -169,7 +169,7 @@ export function AgentRunPanel({ run }: { run: AgentRun }) {
       {/* SUPERVISOR — what AURA allowed and refused inside the runtime. */}
       {actions.length > 0 && (
         <div
-          className="rounded-xl border border-[rgba(125,146,255,0.22)] bg-[rgba(13,19,38,0.55)] px-4 py-3"
+          className="rounded-xl border border-[rgba(125,146,255,0.22)] bg-ws-soft px-4 py-3"
           data-testid="agent-supervisor"
         >
           <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-text-subtle">
@@ -177,8 +177,8 @@ export function AgentRunPanel({ run }: { run: AgentRun }) {
           </p>
           <p className="text-[12px] text-text-muted">
             {supervisor.observed} action{supervisor.observed === 1 ? '' : 's'} observed ·{' '}
-            <span className="text-neon-success">{supervisor.allowed} allowed</span> ·{' '}
-            <span className={supervisor.denied ? 'text-neon-danger' : ''}>
+            <span className="text-ws-ok">{supervisor.allowed} allowed</span> ·{' '}
+            <span className={supervisor.denied ? 'text-ws-bad' : ''}>
               {supervisor.denied} denied
             </span>{' '}
             · {supervisor.parked} parked

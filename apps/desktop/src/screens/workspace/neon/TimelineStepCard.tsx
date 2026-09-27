@@ -29,7 +29,7 @@ export function TimelineStepCard({ step }: { step: TimelineStep }) {
   return (
     <GlassCard tint={step.tint} className="p-4 transition-shadow duration-150">
       <div className="flex items-center gap-3">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-[rgba(125,146,255,0.3)] bg-[rgba(10,16,34,0.9)] text-text">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-[rgba(125,146,255,0.3)] bg-ws-soft text-text">
           <Icon name={step.icon} size={18} />
         </span>
         <span className="min-w-0 flex-1">
@@ -64,7 +64,7 @@ export function TimelineStepCard({ step }: { step: TimelineStep }) {
             transition={spring.snappy}
             className="overflow-hidden"
           >
-            <div className="mt-3 flex flex-wrap items-start justify-between gap-3 rounded-md border border-white/5 bg-black/20 p-3">
+            <div className="mt-3 flex flex-wrap items-start justify-between gap-3 rounded-md border border-line bg-ws-soft p-3">
               <div className="min-w-0 flex-1 text-[12px] leading-relaxed text-text-muted">
                 {step.body}
               </div>

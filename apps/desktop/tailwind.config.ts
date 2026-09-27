@@ -68,6 +68,34 @@ const config: Config = {
           DEFAULT: 'var(--neon-violet)',
           soft: 'rgba(122, 92, 255, 0.14)',
         },
+        /* Workspace surfaces — theme-aware (see --ws-* in global.css).
+           Dark values are the established cyber-glass; light values are
+           the light-glass treatment. Workspace components must use
+           these, never hardcoded navy. */
+        ws: {
+          canvas: 'var(--ws-canvas)',
+          panel: 'var(--ws-panel)',
+          dialog: 'var(--ws-dialog)',
+          pop: 'var(--ws-pop)',
+          'pop-strong': 'var(--ws-pop-strong)',
+          'pop-soft': 'var(--ws-pop-soft)',
+          header: 'var(--ws-header)',
+          input: 'var(--ws-input)',
+          'input-soft': 'var(--ws-input-soft)',
+          soft: 'var(--ws-soft)',
+          tile: 'var(--ws-tile)',
+          slot: 'var(--ws-slot)',
+          evidence: 'var(--ws-evidence)',
+          'aura-row': 'var(--ws-aura-row)',
+          ink: 'var(--ws-ink)',
+          'ink-blue': 'var(--ws-ink-blue)',
+          'ink-violet': 'var(--ws-ink-violet)',
+          'ink-cyan': 'var(--ws-ink-cyan)',
+          unavail: 'var(--ws-unavail)',
+          ok: 'var(--ws-ok)',
+          warn: 'var(--ws-warn)',
+          bad: 'var(--ws-bad)',
+        },
       },
       fontFamily: {
         sans: ['Inter', 'SF Pro Text', 'system-ui', '-apple-system', 'sans-serif'],

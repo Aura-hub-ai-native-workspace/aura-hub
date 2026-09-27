@@ -84,7 +84,7 @@ export function ActivityFeedPanel({ events }: { events: AgentEventFrame[] }) {
     <section
       data-testid="activity-feed-panel"
       aria-label="Live activity feed"
-      className="rounded-xl border border-[rgba(125,146,255,0.18)] bg-[rgba(13,19,38,0.55)]"
+      className="rounded-xl border border-[rgba(125,146,255,0.18)] bg-ws-soft"
     >
       <div className="flex items-center gap-2 border-b border-[rgba(125,146,255,0.12)] px-4 py-2">
         <Icon name="activity" size={11} className="shrink-0 text-text-subtle" />

@@ -70,12 +70,12 @@ function WorkerCard({
       data-connected={worker.connected}
       data-governance={worker.governance}
       data-lifecycle={state}
-      className="flex flex-col gap-1.5 rounded-md border border-[rgba(125,146,255,0.25)] bg-[rgba(13,19,38,0.85)] px-2.5 py-2.5"
+      className="flex flex-col gap-1.5 rounded-md border border-[rgba(125,146,255,0.25)] bg-ws-pop px-2.5 py-2.5"
     >
       <div className="flex items-center gap-2">
-        <span className="relative grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-white/5 bg-black/30 text-text">
+        <span className="relative grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-line bg-ws-soft text-text">
           <Icon name="cpu" size={14} />
-          {live && <span className="aura-live absolute inset-0 text-neon-cyan" aria-hidden />}
+          {live && <span className="aura-live absolute inset-0 text-ws-ink-cyan" aria-hidden />}
         </span>
         <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-text">
           {worker.name}
@@ -84,7 +84,7 @@ function WorkerCard({
           className={cn(
             'h-1.5 w-1.5 shrink-0 rounded-full',
             tone === 'positive' ? 'bg-neon-success'
-              : tone === 'attention' ? 'bg-neon-warning' : 'bg-white/25',
+              : tone === 'attention' ? 'bg-neon-warning' : 'bg-line-strong',
           )}
           aria-hidden
         />
@@ -93,7 +93,7 @@ function WorkerCard({
       <span
         className={cn(
           'text-[10.5px] font-semibold uppercase tracking-wide',
-          worker.connected ? 'text-neon-success' : 'text-text-subtle',
+          worker.connected ? 'text-ws-ok' : 'text-text-subtle',
         )}
       >
         {busy ? 'Proving…' : worker.connected ? 'Connected' : 'Not connected'}
@@ -130,7 +130,7 @@ function WorkerCard({
               ? 'Prove AURA can dispatch to this worker and receive a real result'
               : worker.installDetail || 'Not installed on this machine'
           }
-          className="neon-focus mt-0.5 rounded px-1 py-0.5 text-left text-[10.5px] text-neon-blue transition-colors hover:text-text disabled:cursor-not-allowed disabled:text-text-subtle disabled:opacity-60"
+          className="neon-focus mt-0.5 rounded px-1 py-0.5 text-left text-[10.5px] text-ws-ink-blue transition-colors hover:text-text disabled:cursor-not-allowed disabled:text-text-subtle disabled:opacity-60"
         >
           {worker.installed ? 'Connect' : 'Unavailable'}
         </button>
@@ -180,7 +180,7 @@ export function WorkerRail({
       </div>
 
       {error && (
-        <p role="alert" data-testid="worker-error" className="mb-2 rounded-md border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-2.5 py-1.5 text-[11px] text-neon-danger">
+        <p role="alert" data-testid="worker-error" className="mb-2 rounded-md border border-[rgba(255,93,122,0.45)] bg-[rgba(255,93,122,0.1)] px-2.5 py-1.5 text-[11px] text-ws-bad">
           {error}
         </p>
       )}
@@ -206,21 +206,21 @@ export function WorkerRail({
 
       <p
         data-testid="worker-readiness"
-        className="mt-2.5 border-t border-white/5 pt-2 text-[10.5px] text-text-subtle"
+        className="mt-2.5 border-t border-line pt-2 text-[10.5px] text-text-subtle"
       >
-        <span className="font-semibold text-neon-success">{counts.connected}</span>
+        <span className="font-semibold text-ws-ok">{counts.connected}</span>
         {' of '}
         <span className="font-semibold">{counts.total}</span> connected
         {counts.governed > 0 && (
           <>
             {' · '}
-            <span className="font-semibold text-neon-success">{counts.governed}</span> governed live
+            <span className="font-semibold text-ws-ok">{counts.governed}</span> governed live
           </>
         )}
         {counts.missing > 0 && (
           <>
             {' · '}
-            <span className="font-semibold text-neon-warning">{counts.missing}</span> not installed
+            <span className="font-semibold text-ws-warn">{counts.missing}</span> not installed
           </>
         )}
       </p>

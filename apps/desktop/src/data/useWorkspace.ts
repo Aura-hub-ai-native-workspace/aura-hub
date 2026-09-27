@@ -47,6 +47,8 @@ interface WorkspaceState {
   memory: MemoryItem[];
 
   refresh: () => Promise<void>;
+  /** Explicit per-project autonomous-mode opt-in/out (agent backend). */
+  setAutonomy: (id: string, enabled: boolean) => Promise<{ projectId: string; autonomous: boolean }>;
   addProject: (path: string, name?: string) => Promise<{ ok: boolean; error?: string }>;
   /** Frontend-only: prepend a project to the local session list (no backend). */
   createLocalProject: (name: string, path: string) => void;
@@ -82,10 +84,24 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     set({ loading: true });
     try {
       const res = await aiClient.listProjects();
+      // Overlay workspace autonomy flags from the agent backend (:4320),
+      // which owns the opt-in record. Best-effort: if that service is
+      // down, projects still list — autonomy simply reads off.
+      let autonomousById: Record<string, boolean> = {};
+      try {
+        const { centralAgentClient } = await import('../ai/centralAgentClient');
+        const agentRes = await centralAgentClient.listProjects();
+        for (const p of agentRes.projects ?? []) {
+          if (p && typeof p.id === 'string') autonomousById[p.id] = p.autonomous === true;
+        }
+      } catch { /* agent backend unreachable — autonomy reads off */ }
       // A service that does not report registry health is assumed healthy,
       // so an older build behaves exactly as before.
       set({
-        projects: res.projects,
+        projects: res.projects.map((p) => ({
+          ...p,
+          autonomous: autonomousById[p.id] ?? p.autonomous ?? false,
+        })),
         registryReadable: res.registry ? res.registry.readable : true,
         registryError: res.registry?.error ?? null,
         reachable: true,
@@ -94,6 +110,17 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     } catch {
       set({ reachable: false, loading: false });
     }
+  },
+
+  /** Explicit per-project autonomous-mode opt-in/out (agent backend). */
+  async setAutonomy(id: string, enabled: boolean) {
+    const { centralAgentClient } = await import('../ai/centralAgentClient');
+    const res = await centralAgentClient.setProjectAutonomy(id, enabled);
+    set((st) => ({
+      projects: st.projects.map((p) =>
+        p.id === id ? { ...p, autonomous: res.autonomous } : p),
+    }));
+    return res;
   },
 
   async addProject(path, name) {

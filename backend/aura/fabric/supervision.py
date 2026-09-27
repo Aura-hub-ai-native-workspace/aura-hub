@@ -26,6 +26,12 @@ def _normalize_scope_path(raw: object) -> str | None:
     Canonical form: forward slashes, no leading/trailing slashes, no
     trailing glob (`/**` or `/*` are accepted as spelling and stripped —
     a scope is always a directory subtree or a single file).
+
+    The single entry `"."` (spelled `"."` or `"./"`) denotes the project
+    root itself and normalizes to `""`: every repo-relative path falls
+    inside it. This is the spelling autonomous dispatch uses for
+    whole-project work — explicit, auditable, and still a bounded
+    contract (the root it resolves against is fixed server-side).
     """
     if not isinstance(raw, str):
         return None
@@ -34,6 +40,8 @@ def _normalize_scope_path(raw: object) -> str | None:
         # repo-relative with forward slashes (git reports them that way).
         return None
     text = raw.strip()
+    if text in (".", "./"):
+        return ""
     while text.startswith("/"):
         # Absolute paths are refused below; strip nothing silently — but a
         # single leading slash is almost always a typo for a repo-relative
@@ -95,9 +103,13 @@ def _in_scope(path: str, scope: list[str]) -> bool:
 
     A scope entry covers itself (single file) and everything beneath it
     (directory subtree), on `/` boundaries only — `src/auth` never covers
-    `src/authx`.
+    `src/authx`. The root marker `""` (spelled `"."` in contracts) covers
+    every repo-relative path: whole-project work stays an explicit,
+    auditable contract rather than an absent one.
     """
     for prefix in scope:
+        if prefix == "":
+            return True
         if path == prefix or path.startswith(prefix + "/"):
             return True
     return False

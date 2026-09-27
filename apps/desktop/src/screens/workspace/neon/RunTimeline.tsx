@@ -266,9 +266,9 @@ export function buildRows(
 }
 
 const ACTOR_STYLE: Record<Actor, { tile: string; icon: 'spark' | 'cpu' | 'command'; dot: string }> = {
-  aura:   { tile: 'border-[rgba(122,92,255,0.6)] bg-[rgba(122,92,255,0.16)] text-[#c9bcff] shadow-glow-violet', icon: 'spark',   dot: 'bg-neon-violet' },
-  worker: { tile: 'border-[rgba(77,124,255,0.45)] bg-[rgba(13,19,38,0.95)] text-[#8fb0ff]',                     icon: 'cpu',     dot: 'bg-neon-blue' },
-  tool:   { tile: 'border-[rgba(32,211,255,0.45)] bg-[rgba(10,20,30,0.95)] text-neon-cyan',                     icon: 'command', dot: 'bg-neon-cyan' },
+  aura:   { tile: 'border-[rgba(122,92,255,0.6)] bg-[rgba(122,92,255,0.16)] text-ws-ink shadow-glow-violet', icon: 'spark',   dot: 'bg-neon-violet' },
+  worker: { tile: 'border-[rgba(77,124,255,0.45)] bg-ws-tile text-ws-ink-blue',                     icon: 'cpu',     dot: 'bg-neon-blue' },
+  tool:   { tile: 'border-[rgba(32,211,255,0.45)] bg-ws-tile text-ws-ink-cyan',                     icon: 'command', dot: 'bg-neon-cyan' },
 };
 
 /** Backend `at` → local clock. Never invented: absent stays absent. */
@@ -314,7 +314,7 @@ export function RunTimeline({
             )}
             <span
               aria-hidden
-              className={cn('absolute left-[15px] top-[18px] h-[13px] w-[13px] rounded-full border-2 border-[rgba(9,13,26,1)]', style.dot)}
+              className={cn('absolute left-[15px] top-[18px] h-[13px] w-[13px] rounded-full border-2 border-ws-panel', style.dot)}
             />
             <span
               aria-hidden
@@ -344,8 +344,8 @@ function TimelineRow({ row }: { row: Row }) {
         row.correction
           ? 'border-[rgba(255,181,71,0.38)] bg-[rgba(255,181,71,0.06)]'
           : row.actor === 'aura'
-            ? 'border-[rgba(122,92,255,0.3)] bg-[rgba(24,20,48,0.55)]'
-            : 'border-[rgba(125,146,255,0.22)] bg-[rgba(13,19,38,0.6)]',
+            ? 'border-[rgba(122,92,255,0.3)] bg-ws-aura-row'
+            : 'border-[rgba(125,146,255,0.22)] bg-ws-soft',
       )}
     >
       <div className="flex items-start gap-3">
@@ -363,7 +363,7 @@ function TimelineRow({ row }: { row: Row }) {
 
       {/* What the step produced — the run's own record, never a mock. */}
       {row.output && (
-        <div className="mt-2.5 flex gap-3 rounded-lg border border-[rgba(125,146,255,0.18)] bg-[rgba(9,13,26,0.6)] px-3 py-2.5">
+        <div className="mt-2.5 flex gap-3 rounded-lg border border-[rgba(125,146,255,0.18)] bg-ws-soft px-3 py-2.5">
           <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md border border-[rgba(125,146,255,0.25)] text-text-subtle">
             <Icon name="file" size={14} />
           </span>

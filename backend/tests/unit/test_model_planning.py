@@ -212,7 +212,7 @@ class TestDelegateInputShape:
 
 class TestScope:
     @pytest.mark.parametrize("scope", [
-        ["/etc/passwd"], ["../outside"], ["~/x"], ["."], [""],
+        ["/etc/passwd"], ["../outside"], ["~/x"], [""],
         ["a/../../b"],
     ])
     def test_escaping_scope_rejected(self, scope):
@@ -220,6 +220,15 @@ class TestScope:
             _planner().plan_from_model(
                 _intent(), "ses-1", "now",
                 {"tasks": [_delegate("x", scopePaths=scope)]})
+
+    def test_root_marker_accepted(self):
+        # "." is the documented whole-project-root marker (it
+        # normalizes to "" in supervision and covers every
+        # repo-relative path).
+        plan = _planner().plan_from_model(
+            _intent(), "ses-1", "now",
+            {"tasks": [_delegate("x", scopePaths=["."])]})
+        assert plan.tasks[0].input["scopePaths"] == ["."]
 
     def test_downstream_widening_rejected(self):
         with pytest.raises(PlanningError, match="same or narrower"):

@@ -122,6 +122,52 @@ class TestDecideMatrix:
         v = decide_action(_req(target="src/billing/p.py"), _contract())
         assert v.decision == "DENY"
 
+    def test_root_marker_covers_the_whole_project(self):
+        # "." is the whole-project-root marker: every in-cwd target is
+        # inside scope, in every action class that checks scope.
+        for action, target in (("FILE_WRITE", "style.css"),
+                               ("FILE_WRITE", "deeply/nested/app.js"),
+                               ("FILE_READ", "index.html")):
+            v = decide_action(_req(action=action, target=target),
+                              _contract(scope=(".",)))
+            assert v.decision == "ALLOW", (action, target)
+        # Absolute in-cwd targets resolve the same way.
+        v = decide_action(
+            _req(action="FILE_WRITE", target="/repo/style.css"),
+            _contract(scope=(".",)))
+        assert v.decision == "ALLOW"
+        # Outside-cwd and traversal still denied under the marker.
+        v = decide_action(
+            _req(action="FILE_WRITE", target="/etc/passwd"),
+            _contract(scope=(".",)))
+        assert v.decision == "DENY"
+        v = decide_action(
+            _req(action="FILE_WRITE", target="../escape.js"),
+            _contract(scope=(".",)))
+        assert v.decision == "DENY"
+
+    def test_normalized_root_marker_covers_too(self):
+        # The executor canonicalizes "." to "" before staging the
+        # contract, so enforcement must honor the normalized form —
+        # otherwise whole-project work is denied at the boundary it
+        # was granted at the gate (caught live: styles.css denied
+        # under scope [""]).
+        for scope in ([""],):
+            v = decide_action(_req(action="FILE_WRITE", target="style.css"),
+                              _contract(scope=scope))
+            assert v.decision == "ALLOW", scope
+        v = decide_action(_req(action="FILE_WRITE", target="/etc/passwd"),
+                          _contract(scope=[""]))
+        assert v.decision == "DENY"
+
+    def test_root_marker_globs_the_tree_for_opencode(self):
+        from aura.governance.opencode import compile_config
+        cfg = compile_config(["."])
+        assert cfg["permission"]["edit"].get("**") == "allow"
+        cfg = compile_config(["src"])
+        assert cfg["permission"]["edit"].get("src/**") == "allow"
+        assert "**" not in cfg["permission"]["edit"]
+
 
 class TestEventBounds:
     def test_summary_clips_and_correlates(self):

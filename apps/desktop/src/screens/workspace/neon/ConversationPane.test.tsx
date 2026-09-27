@@ -314,9 +314,21 @@ describe('ConversationPane — approvals', () => {
   });
 
   it('renders no gate until the real request has been resolved', () => {
-    const markup = render([parked], { approvals: { 'apr-1': null } });
+    // approvals map has no entry yet: resolution is still in flight.
+    const markup = render([parked], { approvals: {} });
     expect(markup).toContain('Loading the authorization details');
     expect(markup).not.toContain('Authorization required');
+  });
+
+  it('says the record is gone instead of loading forever when it resolves missing', () => {
+    // approvals map holds null: the ledger was asked and has no such
+    // record (decided, consumed, or cleared by a restart). The card
+    // must admit that rather than hang on "Loading…" — the exact
+    // stuck state users reported on old parked messages.
+    const markup = render([parked], { approvals: { 'apr-1': null } });
+    expect(markup).not.toContain('Loading the authorization details');
+    expect(markup).not.toContain('Authorization required');
+    expect(markup).toContain('no longer available');
   });
 
   it('renders the existing gate once the real request is in hand', () => {
