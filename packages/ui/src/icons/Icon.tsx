@@ -18,7 +18,8 @@ export type IconName =
   | 'more' | 'folder' | 'sidebar' | 'panel' | 'chevron-right' | 'chevron-down' | 'close'
   | 'code' | 'terminal' | 'git-branch' | 'bookmark' | 'file' | 'refresh'
   | 'eye' | 'eye-off' | 'clipboard' | 'bug' | 'shield' | 'flask'
-  | 'minimize' | 'maximize' | 'restore';
+  | 'minimize' | 'maximize' | 'restore'
+  | 'globe' | 'paperclip' | 'globe-off';
 
 /** Path data (stroke-based, 24×24). Keep every glyph optically balanced. */
 const PATHS: Record<IconName, string> = {
@@ -74,6 +75,12 @@ const PATHS: Record<IconName, string> = {
   minimize: 'M6 18.5h12',
   maximize: 'M5.5 5.5h13v13h-13Z',
   restore: 'M8.5 8.5h10v10h-10ZM5.5 5.5h10v3M5.5 5.5v10h3',
+  /** Globe: the web-research toggle for the AURA Private Search Gateway. */
+  globe: 'M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16ZM4 12h16M12 4c2 2.2 3 5 3 8s-1 5.8-3 8c-2-2.2-3-5-3-8s1-5.8 3-8Z',
+  /** Globe with a crossbar: web research is explicitly OFF for this turn. */
+  'globe-off': 'M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16ZM4.8 4.8l14.4 14.4',
+  /** Paperclip: the attachment picker beneath the composer. */
+  paperclip: 'M16.5 8.5 10 15a2.8 2.8 0 0 0 4 4l6.5-6.5a5 5 0 0 0-7-7L7 13',
 };
 
 /** Glyphs that read better filled than stroked. */

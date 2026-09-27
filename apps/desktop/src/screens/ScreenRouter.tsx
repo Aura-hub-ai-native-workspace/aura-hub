@@ -11,6 +11,9 @@ const AiSettings = lazy(() => import('./ai/AiSettings').then((m) => ({ default: 
 const AiRuntime = lazy(() => import('./ai/AiRuntime').then((m) => ({ default: m.AiRuntime })));
 const Workflows = lazy(() => import('./workflows/Workflows').then((m) => ({ default: m.Workflows })));
 const WorkspaceScreen = lazy(() => import('./WorkspaceScreen').then((m) => ({ default: m.WorkspaceScreen })));
+const AgentWorkspaceScreen = lazy(() =>
+  import('./AgentWorkspaceScreen').then((m) => ({ default: m.AgentWorkspaceScreen })),
+);
 const ConnectedEnvironment = lazy(() =>
   import('../environment/ConnectedEnvironment').then((m) => ({ default: m.ConnectedEnvironment })),
 );
@@ -64,19 +67,23 @@ export function ScreenRouter() {
   const askAuraOpen = useAppStore((s) => s.askAuraOpen);
 
   /* Routing asks "is the project screen showing?", which is `inProjectView`
-     — NOT "is a project active?". Those are now different questions: a
-     project stays active while the user is on Home or the Hub. The
-     `activeProjectId` guard covers the one incoherent combination (in the
-     project view with no project), which the pruning in `useActiveProject`
-     can produce for a frame. */
+   * — NOT "is a project active?". Those are now different questions: a
+   * project stays active while the user is on Home or the Hub. The
+   * `activeProjectId` guard covers the one incoherent combination (in the
+   * project view with no project), which the pruning in `useActiveProject`
+   * can produce for a frame. */
   const inProject = inProjectView && Boolean(activeProjectId);
   const key = inProject ? `project:${activeProjectId}` : nav;
 
-  // The workflow editor, the Code Workspace and Ask AURA are fixed-viewport
-  // canvases (their own internal scrolling regions); every other screen
-  // scrolls the page normally.
+  // The workflow editor, the Code Workspace, Ask AURA and (v2) the Agent
+  // Workspace are fixed-viewport canvases (their own internal scrolling
+  // regions); every other screen scrolls the page normally.
   const fixedViewport =
-    (!inProject && (nav === 'workflows' || nav === 'workspace' || nav === 'environment')) ||
+    (!inProject &&
+      (nav === 'workflows' ||
+        nav === 'workspace' ||
+        nav === 'agent-workspace' ||
+        nav === 'environment')) ||
     (inProject && (projectTab === 'code' || askAuraOpen));
 
   return (
@@ -103,6 +110,8 @@ function renderScreen(nav: string, inProject: boolean) {
       return lazyScreen(<Workflows />);
     case 'workspace':
       return lazyScreen(<WorkspaceScreen />);
+    case 'agent-workspace':
+      return lazyScreen(<AgentWorkspaceScreen />);
     case 'environment':
       return (
         <ErrorBoundary title="Unable to load the Connected Environment">
