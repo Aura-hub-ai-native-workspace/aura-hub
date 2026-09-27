@@ -31,6 +31,7 @@ def test_cors_localhost_any_port_allowed(svc):
     c, _ = svc
     for origin in ("http://localhost:1420", "http://localhost:3000",
                    "http://127.0.0.1:1420", "https://localhost:5173",
+                   "http://[::1]:1420",
                    "tauri://localhost", "https://tauri.localhost"):
         r = c.options("/workflows", headers={
             "Origin": origin, "Access-Control-Request-Method": "POST"})

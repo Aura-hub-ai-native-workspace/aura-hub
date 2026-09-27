@@ -777,7 +777,18 @@ class CentralAgent:
             "on and ask for the one detail you need, instead of "
             "describing it as already done."
         )
-        user = (f"CONVERSATION SO FAR:\n{bundle.render(2000)}\n\n"
+        # The transcript comes straight from the session record with its
+        # OWN budget: inside bundle.render the capability manifest is
+        # consumed first, so a shared budget silently dropped every prior
+        # turn and each answer was written with no memory of the
+        # conversation (the last entry is THIS turn's user message —
+        # always, submit appends it before running — so it is excluded).
+        history = "\n".join(
+            f"{'USER' if m.role == 'user' else 'AURA'}: {m.content[:600]}"
+            for m in session.messages[:-1][-8:])
+        user = (f"CAPABILITIES AND CONTEXT (bounded):\n"
+                f"{bundle.render(2000)}\n\n"
+                f"CONVERSATION SO FAR:\n{history or '(this is the first message)'}\n\n"
                 f"USER MESSAGE:\n{user_message}")
         self._emit("answer.started", sid)
 

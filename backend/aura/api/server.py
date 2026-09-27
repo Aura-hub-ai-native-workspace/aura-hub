@@ -59,9 +59,13 @@ from ..workflow.runner import WorkflowRunner
 #: Linux and macOS (``tauri://localhost``) worked.
 #:
 #: Loopback keeps an optional port for the Vite dev server (:1420) and for
-#: `npm run preview`; the tauri origins have none.
+#: `npm run preview`; the tauri origins have none. IPv6 loopback (``[::1]``)
+#: is included for the same reason as in the Node service's allow-list: Vite
+#: binds dev servers to ``[::1]`` on Linux by default and the desktop origin
+#: is then ``http://[::1]:1420`` — a missing case there fails every
+#: preflight from the dev window while ``127.0.0.1`` keeps working.
 ALLOWED_ORIGIN = (
-    r"^(https?://(localhost|127\.0\.0\.1)(:\d+)?"
+    r"^(https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?"
     r"|tauri://localhost"
     r"|https?://tauri\.localhost)$"
 )

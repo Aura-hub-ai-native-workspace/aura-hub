@@ -42,8 +42,17 @@ const CORS = {
   'access-control-allow-headers': 'content-type',
 };
 
-/** Local-only server: reflect the origin only for known local clients. */
-const ALLOWED_ORIGIN = /^(https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?|tauri:\/\/localhost|https?:\/\/tauri\.localhost)$/;
+/**
+ * Local-only server: reflect the origin only for known local clients.
+ *
+ * IPv6 loopback (`[::1]`) is required: Vite binds dev servers to `[::1]`
+ * on Linux by default, and Tauri dev windows inherit that origin. The
+ * missing case blocked every desktop→service call under a
+ * localhost/127.0.0.1-only allow-list (stuck "Waiting for AURA's local
+ * service" gate) — same class of drift as the tauri.localhost case in the
+ * Python backend's allow-list.
+ */
+const ALLOWED_ORIGIN = /^(https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?|tauri:\/\/localhost|https?:\/\/tauri\.localhost)$/;
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
