@@ -72,6 +72,8 @@ export interface V2ScreenState {
 
   /** True while the backend is asking the user to decide. */
   pendingApproval: string | null;
+  /** The live Central Agent session, for the approval decision path. */
+  sessionId: string | null;
   parkedTaskId: string | null;
   parkedScope: string[];
   workerRail: string;
@@ -244,6 +246,7 @@ export function useAgentWorkspaceV2(opts: {
     onResumeCancelled,
     onDecided,
     pendingApproval: run.pendingApproval,
+    sessionId: run.sessionId,
     parkedTaskId: run.parkedTask?.id ?? null,
     parkedScope: run.parkedScope ?? [],
     workerRail,

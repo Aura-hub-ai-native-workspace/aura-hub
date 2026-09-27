@@ -64,7 +64,7 @@ export function V2TimelinePanel({
         <div className="flex items-center gap-2">
           {streamPaused && (
             <span
-              className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(255,181,71,0.5)] bg-[rgba(255,181,71,0.1)] px-2.5 py-1 text-[10.5px] font-semibold text-neon-warning"
+              className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(255,181,71,0.5)] bg-[rgba(255,181,71,0.1)] px-2.5 py-1 text-[10.5px] font-semibold text-ws-warn"
               role="status"
               data-testid="v2-stream-paused"
             >
@@ -74,7 +74,7 @@ export function V2TimelinePanel({
           )}
           {agentUp === false && (
             <span
-              className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(255,93,122,0.5)] bg-[rgba(255,93,122,0.1)] px-2.5 py-1 text-[10.5px] font-semibold text-neon-danger"
+              className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(255,93,122,0.5)] bg-[rgba(255,93,122,0.1)] px-2.5 py-1 text-[10.5px] font-semibold text-ws-bad"
               role="status"
             >
               <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-neon-danger" />
@@ -83,7 +83,7 @@ export function V2TimelinePanel({
           )}
           {inFlight && (
             <span
-              className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(32,211,255,0.5)] bg-[rgba(32,211,255,0.1)] px-2.5 py-1 text-[10.5px] font-semibold text-neon-cyan"
+              className="inline-flex items-center gap-1.5 rounded-full border border-[rgba(32,211,255,0.5)] bg-[rgba(32,211,255,0.1)] px-2.5 py-1 text-[10.5px] font-semibold text-ws-ink-cyan"
               role="status"
               data-testid="v2-in-flight"
             >
@@ -97,7 +97,7 @@ export function V2TimelinePanel({
       {/* Objective */}
       {objective && !idle && (
         <div className="shrink-0 px-5 pt-3" data-testid="v2-objective">
-          <div className="rounded-xl border border-[rgba(125,146,255,0.22)] bg-[rgba(13,19,38,0.55)] px-4 py-2.5">
+          <div className="rounded-xl border border-[rgba(125,146,255,0.22)] bg-ws-soft px-4 py-2.5">
             <p className="text-[10px] font-semibold uppercase tracking-widest text-text-subtle">
               Objective
             </p>
@@ -119,7 +119,7 @@ export function V2TimelinePanel({
           <li className="flex h-full min-h-[260px] flex-col items-center justify-center text-center">
             <span
               aria-hidden
-              className="grid h-16 w-16 place-items-center rounded-2xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.12)] text-neon-violet shadow-glow-violet"
+              className="grid h-16 w-16 place-items-center rounded-2xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.12)] text-ws-ink-violet shadow-glow-violet"
             >
               <Icon name="spark" size={30} />
             </span>
@@ -133,7 +133,7 @@ export function V2TimelinePanel({
               anything is called done — and you will see every step here.
             </p>
             {agentUp === false && (
-              <p className="mt-4 max-w-[420px] text-[12px] leading-relaxed text-neon-danger">
+              <p className="mt-4 max-w-[420px] text-[12px] leading-relaxed text-ws-bad">
                 The Central Agent service is not reachable right now. AURA cannot
                 plan or run requests until it is back up.
               </p>

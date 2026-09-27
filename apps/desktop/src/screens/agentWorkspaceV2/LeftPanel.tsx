@@ -51,7 +51,7 @@ export function IdentityStrip({
         <span className="relative grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] shadow-glow-violet">
           <AuraLogo size={26} />
           {agentBusy && (
-            <span aria-hidden className="absolute -bottom-0.5 -right-0.5 grid h-3.5 w-3.5 place-items-center rounded-full border-2 border-[rgba(9,13,26,0.82)]">
+            <span aria-hidden className="absolute -bottom-0.5 -right-0.5 grid h-3.5 w-3.5 place-items-center rounded-full border-2 border-ws-panel">
               <span className="h-2 w-2 rounded-full bg-neon-cyan aura-breathe" />
             </span>
           )}
@@ -62,7 +62,7 @@ export function IdentityStrip({
               AURA Central Agent
             </div>
             {modelName && (
-              <span className="min-w-0 truncate rounded-full border border-[rgba(122,92,255,0.32)] bg-[rgba(13,19,38,0.55)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-neon-violet">
+              <span className="min-w-0 truncate rounded-full border border-[rgba(122,92,255,0.32)] bg-ws-soft px-2 py-0.5 text-[10px] uppercase tracking-wide text-ws-ink-violet">
                 {modelName}
               </span>
             )}
@@ -114,8 +114,8 @@ function ProviderChip({
     <span
       className={cn(
         'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] leading-tight',
-        tone === 'ok' ? 'border-[rgba(122,92,255,0.32)] bg-[rgba(13,19,38,0.55)] text-text-muted'
-                      : 'border-line bg-[rgba(13,19,38,0.55)] text-text-subtle',
+        tone === 'ok' ? 'border-[rgba(122,92,255,0.32)] bg-ws-soft text-text-muted'
+                      : 'border-line bg-ws-soft text-text-subtle',
       )}
       data-testid={`v2-chip-${icon}`}
     >
@@ -170,8 +170,8 @@ export function WebSearchToggle({
       className={cn(
         'neon-focus inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[12px] leading-tight transition-colors',
         enabled
-          ? 'border-[rgba(32,211,255,0.55)] bg-[rgba(32,211,255,0.12)] text-neon-cyan'
-          : 'border-line bg-[rgba(13,19,38,0.55)] text-text-muted',
+          ? 'border-[rgba(32,211,255,0.55)] bg-[rgba(32,211,255,0.12)] text-ws-ink-cyan'
+          : 'border-line bg-ws-soft text-text-muted',
         disabled && 'cursor-not-allowed opacity-55',
       )}
       title={subtitle}
@@ -210,7 +210,7 @@ export function AttachPanel({
 
   return (
     <div
-      className="rounded-2xl border border-[rgba(125,146,255,0.24)] bg-[rgba(9,13,26,0.82)] p-3"
+      className="rounded-2xl border border-[rgba(125,146,255,0.24)] bg-ws-panel p-3"
       data-testid="v2-attachments"
     >
       <div className="flex items-center justify-between">
@@ -248,7 +248,7 @@ export function AttachPanel({
           <button
             type="button"
             onClick={() => inputRef.current?.click()}
-            className="neon-focus inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[rgba(125,146,255,0.4)] bg-[rgba(13,19,38,0.55)] px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:text-text"
+            className="neon-focus inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[rgba(125,146,255,0.4)] bg-ws-soft px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:text-text"
             data-testid="v2-attach-choose"
           >
             <Icon name="plus" size={13} />
@@ -291,10 +291,10 @@ function AttachmentRow({
     : `${(attachment.file.size / (1024 * 1024)).toFixed(2)} MB`;
   const tone =
     attachment.status === 'ready'
-      ? { border: 'border-[rgba(31,211,138,0.4)]', chip: 'text-neon-success', chipBg: 'bg-[rgba(31,211,138,0.12)]' }
+      ? { border: 'border-[rgba(31,211,138,0.4)]', chip: 'text-ws-ok', chipBg: 'bg-[rgba(31,211,138,0.12)]' }
       : attachment.status === 'ingesting'
-        ? { border: 'border-[rgba(32,211,255,0.42)]', chip: 'text-neon-cyan', chipBg: 'bg-[rgba(32,211,255,0.12)]' }
-        : { border: 'border-[rgba(255,93,122,0.42)]', chip: 'text-neon-danger', chipBg: 'bg-[rgba(255,93,122,0.12)]' };
+        ? { border: 'border-[rgba(32,211,255,0.42)]', chip: 'text-ws-ink-cyan', chipBg: 'bg-[rgba(32,211,255,0.12)]' }
+        : { border: 'border-[rgba(255,93,122,0.42)]', chip: 'text-ws-bad', chipBg: 'bg-[rgba(255,93,122,0.12)]' };
   const statusLabel =
     attachment.status === 'ready' ? 'Ready'
     : attachment.status === 'ingesting' ? 'Parsing' : 'Failed';
@@ -316,7 +316,7 @@ function AttachmentRow({
           className="h-9 w-9 rounded-md border border-line object-cover"
         />
       ) : (
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-[rgba(125,146,255,0.25)] bg-[rgba(13,19,38,0.55)] text-text-muted">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-[rgba(125,146,255,0.25)] bg-ws-soft text-text-muted">
           <Icon name={attachment.status === 'failed' ? 'close' : 'file'} size={16} />
         </span>
       )}
@@ -326,7 +326,7 @@ function AttachmentRow({
           {size}
           {attachment.status === 'ready' && attachment.kbPath && ' · in knowledge base'}
           {attachment.error && (
-            <span className="ml-1 text-neon-danger">· {attachment.error}</span>
+            <span className="ml-1 text-ws-bad">· {attachment.error}</span>
           )}
         </p>
       </div>
@@ -397,7 +397,7 @@ export function MessageComposer({
 
   return (
     <div
-      className="rounded-2xl border border-[rgba(125,146,255,0.28)] bg-[rgba(9,13,26,0.82)] p-3 shadow-card"
+      className="rounded-2xl border border-[rgba(125,146,255,0.28)] bg-ws-panel p-3 shadow-card"
       data-testid="v2-composer"
     >
       <label htmlFor="v2-composer-input" className="sr-only">
@@ -450,7 +450,7 @@ export function MessageComposer({
           aria-label="Attach files (images, PDF or documents)"
           data-testid="v2-action-attach"
           className={cn(
-            'neon-focus grid h-10 w-10 place-items-center rounded-xl border border-[rgba(125,146,255,0.3)] bg-[rgba(13,19,38,0.55)] text-text-muted transition-colors hover:border-[rgba(125,146,255,0.55)] hover:text-text',
+            'neon-focus grid h-10 w-10 place-items-center rounded-xl border border-[rgba(125,146,255,0.3)] bg-ws-soft text-text-muted transition-colors hover:border-[rgba(125,146,255,0.55)] hover:text-text',
             busy && 'cursor-not-allowed opacity-50',
           )}
           title="Attach images, PDFs or documents — they ingest into AURA's knowledge base"

@@ -41,6 +41,12 @@ import {
   type PlanReview,
 } from './centralAgentClient';
 import {
+  deriveActions,
+  deriveHandoffs,
+  deriveObjective,
+  derivePlan,
+} from '../screens/agentWorkspaceV2/runViews';
+import {
   aiClient,
   type Conversation,
   type ConversationSummary,
@@ -127,6 +133,14 @@ interface AgentConvState {
   loading: boolean;
   /** Liveness of the agent service itself (not a provider key). */
   agentUp: boolean | null;
+  /**
+   * Raw event frames from the CURRENT turn's session SSE, in arrival
+   * order (capped). This is the single submission pipeline's own
+   * record: the transcript folds tokens from it, and the execution
+   * timeline folds plan/handoffs/actions from the same frames via the
+   * shared pure derivations — no second subscription, no second run.
+   */
+  frames: AgentEventFrame[];
 
   loadForProject: (projectId: string | null, projectPath?: string | null) => Promise<void>;
   /** Workspace scope only: point the global thread at a working project without moving the thread into it. */
@@ -152,6 +166,18 @@ interface AgentConvState {
   offerHandoff: (handoff: WorkspaceHandoff) => void;
   consumeHandoff: () => WorkspaceHandoff | null;
   dismissHandoff: () => void;
+  /**
+   * Run views for the current turn, folded from the SAME frames the
+   * transcript streams — the execution timeline's single source. Pure
+   * derivations (shared with `useAgentRun`), so what the right panel
+   * shows is exactly what this session's frames establish.
+   */
+  runViews: () => {
+    plan: ReturnType<typeof derivePlan>;
+    objective: ReturnType<typeof deriveObjective>;
+    handoffs: ReturnType<typeof deriveHandoffs>;
+    actions: ReturnType<typeof deriveActions>;
+  };
 }
 
 /**
@@ -474,12 +500,16 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
         controller, unsubscribe: null, settled: false,
       };
       inflight = flight;
-      set({ phase: 'working', activity: IDLE_ACTIVITY });
+      set({ phase: 'working', activity: IDLE_ACTIVITY, frames: [] });
 
       const alive = () => inflight === flight && !flight.settled && epoch === myEpoch;
 
       flight.unsubscribe = centralAgentClient.events(sessionId, (frame: AgentEventFrame) => {
         if (!alive() || frame.sessionId !== sessionId) return;
+        // Retain the frame itself: the timeline's plan/handoffs/actions
+        // views are folds over this same list (shared pure derivations),
+        // so the right panel reads the run the transcript is streaming.
+        set({ frames: get().frames.length > 400 ? get().frames : [...get().frames, frame] });
         if (frame.type === 'answer.token') {
           const text = typeof frame.payload.text === 'string' ? frame.payload.text : '';
           if (text) appendTokens(assistantId, text);
@@ -550,7 +580,7 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
         clearInflight();
       }
       epoch += 1;
-      set({ projectId: opts.workingProjectId, projectPath: opts.workingProjectPath, conversations: [], activeId: null, messages: [], phase: 'idle', activity: IDLE_ACTIVITY, loading: opts.needsHome, agentUp: null });
+      set({ projectId: opts.workingProjectId, projectPath: opts.workingProjectPath, conversations: [], activeId: null, messages: [], phase: 'idle', activity: IDLE_ACTIVITY, loading: opts.needsHome, agentUp: null, frames: [] });
       // Liveness is asked either way: without a project there is still
       // an agent to talk to, and "is it running" is the one thing the
       // user needs to know before typing.
@@ -607,6 +637,7 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
       activity: IDLE_ACTIVITY,
       loading: false,
       agentUp: null,
+      frames: [],
       pendingHandoff: null,
 
       offerHandoff(handoff) {
@@ -622,6 +653,16 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
 
       dismissHandoff() {
         set({ pendingHandoff: null });
+      },
+
+      runViews() {
+        const frames = get().frames;
+        return {
+          plan: derivePlan(frames),
+          objective: deriveObjective(frames),
+          handoffs: deriveHandoffs(frames),
+          actions: deriveActions(frames),
+        };
       },
 
       async loadForProject(projectId, projectPath = null) {
@@ -648,7 +689,7 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
           clearInflight();
         }
         epoch += 1;
-        set({ activeId: cid, phase: 'idle' });
+        set({ activeId: cid, phase: 'idle', frames: [] });
         try {
           const conv = await persistence.get(cid);
           if (get().activeId !== cid) return; // superseded
@@ -667,7 +708,7 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
         }
         epoch += 1;
         const conv = await persistence.create();
-        set({ activeId: conv.id, messages: [], phase: 'idle' });
+        set({ activeId: conv.id, messages: [], phase: 'idle', frames: [] });
         await get().reloadList();
         return conv.id;
       },

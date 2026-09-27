@@ -216,6 +216,8 @@ export function ConversationPane({
   onDecide,
   projectName,
   scope,
+  onPickFiles,
+  webSearch,
 }: {
   messages: AgentChatMessage[];
   activity: AgentActivity;
@@ -237,9 +239,14 @@ export function ConversationPane({
    * this thread is the global Workspace Chat or one project's Ask AURA.
    */
   scope: 'workspace' | 'project';
+  /** Attachment picker — the + button beside the composer. Omit for a plain chat surface. */
+  onPickFiles?: (files: FileList) => void;
+  /** Web-research toggle — the globe button. Omit where the surface has no egress concept. */
+  webSearch?: { enabled: boolean; onToggle: () => void };
 }) {
   const [text, setText] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const empty = messages.length === 0;
 
   useEffect(() => {
@@ -365,16 +372,48 @@ export function ConversationPane({
               <Icon name="minimize" size={15} />
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!text.trim()}
-              data-testid="agent-submit"
-              aria-label="Send to AURA"
-              className="neon-focus absolute bottom-3 right-3 grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-white shadow-glow-blue transition-opacity disabled:opacity-40"
-            >
-              <Icon name="arrow-right" size={16} />
-            </button>
+            <div className="absolute bottom-3 right-3 flex items-center gap-1.5">
+              {onPickFiles && (
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  data-testid="agent-attach"
+                  aria-label="Attach files"
+                  title="Attach files"
+                  className="neon-focus grid h-9 w-9 place-items-center rounded-xl border border-[rgba(125,146,255,0.4)] text-text-muted transition-colors hover:border-[rgba(32,211,255,0.45)] hover:text-text"
+                >
+                  <Icon name="plus" size={15} />
+                </button>
+              )}
+              {webSearch && (
+                <button
+                  type="button"
+                  onClick={webSearch.onToggle}
+                  data-testid="agent-websearch"
+                  aria-label="Toggle web research"
+                  aria-pressed={webSearch.enabled}
+                  title={webSearch.enabled ? 'Web research ON for this request' : 'Web research OFF — private by default'}
+                  className={cn(
+                    'neon-focus grid h-9 w-9 place-items-center rounded-xl border transition-colors',
+                    webSearch.enabled
+                      ? 'border-[rgba(32,211,255,0.55)] bg-[rgba(32,211,255,0.12)] text-neon-cyan'
+                      : 'border-[rgba(125,146,255,0.4)] text-text-muted hover:text-text',
+                  )}
+                >
+                  <Icon name="globe" size={15} />
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={submit}
+                disabled={!text.trim()}
+                data-testid="agent-submit"
+                aria-label="Send to AURA"
+                className="neon-focus grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-white shadow-glow-blue transition-opacity disabled:opacity-40"
+              >
+                <Icon name="arrow-right" size={16} />
+              </button>
+            </div>
           )}
         </div>
         {canRegenerate && (
@@ -389,6 +428,22 @@ export function ConversationPane({
           </button>
         )}
       </div>
+
+      {/* Hidden native file input — the single source of the composer's +
+          button. One instance per pane so re-selecting the same file on a
+          follow-up send works. */}
+      {onPickFiles && (
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="image/*,application/pdf,.doc,.docx,.txt,.md,.csv"
+          className="hidden"
+          aria-hidden
+          tabIndex={-1}
+          onChange={(e) => { const files = e.target.files; if (files) onPickFiles(files); }}
+        />
+      )}
     </section>
   );
 }

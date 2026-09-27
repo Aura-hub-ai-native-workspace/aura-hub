@@ -24,6 +24,7 @@ import { cn, useAppStore } from '@aura/core';
 import { useMediaQuery } from '@aura/ui';
 import { useWorkspace } from '../data/useWorkspace';
 import { IdentityStrip, AttachPanel, MessageComposer } from './agentWorkspaceV2/LeftPanel';
+import { V2ApprovalCard } from './agentWorkspaceV2/V2ApprovalCard';
 import { V2TimelinePanel } from './agentWorkspaceV2/TimelinePanel';
 import { useAgentWorkspaceV2 } from './agentWorkspaceV2/useAgentWorkspaceV2';
 
@@ -79,7 +80,7 @@ export function AgentWorkspaceScreen() {
           data-testid="v2-left-panel"
           aria-label="User interaction — talk to AURA Central Agent"
         >
-          <div className="rounded-2xl border border-[rgba(125,146,255,0.28)] bg-[rgba(9,13,26,0.82)] p-4 shadow-card">
+          <div className="rounded-2xl border border-[rgba(125,146,255,0.28)] bg-ws-panel p-4 shadow-card">
             <IdentityStrip
               connectedProviders={s.connectedProviders}
               availableTools={s.availableTools}
@@ -112,11 +113,23 @@ export function AgentWorkspaceScreen() {
                 : 'Pick a working project on the left for file work — or just talk.'
             }
           />
+
+          {/* Approval handoff: a parked v2 run decides HERE, in the
+              left interaction panel, through the existing ApprovalGate
+              against the existing ledger. The right timeline takes no
+              input by design; without this the run would strand. */}
+          {s.pendingApproval && (
+            <V2ApprovalCard
+              sessionId={s.sessionId}
+              approvalId={s.pendingApproval}
+              onDecided={s.onDecided}
+            />
+          )}
         </div>
 
         {/* RIGHT: the agent execution timeline — no user composer here. */}
         <div
-          className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-[rgba(125,146,255,0.28)] bg-[rgba(9,13,26,0.82)] shadow-card"
+          className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-[rgba(125,146,255,0.28)] bg-ws-panel shadow-card"
           data-testid="v2-right-panel"
           aria-label="AURA agent execution timeline"
         >
@@ -134,8 +147,8 @@ export function AgentWorkspaceScreen() {
               className={cn(
                 'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10.5px] font-semibold leading-tight',
                 s.webSearchEnabled
-                  ? 'border-[rgba(32,211,255,0.55)] bg-[rgba(32,211,255,0.12)] text-neon-cyan'
-                  : 'border-line bg-[rgba(13,19,38,0.55)] text-text-muted',
+                  ? 'border-[rgba(32,211,255,0.55)] bg-[rgba(32,211,255,0.12)] text-ws-ink-cyan'
+                  : 'border-line bg-ws-soft text-text-muted',
               )}
             >
               <span

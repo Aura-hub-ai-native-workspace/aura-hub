@@ -27,17 +27,17 @@ import type { V2Card, V2ActorKind } from './types';
 const ACTOR: Record<V2ActorKind, { icon: IconName; tile: string; label: string }> = {
   aura: {
     icon: 'spark',
-    tile: 'border-[rgba(122,92,255,0.6)] bg-[rgba(122,92,255,0.16)] text-neon-violet shadow-glow-violet',
+    tile: 'border-[rgba(122,92,255,0.6)] bg-[rgba(122,92,255,0.16)] text-ws-ink-violet shadow-glow-violet',
     label: 'Central',
   },
   worker: {
     icon: 'cpu',
-    tile: 'border-[rgba(77,124,255,0.45)] bg-[rgba(13,19,38,0.7)] text-neon-blue',
+    tile: 'border-[rgba(77,124,255,0.45)] bg-ws-soft text-ws-ink-blue',
     label: 'Worker',
   },
   tool: {
     icon: 'command',
-    tile: 'border-[rgba(32,211,255,0.45)] bg-[rgba(13,19,38,0.7)] text-neon-cyan',
+    tile: 'border-[rgba(32,211,255,0.45)] bg-ws-soft text-ws-ink-cyan',
     label: 'Tools',
   },
 };
@@ -59,7 +59,7 @@ function Section({ title, icon, children, testId }: {
 }) {
   return (
     <div
-      className="mt-3 rounded-lg border border-[rgba(125,146,255,0.18)] bg-[rgba(13,19,38,0.55)] px-3 py-2.5"
+      className="mt-3 rounded-lg border border-[rgba(125,146,255,0.18)] bg-ws-soft px-3 py-2.5"
       data-testid={testId}
     >
       <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-subtle">
@@ -88,7 +88,7 @@ export function V2TimelineCard({ card }: { card: V2Card }) {
       data-actor={card.actor}
       data-status={card.status}
       className={cn(
-        'rounded-2xl border bg-gradient-to-b from-[rgba(16,24,43,0.75)] to-[rgba(9,13,26,0.55)] p-4 shadow-card',
+        'rounded-2xl border bg-gradient-to-b from-[var(--ws-grad-from)] to-[var(--ws-grad-to)] p-4 shadow-card',
         card.status === 'failed'
           ? 'border-[rgba(255,93,122,0.42)]'
           : card.status === 'waiting-for-approval'
@@ -131,7 +131,7 @@ export function V2TimelineCard({ card }: { card: V2Card }) {
           className={cn(
             'mt-2 whitespace-pre-wrap rounded-lg px-3 py-2 text-[12px] leading-relaxed',
             card.status === 'failed'
-              ? 'border border-[rgba(255,93,122,0.3)] bg-[rgba(255,93,122,0.08)] text-neon-danger'
+              ? 'border border-[rgba(255,93,122,0.3)] bg-[rgba(255,93,122,0.08)] text-ws-bad'
               : 'text-text-subtle',
           )}
           data-testid="v2-card-detail"
@@ -143,17 +143,17 @@ export function V2TimelineCard({ card }: { card: V2Card }) {
       {/* Agent-to-agent exchange (spec §6) */}
       {hasExchange && (
         <div
-          className="mt-3 rounded-lg border border-[rgba(125,146,255,0.18)] bg-[rgba(13,19,38,0.55)] px-3 py-2.5"
+          className="mt-3 rounded-lg border border-[rgba(125,146,255,0.18)] bg-ws-soft px-3 py-2.5"
           data-testid="v2-exchange"
         >
           <div className="space-y-2 text-[11.5px] leading-relaxed">
             <div className="flex gap-2">
-              <span className="shrink-0 font-semibold text-neon-violet">{card.exchange!.from}</span>
+              <span className="shrink-0 font-semibold text-ws-ink-violet">{card.exchange!.from}</span>
               <span className="min-w-0 text-text-muted">{card.exchange!.text}</span>
             </div>
             {card.exchange!.reply && (
               <div className="flex gap-2 border-l border-[rgba(125,146,255,0.25)] pl-3">
-                <span className="shrink-0 font-semibold text-neon-blue">{card.exchange!.from}</span>
+                <span className="shrink-0 font-semibold text-ws-ink-blue">{card.exchange!.from}</span>
                 <span className="min-w-0 text-text-subtle">{card.exchange!.reply.text}</span>
               </div>
             )}
@@ -189,10 +189,10 @@ export function V2TimelineCard({ card }: { card: V2Card }) {
                   className={cn(
                     'shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase',
                     t.decision === 'DENY'
-                      ? 'bg-[rgba(255,93,122,0.15)] text-neon-danger'
+                      ? 'bg-[rgba(255,93,122,0.15)] text-ws-bad'
                       : t.decision === 'ALLOW'
-                        ? 'bg-[rgba(31,211,138,0.12)] text-neon-success'
-                        : 'bg-[rgba(13,19,38,0.55)] text-text-muted',
+                        ? 'bg-[rgba(31,211,138,0.12)] text-ws-ok'
+                        : 'bg-ws-soft text-text-muted',
                   )}
                 >
                   {t.decision || '—'}
@@ -216,7 +216,7 @@ export function V2TimelineCard({ card }: { card: V2Card }) {
             <span
               className={cn(
                 'mr-1 font-semibold',
-                card.verification!.state === 'passed' ? 'text-neon-success' : 'text-neon-danger',
+                card.verification!.state === 'passed' ? 'text-ws-ok' : 'text-ws-bad',
               )}
             >
               {card.verification!.state === 'passed' ? 'Verified' : 'Not verified'}

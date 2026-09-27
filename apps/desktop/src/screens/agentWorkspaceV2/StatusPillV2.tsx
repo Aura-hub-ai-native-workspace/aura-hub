@@ -27,17 +27,17 @@ export const V2_STATUS_LABEL: Record<V2Status, string> = {
 
 /** Border / background / ink classes per status. */
 const STYLE: Record<V2Status, string> = {
-  planning: 'border-[rgba(122,92,255,0.5)] bg-[rgba(122,92,255,0.14)] text-neon-violet',
-  queued: 'border-line bg-[rgba(13,19,38,0.55)] text-text-muted',
-  analyzing: 'border-[rgba(255,181,71,0.5)] bg-[rgba(255,181,71,0.12)] text-neon-warning',
-  coding: 'border-[rgba(77,124,255,0.55)] bg-[rgba(77,124,255,0.14)] text-neon-blue',
-  researching: 'border-[rgba(122,92,255,0.5)] bg-[rgba(122,92,255,0.14)] text-neon-violet',
-  executing: 'border-[rgba(32,211,255,0.5)] bg-[rgba(32,211,255,0.12)] text-neon-cyan',
-  'waiting-for-approval': 'border-[rgba(255,181,71,0.55)] bg-[rgba(255,181,71,0.14)] text-neon-warning',
-  verifying: 'border-[rgba(32,211,255,0.5)] bg-[rgba(32,211,255,0.12)] text-neon-cyan',
-  completed: 'border-[rgba(31,211,138,0.5)] bg-[rgba(31,211,138,0.12)] text-neon-success',
-  failed: 'border-[rgba(255,93,122,0.55)] bg-[rgba(255,93,122,0.12)] text-neon-danger',
-  cancelled: 'border-[rgba(255,181,71,0.5)] bg-[rgba(255,181,71,0.1)] text-neon-warning',
+  planning: 'border-[rgba(122,92,255,0.5)] bg-[rgba(122,92,255,0.14)] text-ws-ink-violet',
+  queued: 'border-line bg-ws-soft text-text-muted',
+  analyzing: 'border-[rgba(255,181,71,0.5)] bg-[rgba(255,181,71,0.12)] text-ws-warn',
+  coding: 'border-[rgba(77,124,255,0.55)] bg-[rgba(77,124,255,0.14)] text-ws-ink-blue',
+  researching: 'border-[rgba(122,92,255,0.5)] bg-[rgba(122,92,255,0.14)] text-ws-ink-violet',
+  executing: 'border-[rgba(32,211,255,0.5)] bg-[rgba(32,211,255,0.12)] text-ws-ink-cyan',
+  'waiting-for-approval': 'border-[rgba(255,181,71,0.55)] bg-[rgba(255,181,71,0.14)] text-ws-warn',
+  verifying: 'border-[rgba(32,211,255,0.5)] bg-[rgba(32,211,255,0.12)] text-ws-ink-cyan',
+  completed: 'border-[rgba(31,211,138,0.5)] bg-[rgba(31,211,138,0.12)] text-ws-ok',
+  failed: 'border-[rgba(255,93,122,0.55)] bg-[rgba(255,93,122,0.12)] text-ws-bad',
+  cancelled: 'border-[rgba(255,181,71,0.5)] bg-[rgba(255,181,71,0.1)] text-ws-warn',
 };
 
 const DOT: Record<V2Status, string> = {

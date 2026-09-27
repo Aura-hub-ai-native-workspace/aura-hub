@@ -208,7 +208,7 @@ export function AiRuntime() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-text-muted">Out of sync</span>
-                {summary ? (
+                {summary && summary.driftedCount != null ? (
                   <Badge tone={summary.driftedCount > 0 ? 'attention' : 'positive'} dot>
                     {summary.driftedCount > 0 ? `${summary.driftedCount} drifted` : 'All in sync'}
                   </Badge>

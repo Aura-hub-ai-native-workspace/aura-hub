@@ -11,12 +11,6 @@ export type NavKey =
   | 'home'
   | 'workflows'
   | 'workspace'
-  /** The next-generation Agent Workspace: one central agent, one composer,
-   *  live worker/agent timeline over the existing Central Agent session.
-   *  Distinct from `workspace` (the existing hub rail) — v2 is a new,
-   *  additive surface that reuses the same backend, never a parallel one.
-   */
-  | 'agent-workspace'
   | 'environment'
   | 'ai-runtime'
   | 'settings';
