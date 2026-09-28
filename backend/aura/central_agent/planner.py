@@ -56,6 +56,16 @@ _MODEL_WORKER_ROLES = {
 #: compiler-owned and never model-proposable.
 _MODEL_INPUT_FROM = {"literal", "upstream-output"}
 
+#: Command-execution capabilities a model proposal may never bind to.
+#: Their contracts require a `command` argument the Phase F prompt
+#: forbids models from supplying ("no shell commands, no binaries"),
+#: so such tasks are unfillable by construction — they used to survive
+#: planning and die at dispatch as "command is required" (the live t3
+#: failure). Fail closed here instead: command execution is planned
+#: only by AURA's deterministic templates and direct Fabric callers.
+_MODEL_FORBIDDEN_CAPABILITIES = frozenset(
+    {"sandbox.execute", "terminal.execute"})
+
 #: Capabilities whose dispatch input requires a repo-relative file path.
 #: Model proposals carry the file in scopePaths (the documented contract);
 #: dispatch reads input.path — without this binding every model-planned
@@ -581,6 +591,21 @@ class TaskPlanner:
                     if not isinstance(cap, str) or cap not in known:
                         raise PlanningError(
                             f"model proposed unknown capability '{cap}'")
+                    if cap in _MODEL_FORBIDDEN_CAPABILITIES:
+                        # t3 regression: a model task bound to a
+                        # command-execution capability is unfillable by
+                        # construction — the contract requires a command
+                        # the model is forbidden to supply. Reject the
+                        # STRUCTURE at plan time; the deterministic
+                        # planner stays the only route that plans
+                        # command execution.
+                        raise PlanningError(
+                            f"task {label} proposes command execution "
+                            f"via '{cap}': its contract requires a "
+                            "command argument the model contract "
+                            "forbids supplying. Command execution is "
+                            "planned only by AURA's deterministic "
+                            "planner.")
                 from_ = rt.get("inputFrom") or "literal"
                 if from_ not in _MODEL_INPUT_FROM:
                     raise PlanningError(
