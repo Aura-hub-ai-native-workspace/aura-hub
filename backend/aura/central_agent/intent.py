@@ -168,7 +168,40 @@ def is_conversational(message: str) -> bool:
     "Can you use the connected nodes?" is answered rather than treated
     as an engineering task nobody could parse.
     """
-    return normalize_smalltalk(message) in _SMALLTALK or is_capability_question(message)
+    return (normalize_smalltalk(message) in _SMALLTALK
+            or is_capability_question(message))
+
+
+def is_general_question(message: str) -> bool:
+    """True when the message is a question about the world, not work.
+
+    "How would you create a REST API?" asks for knowledge; "Create a
+    REST API in this project" asks for a change — the difference is the
+    conditional how-frame plus the absence of an effect verb. Questions
+    naming a PROBLEM ("what is wrong with the build") are excluded:
+    answering those means reading the project, which is investigation —
+    a worker's job. This is a LATE heuristic branch only: the capability
+    branches (git status, knowledge, workflow status, delegation) all
+    keep precedence over it, and the model compiler is free to classify
+    better than it.
+    """
+    text = message.strip()
+    if not text or len(text) > 300:
+        return False
+    if _NOT_WORK_RE.search(text) is None:
+        return False
+    if _EFFECT_RE.search(text) is not None:
+        return False
+    # A conditional how-question may carry a change verb ("how would you
+    # create…"); any other work/change phrasing is execution.
+    how_q = _HOW_QUESTION_RE.search(text) is not None
+    if not how_q and (_WORK_RE.search(text) is not None
+                      or _CHANGE_RE.search(text) is not None):
+        return False
+    if (_DIAGNOSE_RE.search(text) is not None
+            or _PROBLEM_RE.search(text) is not None):
+        return False
+    return True
 
 
 def smalltalk_reply(message: str) -> str | None:
@@ -246,8 +279,12 @@ class ScriptedModelPort:
 
     def __init__(self, replies: list[tuple[str, dict[str, Any] | str]]) -> None:
         self._replies = replies
+        #: Every (system, user) pair this port was asked with — test
+        #: introspection only; production ports carry no such state.
+        self.prompts: list[tuple[str, str]] = []
 
     def complete_json(self, system: str, user: str) -> dict[str, Any] | None:
+        self.prompts.append((system, user))
         for needle, reply in self._replies:
             if needle.lower() in user.lower():
                 if isinstance(reply, str):
@@ -267,6 +304,7 @@ class ScriptedModelPort:
         """Scripted token delivery: matched plain-string replies arrive
         word by word; anything else arrives whole. Respects should_stop
         between chunks so cancellation tests observe a real stop."""
+        self.prompts.append((system, user))
         text: str | None = None
         for needle, reply in self._replies:
             if needle.lower() in user.lower():
@@ -390,7 +428,44 @@ _DIAGNOSE_RE = re.compile(
 #: Things that read as engineering work but are NOT: asking about the
 #: repository, or naming another surface this installation owns.
 _NOT_WORK_RE = re.compile(
-    r"\b(what|which|why|when|who|how many|explain|describe|tell me about)\b",
+    r"\b(what|which|why|when|who|how|how many|explain|describe|tell me about)\b",
+    re.IGNORECASE)
+
+#: A question ABOUT the active project — its architecture, structure,
+#: entry point, tests, dependencies. Question-shaped (so _NOT_WORK_RE
+#: vetoes the delegation path, keeping "Explain this function" off the
+#: dispatch path as pinned) but answering it from the model alone would
+#: hallucinate a codebase: these take the GROUNDED inspection path,
+#: where the Central Agent reads actual bounded project files and cites
+#: them. Change/effect verbs clear this below — "inspect and fix" is
+#: execution, and the planner owns it.
+_PROJECT_ABOUT_RE = re.compile(
+    r"\b(architecture|codebase\s+structure|project\s+structure|folder\s+structure|"
+    r"directory\s+structure|how\s+(?:is|are)\s+(?:this|the|my)\s+(?:project|codebase|repo\w*)\s+"
+    r"(?:organized|organised|structured)|entry\s*point|main\s+(?:file|module)|"
+    r"where\s+(?:are|is)|which\s+files|what\s+files|"
+    r"list\s+(?:the\s+)?(?:files|tests|modules|directories)|"
+    r"what\s+testing|which\s+tests?\b|what\s+dependencies)",
+    re.IGNORECASE)
+
+#: Something already WRONG with the machine or project. A question that
+#: names a problem is investigation FOR A REASON — worker territory —
+#: even when it also asks about structure. Kept apart from the grounded
+#: inspection path so "explain the architecture" never drifts into
+#: dispatching, and "inspect the project for security problems" never
+#: drifts out of it.
+_PROBLEM_RE = re.compile(
+    r"\b(problems?|issues?|bugs?|vulnerab\w*|fail(?:s|ed|ing|ure)?|"
+    r"wrong|broken|crash\w*|error\w*|not\s+work\w*|slow|security)\b",
+    re.IGNORECASE)
+
+#: Conditional-voice how-questions: "How would you create a REST API?"
+#: asks for knowledge even though it carries a change verb ("create").
+#: The imperative "Create a REST API in this project" has no such frame
+#: and stays on the execution path.
+_HOW_QUESTION_RE = re.compile(
+    r"\bhow\s+(?:would|could|should|can|do|does|did)\s+"
+    r"(?:i|you|we|one|a\s+developer)\b",
     re.IGNORECASE)
 
 #: A SECOND worker reviewing the first worker's verified result. Matched
@@ -573,6 +648,16 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
     fixing = any(w in text for w in _FIX_WORDS)
     running_wf = re.search(r"\brun (?:the )?workflow\b", text) is not None
     git_status = re.search(r"\bgit\b.*\bstatus\b|\bstatus\b.*\bgit\b", text) is not None
+    # A question ABOUT the project (architecture / entry point / tests):
+    # answer it from actual files, in words — never from a guess, never
+    # by dispatching a worker. Any change/effect verb or a named PROBLEM
+    # ("...and find the bugs") means the user wants WORK done, and the
+    # delegation checks below own the turn.
+    change_or_effect = (_CHANGE_RE.search(text) is not None
+                        or _EFFECT_RE.search(text) is not None)
+    project_about = (_PROJECT_ABOUT_RE.search(user_message) is not None
+                     and not change_or_effect
+                     and _PROBLEM_RE.search(text) is None)
     # The whole message is the known read-only capability and nothing
     # else, so the direct executor answers it instead of a worker.
     direct_git_status = _DIRECT_GIT_STATUS_RE.match(user_message.strip()) is not None
@@ -619,6 +704,12 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
         and _EFFECT_RE.search(denuded) is None)
     delegating = ((_WORK_RE.search(user_message) is not None or diagnosing or review_work)
                    and (diagnosing or review_work or _NOT_WORK_RE.match(user_message.strip()) is None)
+                   # A structural question about the project ("explain its
+                   # architecture", "where are the tests") is grounded
+                   # conversation the agent answers itself in words; it
+                   # is not a worker task unless a problem or a change is
+                   # named (both clear project_about above).
+                   and not project_about
                    # A known direct capability is not investigation. This
                    # yields to the `git.status` branch below rather than
                    # answering here: one route, one executor, no second
@@ -682,6 +773,21 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "delegateProve": wants_proof,
             "delegateScope": scope,
             "delegateReadOnly": read_only,
+        })
+    if project_about and not delegating and not knowledge_search and not git_status:
+        return AgentIntent.model_validate({
+            "goal": user_message.strip(),
+            "surface": "project",
+            "expectedOutcome": (
+                "A grounded answer from the project's actual files, with "
+                "file references — no worker, no side effects."),
+            "constraints": ["Read-only inspection", "Ground every claim in "
+                            "retrieved file content"],
+            "requiredCapabilities": [],
+            "urgency": "immediate",
+            "complexity": "single",
+            "approvalLikely": False,
+            "inspectProject": True,
         })
     if project_list and not authoring and not running_wf and not delegating and not git_status:
         return AgentIntent(
@@ -772,6 +878,18 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
                 "passing look like when they are fixed?"
             ),
         )
+    # A plain question about the world ("How would you create a REST
+    # API?") is answerable in words — the LAST classification branch, so
+    # every capability above keeps precedence and a named problem or an
+    # effect verb has already routed the turn to work.
+    if is_general_question(user_message):
+        return AgentIntent(
+            goal=user_message.strip(),
+            expectedOutcome="A direct answer in words, with no effect.",
+            conversational=True,
+            complexity="single",
+            confidence=0.9,
+        )
     # Distinguish query-shaped requests from mutation-shaped ones so the
     # clarification question matches the user's intent: asking "what
     # projects are registered?" needs a lookup-oriented follow-up, not
@@ -838,10 +956,24 @@ class IntentCompiler:
         try:
             raw = self.model_port.complete_json(system, user)  # type: ignore[union-attr]
         except Exception as exc:
+            # A port that RAISES is a model outage (unreachable provider,
+            # timeout). With fallback allowed, degrade to the SAME
+            # deterministic classifier the heuristic mode uses — a
+            # routing decision still exists, and it is the floor the
+            # model is only allowed to widen, never a weaker one.
+            if self.allow_heuristic_fallback:
+                return heuristic_interpret(user_message)
             raise IntentCompilationError(f"model routing failed: {exc}") from exc
         return self._validated(raw, user_message)
 
     def _validated(self, raw: dict | None, user_message: str) -> AgentIntent:
+        """Validate model output and apply the deterministic rules.
+
+        A model outage (raw is None or unparseable) degrades to the SAME
+        deterministic classifier the heuristic mode uses — never to a
+        different, weaker one — when fallback is allowed; without it the
+        failure fails closed as before.
+        """
         if raw is None:
             if self.allow_heuristic_fallback:
                 return heuristic_interpret(user_message)
@@ -859,6 +991,24 @@ class IntentCompiler:
             c for c in intent.requiredCapabilities
             if _re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*", c or "")
         ]
+        # Phase 2: a project-question without change/effect verbs or a
+        # named problem is answered by reading the project, whatever the
+        # model claimed — the same deterministic rule the heuristic uses.
+        if _PROJECT_ABOUT_RE.search(user_message) is not None \
+                and _CHANGE_RE.search(user_message) is None \
+                and _EFFECT_RE.search(user_message) is None \
+                and _PROBLEM_RE.search(user_message) is None:
+            intent.inspectProject = True
+        return self._deterministic_adjustments(intent, user_message)
+
+    def _deterministic_adjustments(self, intent: AgentIntent,
+                                   user_message: str) -> AgentIntent:
+        """The routing rules NO model output can bypass.
+
+        The conversational floor wins first; the deterministic
+        clarification policy decides what actually blocks. Extracted so
+        the model path and any future path apply the identical rules.
+        """
         # Conversation, decided deterministically. The floor wins first:
         # a greeting is conversation whatever the model said. Above that
         # the model may mark a turn answerable in words alone, but a

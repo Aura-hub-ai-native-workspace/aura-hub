@@ -109,6 +109,141 @@ def load_project_artifacts(project_id: str, home=None) -> dict | None:
         return None
 
 
+#: Grounded inspection budgets. A digest is a HANDFUL of small files,
+#: never a repository dump: enough to answer "what is this and where is
+#: the entry point", small enough that the model reads all of it.
+_DIGEST_TREE_ENTRIES = 60
+_DIGEST_FILE_CHARS = 1200
+_DIGEST_TOTAL_CHARS = 9_000
+_DIGEST_KEY_FILES = (
+    "README.md", "readme.md", "README",
+    "pyproject.toml", "package.json", "Cargo.toml", "go.mod",
+    "main.py", "app.py", "manage.py",
+    "index.ts", "index.js", "src/index.ts", "src/main.ts",
+    "src/main.py", "src/app.py", "src/main.rs", "main.go",
+)
+_DIGEST_CONFIG_FILES = (
+    "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "setup.py",
+    "Makefile", "vite.config.ts", "tsconfig.json",
+)
+
+
+def project_digest(path: str) -> dict | None:
+    """A bounded, read-only digest of a project's ACTUAL files.
+
+    Returns ``{"root", "tree", "files": [{path, chars, content}],
+    "tests"}`` or None when the root is missing/unreadable. Contents are
+    UNTRUSTED DATA — consumers must fence them; the digest exists so a
+    project question can be answered from the real code instead of a
+    guess, with every claim citable to a listed path.
+
+    Selection is structural, never clever: top-of-tree layout, the
+    project's declared manifests, conventional entry points, and the
+    test directory listing. Anything unreadable is skipped; a file that
+    vanished between listing and reading changes nothing.
+    """
+    import os
+
+    root = os.path.realpath(path or "")
+    if not root or not os.path.isdir(root):
+        return None
+
+    tree: list[str] = []
+    try:
+        entries = sorted(os.scandir(root), key=lambda e: (not e.is_dir(), e.name))
+        for entry in entries[:_DIGEST_TREE_ENTRIES]:
+            suffix = "/" if entry.is_dir() else ""
+            tree.append(entry.name + suffix)
+    except OSError:
+        return None
+
+    tests = sorted(
+        e.name for e in os.scandir(root)
+        if e.is_dir() and e.name.lower() in ("tests", "test", "spec", "__tests__")
+    ) if os.path.isdir(root) else []
+    tests_listing: list[str] = []
+    for tdir in tests[:2]:
+        troot = os.path.join(root, tdir)
+        try:
+            names = [f"{tdir}/{e.name}" for e in sorted(os.scandir(troot), key=lambda e: e.name)
+                     if e.is_file()][:40]
+            tests_listing.extend(names)
+        except OSError:
+            continue
+
+    files: list[dict] = []
+    used = 0
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for name in _DIGEST_KEY_FILES:
+        if name in seen:
+            continue
+        seen.add(name)
+        candidates.append(name)
+    for name in tree:
+        base = name.rstrip("/")
+        if base.endswith(".py") or base.endswith(".ts") or base.endswith(".js"):
+            if base not in seen and len(candidates) < 14:
+                seen.add(base)
+                candidates.append(base)
+    for rel in candidates:
+        if used >= _DIGEST_TOTAL_CHARS or len(files) >= 12:
+            break
+        full = os.path.join(root, rel)
+        if not os.path.isfile(full):
+            continue
+        try:
+            with open(full, "r", encoding="utf-8", errors="replace") as fh:
+                content = fh.read(_DIGEST_FILE_CHARS)
+        except OSError:
+            continue
+        if not content.strip():
+            continue
+        files.append({"path": rel, "chars": len(content),
+                      "content": content})
+        used += len(content)
+
+    return {"root": root, "tree": tree, "files": files,
+            "tests": tests_listing}
+
+
+def git_worktree_digest(path: str) -> dict | None:
+    """Read-only git facts about a project, through the ONE exec boundary.
+
+    Returns ``{"status", "diff", "log", "is_repo"}`` — all bounded — or
+    None when the path is not a readable directory. Every command is
+    read-only; a git that fails or is absent yields empty strings with
+    ``is_repo=False``, never an error, because this digest exists to
+    ground post-execution questions in what ACTUALLY changed, and "no
+    git here" is an honest answer too.
+    """
+    import os
+
+    from ..environment.procexec import run_argv
+
+    root = os.path.realpath(path or "")
+    if not root or not os.path.isdir(root):
+        return None
+
+    def _run(argv: list[str], timeout_ms: int = 6_000) -> str:
+        try:
+            r = run_argv(argv, timeout_ms=timeout_ms, cwd=root)
+        except Exception:  # noqa: BLE001 — grounding is best-effort
+            return ""
+        if r.exit_code != 0:
+            return ""
+        return (r.stdout or "")[:2_000]
+
+    status = _run(["git", "status", "--porcelain=v1", "-b"])
+    return {
+        "is_repo": bool(status),
+        "status": status,
+        "diff": _run(["git", "diff", "--no-color", "--stat"])
+        + "\n" + _run(["git", "diff", "--no-color"]),
+        "log": _run(["git", "log", "--oneline", "-8"]),
+    }
+
+
 def scan_project(path: str) -> list[str]:
     """A cheap, read-only look at a project, through the ONE exec boundary.
 

@@ -297,10 +297,16 @@ def expects_change(worker_role: str | None, run_when: str | None) -> bool:
 
 def _delegate_input(task_text: str, scope: list[str],
                     expect_change: bool = False,
-                    worker_role: str | None = None) -> dict:
+                    worker_role: str | None = None,
+                    context: str | None = None) -> dict:
     payload: dict = {"task": task_text[:MAX_DELEGATE_CHARS]}
     if scope:
         payload["scopePaths"] = list(scope)
+    if context:
+        # AURA-authored conversation digest (extra field, not in
+        # _DELEGATE_INPUT_KEYS: a model proposal can never inject it).
+        # Fenced as untrusted data by the executor's with_context().
+        payload["context"] = context[:2000]
     if worker_role:
         # AURA-OWNED echo of the task's validated role, like expectChange
         # below: deliberately absent from _DELEGATE_INPUT_KEYS so a model
@@ -339,6 +345,7 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
     """
     scope = _validated_scope(intent)
     text = _delegate_text(intent)
+    conversation_context = str(getattr(intent, "delegateContext", "") or "").strip() or None
     wants_review = bool(getattr(intent, "delegateReview", False))
     wants_remediation = bool(getattr(intent, "delegateRemediate", False))
     prove = bool(getattr(intent, "delegateProve", False))
@@ -381,10 +388,10 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
     tasks: list[TaskSpecification] = [TaskSpecification(
         id="implement",
         description="Carry out the requested change",
-        capabilityId="agent.delegate",
-        input=_delegate_input(text + build_note, scope,
+        capabilityId="agent.delegate",                input=_delegate_input(text + build_note, scope,
                               expect_change=expects_change("code", "always"),
-                              worker_role="code"),
+                              worker_role="code",
+                              context=conversation_context),
         workerRole="code",
         risk="high", reversible=False,
         verification=VerificationRequirement(
@@ -913,6 +920,11 @@ class TaskPlanner:
                 union.update(s or [])
 
             def _covered(path: str) -> bool:
+                # The documented whole-root marker (".") covers every
+                # repo-relative subpath: a dependency scoped to the root
+                # legitimately authorizes a narrower downstream leg.
+                if any(d in (".", "./") for d in union):
+                    return True
                 # Same path, or strictly beneath a dependency scope dir.
                 return any(path == d or path.startswith(d.rstrip("/") + "/")
                            for d in union)

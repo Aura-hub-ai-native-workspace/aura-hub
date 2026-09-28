@@ -104,6 +104,14 @@ class AgentIntent(ContractModel):
     never by model output alone. A conversational result carries no
     performed ids, no verified ids and no evidence, because a turn that
     ran nothing has nothing to show."""
+    inspectProject: bool = False
+    """This turn asks ABOUT the active project (its architecture, entry
+    points, tests, dependencies). It is answered from ACTUAL project
+    files by the Central Agent itself — a bounded read-only digest, no
+    worker, no plan, no effect — with file references in the reply.
+    Enforced deterministically in `intent._validated`: a change or effect
+    verb clears it (that is execution), and a conversational floor win
+    clears it (smalltalk is answered without inspecting anything)."""
 
 
 # ── planning ─────────────────────────────────────────────────────────────────
