@@ -7,6 +7,73 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.17] - 2026-09-28 — Context-Aware Central Agent & Governed Model Planning
+
+### New functionality
+
+- **Context-aware Central Agent (Phase 2)** — conversational turns are
+  now grounded in the real project: a bounded read-only digest of the
+  active project (files, tests, structure) feeds inspection answers, so
+  "which files are in this project" cites actual files instead of
+  inventing them. With no project open, the agent says so honestly.
+- **Automatic intent routing** — project questions, clarification
+  requests and delegable engineering requests are classified
+  deterministically (heuristic router, model-assisted when a provider is
+  configured); ambiguous requests ask for clarification instead of
+  guessing, and outside-project write requests are refused with the
+  refusal stated in the conversation.
+- **Real engineering handoff** — delegable requests compile into
+  governed worker plans (implement → review → remediate) and dispatch to
+  connected workers through the existing Fabric; multi-turn memory is
+  preserved across the handoff and the workspace conversation persists
+  across reloads.
+- **Persistent streaming conversation** — Phase 1's model-generated
+  streaming answers and durable conversation history carry through the
+  workspace session (verified by reload-persistence acceptance).
+
+### Bug fixes
+
+- **t3: model-proposed command-execution tasks rejected at plan time** —
+  a model plan binding a task to `sandbox.execute`/`terminal.execute`
+  used to survive planning and die at dispatch with "command is
+  required" (its contract requires a command the model contract
+  forbids supplying). Such structures now fail closed in the planner
+  with a structured, task-named error. Authorized verification commands
+  through the deterministic planner and direct Fabric callers are
+  unchanged and re-verified by the executor suite.
+- Deterministic fallback for delegable requests when a model-proposed
+  plan is rejected by validation — the request still routes through the
+  governed template instead of hard-failing (only when the pinned
+  heuristic router independently classifies the message as delegable).
+- Fixed a crash in project test-directory inspection when `tests/`
+  contained multiple entries.
+- Whole-root delegation scope (`"."`) is now honored by the dependency
+  coverage check, matching the documented scope semantics.
+
+### Known limitations
+
+- Model-proposed verification subtasks may still fail mid-run
+  cosmetically (e.g. a malformed "command"-shaped step); the run's file
+  and test evidence is unaffected and the failure is surfaced honestly.
+- Genuine multi-worker parallel orchestration is NOT included in this
+  release (Phase 3 scope, targeted for v0.2.0-alpha); single-worker
+  governed execution is the shipping behavior.
+- Live acceptance was performed against a local demo project with one
+  connected OpenCode worker; other adapters are wired but were not part
+  of the acceptance evidence.
+
+### Installation
+
+- Desktop (Linux): build from source — `npm install`,
+  `npm run build --workspace @aura/desktop`, then
+  `npx tauri build` in `apps/desktop` (or `npx tauri build --no-bundle`
+  for a bare binary at
+  `apps/desktop/src-tauri/target/release/aura-hub`). The binary bundles
+  the Node and Python runtimes plus the ai-service and Python backend.
+- Development: `npm run desktop:prepare` (bundles the service and starts
+  the dev server). Backend tests:
+  `cd backend && python -m pytest tests/unit -p no:cacheprovider`.
+
 ## [Unreleased]
 
 Committed to `presentation-v0.1`, pending review before any merge to
