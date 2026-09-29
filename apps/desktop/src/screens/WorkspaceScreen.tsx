@@ -28,7 +28,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { AnimatePresence, motion } from 'framer-motion';
 import { cn, spring, useAppStore } from '@aura/core';
 import { Icon } from '@aura/ui';
-import { useMediaQuery } from '@aura/ui';
 import { useEnvironmentStore } from '../environment/environmentStore';
 import { useWorkspace } from '../data/useWorkspace';
 
@@ -60,7 +59,6 @@ import { useAgentWorkspaceV2 } from './agentWorkspaceV2/useAgentWorkspaceV2';
 type RightTab = 'execution' | 'capabilities';
 
 export function WorkspaceScreen() {
-  const isWide = !useMediaQuery('(max-width: 1024px)');
   const [rightTab, setRightTab] = useState<RightTab>('execution');
   const [adding, setAdding] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -229,18 +227,24 @@ export function WorkspaceScreen() {
         } catch { /* the gate stays unrendered rather than guessing */ }
       }
       const fabricById = new Map(fabricList.map((a) => [a.id, a]));
-      if (!failed) {
-        setApprovals((prev) => {
-          const next = { ...prev };
-          for (const id of missing) {
-            const agentRow = agentById.get(id) ?? decidedById.get(id);
-            next[id] = (agentRow ? agentApprovalToRequest(agentRow) : null)
-              ?? fabricById.get(id)
-              ?? null;
+      setApprovals((prev) => {
+        const next = { ...prev };
+        for (const id of missing) {
+          if (failed) {
+            /* The ledgers could not be reached. Leaving the entry
+               `undefined` parked the gate on an eternal "Loading the
+               authorization details…" — an honest "no longer
+               available" beats a spinner that never resolves. */
+            next[id] = null;
+            continue;
           }
-          return next;
-        });
-      }
+          const agentRow = agentById.get(id) ?? decidedById.get(id);
+          next[id] = (agentRow ? agentApprovalToRequest(agentRow) : null)
+            ?? fabricById.get(id)
+            ?? null;
+        }
+        return next;
+      });
       for (const id of missing) resolving.current.delete(id);
     })();
   }, [parkedIds, approvals]);
@@ -316,16 +320,17 @@ export function WorkspaceScreen() {
   const projectName = projects.find((p) => p.id === projectId)?.name ?? null;
 
   return (
-    <div ref={canvasRef} className="neon-shell relative h-full min-h-0" data-testid="workspace-screen">
+    <div ref={canvasRef} className="neon-shell relative flex h-full min-h-0 flex-col" data-testid="workspace-screen">
       <div aria-hidden className="neon-grid pointer-events-none absolute inset-0" />
 
+      {/* One two-pane layout at EVERY width. The old narrow branch stacked
+          the panes and scrolled the PAGE (grid-cols-1 overflow-y-auto) —
+          scrolling the conversation scrolled the whole Workspace. A desktop
+          app keeps the viewport fixed: both panes always visible, each
+          with its own internal scroll (min-h-0 + overflow-hidden here,
+          overflow-y-auto inside each pane). */}
       <div
-        className={cn(
-          'relative mx-auto grid min-h-0 w-full max-w-[1760px] flex-1 gap-4 p-4',
-          isWide
-            ? 'grid-cols-[minmax(340px,30%)_minmax(0,1fr)] overflow-hidden'
-            : 'grid-cols-1 gap-3 overflow-y-auto',
-        )}
+        className="relative mx-auto grid min-h-0 w-full max-w-[1760px] flex-1 grid-cols-[minmax(300px,30%)_minmax(0,1fr)] gap-3 overflow-hidden p-3 lg:gap-4 lg:p-4"
         data-testid="workspace-split"
       >
         {/* LEFT — the conversation: history, streamed responses, the
@@ -414,34 +419,61 @@ export function WorkspaceScreen() {
 
           {/* Right-panel views: the live execution is the headline; the
               machine inventory is one tab away. */}
-          <div
-            className="flex shrink-0 items-center gap-1 border-b border-[rgba(125,146,255,0.16)] px-3 py-1.5"
-            role="tablist"
-            aria-label="Workspace views"
-          >
-            {(
-              [
-                { key: 'execution', label: 'Live execution' },
-                { key: 'capabilities', label: 'Capabilities' },
-              ] as const
-            ).map(({ key, label }) => (
-              <button
-                key={key}
-                type="button"
-                role="tab"
-                aria-selected={rightTab === key}
-                data-testid={`ws-tab-${key}`}
-                onClick={() => setRightTab(key)}
-                className={cn(
-                  'neon-focus rounded-lg px-3 py-1.5 text-[11.5px] font-medium transition-colors',
-                  rightTab === key
-                    ? 'bg-[rgba(125,146,255,0.16)] text-text'
-                    : 'text-text-muted hover:text-text',
-                )}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[rgba(125,146,255,0.16)] px-3 py-1.5">
+            <div className="flex items-center gap-1" role="tablist" aria-label="Workspace views">
+              {(
+                [
+                  { key: 'execution', label: 'Live execution' },
+                  { key: 'capabilities', label: 'Capabilities' },
+                ] as const
+              ).map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={rightTab === key}
+                  data-testid={`ws-tab-${key}`}
+                  onClick={() => setRightTab(key)}
+                  className={cn(
+                    'neon-focus rounded-lg px-3 py-1.5 text-[11.5px] font-medium transition-colors',
+                    rightTab === key
+                      ? 'bg-[rgba(125,146,255,0.16)] text-text'
+                      : 'text-text-muted hover:text-text',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {/* Sovereign panel quick-launch — Documents, Artifacts,
+                Sovereign Monitor. Lives in the right panel's header row
+                (was: an absolutely-positioned cluster pinned to the
+                screen's bottom-right corner, where it overlapped the
+                composer and its scrollbar at narrow widths). */}
+            <div
+              className="flex items-center gap-1"
+              data-testid="sovereign-panel-toolbar"
+            >
+              {(
+                [
+                  { kind: 'documents', icon: 'doc', label: 'Documents' },
+                  { kind: 'artifacts', icon: 'folder', label: 'Artifacts' },
+                  { kind: 'sovereign-monitor', icon: 'shield', label: 'Sovereign Monitor' },
+                ] as const
+              ).map(({ kind, icon, label }) => (
+                <button
+                  key={kind}
+                  type="button"
+                  data-testid={`open-panel-${kind}`}
+                  aria-label={label}
+                  title={label}
+                  onClick={() => openPanel(kind)}
+                  className="neon-focus grid h-7 w-7 place-items-center rounded-lg text-text-muted transition-colors hover:bg-[rgba(125,146,255,0.12)] hover:text-text"
+                >
+                  <Icon name={icon} size={14} />
+                </button>
+              ))}
+            </div>
           </div>
 
           {rightTab === 'execution' ? (
@@ -582,32 +614,6 @@ export function WorkspaceScreen() {
           </div>
         </div>
       )}
-
-      {/* Sovereign panel quick-launch — Documents, Artifacts, Sovereign Monitor. */}
-      <div
-        data-testid="sovereign-panel-toolbar"
-        className="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-xl border border-[rgba(125,146,255,0.25)] bg-ws-pop-soft p-1 shadow-card backdrop-blur-sm"
-      >
-        {(
-          [
-            { kind: 'documents', icon: 'doc', label: 'Documents' },
-            { kind: 'artifacts', icon: 'folder', label: 'Artifacts' },
-            { kind: 'sovereign-monitor', icon: 'shield', label: 'Sovereign Monitor' },
-          ] as const
-        ).map(({ kind, icon, label }) => (
-          <button
-            key={kind}
-            type="button"
-            data-testid={`open-panel-${kind}`}
-            aria-label={label}
-            title={label}
-            onClick={() => openPanel(kind)}
-            className="neon-focus grid h-7 w-7 place-items-center rounded-lg text-text-muted transition-colors hover:bg-[rgba(125,146,255,0.12)] hover:text-text"
-          >
-            <Icon name={icon} size={14} />
-          </button>
-        ))}
-      </div>
 
       <AddNodeDialog open={adding} onClose={() => setAdding(false)} />
       <NodeWindows canvasRef={canvasRef} />

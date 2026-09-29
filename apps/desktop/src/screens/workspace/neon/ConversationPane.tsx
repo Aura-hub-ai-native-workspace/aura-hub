@@ -157,7 +157,7 @@ function MessageRow({
         ) : (
           <>
             {message.content ? (
-              <div className="text-[13.5px] leading-relaxed text-text">
+              <div className="break-words text-[13.5px] leading-relaxed text-text">
                 <AiMarkdown source={message.content} />
               </div>
             ) : streaming ? (
@@ -246,12 +246,42 @@ export function ConversationPane({
 }) {
   const [text, setText] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const empty = messages.length === 0;
 
+  /* Scroll to the newest message ONLY while the user is already near the
+     bottom (or a fresh conversation appears). The old version yanked the
+     view to the bottom on every message/activity change, so reading an
+     earlier answer while a long one streamed was impossible. A small
+     stickiness threshold (160px) lets normal token streaming keep the
+     view pinned without ever dragging a reader back down. */
+  const stickToBottom = useRef(true);
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el && stickToBottom.current) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    }
   }, [messages, activity.phase]);
+
+  /* Multiline composer: grow with content up to a sensible ceiling,
+     then scroll inside the textarea (the pane itself never grows). */
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    el.style.overflowY = el.scrollHeight > 200 ? 'auto' : 'hidden';
+  }, [text]);
 
   const submit = () => {
     const trimmed = text.trim();
@@ -353,6 +383,7 @@ export function ConversationPane({
           </label>
           <textarea
             id="aura-composer"
+            ref={composerRef}
             rows={2}
             value={text}
             onChange={(e) => setText(e.target.value)}
