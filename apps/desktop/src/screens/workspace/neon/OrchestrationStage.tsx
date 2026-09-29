@@ -24,7 +24,15 @@ import {
  * The connector between hero and grid is a static spine: it pictures
  * the real topology (AURA commands, workers answer), it does not
  * animate delegation that is not happening. Breathing is reserved for
- * the one state that earns it: a worker the backend reports CONNECTED.
+ * the one state that earns it: a worker the CURRENT RUN actually
+ * reports working — a merely connected worker sits calm, because a
+ * connection is a fact, not an activity.
+ *
+ * Stage B deepens the truthfulness: the grid carries the roster's own
+ * state — an unreachable service says so instead of pretending an
+ * empty row, a readiness handshake in flight says "Proving…", a
+ * worker the backend proved says "Proven", and the roster can be
+ * re-asked with the same refresh the Capabilities tab uses.
  *
  * Presentational only; every value arrives as a prop from
  * WorkspaceScreen, which sources them from the existing stores.
@@ -42,6 +50,10 @@ export function OrchestrationStage({
   workerSlots,
   workerActivity,
   scanning,
+  workersConnecting,
+  workersError,
+  workersLoading,
+  onRefreshWorkers,
   onManageWorker,
 }: {
   /** Provider ids the model service reports as connected. */
@@ -64,11 +76,23 @@ export function OrchestrationStage({
   workerActivity: Map<string, string>;
   /** Environment inventory scan in flight (affects slot captions). */
   scanning: boolean;
+  /** Worker ids with a readiness handshake currently in flight. */
+  workersConnecting: string[];
+  /** Set when the roster could not be read. Never rendered as "no workers". */
+  workersError: string | null;
+  /** True while the roster is being (re)read. */
+  workersLoading: boolean;
+  /** Re-ask the backend for its worker roster (same store as the Capabilities tab). */
+  onRefreshWorkers: () => void;
   /** Open the existing worker-slot management surface for a slot. */
   onManageWorker: (index: number) => void;
 }) {
   const connected = workerSlots.filter((s) => s.worker?.connected).length;
   const filled = workerSlots.filter((s) => s.workerId).length;
+  /* The denominator of the grid header is the roster's own size, when
+     it answered. Slots may be filled beyond it or fall short of it —
+     both are real, and neither is corrected here. */
+  const rosterTotal = workerSlots.filter((s) => s.worker).length || filled;
 
   return (
     <div className="flex shrink-0 flex-col px-4 pt-3" data-testid="orchestration-stage">
@@ -178,13 +202,49 @@ export function OrchestrationStage({
         <span className="h-1.5 w-px bg-[rgba(122,92,255,0.2)]" />
       </div>
 
-      {/* 3 — The worker grid: six slots, 3×2, truthful at every state. */}
+      {/* 3 — The worker grid: six slots, 3×2, truthful at every state.
+          The header restates the roster's own counts and re-asks it on
+          demand; an unreachable roster is a banner, never a blank. */}
+      <div className="flex items-center justify-between gap-2 pb-1" data-testid="worker-grid-header">
+        <span className="flex min-w-0 items-baseline gap-2">
+          <span className="text-[10.5px] font-semibold uppercase tracking-[0.16em] text-text-subtle">
+            Workers
+          </span>
+          <span className="min-w-0 truncate text-[10.5px] text-text-subtle" data-testid="worker-grid-count">
+            {workersError
+              ? 'roster unreachable'
+              : `${connected} of ${rosterTotal} connected`}
+          </span>
+        </span>
+        <button
+          type="button"
+          onClick={onRefreshWorkers}
+          disabled={workersLoading}
+          data-testid="worker-grid-refresh"
+          aria-label="Refresh the worker roster"
+          title={workersError ? 'Ask the backend again for its worker roster' : 'Refresh the worker roster'}
+          className="neon-focus grid h-6 w-6 shrink-0 place-items-center rounded-lg text-text-subtle transition-colors hover:bg-[rgba(125,146,255,0.12)] hover:text-text disabled:opacity-50"
+        >
+          <Icon name="refresh" size={13} />
+        </button>
+      </div>
+      {workersError && (
+        <p
+          role="status"
+          data-testid="worker-grid-error"
+          className="mb-2 rounded-lg border border-[rgba(255,181,71,0.42)] bg-[rgba(255,181,71,0.08)] px-2.5 py-1.5 text-[10.5px] leading-snug text-ws-warn"
+        >
+          The worker roster could not be read: {workersError}. Slots hold their places and
+          claim nothing until the backend answers.
+        </p>
+      )}
       <div className="grid grid-cols-2 gap-2 md:grid-cols-3" data-testid="worker-grid">
         {workerSlots.map((slot) => (
           <WorkerStageCard
             key={slot.index}
             slot={slot}
             activity={slot.workerId ? workerActivity.get(slot.workerId) ?? null : null}
+            connecting={slot.workerId ? workersConnecting.includes(slot.workerId) : false}
             scanning={scanning}
             onManage={() => onManageWorker(slot.index)}
           />
@@ -223,27 +283,40 @@ function HeroChip({
 
 /** One worker slot. A card, never a promise: the caption and the dot
     restate the backend's verdict, and an empty slot offers the real
-    management surface instead of a fake occupant. */
+    management surface instead of a fake occupant. A handshake in
+    flight says "Proving…"; a worker the current run reports on breathes
+    and shows the activity word; a merely connected worker sits calm. */
 function WorkerStageCard({
   slot,
   activity,
+  connecting,
   scanning,
   onManage,
 }: {
   slot: WorkerSlot;
   activity: string | null;
+  connecting: boolean;
   scanning: boolean;
   onManage: () => void;
 }) {
   const state = scanning && slot.state === 'UNKNOWN' ? 'UNKNOWN' : slot.state;
   const name = workerSlotName(slot);
-  const caption = workerSlotCaption(slot);
+  /* "Proving…" is the caption while the readiness handshake runs — the
+     backend's own word for a proof it has not finished earning. */
+  const caption = connecting ? 'Proving…' : workerSlotCaption(slot);
   const capabilities = slot.worker?.capabilities ?? [];
+  const proof = slot.worker?.proof ?? null;
+
+  /* In-run is the run's own report: an activity word that is neither of
+     the two non-answers ('IDLE', 'CONNECTED'). Same predicate the
+     WorkerRail uses, so the two surfaces can never disagree. */
+  const inRun = !!activity && activity !== 'IDLE' && activity !== 'CONNECTED';
 
   const dot =
-    state === 'ACTIVE' ? 'bg-neon-success aura-breathe'
+    connecting ? 'bg-neon-cyan aura-breathe'
+      : inRun ? 'bg-neon-success aura-breathe'
+      : state === 'ACTIVE' ? 'bg-neon-success'
       : state === 'SELECTED' ? 'bg-neon-blue'
-      : state === 'UNKNOWN' ? 'bg-text-subtle'
       : 'bg-text-subtle';
 
   const frame =
@@ -268,7 +341,11 @@ function WorkerStageCard({
           ? `Empty worker slot ${slot.index + 1} — add a worker`
           : `${name || 'Worker'} — ${caption}. Open management`
       }
-      title={state === 'EMPTY' ? 'Add a worker to this slot' : `${name} — ${caption}${activity ? ` · ${activity}` : ''}`}
+      title={
+        state === 'EMPTY'
+          ? 'Add a worker to this slot'
+          : `${name} — ${caption}${activity && inRun ? ` · ${activity}` : ''}${proof?.proved ? ` · proof: ${proof.detail}` : ''}`
+      }
       className={cn(
         'neon-focus group flex min-h-[64px] flex-col items-start gap-1 rounded-xl border p-2.5 text-left transition-colors',
         frame,
@@ -297,8 +374,21 @@ function WorkerStageCard({
         {state === 'EMPTY' ? 'Add a worker' : caption}
       </span>
 
+      {/* Readiness proof — the backend's own record that a real
+          dispatch round-trip succeeded. Shown only when it exists. */}
+      {proof?.proved && state !== 'EMPTY' && (
+        <span
+          className="inline-flex items-center gap-1 rounded-full border border-[rgba(31,211,138,0.4)] bg-[rgba(31,211,138,0.08)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-ws-ok"
+          data-testid={`worker-proof-${slot.index}`}
+          title={`${proof.detail} (probe ${proof.probeId})`}
+        >
+          <Icon name="check" size={9} className="shrink-0" />
+          Proven
+        </span>
+      )}
+
       {/* Live activity word — only while the run actually reports one. */}
-      {activity && state === 'ACTIVE' && (
+      {inRun && state === 'ACTIVE' && (
         <span
           className="inline-flex items-center gap-1 rounded-full border border-[rgba(32,211,255,0.4)] bg-[rgba(32,211,255,0.1)] px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-ws-ink-cyan"
           data-testid={`worker-activity-${slot.index}`}

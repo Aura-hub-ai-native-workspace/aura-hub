@@ -156,6 +156,7 @@ export function WorkspaceScreen() {
   const workers = useWorkerStore((s) => s.workers);
   const workersConnecting = useWorkerStore((s) => s.connecting);
   const workersError = useWorkerStore((s) => s.error);
+  const workersLoading = useWorkerStore((s) => s.loading);
   const refreshWorkers = useWorkerStore((s) => s.refresh);
   const connectWorker = useWorkerStore((s) => s.connect);
   const disconnectWorker = useWorkerStore((s) => s.disconnect);
@@ -457,6 +458,10 @@ export function WorkspaceScreen() {
             workerSlots={workerSlots}
             workerActivity={workerActivity}
             scanning={scanning}
+            workersConnecting={workersConnecting}
+            workersError={workersError}
+            workersLoading={workersLoading}
+            onRefreshWorkers={() => void refreshWorkers()}
             onManageWorker={(index) => openWorkerSurface(index)}
           />
 
