@@ -57,6 +57,11 @@ class ApprovalLedger:
         self._audit_append = audit_append
         self._emit = emit
         self._clock = clock
+        # Parallel worker legs create and spend approvals concurrently:
+        # register/spend/decide mutate the same dict, and a lost race
+        # here would be a duplicated or silently-spent authorization.
+        from threading import Lock
+        self._lock = Lock()
 
     # ── durability ───────────────────────────────────────────────────────
 
@@ -90,7 +95,8 @@ class ApprovalLedger:
     # ── queries ──────────────────────────────────────────────────────────
 
     def pending(self) -> list[dict[str, Any]]:
-        return [r for r in self._approvals.values() if r.get("state") == "pending"]
+        with self._lock:
+            return [r for r in self._approvals.values() if r.get("state") == "pending"]
 
     def decided(self) -> list[dict[str, Any]]:
         """Granted/denied/consumed records, newest decision first.
@@ -105,9 +111,10 @@ class ApprovalLedger:
         return rows
 
     def by_id(self, approval_id: str) -> dict[str, Any] | None:
-        for r in self._approvals.values():
-            if r.get("id") == approval_id:
-                return r
+        with self._lock:
+            for r in self._approvals.values():
+                if r.get("id") == approval_id:
+                    return r
         return None
 
     def open_for_key(self, key: str) -> dict[str, Any] | None:
@@ -135,7 +142,8 @@ class ApprovalLedger:
 
     def register(self, key: str, request: dict[str, Any]) -> None:
         """Park a freshly built pending request (fabric.ts:644–650)."""
-        self._approvals[key] = request
+        with self._lock:
+            self._approvals[key] = request
         self._persist()
 
     def replace(self, key: str, request: dict[str, Any]) -> None:
@@ -167,7 +175,20 @@ class ApprovalLedger:
         request = self.by_id(approval_id)
         if not request or request.get("state") != "pending":
             return None
+        with self._lock:
+            # Re-check under the lock: a parallel leg may have decided
+            # this request between the read above and now.
+            if request.get("state") != "pending":
+                return None
+            request["_deciding"] = True
+        try:
+            return self._decide_locked(approval_id, request, granted,
+                                       decided_by, reason)
+        finally:
+            with self._lock:
+                request.pop("_deciding", None)
 
+    def _decide_locked(self, approval_id, request, granted, decided_by, reason):
         ts = self._clock()
         request["state"] = "granted" if granted else "denied"
         request["decidedAt"] = ts
@@ -207,10 +228,14 @@ class ApprovalLedger:
 
     def consume(self, approval_id: str) -> dict[str, Any] | None:
         """Single-use spend (fabric.ts:423–429); replay finds nothing."""
-        request = self.by_id(approval_id)
-        if not request or request.get("state") != "granted" or request.get("consumedAt"):
-            return None
-        request["consumedAt"] = self._clock()
+        with self._lock:
+            request = next(
+                (r for r in self._approvals.values()
+                 if r.get("id") == approval_id), None)
+            if not request or request.get("state") != "granted" \
+                    or request.get("consumedAt"):
+                return None
+            request["consumedAt"] = self._clock()
         self._persist()
         return request
 

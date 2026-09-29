@@ -13,12 +13,23 @@ without deciding it.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from ..contracts import TaskOutcome, TaskPlan
 from ..fabric import FabricConfig, invoke_fabric
 from ..workflow import EngineConfig, WorkflowEngine
+from .isolation import IsolationManager, conflict_scan
+from .orchestration import (
+    MAX_PARALLEL_WORKERS,
+    TaskInterval,
+    allocate_workers,
+    overlapping,
+    parallel_eligible,
+    plan_levels,
+)
 from .planner import topo_order
 
 #: Fabric outcome → leg state. Unknown outcomes fail closed as "failed":
@@ -286,6 +297,308 @@ class ExecutionController:
                 result.stop_reason = f"{task.id}: {last.detail}"
                 break
         return result
+
+    # ── Milestone 1: parallel level execution ───────────────────────────
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z")
+
+    def _read_registry_for_allocation(
+        self, capability_id: str,
+    ) -> tuple[list[dict], dict[str, list[str]], dict[str, bool]]:
+        """One registry read, shaped for allocate_workers: present nodes,
+        each node's roles from the match table, and whether the routing
+        executor can drive the capability (the same usability source
+        _match_role consults — selection and dispatch can never use
+        different answers)."""
+        from .worker_match import ROLE_NODE_CAPABILITY
+        nodes = self._present_nodes()
+        satisfies: dict[str, list[str]] = {}
+        for node in nodes:
+            nid = str(node.get("id") or "")
+            caps = [str(c) for c in (node.get("capabilities") or [])]
+            satisfies[nid] = [
+                role for role, needed in ROLE_NODE_CAPABILITY.items()
+                if needed in caps]
+        usable_fn = self._role_usable(capability_id)
+        usable = {nid: True for nid in satisfies}
+        if usable_fn is not None:
+            for node in nodes:
+                nid = str(node.get("id") or "")
+                try:
+                    usable[nid] = bool(usable_fn(node))
+                except Exception:
+                    usable[nid] = False
+        return nodes, satisfies, usable
+
+    def execute_parallel(
+        self,
+        plan: TaskPlan,
+        project_id: str | None,
+        cancel_token: Any | None = None,
+        cancel_check: Any | None = None,
+        resume_grants: dict[str, tuple[str, str | None]] | None = None,
+        project_cwd: str | None = None,
+        correlation: dict[str, str] | None = None,
+    ) -> tuple[Any, dict]:
+        """Run a plan with level-parallel dispatch of independent tasks.
+
+        The SEQUENTIAL path stays the owner of every per-task decision:
+        this method computes levels and worker allocation (orchestration.py),
+        dispatches independent tasks of a level on distinct workers in
+        their own isolation worktrees (threads calling _invoke_single),
+        then integrates non-conflicting change sets into one worktree and
+        reports the combined result — the caller verifies as usual.
+
+        Sequential fallback (by construction, not by failure):
+          • a level with one task;
+          • no project cwd (nothing to isolate);
+          • fewer than two tasks of the level securing distinct workers;
+          • any task of the level that cannot be allocated (refused —
+            the level runs sequentially and that task fails closed there).
+
+        Returns (ExecutionOutcome, parallel_report) where the report
+        carries the scheduling shape, per-task intervals (real overlap
+        evidence), the isolation record, and the integration result.
+        """
+        from .isolation import IsolationManager as _IM  # noqa: F401 (import symmetry)
+        correlation = {k: v for k, v in (correlation or {}).items() if v}
+        result = ExecutionOutcome()
+        report: dict[str, Any] = {
+            "parallel": False, "levels": [], "intervals": [],
+            "isolation": None, "integration": None,
+        }
+        resume_grants = resume_grants or {}
+
+        def _stop_requested() -> bool:
+            if cancel_token is not None and cancel_token.cancelled:
+                return True
+            return bool(cancel_check and cancel_check())
+
+        try:
+            levels = plan_levels(plan.tasks)
+        except Exception as exc:  # SchedulingError propagates as a failed run
+            result.stopped = True
+            result.stop_reason = str(exc)
+            return result, report
+        report["levels"] = [[t.id for t in lv] for lv in levels]
+
+        manager: IsolationManager | None = None
+        if project_cwd:
+            try:
+                manager = IsolationManager(project_cwd)
+            except Exception as exc:
+                manager = None
+                report["isolationError"] = str(exc)[:200]
+        intervals: list[TaskInterval] = []
+
+        for level in levels:
+            if _stop_requested():
+                result.cancelled = True
+                result.stopped = True
+                result.stop_reason = "cancelled before the next level started"
+                break
+
+            nodes, satisfies, usable = self._read_registry_for_allocation(
+                level[0].capabilityId)
+            allocations = allocate_workers(
+                level, nodes, usable, satisfies,
+                cap=MAX_PARALLEL_WORKERS)
+            go_parallel = (
+                parallel_eligible(level, allocations, project_cwd)
+                and manager is not None
+                and all(a.ok for a in allocations)
+                and not any(grants for grants in
+                            (resume_grants.get(t.id) for t in level))
+            )
+            if not go_parallel:
+                # Sequential fallback for this level — the original path.
+                for task in topo_order(level):
+                    grant = resume_grants.get(task.id)
+                    self._invoke_single(
+                        task, project_id, None, result,
+                        approval_id=grant[0] if grant else None,
+                        project_cwd=project_cwd,
+                        cancel_token=cancel_token,
+                        correlation=correlation)
+                    last = result.outcomes[-1] if result.outcomes else None
+                    if last is None:
+                        break
+                    if last.state in ("awaiting-approval", "denied",
+                                      "timed-out", "cancelled",
+                                      "failed", "blocked"):
+                        result.approval_id = (last.approvalId
+                                              if last.state == "awaiting-approval"
+                                              else result.approval_id)
+                        result.stopped = True
+                        result.stop_reason = f"{task.id}: {last.detail}"
+                        if last.state == "awaiting-approval":
+                            result.approval_id = last.approvalId
+                        elif last.state == "denied":
+                            result.denied = True
+                        elif last.state == "timed-out":
+                            result.timed_out = True
+                        elif last.state == "cancelled":
+                            result.cancelled = True
+                        break
+                continue
+
+            # ── genuinely parallel: distinct workers, isolated worktrees ──
+            report["parallel"] = True
+            assert manager is not None
+            worktrees: dict[str, str] = {}
+            branches: dict[str, str] = {}
+            for alloc in allocations:
+                if not alloc.ok:
+                    continue
+                try:
+                    wt = manager.create(alloc.task_id, alloc.node_id)
+                    worktrees[alloc.task_id] = wt.path
+                    branches[alloc.task_id] = wt.branch
+                except Exception as exc:
+                    report["isolationError"] = str(exc)[:200]
+            if len(worktrees) < 2:
+                # Isolation unavailable: sequential fallback, exactly as
+                # if the second worker had not been there.
+                for task in topo_order(level):
+                    self._invoke_single(
+                        task, project_id, None, result,
+                        project_cwd=project_cwd,
+                        cancel_token=cancel_token,
+                        correlation=correlation)
+                continue
+
+            outcomes: dict[str, TaskOutcome] = {}
+            errors: dict[str, str] = {}
+            lock = threading.Lock()
+
+            def _run_one(task: Any, wt_path: str) -> None:
+                started = self._now()
+                try:
+                    leg = ExecutionOutcome()
+                    self._invoke_single(
+                        task, project_id, None, leg,
+                        project_cwd=wt_path,
+                        cancel_token=cancel_token,
+                        correlation=correlation)
+                    with lock:
+                        for o in leg.outcomes:
+                            outcomes[task.id] = o
+                            result.outcomes.append(o)
+                        result.worker_assignments.update(leg.worker_assignments)
+                        for k, v in leg.verified_outputs.items():
+                            result.verified_outputs[k] = v
+                        result.governed_actions.extend(leg.governed_actions[:100])
+                        if leg.run_id and result.run_id is None:
+                            result.run_id = leg.run_id
+                    intervals.append(TaskInterval(
+                        task_id=task.id,
+                        node_id=(result.worker_assignments.get(task.id) or {}).get("nodeId", ""),
+                        started_at=started,
+                        ended_at=self._now()))
+                except Exception as exc:  # a crashed leg is a failed task
+                    with lock:
+                        errors[task.id] = str(exc)[:200]
+                        result.outcomes.append(TaskOutcome(
+                            taskId=task.id, state="failed", performed=False,
+                            detail=f"parallel leg error: {errors[task.id]}"))
+                    intervals.append(TaskInterval(
+                        task_id=task.id, node_id="", started_at=started,
+                        ended_at=self._now()))
+
+            threads = []
+            for task, alloc in zip(level, allocations):
+                wt_path = worktrees.get(task.id)
+                if wt_path is None:
+                    continue
+                result.worker_assignments[task.id] = {
+                    "taskId": task.id, "nodeId": alloc.node_id or "",
+                    "role": getattr(task, "workerRole", None) or "",
+                    "capabilityId": task.capabilityId,
+                    "lifecycle": "ACTIVE", "isolated": True,
+                    **({"sessionId": correlation["session_id"]}
+                       if correlation.get("session_id") else {}),
+                }
+                th = threading.Thread(target=_run_one, args=(task, wt_path))
+                th.start()
+                threads.append(th)
+            for th in threads:
+                th.join()
+
+            # A failed/denied/parked/cancelled leg stops the run before
+            # anything downstream is dispatched; dependent tasks are NOT
+            # marked successful — they were never dispatched at all.
+            bad = [o for o in outcomes.values()
+                   if o.state in ("failed", "denied", "timed-out",
+                                  "cancelled", "awaiting-approval",
+                                  "blocked")]
+            if bad:
+                first = bad[0]
+                result.stopped = True
+                result.stop_reason = f"{first.taskId}: {first.detail}"
+                if first.state == "awaiting-approval":
+                    result.approval_id = first.approvalId
+                elif first.state == "denied":
+                    result.denied = True
+                elif first.state == "timed-out":
+                    result.timed_out = True
+                elif first.state == "cancelled":
+                    result.cancelled = True
+                if first.state == "awaiting-approval" and result.run_id:
+                    result.parked_runs[first.taskId] = result.run_id
+                break
+
+            # Integration: collect each worker's change set, detect
+            # overlaps, apply non-conflicting changes into one worktree.
+            changes = {tid: manager.changed_files(tid) for tid in worktrees}
+            conflicts = conflict_scan(changes)
+            report["conflicts"] = conflicts
+            report["changes"] = changes
+            if conflicts:
+                # Stop automatic integration; surface the conflict. The
+                # worktrees are LEFT in place for explicit resolution and
+                # recorded in the report.
+                result.stopped = True
+                result.stop_reason = (
+                    "parallel tasks modified the same files: "
+                    + "; ".join(
+                        f"{c['path']} ({', '.join(c['tasks'])})"
+                        for c in conflicts[:5])
+                    + ". Nothing was integrated automatically.")
+                report["isolation"] = {
+                    "worktrees": worktrees, "branches": branches,
+                    "preservedForResolution": True,
+                }
+                break
+            integration = manager.integrate(list(worktrees.keys()))
+            report["integration"] = integration
+            report["isolation"] = {
+                "worktrees": worktrees, "branches": branches,
+                "integrationPath": integration["integrationPath"],
+            }
+            # The combined result REPLACES per-task cwd evidence: the
+            # verifier and the answer must see the integrated tree, and
+            # the per-task evidence keeps pointing at its own worktree
+            # through the isolation record.
+            for tid, paths in integration["applied"].items():
+                ev = result.verified_outputs.get(tid)
+                if ev is not None:
+                    ev["changed_paths"] = list(paths)
+                    ev["integration_path"] = integration["integrationPath"]
+
+        if manager is not None:
+            # Cleanup only when the report preserved nothing for manual
+            # resolution; a conflict run keeps its worktrees for the human.
+            if not report.get("isolation", {}) or \
+                    not report["isolation"].get("preservedForResolution"):
+                manager.cleanup()
+        report["intervals"] = [
+            {"taskId": i.task_id, "nodeId": i.node_id,
+             "startedAt": i.started_at, "endedAt": i.ended_at}
+            for i in intervals]
+        report["overlapped"] = overlapping(intervals)
+        return result, report
 
     # ── Phase G worker requirement matching ────────────────────────────
     def _present_nodes(self) -> list[dict]:

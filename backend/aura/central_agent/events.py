@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import queue
+import threading
 from collections.abc import Callable
 
 from ..contracts import AgentEvent
@@ -35,25 +36,37 @@ class EventBus:
         self._tail: list[AgentEvent] = []
         self._tail_limit = tail_limit
         self._seq = 0
+        # Parallel legs emit from worker threads: seq assignment and the
+        # tail append must be atomic or the SSE replay window can skip
+        # or duplicate frames under concurrency.
+        self._lock = threading.Lock()
 
     def subscribe(self, fn: Subscriber) -> Callable[[], None]:
-        self._subscribers.append(fn)
-        return lambda: self._subscribers.remove(fn) if fn in self._subscribers else None
+        with self._lock:
+            self._subscribers.append(fn)
+        return lambda: self._unsubscribe(fn)
+
+    def _unsubscribe(self, fn: Subscriber) -> None:
+        with self._lock:
+            if fn in self._subscribers:
+                self._subscribers.remove(fn)
 
     def subscriber_count(self) -> int:
         """Live subscriber count — lets tests prove disconnect cleanup."""
         return len(self._subscribers)
 
     def emit(self, event: AgentEvent) -> None:
-        self._seq += 1
-        try:
-            event = event.model_copy(update={"seq": self._seq})
-        except Exception:
-            pass  # a foreign-shaped event still fans out; seq is best-effort
-        self._tail.append(event)
-        if len(self._tail) > self._tail_limit:
-            del self._tail[: len(self._tail) - self._tail_limit]
-        for fn in list(self._subscribers):
+        with self._lock:
+            self._seq += 1
+            try:
+                event = event.model_copy(update={"seq": self._seq})
+            except Exception:
+                pass  # a foreign-shaped event still fans out; seq is best-effort
+            self._tail.append(event)
+            if len(self._tail) > self._tail_limit:
+                del self._tail[: len(self._tail) - self._tail_limit]
+            subscribers = list(self._subscribers)
+        for fn in subscribers:
             try:
                 fn(event)
             except Exception:
