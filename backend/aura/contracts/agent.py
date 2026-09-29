@@ -60,6 +60,12 @@ AgentEventType = Literal[
     # "stopping" honestly instead of claiming a stop it has not seen.
     "run.cancellation-requested", "run.stopping", "run.cancelled",
     "worker.terminated", "approval.invalidated",
+    # Milestone 1 multi-worker scheduling: the plan's dependency levels,
+    # genuinely concurrent worker dispatch (with real overlap evidence),
+    # and integration of the isolated change sets — or the conflict that
+    # stopped it. Observation only; never authority.
+    "scheduling.planned", "scheduling.levels", "workers.parallel",
+    "integration.completed", "integration.conflict",
 ]
 
 

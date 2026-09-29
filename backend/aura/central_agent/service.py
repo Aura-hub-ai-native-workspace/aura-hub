@@ -555,13 +555,36 @@ class CentralAgent:
 
         self._emit("workflow.validated", sid, planId=plan.planId)
 
-        # 6. execute — through the Fabric; nothing here decides authority
+        # 6. execute — through the Fabric; nothing here decides authority.
+        # Milestone 1: the level-parallel scheduler dispatches independent
+        # tasks of a level on distinct verified workers in isolated
+        # worktrees; every level that cannot run concurrently (single
+        # task, no project, one worker available) takes the original
+        # sequential path inside the same call. Same contracts, same
+        # approvals, same verification — no second engine.
         self._emit("execution.started", sid, planId=plan.planId)
-        outcome: ExecutionOutcome = self.controller.execute(
+        self._emit("scheduling.planned", sid,
+                   **self.controller.scheduling_shape(plan))
+        outcome, parallel_report = self.controller.execute_parallel(
             plan, session.projectId, compiled_workflow=compiled,
             project_cwd=getattr(session, "projectPath", None),
             cancel_token=self.runs.begin(sid),
             correlation=self._leg_correlation(session))
+        if parallel_report.get("levels"):
+            self._emit("scheduling.levels", sid, levels=parallel_report["levels"])
+        if parallel_report.get("parallel"):
+            self._emit("workers.parallel", sid,
+                       tasks=[i.get("taskId") for i in parallel_report.get("intervals", [])],
+                       workers=[i.get("nodeId") for i in parallel_report.get("intervals", [])],
+                       overlapped=parallel_report.get("overlapped", False))
+        if parallel_report.get("conflicts"):
+            self._emit("integration.conflict", sid,
+                       conflicts=parallel_report["conflicts"][:10])
+        elif parallel_report.get("integration"):
+            self._emit("integration.completed", sid,
+                       applied=sum(len(v) for v in
+                                   parallel_report["integration"].get("applied", {}).values()),
+                       integrationPath=parallel_report["integration"].get("integrationPath", ""))
         for o in outcome.outcomes:
             self._emit("invocation.observed", sid, taskId=o.taskId,
                        state=o.state, verified=o.verified, detail=o.detail[:200])

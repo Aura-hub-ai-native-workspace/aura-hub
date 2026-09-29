@@ -29,6 +29,7 @@ from .orchestration import (
     overlapping,
     parallel_eligible,
     plan_levels,
+    scheduling_shape,
 )
 from .planner import topo_order
 
@@ -304,6 +305,18 @@ class ExecutionController:
         return datetime.now(UTC).isoformat(timespec="milliseconds").replace(
             "+00:00", "Z")
 
+    def scheduling_shape(self, plan: TaskPlan) -> dict:
+        """The scheduling view of a plan for the event bus: levels and
+        parallel candidates, computed by the orchestration scheduler.
+        Raises nothing — a malformed DAG is reported as a failed shape
+        and the run itself will fail closed in execute_parallel."""
+        from .orchestration import SchedulingError
+        try:
+            return scheduling_shape(plan.tasks)
+        except SchedulingError as exc:
+            return {"levels": [], "parallelCandidates": 0,
+                    "tasks": len(plan.tasks), "error": str(exc)[:200]}
+
     def _read_registry_for_allocation(
         self, capability_id: str,
     ) -> tuple[list[dict], dict[str, list[str]], dict[str, bool]]:
@@ -336,6 +349,7 @@ class ExecutionController:
         self,
         plan: TaskPlan,
         project_id: str | None,
+        compiled_workflow: dict | None = None,
         cancel_token: Any | None = None,
         cancel_check: Any | None = None,
         resume_grants: dict[str, tuple[str, str | None]] | None = None,
@@ -413,11 +427,32 @@ class ExecutionController:
                             (resume_grants.get(t.id) for t in level))
             )
             if not go_parallel:
-                # Sequential fallback for this level — the original path.
-                for task in topo_order(level):
+                # Sequential fallback for this level — the original path,
+                # including workflow-run tasks routed through the engine.
+                # A level is already dependency-ordered by construction
+                # (its tasks depend only on EARLIER levels), so the level
+                # list itself is the order — topo_order on a subset would
+                # see dependency ids the subset does not contain and
+                # deadlock against work that already ran.
+                for task in level:
                     grant = resume_grants.get(task.id)
+                    if task.route == "workflow-run":
+                        workflow_grant = resume_grants.get(task.id)
+                        if workflow_grant:
+                            _, parked_rid = workflow_grant
+                            self._resume_workflow(task, parked_rid, result)
+                        else:
+                            self._run_workflow(task, plan, project_id, result,
+                                               project_cwd=project_cwd)
+                        last = result.outcomes[-1] if result.outcomes else None
+                        if last is not None and last.state in (
+                                "failed", "blocked"):
+                            result.stopped = True
+                            result.stop_reason = f"{task.id}: {last.detail}"
+                            break
+                        continue
                     self._invoke_single(
-                        task, project_id, None, result,
+                        task, project_id, compiled_workflow, result,
                         approval_id=grant[0] if grant else None,
                         project_cwd=project_cwd,
                         cancel_token=cancel_token,
@@ -460,10 +495,11 @@ class ExecutionController:
                     report["isolationError"] = str(exc)[:200]
             if len(worktrees) < 2:
                 # Isolation unavailable: sequential fallback, exactly as
-                # if the second worker had not been there.
-                for task in topo_order(level):
+                # if the second worker had not been there. Same reasoning:
+                # the level list is already the topological order.
+                for task in level:
                     self._invoke_single(
-                        task, project_id, None, result,
+                        task, project_id, compiled_workflow, result,
                         project_cwd=project_cwd,
                         cancel_token=cancel_token,
                         correlation=correlation)
@@ -478,7 +514,7 @@ class ExecutionController:
                 try:
                     leg = ExecutionOutcome()
                     self._invoke_single(
-                        task, project_id, None, leg,
+                        task, project_id, compiled_workflow, leg,
                         project_cwd=wt_path,
                         cancel_token=cancel_token,
                         correlation=correlation)
