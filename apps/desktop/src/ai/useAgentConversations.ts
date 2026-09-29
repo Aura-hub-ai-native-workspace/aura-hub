@@ -107,6 +107,14 @@ export interface AgentMsgMeta {
   cancelled: boolean;
   /** Human names of what this turn actually used. Record, not claim. */
   tools: string[];
+  /**
+   * The run's own event frames, kept (capped) so a REOPENED thread can
+   * reconstruct the execution timeline exactly as it was drawn live —
+   * the same frames `buildV2Timeline` folds. Capped at MAX_PERSISTED_FRAMES
+   * on persist; the live `frames` field of the store remains the uncapped
+   * source while the turn is running.
+   */
+  frames?: AgentEventFrame[];
 }
 
 export interface AgentChatMessage {
@@ -196,6 +204,10 @@ export interface WorkspaceHandoff {
 
 let seq = 0;
 const nid = () => `am${Date.now().toString(36)}${seq++}`;
+
+/** The cap on persisted frames. The timeline needs plan + lifecycle +
+ *  actions + verification; 400 covers it without unbounded threads. */
+const MAX_PERSISTED_FRAMES = 400;
 
 /** The persistence seam. One implementation per scope, same record shape. */
 interface ScopePersistence {
@@ -350,6 +362,50 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
       });
 
     /**
+     * The frame handler shared by a fresh drive and an approval resume.
+     * A resumed leg is a live leg: the worker's frames after the decision
+     * must stream into the same timeline (and the same persisted record)
+     * as a fresh run's — without it, everything after "Approved" was
+     * invisible until the result landed. Session identity is read from
+     * the flight, so a mid-drive recovery to a fresh session keeps
+     * landing frames in the same turn.
+     */
+    function runFrameHandler(flight: Inflight, assistantId: string, alive: () => boolean) {
+      return (frame: AgentEventFrame) => {
+        if (!alive() || frame.sessionId !== flight.sessionId) return;
+        // Retain the frame itself: the timeline's plan/handoffs/actions
+        // views are folds over this same list (shared pure derivations),
+        // so the right panel reads the run the transcript is streaming.
+        set({ frames: get().frames.length > 400 ? get().frames : [...get().frames, frame] });
+        if (frame.type === 'answer.token') {
+          const text = typeof frame.payload.text === 'string' ? frame.payload.text : '';
+          if (text) appendTokens(assistantId, text);
+          return;
+        }
+        if (frame.type === 'run.cancelled') {
+          flight.settled = true;
+          patchMsg(assistantId, (m) => ({
+            ...m, status: 'cancelled',
+            agent: m.agent ? { ...m.agent, outcome: 'cancelled', cancelled: true } : m.agent,
+          }));
+          return;
+        }
+        const label = labelForEvent(frame.type);
+        pushEvent(assistantId, frame.type, label);
+        absorbActivity(frame);
+      };
+    }
+
+    function subscribeRun(
+      flight: Inflight,
+      sessionId: string,
+      assistantId: string,
+      alive: () => boolean,
+    ) {
+      return centralAgentClient.events(sessionId, runFrameHandler(flight, assistantId, alive));
+    }
+
+    /**
      * Folds one frame into the live activity model.
      *
      * Reads only fields the backend actually sends. A worker appears
@@ -400,7 +456,22 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
         await persistence.append(convId, {
           role: 'assistant',
           content: m.content,
-          meta: m.agent ? { agent: { ...m.agent, events: m.agent.events.slice(-100), progress: m.agent.progress.slice(-20), plan: m.agent.plan ? { planId: m.agent.plan.planId, steps: m.agent.plan.steps.length } : null } } : undefined,
+          meta: m.agent
+            ? {
+              agent: {
+                ...m.agent,
+                events: m.agent.events.slice(-100),
+                progress: m.agent.progress.slice(-20),
+                plan: m.agent.plan ? { planId: m.agent.plan.planId, steps: m.agent.plan.steps.length } : null,
+                // The run's own frames, so reopening the thread can
+                // rebuild the execution timeline — not just the answer.
+                // The live store record is canonical while a leg is in
+                // flight; the message-carried record covers restores.
+                frames: (get().frames.length > 0 ? get().frames : m.agent.frames ?? [])
+                  .slice(-MAX_PERSISTED_FRAMES),
+              },
+            }
+            : undefined,
           error: m.status === 'error',
         });
         void get().reloadList();
@@ -504,29 +575,7 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
 
       const alive = () => inflight === flight && !flight.settled && epoch === myEpoch;
 
-      flight.unsubscribe = centralAgentClient.events(sessionId, (frame: AgentEventFrame) => {
-        if (!alive() || frame.sessionId !== sessionId) return;
-        // Retain the frame itself: the timeline's plan/handoffs/actions
-        // views are folds over this same list (shared pure derivations),
-        // so the right panel reads the run the transcript is streaming.
-        set({ frames: get().frames.length > 400 ? get().frames : [...get().frames, frame] });
-        if (frame.type === 'answer.token') {
-          const text = typeof frame.payload.text === 'string' ? frame.payload.text : '';
-          if (text) appendTokens(assistantId, text);
-          return;
-        }
-        if (frame.type === 'run.cancelled') {
-          flight.settled = true;
-          patchMsg(assistantId, (m) => ({
-            ...m, status: 'cancelled',
-            agent: m.agent ? { ...m.agent, outcome: 'cancelled', cancelled: true } : m.agent,
-          }));
-          return;
-        }
-        const label = labelForEvent(frame.type);
-        pushEvent(assistantId, frame.type, label);
-        absorbActivity(frame);
-      });
+      flight.unsubscribe = subscribeRun(flight, sessionId, assistantId, alive);
 
       const finish = () => {
         if (inflight === flight) {
@@ -541,20 +590,57 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
       };
 
       try {
-        const res = followUp
-          ? await centralAgentClient.message(sessionId, instruction, {
-            projectId: projectId ?? undefined,
-            projectPath: projectPath ?? undefined,
-            editorContext, signal: controller.signal,
-          }).then((r) => ({ result: r.result, sessionId, requestId: r.requestId ?? null }))
-          : await centralAgentClient.submit(instruction, {
+        let res: Awaited<ReturnType<typeof centralAgentClient.submit>>;
+        if (!followUp) {
+          res = await centralAgentClient.submit(instruction, {
             projectId: projectId ?? undefined,
             projectPath: projectPath ?? undefined,
             editorContext, sessionId, signal: controller.signal,
-          }).then((r) => ({ ...r, requestId: r.requestId ?? null }));
+          });
+        } else {
+          try {
+            res = {
+              ...(await centralAgentClient.message(sessionId, instruction, {
+                projectId: projectId ?? undefined,
+                projectPath: projectPath ?? undefined,
+                editorContext, signal: controller.signal,
+              })),
+              sessionId,
+              requestId: null,
+            };
+          } catch (e) {
+            /* A follow-up names a session the thread REMEMBERS — but a
+               service restart or AURA_HOME change can orphan it. When the
+               backend says there is no such session, fall back ONCE to a
+               fresh one: a new plan and new approvals, so nothing that
+               was granted for the old run is spent on it. An unknown
+               failure still surfaces; only the backend's own "no such
+               session" verdict triggers the retry. */
+            const msg = (e as Error)?.message ?? String(e);
+            if (!/no such session/i.test(msg)) throw e;
+            patchMsg(assistantId, (m) => (m.agent
+              ? { ...m, agent: { ...m.agent, sessionId: null } }
+              : m));
+            const fresh = newClientSessionId();
+            sessionId = fresh;
+            flight.sessionId = fresh;
+            patchMsg(assistantId, (m) => (m.agent
+              ? { ...m, agent: { ...m.agent, sessionId: fresh } }
+              : m));
+            // The old session's stream is dead with it: re-subscribe so
+            // the fresh run's frames keep landing in this turn.
+            flight.unsubscribe?.();
+            flight.unsubscribe = centralAgentClient.events(fresh, runFrameHandler(flight, assistantId, alive));
+            res = await centralAgentClient.submit(instruction, {
+              projectId: projectId ?? undefined,
+              projectPath: projectPath ?? undefined,
+              editorContext, sessionId: fresh, signal: controller.signal,
+            });
+          }
+        }
         if (!alive()) return; // cancelled, superseded, or scope switched mid-flight
         const finalSid = res.sessionId ?? sessionId;
-        patchMsg(assistantId, (m) => (m.agent ? { ...m, agent: { ...m.agent, sessionId: finalSid, requestId: res.requestId } } : m));
+        patchMsg(assistantId, (m) => (m.agent ? { ...m, agent: { ...m.agent, sessionId: finalSid, requestId: res.requestId ?? null } } : m));
         await adoptResult(convId, assistantId, res.result, finalSid);
       } catch (e) {
         if (!alive()) return;
@@ -619,6 +705,12 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
             needsInput: agent.needsInput ?? false,
             cancelled: agent.cancelled ?? false,
             tools: agent.tools ?? [],
+            // The persisted run record, so `buildV2Timeline` can fold the
+            // SAME timeline a live run drew. Restored verbatim — never
+            // re-derived, re-ordered, or upgraded.
+            frames: Array.isArray(agent.frames)
+              ? (agent.frames as AgentEventFrame[]).slice(-MAX_PERSISTED_FRAMES)
+              : [],
           }
           : undefined;
         const status = m.error ? 'error' as const : full?.cancelled ? 'cancelled' as const : 'done' as const;
@@ -821,6 +913,12 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
         const myEpoch = epoch;
         const alive = () => inflight === flight && !flight.settled && epoch === myEpoch;
         set({ phase: 'working' });
+        // A resumed leg continues the run it belongs to: seed the store's
+        // frame record with the message's persisted frames (pre-park
+        // plan, delegation, approval) so the timeline and the next
+        // persist cover the WHOLE run, not just the post-decision leg.
+        const seededFrames = msg?.agent?.frames ?? [];
+        if (seededFrames.length > get().frames.length) set({ frames: seededFrames });
         const finish = () => {
           if (inflight === flight) {
             flight.settled = true;
@@ -830,6 +928,11 @@ function createAgentConversationStore(scopeType: AgentScopeType) {
         };
         pushEvent(messageId, 'approval.required', granted ? 'Approval granted — resuming' : 'Approval denied');
         patchMsg(messageId, (m) => ({ ...m, status: 'streaming' }));
+        // The resumed leg streams like a fresh run: frames from the
+        // post-decision execution land in the same timeline fold (and
+        // the same persisted record). Pre-park frames are kept, so the
+        // plan and the approval stay in view.
+        flight.unsubscribe = subscribeRun(flight, sessionId, messageId, alive);
         try {
           const { result, approval } = await centralAgentClient.approve(sessionId, approvalId, granted, reason);
           if (!alive()) return null;

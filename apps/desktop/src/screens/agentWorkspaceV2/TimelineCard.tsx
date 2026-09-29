@@ -73,6 +73,11 @@ function Section({ title, icon, children, testId }: {
 
 export function V2TimelineCard({ card }: { card: V2Card }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  /* Long worker output (logs, diffs, stack traces) is progressively
+     disclosed: clamped by default, full text on demand — so one verbose
+     task cannot push the rest of the run out of the panel. */
+  const [detailOpen, setDetailOpen] = useState(false);
+  const detailLong = (card.detail?.length ?? 0) > 480;
   const actor = ACTOR[card.actor];
   const time = clock(card.at);
   const hasFacts = card.facts.filter(Boolean).length > 0;
@@ -125,19 +130,38 @@ export function V2TimelineCard({ card }: { card: V2Card }) {
         <V2StatusPill status={card.status} />
       </div>
 
-      {/* Description / failure detail */}
+      {/* Description / failure detail — clamped when long, full on demand */}
       {card.detail && (
-        <p
+        <div
           className={cn(
-            'mt-2 whitespace-pre-wrap rounded-lg px-3 py-2 text-[12px] leading-relaxed',
+            'mt-2 rounded-lg px-3 py-2',
             card.status === 'failed'
-              ? 'border border-[rgba(255,93,122,0.3)] bg-[rgba(255,93,122,0.08)] text-ws-bad'
-              : 'text-text-subtle',
+              ? 'border border-[rgba(255,93,122,0.3)] bg-[rgba(255,93,122,0.08)]'
+              : '',
           )}
           data-testid="v2-card-detail"
         >
-          {card.detail}
-        </p>
+          <p
+            className={cn(
+              'whitespace-pre-wrap text-[12px] leading-relaxed',
+              card.status === 'failed' ? 'text-ws-bad' : 'text-text-subtle',
+              detailLong && !detailOpen && 'line-clamp-6',
+            )}
+          >
+            {card.detail}
+          </p>
+          {detailLong && (
+            <button
+              type="button"
+              onClick={() => setDetailOpen((v) => !v)}
+              aria-expanded={detailOpen}
+              data-testid="v2-card-detail-toggle"
+              className="neon-focus mt-1 inline-flex items-center gap-1 rounded text-[10.5px] font-semibold uppercase tracking-wide text-text-subtle transition-colors hover:text-text"
+            >
+              {detailOpen ? 'Show less' : 'Show full output'}
+            </button>
+          )}
+        </div>
       )}
 
       {/* Agent-to-agent exchange (spec §6) */}

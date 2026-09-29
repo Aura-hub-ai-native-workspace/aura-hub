@@ -50,6 +50,35 @@ class TestHeuristic:
         assert intent.needsClarification is False
 
 
+class TestDelegateScope:
+    """Scope extraction from user text — the words become a task
+    contract, so a wrong entry is a wrong boundary the governance
+    layer will then enforce literally (a real run parked exactly this
+    way: the sentence's trailing period minted the scope entry
+    `src/slugify.test.js.`, and every write to the real file was
+    denied as out-of-scope until the correction budget ran out)."""
+
+    def test_trailing_sentence_punctuation_is_not_scope(self):
+        from aura.central_agent.intent import _delegate_scope
+        scope = _delegate_scope(
+            "Implement slugify in src/slugify.js. Then add a test in "
+            "src/slugify.test.js. Delegate the coding to a worker.")
+        assert "src/slugify.test.js" in scope
+        for entry in scope:
+            assert not entry.endswith("."), entry
+
+    def test_version_numbers_keep_their_dots(self):
+        from aura.central_agent.intent import _delegate_scope
+        scope = _delegate_scope(
+            "update the dependency pinned in src/config/file.v2.json "
+            "inside src/config")
+        assert "src/config/file.v2.json" in scope
+
+    def test_unmentioned_files_stay_out_of_scope(self):
+        from aura.central_agent.intent import _delegate_scope
+        assert _delegate_scope("refactor the parser module") == []
+
+
 class TestModelMode:
     def test_scripted_model_output_validated(self):
         port = ScriptedModelPort([("deploy", {

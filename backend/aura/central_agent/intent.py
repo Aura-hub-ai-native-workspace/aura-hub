@@ -593,6 +593,13 @@ def _delegate_scope(message: str) -> list[str]:
     out: list[str] = []
     for raw in _SCOPE_RE.findall(message):
         candidate = raw.strip().strip("/")
+        # Sentence punctuation is not path material: "...in
+        # src/slugify.test.js. Delegate..." must not mint the scope entry
+        # `src/slugify.test.js.` — a contract entry no real file matches,
+        # which turns every write to the intended file into a hard,
+        # run-parking boundary violation. Interior dots stay (versions,
+        # extensions); only trailing sentence marks are trimmed.
+        candidate = candidate.rstrip(".,;:!?'\"\u2019\u201d`")
         if not candidate or candidate.startswith(".") or ".." in candidate:
             continue
         # A bare English word is not a path. Requiring either a

@@ -55,6 +55,12 @@ import { IdentityStrip, AttachPanel } from './agentWorkspaceV2/LeftPanel';
 import { OrchestrationStage } from './workspace/neon/OrchestrationStage';
 import { V2TimelinePanel } from './agentWorkspaceV2/TimelinePanel';
 import { buildV2Timeline } from './agentWorkspaceV2/timelineModel';
+import {
+  deriveActions,
+  deriveHandoffs,
+  deriveObjective,
+  derivePlan,
+} from './agentWorkspaceV2/runViews';
 import { useAgentWorkspaceV2 } from './agentWorkspaceV2/useAgentWorkspaceV2';
 
 type RightTab = 'execution' | 'capabilities';
@@ -297,9 +303,25 @@ export function WorkspaceScreen() {
      frames establish. One pipeline, one source of truth. */
   const frames = useWorkspaceConversations((st) => st.frames);
   const timeline = useMemo(() => {
-    const views = conv.runViews();
     const lastAssistant = [...conv.messages].reverse().find((m) => m.role === 'assistant');
     const meta = lastAssistant?.agent;
+    /* The run record: while a leg is in flight, the store's live frames
+       (a resumed approval seeded them with the pre-park record, so they
+       are the superset); otherwise the frames PERSISTED with the last
+       assistant message — so a reopened thread folds the same timeline
+       it drew live. Rendered verbatim, never re-derived. */
+    const liveFrames = conv.phase === 'working' && frames.length > 0;
+    const runFrames = liveFrames
+      ? frames
+      : meta?.frames && meta.frames.length > 0
+        ? meta.frames
+        : frames;
+    const views = {
+      plan: derivePlan(runFrames),
+      objective: deriveObjective(runFrames),
+      handoffs: deriveHandoffs(runFrames),
+      actions: deriveActions(runFrames),
+    };
     let result: AgentResult | null = null;
     if (meta) {
       result = {
@@ -324,19 +346,34 @@ export function WorkspaceScreen() {
       handoffs: views.handoffs,
       actions: views.actions,
       plan: views.plan,
-      events: frames,
+      events: runFrames,
       result,
       sessionId: meta?.sessionId ?? null,
       busy: conv.phase === 'working',
     });
   }, [conv, frames]);
 
-  /* Live worker highlight for the capability tab, from the frames the
-     conversation already receives. No second subscription. */
-  const workerActivity = useMemo(
-    () => new Map(Object.entries(conv.activity.workers)),
-    [conv.activity.workers],
-  );
+  /* Live worker highlight for the capability tab and the stage grid,
+     from the frames the conversation already receives. No second
+     subscription. The stage grid is keyed by ROSTER id while the run
+     reports its worker by run-time id or display name, so the two are
+     joined by identity — the lifecycle word shown stays the backend's
+     own, and a worker the run never named stays unlit. */
+  const workerActivity = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [nodeId, word] of Object.entries(conv.activity.workers)) {
+      map.set(nodeId, word);
+      const roster = workers.find(
+        (w) =>
+          w.id === nodeId ||
+          w.name === nodeId ||
+          w.id.toLowerCase() === nodeId.toLowerCase() ||
+          w.name.toLowerCase() === nodeId.toLowerCase(),
+      );
+      if (roster) map.set(roster.id, word);
+    }
+    return map;
+  }, [conv.activity.workers, workers]);
 
   const agentPhase = conv.activity.phase
     ?? (conv.phase === 'working' ? 'Working' : 'Ready when you are');
