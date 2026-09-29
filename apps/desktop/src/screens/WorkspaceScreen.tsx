@@ -52,6 +52,7 @@ import { AuraEverything } from '../environment/AuraEverything';
 import { AddWorkerPanel } from '../workspace/AddWorkerPanel';
 
 import { IdentityStrip, AttachPanel } from './agentWorkspaceV2/LeftPanel';
+import { OrchestrationStage } from './workspace/neon/OrchestrationStage';
 import { V2TimelinePanel } from './agentWorkspaceV2/TimelinePanel';
 import { buildV2Timeline } from './agentWorkspaceV2/timelineModel';
 import { useAgentWorkspaceV2 } from './agentWorkspaceV2/useAgentWorkspaceV2';
@@ -61,6 +62,27 @@ type RightTab = 'execution' | 'capabilities';
 export function WorkspaceScreen() {
   const [rightTab, setRightTab] = useState<RightTab>('execution');
   const [adding, setAdding] = useState(false);
+
+  /* Draggable divider between the conversation and the orchestration
+     panel. A percentage, clamped so neither pane can starve the other:
+     the conversation never drops below its 300px grid floor, and the
+     execution panel keeps enough width to stay readable. Persists for
+     the session (state, not storage) — the default 30/70 is the design,
+     the drag is a personal adjustment. */
+  const [leftPct, setLeftPct] = useState(30);
+  const splitRef = useRef<HTMLDivElement>(null);
+  const dividerDrag = useRef<{ pointerId: number } | null>(null);
+  const clampPct = useCallback((pct: number) => Math.min(42, Math.max(20, pct)), []);
+  const onDividerPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!dividerDrag.current || !splitRef.current) return;
+      const rect = splitRef.current.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      setLeftPct(clampPct((px / rect.width) * 100));
+    },
+    [clampPct],
+  );
+  const endDividerDrag = useCallback(() => { dividerDrag.current = null; }, []);
   const canvasRef = useRef<HTMLDivElement>(null);
 
   /* The working project — the same source the v2 surface reads, so
@@ -330,7 +352,12 @@ export function WorkspaceScreen() {
           with its own internal scroll (min-h-0 + overflow-hidden here,
           overflow-y-auto inside each pane). */}
       <div
-        className="relative mx-auto grid min-h-0 w-full max-w-[1760px] flex-1 grid-cols-[minmax(300px,30%)_minmax(0,1fr)] gap-3 overflow-hidden p-3 lg:gap-4 lg:p-4"
+        ref={splitRef}
+        onPointerMove={onDividerPointerMove}
+        onPointerUp={endDividerDrag}
+        onPointerCancel={endDividerDrag}
+        className="relative mx-auto grid min-h-0 w-full max-w-[1760px] flex-1 grid-cols-[minmax(300px,calc(var(--ws-left,30%)-24px))_24px_minmax(420px,1fr)] gap-0 overflow-hidden p-3 lg:p-4"
+        style={{ '--ws-left': `${leftPct}%` } as React.CSSProperties}
         data-testid="workspace-split"
       >
         {/* LEFT — the conversation: history, streamed responses, the
@@ -363,6 +390,10 @@ export function WorkspaceScreen() {
             onDecide={(id, granted, reason) => void decide(id, granted, reason)}
             projectName={projectName}
             scope="workspace"
+            conversations={conv.conversations}
+            activeId={conv.activeId}
+            onOpenConversation={(cid) => void conv.select(cid)}
+            onNewConversation={() => void conv.newConversation()}
             onPickFiles={(files) => { if (files && files.length > 0) void s.attachments.add(files); }}
             webSearch={{
               enabled: s.webSearchEnabled,
@@ -377,12 +408,58 @@ export function WorkspaceScreen() {
           />
         </div>
 
+        {/* The draggable divider. Pointer-events live on the strip; the
+            grid columns above do the actual sizing. Keyboard users get
+            the same control with Left/Right arrows. */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize conversation and orchestration panels"
+          aria-valuenow={Math.round(leftPct)}
+          aria-valuemin={20}
+          aria-valuemax={42}
+          tabIndex={0}
+          data-testid="ws-divider"
+          onPointerDown={(e) => {
+            dividerDrag.current = { pointerId: e.pointerId };
+            (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft') { e.preventDefault(); setLeftPct((p) => clampPct(p - 2)); }
+            if (e.key === 'ArrowRight') { e.preventDefault(); setLeftPct((p) => clampPct(p + 2)); }
+          }}
+          className="neon-focus group relative z-10 -mx-1 flex w-6 cursor-col-resize items-center justify-center outline-none"
+        >
+          <span
+            aria-hidden
+            className="h-10 w-1 rounded-full bg-[rgba(125,146,255,0.22)] transition-colors group-hover:bg-[rgba(32,211,255,0.55)]"
+          />
+        </div>
+
         {/* RIGHT — agent execution. No user composer here. */}
         <div
           className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-[rgba(125,146,255,0.28)] bg-ws-panel shadow-card"
           data-testid="ws-right-panel"
           aria-label="AURA agent execution"
         >
+          {/* The v3 stage: brand + tagline, the Central Agent hero and
+              the truthful worker grid — the standing identity of this
+              panel, above whichever tab is open. */}
+          <OrchestrationStage
+            connectedProviders={s.connectedProviders}
+            availableTools={s.availableTools}
+            agentPhase={agentPhase}
+            agentBusy={conv.phase === 'working'}
+            agentUp={conv.agentUp}
+            modelName={s.modelName}
+            projectName={projectName}
+            projectPath={projectPath}
+            workerSlots={workerSlots}
+            workerActivity={workerActivity}
+            scanning={scanning}
+            onManageWorker={(index) => openWorkerSurface(index)}
+          />
+
           {/* Web-research state — the sole toggle lives in the left
               composer; this bar only reports the state. */}
           <div

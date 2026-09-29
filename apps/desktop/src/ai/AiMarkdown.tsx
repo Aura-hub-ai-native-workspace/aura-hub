@@ -45,6 +45,35 @@ export function AiMarkdown({ source }: { source: string }) {
       out.push(<CodeBlock key={key++} code={buf.join('\n')} lang={lang} />);
       continue;
     }
+    /* Tables: a header row, the |---| separator, then body rows. Rendered
+       as a real <table> so tabular answers read as tables, not pipe soup.
+       Cells go through the same inline parser as the rest of the text. */
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|(\s*:?-+:?\s*\|)+\s*$/.test(lines[i + 1])) {
+      const splitRow = (row: string) => row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+      const head = splitRow(line);
+      i += 2;
+      const body: string[][] = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) body.push(splitRow(lines[i++]));
+      out.push(
+        <div key={key++} className="my-3 overflow-x-auto rounded-xl border border-line">
+          <table className="w-full border-collapse text-[12.5px]">
+            <thead>
+              <tr className="border-b border-line bg-surface-active/40">
+                {head.map((h, j) => <th key={j} className="px-3 py-1.5 text-left font-semibold text-text-muted">{inline(h)}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {body.map((row, r) => (
+                <tr key={r} className="border-b border-line/60 last:border-b-0">
+                  {row.map((cell, c) => <td key={c} className="px-3 py-1.5 align-top text-text">{inline(cell)}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
     if (line.startsWith('### ')) out.push(<h3 key={key++} className="mt-4 mb-1.5 text-[14px] font-semibold text-text">{inline(line.slice(4))}</h3>);
     else if (line.startsWith('## ')) out.push(<h2 key={key++} className="mt-5 mb-2 text-[15.5px] font-semibold text-text">{inline(line.slice(3))}</h2>);
     else if (line.startsWith('# ')) out.push(<h1 key={key++} className="mb-2 text-[18px] font-semibold tracking-[-0.01em] text-text">{inline(line.slice(2))}</h1>);

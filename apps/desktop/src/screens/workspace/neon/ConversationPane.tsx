@@ -11,6 +11,7 @@ import {
 import type { AgentActivity, AgentChatMessage } from '../../../ai/useAgentConversations';
 import { ApprovalGate } from '../../missions/ApprovalGate';
 import type { ApprovalRequest } from '../../../ai/fabricClient';
+import type { ConversationSummary } from '../../../ai/aiClient';
 
 /**
  * ConversationPane — the workspace IS the conversation.
@@ -127,7 +128,9 @@ function MessageRow({
   if (message.role === 'user') {
     return (
       <div className="flex justify-end" data-testid="chat-message" data-role="user">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-[rgba(122,92,255,0.4)] bg-[rgba(122,92,255,0.16)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text">
+        {/* The user's words on the quiet violet glass — the strongest
+            surface in the pane, because it is the strongest voice. */}
+        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-[rgba(122,92,255,0.4)] bg-gradient-to-br from-[rgba(122,92,255,0.18)] to-[rgba(77,124,255,0.12)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text shadow-card break-words">
           {message.content}
         </div>
       </div>
@@ -161,7 +164,11 @@ function MessageRow({
                 <AiMarkdown source={message.content} />
               </div>
             ) : streaming ? (
-              <span className="inline-block h-4 w-2 animate-pulse rounded-sm bg-neon-cyan align-middle" />
+              <span className="inline-flex items-center gap-1" role="status" aria-label="AURA is responding">
+                <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-neon-cyan aura-breathe" />
+                <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-neon-violet aura-breathe [animation-delay:0.3s]" />
+                <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-neon-blue aura-breathe [animation-delay:0.6s]" />
+              </span>
             ) : null}
 
             {note && (
@@ -218,6 +225,11 @@ export function ConversationPane({
   scope,
   onPickFiles,
   webSearch,
+  /** Saved threads for this scope, newest first — the header's history door. */
+  conversations,
+  activeId,
+  onOpenConversation,
+  onNewConversation,
 }: {
   messages: AgentChatMessage[];
   activity: AgentActivity;
@@ -243,11 +255,22 @@ export function ConversationPane({
   onPickFiles?: (files: FileList) => void;
   /** Web-research toggle — the globe button. Omit where the surface has no egress concept. */
   webSearch?: { enabled: boolean; onToggle: () => void };
+  /** Saved conversations for this scope. Empty is honest: nothing saved yet.
+   *  Omitted entirely on surfaces that do not own the thread lifecycle —
+   *  the history door and new-chat button hide rather than pretend. */
+  conversations?: ConversationSummary[];
+  /** The currently open conversation id, or null when none is open. */
+  activeId?: string | null;
+  /** Load a saved conversation through the owning store. */
+  onOpenConversation?: (cid: string) => void | Promise<void>;
+  /** Start a fresh conversation through the owning store. */
+  onNewConversation?: () => void | Promise<void>;
 }) {
   const [text, setText] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const empty = messages.length === 0;
 
   /* Scroll to the newest message ONLY while the user is already near the
@@ -318,6 +341,74 @@ export function ConversationPane({
             {projectName ? `Working in ${projectName}` : 'Give me an objective — I plan, request approval, and execute'}
           </p>
         </span>
+
+        {/* Conversation history — the transcript persists; this is its
+            door. Everything listed is a real saved conversation from the
+            store's `list()`; selecting one loads it through the store.
+            Hidden on surfaces that do not own the thread lifecycle. */}
+        {conversations !== undefined && onOpenConversation && (
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setHistoryOpen((v) => !v)}
+              aria-expanded={historyOpen}
+              aria-haspopup="listbox"
+              data-testid="chat-history-toggle"
+              aria-label="Conversation history"
+              title="Conversation history"
+              className="neon-focus grid h-8 w-8 place-items-center rounded-lg border border-[rgba(125,146,255,0.28)] text-text-muted transition-colors hover:text-text"
+            >
+              <Icon name="bookmark" size={14} />
+            </button>
+          {historyOpen && (
+            <div
+              className="absolute right-0 top-9 z-20 max-h-[320px] w-[280px] overflow-y-auto rounded-xl border border-[rgba(125,146,255,0.3)] bg-ws-dialog p-1.5 shadow-lg"
+              role="listbox"
+              aria-label="Saved conversations"
+              data-testid="chat-history"
+            >
+              {conversations.length === 0 ? (
+                <p className="px-2.5 py-3 text-[11.5px] leading-relaxed text-text-subtle">
+                  No saved conversations yet. Everything you exchange with AURA here is kept for this workspace.
+                </p>
+              ) : (
+                conversations.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    role="option"
+                    aria-selected={c.id === activeId}
+                    onClick={() => { setHistoryOpen(false); void onOpenConversation(c.id); }}
+                    className={cn(
+                      'neon-focus block w-full rounded-lg px-2.5 py-2 text-left transition-colors',
+                      c.id === activeId ? 'bg-[rgba(125,146,255,0.14)]' : 'hover:bg-surface-hover',
+                    )}
+                  >
+                    <span className="block truncate text-[12px] font-medium text-text">{c.title}</span>
+                    <span className="mt-0.5 block truncate text-[10.5px] text-text-subtle">
+                      {c.messageCount} message{c.messageCount === 1 ? '' : 's'} · {c.preview || '—'}
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+          </div>
+        )}
+
+        {onNewConversation && (
+          <button
+            type="button"
+            onClick={() => { setHistoryOpen(false); void onNewConversation(); }}
+            data-testid="chat-new"
+            aria-label="New conversation"
+            title="New conversation"
+            className="neon-focus grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-[rgba(125,146,255,0.28)] text-text-muted transition-colors hover:text-text"
+          >
+            <Icon name="plus" size={14} />
+          </button>
+        )}
+
         {agentUp === false && (
           <span
             role="alert"
