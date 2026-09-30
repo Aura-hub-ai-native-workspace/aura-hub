@@ -1,6 +1,15 @@
 /**
- * useAgentConversations — project Ask AURA over the Central Agent.
+ * useAgentConversations — scoped chats over the Central Agent.
  * ==================================================================
+ * ONE engine, TWO scopes:
+ *   · project   — "Ask AURA": plans, decisions and understanding.
+ *   · workspace — "Execution Chat": the Hub workspace's doing-thread.
+ * Each scope lists, selects and persists through its OWN routes and its
+ * own file family on the service, so the transcripts cannot mix. The
+ * scope is captured with every turn (`owner`), so a late stream frame
+ * from a turn started in one scope can never be persisted into the
+ * other.
+ *
  * The project-level counterpart to Ctrl+I's `useAiAction`: same
  * Central Agent, same session contract, broader context (project +
  * conversation + optional editor snapshot instead of editor-first).
@@ -35,7 +44,9 @@ import {
 } from './centralAgentClient';
 import {
   aiClient,
+  type ConversationScope,
   type ConversationSummary,
+  type Handoff,
 } from './aiClient';
 import { eventPhrase, toolName } from './agentNarration';
 
@@ -94,8 +105,14 @@ export interface AgentChatMessage {
 }
 
 interface AgentConvState {
+  /** Which surface owns the store right now. */
+  scope: ConversationScope;
   projectId: string | null;
   projectPath: string | null;
+  /** Set in workspace scope: `workspace:<projectId>`. */
+  workspaceId: string | null;
+  /** Handoffs offered to the active workspace (workspace scope only). */
+  handoffs: Handoff[];
   conversations: ConversationSummary[];
   activeId: string | null;
   messages: AgentChatMessage[];
@@ -107,6 +124,8 @@ interface AgentConvState {
   agentUp: boolean | null;
 
   loadForProject: (projectId: string | null, projectPath?: string | null) => Promise<void>;
+  /** Switch the store to a workspace's Execution Chat scope. */
+  loadForWorkspace: (workspaceId: string) => Promise<void>;
   reloadList: () => Promise<void>;
   select: (cid: string) => Promise<void>;
   newConversation: () => Promise<string | null>;
@@ -118,6 +137,12 @@ interface AgentConvState {
   decide: (messageId: string, granted: boolean, reason?: string) => Promise<void>;
   stop: () => void;
   regenerate: () => Promise<void>;
+  /** Offer a project Ask AURA message (or messages) to the workspace. */
+  handoffToWorkspace: (convId: string, messageIds: string[], title: string, notes?: string) => Promise<Handoff>;
+  /** Re-read the workspace's handoff inbox. */
+  reloadHandoffs: () => Promise<void>;
+  /** Accept an offered handoff into the active execution chat. */
+  acceptHandoff: (handoff: Handoff) => Promise<void>;
 }
 
 let seq = 0;
@@ -168,6 +193,13 @@ function sessionOf(messages: AgentChatMessage[]): string | null {
   return null;
 }
 
+/** The scope a turn was started in, captured once and carried through. */
+interface Owner {
+  scope: ConversationScope;
+  projectId: string | null;
+  workspaceId: string | null;
+}
+
 interface Inflight {
   seq: number;
   sessionId: string;
@@ -176,6 +208,8 @@ interface Inflight {
   controller: AbortController;
   unsubscribe: (() => void) | null;
   settled: boolean;
+  /** The turn's scope, fixed at send() time. */
+  owner: Owner;
 }
 
 let inflight: Inflight | null = null;
@@ -254,22 +288,25 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     set({ activity: next });
   };
 
-  async function persistAssistant(convId: string, m: AgentChatMessage) {
-    const { projectId } = get();
-    if (!projectId) return;
+  async function persistAssistant(convId: string, m: AgentChatMessage, owner: Owner) {
+    if (!owner.projectId) return;
     try {
-      await aiClient.appendMessage(projectId, convId, {
-        role: 'assistant',
-        content: m.content,
-        meta: m.agent ? { agent: { ...m.agent, events: m.agent.events.slice(-100), progress: m.agent.progress.slice(-20), plan: m.agent.plan ? { planId: m.agent.plan.planId, steps: m.agent.plan.steps.length } : null } } : undefined,
-        error: m.status === 'error',
-      });
+      const meta = m.agent ? { agent: { ...m.agent, events: m.agent.events.slice(-100), progress: m.agent.progress.slice(-20), plan: m.agent.plan ? { planId: m.agent.plan.planId, steps: m.agent.plan.steps.length } : null } } : undefined;
+      if (owner.scope === 'workspace' && owner.workspaceId) {
+        await aiClient.appendWorkspaceMessage(owner.workspaceId, convId, {
+          role: 'assistant', content: m.content, meta, error: m.status === 'error',
+        });
+      } else {
+        await aiClient.appendMessage(owner.projectId, convId, {
+          role: 'assistant', content: m.content, meta, error: m.status === 'error',
+        });
+      }
       void get().reloadList();
     } catch { /* thread persistence never fails the visible result */ }
   }
 
   /** Route a terminal-or-parked result into the assistant message. */
-  async function adoptResult(convId: string, assistantId: string, result: AgentResult, sessionId: string) {
+  async function adoptResult(convId: string, assistantId: string, result: AgentResult, sessionId: string, owner: Owner) {
     // The turn keeps the record of what it used, so the transcript can
     // still say "Used Git and OpenCode" after the live line has gone.
     // It is a record of reported use, never a claim of success.
@@ -293,7 +330,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
           ...m, status: 'error',
           error: 'The run parked for approval but named no approval. Nothing was approved; start a new request.',
         }));
-        if (entry) void persistAssistant(convId, { ...entry, status: 'error', error: 'Parked approval reference missing.' });
+        if (entry) void persistAssistant(convId, { ...entry, status: 'error', error: 'Parked approval reference missing.' }, owner);
         return;
       }
       patchMsg(assistantId, (m) => ({
@@ -341,7 +378,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       }));
     }
     const final = get().messages.find((m) => m.id === assistantId);
-    if (final && final.status !== 'cancelled') void persistAssistant(convId, final);
+    if (final && final.status !== 'cancelled') void persistAssistant(convId, final, owner);
   }
 
   async function drive(
@@ -351,13 +388,14 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     instruction: string,
     editorContext: EditorContext | undefined,
     followUp: boolean,
+    owner: Owner,
   ) {
     const { projectId, projectPath } = get();
     const mySeq = (inflight?.seq ?? 0) + 1;
     const controller = new AbortController();
     const flight: Inflight = {
       seq: mySeq, sessionId, convId, assistantId,
-      controller, unsubscribe: null, settled: false,
+      controller, unsubscribe: null, settled: false, owner,
     };
     inflight = flight;
     set({ phase: 'working', activity: IDLE_ACTIVITY });
@@ -411,7 +449,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       if (!alive()) return; // cancelled or superseded mid-flight
       const finalSid = res.sessionId ?? sessionId;
       patchMsg(assistantId, (m) => (m.agent ? { ...m, agent: { ...m.agent, sessionId: finalSid, requestId: res.requestId } } : m));
-      await adoptResult(convId, assistantId, res.result, finalSid);
+      await adoptResult(convId, assistantId, res.result, finalSid, owner);
     } catch (e) {
       if (!alive()) return;
       if ((e as Error)?.name === 'AbortError') {
@@ -422,7 +460,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       } else {
         const entry = get().messages.find((m) => m.id === assistantId);
         patchMsg(assistantId, (m) => ({ ...m, status: 'error', error: errorText(e) }));
-        if (entry) void persistAssistant(convId, { ...entry, status: 'error', error: errorText(e) });
+        if (entry) void persistAssistant(convId, { ...entry, status: 'error', error: errorText(e) }, owner);
       }
     } finally {
       finish();
@@ -430,8 +468,11 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
   }
 
   return {
+    scope: 'project' as const,
     projectId: null,
     projectPath: null,
+    workspaceId: null,
+    handoffs: [],
     conversations: [],
     activeId: null,
     messages: [],
@@ -441,12 +482,15 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     agentUp: null,
 
     async loadForProject(projectId, projectPath = null) {
-      if (get().projectId === projectId) return;
+      // Same project, already in project scope: nothing to do. A scope
+      // change ALWAYS reloads — arriving here from a workspace means the
+      // Ask AURA threads must replace the execution transcript.
+      if (get().scope === 'project' && get().projectId === projectId) return;
       if (inflight) {
         inflight.controller.abort();
         clearInflight();
       }
-      set({ projectId, projectPath, conversations: [], activeId: null, messages: [], phase: 'idle', activity: IDLE_ACTIVITY, loading: !!projectId, agentUp: null });
+      set({ scope: 'project', workspaceId: null, handoffs: [], projectId, projectPath, conversations: [], activeId: null, messages: [], phase: 'idle', activity: IDLE_ACTIVITY, loading: !!projectId, agentUp: null });
       // Liveness is asked either way: without a project there is still
       // an agent to talk to, and "is it running" is the one thing the
       // user needs to know before typing.
@@ -464,22 +508,66 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       }
     },
 
+    async loadForWorkspace(workspaceId) {
+      // Same workspace, already in workspace scope: nothing to do.
+      if (get().scope === 'workspace' && get().workspaceId === workspaceId) return;
+      if (inflight) {
+        inflight.controller.abort();
+        clearInflight();
+      }
+      set({
+        scope: 'workspace',
+        workspaceId,
+        projectId: workspaceId.startsWith('workspace:') ? workspaceId.slice('workspace:'.length) : null,
+        projectPath: null,
+        handoffs: [],
+        conversations: [], activeId: null, messages: [], phase: 'idle', activity: IDLE_ACTIVITY,
+        loading: true, agentUp: null,
+      });
+      centralAgentClient.health()
+        .then(() => { if (get().scope === 'workspace' && get().workspaceId === workspaceId) set({ agentUp: true }); })
+        .catch(() => { if (get().scope === 'workspace' && get().workspaceId === workspaceId) set({ agentUp: false }); });
+      try {
+        let { conversations } = await aiClient.listWorkspaceConversations(workspaceId);
+        if (get().scope !== 'workspace' || get().workspaceId !== workspaceId) return; // superseded
+        if (!conversations.length) {
+          // A workspace is born with its first execution chat — the pane
+          // must never open into an empty list.
+          await aiClient.createWorkspaceConversation(workspaceId);
+          conversations = (await aiClient.listWorkspaceConversations(workspaceId)).conversations;
+          if (get().scope !== 'workspace' || get().workspaceId !== workspaceId) return;
+        }
+        set({ conversations, loading: false });
+        if (conversations.length) await get().select(conversations[0].id);
+        await get().reloadHandoffs();
+      } catch {
+        if (get().scope === 'workspace' && get().workspaceId === workspaceId) set({ loading: false });
+      }
+    },
+
     async reloadList() {
-      const { projectId } = get();
+      const { scope, projectId, workspaceId } = get();
+      if (scope === 'workspace') {
+        if (!workspaceId) return;
+        try { set({ conversations: (await aiClient.listWorkspaceConversations(workspaceId)).conversations }); } catch { /* keep */ }
+        return;
+      }
       if (!projectId) return;
       try { set({ conversations: (await aiClient.listConversations(projectId)).conversations }); } catch { /* keep */ }
     },
 
     async select(cid) {
-      const { projectId } = get();
-      if (!projectId) return;
+      const { scope, projectId, workspaceId } = get();
+      if (scope === 'workspace' ? !workspaceId : !projectId) return;
       if (inflight) {
         inflight.controller.abort();
         clearInflight();
       }
       set({ activeId: cid, phase: 'idle' });
       try {
-        const conv = await aiClient.getConversation(projectId, cid);
+        const conv = scope === 'workspace' && workspaceId
+          ? await aiClient.getWorkspaceConversation(workspaceId, cid)
+          : await aiClient.getConversation(projectId as string, cid);
         if (get().activeId !== cid) return; // superseded
         set({
           messages: conv.messages.map((m) => {
@@ -512,7 +600,18 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     },
 
     async newConversation() {
-      const { projectId } = get();
+      const { scope, projectId, workspaceId } = get();
+      if (scope === 'workspace') {
+        if (!workspaceId) return null;
+        if (inflight) {
+          inflight.controller.abort();
+          clearInflight();
+        }
+        const conv = await aiClient.createWorkspaceConversation(workspaceId);
+        set({ activeId: conv.id, messages: [], phase: 'idle' });
+        await get().reloadList();
+        return conv.id;
+      }
       if (!projectId) return null;
       if (inflight) {
         inflight.controller.abort();
@@ -525,17 +624,32 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     },
 
     async rename(cid, title) {
-      const { projectId } = get();
-      if (!projectId) return;
-      await aiClient.renameConversation(projectId, cid, title);
+      const { scope, projectId, workspaceId } = get();
+      if (scope === 'workspace') {
+        if (!workspaceId) return;
+        await aiClient.renameWorkspaceConversation(workspaceId, cid, title);
+      } else {
+        if (!projectId) return;
+        await aiClient.renameConversation(projectId, cid, title);
+      }
       await get().reloadList();
     },
 
     async remove(cid) {
-      const { projectId, activeId } = get();
-      if (!projectId) return;
+      const { scope, projectId, workspaceId, activeId } = get();
       // Deleting the live thread stops its run first: no orphaned
       // governed work may outlive the conversation that asked for it.
+      if (scope === 'workspace') {
+        if (!workspaceId) return;
+        if (inflight && activeId === cid) get().stop();
+        await aiClient.removeWorkspaceConversation(workspaceId, cid);
+        if (get().activeId === cid) set({ activeId: null, messages: [] });
+        await get().reloadList();
+        const first = get().conversations[0];
+        if (first && !get().activeId) await get().select(first.id);
+        return;
+      }
+      if (!projectId) return;
       if (inflight && activeId === cid) get().stop();
       await aiClient.removeConversation(projectId, cid);
       if (get().activeId === cid) set({ activeId: null, messages: [] });
@@ -553,8 +667,12 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       // Without one, the same conversation runs against the same agent
       // under a local id and simply is not persisted — the alternative
       // was refusing to answer "Hi" until a directory was chosen.
+      // The scope is captured HERE, once, and every persistence call in
+      // this turn uses it — even if the user navigates to the other
+      // surface mid-stream, the record lands where the turn began.
+      const owner: Owner = { scope: get().scope, projectId: get().projectId, workspaceId: get().workspaceId };
       let cid = get().activeId;
-      if (!cid) cid = projectId ? await get().newConversation() : nid();
+      if (!cid) cid = owner.scope === 'workspace' || projectId ? await get().newConversation() : nid();
       if (!cid) return;
       const convId: string = cid;
       if (!get().activeId) set({ activeId: convId });
@@ -576,18 +694,19 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
           { id: assistantId, role: 'assistant', content: '', status: 'streaming', agent: agentMeta },
         ],
       });
-      const pid = get().projectId;
-      if (pid) {
-        aiClient.appendMessage(pid, convId, { role: 'user', content: trimmed })
-          .then(() => get().reloadList()).catch(() => {});
+      if (owner.projectId) {
+        const persist = owner.scope === 'workspace' && owner.workspaceId
+          ? aiClient.appendWorkspaceMessage(owner.workspaceId, convId, { role: 'user', content: trimmed })
+          : aiClient.appendMessage(owner.projectId, convId, { role: 'user', content: trimmed });
+        persist.then(() => get().reloadList()).catch(() => {});
       }
 
       if (priorSid) {
-        await drive(convId, assistantId, priorSid, trimmed, opts?.editorContext, true);
+        await drive(convId, assistantId, priorSid, trimmed, opts?.editorContext, true, owner);
       } else {
         const sessionId = newClientSessionId();
         patchMsg(assistantId, (m) => (m.agent ? { ...m, agent: { ...m.agent, sessionId } } : m));
-        await drive(convId, assistantId, sessionId, trimmed, opts?.editorContext, false);
+        await drive(convId, assistantId, sessionId, trimmed, opts?.editorContext, false, owner);
       }
     },
 
@@ -611,7 +730,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
         const { result } = await centralAgentClient.approve(sessionId, approvalId, granted, reason);
         const cid = get().activeId;
         if (!cid) return;
-        await adoptResult(cid, messageId, result, sessionId);
+        await adoptResult(cid, messageId, result, sessionId, { scope: get().scope, projectId: get().projectId, workspaceId: get().workspaceId });
       } catch (e) {
         patchMsg(messageId, (m) => ({ ...m, status: 'error', error: errorText(e) }));
       }
@@ -624,7 +743,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       const attempt = async (triesLeft: number): Promise<void> => {
         if (inflight !== flight) return;
         try {
-          await centralAgentClient.cancel(sid, 'cancelled from Ask AURA');
+          await centralAgentClient.cancel(sid, get().scope === 'workspace' ? 'cancelled from Execution Chat' : 'cancelled from Ask AURA');
         } catch (e) {
           const msg = (e as Error)?.message ?? '';
           if (/no such session/i.test(msg) && triesLeft > 0) {
@@ -662,6 +781,43 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       // Agent semantics: re-asking continues the SAME session as a new
       // turn (the session is the memory; nothing is deleted server-side).
       await get().send(messages[lastUser].content);
+    },
+
+    async handoffToWorkspace(convId, messageIds, title, notes) {
+      const { scope, projectId } = get();
+      // Only a PROJECT discussion can be handed off. The workspace's
+      // execution chat is the destination, never the source.
+      if (scope !== 'project' || !projectId) {
+        throw new Error('handoffs can only be sent from a project Ask AURA conversation');
+      }
+      if (!messageIds.length) throw new Error('a handoff needs at least one message');
+      return aiClient.createHandoff(projectId, {
+        sourceConversationId: convId,
+        sourceMessageIds: messageIds,
+        title,
+        notes,
+        targetWorkspaceId: `workspace:${projectId}`,
+      });
+    },
+
+    async reloadHandoffs() {
+      const { scope, workspaceId } = get();
+      if (scope !== 'workspace' || !workspaceId) return;
+      try { set({ handoffs: (await aiClient.listWorkspaceHandoffs(workspaceId)).handoffs }); } catch { /* keep */ }
+    },
+
+    async acceptHandoff(handoff) {
+      const { scope, workspaceId, activeId } = get();
+      if (scope !== 'workspace' || !workspaceId) return;
+      // The service appends the task block to the WORKSPACE conversation
+      // only; re-selecting the active thread makes it visible here.
+      await aiClient.acceptHandoff(handoff.projectId, handoff.id, {
+        workspaceId,
+        ...(activeId ? { conversationId: activeId } : {}),
+      });
+      await get().reloadHandoffs();
+      const active = get().activeId;
+      if (active) await get().select(active);
     },
   };
 });
