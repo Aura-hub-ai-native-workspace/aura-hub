@@ -27,6 +27,7 @@ import type { ComponentProps } from 'react';
 import type { ApprovalRequest } from '../../../ai/fabricClient';
 
 import type { AgentActivity, AgentChatMessage } from '../../../ai/useAgentConversations';
+import type { Handoff } from '../../../ai/aiClient';
 import { ConversationPane } from './ConversationPane';
 
 /* ── fixtures ────────────────────────────────────────────────────── */
@@ -82,6 +83,8 @@ function pane(messages: AgentChatMessage[], over: Partial<PaneProps> = {}) {
     onStop: vi.fn(),
     onRegenerate: vi.fn(),
     onDecide: vi.fn(),
+    handoffs: [] as Handoff[],
+    onAcceptHandoff: vi.fn(),
     projectName: null,
     ...over,
   };
@@ -123,7 +126,9 @@ describe('ConversationPane — a greeting reads like a reply', () => {
 
   it('offers a starting point when there is nothing to show', () => {
     const markup = render([]);
-    expect(markup).toContain('How can I help?');
+    // The workspace chat is the EXECUTION surface now: its empty state
+    // names the scope instead of the old shared "How can I help?".
+    expect(markup).toContain('Ready to execute.');
     expect(count(markup, 'chat-suggestion')).toBeGreaterThan(0);
   });
 });
