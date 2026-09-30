@@ -281,7 +281,22 @@ export class ProjectConversations extends ConversationFileStore {
 
 /* ── Workspace conversations (scope=workspace, kind=execution) ─────── */
 
-const WORKSPACE_FILE = (workspaceId: string) => homePath('conversations-workspace', `${workspaceId}.json`);
+/**
+ * Windows-safe, injective file name for a workspace id. A colon is a
+ * legal part of a workspace id (`workspace:<projectId>`) but an ILLEGAL
+ * character in a Windows file name — the atomic rename would fail with
+ * EINVAL on the very first save. `%`-escaping keeps the mapping
+ * reversible (a real id can never contain a literal `%xx` ambiguity:
+ * any `%` in a raw id is itself escaped first), so two different
+ * workspaces can never collapse onto one file and a file always reads
+ * back to exactly the workspace that wrote it.
+ */
+export function workspaceFileName(workspaceId: string): string {
+  return workspaceId.replace(/%/g, '%25').replace(/:/g, '%3A');
+}
+
+const WORKSPACE_FILE = (workspaceId: string) =>
+  homePath('conversations-workspace', `${workspaceFileName(workspaceId)}.json`);
 
 /**
  * The workspace's own execution threads. Stored in a DIFFERENT directory

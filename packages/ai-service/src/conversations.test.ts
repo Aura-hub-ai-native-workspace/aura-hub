@@ -27,7 +27,9 @@ afterEach(() => {
 });
 
 const convFile = (pid: string) => path.join(home, 'conversations', `${pid}.json`);
-const wsFile = (wsId: string) => path.join(home, 'conversations-workspace', `${wsId}.json`);
+/** Mirrors the service's Windows-safe encoding: `:` is illegal in a Windows file name. */
+const wsFile = (wsId: string) =>
+  path.join(home, 'conversations-workspace', `${wsId.replace(/%/g, '%25').replace(/:/g, '%3A')}.json`);
 
 import { ProjectConversations, WorkspaceConversations } from './conversations';
 
@@ -118,6 +120,16 @@ describe('WorkspaceConversations (scope=workspace, kind=execution)', () => {
     expect(c.id.startsWith('wconv_')).toBe(true);
     expect(fs.existsSync(wsFile('workspace:p1'))).toBe(true);
     expect(fs.existsSync(convFile('p1'))).toBe(false);
+  });
+
+  it('encodes the workspace id into a Windows-safe file name', () => {
+    // A colon is part of the id but illegal in a Windows file name; the
+    // mapping must stay reversible so two workspaces never share a file.
+    const ws = new WorkspaceConversations('workspace:p1');
+    ws.create('Probe');
+    expect(fs.readdirSync(path.join(home, 'conversations-workspace'))).toEqual(['workspace%3Ap1.json']);
+    // And it reads back to exactly the workspace that wrote it.
+    expect(new WorkspaceConversations('workspace:p1').list()).toHaveLength(1);
   });
 
   it('never exposes a project conversation, and the project store never exposes a workspace one', () => {
