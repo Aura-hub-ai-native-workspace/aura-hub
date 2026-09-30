@@ -139,14 +139,14 @@ export function WorkspaceScreen() {
     [workerIds, workers],
   );
 
-  const projectPath = useMemo(
-    () => projects.find((p) => p.id === projectId)?.path ?? null,
-    [projects, projectId],
+  /* The Hub workspace identity is derived from the project. The layout
+     stores are machine-global — one Hub workspace per project — so the
+     honest workspace id is the project id, namespaced. */
+  const workspaceId = useMemo(
+    () => (projectId ? `workspace:${projectId}` : null),
+    [projectId],
   );
 
-  // ONE conversation, owned above both panels: the composer lives in the
-  // rail, the run it starts renders in the workspace. Same client, same
-  // session — lifted only so the two halves cannot disagree.
   // Which management surface is open, if any. Opening one costs nothing:
   // the worker roster and the machine inventory are already loaded, so
   // neither entry point triggers a scan.
@@ -202,14 +202,23 @@ export function WorkspaceScreen() {
   }, [replacingSlot, toolSlots]);
 
   /* ── the one conversation ─────────────────────────────────────────
-     The existing project Ask AURA engine, unchanged: it owns the
-     transcript, the Central Agent session and the single SSE
-     subscription. Pointing it at the active project (or at none) is
-     the only wiring this screen does. */
+     The shared conversation engine in its WORKSPACE scope: this
+     surface owns the Execution Chat — a different conversation family
+     from the project's Ask AURA threads, with its own ids, its own
+     routes and its own persistence. The scope is the workspace id,
+     `workspace:<projectId>`; the engine reads it, not the raw project.
+     One engine, two scopes — and the transcripts never mix. */
   const conv = useAgentConversations();
   useEffect(() => {
-    void conv.loadForProject(projectId, projectPath);
-  }, [projectId, projectPath]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (workspaceId) void conv.loadForWorkspace(workspaceId);
+  }, [workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Offered handoffs: tasks sent over from the project's Ask AURA
+  // surface, waiting here for a decision. Refreshed with the scope;
+  // acceptance goes back through the store so the transcript updates.
+  useEffect(() => {
+    void conv.reloadHandoffs();
+  }, [workspaceId, conv.reloadHandoffs]);
 
   /* Live worker highlight for the graph, from the frames the
      conversation already receives. No second subscription. */
@@ -301,6 +310,8 @@ export function WorkspaceScreen() {
             onStop={() => conv.stop()}
             onRegenerate={() => void conv.regenerate()}
             onDecide={(id, granted, reason) => void decide(id, granted, reason)}
+            handoffs={conv.handoffs}
+            onAcceptHandoff={(h) => void conv.acceptHandoff(h)}
             projectName={projects.find((p) => p.id === projectId)?.name ?? null}
           />
         }

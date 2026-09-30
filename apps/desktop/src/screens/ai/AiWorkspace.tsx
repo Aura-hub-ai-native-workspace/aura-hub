@@ -69,6 +69,9 @@ export function AiWorkspace() {
   const conv = useAgentConversations();
   const [dev, setDev] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** The finished assistant message being offered to the workspace, if any. */
+  const [handoffDraft, setHandoffDraft] = useState<AgentChatMessage | null>(null);
+  const [handoffError, setHandoffError] = useState<string | null>(null);
 
   // The conversation store is always scoped to the open project.
   useEffect(() => { void conv.loadForProject(openId, project?.path ?? null); }, [openId, project?.path]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -106,8 +109,14 @@ export function AiWorkspace() {
                 <span className={cn('h-1.5 w-1.5 rounded-full', conv.agentUp ? 'bg-positive aura-live' : 'bg-attention')} />
                 {conv.agentUp ? 'Agent connected' : conv.agentUp === false ? 'Agent unavailable' : 'Connecting…'}
               </span>
+              <span
+                data-testid="scope-project"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-0.5 text-[11px] font-medium text-text-muted"
+              >
+                Project discussion
+              </span>
             </div>
-            <p className="mt-0.5 truncate text-[12px] text-text-muted">Central Agent · project work with plans, approvals and evidence</p>
+            <p className="mt-0.5 truncate text-[12px] text-text-muted">Ask AURA · plans, decisions and understanding for this project</p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -149,6 +158,8 @@ export function AiWorkspace() {
                       onRegenerate={() => void conv.regenerate()}
                       onAnswer={(t) => void conv.answer(t)}
                       onDecide={(granted) => void conv.decide(m.id, granted)}
+                      canHandoff={m.role === 'assistant' && m.status === 'done' && !m.agent?.needsInput && !!conv.activeId}
+                      onHandoff={() => { setHandoffError(null); setHandoffDraft(m); }}
                     />
                   ))}
                 </div>
@@ -157,6 +168,20 @@ export function AiWorkspace() {
           </div>
           <Composer streaming={streaming} onSend={(t) => void conv.send(t, { editorContext: activeEditorContext() })} onStop={conv.stop} />
         </div>
+
+        {handoffDraft && (
+          <HandoffDialog
+            message={handoffDraft}
+            error={handoffError}
+            onCancel={() => { setHandoffDraft(null); setHandoffError(null); }}
+            onSubmit={(title, notes) => {
+              if (!conv.activeId) return;
+              conv.handoffToWorkspace(conv.activeId, [handoffDraft.id], title, notes)
+                .then(() => { setHandoffDraft(null); setHandoffError(null); })
+                .catch((e: unknown) => setHandoffError((e as Error)?.message ?? 'The handoff could not be created.'));
+            }}
+          />
+        )}
 
         <aside className="hidden min-h-0 overflow-y-auto border-l border-line bg-surface/40 xl:block">
           <SidePanel message={[...conv.messages].reverse().find((m) => m.role === 'assistant')} dev={dev} />
@@ -236,7 +261,7 @@ function EmptyState({ onPick, disabled, project }: { onPick: (t: string) => void
 }
 
 /* ── Message ─────────────────────────────────────────────────────── */
-function MessageView({ message, isLast, working, canRegenerate, onRegenerate, onAnswer, onDecide }: {
+function MessageView({ message, isLast, working, canRegenerate, onRegenerate, onAnswer, onDecide, canHandoff, onHandoff }: {
   message: AgentChatMessage;
   isLast: boolean;
   working: boolean;
@@ -244,6 +269,8 @@ function MessageView({ message, isLast, working, canRegenerate, onRegenerate, on
   onRegenerate: () => void;
   onAnswer: (text: string) => void;
   onDecide: (granted: boolean) => void;
+  canHandoff: boolean;
+  onHandoff: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [answerText, setAnswerText] = useState('');
@@ -342,6 +369,7 @@ function MessageView({ message, isLast, working, canRegenerate, onRegenerate, on
               {agent.evidenceSummary && <span className="inline-flex items-center gap-1"><Icon name="shield" size={12} /> {agent.evidenceSummary}</span>}
               <div className="ml-auto flex items-center gap-1">
                 <button onClick={copy} className={cn('inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors', copied ? 'text-positive' : 'hover:text-text hover:bg-surface-hover')}><Icon name={copied ? 'check' : 'doc'} size={12} /> {copied ? 'Copied' : 'Copy'}</button>
+                {canHandoff && <SendToWorkspaceButton onClick={onHandoff} />}
                 {isLast && canRegenerate && <button onClick={onRegenerate} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:text-text hover:bg-surface-hover"><Icon name="activity" size={12} /> Regenerate</button>}
               </div>
             </div>
@@ -351,11 +379,96 @@ function MessageView({ message, isLast, working, canRegenerate, onRegenerate, on
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-text-subtle">
               <div className="ml-auto flex items-center gap-1">
                 <button onClick={copy} className={cn('inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors', copied ? 'text-positive' : 'hover:text-text hover:bg-surface-hover')}><Icon name={copied ? 'check' : 'doc'} size={12} /> {copied ? 'Copied' : 'Copy'}</button>
+                {canHandoff && <SendToWorkspaceButton onClick={onHandoff} />}
                 {isLast && canRegenerate && <button onClick={onRegenerate} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 hover:text-text hover:bg-surface-hover"><Icon name="activity" size={12} /> Regenerate</button>}
               </div>
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** The one sanctioned bridge from a project discussion to workspace execution. */
+function SendToWorkspaceButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid="send-to-workspace"
+      title="Send this to the Workspace Execution Chat"
+      className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 transition-colors hover:text-text hover:bg-surface-hover"
+    >
+      <Icon name="arrow-right" size={12} /> Send to Workspace
+    </button>
+  );
+}
+
+/**
+ * The handoff dialog. It packages ONLY the reference: the message's id
+ * rides into the handoff record — the text is not copied, so the source
+ * thread remains the single authority for what was said.
+ */
+function HandoffDialog({ message, error, onCancel, onSubmit }: {
+  message: AgentChatMessage;
+  error: string | null;
+  onCancel: () => void;
+  onSubmit: (title: string, notes?: string) => void;
+}) {
+  const [title, setTitle] = useState('');
+  const [notes, setNotes] = useState('');
+  const preview = message.content.replace(/[#*`>\[\]]/g, '').trim().slice(0, 140);
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Send to Workspace"
+      data-testid="handoff-dialog"
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div className="w-full max-w-md rounded-2xl border border-line bg-surface p-5 shadow-xl">
+        <h3 className="text-[15px] font-semibold text-text">Send to Workspace</h3>
+        <p className="mt-1 text-[12.5px] text-text-muted">
+          This offers the task to the project's Workspace Execution Chat. The discussion stays here, untouched.
+        </p>
+        <form
+          className="mt-4 space-y-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const t = title.trim() || preview;
+            if (t) onSubmit(t, notes.trim() || undefined);
+          }}
+        >
+          <label className="block">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-text-subtle">Task</span>
+            <Input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder={preview || 'What should the workspace do?'}
+              aria-label="Task statement"
+              className="mt-1"
+            />
+          </label>
+          <label className="block">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-text-subtle">Acceptance criteria (optional)</span>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              placeholder="How will we know this is done?"
+              aria-label="Acceptance criteria"
+              className="mt-1 w-full resize-none rounded-lg border border-line bg-surface px-3 py-2 text-[13px] text-text outline-none placeholder:text-text-subtle focus:border-accent"
+            />
+          </label>
+          {error && (
+            <p role="alert" data-testid="handoff-error" className="text-[12.5px] text-danger">{error}</p>
+          )}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button type="button" variant="secondary" size="sm" onClick={onCancel}>Cancel</Button>
+            <Button type="submit" size="sm" icon="arrow-right">Send to Workspace</Button>
+          </div>
+        </form>
       </div>
     </div>
   );

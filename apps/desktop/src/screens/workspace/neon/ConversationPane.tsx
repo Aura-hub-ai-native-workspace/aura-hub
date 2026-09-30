@@ -9,6 +9,7 @@ import {
   type OutcomeTone,
 } from '../../../ai/agentNarration';
 import type { AgentActivity, AgentChatMessage } from '../../../ai/useAgentConversations';
+import type { Handoff } from '../../../ai/aiClient';
 import { ApprovalGate } from '../../missions/ApprovalGate';
 import type { ApprovalRequest } from '../../../ai/fabricClient';
 
@@ -38,6 +39,47 @@ import type { ApprovalRequest } from '../../../ai/fabricClient';
  *   • Approvals reuse the existing `ApprovalGate` against the existing
  *     ledger. This pane never decides anything itself.
  */
+
+/**
+ * The workspace's inbox: handoffs offered by the project's Ask AURA
+ * surface. Only `created` handoffs render — once accepted, cancelled
+ * or completed, the offer has been decided and leaves the inbox.
+ * Acceptance goes through the store; this pane never invents one.
+ */
+function HandoffInbox({ handoffs, onAccept }: { handoffs: Handoff[]; onAccept: (h: Handoff) => void }) {
+  const offered = handoffs.filter((h) => h.status === 'created');
+  if (!offered.length) return null;
+  return (
+    <div className="space-y-2" data-testid="handoff-panel">
+      {offered.map((h) => (
+        <div
+          key={h.id}
+          data-testid="handoff-card"
+          className="rounded-xl border border-[rgba(255,181,71,0.4)] bg-[rgba(255,181,71,0.07)] px-4 py-3"
+        >
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-neon-warning">
+            Task received from Project Ask AURA
+          </p>
+          <p className="mt-1 text-[13.5px] leading-relaxed text-text">{h.title}</p>
+          {h.notes && <p className="mt-1 whitespace-pre-wrap text-[12.5px] text-text-muted">{h.notes}</p>}
+          <div className="mt-2.5 flex items-center justify-between gap-3">
+            <span className="text-[11px] text-text-subtle">
+              Source: Ask AURA · {h.sourceMessageIds.length} message(s)
+            </span>
+            <button
+              type="button"
+              data-testid="handoff-accept"
+              onClick={() => onAccept(h)}
+              className="neon-focus rounded-lg bg-gradient-to-br from-neon-blue to-neon-violet px-3 py-1.5 text-[12px] font-medium text-white shadow-glow-blue transition-opacity hover:opacity-90"
+            >
+              Start execution
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 const TONE_CLASS: Record<OutcomeTone, string> = {
   neutral: 'border-[rgba(125,146,255,0.3)] bg-[rgba(13,19,38,0.7)] text-text-muted',
@@ -206,6 +248,8 @@ export function ConversationPane({
   onStop,
   onRegenerate,
   onDecide,
+  handoffs,
+  onAcceptHandoff,
   projectName,
 }: {
   messages: AgentChatMessage[];
@@ -220,6 +264,9 @@ export function ConversationPane({
   onStop: () => void;
   onRegenerate: () => void;
   onDecide: (messageId: string, granted: boolean, reason?: string) => void;
+  /** Handoffs offered to this workspace by the project's Ask AURA. */
+  handoffs: Handoff[];
+  onAcceptHandoff: (h: Handoff) => void;
   /** Shown only so the user knows what AURA is working on. */
   projectName: string | null;
 }) {
@@ -249,12 +296,12 @@ export function ConversationPane({
   const canRegenerate = !busy && lastAssistant && lastAssistant.status !== 'streaming';
 
   return (
-    <section aria-label="Conversation with AURA" className="flex min-h-0 flex-1 flex-col">
+    <section aria-label="Workspace execution chat" className="flex min-h-0 flex-1 flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b border-[rgba(125,146,255,0.22)] px-6 py-3.5">
         <span className="min-w-0 flex-1">
-          <h2 className="truncate text-[15px] font-semibold tracking-[-0.01em] text-text">AURA</h2>
+          <h2 className="truncate text-[15px] font-semibold tracking-[-0.01em] text-text" data-testid="workspace-chat-title">Execution Chat</h2>
           <p className="truncate text-[11.5px] text-text-subtle">
-            {projectName ? `Working in ${projectName}` : 'Ask anything, or tell me what to build'}
+            {projectName ? `Workspace execution in ${projectName}` : 'Ask anything, or tell me what to build'}
           </p>
         </span>
         {agentUp === false && (
@@ -269,15 +316,15 @@ export function ConversationPane({
       </header>
 
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
-        {empty ? (
+        {empty && (!handoffs.some((h) => h.status === 'created')) ? (
           <div className="flex h-full flex-col items-center justify-center gap-5 text-center">
             <span className="grid h-14 w-14 place-items-center rounded-2xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-[#c9bcff]">
               <Icon name="spark" size={26} />
             </span>
             <div>
-              <p className="text-[16px] font-semibold text-text">How can I help?</p>
+              <p className="text-[16px] font-semibold text-text">Ready to execute.</p>
               <p className="mt-1 text-[12.5px] text-text-muted">
-                I can answer questions, or use the tools you have connected to do real work.
+                This workspace does the work — plans and discussions live in the project's Ask AURA.
               </p>
             </div>
             <div className="flex flex-wrap justify-center gap-2">
@@ -295,15 +342,18 @@ export function ConversationPane({
             </div>
           </div>
         ) : (
-          messages.map((m) => (
-            <MessageRow
-              key={m.id}
-              message={m}
-              approval={m.agent?.approvalId ? approvals[m.agent.approvalId] ?? null : undefined}
-              deciding={deciding}
-              onDecide={(granted, reason) => onDecide(m.id, granted, reason)}
-            />
-          ))
+          <>
+            <HandoffInbox handoffs={handoffs} onAccept={onAcceptHandoff} />
+            {messages.map((m) => (
+              <MessageRow
+                key={m.id}
+                message={m}
+                approval={m.agent?.approvalId ? approvals[m.agent.approvalId] ?? null : undefined}
+                deciding={deciding}
+                onDecide={(granted, reason) => onDecide(m.id, granted, reason)}
+              />
+            ))}
+          </>
         )}
       </div>
 
