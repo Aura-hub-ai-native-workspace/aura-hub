@@ -4,6 +4,7 @@ import { WorkspaceManager } from './workspace';
 import type { PipelineOptions, StreamEmit } from './pipeline';
 import { DEFAULT_SETTINGS } from './settings';
 import type { MemoryKind } from './memory';
+import type { HandoffStatus } from './handoffs';
 import type { ConfidenceLevel, ImportanceLevel, MemoryCategory } from '@aura/engineering-memory';
 import { nodeSpecInfos } from './workflow/nodes';
 import { TEMPLATES, instantiateTemplate } from './workflow/templates';
@@ -566,21 +567,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         return json(res, 200, manager.missionDashboard());
       }
 
-      /* ── workspace chat (global scope) ────────────────────────────
-         The SAME conversation store as projects, under the reserved
-         workspace file. Project routes below can never address these
-         threads (their id is not a project id), and these routes can
-         never address project threads. One store, two disjoint files. */
-      if (seg[0] === 'workspace' && seg[1] === 'conversations') {
-        if (seg.length === 2 && method === 'GET') return json(res, 200, { conversations: manager.listWorkspaceConversations() });
-        if (seg.length === 2 && method === 'POST') { const b = await readJson(req); return json(res, 200, manager.createWorkspaceConversation(b.title as string | undefined)); }
-        const cid = seg[2];
-        if (seg.length === 3 && method === 'GET') { const c = manager.getWorkspaceConversation(cid); return c ? json(res, 200, c) : json(res, 404, { error: 'no such conversation' }); }
-        if (seg.length === 3 && (method === 'PATCH' || method === 'POST')) { const b = await readJson(req); const c = manager.renameWorkspaceConversation(cid, String(b.title ?? '')); return c ? json(res, 200, c) : json(res, 404, { error: 'no such conversation' }); }
-        if (seg.length === 3 && method === 'DELETE') return json(res, 200, { ok: manager.removeWorkspaceConversation(cid) });
-        if (seg[3] === 'message' && method === 'POST') { const b = await readJson(req); return json(res, 200, manager.appendWorkspaceMessage(cid, { role: b.role === 'assistant' ? 'assistant' : 'user', content: String(b.content ?? ''), meta: b.meta, error: Boolean(b.error) }) ?? { error: 'no such conversation' }); }
-        if (seg[3] === 'message' && seg[4] === 'last' && method === 'DELETE') return json(res, 200, { ok: manager.removeLastWorkspaceAssistantMessage(cid) });
-      }
 
       /* ── projects ─────────────────────────────────────────────── */
       if (seg[0] === 'projects') {
@@ -618,6 +604,53 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (seg.length === 4 && method === 'DELETE') return json(res, 200, { ok: manager.removeConversation(id, cid) });
           if (seg[4] === 'message' && method === 'POST') { const b = await readJson(req); return json(res, 200, manager.appendMessage(id, cid, { role: b.role === 'assistant' ? 'assistant' : 'user', content: String(b.content ?? ''), meta: b.meta, error: Boolean(b.error) }) ?? { error: 'no such conversation' }); }
           if (seg[4] === 'message' && seg[5] === 'last' && method === 'DELETE') return json(res, 200, { ok: manager.removeLastAssistantMessage(id, cid) });
+        }
+        /* ── Ask AURA handoffs — "Send to Workspace" ─────────────
+           The controlled bridge from a project discussion to workspace
+           execution. A handoff is created from THIS project's Ask AURA
+           thread and is the only sanctioned way work crosses over. */
+        if (seg[2] === 'ask-aura' && seg[3] === 'handoffs') {
+          if (seg.length === 4 && method === 'GET') {
+            const ws = url.searchParams.get('workspaceId') ?? undefined;
+            const status = url.searchParams.get('status') as HandoffStatus | null;
+            return json(res, 200, { handoffs: manager.listHandoffs(id, { ...(ws ? { targetWorkspaceId: ws } : {}), ...(status ? { status } : {}) }) });
+          }
+          if (seg.length === 4 && method === 'POST') {
+            const b = await readJson(req);
+            try {
+              return json(res, 200, manager.createHandoff(id, {
+                sourceConversationId: String(b.sourceConversationId ?? ''),
+                sourceMessageIds: Array.isArray(b.sourceMessageIds) ? b.sourceMessageIds.filter((x): x is string => typeof x === 'string') : [],
+                title: String(b.title ?? ''),
+                notes: typeof b.notes === 'string' ? b.notes : undefined,
+                targetWorkspaceId: String(b.targetWorkspaceId ?? `workspace:${id}`),
+              }));
+            } catch (e) { return json(res, 400, { error: (e as Error).message }); }
+          }
+          const hid = seg[4];
+          if (seg.length === 5 && method === 'GET') { const h = manager.getHandoff(id, hid); return h ? json(res, 200, h) : json(res, 404, { error: 'no such handoff' }); }
+          if (seg[5] === 'accept' && method === 'POST') {
+            const b = await readJson(req);
+            try {
+              const h = manager.acceptHandoff(String(b.workspaceId ?? `workspace:${id}`), id, hid, typeof b.conversationId === 'string' ? b.conversationId : undefined);
+              return h ? json(res, 200, h) : json(res, 404, { error: 'no such handoff' });
+            } catch (e) { return json(res, 409, { error: (e as Error).message }); }
+          }
+          if (seg[5] === 'cancel' && method === 'POST') {
+            try { const h = manager.setHandoffStatus(id, hid, 'cancelled'); return h ? json(res, 200, h) : json(res, 404, { error: 'no such handoff' }); }
+            catch (e) { return json(res, 409, { error: (e as Error).message }); }
+          }
+          if (seg[5] === 'complete' && method === 'POST') {
+            try { const h = manager.setHandoffStatus(id, hid, 'completed'); return h ? json(res, 200, h) : json(res, 404, { error: 'no such handoff' }); }
+            catch (e) { return json(res, 409, { error: (e as Error).message }); }
+          }
+          if (seg[5] === 'status' && method === 'POST') {
+            const b = await readJson(req);
+            const wanted = String(b.status ?? '');
+            if (!['accepted', 'cancelled', 'completed'].includes(wanted)) return json(res, 400, { error: 'status must be accepted, cancelled or completed' });
+            try { const h = manager.setHandoffStatus(id, hid, wanted as HandoffStatus); return h ? json(res, 200, h) : json(res, 404, { error: 'no such handoff' }); }
+            catch (e) { return json(res, 409, { error: (e as Error).message }); }
+          }
         }
         if (seg[2] === 'graph' && method === 'GET') { const kg = manager.knowledgeGraph(id); return kg ? json(res, 200, kg) : json(res, 404, { error: 'project not open' }); }
         if (seg[2] === 'intelligence' && method === 'GET') { const r = manager.projectIntelligence(id); return r ? json(res, 200, r) : json(res, 404, { error: 'no such project' }); }
@@ -1395,6 +1428,34 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           return json(res, 200, { text: lines.join('\n'), report });
         }
         return json(res, 404, { error: 'no such predictive endpoint' });
+      }
+
+      /* ── workspace execution conversations + handoff inbox ─────── */
+      /* `/workspaces/<id>` (plural) is the Hub workspace surface: the
+         execution chat family and the inbox of offered handoffs. It is
+         a different namespace from `/projects/<id>/conversations` on
+         purpose — separate scopes, separate routes, no accidental
+         sharing of transcripts. */
+      if (seg[0] === 'workspaces' && seg.length >= 2) {
+        const wsId = seg[1];
+        if (seg[2] === 'conversations') {
+          if (seg.length === 3 && method === 'GET') return json(res, 200, { conversations: manager.listWorkspaceConversations(wsId) });
+          if (seg.length === 3 && method === 'POST') { const b = await readJson(req); return json(res, 200, manager.createWorkspaceConversation(wsId, b.title as string | undefined)); }
+          const wcid = seg[3];
+          if (seg.length === 4 && method === 'GET') { const c = manager.getWorkspaceConversation(wsId, wcid); return c ? json(res, 200, c) : json(res, 404, { error: 'no such conversation' }); }
+          if (seg.length === 4 && (method === 'PATCH' || method === 'POST')) { const b = await readJson(req); const c = manager.renameWorkspaceConversation(wsId, wcid, String(b.title ?? '')); return c ? json(res, 200, c) : json(res, 404, { error: 'no such conversation' }); }
+          if (seg.length === 4 && method === 'DELETE') return json(res, 200, { ok: manager.removeWorkspaceConversation(wsId, wcid) });
+          if (seg[4] === 'message' && method === 'POST') { const b = await readJson(req); return json(res, 200, manager.appendWorkspaceMessage(wsId, wcid, { role: b.role === 'assistant' ? 'assistant' : 'user', content: String(b.content ?? ''), meta: b.meta, error: Boolean(b.error) }) ?? { error: 'no such conversation' }); }
+          if (seg[4] === 'message' && seg[5] === 'last' && method === 'DELETE') return json(res, 200, { ok: manager.removeLastWorkspaceAssistantMessage(wsId, wcid) });
+        }
+        if (seg[2] === 'handoffs' && method === 'GET') {
+          // The inbox: every project's `created` handoffs addressed to
+          // this workspace. Once accepted, cancelled or completed a
+          // handoff has left its inbox and is read via its project.
+          const status = url.searchParams.get('status') as HandoffStatus | null;
+          const handoffs = manager.listProjects().flatMap((p) => manager.listHandoffs(p.id, { targetWorkspaceId: wsId, status: status ?? 'created' }));
+          return json(res, 200, { handoffs });
+        }
       }
 
       /* ── workspace-level intelligence (cross-repository) ───────── */

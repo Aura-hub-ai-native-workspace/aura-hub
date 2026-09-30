@@ -18,7 +18,7 @@
  * same approval ledger decides, and this screen reads the same stores
  * it always did. What changed is which of it is the headline.
  *
- * One conversation store (`useWorkspaceConversations`, the workspace
+ * One conversation store (`useAgentConversations`, in its workspace
  * sibling of the project Ask AURA engine) owns the transcript, the
  * session and the live events. It persists in the workspace-scoped
  * conversation file — never in a project's file — so the Workspace
@@ -48,7 +48,7 @@ import { useLayoutStore } from '../ops/layoutStore';
 import { WorkspaceShell } from './workspace/neon/WorkspaceShell';
 import { LeftControlPanel } from './workspace/neon/LeftControlPanel';
 import { ConversationPane } from './workspace/neon/ConversationPane';
-import { useWorkspaceConversations } from '../ai/useAgentConversations';
+import { useAgentConversations } from '../ai/useAgentConversations';
 import { AuraEverything } from '../environment/AuraEverything';
 import { AddWorkerPanel } from '../workspace/AddWorkerPanel';
 
@@ -145,14 +145,14 @@ export function WorkspaceScreen() {
     [workerIds, workers],
   );
 
-  const projectPath = useMemo(
-    () => projects.find((p) => p.id === projectId)?.path ?? null,
-    [projects, projectId],
+  /* The Hub workspace identity is derived from the project. The layout
+     stores are machine-global — one Hub workspace per project — so the
+     honest workspace id is the project id, namespaced. */
+  const workspaceId = useMemo(
+    () => (projectId ? `workspace:${projectId}` : null),
+    [projectId],
   );
 
-  // ONE conversation, owned above both panels: the composer lives in the
-  // rail, the run it starts renders in the workspace. Same client, same
-  // session — lifted only so the two halves cannot disagree.
   // Which management surface is open, if any. Opening one costs nothing:
   // the worker roster and the machine inventory are already loaded, so
   // neither entry point triggers a scan.
@@ -208,16 +208,23 @@ export function WorkspaceScreen() {
   }, [replacingSlot, toolSlots]);
 
   /* ── the one conversation ─────────────────────────────────────────
-     The workspace sibling of the project Ask AURA engine, unchanged in
-     kind: it owns the transcript, the Central Agent session and the
-     single SSE subscription. Pointing it at the active project as its
-     WORKING target (or at none) is the only wiring this screen does —
-     the thread itself stays in the workspace scope and never lands in
-     a project's file. */
-  const conv = useWorkspaceConversations();
+     The shared conversation engine in its WORKSPACE scope: this
+     surface owns the Execution Chat — a different conversation family
+     from the project's Ask AURA threads, with its own ids, its own
+     routes and its own persistence. The scope is the workspace id,
+     `workspace:<projectId>`; the engine reads it, not the raw project.
+     One engine, two scopes — and the transcripts never mix. */
+  const conv = useAgentConversations();
   useEffect(() => {
-    void conv.loadForWorkspace(projectId, projectPath);
-  }, [projectId, projectPath]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (workspaceId) void conv.loadForWorkspace(workspaceId);
+  }, [workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Offered handoffs: tasks sent over from the project's Ask AURA
+  // surface, waiting here for a decision. Refreshed with the scope;
+  // acceptance goes back through the store so the transcript updates.
+  useEffect(() => {
+    void conv.reloadHandoffs();
+  }, [workspaceId, conv.reloadHandoffs]);
 
   /* Live worker highlight for the graph, from the frames the
      conversation already receives. No second subscription. */
@@ -296,16 +303,6 @@ export function WorkspaceScreen() {
     finally { setDeciding(false); }
   }, [conv]);
 
-  /* Explicit Ask AURA → Workspace handoff. Offered by the advisory
-     surface; nothing here sends, plans, or executes until the user
-     presses Start — and Dismiss drops it without a trace. */
-  const handoff = useWorkspaceConversations((s) => s.pendingHandoff);
-  const dismissHandoff = useCallback(() => { conv.dismissHandoff(); }, [conv]);
-  const startHandoff = useCallback(() => {
-    const h = conv.consumeHandoff();
-    if (h?.text.trim()) void conv.send(h.text);
-  }, [conv]);
-
   /* The graph's status line: what AURA is doing, in the same words the
      conversation uses. One vocabulary, two places. */
   const agentPhase = conv.activity.phase
@@ -313,49 +310,6 @@ export function WorkspaceScreen() {
 
   return (
     <div ref={canvasRef} className="relative h-full min-h-0">
-      {/* Offered task from Ask AURA. An offer, not an order: Start turns
-          it into an execution objective under the current working
-          project, Dismiss drops it. */}
-      {handoff && (
-        <div
-          role="dialog"
-          aria-label="Suggested Workspace Task from Ask AURA"
-          data-testid="handoff-banner"
-          className="absolute inset-x-0 top-3 z-20 mx-auto w-[min(640px,calc(100%-2rem))]"
-        >
-          <div className="rounded-2xl border border-[rgba(125,146,255,0.4)] bg-[rgba(9,13,26,0.97)] p-4 shadow-card">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-text-subtle">
-              Suggested Workspace Task{handoff.sourceProjectName ? ` · from ${handoff.sourceProjectName}` : ''}
-            </p>
-            <p className="mt-1.5 max-h-28 overflow-y-auto whitespace-pre-wrap text-[12.5px] leading-relaxed text-text">
-              {handoff.text}
-            </p>
-            <p className="mt-1.5 text-[11px] text-text-subtle">
-              Will run as an execution objective
-              {projects.find((p) => p.id === projectId)?.name
-                ? ` in ${projects.find((p) => p.id === projectId)?.name}`
-                : ' with no working project — pick one on the left first if the work needs files'}.
-            </p>
-            <div className="mt-3 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={dismissHandoff}
-                className="neon-focus rounded-xl border border-[rgba(125,146,255,0.3)] px-3.5 py-1.5 text-[12px] text-text-muted transition-colors hover:text-text"
-              >
-                Dismiss
-              </button>
-              <button
-                type="button"
-                onClick={startHandoff}
-                data-testid="handoff-start"
-                className="neon-focus rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet px-3.5 py-1.5 text-[12px] font-medium text-white shadow-glow-blue"
-              >
-                Start in Workspace
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       <WorkspaceShell
         left={
           <LeftControlPanel
@@ -396,8 +350,9 @@ export function WorkspaceScreen() {
             onStop={() => conv.stop()}
             onRegenerate={() => void conv.regenerate()}
             onDecide={(id, granted, reason) => void decide(id, granted, reason)}
+            handoffs={conv.handoffs}
+            onAcceptHandoff={(h) => void conv.acceptHandoff(h)}
             projectName={projects.find((p) => p.id === projectId)?.name ?? null}
-            scope="workspace"
           />
         }
       />

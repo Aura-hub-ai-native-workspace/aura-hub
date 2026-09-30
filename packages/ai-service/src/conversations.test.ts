@@ -1,96 +1,171 @@
 /**
- * conversations — workspace and project threads never mix.
- *
- * Regression cover for the Workspace Chat / Project Ask AURA split:
- * the two scopes share one store class but must never share a file, a
- * thread, a message, or history. Every conversation carries exactly one
- * scope, and the scope is the file it lives in.
- *
- * Runs with `npm run test:service` from the repo root, against an
- * isolated AURA_HOME so no real user state is touched.
+ * Scoped conversation stores — the isolation contract.
+ * ==================================================================
+ * These tests treat the disk as the contract: a legacy project file with
+ * unscoped records must migrate in place, stay readable through the
+ * project routes, and stay INVISIBLE to the workspace routes. The store
+ * that finds a foreign id must behave exactly as if the id never existed.
  */
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
 
-process.env.AURA_HOME = mkdtempSync(join(tmpdir(), 'aura-conv-test-'));
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
-import { ProjectConversations, WORKSPACE_SCOPE_ID } from './conversations';
-
-const PROJECT_A = 'proj-a';
-const PROJECT_B = 'proj-b';
+let home = '';
+const realHome = process.env.AURA_HOME;
 
 beforeEach(() => {
-  // Fresh files per test: the constructor reads from disk, so a new
-  // instance per scope per test starts empty under a fresh home.
-  process.env.AURA_HOME = mkdtempSync(join(tmpdir(), 'aura-conv-test-'));
+  home = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-conv-test-'));
+  process.env.AURA_HOME = home;
 });
 
-describe('conversation scopes', () => {
-  it('tags new threads with their scope', () => {
-    const ws = new ProjectConversations(WORKSPACE_SCOPE_ID).create('ws thread');
-    const pa = new ProjectConversations(PROJECT_A).create('a thread');
+afterEach(() => {
+  fs.rmSync(home, { recursive: true, force: true });
+  if (realHome === undefined) delete process.env.AURA_HOME;
+  else process.env.AURA_HOME = realHome;
+});
 
-    expect(ws.scope).toBe('workspace');
-    expect(pa.scope).toBe('project');
-    expect(new ProjectConversations(PROJECT_B).scope).toBe('project');
+const convFile = (pid: string) => path.join(home, 'conversations', `${pid}.json`);
+/** Mirrors the service's Windows-safe encoding: `:` is illegal in a Windows file name. */
+const wsFile = (wsId: string) =>
+  path.join(home, 'conversations-workspace', `${wsId.replace(/%/g, '%25').replace(/:/g, '%3A')}.json`);
+
+import { ProjectConversations, WorkspaceConversations } from './conversations';
+
+describe('ProjectConversations (scope=project, kind=ask_aura)', () => {
+  it('creates, lists and gets conversations stamped with the project scope', () => {
+    const store = new ProjectConversations('p1');
+    const c = store.create('Design review');
+    expect(c.scope).toBe('project');
+    expect(c.kind).toBe('ask_aura');
+    expect(c.projectId).toBe('p1');
+    expect(c.workspaceId).toBeUndefined();
+    expect(store.list()).toHaveLength(1);
+    expect(store.list()[0].scope).toBe('project');
+    expect(store.get(c.id)?.title).toBe('Design review');
   });
 
-  it('keeps workspace and project threads in disjoint files', () => {
-    const ws = new ProjectConversations(WORKSPACE_SCOPE_ID);
-    const pa = new ProjectConversations(PROJECT_A);
-
-    const wConv = ws.create('ws thread');
-    const aConv = pa.create('a thread');
-    ws.append(wConv.id, { role: 'user', content: 'workspace secret WIN-WS-1' });
-    pa.append(aConv.id, { role: 'user', content: 'project secret PROJ-A-ONLY-739' });
-
-    // Re-read from disk, like a restart would.
-    const wsReread = new ProjectConversations(WORKSPACE_SCOPE_ID);
-    const paReread = new ProjectConversations(PROJECT_A);
-
-    expect(wsReread.list().map((c) => c.id)).toEqual([wConv.id]);
-    expect(paReread.list().map((c) => c.id)).toEqual([aConv.id]);
-    expect(wsReread.get(wConv.id)?.messages.map((m) => m.content))
-      .toEqual(['workspace secret WIN-WS-1']);
-    expect(paReread.get(aConv.id)?.messages.map((m) => m.content))
-      .toEqual(['project secret PROJ-A-ONLY-739']);
+  it('appends messages and auto-titles from the first user turn', () => {
+    const store = new ProjectConversations('p1');
+    const c = store.create();
+    store.append(c.id, { role: 'user', content: 'Why is the login failing?' });
+    store.append(c.id, { role: 'assistant', content: 'Looking into it.' });
+    const got = store.get(c.id);
+    expect(got?.messages).toHaveLength(2);
+    expect(got?.title).toBe('Why is the login failing?');
+    expect(store.list()[0].preview).toBe('Why is the login failing?');
   });
 
-  it('keeps two projects disjoint (A → B has no leakage)', () => {
-    const pa = new ProjectConversations(PROJECT_A);
-    const pb = new ProjectConversations(PROJECT_B);
+  it('migrates a legacy unscoped file at read time, keeping the path and id', () => {
+    const legacy = {
+      id: 'conv_legacy1',
+      title: 'Before scopes',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      messages: [{ id: 'm1', role: 'user', content: 'hello', at: '2026-01-01T00:00:00.000Z' }],
+    };
+    fs.mkdirSync(path.dirname(convFile('p1')), { recursive: true });
+    fs.writeFileSync(convFile('p1'), JSON.stringify([legacy]));
 
-    const aConv = pa.create('a thread');
-    pa.append(aConv.id, { role: 'user', content: 'My secret project identifier is PROJECT-A-ONLY-739.' });
+    const store = new ProjectConversations('p1');
+    const list = store.list();
+    expect(list).toHaveLength(1);
+    expect(list[0].id).toBe('conv_legacy1');
+    expect(list[0].scope).toBe('project');
 
-    expect(pb.list()).toEqual([]);
-    expect(pb.get(aConv.id)).toBeUndefined();
-    expect(new ProjectConversations(WORKSPACE_SCOPE_ID).list()).toEqual([]);
+    // Re-open: migration was written back, and reading it again is stable.
+    const again = new ProjectConversations('p1');
+    expect(again.get('conv_legacy1')?.scope).toBe('project');
+    expect(again.get('conv_legacy1')?.kind).toBe('ask_aura');
+    expect(again.get('conv_legacy1')?.projectId).toBe('p1');
+
+    const onDisk = JSON.parse(fs.readFileSync(convFile('p1'), 'utf8'));
+    expect(onDisk[0].scope).toBe('project');
   });
 
-  it('reads pre-scope records as the scope of the file they live in', () => {
-    const pa = new ProjectConversations(PROJECT_A);
-    const conv = pa.create('legacy thread');
-    // Simulate a record written before scopes existed.
-    const raw = pa.get(conv.id);
-    expect(raw).toBeDefined();
-    delete (raw as { scope?: unknown }).scope;
-
-    const reread = new ProjectConversations(PROJECT_A);
-    const summaries = reread.list();
-    expect(summaries[0].scope).toBe('project');
+  it('is idempotent: migrating an already-migrated file changes nothing', () => {
+    const legacy = {
+      id: 'conv_legacy2', title: 'T',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      messages: [],
+    };
+    fs.mkdirSync(path.dirname(convFile('p1')), { recursive: true });
+    fs.writeFileSync(convFile('p1'), JSON.stringify([legacy]));
+    new ProjectConversations('p1').list();
+    const afterFirst = fs.readFileSync(convFile('p1'), 'utf8');
+    new ProjectConversations('p1').list();
+    expect(fs.readFileSync(convFile('p1'), 'utf8')).toBe(afterFirst);
   });
 
-  it('removing a thread in one scope touches nothing in the other', () => {
-    const ws = new ProjectConversations(WORKSPACE_SCOPE_ID);
-    const pa = new ProjectConversations(PROJECT_A);
-    const wConv = ws.create('ws');
-    const aConv = pa.create('a');
+  it('drops corrupt records instead of failing the whole file', () => {
+    fs.mkdirSync(path.dirname(convFile('p1')), { recursive: true });
+    fs.writeFileSync(convFile('p1'), JSON.stringify([
+      { garbage: true },
+      { id: 'conv_ok', title: 'Keep me', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', messages: [] },
+    ]));
+    const store = new ProjectConversations('p1');
+    expect(store.list().map((c) => c.id)).toEqual(['conv_ok']);
+  });
+});
 
-    expect(ws.remove(wConv.id)).toBe(true);
-    expect(ws.list()).toEqual([]);
-    expect(pa.list().map((c) => c.id)).toEqual([aConv.id]);
+describe('WorkspaceConversations (scope=workspace, kind=execution)', () => {
+  it('stores execution threads in a separate file family with execution ids', () => {
+    const ws = new WorkspaceConversations('workspace:p1');
+    const c = ws.create('Execution thread');
+    expect(c.scope).toBe('workspace');
+    expect(c.kind).toBe('execution');
+    expect(c.projectId).toBe('p1');
+    expect(c.workspaceId).toBe('workspace:p1');
+    expect(c.id.startsWith('wconv_')).toBe(true);
+    expect(fs.existsSync(wsFile('workspace:p1'))).toBe(true);
+    expect(fs.existsSync(convFile('p1'))).toBe(false);
+  });
+
+  it('encodes the workspace id into a Windows-safe file name', () => {
+    // A colon is part of the id but illegal in a Windows file name; the
+    // mapping must stay reversible so two workspaces never share a file.
+    const ws = new WorkspaceConversations('workspace:p1');
+    ws.create('Probe');
+    expect(fs.readdirSync(path.join(home, 'conversations-workspace'))).toEqual(['workspace%3Ap1.json']);
+    // And it reads back to exactly the workspace that wrote it.
+    expect(new WorkspaceConversations('workspace:p1').list()).toHaveLength(1);
+  });
+
+  it('never exposes a project conversation, and the project store never exposes a workspace one', () => {
+    const proj = new ProjectConversations('p1');
+    const pc = proj.create('Discussion');
+
+    const ws = new WorkspaceConversations('workspace:p1');
+    const wc = ws.create('Execution');
+
+    // Foreign ids are indistinguishable from nonexistent ones.
+    expect(ws.get(pc.id)).toBeUndefined();
+    expect(ws.list()).toHaveLength(1);
+    expect(ws.list()[0].id).toBe(wc.id);
+
+    expect(proj.get(wc.id)).toBeUndefined();
+
+    // And the isolation holds through every mutating operation.
+    expect(ws.append(pc.id, { role: 'user', content: 'x' })).toBeUndefined();
+    expect(ws.rename(pc.id, 'hijack')).toBeUndefined();
+    expect(ws.remove(pc.id)).toBe(false);
+    expect(ws.removeLastAssistant(pc.id)).toBe(false);
+    expect(proj.get(pc.id)?.title).toBe('Discussion');
+  });
+
+  it('refuses a workspace id / project id mismatch', () => {
+    expect(() => new WorkspaceConversations('workspace:p1', 'p2')).toThrow('belongs to project "p1"');
+  });
+
+  it('supports the full CRUD surface a workspace route needs', () => {
+    const ws = new WorkspaceConversations('workspace:p9');
+    const a = ws.create('One');
+    const b = ws.create('Two');
+    expect(ws.rename(a.id, 'One renamed')?.title).toBe('One renamed');
+    expect(ws.append(b.id, { role: 'assistant', content: 'done' })).toBeDefined();
+    expect(ws.removeLastAssistant(b.id)).toBe(true);
+    expect(ws.remove(a.id)).toBe(true);
+    expect(ws.list().map((c) => c.id)).toEqual([b.id]);
   });
 });
