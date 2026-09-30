@@ -2,7 +2,8 @@ export { PipelineManager, type PipelineOptions, type InspectResult, type StreamE
 export { WorkspaceManager, type OpenResult } from './workspace';
 export { ProjectRegistry, type ProjectRecord } from './projects';
 export { ProjectMemory, type MemoryItem, type MemoryKind } from './memory';
-export { ProjectConversations, type Conversation, type ConvMessage, type ConversationSummary } from './conversations';
+export { ProjectConversations, WorkspaceConversations, migrateConversation, type ConversationScope, type ConversationKind, type Conversation, type ConvMessage, type ConversationSummary } from './conversations';
+export { HandoffStore, type Handoff, type HandoffStatus, type HandoffInput, type HandoffSourceReader } from './handoffs';
 export { buildKnowledgeGraph, type KnowledgeGraph, type GraphNode, type GraphEdge } from './knowledgeGraph';
 export { buildProfile, getOrBuildProfile, loadProfile, type ProjectProfile, type FolderNode } from './profile';
 export { configHome, homePath } from './persist';

@@ -5,7 +5,8 @@ import { extractArchitectureLayers, layersFromFullstack, type LayerStack } from 
 import { graphifyJsonPath } from './graphify';
 import { ProjectMemory, type MemoryItem, type MemoryKind } from './memory';
 import { engineeringMemory, decisionMemory, missionMemory, type BaseMemoryRecord, type DecisionAlternative } from '@aura/engineering-memory';
-import { ProjectConversations, type Conversation, type ConversationSummary } from './conversations';
+import { ProjectConversations, WorkspaceConversations, type Conversation, type ConversationSummary } from './conversations';
+import { HandoffStore, type Handoff, type HandoffStatus } from './handoffs';
 import { buildKnowledgeGraph, type KnowledgeGraph } from './knowledgeGraph';
 import { runProjectIntelligence, runWorkspaceIntelligence, type ProjectIntelligenceReport, type WorkspaceIntelligenceReport } from './intelligence';
 import { loadChangeLog, analyzeChangePatterns, getChangeVelocity, detectHotspots, type ChangeEntry, type ChangePattern } from './intelligence/changeIntelligence';
@@ -342,6 +343,95 @@ export class WorkspaceManager {
   }
   conversationHistory(id: string, cid: string) {
     return this.conversationsOf(id).history(cid);
+  }
+
+  /* ── workspace execution conversations ───────────────────────── */
+
+  /**
+   * The workspace's own conversation store — a DIFFERENT file family
+   * from the project's Ask AURA threads. `workspaceId` is the Hub's
+   * workspace identity, `workspace:<projectId>`. Operations that name a
+   * conversation refuse to touch anything outside this workspace's
+   * scope; a project conversation id is simply "not found" here.
+   */
+  workspaceConversationsOf(workspaceId: string): WorkspaceConversations {
+    return new WorkspaceConversations(workspaceId);
+  }
+  listWorkspaceConversations(workspaceId: string): ConversationSummary[] {
+    return this.workspaceConversationsOf(workspaceId).list();
+  }
+  getWorkspaceConversation(workspaceId: string, cid: string): Conversation | undefined {
+    return this.workspaceConversationsOf(workspaceId).get(cid);
+  }
+  createWorkspaceConversation(workspaceId: string, title?: string): Conversation {
+    return this.workspaceConversationsOf(workspaceId).create(title);
+  }
+  renameWorkspaceConversation(workspaceId: string, cid: string, title: string): Conversation | undefined {
+    return this.workspaceConversationsOf(workspaceId).rename(cid, title);
+  }
+  removeWorkspaceConversation(workspaceId: string, cid: string): boolean {
+    return this.workspaceConversationsOf(workspaceId).remove(cid);
+  }
+  appendWorkspaceMessage(workspaceId: string, cid: string, msg: { role: 'user' | 'assistant'; content: string; meta?: unknown; error?: boolean }) {
+    return this.workspaceConversationsOf(workspaceId).append(cid, msg);
+  }
+  removeLastWorkspaceAssistantMessage(workspaceId: string, cid: string): boolean {
+    return this.workspaceConversationsOf(workspaceId).removeLastAssistant(cid);
+  }
+
+  /* ── handoffs (Project Ask AURA → Workspace execution) ───────── */
+
+  handoffsOf(projectId: string): HandoffStore {
+    return new HandoffStore(projectId, (pid, cid) => this.conversationsOf(pid).get(cid));
+  }
+
+  createHandoff(projectId: string, input: { sourceConversationId: string; sourceMessageIds: string[]; title: string; notes?: string; targetWorkspaceId: string }): Handoff {
+    return this.handoffsOf(projectId).create({ projectId, ...input });
+  }
+
+  listHandoffs(projectId: string, filter: { targetWorkspaceId?: string; status?: HandoffStatus } = {}): Handoff[] {
+    return this.handoffsOf(projectId).list(filter);
+  }
+
+  getHandoff(projectId: string, hid: string): Handoff | undefined {
+    return this.handoffsOf(projectId).get(hid);
+  }
+
+  setHandoffStatus(projectId: string, hid: string, status: HandoffStatus): Handoff | undefined {
+    return this.handoffsOf(projectId).setStatus(hid, status);
+  }
+
+  /**
+   * Accepts a handoff into this workspace: marks it accepted (naming the
+   * conversation it landed in, so the record is traceable) and posts the
+   * task block into the WORKSPACE conversation only. The source project
+   * thread is never modified by acceptance — the discussion stays as it
+   * was, and the workspace transcript shows what it received.
+   */
+  acceptHandoff(workspaceId: string, projectId: string, hid: string, targetConversationId?: string): Handoff | undefined {
+    const store = this.handoffsOf(projectId);
+    const h = store.get(hid);
+    if (!h) return undefined;
+    if (h.targetWorkspaceId !== workspaceId) {
+      throw new Error(`handoff "${hid}" is addressed to "${h.targetWorkspaceId}", not "${workspaceId}"`);
+    }
+    const convs = this.workspaceConversationsOf(workspaceId);
+    const cid = targetConversationId ?? convs.list()[0]?.id;
+    if (!cid) throw new Error('the workspace has no execution conversation to accept the handoff into');
+    const conv = convs.get(cid);
+    if (!conv) throw new Error(`workspace conversation "${cid}" not found`);
+    const updated = store.setStatus(hid, 'accepted', { acceptedIntoConversationId: cid });
+    if (!updated) return undefined;
+    const lines = [
+      'Task received from Project Ask AURA',
+      '',
+      updated.title,
+      ...(updated.notes ? ['', updated.notes] : []),
+      '',
+      `Source: Ask AURA · ${updated.sourceMessageIds.length} message(s)`,
+    ];
+    convs.append(cid, { role: 'user', content: lines.join('\n') });
+    return updated;
   }
 
   /* ── knowledge graph ────────────────────────────────────────────── */
