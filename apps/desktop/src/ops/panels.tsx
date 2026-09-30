@@ -24,6 +24,9 @@ const AiChatPanel = lazy(() => import('./panels/AiChatPanel'));
 const DashboardPanel = lazy(() => import('./panels/DashboardPanel'));
 const TwinPanel = lazy(() => import('./panels/TwinPanel'));
 const GovernancePanel = lazy(() => import('./panels/GovernancePanel'));
+const DocumentsPanel = lazy(() => import('./panels/DocumentsPanel'));
+const SovereignMonitorPanel = lazy(() => import('./panels/SovereignMonitorPanel'));
+const ArtifactsPanel = lazy(() => import('./panels/ArtifactsPanel'));
 
 export const PANELS: Record<PanelKind, ComponentType> = {
   missions: MissionsPanel,
@@ -41,6 +44,9 @@ export const PANELS: Record<PanelKind, ComponentType> = {
   dashboard: DashboardPanel,
   twin: TwinPanel,
   governance: GovernancePanel,
+  documents: DocumentsPanel,
+  'sovereign-monitor': SovereignMonitorPanel,
+  artifacts: ArtifactsPanel,
 };
 
 export function PanelContent({ kind }: { kind: PanelKind }) {

@@ -29,6 +29,7 @@ from ..exec_ import (
     parse_command,
     resolve_agent_binary,
     run_agent,
+    run_file as _run_file,
     safe_shell_with_code,
 )
 from ..governance.opencode import SELF_KILL_CODE as _SELF_KILL_CODE
@@ -573,6 +574,29 @@ async def agent_delegate_run(inv: dict) -> dict:
         return _no(f"{node['name']} has no executable recorded in the catalogue, so it cannot be run.")
     if not resolve_agent_binary(bin_name).ok:
         return _no(f"{node['name']} is not on the coding-agent allow-list, so it was not run.")
+    # GOV_NONE approval floor: workers whose runtime AURA cannot intercept
+    # at the action level require explicit human pre-approval, because no
+    # real-time enforcement is possible. An unapproved invocation is parked
+    # here before any spawn attempt.
+    _gov_adapter = adapter_for_binary(bin_name)
+    if (_gov_adapter is None or _gov_adapter.governance == GOV_NONE) and \
+            not (inv.get("context") or {}).get("approvalId"):
+        return {
+            "ok": False,
+            "requiresApproval": True,
+            "detail": (
+                f"{node['name']} requires explicit human approval before "
+                "running: AURA has no proven real-time interception point "
+                "for this runtime (GOV_NONE). Request approval and retry "
+                "with the issued approvalId."
+            ),
+            "output": {
+                "nodeId": node["id"], "agent": node["name"],
+                "exitCode": None, "stdout": "",
+                "governanceKind": "GOV_NONE",
+                **({"role": role} if role else {}),
+            },
+        }
     spec = agent_delegate_invocation(node)
     if not spec:
         return _no(
@@ -1171,7 +1195,283 @@ CANONICAL_INTERNAL_CAPABILITIES: list[dict] = [
         "risk": "low", "permissions": [],
         "input": [], "output": "Workflow inventory", "verify": None,
     },
+    {
+        "id": "knowledge.search", "name": "Search uploaded documents / knowledge base",
+        "category": "knowledge", "surface": "aura-internal",
+        "description": "BM25 full-text search over locally ingested documents (PDFs, DOCX, images, TXT) and the knowledge base. Use this for questions about uploaded documents, scanned files, or 'what does the document say'. Not for engineering-decision history — use memory.search for that.",
+        "risk": "low", "permissions": ["aura.read"],
+        "input": [
+            {"name": "query", "type": "string", "required": True,
+             "description": "Search query"},
+            {"name": "top_k", "type": "number", "required": False,
+             "description": "Max results (default 5)"},
+        ],
+        "output": "SearchResult[]", "verify": None,
+    },
+    {
+        "id": "document.ingest", "name": "Ingest document",
+        "category": "knowledge", "surface": "aura-internal",
+        "description": "Extracts text from a local file (PDF, DOCX, image) "
+                       "and indexes it in the knowledge base.",
+        "risk": "low", "permissions": ["project.read", "aura.write"],
+        "input": [
+            {"name": "path", "type": "string", "required": True,
+             "description": "Absolute path to the document"},
+        ],
+        "output": "IngestResult — status, chunk_count, char_count", "verify": "read-back",
+    },
+    {
+        "id": "artifact.generate", "name": "Generate artifact",
+        "category": "artifacts", "surface": "aura-internal",
+        "description": "Produces a real DOCX, XLSX, or PDF document from a structured spec.",
+        "risk": "low", "permissions": ["project.write", "aura.write"],
+        "input": [
+            {"name": "spec", "type": "object", "required": True,
+             "description": "ArtifactSpec: {artifact_type, title, sections, author, subject}"},
+            {"name": "output_path", "type": "string", "required": False,
+             "description": "Destination file path (auto-generated if omitted)"},
+        ],
+        "output": "ArtifactResult — path, size_bytes, status", "verify": "read-back",
+    },
+    {
+        "id": "sandbox.execute", "name": "Execute in sandbox",
+        "category": "terminal", "surface": "local-process",
+        "description": "Runs a command in a bounded subprocess inside the project root "
+                       "with timeout enforcement.",
+        "risk": "medium", "permissions": ["process.execute"],
+        "input": [
+            {"name": "command", "type": "string", "required": True,
+             "description": "Command to execute"},
+            {"name": "cwd", "type": "string", "required": False,
+             "description": "Working directory (must stay inside project root)"},
+            {"name": "timeout_ms", "type": "number", "required": False,
+             "description": "Timeout in milliseconds (max 30 000, default 10 000)"},
+        ],
+        "output": "exit_code, stdout, stderr, timed_out", "verify": "exit-code",
+    },
 ]
+
+
+def multimodal_executors(kb, artifacts_dir=None) -> "list[ExecutorAdapter]":
+    """ExecutorAdapters for knowledge/document/artifact/sandbox capabilities.
+
+    Args:
+        kb:            KnowledgeBase instance (already constructed).
+        artifacts_dir: directory where generated artifacts are written;
+                       defaults to ~/.aura/artifacts.
+    """
+    from pathlib import Path as _Path
+
+    _adir = (_Path(artifacts_dir).resolve() if artifacts_dir
+             else _Path.home() / ".aura" / "artifacts")
+    _adir.mkdir(parents=True, exist_ok=True)
+
+    # ── knowledge.search ────────────────────────────────────────────────
+    async def knowledge_search_run(inv):
+        params = (inv.get("input") or inv.get("params")) or {}
+        query = params.get("query", "")
+        top_k = int(params.get("top_k") or 5)
+        if not query:
+            return {"ok": False, "detail": "query is required"}
+        results = kb.search_with_context(query, top_k=top_k)
+        # Emit stdout so the Central Agent's answer-synthesizer can feed
+        # retrieved chunks to the model. Each excerpt is fenced with its
+        # source path so the synthesizer's prompt can treat it as untrusted
+        # data. Per-chunk cap keeps a single big doc from starving the
+        # context; overall cap matches other executors' stdout budget.
+        _PER_CHUNK_CHARS = 1_200
+        _MAX_STDOUT_CHARS = 8_000
+        lines: list[str] = []
+        for r in results:
+            data = r.to_dict() if hasattr(r, "to_dict") else r
+            text = (data.get("text") or "").strip()
+            if not text:
+                continue
+            src = data.get("source") or data.get("path") or "unknown"
+            score = data.get("score")
+            score_str = f" score={score:.3f}" if isinstance(score, (int, float)) else ""
+            excerpt = text[:_PER_CHUNK_CHARS]
+            if len(text) > _PER_CHUNK_CHARS:
+                excerpt += " …[truncated]"
+            lines.append(
+                f"[source={src}{score_str}]\n{excerpt}\n[/source]")
+            if sum(len(x) for x in lines) >= _MAX_STDOUT_CHARS:
+                lines.append("…[additional results omitted]")
+                break
+        stdout = "\n\n".join(lines) if lines else "(no results)"
+        return _ok(
+            f"{len(results)} result(s) for query: {query!r}",
+            {"results": [r.to_dict() for r in results],
+             "query": query,
+             "stdout": stdout},
+        )
+
+    # ── document.ingest ─────────────────────────────────────────────────
+    async def document_ingest_run(inv):
+        params = (inv.get("input") or inv.get("params")) or {}
+        path = params.get("path", "")
+        if not path:
+            return {"ok": False, "detail": "path is required"}
+        from ..multimodal.document_engine import DocumentEngine, EngineConfig
+        from ..multimodal.doctypes import DocumentStatus
+        engine = DocumentEngine(EngineConfig.from_env())
+        result = engine.convert(path)
+        _NON_INDEXABLE = {
+            DocumentStatus.UNSUPPORTED,
+            DocumentStatus.CORRUPT,
+            DocumentStatus.OCR_REQUIRED,
+            DocumentStatus.SUPPORTED_DEPENDENCY_MISSING,
+        }
+        if result.document_status in _NON_INDEXABLE:
+            return {
+                "ok": False,
+                "detail": result.note or result.document_status.value,
+                "documentStatus": result.document_status.value,
+                "engine": result.engine,
+            }
+        extraction = result.to_extraction_result()
+        record = kb.add_document(path, extraction)
+        warnings = [e.message for e in result.errors] if result.errors else []
+        # CRITICAL: document text is NOT included — only structural metadata
+        return _ok(
+            f"Ingested {_Path(path).name}: {record.chunk_count} chunk(s), "
+            f"status={record.extraction_status}",
+            {
+                "status": record.extraction_status,
+                "documentStatus": result.document_status.value,
+                "engine": result.engine,
+                "ocrUsed": result.ocr_used or None,
+                "chunkCount": record.chunk_count,
+                "charCount": record.char_count,
+                "pageCount": result.page_count,
+                "docId": record.doc_id,
+                "note": result.note or None,
+                "warnings": warnings,
+            },
+        )
+
+    async def document_ingest_verify(inv, result):
+        if not result.get("ok"):
+            return {"passed": False, "kind": "status-check",
+                    "detail": result.get("detail")}
+        chunk_count = (result.get("output") or {}).get("chunkCount", 0)
+        passed = chunk_count > 0
+        return {
+            "passed": passed, "kind": "read-back",
+            "detail": (f"{chunk_count} chunk(s) indexed" if passed
+                       else "no chunks indexed — file may be empty or unsupported"),
+        }
+
+    # ── artifact.generate ───────────────────────────────────────────────
+    async def artifact_generate_run(inv):
+        import json as _json
+        params = (inv.get("input") or inv.get("params")) or {}
+        spec_raw = params.get("spec")
+        if not spec_raw:
+            return {"ok": False, "detail": "spec is required"}
+        from ..artifacts.generator import ArtifactGenerator, ArtifactSpec, ArtifactType
+        try:
+            if isinstance(spec_raw, str):
+                spec_raw = _json.loads(spec_raw)
+            art_type = ArtifactType(spec_raw.get("artifact_type", "docx"))
+            spec = ArtifactSpec(
+                artifact_type=art_type,
+                title=spec_raw.get("title", "Untitled"),
+                sections=spec_raw.get("sections", []),
+                author=spec_raw.get("author", "AURA"),
+                subject=spec_raw.get("subject", ""),
+            )
+        except Exception as exc:
+            return {"ok": False, "detail": f"invalid spec: {exc}"}
+        output_path = params.get("output_path")
+        if not output_path:
+            import time as _time
+            safe_title = spec.title[:40].replace(" ", "_").replace("/", "_")
+            fname = f"{safe_title}_{int(_time.time())}.{spec.artifact_type.value}"
+            output_path = str(_adir / fname)
+        gen = ArtifactGenerator().generate(spec, output_path)
+        if gen.status != "ok":
+            return {"ok": False, "detail": gen.note or gen.status,
+                    "output": gen.to_dict()}
+        return _ok(
+            f"Generated {spec.artifact_type.value.upper()}: "
+            f"{_Path(output_path).name} ({gen.size_bytes:,} bytes)",
+            gen.to_dict(),
+        )
+
+    async def artifact_generate_verify(inv, result):
+        if not result.get("ok"):
+            return {"passed": False, "kind": "status-check",
+                    "detail": result.get("detail")}
+        out = result.get("output") or {}
+        path = out.get("path", "")
+        size = out.get("sizeBytes", 0)
+        passed = bool(path) and _Path(path).exists() and size > 0
+        return {
+            "passed": passed, "kind": "read-back",
+            "detail": (f"file exists, {size} bytes" if passed
+                       else f"file not found or empty: {path}"),
+        }
+
+    # ── sandbox.execute ─────────────────────────────────────────────────
+    async def sandbox_execute_run(inv):
+        import shlex
+        params = (inv.get("input") or inv.get("params")) or {}
+        command = params.get("command", "")
+        if not command:
+            return {"ok": False, "detail": "command is required"}
+        cwd = params.get("cwd") or str(_Path.cwd())
+        timeout_ms = int(params.get("timeout_ms") or 10_000)
+        # Cap at 30 s; run_file enforces its own process-group cleanup
+        timeout_ms = min(timeout_ms, 30_000)
+        try:
+            cwd_resolved = str(_Path(cwd).resolve())
+        except Exception:
+            return {"ok": False, "detail": f"invalid cwd: {cwd}"}
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            return {"ok": False, "detail": f"invalid command: {exc}"}
+        if not argv:
+            return {"ok": False, "detail": "command is empty after parsing"}
+        try:
+            proc_out = await _run_file(argv, cwd_resolved, timeout_ms)
+        except Exception as exc:
+            return {"ok": False, "detail": f"subprocess error: {exc}"}
+        timed_out = bool(proc_out.timedOut)
+        exit_code = proc_out.code
+        out_data = {
+            "exitCode": exit_code,
+            "stdout": proc_out.out[:8_000],
+            "timedOut": timed_out,
+        }
+        if not timed_out and exit_code == 0:
+            return _ok(f"exit={exit_code}", out_data)
+        return {"ok": False,
+                "detail": "timed out" if timed_out else f"exit={exit_code}",
+                "output": out_data}
+
+    async def sandbox_execute_verify(inv, result):
+        if not result.get("ok"):
+            return {"passed": False, "kind": "exit-code",
+                    "detail": result.get("detail")}
+        exit_code = (result.get("output") or {}).get("exitCode", -1)
+        passed = exit_code == 0
+        return {"passed": passed, "kind": "exit-code",
+                "detail": f"exit_code={exit_code}"}
+
+    return [
+        ExecutorAdapter("knowledge.search", {"run": knowledge_search_run}),
+        ExecutorAdapter("document.ingest",
+                        {"run": document_ingest_run,
+                         "verify": document_ingest_verify}),
+        ExecutorAdapter("artifact.generate",
+                        {"run": artifact_generate_run,
+                         "verify": artifact_generate_verify}),
+        ExecutorAdapter("sandbox.execute",
+                        {"run": sandbox_execute_run,
+                         "verify": sandbox_execute_verify}),
+    ]
 
 
 def register_canonical_internal_capabilities(fabric) -> None:

@@ -1,0 +1,48 @@
+SITE INSPECTION REPORT
+Building A, Level 3
+Date: 2026-09-15
+Inspector: J. Smith
+Report Reference: INS-2026-0915-BA3
+Status: Pending Approval
+
+EXECUTIVE SUMMARY
+This report documents findings from the scheduled safety and compliance inspection
+of Building A, Level 3 conducted on 2026-09-15. Three findings were identified
+requiring attention prior to formal approval.
+
+SECTION 1 — ELECTRICAL SYSTEMS
+Finding ID: EL-001
+Severity: HIGH
+Description: Panel board EL-3A has three circuit breakers rated at 40A serving
+circuits with 20A wire gauge. This constitutes an overrated protection situation
+and presents a fire risk under sustained load conditions.
+Recommended Action: Replace affected circuit breakers with 20A rated units.
+Contractor: Licensed electrician required. Target completion: 2026-10-01.
+
+SECTION 2 — STRUCTURAL INTEGRITY
+Finding ID: ST-002
+Severity: MEDIUM
+Description: Expansion joint covers on the west corridor show visible separation
+of approximately 8mm beyond rated tolerance. No structural compromise observed
+but monitoring and remediation is recommended.
+Recommended Action: Replace expansion joint covers to specification.
+Contractor: Building maintenance team. Target completion: 2026-10-15.
+
+SECTION 3 — FIRE SAFETY
+Finding ID: FS-003
+Severity: HIGH
+Description: Sprinkler head FS-3-14 in storage room 3-B is obstructed by
+shelving installed without clearance compliance. Current clearance is 120mm;
+minimum required is 450mm.
+Recommended Action: Relocate shelving to restore required clearance.
+Contractor: Facilities management. Target completion: 2026-09-22.
+
+APPROVAL CRITERIA
+All HIGH severity findings must be resolved and verified before formal approval.
+MEDIUM severity findings must have confirmed remediation plans with scheduled
+completion dates within 30 days of inspection date.
+
+INSPECTOR DECLARATION
+I certify that the findings documented in this report accurately represent the
+conditions observed during the inspection conducted on 2026-09-15.
+Signed: J. Smith, Certified Safety Inspector (CSI-4821)

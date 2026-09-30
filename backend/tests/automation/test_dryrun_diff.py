@@ -19,6 +19,12 @@ sys.path.insert(0, str(_ROOT / "workflow"))
 
 START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=UTC).timestamp() * 1000)
 
+_TSREF_DRYRUN = Path("/tmp/opencode/tsref/dryrun.mjs")
+_NEED_TSREF = pytest.mark.skipif(
+    not _TSREF_DRYRUN.exists(),
+    reason="SKIP-INFRA: TypeScript dryrun reference not built (/tmp/opencode/tsref/dryrun.mjs missing)",
+)
+
 
 def _run_ts(graph, home, deny_for=None):
     driver = _ROOT / "differential" / "ts_driver.mjs"
@@ -155,6 +161,7 @@ KNOWN_ORACLE_DIVERGENCES = {
 }
 
 
+@_NEED_TSREF
 def test_full_report_parity(ran):
     problems = []
     for name, t, p in ran:

@@ -2,6 +2,9 @@ import { Icon } from '@aura/ui';
 import { ApprovalRequestCard } from './ApprovalRequestCard';
 import { RunTimeline } from './RunTimeline';
 import { RunResultCard } from './RunResultCard';
+import { MissionStageStrip } from './MissionStageStrip';
+import { ActivityFeedPanel } from './ActivityFeedPanel';
+import { EvidencePanel } from './EvidencePanel';
 import type { AgentRun } from './useAgentRun';
 
 /**
@@ -19,7 +22,7 @@ import type { AgentRun } from './useAgentRun';
  */
 export function AgentRunPanel({ run }: { run: AgentRun }) {
   const {
-    sessionId, result, error, plan, objective, handoffs, actions,
+    sessionId, result, error, plan, objective, handoffs, actions, events,
     supervisor, pendingApproval, parkedTask, parkedScope, busy, waiting,
     onDecided, openProject, projectPath, projectId, stop, stopRequested,
     cancelled, resumeCancelled, runState,
@@ -123,6 +126,16 @@ export function AgentRunPanel({ run }: { run: AgentRun }) {
         </div>
       )}
 
+      {/* PIPELINE PROGRESS — real stage transitions derived from actual
+          backend events. Shown as soon as we have a session and either
+          events or an active run; hidden on the empty idle screen. */}
+      {(events.length > 0 || busy) && !idle && (
+        <MissionStageStrip
+          events={events}
+          outcome={result?.outcome ?? null}
+        />
+      )}
+
       {waiting && (
         <p className="text-[13px] text-text-muted">Waiting for AURA's plan…</p>
       )}
@@ -173,6 +186,11 @@ export function AgentRunPanel({ run }: { run: AgentRun }) {
         </div>
       )}
 
+      {/* LIVE ACTIVITY FEED — last 20 real events, never a placeholder. */}
+      {events.length > 0 && (
+        <ActivityFeedPanel events={events} />
+      )}
+
       {result && (
         <RunResultCard
           result={result}
@@ -183,6 +201,13 @@ export function AgentRunPanel({ run }: { run: AgentRun }) {
           projectPath={projectPath}
           onOpenProject={projectId ? () => openProject(projectId) : undefined}
         />
+      )}
+
+      {/* EVIDENCE — proof of how the run was governed. Only drawn when
+          the backend actually provided evidence; absent on failed/cancelled
+          runs that produced no bundle. */}
+      {result?.evidence && (
+        <EvidencePanel evidence={result.evidence} sessionId={sessionId} />
       )}
     </div>
   );

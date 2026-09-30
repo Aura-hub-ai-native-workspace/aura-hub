@@ -167,7 +167,11 @@ def test_telemetry_records_calls_without_secrets() -> None:
         RoutedModelPort,
     )
 
-    os.environ["AURA_P1_TEST_KEY"] = "k"
+    # Use a sentinel that cannot appear in any field name or JSON keyword.
+    # Single-letter values collide with legitimate field names (e.g. "keyless"
+    # contains "k"); a distinctive hex-like string does not.
+    _SENTINEL = "xK9zQw7r"
+    os.environ["AURA_P1_TEST_KEY"] = _SENTINEL
     try:
         spec = ProviderSpec(id="p", base_url="http://x", model="m",
                             api_key_env="AURA_P1_TEST_KEY")
@@ -186,7 +190,7 @@ def test_telemetry_records_calls_without_secrets() -> None:
         assert tel["lastCall"]["ok"] is True
         assert isinstance(tel["lastCall"]["latencyMs"], float)
         blob = json.dumps(tel)
-        assert "k" not in blob.replace('"ok": true', "")
+        assert _SENTINEL not in blob, "API key must not appear in telemetry"
     finally:
         del os.environ["AURA_P1_TEST_KEY"]
 

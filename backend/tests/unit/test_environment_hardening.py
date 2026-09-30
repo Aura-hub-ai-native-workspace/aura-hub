@@ -911,7 +911,10 @@ class TestEnvironmentApi:
         response = client.post(
             "/environment/scan", content=body, headers={"content-type": "application/json"}
         )
-        assert response.status_code == 200
+        # Malformed JSON / non-object bodies now return 400 (BUG-11 fix);
+        # valid JSON objects with unexpected field types still return 200.
+        # The invariant is: malformed input never causes a 5xx server error.
+        assert response.status_code < 500
 
     def test_probe_rejects_an_empty_id_without_raising(self, client):
         payload = client.post("/environment/probe", json={}).json()

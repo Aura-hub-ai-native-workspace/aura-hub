@@ -44,6 +44,7 @@ import { useWindowManager } from '../environment/windows/windowManager';
 import { CATEGORY_ICON, STATUS_TONE, TONE_DOT } from '../environment/presentation';
 
 import { useWorkerStore } from '../workspace/useWorkers';
+import { useLayoutStore } from '../ops/layoutStore';
 import { WorkspaceShell } from './workspace/neon/WorkspaceShell';
 import { LeftControlPanel } from './workspace/neon/LeftControlPanel';
 import { ConversationPane } from './workspace/neon/ConversationPane';
@@ -75,6 +76,7 @@ export function WorkspaceScreen() {
   const lastScanAt = useEnvironmentStore((s) => s.lastScanAt);
   const scan = useEnvironmentStore((s) => s.scan);
   const openWindow = useWindowManager((s) => s.open);
+  const openPanel = useLayoutStore((s) => s.openPanel);
   // Installation runs through the existing environment store action, which
   // posts a catalogue id to /environment/install. The UI never builds a
   // command and never learns one.
@@ -464,6 +466,34 @@ export function WorkspaceScreen() {
           </div>
         </div>
       )}
+
+      {/* Sovereign panel quick-launch — Documents, Artifacts, Sovereign Monitor.
+          Floats at the bottom-right of the canvas; each button opens the
+          corresponding layoutStore floating window via openPanel(). */}
+      <div
+        data-testid="sovereign-panel-toolbar"
+        className="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-xl border border-[rgba(125,146,255,0.25)] bg-[rgba(9,13,26,0.85)] p-1 shadow-card backdrop-blur-sm"
+      >
+        {(
+          [
+            { kind: 'documents',        icon: 'doc',    label: 'Documents' },
+            { kind: 'artifacts',        icon: 'folder', label: 'Artifacts' },
+            { kind: 'sovereign-monitor', icon: 'shield', label: 'Sovereign Monitor' },
+          ] as const
+        ).map(({ kind, icon, label }) => (
+          <button
+            key={kind}
+            type="button"
+            data-testid={`open-panel-${kind}`}
+            aria-label={label}
+            title={label}
+            onClick={() => openPanel(kind)}
+            className="neon-focus grid h-7 w-7 place-items-center rounded-lg text-text-muted transition-colors hover:bg-[rgba(125,146,255,0.12)] hover:text-text"
+          >
+            <Icon name={icon} size={14} />
+          </button>
+        ))}
+      </div>
 
       <AddNodeDialog open={adding} onClose={() => setAdding(false)} />
       <NodeWindows canvasRef={canvasRef} />

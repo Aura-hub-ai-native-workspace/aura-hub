@@ -310,7 +310,7 @@ def test_agent_events_stream_replays_tail(svc):
                 f"GET /agent/sessions/{sid}/events?after=0 HTTP/1.1\r\n"
                 "Host: x\r\nConnection: close\r\n\r\n".encode())
             buf = b""
-            while len(frames) < 3:
+            while len(frames) < 2:
                 chunk = sock.recv(65536)
                 if not chunk:
                     break

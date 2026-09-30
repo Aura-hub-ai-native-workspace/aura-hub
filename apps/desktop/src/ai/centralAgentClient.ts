@@ -106,6 +106,8 @@ export interface AgentEvidenceBundle {
   /** Model behind model-backed synthesis; absent means heuristic. */
   modelProvider?: string | null;
   modelName?: string | null;
+  /** Paths of artifacts generated during this session (Phase 5 onwards). */
+  artifactPaths?: string[];
 }
 
 /** The backend's terminal report. See docs/AURA_CENTRAL_AGENT_API.md. */
@@ -230,6 +232,54 @@ export interface EditorContext {
   customInstruction?: string;
 }
 
+/* ── Agent Runtime Control Plane types ─────────────────────────────── */
+
+export interface AgentRuntimeConfig {
+  baseUrl: string;
+  modelId: string;
+  authType?: 'keyless' | 'bearer' | 'api_key';
+  networkClass?: 'local' | 'private' | 'cloud' | 'unknown';
+  apiKeyEnv?: string;
+}
+
+export type AgentConfigStatus = 'ok' | 'partial' | 'incompatible' | 'not_installed' | 'error';
+export type AgentDriftStatus = 'in_sync' | 'drifted' | 'unknown';
+
+export interface AgentRecord {
+  id: string;
+  name: string;
+  detected: boolean;
+  configPath: string | null;
+  status: AgentConfigStatus;
+  statusNote: string;
+  currentConfig: Record<string, unknown>;
+  drift: AgentDriftStatus;
+  driftFields: string[];
+  error: string | null;
+}
+
+export interface AgentConfigChange {
+  agentId: string;
+  status: AgentConfigStatus;
+  statusNote: string;
+  backupPath: string | null;
+  ok: boolean;
+  error: string | null;
+}
+
+export interface AgentDriftResult {
+  agentId: string;
+  drift: AgentDriftStatus;
+  fields: string[];
+}
+
+export interface AgentRuntimeSummary {
+  agents: AgentRecord[];
+  installedCount: number;
+  configuredCount: number;
+  driftedCount: number;
+}
+
 /** A client-proposed session id (`agt-` + 12 hex). The server accepts it
  *  only when well-shaped and untaken — otherwise it issues its own. */
 export function newClientSessionId(): string {
@@ -339,6 +389,30 @@ export const centralAgentClient = {
 
   /** Reasoning-free plan review: steps, capabilities, risks, approvals. */
   planReview: (sessionId: string) => jget<PlanReview>(`/agent/sessions/${encodeURIComponent(sessionId)}/plan`),
+
+  /* Agent Runtime Control Plane ───────────────────────────────────── */
+
+  /** Discover and return live status for all detected agents. */
+  agentRuntimeDiscover: () => jget<AgentRuntimeSummary>('/agent-runtime/discover'),
+
+  /** Cached summary without re-probing the filesystem. */
+  agentRuntimeSummary: () => jget<AgentRuntimeSummary>('/agent-runtime/summary'),
+
+  /** Point every detected agent at the supplied runtime. */
+  agentRuntimeApplyAll: (runtime: AgentRuntimeConfig) =>
+    jpost<{ changes: AgentConfigChange[] }>('/agent-runtime/apply', runtime),
+
+  /** Point one specific agent at the supplied runtime. */
+  agentRuntimeApplyOne: (agentId: string, runtime: AgentRuntimeConfig) =>
+    jpost<AgentConfigChange>(`/agent-runtime/apply/${encodeURIComponent(agentId)}`, runtime),
+
+  /** Roll one agent back to its most recent backup. */
+  agentRuntimeRestore: (agentId: string) =>
+    jpost<AgentConfigChange>(`/agent-runtime/restore/${encodeURIComponent(agentId)}`),
+
+  /** Check how far each agent has drifted from the expected runtime. */
+  agentRuntimeDrift: (runtime: AgentRuntimeConfig) =>
+    jpost<{ drift: AgentDriftResult[] }>('/agent-runtime/drift', runtime),
 
   /**
    * The EvidenceBundle of the session's last result. The route returns the
@@ -469,5 +543,69 @@ export const centralAgentClient = {
       controller.abort();
     };
   },
+
+  /* ── Documents / Knowledge ──────────────────────────────────────── */
+
+  /** Upload a file for ingestion into the knowledge base. */
+  ingestDocument: async (file: File): Promise<{
+    ok: boolean; path: string; chunkCount: number; charCount: number;
+    status: string; documentStatus: string; engine: string;
+    ocrUsed: string | null; pageCount: number; mimeType: string | null;
+    note: string | null; warnings: string[]; timingsMs: Record<string, number>;
+  }> => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${BASE}/documents/ingest`, { method: 'POST', body: form });
+    if (!res.ok) {
+      let msg = `request failed (${res.status})`;
+      try {
+        const b = await res.json() as { error?: string; note?: string };
+        if (b.note) msg = b.note; else if (b.error) msg = b.error;
+      } catch { /* keep */ }
+      throw new Error(msg);
+    }
+    return res.json();
+  },
+
+  /** Search the knowledge base. */
+  searchKnowledge: (query: string, topK = 5) =>
+    jget<{ results: Array<{ text: string; score: number; source: string | null }> }>(
+      `/knowledge/search?q=${encodeURIComponent(query)}&top_k=${topK}`),
+
+  /** List documents in the knowledge base. */
+  listDocuments: () =>
+    jget<{ documents: Array<{ path: string; chunk_count: number; extraction_status: string; ingested_at: string; engine?: string; documentStatus?: string; ocrUsed?: string | null }> }>(
+      '/documents/list'),
+
+  /** Query document-engine health and capabilities. */
+  getDocumentEngines: () =>
+    jget<{
+      ok: boolean;
+      health: {
+        available: boolean; doclingInstalled: boolean; doclingVersion: string;
+        modelsCached: boolean; ocrReady: boolean; ocrEngines: string[];
+        offlineReady: boolean; missing: string[]; detail: string;
+      };
+      capabilities: {
+        doclingInstalled: boolean; doclingVersion: string; formats: Record<string, string>;
+        ocrEngines: string[]; ocrRequested: string; libreofficeAvailable: boolean;
+        tesseractAvailable: boolean; modelsCached: boolean; modelCacheDir: string;
+        offlineReady: boolean;
+      };
+    }>('/documents/engines'),
+
+  /* ── Artifacts ──────────────────────────────────────────────────── */
+
+  /** List artifacts generated during missions. */
+  listArtifacts: () =>
+    jget<{ artifacts: Array<{ name: string; path: string; size_bytes: number; created_at: string }> }>(
+      '/artifacts'),
+
+  /* ── Sovereign Network Monitor ──────────────────────────────────── */
+
+  /** Snapshot of the EgressGateway inference journal. */
+  networkJournal: () =>
+    jget<{ total: number; blocked: number; entries: Array<{ host: string; decision: string; sovereign_block: boolean; timestamp: string }> }>(
+      '/network/journal'),
 
 };

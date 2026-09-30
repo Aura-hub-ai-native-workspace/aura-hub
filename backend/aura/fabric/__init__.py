@@ -886,8 +886,30 @@ def describe_authority(capability_id: str, context: dict,
     ))
 
 
-def builtin_executors(home=None) -> dict:
-    """The canonical executor set, keyed by capability id."""
-    from ..executors import all_executors, register_canonical_internal_capabilities
+def builtin_executors(home=None, kb=None) -> dict:
+    """The canonical executor set, keyed by capability id.
+
+    Includes the four multimodal capabilities (knowledge.search,
+    document.ingest, artifact.generate, sandbox.execute) when a
+    KnowledgeBase is available.  If ``kb`` is None and ``home`` is set,
+    a default KnowledgeBase rooted at ``home/knowledge`` is created.
+    Pass ``kb=False`` to skip multimodal registration entirely (tests
+    that do not need KB can avoid the import).
+    """
+    from ..executors import all_executors, multimodal_executors, register_canonical_internal_capabilities
     register_canonical_internal_capabilities(None)
-    return {e.capabilityId: e for e in all_executors()}
+    result = {e.capabilityId: e for e in all_executors()}
+    if kb is not False:
+        _kb = kb
+        if _kb is None and home is not None:
+            try:
+                from ..knowledge.store import KnowledgeBase as _KB
+                _kb = _KB(store_dir=home / "knowledge")
+            except Exception:
+                _kb = None
+        if _kb is not None:
+            _home = home
+            _adir = (_home / "artifacts") if _home is not None else None
+            for e in multimodal_executors(_kb, _adir):
+                result[e.capabilityId] = e
+    return result

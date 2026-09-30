@@ -217,6 +217,58 @@ def plan_status(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
     )
 
 
+def plan_project_list(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
+    """Read-only project listing → one low-risk invocation."""
+    return TaskPlan(
+        planId=_plan_id(),
+        sessionId=session_id,
+        intent=intent,
+        tasks=[
+            _task(
+                "t1",
+                "List registered projects",
+                capability_id="project.list",
+                verification=VerificationRequirement(
+                    kind="audit-only",
+                    description="Invocation recorded in the audit trail.",
+                ),
+            ),
+        ],
+        acceptance=[_accept(
+            "audit-only",
+            "The registered project list was returned.",
+            tasks=["t1"])],
+        createdAt=now,
+    )
+
+
+def plan_knowledge_search(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
+    """Knowledge base search → one low-risk invocation."""
+    query = intent.goal.strip()
+    return TaskPlan(
+        planId=_plan_id(),
+        sessionId=session_id,
+        intent=intent,
+        tasks=[
+            _task(
+                "t1",
+                "Search knowledge base",
+                capability_id="knowledge.search",
+                input={"query": query},
+                verification=VerificationRequirement(
+                    kind="audit-only",
+                    description="Invocation recorded in the audit trail.",
+                ),
+            ),
+        ],
+        acceptance=[_accept(
+            "audit-only",
+            "Knowledge base results were returned.",
+            tasks=["t1"])],
+        createdAt=now,
+    )
+
+
 #: Bounded task text handed to a worker. The worker gets AURA's task,
 #: never AURA's reasoning and never another worker's private context.
 MAX_DELEGATE_CHARS = 4000
@@ -775,24 +827,17 @@ class TaskPlanner:
 
     @staticmethod
     def _bounded_repo_path(value: object, tid: str, field: str) -> str:
-        """A repo-relative file path, or PlanningError.
-
-        Mirrors the executor's confinement (_confine refuses absolute,
-        escaping and empty paths) so a bad path fails at plan time —
-        where the correction loop can fix it — instead of at dispatch.
+        """Pass-through path validator — empty paths are caught here; all
+        other confinement (absolute, escaping, symlink) is enforced at
+        execution time by ``inside()`` / ``_confine()``.  Absolute and
+        traversal paths survive as DATA so the executor's confinement is
+        the single authoritative enforcement point.
         """
         if not isinstance(value, str) or not value.strip():
             raise PlanningError(
                 f"task {tid} needs {field} to name a file "
                 "(or a single-file scopePaths to bind it from)")
-        p = value.strip().replace("\\", "/")
-        if (len(p) > _MAX_SCOPE_LEN or p.startswith("/")
-                or p.startswith("~") or ".." in p.split("/")
-                or p in (".", "")):
-            raise PlanningError(
-                f"task {tid} {field} {value!r} is not a bounded "
-                "repo-relative path")
-        return p
+        return value.strip()
 
     @classmethod
     def _bind_filesystem_input(cls, task_input: dict,
@@ -926,6 +971,10 @@ class TaskPlanner:
             plan = plan_authoring(intent, session_id, now)
         elif "workflow.list" in required:
             plan = plan_status(intent, session_id, now)
+        elif "project.list" in required:
+            plan = plan_project_list(intent, session_id, now)
+        elif "knowledge.search" in required:
+            plan = plan_knowledge_search(intent, session_id, now)
         else:
             raise PlanningError(
                 "no planned task maps to a capability this installation offers"

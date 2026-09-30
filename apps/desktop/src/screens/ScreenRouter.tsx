@@ -8,6 +8,7 @@ import { ProjectWorkspace } from './project/ProjectWorkspace';
 import { ErrorBoundary } from './ErrorBoundary';
 
 const AiSettings = lazy(() => import('./ai/AiSettings').then((m) => ({ default: m.AiSettings })));
+const AiRuntime = lazy(() => import('./ai/AiRuntime').then((m) => ({ default: m.AiRuntime })));
 const Workflows = lazy(() => import('./workflows/Workflows').then((m) => ({ default: m.Workflows })));
 const WorkspaceScreen = lazy(() => import('./WorkspaceScreen').then((m) => ({ default: m.WorkspaceScreen })));
 const ConnectedEnvironment = lazy(() =>
@@ -106,6 +107,12 @@ function renderScreen(nav: string, inProject: boolean) {
       return (
         <ErrorBoundary title="Unable to load the Connected Environment">
           {lazyScreen(<ConnectedEnvironment />)}
+        </ErrorBoundary>
+      );
+    case 'ai-runtime':
+      return (
+        <ErrorBoundary title="Unable to load AI Runtime">
+          {lazyScreen(<AiRuntime />)}
         </ErrorBoundary>
       );
     case 'settings':

@@ -4,6 +4,17 @@ export interface AiSettings {
   maxTokens: number;
   timeoutMs: number;
   maxRetries: number;
+  /**
+   * APPLICATION ENFORCED SOVEREIGN MODE.
+   * When true: cloud AI inference endpoints are blocked at the routing layer.
+   * AURA will only use local/private model endpoints (Ollama, private GPU servers).
+   * If no private model is available, AURA reports the gap honestly rather than
+   * falling back to cloud silently.
+   *
+   * This is software-level enforcement, NOT a physical air-gap guarantee.
+   * Physical isolation requires separate infrastructure controls.
+   */
+  sovereignMode: boolean;
 }
 
 export const DEFAULT_SETTINGS: AiSettings = {
@@ -12,6 +23,7 @@ export const DEFAULT_SETTINGS: AiSettings = {
   maxTokens: 4096,
   timeoutMs: 30_000,
   maxRetries: 2,
+  sovereignMode: false,
 };
 
 const CODE_HINT = /\b(code|function|class|file|implement|implementation|bug|error|refactor|component|hook|module|import|type|interface|variable|method|test|snippet|how does|where is)\b/i;

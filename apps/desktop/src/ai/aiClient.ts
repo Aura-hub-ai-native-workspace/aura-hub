@@ -172,7 +172,7 @@ export interface HealthResult {
 }
 
 /* ── Mission Control types now live in `missionClient.ts` (its own file, mirroring `diagnosisClient.ts`'s split from this one) ── */
-export interface AiSettings { streaming: boolean; temperature: number; maxTokens: number; timeoutMs: number; maxRetries: number }
+export interface AiSettings { streaming: boolean; temperature: number; maxTokens: number; timeoutMs: number; maxRetries: number; sovereignMode: boolean }
 export interface SettingsResult { settings: AiSettings; key: { configured: boolean; fingerprint: string } }
 
 export interface InspectResult {

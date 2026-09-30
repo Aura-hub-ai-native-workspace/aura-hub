@@ -12,6 +12,7 @@ export type NavKey =
   | 'workflows'
   | 'workspace'
   | 'environment'
+  | 'ai-runtime'
   | 'settings';
 
 /** Tabs inside a project workspace (the project's own environment). */
