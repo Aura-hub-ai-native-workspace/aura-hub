@@ -292,6 +292,39 @@ export function AiSettings() {
           </Card>
         </PageBlock>
 
+        {/* Sovereign Mode */}
+        <PageBlock className="col-span-12">
+          <Card>
+            <div className="flex items-start justify-between gap-6">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <CardHeader title="Sovereign Mode" subtitle="Block cloud AI inference — only local and private servers may process prompts." />
+                  {settings.sovereignMode && (
+                    <Badge tone="attention" dot className="shrink-0 self-start mt-1">Active</Badge>
+                  )}
+                </div>
+                <div className="mt-3 rounded-xl border border-line bg-surface-active/40 px-4 py-3 text-[12px] space-y-1.5">
+                  <div className="flex items-center gap-2 text-text-muted">
+                    <Icon name="check" size={12} className="shrink-0 text-positive" />
+                    <span>When ON — cloud providers (OpenAI, Anthropic, Gemini, etc.) are blocked at the routing layer.</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-text-muted">
+                    <Icon name="check" size={12} className="shrink-0 text-positive" />
+                    <span>AURA uses only self-hosted servers. If none is available, AURA reports the gap honestly.</span>
+                  </div>
+                  <div className="flex items-center gap-2 text-text-muted">
+                    <Icon name="cpu" size={12} className="shrink-0 text-text-subtle" />
+                    <span className="font-medium text-text-subtle">APPLICATION ENFORCED — software policy, not a physical air-gap. Physical isolation requires separate infrastructure controls.</span>
+                  </div>
+                </div>
+              </div>
+              <div className="shrink-0 pt-1">
+                <Toggle on={settings.sovereignMode ?? false} onChange={(v) => patch({ sovereignMode: v })} />
+              </div>
+            </div>
+          </Card>
+        </PageBlock>
+
         {/* Generation */}
         <PageBlock className="col-span-12 lg:col-span-7">
           <Card>

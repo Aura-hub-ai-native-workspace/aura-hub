@@ -25,8 +25,20 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+
+# python-multipart is required for Starlette's request.form() used by
+# POST /documents/ingest. Starlette raises an AssertionError deep inside a
+# request handler if it is absent, producing an unexplained HTTP 500. This
+# guard surfaces the missing dependency at server import time instead.
+try:
+    import multipart as _mp  # noqa: F401  (python-multipart package)
+except ImportError as _exc:
+    raise ImportError(
+        "python-multipart is required by POST /documents/ingest but is not installed. "
+        "Add it to the backend dependencies: uv add python-multipart"
+    ) from _exc
 
 from ..config import aura_home
 from ..fabric import CapabilityFabric, describe_capability
@@ -209,9 +221,31 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         for executor in all_executors(registry):
             fabric.register(executor)
         register_canonical_internal_capabilities(fabric)
+        from ..knowledge.store import KnowledgeBase as _KnowledgeBase
+        from ..executors import multimodal_executors as _multimodal_executors
+        _kb = _KnowledgeBase(H / "knowledge")
+        for executor in _multimodal_executors(_kb, H / "artifacts"):
+            fabric.register(executor)
         from ..policy import DEFAULT_POLICY
 
         fabric.policy = read_json_file(H / "fabric-policy.json", DEFAULT_POLICY)
+        # Phase 7: explicit per-capability policy defaults for governed agentic ops.
+        # Applied AFTER loading the user's fabric-policy.json so any explicit choice
+        # there always wins.  We only fill gaps — never clobber an existing override.
+        # Safety invariant: every default here is at most as restrictive as the
+        # capability's byRisk tier (low→auto-execute, medium→ask-user).  We never
+        # lower a risk floor.
+        _P7_DEFAULTS: dict[str, str] = {
+            "knowledge.search":  "auto-execute",   # low-risk KB read
+            "document.ingest":   "auto-execute",   # low-risk write to KB
+            "artifact.generate": "auto-execute",   # low-risk write to artifacts dir
+            "sandbox.execute":   "ask-user",        # medium-risk subprocess
+            "terminal.execute":  "ask-user",        # medium-risk subprocess
+        }
+        _cur = fabric.policy.setdefault("overrides", {})
+        for _cap, _act in _P7_DEFAULTS.items():
+            if _cap not in _cur:
+                _cur[_cap] = _act
     if hasattr(fabric, "attach_approval_store"):
         fabric.attach_approval_store(_ap_load, _ap_save)
         fabric.attach_audit_store(audit.load, audit.append)
@@ -266,10 +300,66 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         config=EngineConfig(emit=lambda event: agent_bus.emit(
             _agent_event("invocation.observed", "-", {"engine": event}))),
     )
+    try:
+        from ..sovereign.policy import load_sovereign_policy as _load_sp
+        _sovereign_policy = _load_sp()
+    except Exception:
+        _sovereign_policy = None
+
+    # GAP-S4: warn when a cloud provider key is present without sovereign mode
+    import os as _os, logging as _log
+    _CLOUD_KEY_ENVVARS = [
+        "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
+        "COHERE_API_KEY", "MISTRAL_API_KEY",
+    ]
+    if not (getattr(_sovereign_policy, "sovereign_mode", False)):
+        _present = [k for k in _CLOUD_KEY_ENVVARS if _os.environ.get(k)]
+        if _present:
+            _log.getLogger(__name__).warning(
+                "WARNING: cloud provider key(s) detected in environment (%s) "
+                "while sovereign mode is OFF — cloud AI calls are unrestricted.",
+                ", ".join(_present),
+            )
+
+    from ..agent_runtime import AgentRuntimeService
+
+    agent_runtime_svc = AgentRuntimeService(
+        store_dir=H / "agent-runtime-backups",
+        sovereign_policy=_sovereign_policy,
+    )
+    # Phase 2: ModelRegistry — discover sovereign (local/private) models
+    # from providers.json so ModelRouter can hint agent.delegate tasks.
+    # Silently skips offline Ollama endpoints and missing config files.
+    _model_registry = None
+    try:
+        from ..sovereign.model_registry import ModelRegistry as _MReg
+        import json as _json
+        _model_registry = _MReg()
+        _pjson = H / "agent" / "providers.json"
+        if _pjson.exists():
+            _pdata = _json.loads(_pjson.read_text())
+            _SOVEREIGN_NC = frozenset({"local", "private"})
+            for _pspec in (_pdata if isinstance(_pdata, list) else []):
+                _nc = (_pspec.get("network_class") or "").strip()
+                _bu = (_pspec.get("base_url") or "").strip()
+                if _nc in _SOVEREIGN_NC and _bu:
+                    try:
+                        _model_registry.discover_from_ollama(
+                            endpoint_id=_pspec.get("id") or _bu,
+                            base_url=_bu,
+                            network_class=_nc,
+                        )
+                    except Exception:
+                        pass
+    except Exception:
+        _model_registry = None
+
     agent = CentralAgent(
         fabric_cfg=agent_cfg, session_store=sessions, bus=agent_bus,
         intent_compiler=intents,
         workflow_engine=engine, workflow_store=wf_store, run_store=run_store,
+        agent_runtime=agent_runtime_svc,
+        model_registry=_model_registry,
     )
 
     # ── automation engine + scheduler on the same runner ────────────
@@ -306,6 +396,8 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         "scheduler": scheduler, "auto_emit": _auto_emit,
         "auto_events": auto_events, "auto_subs": auto_subscribers,
         "model_port": model_port,
+        "agent_runtime": agent_runtime_svc,
+        "kb": _kb,
     }
 
 
@@ -355,7 +447,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse({
             "ok": True, "service": "aura-hub-backend",
             "health": {"status": "ok", "backend": "python"},
-            "key": {"configured": bool(S["secrets"])},
+            # scope="aura-backend" distinguishes this from the per-agent key
+            # reported by /agent-runtime/discover (agents carry their own keys)
+            "key": {"configured": bool(S["secrets"]), "scope": "aura-backend"},
             "index": {"status": "ready"},
             "project": None,
         })
@@ -1097,8 +1191,21 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
     async def fabric_approvals_decide(request: Request):
         body = await _json_body(request)
+        # Accept canonical `granted` (bool) or alias `decision: "approve"/"deny"`
+        if "granted" in body:
+            granted = bool(body["granted"])
+        elif "decision" in body:
+            decision_str = str(body["decision"]).lower()
+            if decision_str == "approve":
+                granted = True
+            elif decision_str == "deny":
+                granted = False
+            else:
+                return _err('decision must be "approve" or "deny"', 400)
+        else:
+            return _err('body must include "granted" (boolean) or "decision" ("approve"/"deny")', 400)
         decided = S["ledger"].decide(
-            request.path_params["aid"], bool(body.get("granted")),
+            request.path_params["aid"], granted,
             "user", body.get("reason"))
         if decided is None:
             return _err("this request was already decided", 409)
@@ -1637,6 +1744,326 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"cache-control": "no-cache"})
 
+    # ── agent runtime control plane ─────────────────────────────────
+    ar_svc = S["agent_runtime"]
+
+    async def agent_runtime_discover(request: Request):
+        import anyio
+        records = await anyio.to_thread.run_sync(ar_svc.discover)
+        return JSONResponse({"agents": [r.to_dict() for r in records]})
+
+    async def agent_runtime_summary(request: Request):
+        import anyio
+        summary = await anyio.to_thread.run_sync(ar_svc.runtime_summary)
+        return JSONResponse(summary)
+
+    async def agent_runtime_apply_all(request: Request):
+        import anyio
+        from ..agent_runtime.model import AuthType, RuntimeConfig
+        body = await _json_body(request)
+        if not body.get("baseUrl") or not body.get("modelId"):
+            return _err("baseUrl and modelId are required")
+        try:
+            runtime = RuntimeConfig(
+                base_url=str(body["baseUrl"]),
+                model_id=str(body["modelId"]),
+                auth_type=AuthType(body.get("authType", "keyless")),
+                network_class=str(body.get("networkClass", "local")),
+                api_key_env=str(body.get("apiKeyEnv", "")),
+            )
+        except (ValueError, KeyError) as exc:
+            return _err(f"invalid runtime config: {exc}")
+        try:
+            changes = await anyio.to_thread.run_sync(
+                lambda: ar_svc.apply_all(runtime))
+        except ValueError as exc:
+            return _err(str(exc), 403)
+        return JSONResponse({"changes": [c.to_dict() for c in changes]})
+
+    async def agent_runtime_apply_agent(request: Request):
+        import anyio
+        from ..agent_runtime.model import AuthType, RuntimeConfig
+        agent_id = request.path_params["agent_id"]
+        body = await _json_body(request)
+        if not body.get("baseUrl") or not body.get("modelId"):
+            return _err("baseUrl and modelId are required")
+        try:
+            runtime = RuntimeConfig(
+                base_url=str(body["baseUrl"]),
+                model_id=str(body["modelId"]),
+                auth_type=AuthType(body.get("authType", "keyless")),
+                network_class=str(body.get("networkClass", "local")),
+                api_key_env=str(body.get("apiKeyEnv", "")),
+            )
+        except (ValueError, KeyError) as exc:
+            return _err(f"invalid runtime config: {exc}")
+        try:
+            change = await anyio.to_thread.run_sync(
+                lambda: ar_svc.apply_agent(agent_id, runtime))
+        except ValueError as exc:
+            return _err(str(exc), 403)
+        return JSONResponse(change.to_dict())
+
+    async def agent_runtime_restore(request: Request):
+        import anyio
+        agent_id = request.path_params["agent_id"]
+        change = await anyio.to_thread.run_sync(
+            lambda: ar_svc.restore_agent(agent_id))
+        return JSONResponse(change.to_dict())
+
+    async def agent_runtime_drift(request: Request):
+        import anyio
+        from ..agent_runtime.model import AuthType, RuntimeConfig
+        body = await _json_body(request)
+        if not body.get("baseUrl") or not body.get("modelId"):
+            return _err("baseUrl and modelId are required")
+        try:
+            runtime = RuntimeConfig(
+                base_url=str(body["baseUrl"]),
+                model_id=str(body["modelId"]),
+                auth_type=AuthType(body.get("authType", "keyless")),
+                network_class=str(body.get("networkClass", "local")),
+            )
+        except (ValueError, KeyError) as exc:
+            return _err(f"invalid runtime config: {exc}")
+        drifts = await anyio.to_thread.run_sync(
+            lambda: ar_svc.check_drift(runtime))
+        return JSONResponse({"drift": [d.to_dict() for d in drifts]})
+
+    # ------------------------------------------------------------------ Phase 3
+    async def documents_ingest(request: Request) -> Response:
+        kb = S["kb"]
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            return _err("file field required", 400)
+        import tempfile, os
+        # Use the original filename for the KB record; the temp path is
+        # extraction-only and is deleted immediately after ingestion so it
+        # must never be stored as the document's durable identity.
+        original_name = (upload.filename or "").strip() or "uploaded_document"
+        # Strip any path components the client may have included (security)
+        original_name = os.path.basename(original_name) or "uploaded_document"
+        suffix = os.path.splitext(original_name)[1] or ".bin"
+        _ALLOWED_SUFFIXES = {
+            ".pdf", ".docx", ".doc", ".txt", ".md", ".rst",
+            ".csv", ".json", ".yaml", ".yml",
+            ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp",
+            ".xlsx", ".xls", ".pptx", ".ppt", ".odt", ".ods", ".odp",
+        }
+        if suffix.lower() not in _ALLOWED_SUFFIXES:
+            return _err(f"unsupported file type: {suffix!r}", 400)
+        _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+        data = await upload.read()
+        if len(data) > _MAX_UPLOAD_BYTES:
+            return _err("file exceeds 50 MB limit", 413)
+        upload_dir = S["home"] / "documents"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=suffix, dir=upload_dir
+        ) as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        try:
+            from ..multimodal.document_engine import DocumentEngine, EngineConfig
+            from ..multimodal.doctypes import DocumentStatus
+            engine = DocumentEngine(EngineConfig.from_env())
+            result = engine.convert(tmp_path)
+            _NON_INDEXABLE = {
+                DocumentStatus.UNSUPPORTED,
+                DocumentStatus.CORRUPT,
+                DocumentStatus.OCR_REQUIRED,
+                DocumentStatus.SUPPORTED_DEPENDENCY_MISSING,
+            }
+            if result.document_status in _NON_INDEXABLE:
+                return JSONResponse({
+                    "ok": False,
+                    "documentStatus": result.document_status.value,
+                    "engine": result.engine,
+                    "note": result.note or None,
+                    "mimeType": result.mime_type or None,
+                }, status_code=422)
+            extraction = result.to_extraction_result()
+            # Record the document under its original filename in the isolated
+            # documents directory so the KB path never resolves to CWD.
+            doc_path = upload_dir / original_name
+            doc_record = kb.add_document(doc_path, extraction)
+            warnings = [e.message for e in result.errors] if result.errors else []
+            return JSONResponse({
+                "ok": True,
+                "path": original_name,
+                "chunkCount": doc_record.chunk_count,
+                "charCount": doc_record.char_count,
+                "status": doc_record.extraction_status,
+                "documentStatus": result.document_status.value,
+                "engine": result.engine,
+                "ocrUsed": result.ocr_used or None,
+                "pageCount": result.page_count,
+                "mimeType": result.mime_type or None,
+                "note": result.note or None,
+                "warnings": warnings,
+                "timingsMs": dict(result.timings_ms),
+            })
+        except Exception as exc:
+            return _err(str(exc), 500)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+    async def documents_engines(request: Request) -> Response:
+        try:
+            from ..multimodal.document_engine import DocumentEngine, EngineConfig
+            engine = DocumentEngine(EngineConfig.from_env())
+            return JSONResponse({
+                "ok": True,
+                "health": engine.health().to_dict(),
+                "capabilities": engine.capabilities().to_dict(),
+            })
+        except Exception as exc:
+            return _err(str(exc), 500)
+
+    async def knowledge_search(request: Request) -> Response:
+        kb = S["kb"]
+        q = request.query_params.get("q", "").strip()
+        if not q:
+            return _err("q parameter required", 400)
+        try:
+            top_k = int(request.query_params.get("top_k", "5"))
+        except ValueError:
+            top_k = 5
+        results = kb.search_with_context(q, top_k=top_k)
+        items = []
+        for r in results:
+            chunk = getattr(r, "chunk", r)
+            doc_record = getattr(r, "doc_record", None)
+            items.append({
+                "text": getattr(chunk, "text", str(chunk)),
+                "score": getattr(r, "score", None),
+                "source": getattr(doc_record, "path", None),
+            })
+        return JSONResponse({"ok": True, "results": items, "query": q})
+
+    async def documents_list(request: Request) -> Response:
+        kb = S["kb"]
+        try:
+            snap = kb.snapshot()
+            docs = snap.get("docs", [])
+            result = []
+            for d in docs:
+                if isinstance(d, dict):
+                    result.append(d)
+                else:
+                    result.append({
+                        "path": getattr(d, "path", str(d)),
+                        "chunkCount": getattr(d, "chunk_count", 0),
+                        "status": getattr(d, "extraction_status", "unknown"),
+                    })
+            return JSONResponse({"ok": True, "documents": result})
+        except Exception as exc:
+            return _err(str(exc), 500)
+
+    async def network_journal(request: Request) -> Response:
+        try:
+            from ..governance.netgate import EgressGateway
+            gw = EgressGateway.instance()
+            if gw is None:
+                return JSONResponse({"ok": True, "total": 0, "blocked": 0,
+                                     "allowed": 0, "entries": []})
+            snap = gw.inference_journal_snapshot()
+            return JSONResponse({"ok": True, **snap})
+        except Exception as exc:
+            return JSONResponse({"ok": True, "total": 0, "blocked": 0,
+                                 "allowed": 0, "entries": [], "error": str(exc)})
+
+    async def artifacts_generate(request: Request) -> Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return _err("JSON body required", 400)
+        spec_raw = body.get("spec")
+        if not spec_raw:
+            return _err("spec required", 400)
+        if isinstance(spec_raw, str):
+            import json as _json
+            try:
+                spec_raw = _json.loads(spec_raw)
+            except Exception:
+                return _err("spec must be a JSON object or JSON string", 400)
+        from ..artifacts.generator import ArtifactGenerator, ArtifactSpec, ArtifactType
+        artifact_type_str = spec_raw.get("artifact_type", "docx")
+        try:
+            artifact_type = ArtifactType(artifact_type_str)
+        except ValueError:
+            return _err(f"unknown artifact_type: {artifact_type_str}", 400)
+        spec = ArtifactSpec(
+            artifact_type=artifact_type,
+            title=spec_raw.get("title", "Untitled"),
+            sections=spec_raw.get("sections", []),
+            author=spec_raw.get("author", "AURA"),
+            subject=spec_raw.get("subject", ""),
+        )
+        artifacts_dir = S["home"] / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        output_path = body.get("output_path") or str(
+            artifacts_dir / f"{spec.title.replace(' ', '_')}.{artifact_type.value}"
+        )
+        result = ArtifactGenerator().generate(spec, output_path)
+        if result.status != "ok":
+            return JSONResponse({"ok": False, "detail": result.note, "artifact": result.to_dict()}, status_code=500)
+        return JSONResponse({"ok": True, "artifact": result.to_dict()})
+
+    async def artifacts_list(request: Request) -> Response:
+        artifacts_dir = S["home"] / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        items = []
+        for p in sorted(artifacts_dir.glob("*"), key=lambda x: x.stat().st_mtime, reverse=True):
+            if p.is_file():
+                st = p.stat()
+                items.append({
+                    "name": p.name,
+                    "path": str(p),
+                    "sizeBytes": st.st_size,
+                    "modifiedAt": st.st_mtime,
+                    "createdAt": st.st_mtime,
+                })
+        return JSONResponse({"ok": True, "artifacts": items})
+
+    async def artifacts_download(request: Request) -> Response:
+        """Serve an artifact file with path confinement.
+
+        The client supplies a ``path`` query param (absolute path from
+        artifacts_list).  We resolve it and verify it stays inside the
+        artifacts directory before reading — the client path is NEVER
+        used as authority; it is only a hint that we sanitise.
+        """
+        import mimetypes
+        artifacts_dir = (S["home"] / "artifacts").resolve()
+        raw = request.query_params.get("path", "").strip()
+        if not raw:
+            return _err("path parameter required", 400)
+        from pathlib import Path as _Path
+        try:
+            target = _Path(raw).resolve()
+        except Exception:
+            return _err("invalid path", 400)
+        # Confinement: must be inside artifacts_dir, no traversal
+        try:
+            target.relative_to(artifacts_dir)
+        except ValueError:
+            return _err("path outside artifacts directory", 403)
+        if not target.is_file():
+            return _err("artifact not found", 404)
+        content_type, _ = mimetypes.guess_type(target.name)
+        content_type = content_type or "application/octet-stream"
+        safe_name = target.name.replace('"', "_")
+        return Response(
+            content=target.read_bytes(),
+            media_type=content_type,
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
+
     # helpers ---------------------------------------------------------
     def _validate_rule_issues(rule: dict) -> list[dict]:
         from ..automation.dryrun import validate_rule
@@ -1744,7 +2171,24 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/environment/install", environment_install, methods=["POST"]),
         Route("/environment/uninstall", environment_uninstall, methods=["POST"]),
         Route("/environment/connect", environment_connect, methods=["POST"]),
+        Route("/agent-runtime/discover", agent_runtime_discover, methods=["GET"]),
+        Route("/agent-runtime/summary", agent_runtime_summary, methods=["GET"]),
+        Route("/agent-runtime/apply", agent_runtime_apply_all, methods=["POST"]),
+        Route("/agent-runtime/apply/{agent_id}", agent_runtime_apply_agent, methods=["POST"]),
+        Route("/agent-runtime/restore/{agent_id}", agent_runtime_restore, methods=["POST"]),
+        Route("/agent-runtime/drift", agent_runtime_drift, methods=["POST"]),
+        Route("/documents/ingest", documents_ingest, methods=["POST"]),
+        Route("/documents/engines", documents_engines, methods=["GET"]),
+        Route("/knowledge/search", knowledge_search, methods=["GET"]),
+        Route("/documents/list", documents_list, methods=["GET"]),
+        Route("/network/journal", network_journal, methods=["GET"]),
+        Route("/artifacts/generate", artifacts_generate, methods=["POST"]),
+        Route("/artifacts", artifacts_list, methods=["GET"]),
+        Route("/artifacts/download", artifacts_download, methods=["GET"]),
     ]
+
+    async def _handle_malformed_body(req: Request, exc: _MalformedBody) -> JSONResponse:
+        return JSONResponse({"error": str(exc)}, status_code=400)
 
     app = Starlette(
         routes=routes,
@@ -1752,7 +2196,8 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
                                allow_origin_regex=ALLOWED_ORIGIN,
                                allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                                allow_headers=["Content-Type", "x-aura-shutdown",
-                                              "Last-Event-ID"])])
+                                              "Last-Event-ID"])],
+        exception_handlers={_MalformedBody: _handle_malformed_body})
     app.state.services = S
     app.state.runner = runner
     app.state.wf_store = wf_store
@@ -1792,22 +2237,30 @@ async def automation_validate_route(request: Request):
     return JSONResponse({"issues": validate_rule(body)})
 
 
-async def _json_body(request: Request) -> dict:
-    """Parse a JSON request body defensively.
+class _MalformedBody(Exception):
+    """Raised when a request body is not valid JSON or is not a JSON object."""
 
-    A malformed payload is a client mistake, not a server fault: it must not
-    surface as an unhandled JSONDecodeError and a 500. Non-object JSON
-    (a list, string or number) is likewise not a body — callers use
-    ``body.get(...)`` unconditionally, so anything else would raise
-    AttributeError into another 500.
+
+async def _json_body(request: Request) -> dict:
+    """Parse a JSON request body, raising _MalformedBody on invalid input.
+
+    A malformed payload is a client mistake (400), not a server fault (500).
+    Callers receive a plain dict and may use .get() unconditionally.
+
+    Empty bodies are treated as {} — many endpoints accept optional JSON
+    bodies and callers rely on body.get() returning None for absent fields.
+    Only a non-empty body that fails to parse raises _MalformedBody.
     """
+    raw = await request.body()
+    if not raw.strip():
+        return {}
     try:
-        # Raw parse: this is the ONE place allowed to touch request.json()
-        # directly, inside the try that makes it safe.
         body = await request.json()
     except Exception:
-        return {}
-    return body if isinstance(body, dict) else {}
+        raise _MalformedBody("request body must be valid JSON")
+    if not isinstance(body, dict):
+        raise _MalformedBody("request body must be a JSON object")
+    return body
 
 
 def _environment_ids(raw: object) -> list[str] | None:

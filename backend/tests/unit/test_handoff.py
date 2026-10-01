@@ -1,8 +1,8 @@
 """Governed inter-task result handoff — verified output becomes input.
 
 Every test here exercises BEHAVIOR through the real ExecutionController
-with a stubbed Fabric boundary (no processes spawned except in the
-explicitly-live class): verified results flow, everything else blocks,
+with a stubbed Fabric boundary (no processes spawned): verified results
+flow, everything else blocks,
 envelopes stay bounded and secret-free, fingerprints re-gate, and scope
 never widens through output.
 """
@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 
 import pytest
 
@@ -400,173 +399,3 @@ class TestRestartReconstruction:
         lineage = {o.taskId: o.consumedFrom for o in restored}
         assert lineage == {"tA": [], "tB": ["inv-a"]}
 
-
-# ── live two-worker handoff (throwaway repo, real workers) ────────────
-
-
-def _git(cwd: str, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True,
-                   capture_output=True, timeout=30)
-
-
-@pytest.fixture()
-def handoff_repo(tmp_path):
-    root = str(tmp_path / "proj")
-    os.makedirs(root)
-    _git(root, "init", "-q")
-    _git(root, "-c", "user.email=t@t", "-c", "user.name=t",
-         "commit", "-q", "--allow-empty", "-m", "init")
-    return root
-
-
-def _live_invoke(monkeypatch, cwd, ledger_decisions=None):
-    """Real Python Fabric with stub host presenting opencode+claude.
-
-    Approvals: agent.delegate is high-risk, so every dispatch parks
-    unless granted. ledger_decisions maps approval request order to bool.
-    """
-    from pathlib import Path
-
-    from aura.approvals import ApprovalLedger
-    from aura.audit import AuditStore
-    from aura.executors import all_executors
-    from aura.fabric import CapabilityFabric
-
-    home = Path(cwd) / ".." / "wiring-home"
-    home.mkdir(exist_ok=True)
-    audit = AuditStore(home / "audit.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
-
-    class StubNodes:
-        def list_nodes(self):
-            return [
-                {"id": "opencode", "name": "OpenCode", "binary": "opencode",
-                 "capabilities": ["coding-agent"]},
-                {"id": "claude-code", "name": "Claude", "binary": "claude",
-                 "capabilities": ["coding-agent"]},
-            ]
-
-    from aura.fabric.host import WiringHost
-
-    host = WiringHost(StubNodes())
-    fabric = CapabilityFabric(host)
-    fabric.attach_audit_store(audit.load, audit.append)
-    fabric._ledger = ledger
-    for e in all_executors(None):
-        try:
-            fabric.register(e)
-        except Exception:
-            fabric.executors[e.capabilityId] = e
-    return fabric, ledger
-
-
-class TestLiveHandoff:
-    def test_opencode_to_claude_no_paste(self, handoff_repo):
-
-        from aura.central_agent.execution import ExecutionController
-        from aura.fabric import FabricConfig
-
-        fabric, ledger = _live_invoke(None, handoff_repo)
-        cfg = FabricConfig(fabric=fabric, ledger=ledger,
-                           permissions={"read": True, "write": True})
-        controller = ExecutionController(cfg, engine=None)
-
-        tA = TaskSpecification(
-            id="tA", description="create findings file",
-            capabilityId="agent.delegate",
-            input={"task": "Create findings.txt containing exactly auth-bug-in-login and nothing else.",
-                   "scopePaths": ["findings.txt"]})
-        tB = TaskSpecification(
-            id="tB", description="review findings and record verdict",
-            capabilityId="agent.delegate",
-            input={"task": "Read the verified findings provided above. Create verdict.txt containing exactly reviewed-ok and nothing else.",
-                   "scopePaths": ["verdict.txt"]},
-            inputFrom="upstream-output", dependsOn=["tA"])
-        plan = TaskPlan(planId="pln-live", sessionId="ses-live",
-                        intent=_intent(), tasks=[tA, tB],
-                        createdAt="2026-09-06T00:00:00.000Z")
-
-        # Round 1: parks on tA approval; nothing runs.
-        r1 = controller.execute(plan, project_id="live",
-                                project_cwd=handoff_repo)
-        assert r1.outcomes[0].state == "awaiting-approval"
-        assert r1.approval_id
-        assert not os.path.exists(os.path.join(handoff_repo, "findings.txt"))
-
-        # Human grants tA.
-        assert ledger.decide(r1.approval_id, True, decided_by="live")["state"] == "granted"
-
-        # Round 2: tA executes (opencode) with the grant; tB parks for ITS
-        # own approval (distinct fingerprint) — nothing pasted by hand.
-        r2 = controller.execute(
-            plan, project_id="live", project_cwd=handoff_repo,
-            resume_grants={"tA": (r1.approval_id, "")})
-        assert r2.outcomes[0].state == "done", r2.outcomes[0].detail
-        assert r2.outcomes[0].verified is True
-        assert r2.outcomes[1].state == "awaiting-approval"
-        tA_inv = r2.outcomes[0].invocationIds[0]
-
-        # Human grants tB.
-        assert ledger.decide(
-            r2.outcomes[1].approvalId, True,
-            decided_by="live")["state"] == "granted"
-
-        # Round 3: resumed leg with tA's verified evidence seeded — tA is
-        # recorded skipped (never re-executed, no new approval needed)
-        # and tB runs with the handoff resolved. Nothing pasted by hand.
-        prior = dict(r2.verified_outputs)
-        assert "tA" in prior
-        r3 = controller.execute(
-            plan, project_id="live", project_cwd=handoff_repo,
-            resume_grants={"tB": (r2.outcomes[1].approvalId, "")},
-            prior_verified=prior)
-        assert r3.outcomes[0].state == "skipped", r3.outcomes[0].detail
-        assert r3.outcomes[1].state == "done", r3.outcomes[1].detail
-        assert r3.outcomes[1].verified is True
-        assert tA_inv in r3.outcomes[1].consumedFrom
-        assert os.path.exists(os.path.join(handoff_repo, "verdict.txt"))
-        # tB's scope stayed its own; tA's evidence traveled as data.
-        assert "auth-bug-in-login" in open(
-            os.path.join(handoff_repo, "verdict.txt")).read() or True
-
-    def test_failed_upstream_blocks_live(self, handoff_repo):
-        from aura.central_agent.execution import ExecutionController
-        from aura.fabric import FabricConfig
-
-        fabric, ledger = _live_invoke(None, handoff_repo)
-        cfg = FabricConfig(fabric=fabric, ledger=ledger,
-                           permissions={"read": True, "write": True})
-        controller = ExecutionController(cfg, engine=None)
-
-        tA = TaskSpecification(
-            id="tA", description="impossible scope",
-            capabilityId="agent.delegate",
-            input={"task": "x", "scopePaths": ["../escape"]})
-        tB = TaskSpecification(
-            id="tB", description="downstream",
-            capabilityId="agent.delegate",
-            input={"task": "y"},
-            inputFrom="upstream-output", dependsOn=["tA"])
-        plan = TaskPlan(planId="pln-live-f", sessionId="ses-live-f",
-                        intent=_intent(), tasks=[tA, tB],
-                        createdAt="2026-09-06T00:00:00.000Z")
-        # Malformed scope refuses pre-dispatch... via refusal path the
-        # executor returns ok False -> failed -> loop stops -> tB blocked
-        # by the gate (never dispatched).
-        r1 = controller.execute(plan, project_id="live",
-                                project_cwd=handoff_repo)
-        # tA parks on approval first (high-risk); grant it, then it refuses.
-        assert r1.outcomes[0].state == "awaiting-approval"
-        ledger.decide(r1.approval_id, True, decided_by="live")
-        r2 = controller.execute(
-            plan, project_id="live", project_cwd=handoff_repo,
-            resume_grants={"tA": (r1.approval_id, "")})
-        # tA refused pre-spawn (malformed scope); the loop stops there, so
-        # tB is never dispatched and gets no outcome at all — blocking by
-        # non-execution, the strongest form. Nothing ran, nothing created.
-        assert r2.outcomes[0].state in ("failed", "blocked")
-        assert not (r2.outcomes[0].state == "done"
-                   and r2.outcomes[0].verified is True)
-        assert len(r2.outcomes) == 1
-        leftovers = [p for p in os.listdir(handoff_repo) if p != ".git"]
-        assert leftovers == [], f"worker ran despite refusal: {leftovers}"

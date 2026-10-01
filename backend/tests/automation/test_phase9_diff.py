@@ -16,6 +16,11 @@ import pytest
 START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=UTC).timestamp() * 1000)
 DRIVER = Path(__file__).resolve().parents[1] / "differential" / "ts_driver.mjs"
 assert DRIVER.exists(), DRIVER
+_TSREF_AGENTRUNNER = Path("/tmp/opencode/tsref/agentrunner.mjs")
+_NEED_TSREF = pytest.mark.skipif(
+    not _TSREF_AGENTRUNNER.exists(),
+    reason="SKIP-INFRA: TypeScript agent runner reference not built (/tmp/opencode/tsref/agentrunner.mjs missing)",
+)
 ENV = {"TSREF_AGENTRUNNER": "/tmp/opencode/tsref/agentrunner.mjs",
        "TSREF_SCHED": "/tmp/opencode/tsref/sched.mjs",
        "TSREF_AUTOSTORE": "/tmp/opencode/tsref/autostore.mjs",
@@ -151,6 +156,7 @@ def asyncio_run(c):
     return c
 
 
+@_NEED_TSREF
 def test_agent_loop_parity(agent_ran):
     problems = []
     for name, ts, py in agent_ran:

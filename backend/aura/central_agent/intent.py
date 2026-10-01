@@ -297,9 +297,61 @@ class IntentCompilationError(Exception):
     pass
 
 
-_STATUS_WORDS = ("status", "list", "show", "what workflows", "inventory", "overview")
+# Workflow-specific status/inventory keywords. "list" and "show" alone
+# are too broad: they match "list projects", "list files", etc. Only
+# words that unambiguously refer to the workflow surface belong here.
+_STATUS_WORDS = (
+    "what workflows", "list workflows", "list workflow",
+    "show workflows", "show workflow",
+    "workflow inventory", "workflow overview", "workflow status",
+    "workflow list",
+)
+# "status" without a workflow qualifier still falls through to a
+# separate check (see _WORKFLOW_STATUS_RE below) so that "project
+# status" and "git status" are handled by their own branches.
+_WORKFLOW_STATUS_RE = re.compile(
+    r"\b(status|inventory|overview)\b(?!.*\b(project|git|build|test|ci)\b)",
+    re.IGNORECASE,
+)
+
+#: Workflow listing: "show me available workflows", "list all workflows", etc.
+_WORKFLOW_LIST_RE = re.compile(
+    r"\b(list|show|get|display|what|which|how many)\b"
+    r".{0,40}\bworkflows?\b"
+    r"|\bworkflows?\b.{0,40}"
+    r"\b(list(?:ed)?|available|exist|are there|do you have|registered)\b",
+    re.IGNORECASE,
+)
 _AUTHOR_WORDS = ("create workflow", "build workflow", "new workflow",
                  "make workflow", "set up a workflow", "create a workflow")
+
+#: Project listing: "list projects", "what projects are registered", etc.
+_PROJECT_LIST_RE = re.compile(
+    r"\b(list|show|get|display|enumerate|what|which|how many)\b"
+    r".{0,40}\bprojects?\b"
+    r"|\bprojects?\b.{0,40}"
+    r"\b(list(?:ed)?|registered|configured|available|exist|are there|do you have)\b",
+    re.IGNORECASE,
+)
+
+#: Knowledge base search: "search knowledge", "find in my knowledge base", etc.
+_KNOWLEDGE_SEARCH_RE = re.compile(
+    r"\b(search|find|look\s+(?:for|in|up)|query)\b.{0,50}"
+    r"\b(knowledge\s*(?:base)?|documents?|kb)\b"
+    r"|\b(knowledge\s*(?:base)?|my\s+documents?)\b.{0,40}"
+    r"\b(for|about|contain|search|find|has)\b",
+    re.IGNORECASE,
+)
+
+#: Query-phrased messages: questions or listing verbs, NOT mutation-shaped.
+#: Used to detect read-only fallback requests that need a query-oriented
+#: clarification question rather than a mutation-oriented one.
+_QUERY_PHRASING_RE = re.compile(
+    r"^\s*(what|which|how|who|where|when|is there|are there|do you|"
+    r"list|show me|get me|find|tell me|can you tell|can you show|"
+    r"what.s|what.re|how.s|what are|what is)\b",
+    re.IGNORECASE,
+)
 _SCHEDULED_WORDS = ("every morning", "every day", "daily", "each morning",
                     "schedule", "cron", "every hour")
 _FIX_WORDS = ("fix", "repair", "run tests")
@@ -511,7 +563,13 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
 
     scheduled = any(w in text for w in _SCHEDULED_WORDS)
     authoring = any(w in text for w in _AUTHOR_WORDS)
-    status = any(w in text for w in _STATUS_WORDS)
+    # Workflow status: specific workflow keywords, workflow listing regex,
+    # OR ambiguous "status/inventory/overview" not qualified by another surface.
+    status = (any(w in text for w in _STATUS_WORDS)
+              or _WORKFLOW_LIST_RE.search(user_message) is not None
+              or _WORKFLOW_STATUS_RE.search(user_message) is not None)
+    project_list = _PROJECT_LIST_RE.search(user_message) is not None
+    knowledge_search = _KNOWLEDGE_SEARCH_RE.search(user_message) is not None
     fixing = any(w in text for w in _FIX_WORDS)
     running_wf = re.search(r"\brun (?:the )?workflow\b", text) is not None
     git_status = re.search(r"\bgit\b.*\bstatus\b|\bstatus\b.*\bgit\b", text) is not None
@@ -625,6 +683,28 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "delegateScope": scope,
             "delegateReadOnly": read_only,
         })
+    if project_list and not authoring and not running_wf and not delegating and not git_status:
+        return AgentIntent(
+            goal=f"List registered projects: {user_message.strip()}",
+            surface="aura-internal",
+            expectedOutcome="The list of all registered projects is returned.",
+            constraints=[*constraints, "Read-only"],
+            requiredCapabilities=["project.list"],
+            urgency="immediate",
+            complexity="single",
+            approvalLikely=False,
+        )
+    if knowledge_search and not authoring and not running_wf and not delegating:
+        return AgentIntent(
+            goal=user_message.strip(),
+            surface="knowledge",
+            expectedOutcome="Relevant knowledge base results are returned.",
+            constraints=[*constraints, "Read-only"],
+            requiredCapabilities=["knowledge.search"],
+            urgency="immediate",
+            complexity="single",
+            approvalLikely=False,
+        )
     if git_status and not authoring and not running_wf:
         return AgentIntent(
             goal=user_message.strip(),
@@ -692,22 +772,29 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
                 "passing look like when they are fixed?"
             ),
         )
-    return AgentIntent.model_validate({
-        "goal": user_message.strip(),
-        "expectedOutcome": "The requested outcome is achieved and evidenced.",
-        "needsClarification": True,
-        # The last resort, and it has to leave the user's intent intact.
-        # The old wording asked for "the change you want in the project —
-        # for example implement token refresh in src/auth", which put the
-        # burden of naming a file and a function on someone who may have
-        # been asking a question. What AURA actually needs is the
-        # outcome; choosing the worker and the files is its own job.
-        "clarificationQuestion": (
+    # Distinguish query-shaped requests from mutation-shaped ones so the
+    # clarification question matches the user's intent: asking "what
+    # projects are registered?" needs a lookup-oriented follow-up, not
+    # "what would you like to be different?".
+    is_query_shaped = _QUERY_PHRASING_RE.search(user_message) is not None
+    if is_query_shaped:
+        clarification_question = (
+            "What are you looking for? I can list your registered projects, "
+            "check workflow status, search your knowledge base, check git "
+            "status, or delegate work to a coding agent."
+        )
+    else:
+        clarification_question = (
             "I want to get this right before I start. What would you like "
             "to be different once it is done? Describe it however makes "
             "sense to you — I will plan it, choose the worker, watch it as "
             "it goes and check the result."
-        ),
+        )
+    return AgentIntent.model_validate({
+        "goal": user_message.strip(),
+        "expectedOutcome": "The requested outcome is achieved and evidenced.",
+        "needsClarification": True,
+        "clarificationQuestion": clarification_question,
         "ambiguity": "ambiguous",
         "confidence": 0.3,
     })

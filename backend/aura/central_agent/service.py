@@ -106,6 +106,9 @@ class CentralAgent:
         workflow_store: WorkflowStore | None = None,
         run_store: WorkflowRunStore | None = None,
         mcp_context_provider: Any | None = None,
+        sovereign_policy: Any | None = None,
+        agent_runtime: Any | None = None,
+        model_registry: Any | None = None,
     ) -> None:
         self.fabric_cfg = fabric_cfg
         self.sessions = session_store
@@ -113,7 +116,34 @@ class CentralAgent:
         # Optional AGENT 2 extension: MCP resources/prompts context feed
         # (untrusted, fenced — see mcp_context.py). Inert when absent.
         self._mcp_context_provider = mcp_context_provider
-        self.intents = intent_compiler or IntentCompiler(mode="heuristic")
+        # Sovereign policy: load from ~/.aura/sovereign.json unless the
+        # caller supplies one (e.g. from tests or the API layer).
+        if sovereign_policy is None:
+            try:
+                from ..sovereign.policy import load_sovereign_policy
+                sovereign_policy = load_sovereign_policy()
+            except Exception:
+                pass
+        self.sovereign_policy = sovereign_policy
+        self.agent_runtime = agent_runtime
+        self._model_registry = model_registry
+        # Model port: built with the sovereign policy so cloud endpoints are
+        # blocked at the routing layer when sovereign_mode is enabled.
+        # Falls back to heuristic IntentCompiler when no providers.json is
+        # configured — the honest degraded mode, never a silent cloud call.
+        if intent_compiler is not None:
+            self.intents = intent_compiler
+        else:
+            _port = None
+            try:
+                from .model_routing import default_model_port
+                _port = default_model_port(sovereign_policy=sovereign_policy)
+            except Exception:
+                pass
+            if _port is not None:
+                self.intents = IntentCompiler(mode="model", model_port=_port)
+            else:
+                self.intents = IntentCompiler(mode="heuristic")
         if planner is not None:
             self.planner = planner
         else:
@@ -160,7 +190,8 @@ class CentralAgent:
         self.compiler = compiler or WorkflowCompiler()
         self.controller = ExecutionController(
             fabric_cfg, engine=getattr(self, "engine", None),
-            capability_registry=self.capabilities)
+            capability_registry=self.capabilities,
+            model_registry=self._model_registry)
         self.verifier = VerificationEngine()
         self._active_plans: dict[str, Any] = {}
         # Live request correlation: session id -> the request id of the
@@ -391,8 +422,11 @@ class CentralAgent:
         # the fenced editor block must not steer classification. The
         # block still reaches model-backed compilation through the
         # bundle (labelled data), and worker delegation below.
+        # 8k chars accommodates the full 40-capability manifest plus
+        # workflows/approvals/session/project items; the intent compiler
+        # must see the whole action space or it fabricates unavailability.
         intent = self.intents.compile(user_message,
-                                      context_summary=bundle.render(4000))
+                                      context_summary=bundle.render(8000))
         if editor_block and getattr(intent, "delegateTask", None):
             # AURA-owned composition, re-validated downstream by the
             # planner and the task contract — the worker sees the code
@@ -917,7 +951,9 @@ class CentralAgent:
         elif report.unverifiedActions:
             summary_bits.append("unverified: " + ", ".join(report.unverifiedActions))
         bundle = self._collect_evidence(sid, plan.planId, outcome.outcomes,
-                                       "; ".join(summary_bits), _now())
+                                       "; ".join(summary_bits), _now(),
+                                       artifact_paths=outcome.artifact_paths,
+                                       worker_assignments=outcome.worker_assignments)
         self._emit("result.ready", sid, passed=report.passed)
         # Model-backed read-only answer synthesis, streamed as
         # answer.token frames. This path only REASONS OVER records the
@@ -1502,6 +1538,10 @@ class CentralAgent:
         takes as long as the worker takes to die, so the caller learns
         that the request landed — not that the process is already gone.
         The `run.cancelled` event says that.
+
+        For sessions parked with no active worker (awaiting-approval,
+        planning), the cancellation is settled immediately in this call
+        since there is nothing to signal.
         """
         session = self.sessions.load(session_id)
         if session is None:
@@ -1517,6 +1557,25 @@ class CentralAgent:
             session.cancellation = {**record, "settled": False}
             self.sessions.save(session)
             self._invalidate_pending(session, record)
+            # If no worker is actively running (session is parked waiting
+            # for approval or still in planning), settle immediately —
+            # there is no process to signal and the state would never
+            # advance to "cancelled" on its own.
+            token = self.runs.token_for(session_id)
+            parked = session.state in ("awaiting-approval", "planning")
+            if parked and (token is None or not getattr(token, "running", False)):
+                summary = self._cancellation_summary(record, [], [])
+                session.cancellation = {**record, "settled": True,
+                                        "at": _now(), "performedTasks": [],
+                                        "verifiedTasks": [], "neverStarted": [],
+                                        "summary": summary}
+                settled = AgentResult(
+                    status="cancelled", outcome="cancelled",
+                    summary=summary, performed=[], verified=[],
+                    failureReason="cancelled-by-user")
+                self.sessions.finish(session, settled)
+                self.sessions.save(session)
+                self._emit("run.cancelled", session_id, **session.cancellation)
         return record
 
     def _invalidate_pending(self, session: AgentSession,
@@ -1654,19 +1713,23 @@ class CentralAgent:
 
     def _collect_evidence(self, sid: str, plan_id: str,
                             outcomes: Any, summary: str,
-                            now: str) -> Any:
+                            now: str,
+                            artifact_paths: list[str] | None = None,
+                            worker_assignments: dict | None = None) -> Any:
         """Evidence collection with the ambient leg attached.
 
         The request id rides the bundle for correlation; model identity
         rides it only when a model call verifiably happened on a
-        contributing leg (stashed by _stream_answer) — otherwise the
-        fields stay absent, which honestly means heuristic. Authority
-        stays with the referenced audit/approval records either way.
+        contributing leg (stashed by _stream_answer or carried by a
+        routing record in worker_assignments) — otherwise the fields stay
+        absent, which honestly means heuristic. Authority stays with the
+        referenced audit/approval records either way.
         """
         rid = (getattr(self, "_request_ids", None) or {}).get(sid)
         bundle = self.evidence.collect(
             sid, plan_id, outcomes, summary, now,
-            request_ids=[rid] if rid else [])
+            request_ids=[rid] if rid else [],
+            artifact_paths=artifact_paths or [])
         try:
             session = self.sessions.load(sid)
         except Exception:
@@ -1674,6 +1737,19 @@ class CentralAgent:
         if session is not None:
             provider = getattr(session, "lastModelProvider", None)
             model = getattr(session, "lastModelName", None)
+            # Fallback: extract model identity from the routing record stored
+            # in worker_assignments when _stream_answer never ran (e.g. for
+            # delegated agent tasks that never call the synthesis path).
+            if (not isinstance(provider, str) or not isinstance(model, str)):
+                for wa in (worker_assignments or {}).values():
+                    wm = wa.get("modelName")
+                    if wm:
+                        # modelId is "<endpoint_id>/<model_name>" when set
+                        mid = wa.get("modelId", "")
+                        wp = mid.split("/")[0] if "/" in mid else wa.get(
+                            "networkClass", "unknown")
+                        provider, model = wp, wm
+                        break
             if isinstance(provider, str) and isinstance(model, str):
                 bundle = bundle.model_copy(update={"modelProvider": provider,
                                                    "modelName": model})
@@ -1902,7 +1978,8 @@ class CentralAgent:
                    unmet=report.unmetAcceptance)
         bundle = self._collect_evidence(session.sessionId, plan.planId,
                                        outcome.outcomes,
-                                       f"Resumed; {report.detail}", _now())
+                                       f"Resumed; {report.detail}", _now(),
+                                       artifact_paths=outcome.artifact_paths)
         if outcome.stopped and outcome.approval_id:
             # A resumed leg that parks AGAIN must record the same two
             # things the first leg records, or a multi-task plan can

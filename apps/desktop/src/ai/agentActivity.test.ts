@@ -43,9 +43,9 @@ vi.mock('./centralAgentClient', () => ({
   },
 }));
 
-const { useWorkspaceConversations } = await import('./useAgentConversations');
+const { useAgentConversations } = await import('./useAgentConversations');
 
-const state = () => useWorkspaceConversations.getState();
+const state = () => useAgentConversations.getState();
 
 /** Lets the store's awaited internals run without resolving the turn. */
 const settle = async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve(); };
@@ -67,7 +67,7 @@ beforeEach(() => {
   // A loaded workspace thread: the turn mechanics under test start from
   // an existing conversation, never from thread creation (which needs
   // the service and is covered elsewhere).
-  useWorkspaceConversations.setState({
+  useAgentConversations.setState({
     projectId: null, projectPath: null, conversations: [], activeId: 'conv-test',
     messages: [], phase: 'idle', loading: false, agentUp: null,
     activity: { workers: {}, tools: [], phase: null, awaitingApproval: false },

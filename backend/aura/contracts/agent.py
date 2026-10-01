@@ -322,6 +322,9 @@ class EvidenceBundle(ContractModel):
     #: Observability only.
     modelProvider: str | None = None
     modelName: str | None = None
+    #: Paths of artifacts generated during this session. Observability only;
+    #: authority rides the audit records that reference the same invocationIds.
+    artifactPaths: list[str] = Field(default_factory=list)
 
 
 class AgentResult(ContractModel):

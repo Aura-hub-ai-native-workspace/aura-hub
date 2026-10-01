@@ -55,6 +55,13 @@ UNRESTRICTED = "unrestricted"
 
 MODES = (DENY, ALLOWLIST, UNRESTRICTED)
 
+# KNOWN_LIMITATION: subprocess_network_escape
+# Workers' own spawned subprocesses (curl, pip, node, double-forked children)
+# run outside any namespace AURA creates and therefore bypass ALLOWLIST policy.
+# Only DENY (unprivileged network namespace) covers these processes.
+# Mitigations: (1) set terminal.execute policy to ask-user, (2) sandbox.execute
+# enforces per-invocation cwd boundary and timeout but does not add a namespace.
+
 # ── enforcement states (§16: "enabled" is not "enforced") ───────────────
 
 SUPPORTED_AND_ENFORCED = "SUPPORTED_AND_ENFORCED"
