@@ -101,7 +101,10 @@ function startStub(tagsHitsAllowed: number): Promise<Stub> {
   });
 }
 
-beforeEach(freshModules);
+// Dynamic module isolation (resetModules + fresh imports) rebuilds the whole
+// provider module graph per test, which can exceed the default 10s hook
+// timeout on cold CI runners — give this hook an explicit bounded timeout.
+beforeEach(freshModules, 30_000);
 
 describe('verifySelfHosted save stage', () => {
   it('verifies, saves, and persists the exact verified URL and model', async () => {
