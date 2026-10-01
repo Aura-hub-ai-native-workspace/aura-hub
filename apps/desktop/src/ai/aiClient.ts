@@ -52,10 +52,49 @@ export interface ProjectProfile {
 }
 
 export interface ConvMessage { id: string; role: 'user' | 'assistant'; content: string; at: string; meta?: unknown; error?: boolean }
-/** Exactly one scope per conversation: the global Workspace Chat, or one project's Ask AURA. Scopes never share threads. */
-export type ConversationScope = 'workspace' | 'project';
-export interface Conversation { id: string; title: string; scope?: ConversationScope; createdAt: string; updatedAt: string; messages: ConvMessage[] }
-export interface ConversationSummary { id: string; title: string; scope?: ConversationScope; createdAt: string; updatedAt: string; messageCount: number; preview: string }
+export type ConversationScope = 'project' | 'workspace';
+export type ConversationKind = 'ask_aura' | 'execution';
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: ConvMessage[];
+  scope?: ConversationScope;
+  kind?: ConversationKind;
+  projectId?: string;
+  workspaceId?: string;
+  archived?: boolean;
+}
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  preview: string;
+  scope?: ConversationScope;
+  kind?: ConversationKind;
+}
+
+/* ── Handoff: a task offered from Project Ask AURA to the workspace ──── */
+export type HandoffStatus = 'created' | 'accepted' | 'cancelled' | 'completed';
+export interface Handoff {
+  id: string;
+  projectId: string;
+  sourceConversationId: string;
+  sourceMessageIds: string[];
+  title: string;
+  notes?: string;
+  targetWorkspaceId: string;
+  status: HandoffStatus;
+  createdAt: string;
+  updatedAt: string;
+  acceptedAt?: string;
+  completedAt?: string;
+  cancelledAt?: string;
+  acceptedIntoConversationId?: string;
+}
 
 export interface KGNode { id: string; type: string; label: string; group: string; relPath?: string; line?: number; detail?: string }
 export interface KGEdge { from: string; to: string; kind: string }
@@ -860,14 +899,32 @@ export const aiClient = {
   appendMessage: (id: string, cid: string, msg: { role: 'user' | 'assistant'; content: string; meta?: unknown; error?: boolean }) => jpost<ConvMessage>(`/projects/${id}/conversations/${cid}/message`, msg),
   removeLastAssistantMessage: (id: string, cid: string) => jsend<{ ok: boolean }>('DELETE', `/projects/${id}/conversations/${cid}/message/last`),
 
-  /* workspace chat (global scope) — same store, disjoint file, disjoint routes */
-  listWorkspaceConversations: () => jget<{ conversations: ConversationSummary[] }>('/workspace/conversations'),
-  getWorkspaceConversation: (cid: string) => jget<Conversation>(`/workspace/conversations/${cid}`),
-  createWorkspaceConversation: (title?: string) => jpost<Conversation>('/workspace/conversations', { title }),
-  renameWorkspaceConversation: (cid: string, title: string) => jsend<Conversation>('PATCH', `/workspace/conversations/${cid}`, { title }),
-  removeWorkspaceConversation: (cid: string) => jsend<{ ok: boolean }>('DELETE', `/workspace/conversations/${cid}`),
-  appendWorkspaceMessage: (cid: string, msg: { role: 'user' | 'assistant'; content: string; meta?: unknown; error?: boolean }) => jpost<ConvMessage>(`/workspace/conversations/${cid}/message`, msg),
-  removeLastWorkspaceAssistantMessage: (cid: string) => jsend<{ ok: boolean }>('DELETE', `/workspace/conversations/${cid}/message/last`),
+  /* workspace execution conversations — a separate scope with separate
+     routes and a separate file family on the service. A project
+     conversation id is simply "not found" here, and vice versa. */
+  listWorkspaceConversations: (wsId: string) => jget<{ conversations: ConversationSummary[] }>(`/workspaces/${encodeURIComponent(wsId)}/conversations`),
+  getWorkspaceConversation: (wsId: string, cid: string) => jget<Conversation>(`/workspaces/${encodeURIComponent(wsId)}/conversations/${cid}`),
+  createWorkspaceConversation: (wsId: string, title?: string) => jpost<Conversation>(`/workspaces/${encodeURIComponent(wsId)}/conversations`, { title }),
+  renameWorkspaceConversation: (wsId: string, cid: string, title: string) => jsend<Conversation>('PATCH', `/workspaces/${encodeURIComponent(wsId)}/conversations/${cid}`, { title }),
+  removeWorkspaceConversation: (wsId: string, cid: string) => jsend<{ ok: boolean }>('DELETE', `/workspaces/${encodeURIComponent(wsId)}/conversations/${cid}`),
+  appendWorkspaceMessage: (wsId: string, cid: string, msg: { role: 'user' | 'assistant'; content: string; meta?: unknown; error?: boolean }) => jpost<ConvMessage>(`/workspaces/${encodeURIComponent(wsId)}/conversations/${cid}/message`, msg),
+  removeLastWorkspaceAssistantMessage: (wsId: string, cid: string) => jsend<{ ok: boolean }>('DELETE', `/workspaces/${encodeURIComponent(wsId)}/conversations/${cid}/message/last`),
+
+  /* handoffs — the controlled bridge from Project Ask AURA to the workspace */
+  createHandoff: (projectId: string, input: { sourceConversationId: string; sourceMessageIds: string[]; title: string; notes?: string; targetWorkspaceId: string }) =>
+    jpost<Handoff>(`/projects/${projectId}/ask-aura/handoffs`, input),
+  listHandoffs: (projectId: string, filter: { targetWorkspaceId?: string; status?: HandoffStatus } = {}) => {
+    const q = new URLSearchParams();
+    if (filter.targetWorkspaceId) q.set('workspaceId', filter.targetWorkspaceId);
+    if (filter.status) q.set('status', filter.status);
+    const qs = q.toString();
+    return jget<{ handoffs: Handoff[] }>(`/projects/${projectId}/ask-aura/handoffs${qs ? `?${qs}` : ''}`);
+  },
+  listWorkspaceHandoffs: (wsId: string) => jget<{ handoffs: Handoff[] }>(`/workspaces/${encodeURIComponent(wsId)}/handoffs`),
+  acceptHandoff: (projectId: string, hid: string, input: { workspaceId: string; conversationId?: string }) =>
+    jpost<Handoff>(`/projects/${projectId}/ask-aura/handoffs/${hid}/accept`, input),
+  cancelHandoff: (projectId: string, hid: string) => jpost<Handoff>(`/projects/${projectId}/ask-aura/handoffs/${hid}/cancel`, {}),
+  completeHandoff: (projectId: string, hid: string) => jpost<Handoff>(`/projects/${projectId}/ask-aura/handoffs/${hid}/complete`, {}),
 
   /* memory */
   listMemory: (id: string) => jget<{ items: MemoryItem[] }>(`/projects/${id}/memory`),

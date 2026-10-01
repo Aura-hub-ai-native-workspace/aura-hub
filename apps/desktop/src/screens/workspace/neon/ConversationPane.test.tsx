@@ -27,6 +27,7 @@ import type { ComponentProps } from 'react';
 import type { ApprovalRequest } from '../../../ai/fabricClient';
 
 import type { AgentActivity, AgentChatMessage } from '../../../ai/useAgentConversations';
+import type { Handoff } from '../../../ai/aiClient';
 import { ConversationPane } from './ConversationPane';
 
 /* ── fixtures ────────────────────────────────────────────────────── */
@@ -58,7 +59,7 @@ function assistant(
     content,
     status: 'done',
     agent: {
-      sessionId: 'agt-3f1a9b2c4d5e', outcome: 'completed', projectId: null, requestId: 'req-aabbccddeeff',
+      sessionId: 'agt-3f1a9b2c4d5e', outcome: 'completed', requestId: 'req-aabbccddeeff',
       progress: [], events: [], plan: null, approvalId: null,
       performed: [], verified: [], evidenceSummary: null, runId: null,
       needsInput: false, cancelled: false, tools: [],
@@ -82,8 +83,9 @@ function pane(messages: AgentChatMessage[], over: Partial<PaneProps> = {}) {
     onStop: vi.fn(),
     onRegenerate: vi.fn(),
     onDecide: vi.fn(),
+    handoffs: [] as Handoff[],
+    onAcceptHandoff: vi.fn(),
     projectName: null,
-    scope: 'workspace',
     ...over,
   };
   return <ConversationPane {...props} />;
@@ -124,7 +126,9 @@ describe('ConversationPane — a greeting reads like a reply', () => {
 
   it('offers a starting point when there is nothing to show', () => {
     const markup = render([]);
-    expect(markup).toContain('What should get done?');
+    // The workspace chat is the EXECUTION surface now: its empty state
+    // names the scope instead of the old shared "How can I help?".
+    expect(markup).toContain('Ready to execute.');
     expect(count(markup, 'chat-suggestion')).toBeGreaterThan(0);
   });
 });

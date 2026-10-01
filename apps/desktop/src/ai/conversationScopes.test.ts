@@ -1,23 +1,24 @@
 /**
- * conversationScopes — Ask AURA advises, the Workspace executes.
+ * conversationScopes — Ask AURA and the Workspace never share threads.
  *
- * Regression cover for the product split:
+ * Regression cover for the product split, expressed against the
+ * scope-separated architecture (one engine, two scopes):
  *
- *   1. ADVISORY HAS NO EXECUTION AUTHORITY. Sending through the Ask
- *      AURA store (`useConversations`) must never call the Central
- *      Agent client — no submit, no message, no approve, no cancel.
- *      Advice streams from `/stream` with project context and persists
- *      in that project's file. This is the hard invariant.
- *   2. The Workspace execution store drives the Central Agent and
- *      persists in the workspace-scoped file, never in a project's.
- *   3. The two stores never share transcripts.
- *   4. Handoff is explicit: offering sets a pending banner and sends
- *      nothing; only an explicit consume+send executes.
- *   5. Project A/B advisory threads stay isolated; the Workspace never
- *      inherits a project's private thread.
+ *   1. The advisory store (`useConversations`, /stream generation)
+ *      must never call the Central Agent client — no submit, no
+ *      message, no approve, no cancel. This is the hard invariant.
+ *   2. Ask AURA (agent engine, project scope) persists ONLY through
+ *      the project conversation routes.
+ *   3. Workspace execution (agent engine, `workspace:<projectId>`
+ *      scope) persists ONLY through the /workspaces/<id> routes.
+ *   4. The two families never share transcripts, and switching scopes
+ *      resets the visible thread instead of carrying it across.
+ *   5. Handoff is explicit: `handoffToWorkspace` only RECORDS an offer
+ *      (a POST to the handoff store); it never executes anything, and
+ *      the workspace scope can never be a handoff source.
  *
- * Only the Central Agent client and the HTTP layer are faked; both
- * stores, their routing and the handoff are the real ones.
+ * Only the Central Agent client and the HTTP layer are faked; the
+ * stores, their scope routing and the handoff guard are the real ones.
  *
  * Run with `npm run test:front` from the repo root.
  */
@@ -25,16 +26,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const calls = { submit: [] as unknown[][], message: [] as unknown[][] };
 
-/* In-memory stand-in for the service's disjoint conversation files. */
+/* In-memory stand-in for the service's disjoint conversation files.
+   Keys mirror the ROUTE namespaces, which mirror the on-disk families:
+   `project:<id>` (conversations/<id>.json) vs
+   `workspace:<id>` (conversations-workspace/<id>.json, Windows-safe
+   name on the service side — irrelevant at this HTTP seam). */
 const files = new Map<string, { id: string; title: string; messages: { id: string; role: string; content: string; meta?: unknown }[] }[]>();
 const fetched: string[] = [];
+const handoffPosts: { url: string; body: Record<string, unknown> }[] = [];
 let convSeq = 0;
 let msgSeq = 0;
 
 function fileFor(url: string): string {
-  const m = url.match(/\/(projects\/([^/]+)|workspace)\/conversations/);
-  if (!m) throw new Error(`unexpected url ${url}`);
-  return m[1] === 'workspace' ? '__workspace__' : `project:${m[2]}`;
+  const u = new URL(url, 'http://x');
+  const segs = u.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+  if (segs[0] === 'workspaces') return `workspace:${segs[1]}`;
+  if (segs[0] === 'projects') return `project:${segs[1]}`;
+  throw new Error(`unexpected url ${url}`);
 }
 
 function jsonBody(init?: RequestInit): Record<string, unknown> {
@@ -99,6 +107,7 @@ const fetchStub = async (url: string, init?: RequestInit) => {
   fetched.push(`${init?.method ?? 'GET'} ${url}`);
   const u = new URL(url, 'http://x');
   const method = init?.method ?? 'GET';
+  const segs = u.pathname.split('/').filter(Boolean).map(decodeURIComponent);
 
   // The advisory generation path: one streamed answer, then done.
   if (u.pathname === '/stream' && method === 'POST') {
@@ -111,17 +120,36 @@ const fetchStub = async (url: string, init?: RequestInit) => {
     };
   }
 
-  const file = fileFor(u.pathname);
+  // Handoff routes: record the offer, never execute.
+  if (segs[2] === 'ask-aura' && segs[3] === 'handoffs') {
+    const body = jsonBody(init as RequestInit | undefined);
+    handoffPosts.push({ url: u.pathname, body });
+    const hid = 'hnd-1';
+    if (segs.length > 4 && segs[5] === 'accept') {
+      return { json: () => Promise.resolve({ id: hid, status: 'accepted', projectId: segs[1], targetWorkspaceId: body.workspaceId }) };
+    }
+    return {
+      json: () => Promise.resolve({
+        id: hid, status: 'created', projectId: segs[1],
+        sourceConversationId: body.sourceConversationId ?? 'conv-x',
+        sourceMessageIds: body.sourceMessageIds ?? [],
+        title: body.title ?? '', targetWorkspaceId: body.targetWorkspaceId ?? '',
+      }),
+    };
+  }
+
+  const file = fileFor(url);
   const list = files.get(file) ?? [];
-  const segs = u.pathname.split('/').filter(Boolean);
   const body = jsonBody(init as RequestInit | undefined);
   const ok = (v: unknown) => ({ json: () => Promise.resolve(v) });
+  const isConversations = segs[segs.length - 1] === 'conversations' || (segs.length >= 3 && segs[2] === 'conversations');
 
-  if (segs[segs.length - 1] === 'conversations' && method === 'GET') {
+  if (isConversations && segs[segs.length - 1] === 'conversations' && method === 'GET') {
     return ok({ conversations: list.map((c) => ({ id: c.id, title: c.title, messageCount: c.messages.length, createdAt: '', updatedAt: '' })) });
   }
-  if (segs[segs.length - 1] === 'conversations' && method === 'POST') {
-    const conv = { id: `conv-${++convSeq}`, title: String(body.title ?? 'New conversation'), messages: [] as { id: string; role: string; content: string; meta?: unknown }[] };
+  if (isConversations && segs[segs.length - 1] === 'conversations' && method === 'POST') {
+    const idPrefix = file.startsWith('workspace:') ? 'wconv' : 'conv';
+    const conv = { id: `${idPrefix}-${++convSeq}`, title: String(body.title ?? 'New conversation'), messages: [] as { id: string; role: string; content: string; meta?: unknown }[] };
     files.set(file, [conv, ...list]);
     return ok(conv);
   }
@@ -139,7 +167,7 @@ const fetchStub = async (url: string, init?: RequestInit) => {
 vi.stubGlobal('fetch', fetchStub);
 
 const { useConversations } = await import('./useConversations');
-const { useWorkspaceConversations } = await import('./useAgentConversations');
+const { useAgentConversations } = await import('./useAgentConversations');
 
 const IDLE_ACTIVITY = { workers: {}, tools: [], phase: null, awaitingApproval: false };
 
@@ -148,6 +176,7 @@ const settle = async () => { for (let i = 0; i < 16; i += 1) await Promise.resol
 beforeEach(() => {
   files.clear();
   fetched.length = 0;
+  handoffPosts.length = 0;
   calls.submit.length = 0;
   calls.message.length = 0;
   convSeq = 0;
@@ -155,14 +184,14 @@ beforeEach(() => {
   useConversations.setState({
     projectId: null, conversations: [], activeId: null, messages: [], phase: 'idle', loading: false,
   });
-  useWorkspaceConversations.setState({
-    projectId: null, projectPath: null, conversations: [], activeId: null,
-    messages: [], phase: 'idle', loading: false, agentUp: null, activity: { ...IDLE_ACTIVITY },
-    pendingHandoff: null,
+  useAgentConversations.setState({
+    scope: 'project', projectId: null, projectPath: null, workspaceId: null, handoffs: [],
+    conversations: [], activeId: null, messages: [], phase: 'idle', loading: false,
+    agentUp: null, activity: { ...IDLE_ACTIVITY },
   });
 });
 
-describe('Ask AURA advises and never executes', () => {
+describe('advisory /stream has no execution authority', () => {
   it('routes advice through /stream with project scope and zero central-agent calls', async () => {
     useConversations.setState({ projectId: 'projA' });
     await useConversations.getState().send('Explain thread isolation');
@@ -195,93 +224,79 @@ describe('Ask AURA advises and never executes', () => {
     expect(useConversations.getState().messages).toEqual([]);
     expect(files.get('project:projB') ?? []).toEqual([]);
 
-    // Project A thread intact; workspace file untouched by advice.
+    // Project A thread intact; no workspace-family writes happened.
     await useConversations.getState().loadForProject('projA');
     await settle();
     expect(useConversations.getState().messages.some((m) => m.content.includes('AURA-PROJECT-A-PRIVATE-123'))).toBe(true);
-    expect(files.has('__workspace__')).toBe(false);
+    expect(files.has('workspace:workspace:projA')).toBe(false);
+    expect(fetched.some((f) => f.includes('/workspaces/'))).toBe(false);
   });
 });
 
-describe('Workspace executes and stays separate', () => {
-  it('drives the central agent and persists in the workspace file only', async () => {
-    await useWorkspaceConversations.getState().loadForWorkspace('projA', '/tmp/projA');
-    await useWorkspaceConversations.getState().send('Fix the onboarding bug');
+describe('Ask AURA (project scope) and the Workspace stay separate', () => {
+  it('Ask AURA drives the agent and persists through project routes only', async () => {
+    await useAgentConversations.getState().loadForProject('projA');
+    await settle();
+    void useAgentConversations.getState().send('Why is the retry failing?');
     await settle();
 
     expect(calls.submit.length).toBe(1);
-    const writes = fetched.filter((f) => f.startsWith('POST'));
-    expect(writes.some((f) => f.includes('/workspace/conversations'))).toBe(true);
-    expect(writes.some((f) => f.includes('/projects/'))).toBe(false);
-    expect(files.has('project:projA')).toBe(false);
+    const writes = fetched.filter((f) => f.startsWith('POST') && f.includes('/message'));
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes.every((f) => f.includes('/projects/projA/'))).toBe(true);
+    expect(fetched.some((f) => f.includes('/workspaces/'))).toBe(false);
+    expect(files.has('workspace:workspace:projA')).toBe(false);
   });
 
-  it('never inherits a project advisory thread', async () => {
-    useConversations.setState({ projectId: 'projA' });
-    await useConversations.getState().send('Project A advisor context = BBBBB');
+  it('the workspace execution chat persists through /workspaces routes only', async () => {
+    await useAgentConversations.getState().loadForWorkspace('workspace:projA');
+    await settle();
+    void useAgentConversations.getState().send('Fix the onboarding bug');
     await settle();
 
-    await useWorkspaceConversations.getState().loadForWorkspace(null, null);
-    await settle();
-    expect(useWorkspaceConversations.getState().messages).toEqual([]);
-  });
-
-  it('starts a fresh session when the working project changes mid-thread', async () => {
-    await useWorkspaceConversations.getState().loadForWorkspace('projA', '/tmp/projA');
-    await useWorkspaceConversations.getState().send('first objective');
-    await settle();
     expect(calls.submit.length).toBe(1);
+    const writes = fetched.filter((f) => f.startsWith('POST') && f.includes('/message'));
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes.every((f) => f.includes('/workspaces/'))).toBe(true);
+    expect(fetched.some((f) => f.includes('/projects/projA/conversations'))).toBe(false);
+    expect(files.get('workspace:workspace:projA')?.[0]?.messages.length).toBe(2);
+  });
 
-    useWorkspaceConversations.setState({ projectId: 'projB', projectPath: '/tmp/projB' });
-    await useWorkspaceConversations.getState().send('second objective');
+  it('switching scopes resets the visible thread instead of carrying it across', async () => {
+    await useAgentConversations.getState().loadForProject('projA');
     await settle();
+    void useAgentConversations.getState().send('PROJECT ONLY MARKER zzz');
+    await settle();
+    expect(useAgentConversations.getState().messages.some((m) => m.content.includes('PROJECT ONLY MARKER zzz'))).toBe(true);
 
-    expect(calls.message.length).toBe(0);
-    expect(calls.submit.length).toBe(2);
+    await useAgentConversations.getState().loadForWorkspace('workspace:projA');
+    await settle();
+    expect(useAgentConversations.getState().scope).toBe('workspace');
+    expect(useAgentConversations.getState().messages).toEqual([]);
+    expect(JSON.stringify(useAgentConversations.getState().messages)).not.toContain('PROJECT ONLY MARKER zzz');
   });
 });
 
 describe('explicit handoff', () => {
-  it('offering stages a banner and executes nothing', async () => {
-    await useWorkspaceConversations.getState().loadForWorkspace('projA', '/tmp/projA');
-    useWorkspaceConversations.getState().offerHandoff({
-      text: 'Task from Ask AURA (project "projA"):\n\nQuestion: How should we fix X?',
-      sourceProjectId: 'projA',
-      sourceProjectName: 'projA',
-      offeredAt: new Date().toISOString(),
-    });
+  it('a project handoff only RECORDS an offer — nothing executes', async () => {
+    useAgentConversations.setState({ scope: 'project', projectId: 'projA' });
+    const h = await useAgentConversations.getState().handoffToWorkspace('conv-1', ['m1'], 'Build the retry path');
 
-    expect(useWorkspaceConversations.getState().pendingHandoff?.text).toContain('How should we fix X?');
-    expect(calls.submit.length).toBe(0);
-    expect(useWorkspaceConversations.getState().messages).toEqual([]);
+    expect(h.status).toBe('created');
+    expect(handoffPosts).toHaveLength(1);
+    expect(handoffPosts[0].url).toBe('/projects/projA/ask-aura/handoffs');
+    expect(handoffPosts[0].body.targetWorkspaceId).toBe('workspace:projA');
+    // Recording an offer never reaches the execution engine.
+    expect(calls.submit).toEqual([]);
+    expect(useAgentConversations.getState().messages).toEqual([]);
   });
 
-  it('only an explicit consume+send executes the offered task', async () => {
-    await useWorkspaceConversations.getState().loadForWorkspace('projA', '/tmp/projA');
-    useWorkspaceConversations.getState().offerHandoff({
-      text: 'Do the thing',
-      sourceProjectId: 'projA',
-      sourceProjectName: 'projA',
-      offeredAt: new Date().toISOString(),
-    });
-    const handoff = useWorkspaceConversations.getState().consumeHandoff();
-    expect(handoff?.text).toBe('Do the thing');
-    expect(useWorkspaceConversations.getState().pendingHandoff).toBeNull();
-
-    await useWorkspaceConversations.getState().send(handoff!.text);
-    await settle();
-    expect(calls.submit.length).toBe(1);
-  });
-
-  it('dismiss drops the offer without a trace', () => {
-    useWorkspaceConversations.getState().offerHandoff({
-      text: 'Do the thing',
-      sourceProjectId: 'projA',
-      sourceProjectName: 'projA',
-      offeredAt: new Date().toISOString(),
-    });
-    useWorkspaceConversations.getState().dismissHandoff();
-    expect(useWorkspaceConversations.getState().pendingHandoff).toBeNull();
-    expect(calls.submit.length).toBe(0);
+  it('the workspace scope can never be a handoff source', async () => {
+    useAgentConversations.setState({ scope: 'workspace', projectId: 'projA', workspaceId: 'workspace:projA' });
+    await expect(
+      useAgentConversations.getState().handoffToWorkspace('wconv-1', ['m1'], 'nope'),
+    ).rejects.toThrow('only be sent from a project');
+    expect(handoffPosts).toHaveLength(0);
+    expect(calls.submit).toEqual([]);
   });
 });
