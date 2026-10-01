@@ -7,6 +7,45 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.18] - 2026-10-01 — Chat Scope Separation
+
+Ask AURA and Workspace Execution Chat are now distinct, scoped surfaces,
+each with its own persistence, ownership and handoff semantics.
+
+### New functionality
+
+- **Project "Ask AURA" vs Workspace "Execution Chat"** — conversations
+  are scoped per project (`workspace:<projectId>`) with separate store
+  families, so advisory questions and delegable work no longer share one
+  transcript (PR #64, #65).
+- **Controlled Send to Workspace** — an Ask AURA thread can be handed
+  off into the workspace execution chat through a persistent handoff
+  store with an explicit accepted/cancelled lifecycle.
+- **Scope-aware conversation engine** — the desktop engine captures the
+  per-turn owner and persists through the matching scope's store, with
+  read-time migration of existing conversations into the new model.
+- **Project-aware context, capabilities and provider groups** — context
+  and planning surfaces resolve through the capability registry with
+  project-aware grouping (from the unified main line).
+
+### Fixed
+
+- **Windows-safe workspace conversation file names** — store file
+  naming escapes characters that are illegal on Windows volumes.
+- **Provider headers and text-output crash** in the backend runtime.
+- **Windows environment detection** — shim routing, stub skip, shells,
+  npm prefix and cmd quoting fixes from the main line.
+- **projectScoping mount-vs-request identity assertion** in the
+  service.
+
+### Testing / Validation
+
+- Chat scope separation suites: 11 store tests + 9 UI tests, rewritten
+  scope regression coverage, and the full validation matrix (245
+  frontend / 65 service tests, typecheck and build clean).
+- Explicit hook timeout headroom for cold CI runners on the provider
+  verify/save suite.
+
 ## [0.1.15] - 2026-09-22 — Windows Hardening + Project Context
 
 Two tracks. Windows machines reported healthy tools as broken or
