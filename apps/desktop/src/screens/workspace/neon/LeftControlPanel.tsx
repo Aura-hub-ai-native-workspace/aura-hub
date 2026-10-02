@@ -111,7 +111,7 @@ export function LeftControlPanel({
             AURA <span className="text-neon-blue">Hub</span>
           </span>
           <span className="block truncate text-[11.5px] text-text-subtle">
-            One Prompt. Multiple Minds.
+            Sovereign AI Agent
           </span>
         </span>
         <IconButton icon="panel" label="Toggle panel" size="sm" onClick={onRelayout} />
@@ -203,9 +203,9 @@ export function LeftControlPanel({
         type="button"
         onClick={() => onAddWorker(null)}
         data-testid="add-worker-open"
-        className="neon-focus inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-xl border border-[rgba(122,92,255,0.4)] bg-[rgba(122,92,255,0.1)] text-[12px] font-semibold text-[#c9bcff] transition-colors hover:bg-[rgba(122,92,255,0.18)]"
+        className="neon-focus inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-xl border border-[rgba(125,146,255,0.22)] bg-transparent text-[11.5px] font-medium text-text-subtle transition-colors hover:border-[rgba(122,92,255,0.4)] hover:text-[#c9bcff]"
       >
-        <Icon name="plus" size={14} />
+        <Icon name="plus" size={13} />
         Add Worker
       </button>
     </aside>

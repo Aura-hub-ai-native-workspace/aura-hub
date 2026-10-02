@@ -481,7 +481,10 @@ export function OrchestrationGraph({
 
   return (
     <div className="flex flex-col items-center">
-      {/* MINDS — six slots, always drawn. */}
+      {/* AURA CAPABILITIES — six slots, always drawn. */}
+      <p className="mb-2 self-start text-[9.5px] font-semibold uppercase tracking-widest text-text-subtle">
+        Capabilities
+      </p>
       <div
         className="grid w-full grid-cols-3 gap-x-2 gap-y-4"
         role="list"
@@ -530,13 +533,16 @@ export function OrchestrationGraph({
         <span className="mt-2.5 text-[17px] font-semibold tracking-[-0.01em] text-text">
           AURA Agent
         </span>
-        <span className="text-[11.5px] text-text-muted">Plan · Use Tools · Get Results</span>
+        <span className="text-[11.5px] text-text-muted">Understand · Plan · Execute · Verify</span>
         <span className="mt-0.5 max-w-full truncate text-[11px] text-neon-cyan">{phase}</span>
       </div>
 
       <Connectors count={ACTIVE_TOOL_SLOTS} direction="up" />
 
       {/* ACTIVE WORKSPACE TOOLS — three slots, always drawn. */}
+      <p className="mb-2 self-start text-[9.5px] font-semibold uppercase tracking-widest text-text-subtle">
+        Environment
+      </p>
       <div
         className="grid w-full grid-cols-3 gap-2"
         role="list"

@@ -55,7 +55,7 @@ export function WorkspaceShell({ left, right }: { left: ReactNode; right: ReactN
             className="neon-focus absolute right-3 top-3 z-10 inline-flex items-center gap-1.5 rounded-lg border border-[rgba(125,146,255,0.3)] bg-[rgba(9,13,26,0.9)] px-2.5 py-1.5 text-[11.5px] text-text-subtle transition-colors hover:text-text"
           >
             <Icon name="panel" size={13} />
-            {railOpen ? 'Hide tools' : 'Show tools'}
+            {railOpen ? 'Hide capabilities' : 'Show capabilities'}
           </button>
           {right}
         </div>

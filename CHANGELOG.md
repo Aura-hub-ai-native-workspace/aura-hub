@@ -7,6 +7,42 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.19] - 2026-10-02 — Workspace AURA Execution UI
+
+The Workspace is redesigned around a single clear interaction model:
+**USER → AURA → WORK**. AURA is the primary actor; workers and tools
+are its capabilities, not the user's choices to manually orchestrate.
+
+### Changed
+
+- **Left rail tagline** — "One Prompt. Multiple Minds." replaced with
+  "Sovereign AI Agent", positioning AURA as the agent rather than
+  advertising multiple AI models for the user to select (neon workspace).
+- **AURA node lifecycle** — caption updated from "Plan · Use Tools · Get
+  Results" to "Understand · Plan · Execute · Verify", matching the actual
+  execution lifecycle described throughout the product.
+- **Capabilities section label** — worker slots in the orchestration graph
+  are now labelled "Capabilities" (above) and environment tools labelled
+  "Environment", communicating that workers are resources AURA selects, not
+  user-managed model choices.
+- **Capability rail toggle** — "Hide tools" / "Show tools" button renamed
+  to "Hide capabilities" / "Show capabilities".
+- **Composer prompt** — "Message AURA…" placeholder changed to
+  "Give AURA a task…" to reinforce the task-delegation model.
+- **No-project subtitle** — when no project is selected, the Execution
+  Chat subtitle now reads "Give AURA a task — it plans, executes and
+  verifies" instead of "Ask anything, or tell me what to build".
+- **Add Worker button styling** — demoted from a filled accent button to
+  a secondary ghost control; present and accessible but no longer the
+  visual headline of the left rail.
+
+### Unchanged
+
+- All conversation, approval, handoff and evidence logic unchanged.
+- All worker/tool slot mechanics, data-testids and layout unchanged.
+- AI Runtime provider system and Ollama integration unchanged.
+- All backend architecture unchanged.
+
 ## [0.1.18] - 2026-10-01 — Chat Scope Separation
 
 Ask AURA and Workspace Execution Chat are now distinct, scoped surfaces,
