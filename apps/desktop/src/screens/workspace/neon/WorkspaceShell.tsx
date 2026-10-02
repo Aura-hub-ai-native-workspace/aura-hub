@@ -30,14 +30,14 @@ export function WorkspaceShell({ left, right }: { left: ReactNode; right: ReactN
         className={cn(
           'relative mx-auto grid min-h-0 w-full max-w-[1760px] flex-1 grid-cols-1 gap-3 overflow-hidden p-3 lg:gap-4 lg:p-4',
           railOpen
-            ? 'lg:grid-cols-[minmax(320px,26%)_minmax(0,1fr)]'
+            ? 'lg:grid-cols-[minmax(360px,30%)_minmax(0,1fr)]'
             : 'lg:grid-cols-[minmax(0,1fr)]',
         )}
       >
         {railOpen && (
           <div
             data-testid="capability-rail"
-            className="min-h-0 overflow-y-auto rounded-2xl border border-[rgba(125,146,255,0.28)] bg-[rgba(9,13,26,0.82)] p-4 shadow-card"
+            className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-[rgba(125,146,255,0.28)] bg-[rgba(9,13,26,0.82)] shadow-card"
           >
             {left}
           </div>

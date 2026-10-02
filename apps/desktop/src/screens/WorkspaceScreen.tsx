@@ -47,7 +47,7 @@ import { useWorkerStore } from '../workspace/useWorkers';
 import { useLayoutStore } from '../ops/layoutStore';
 import { WorkspaceShell } from './workspace/neon/WorkspaceShell';
 import { LeftControlPanel } from './workspace/neon/LeftControlPanel';
-import { ConversationPane } from './workspace/neon/ConversationPane';
+import { AuraAgentWorkspace } from './workspace/neon/AuraAgentWorkspace';
 import { useAgentConversations } from '../ai/useAgentConversations';
 import { AuraEverything } from '../environment/AuraEverything';
 import { AddWorkerPanel } from '../workspace/AddWorkerPanel';
@@ -157,6 +157,10 @@ export function WorkspaceScreen() {
   // the worker roster and the machine inventory are already loaded, so
   // neither entry point triggers a scan.
   const [surface, setSurface] = useState<'none' | 'worker' | 'tool'>('none');
+
+  // Composer text lifted here so suggestion chips in the right panel can
+  // fire sends without needing a second composer state.
+  const [composerText, setComposerText] = useState('');
 
   /* Which slot the open tool surface is replacing, if any. This is the
      whole of the replace flow's state: a slot index, held only while the
@@ -316,9 +320,6 @@ export function WorkspaceScreen() {
             toolSlots={toolSlots}
             workerSlots={workerSlots}
             scanning={scanning}
-            projects={projects}
-            projectId={projectId}
-            onSelectProject={selectProject}
             onAddWorker={(index) => openWorkerSurface(index)}
             onRemoveWorker={(index) => clearWorkerAt(index)}
             onReplaceWorker={(index) => openWorkerSurface(index)}
@@ -336,23 +337,29 @@ export function WorkspaceScreen() {
             onDisconnectWorker={(id) => void disconnectWorker(id)}
             phase={agentPhase}
             agentBusy={conv.phase === 'working'}
+            text={composerText}
+            setText={setComposerText}
+            onSend={(text) => { setComposerText(''); void conv.send(text); }}
+            onStop={() => conv.stop()}
+            busy={conv.phase === 'working'}
           />
         }
         right={
-          <ConversationPane
+          <AuraAgentWorkspace
             messages={conv.messages}
             activity={conv.activity}
             busy={conv.phase === 'working'}
             agentUp={conv.agentUp}
             approvals={approvals}
             deciding={deciding}
-            onSend={(text) => void conv.send(text)}
-            onStop={() => conv.stop()}
+            onSend={(text) => { setComposerText(''); void conv.send(text); }}
             onRegenerate={() => void conv.regenerate()}
             onDecide={(id, granted, reason) => void decide(id, granted, reason)}
             handoffs={conv.handoffs}
             onAcceptHandoff={(h) => void conv.acceptHandoff(h)}
-            projectName={projects.find((p) => p.id === projectId)?.name ?? null}
+            projects={projects}
+            projectId={projectId}
+            onSelectProject={selectProject}
           />
         }
       />
