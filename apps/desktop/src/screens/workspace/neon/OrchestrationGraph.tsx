@@ -142,15 +142,15 @@ function FilledWorkerSlot({
             : `${name} — ${worker?.reason || caption.toLowerCase()}. ${worker?.detail || ''}`.trim()
         }
         className={cn(
-          'neon-focus relative grid h-[68px] w-[68px] place-items-center rounded-2xl border transition-all duration-150 disabled:cursor-not-allowed',
+          'neon-focus relative grid h-[54px] w-[54px] place-items-center rounded-xl border transition-all duration-150 disabled:cursor-not-allowed',
           on
             ? 'border-[rgba(122,92,255,0.55)] bg-[rgba(122,92,255,0.12)] shadow-glow-violet hover:border-[rgba(122,92,255,0.8)]'
-            : 'border-[rgba(125,146,255,0.22)] bg-[rgba(13,19,38,0.9)] hover:border-[rgba(125,146,255,0.45)]',
+            : 'border-[rgba(125,146,255,0.18)] bg-[rgba(13,19,38,0.7)] hover:border-[rgba(125,146,255,0.38)]',
         )}
       >
         <span
           className={cn(
-            'text-[20px] font-semibold tracking-tight',
+            'text-[15px] font-medium tracking-tight',
             on ? 'text-[#c9bcff]' : 'text-text-subtle',
           )}
         >
@@ -165,11 +165,11 @@ function FilledWorkerSlot({
           )}
         />
       </button>
-      <span className="mt-2 w-full truncate text-[12px] font-semibold text-text">{name}</span>
+      <span className="mt-1.5 w-full truncate text-[11px] font-medium text-text-subtle">{name}</span>
       <span
         className={cn(
-          'w-full truncate text-[10.5px]',
-          on ? 'text-neon-success' : 'text-text-subtle',
+          'w-full truncate text-[10px]',
+          on ? 'text-neon-success' : 'text-text-subtle opacity-60',
         )}
       >
         {caption}
@@ -232,10 +232,10 @@ function EmptyWorkerSlot({ index, onAddWorker }: { index: number; onAddWorker: (
         title="Add an AI worker to this workspace"
         className="neon-focus flex min-w-0 flex-col items-center text-center"
       >
-        <span className="grid h-[68px] w-[68px] place-items-center rounded-2xl border border-dashed border-[rgba(125,146,255,0.28)] bg-[rgba(10,16,34,0.55)] text-text-subtle transition-colors duration-150 hover:border-[rgba(122,92,255,0.5)] hover:text-[#c9bcff]">
-          <Icon name="plus" size={18} />
+        <span className="grid h-[54px] w-[54px] place-items-center rounded-xl border border-dashed border-[rgba(125,146,255,0.2)] bg-[rgba(10,16,34,0.4)] text-text-subtle opacity-50 transition-colors duration-150 hover:border-[rgba(122,92,255,0.5)] hover:opacity-80 hover:text-[#c9bcff]">
+          <Icon name="plus" size={14} />
         </span>
-        <span className="mt-2 w-full truncate text-[12px] font-medium text-text-subtle">
+        <span className="mt-1.5 w-full truncate text-[11px] font-medium text-text-subtle opacity-50">
           Add Worker
         </span>
       </button>
@@ -481,7 +481,35 @@ export function OrchestrationGraph({
 
   return (
     <div className="flex flex-col items-center">
-      {/* MINDS — six slots, always drawn. */}
+      {/* THE ORCHESTRATOR — first and dominant: AURA is the primary actor. */}
+      <div className="flex flex-col items-center" data-testid="hub-aura-node">
+        <span
+          className={cn(
+            'relative grid h-[104px] w-[104px] place-items-center rounded-full border-2 border-[rgba(122,92,255,0.6)]',
+            'bg-[radial-gradient(circle_at_50%_35%,rgba(122,92,255,0.35),rgba(10,16,34,0.98)_70%)] shadow-glow-violet',
+          )}
+        >
+          <AuraLogo size={52} />
+          {busy && (
+            <span
+              aria-hidden
+              className="aura-breathe absolute inset-0 rounded-full border-2 border-[rgba(122,92,255,0.5)]"
+            />
+          )}
+        </span>
+        <span className="mt-2.5 text-[17px] font-semibold tracking-[-0.01em] text-text">
+          AURA Agent
+        </span>
+        <span className="text-[11.5px] text-text-muted">Understand · Plan · Execute · Verify</span>
+        <span className="mt-0.5 max-w-full truncate text-[11px] text-neon-cyan">{phase}</span>
+      </div>
+
+      <Connectors count={WORKER_SLOTS} direction="down" />
+
+      {/* AURA CAPABILITIES — six slots, subordinate to AURA. */}
+      <p className="mb-2 self-start text-[9.5px] font-semibold uppercase tracking-widest text-text-subtle">
+        Capabilities
+      </p>
       <div
         className="grid w-full grid-cols-3 gap-x-2 gap-y-4"
         role="list"
@@ -509,34 +537,12 @@ export function OrchestrationGraph({
         )}
       </div>
 
-      <Connectors count={WORKER_SLOTS} direction="down" />
-
-      {/* THE ORCHESTRATOR — the largest thing in the rail, on purpose. */}
-      <div className="flex flex-col items-center" data-testid="hub-aura-node">
-        <span
-          className={cn(
-            'relative grid h-[104px] w-[104px] place-items-center rounded-full border-2 border-[rgba(122,92,255,0.6)]',
-            'bg-[radial-gradient(circle_at_50%_35%,rgba(122,92,255,0.35),rgba(10,16,34,0.98)_70%)] shadow-glow-violet',
-          )}
-        >
-          <AuraLogo size={52} />
-          {busy && (
-            <span
-              aria-hidden
-              className="aura-breathe absolute inset-0 rounded-full border-2 border-[rgba(122,92,255,0.5)]"
-            />
-          )}
-        </span>
-        <span className="mt-2.5 text-[17px] font-semibold tracking-[-0.01em] text-text">
-          AURA Agent
-        </span>
-        <span className="text-[11.5px] text-text-muted">Plan · Use Tools · Get Results</span>
-        <span className="mt-0.5 max-w-full truncate text-[11px] text-neon-cyan">{phase}</span>
-      </div>
-
       <Connectors count={ACTIVE_TOOL_SLOTS} direction="up" />
 
       {/* ACTIVE WORKSPACE TOOLS — three slots, always drawn. */}
+      <p className="mb-2 self-start text-[9.5px] font-semibold uppercase tracking-widest text-text-subtle">
+        Environment
+      </p>
       <div
         className="grid w-full grid-cols-3 gap-2"
         role="list"
