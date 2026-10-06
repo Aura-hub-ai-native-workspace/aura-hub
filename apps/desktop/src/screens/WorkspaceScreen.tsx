@@ -44,7 +44,6 @@ import { useWindowManager } from '../environment/windows/windowManager';
 import { CATEGORY_ICON, STATUS_TONE, TONE_DOT } from '../environment/presentation';
 
 import { useWorkerStore } from '../workspace/useWorkers';
-import { useLayoutStore } from '../ops/layoutStore';
 import { WorkspaceShell } from './workspace/neon/WorkspaceShell';
 import { LeftControlPanel } from './workspace/neon/LeftControlPanel';
 import { AuraAgentWorkspace } from './workspace/neon/AuraAgentWorkspace';
@@ -76,7 +75,6 @@ export function WorkspaceScreen() {
   const lastScanAt = useEnvironmentStore((s) => s.lastScanAt);
   const scan = useEnvironmentStore((s) => s.scan);
   const openWindow = useWindowManager((s) => s.open);
-  const openPanel = useLayoutStore((s) => s.openPanel);
   // Installation runs through the existing environment store action, which
   // posts a catalogue id to /environment/install. The UI never builds a
   // command and never learns one.
@@ -162,6 +160,12 @@ export function WorkspaceScreen() {
   // fire sends without needing a second composer state.
   const [composerText, setComposerText] = useState('');
 
+  /* Web research, per request. Off until the person says otherwise, and
+     reset the moment a request goes out — so the next message cannot
+     inherit a choice made for the last one, and a forgotten toggle never
+     quietly sends the machine's questions to a search engine. */
+  const [webResearch, setWebResearch] = useState(false);
+
   /* Which slot the open tool surface is replacing, if any. This is the
      whole of the replace flow's state: a slot index, held only while the
      surface is open. Null means the surface was opened from an empty
@@ -219,6 +223,16 @@ export function WorkspaceScreen() {
      `workspace:<projectId>`; the engine reads it, not the raw project.
      One engine, two scopes — and the transcripts never mix. */
   const conv = useAgentConversations();
+
+  /* Sending captures the toggle as it stands, then resets it. The value
+     that travels belongs to this request alone — the next message starts
+     from OFF unless the person asks again. */
+  const sendWithPreference = useCallback((text: string) => {
+    setComposerText('');
+    const choice = webResearch;
+    setWebResearch(false);
+    void conv.send(text, { webResearch: choice });
+  }, [conv, webResearch]);
   useEffect(() => {
     if (workspaceId) void conv.loadForWorkspace(workspaceId);
   }, [workspaceId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -339,9 +353,11 @@ export function WorkspaceScreen() {
             agentBusy={conv.phase === 'working'}
             text={composerText}
             setText={setComposerText}
-            onSend={(text) => { setComposerText(''); void conv.send(text); }}
+            onSend={sendWithPreference}
             onStop={() => conv.stop()}
             busy={conv.phase === 'working'}
+            webResearch={webResearch}
+            onWebResearchChange={setWebResearch}
           />
         }
         right={
@@ -352,7 +368,7 @@ export function WorkspaceScreen() {
             agentUp={conv.agentUp}
             approvals={approvals}
             deciding={deciding}
-            onSend={(text) => { setComposerText(''); void conv.send(text); }}
+            onSend={sendWithPreference}
             onRegenerate={() => void conv.regenerate()}
             onDecide={(id, granted, reason) => void decide(id, granted, reason)}
             handoffs={conv.handoffs}
@@ -428,34 +444,6 @@ export function WorkspaceScreen() {
           </div>
         </div>
       )}
-
-      {/* Sovereign panel quick-launch — Documents, Artifacts, Sovereign Monitor.
-          Floats at the bottom-right of the canvas; each button opens the
-          corresponding layoutStore floating window via openPanel(). */}
-      <div
-        data-testid="sovereign-panel-toolbar"
-        className="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-xl border border-[rgba(125,146,255,0.25)] bg-[rgba(9,13,26,0.85)] p-1 shadow-card backdrop-blur-sm"
-      >
-        {(
-          [
-            { kind: 'documents',        icon: 'doc',    label: 'Documents' },
-            { kind: 'artifacts',        icon: 'folder', label: 'Artifacts' },
-            { kind: 'sovereign-monitor', icon: 'shield', label: 'Sovereign Monitor' },
-          ] as const
-        ).map(({ kind, icon, label }) => (
-          <button
-            key={kind}
-            type="button"
-            data-testid={`open-panel-${kind}`}
-            aria-label={label}
-            title={label}
-            onClick={() => openPanel(kind)}
-            className="neon-focus grid h-7 w-7 place-items-center rounded-lg text-text-muted transition-colors hover:bg-[rgba(125,146,255,0.12)] hover:text-text"
-          >
-            <Icon name={icon} size={14} />
-          </button>
-        ))}
-      </div>
 
       <AddNodeDialog open={adding} onClose={() => setAdding(false)} />
       <NodeWindows canvasRef={canvasRef} />

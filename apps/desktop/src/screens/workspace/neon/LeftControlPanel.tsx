@@ -1,9 +1,8 @@
-import { type KeyboardEvent } from 'react';
-import { cn } from '@aura/core';
 import { Icon, IconButton, type IconName } from '@aura/ui';
 import type { WorkerDescriptor } from '../../../ai/workerClient';
 import type { ToolSlot } from '../../../workspace/toolSlots';
 import type { WorkerSlot } from '../../../workspace/workerSlots';
+import { AuraComposer } from './AuraComposer';
 import { OrchestrationGraph } from './OrchestrationGraph';
 
 /**
@@ -13,6 +12,13 @@ import { OrchestrationGraph } from './OrchestrationGraph';
  * central AURA Agent node), then pins the composer at the bottom so the
  * interaction model reads as: compose → AURA → capabilities. The graph
  * scrolls independently; the composer is always reachable without scrolling.
+ *
+ * The panel itself holds no state: the graph is a pure view over the
+ * workspace's slots, and the composer owns everything it needs (its text
+ * arrives lifted from WorkspaceScreen so the suggestion chips can send,
+ * and its attachment/send controls live in AuraComposer). That boundary
+ * is guarded by `addToolFlow.test.ts` — the rail passes callbacks
+ * through and holds no replace state.
  *
  * Presentational only. Every value comes from WorkspaceScreen props.
  */
@@ -49,6 +55,8 @@ export function LeftControlPanel({
   onSend,
   onStop,
   busy,
+  webResearch,
+  onWebResearchChange,
 }: {
   /** The workspace's three active tool slots, filled or empty. */
   toolSlots: ToolSlot[];
@@ -81,23 +89,12 @@ export function LeftControlPanel({
   onStop: () => void;
   /** True while AURA is executing — switches send → stop. */
   busy: boolean;
+  /** Whether this request may reach the web. Held by the screen, passed through. */
+  webResearch: boolean;
+  onWebResearchChange: (next: boolean) => void;
 }) {
   const connected = workers.filter((w) => w.connected).length;
   const governed = workers.filter((w) => w.governance === 'FULLY_GOVERNED').length;
-
-  const submit = () => {
-    const trimmed = text.trim();
-    if (!trimmed || busy) return;
-    setText('');
-    onSend(trimmed);
-  };
-
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      submit();
-    }
-  };
 
   return (
     <aside
@@ -189,53 +186,18 @@ export function LeftControlPanel({
         </div>
       </div>
 
-      {/* Composer — always visible at the bottom of the rail */}
-      <div className="shrink-0 border-t border-[rgba(125,146,255,0.22)] p-4 pt-3">
-        <div
-          className={cn(
-            'relative rounded-2xl border bg-[rgba(13,19,38,0.85)] p-3 transition-colors',
-            busy
-              ? 'border-[rgba(32,211,255,0.35)]'
-              : 'border-[rgba(125,146,255,0.32)] focus-within:border-[rgba(125,146,255,0.6)]',
-          )}
-        >
-          <label htmlFor="aura-composer" className="sr-only">
-            Message AURA
-          </label>
-          <textarea
-            id="aura-composer"
-            rows={3}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={onKeyDown}
-            data-testid="agent-composer"
-            placeholder="Type your message..."
-            className="neon-focus w-full resize-none bg-transparent pr-12 text-[13.5px] leading-relaxed text-text outline-none placeholder:text-text-subtle"
-          />
-          {busy ? (
-            <button
-              type="button"
-              onClick={onStop}
-              data-testid="agent-stop"
-              aria-label="Stop"
-              className="neon-focus absolute bottom-3 right-3 grid h-9 w-9 place-items-center rounded-xl border border-[rgba(125,146,255,0.4)] text-text-muted transition-colors hover:text-text"
-            >
-              <Icon name="minimize" size={15} />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={submit}
-              disabled={!text.trim()}
-              data-testid="agent-submit"
-              aria-label="Send to AURA"
-              className="neon-focus absolute bottom-3 right-3 grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-white shadow-glow-blue transition-opacity disabled:opacity-40"
-            >
-              <Icon name="arrow-right" size={16} />
-            </button>
-          )}
-        </div>
-      </div>
+      {/* Composer — always visible at the bottom of the rail. The composer
+          owns its controls (message box, attachment, send/stop); the rail
+          above stays a pure view over workspace state. */}
+      <AuraComposer
+        text={text}
+        onTextChange={setText}
+        onSend={onSend}
+        onStop={onStop}
+        busy={busy}
+        webResearch={webResearch}
+        onWebResearchChange={onWebResearchChange}
+      />
     </aside>
   );
 }

@@ -97,12 +97,14 @@ function rail(toolSlots: ToolSlot[], workerIds: (string | null)[] = ['claude', '
       onConnectWorker={vi.fn()}
       onDisconnectWorker={vi.fn()}
       agentBusy={false}
-      text=""
-      setText={vi.fn()}
-      onSend={vi.fn()}
-      onStop={vi.fn()}
-      busy={false}
-    />,
+            text=""
+            setText={vi.fn()}
+            onSend={vi.fn()}
+            onStop={vi.fn()}
+            busy={false}
+            webResearch={false}
+            onWebResearchChange={vi.fn()}
+          />,
   );
 }
 

@@ -37,13 +37,13 @@ export function WorkspaceShell({ left, right }: { left: ReactNode; right: ReactN
         {railOpen && (
           <div
             data-testid="capability-rail"
-            className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-[rgba(125,146,255,0.28)] bg-[rgba(9,13,26,0.82)] shadow-card"
+            className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-[rgba(125,146,255,0.28)] bg-[var(--ws-panel)] shadow-card"
           >
             {left}
           </div>
         )}
 
-        <div className="relative flex min-h-0 flex-col overflow-hidden rounded-xl border border-[rgba(125,146,255,0.28)] bg-[rgba(9,13,26,0.82)] shadow-card">
+        <div className="relative flex min-h-0 flex-col overflow-hidden rounded-xl border border-[rgba(125,146,255,0.28)] bg-[var(--ws-panel)] shadow-card">
           {/* One control, present at every width. The conversation below
               it is unaffected either way. */}
           <button

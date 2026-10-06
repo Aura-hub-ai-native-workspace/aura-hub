@@ -48,6 +48,7 @@ import {
   type ConversationSummary,
   type Handoff,
 } from './aiClient';
+import { useWorkspace } from '../data/useWorkspace';
 import { eventPhrase, toolName } from './agentNarration';
 import type { AgentApprovalRow } from './agentApprovals';
 
@@ -132,7 +133,7 @@ interface AgentConvState {
   newConversation: () => Promise<string | null>;
   rename: (cid: string, title: string) => Promise<void>;
   remove: (cid: string) => Promise<void>;
-  send: (text: string, opts?: { editorContext?: EditorContext }) => Promise<void>;
+  send: (text: string, opts?: { editorContext?: EditorContext; webResearch?: boolean }) => Promise<void>;
   /** Answer a needs-clarification prompt on the thread's live session. */
   answer: (text: string) => Promise<void>;
   decide: (messageId: string, granted: boolean, reason?: string) => Promise<AgentApprovalRow | null>;
@@ -390,6 +391,12 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     editorContext: EditorContext | undefined,
     followUp: boolean,
     owner: Owner,
+    /**
+     * The web-research choice for THIS leg, captured when the person
+     * pressed send. It travels with the request and is never read back
+     * off the session, so one turn's choice cannot leak into the next.
+     */
+    webResearch: boolean = false,
   ) {
     const { projectId, projectPath } = get();
     const mySeq = (inflight?.seq ?? 0) + 1;
@@ -441,11 +448,13 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
           projectId: projectId ?? undefined,
           projectPath: projectPath ?? undefined,
           editorContext, signal: controller.signal,
+          webResearch,
         }).then((r) => ({ result: r.result, sessionId, requestId: r.requestId ?? null }))
         : await centralAgentClient.submit(instruction, {
           projectId: projectId ?? undefined,
           projectPath: projectPath ?? undefined,
           editorContext, sessionId, signal: controller.signal,
+          webResearch,
         }).then((r) => ({ ...r, requestId: r.requestId ?? null }));
       if (!alive()) return; // cancelled or superseded mid-flight
       const finalSid = res.sessionId ?? sessionId;
@@ -516,11 +525,19 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
         inflight.controller.abort();
         clearInflight();
       }
+      const activeId = workspaceId.startsWith('workspace:')
+        ? workspaceId.slice('workspace:'.length) : null;
+      // Without the project path the workspace execution chat produces a
+      // session whose invocations have no cwd, and every worker dispatch
+      // fails with "No project directory is set". Resolve the active
+      // project's registered path so delegated work has a home.
+      const activeProject = useWorkspace.getState().projects
+        .find((p) => p.id === activeId);
       set({
         scope: 'workspace',
         workspaceId,
-        projectId: workspaceId.startsWith('workspace:') ? workspaceId.slice('workspace:'.length) : null,
-        projectPath: null,
+        projectId: activeId,
+        projectPath: activeProject?.path ?? null,
         handoffs: [],
         conversations: [], activeId: null, messages: [], phase: 'idle', activity: IDLE_ACTIVITY,
         loading: true, agentUp: null,
@@ -703,11 +720,13 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       }
 
       if (priorSid) {
-        await drive(convId, assistantId, priorSid, trimmed, opts?.editorContext, true, owner);
+        await drive(convId, assistantId, priorSid, trimmed, opts?.editorContext, true, owner,
+          opts?.webResearch === true);
       } else {
         const sessionId = newClientSessionId();
         patchMsg(assistantId, (m) => (m.agent ? { ...m, agent: { ...m.agent, sessionId } } : m));
-        await drive(convId, assistantId, sessionId, trimmed, opts?.editorContext, false, owner);
+        await drive(convId, assistantId, sessionId, trimmed, opts?.editorContext, false, owner,
+          opts?.webResearch === true);
       }
     },
 

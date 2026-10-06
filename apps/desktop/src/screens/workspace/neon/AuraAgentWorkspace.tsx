@@ -147,11 +147,11 @@ function StageCard({
         ) : (
           <>
             {message.content ? (
-              <div className="rounded-xl border border-[rgba(125,146,255,0.2)] bg-[rgba(13,19,38,0.6)] px-4 py-3 text-[13.5px] leading-relaxed text-text">
+              <div className="rounded-xl border border-[rgba(125,146,255,0.2)] bg-[var(--ws-card)] px-4 py-3 text-[13.5px] leading-relaxed text-text">
                 <AiMarkdown source={message.content} />
               </div>
             ) : streaming ? (
-              <div className="rounded-xl border border-[rgba(32,211,255,0.28)] bg-[rgba(13,19,38,0.6)] px-4 py-3">
+              <div className="rounded-xl border border-[rgba(32,211,255,0.28)] bg-[var(--ws-card)] px-4 py-3">
                 <span className="inline-block h-4 w-2 animate-pulse rounded-sm bg-neon-cyan align-middle" />
               </div>
             ) : null}
