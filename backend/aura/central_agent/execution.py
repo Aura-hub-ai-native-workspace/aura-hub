@@ -13,6 +13,7 @@ without deciding it.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -159,6 +160,19 @@ class ExecutionController:
                 return True
             return bool(cancel_check and cancel_check())
 
+        # Worker runs can span minutes; an invocation timeout is per-run,
+        # not mission-wide, so several independent workers may all be in
+        # flight together for the same project and mission. Run such a
+        # plan fully concurrently; dependency-gated/workflow/upstream
+        # plans fall through to the sequential scheduler below, which
+        # preserves task ordering and dependency semantics exactly.
+        if self._all_parallel_runnable(plan, result):
+            self._dispatch_parallel(plan, project_id, compiled_workflow,
+                                    result, project_cwd=project_cwd,
+                                    cancel_token=cancel_token,
+                                    correlation=correlation)
+            return result
+
         for task in topo_order(plan.tasks):
             if _stop_requested():
                 result.cancelled = True
@@ -286,6 +300,87 @@ class ExecutionController:
                 result.stop_reason = f"{task.id}: {last.detail}"
                 break
         return result
+
+    def _all_parallel_runnable(self, plan: TaskPlan,
+                               seeded: Any) -> bool:
+        """True when every task in the plan can run concurrently: no
+        dependency edges between tasks, no upstream-output handoff, no
+        conditional (runWhen) gate, not a workflow-run route, a bound
+        capability, and not already a resumed/verified task. A plan like
+        'Claude inspect backend || Kilo inspect frontend' meets this; the
+        sequential scheduler keeps dependency chains correct for the rest.
+        """
+        if len(plan.tasks) < 2:
+            return False
+        seeded_ids = set(getattr(seeded, "verified_outputs", {}) or {})
+        for task in plan.tasks:
+            if (task.id in seeded_ids
+                    or task.route == "workflow-run"
+                    or task.inputFrom == "upstream-output"
+                    or getattr(task, "runWhen", "always") != "always"
+                    or list(getattr(task, "dependsOn", []) or [])
+                    or not task.capabilityId):
+                return False
+        return True
+
+    def _dispatch_parallel(self, plan: TaskPlan, project_id: str | None,
+                           compiled_workflow: dict | None,
+                           result: ExecutionOutcome,
+                           *, project_cwd: str | None,
+                           cancel_token: Any | None,
+                           correlation: dict[str, str] | None) -> None:
+        """Run all independent tasks concurrently through the SAME
+        _invoke_single path, each into its own ExecutionOutcome, then
+        merge deterministically in task-plan order. Each task keeps its
+        own invocation context, node assignment, exit code, stdout and
+        audit record — there is no shared mutable run state.
+        """
+        correlation = dict(correlation or {})
+
+        def _invoke(task) -> ExecutionOutcome:
+            per = ExecutionOutcome()
+            per.verified_outputs.update(result.verified_outputs)
+            per.deviation_evidence.update(result.deviation_evidence)
+            self._invoke_single(task, project_id, compiled_workflow, per,
+                                approval_id=None, project_cwd=project_cwd,
+                                cancel_token=cancel_token,
+                                correlation=correlation)
+            return per
+
+        with ThreadPoolExecutor(max_workers=max(2, len(plan.tasks))) as pool:
+            futures = {pool.submit(_invoke, task): task for task in plan.tasks}
+            per_task: dict[str, ExecutionOutcome] = {}
+            for fut in as_completed(futures):
+                per = fut.result()
+                per_task[futures[fut].id] = per
+
+        merged_stop = None
+        for task in plan.tasks:
+            per = per_task.get(task.id)
+            if per is None:
+                continue
+            result.outcomes.extend(per.outcomes)
+            result.verified_outputs.update(per.verified_outputs)
+            result.worker_assignments.update(per.worker_assignments)
+            result.governed_actions.extend(per.governed_actions)
+            result.deviation_evidence.update(per.deviation_evidence)
+            result.parked_runs.update(per.parked_runs)
+            result.cancelled_before.extend(per.cancelled_before)
+            if per.approval_id and result.approval_id is None:
+                result.approval_id = per.approval_id
+            if per.run_id and result.run_id is None:
+                result.run_id = per.run_id
+            if per.stopped and merged_stop is None:
+                merged_stop = (per.stop_reason, per.cancelled, per.timed_out,
+                               per.denied)
+        if merged_stop is not None:
+            reason, cancelled, timed_out, denied = merged_stop
+            result.stopped = True
+            result.stop_reason = reason
+            result.cancelled = cancelled
+            result.timed_out = timed_out
+            result.denied = denied
+        result.request_id = correlation.get("request_id") or result.request_id
 
     # ── Phase G worker requirement matching ────────────────────────────
     def _present_nodes(self) -> list[dict]:
@@ -541,6 +636,8 @@ class ExecutionController:
             "projectId": project_id,
             "taskId": task.id,
         }
+        if getattr(task, "missionId", None):
+            context["missionId"] = task.missionId
         # Leg correlation into the governed invocation (lands in the
         # Fabric audit record; see fabric.invoke._settle). IDs only.
         if correlation.get("session_id"):
@@ -627,6 +724,7 @@ class ExecutionController:
             "nodeId": context.get("nodeId") or "",
             "role": role or "",
             "capabilityId": task.capabilityId,
+            **({"missionId": task.missionId} if getattr(task, "missionId", None) else {}),
             "lifecycle": "ACTIVE",
             **({"taskType": _task_type} if _task_type else {}),
             **({"modelId": _routing_record.id,
