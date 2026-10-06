@@ -5,7 +5,12 @@ Two transparent modes:
 - model: a ModelPort returns JSON constrained by the prompt schema; output
   is VALIDATED into AgentIntent and any parse/validation failure is an
   IntentCompilationError (fail closed — malformed model output never
-  becomes an execution plan).
+  becomes an execution plan). When `allow_heuristic_fallback` is set, an
+  UNUSABLE-but-received answer (INVALID_PROVIDER_RESPONSE: truncated,
+  looping, or non-JSON) falls back to the deterministic interpreter, so
+  the decision is made by readable rules rather than by a broken
+  completion. Transport, auth, timeout, cancellation and outage failures
+  never take that path: no answer arrived, so nothing is invented.
 - heuristic: deterministic keyword interpretation, the Python counterpart
   of the existing KeywordIntentClassifier in pipeline.ts. Used for offline
   runs, tests, and as the CLI default; every rule is readable in this file.
@@ -17,6 +22,7 @@ output is a structured description.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Protocol
 
@@ -81,6 +87,20 @@ _ABOUT_AURA = frozenset({
 })
 
 _SMALLTALK = _GREETINGS | _THANKS | _FAREWELLS | _ABOUT_AURA
+
+#: Questions about AURA's runtime that are answerable in words alone —
+#: no plan and no executor. These are a conversational turn, not a task,
+#: so they never become a phantom artifact.generate plan. The deterministic
+#: smalltalk fallback deliberately returns None for them (smalltalk does not
+#: know the configured provider), letting the model answer when one exists.
+_META_QUESTIONS = frozenset({
+    "what model are you using", "what model are you running on",
+    "what model do you use", "which model are you using",
+    "which model are you running on", "what provider are you using",
+    "what provider do you use", "which provider are you using",
+    "which provider do you use", "what model powers you",
+    "what is powering you", "what is powering your answers",
+})
 
 #: "Can you …?" — a question ABOUT what AURA can do, not a request to do
 #: it. These reached the generic "I could not tell what work you want
@@ -168,7 +188,9 @@ def is_conversational(message: str) -> bool:
     "Can you use the connected nodes?" is answered rather than treated
     as an engineering task nobody could parse.
     """
-    return normalize_smalltalk(message) in _SMALLTALK or is_capability_question(message)
+    return normalize_smalltalk(message) in _SMALLTALK or \
+        normalize_smalltalk(message) in _META_QUESTIONS or \
+        is_capability_question(message)
 
 
 def smalltalk_reply(message: str) -> str | None:
@@ -179,6 +201,10 @@ def smalltalk_reply(message: str) -> str | None:
     for. None means "this needs a model", never a guess.
     """
     text = normalize_smalltalk(message)
+    if text in _META_QUESTIONS:
+        # A deterministic smalltalk reply cannot know the configured runtime;
+        # leave provider truth to the model path, or honest no-model fallback.
+        return None
     if text in _THANKS:
         return "Anytime. What would you like to do next?"
     if text in _FAREWELLS:
@@ -641,6 +667,25 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
                              and _REMEDIATE_RE.search(user_message) is not None)
         wants_proof = _PROVE_RE.search(user_message) is not None
         scope = _delegate_scope(user_message)
+        if (re.search(r"\bclaude\s+code\b", text, re.IGNORECASE)
+                and re.search(r"\bkilo\s+code\b", text, re.IGNORECASE)
+                and ("parallel" in text or "independent" in text)):
+            return AgentIntent.model_validate({
+                "goal": user_message.strip(),
+                "surface": "project",
+                "expectedOutcome": "Two delegated worker tasks produce independently verified findings and a single AURA summary.",
+                "constraints": [*constraints, "Read-only investigation: the workers must not modify any file"],
+                "requiredCapabilities": ["agent.delegate"],
+                "urgency": "immediate",
+                "complexity": "multi-step",
+                "approvalLikely": True,
+                "delegateTask": user_message.strip(),
+                "delegateReview": wants_review,
+                "delegateRemediate": wants_remediation,
+                "delegateProve": wants_proof,
+                "delegateScope": scope,
+                "delegateReadOnly": read_only,
+            })
         shape = ["implementation"]
         if wants_review:
             shape.append("independent review by a second worker")
@@ -838,6 +883,28 @@ class IntentCompiler:
         try:
             raw = self.model_port.complete_json(system, user)  # type: ignore[union-attr]
         except Exception as exc:
+            # A response ARRIVED but was unusable — truncated by the
+            # generation bound, a repetition loop, or not JSON at all.
+            # That is the same class of outcome as `raw is None` and a
+            # validation failure, which _validated already treats as
+            # "the model spoke and could not be understood". Route it to
+            # the same deterministic fallback instead of failing a turn
+            # the model did answer.
+            #
+            # ONLY that category qualifies. Transport, authentication,
+            # timeout, cancellation, rate-limit, provider-outage and
+            # configuration failures all carry different categories and
+            # stay hard failures: no answer ever arrived, and a
+            # deterministic guess would silently invent one.
+            from .model_routing import RoutingError
+
+            if (isinstance(exc, RoutingError)
+                    and exc.category == "INVALID_PROVIDER_RESPONSE"
+                    and self.allow_heuristic_fallback):
+                logging.getLogger(__name__).warning(
+                    "intent: provider answered with unusable output (%s); "
+                    "using deterministic interpretation instead", exc)
+                return heuristic_interpret(user_message)
             raise IntentCompilationError(f"model routing failed: {exc}") from exc
         return self._validated(raw, user_message)
 
@@ -874,6 +941,21 @@ class IntentCompiler:
             intent.requiredCapabilities = []
             intent.needsClarification = False
             intent.clarificationQuestion = None
+            return intent
+        # A request that explicitly names two worker/runtime tools should
+        # never be allowed to collapse into a workflow-create intent from
+        # the model. The model's proposal is advisory; this deterministic
+        # worker signal is the mission intent.
+        if (re.search(r"\bclaude\s+code\b", user_message, re.IGNORECASE)
+                and re.search(r"\bkilo\s+code\b", user_message, re.IGNORECASE)
+                and ("parallel" in user_message.lower() or "independent" in user_message.lower())):
+            intent.requiredCapabilities = ["agent.delegate"]
+            intent.conversational = False
+            intent.complexity = "multi-step"
+            intent.needsClarification = False
+            intent.clarificationQuestion = None
+            intent.delegateTask = user_message.strip()
+            intent.delegateReadOnly = True
             return intent
 
         # DETERMINISTIC clarification policy (model claims are advisory):
