@@ -166,6 +166,7 @@ def _settle(
         "durationMs": duration_ms,
         "inputSummary": policy.pop("_input_summary", "(no arguments)"),
         **({"taskId": context["taskId"]} if context.get("taskId") else {}),
+        **({"missionId": context["missionId"]} if context.get("missionId") else {}),
         **({"sessionId": context["sessionId"]} if context.get("sessionId") else {}),
         **({"requestId": context["requestId"]} if context.get("requestId") else {}),
         **({"workflowId": context["workflowId"]} if context.get("workflowId") else {}),

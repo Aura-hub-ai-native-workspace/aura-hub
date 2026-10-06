@@ -52,6 +52,77 @@ class AgentRuntimeService:
     def discover(self) -> list[AgentRecord]:
         return self._registry.discover()
 
+    @staticmethod
+    def to_api_record(record: AgentRecord) -> dict:
+        """Map the internal discovery record into the TS AgentRecord shape.
+
+        The desktop contract (ai/centralAgentClient.ts) spells one record in
+        camelCase with id/name/status/currentConfig, while this service's
+        AgentRecord dataclasses spell it in snake_case with agent_id/
+        display_name/config_status/current_base_url, etc. Both routes below
+        and the AgentCard renderer depend on the TS shape, so the mapping
+        lives here, in one place.
+
+        Nothing is invented: `drift` is 'unknown' because drift is only
+        measured after a runtime is applied and checked, never at discovery
+        time; `driftFields`/`error` have no measured value of their own;
+        `currentConfig` carries only the fields the detector actually found.
+        """
+        current_config: dict = {}
+        if record.current_base_url is not None:
+            current_config["baseUrl"] = record.current_base_url
+        if record.current_model is not None:
+            current_config["modelId"] = record.current_model
+        if record.version is not None:
+            current_config["version"] = record.version
+        if record.binary_path is not None:
+            current_config["binaryPath"] = record.binary_path
+        return {
+            "id": record.agent_id,
+            "name": record.display_name,
+            "detected": record.detected,
+            "configPath": record.config_path,
+            "status": record.config_status.value,
+            "statusNote": "; ".join(record.notes) if record.notes else "",
+            "currentConfig": current_config,
+            "drift": "unknown",
+            "driftFields": [],
+            "error": None,
+        }
+
+    def discover_summary(self) -> dict:
+        """AgentRuntimeSummary over what discovery actually found.
+
+        Conforms to the frontend's AgentRuntimeSummary (agents + the three
+        counts). configuredCount derives from genuinely-readable config
+        (OK or PARTIAL); driftedCount is 0 because drift is not measured
+        during discovery — rendering 'All in sync' would be a claim this
+        stage has not earned.
+        """
+        records = self._registry.discover()
+        return self.summary_from_records(records)
+
+    def summary_from_records(self, records: list[AgentRecord]) -> dict:
+        """AgentRuntimeSummary over a discovered set of records.
+
+        Conforms to the frontend's AgentRuntimeSummary (agents + the three
+        counts). configuredCount derives from genuinely-readable config
+        (OK or PARTIAL); driftedCount is 0 because drift is not measured
+        during discovery — rendering 'All in sync' would be a claim this
+        stage has not earned.
+        """
+        installed = [r for r in records if r.detected]
+        configured = [
+            r for r in records
+            if r.detected and r.config_status in (ConfigStatus.OK, ConfigStatus.PARTIAL)
+        ]
+        return {
+            "agents": [self.to_api_record(r) for r in records],
+            "installedCount": len(installed),
+            "configuredCount": len(configured),
+            "driftedCount": 0,
+        }
+
     def apply_all(self, runtime: RuntimeConfig) -> list[ConfigurationChange]:
         self._check_sovereign(runtime)
         self._last_runtime = runtime
@@ -151,9 +222,15 @@ class AgentRuntimeService:
         """Safe for API responses — no secrets, no key values."""
         records = self.discover()
         installed = [r for r in records if r.detected]
+        configured = [
+            r for r in records
+            if r.detected and r.config_status in (ConfigStatus.OK, ConfigStatus.PARTIAL)
+        ]
         return {
             "installedCount": len(installed),
             "totalDiscovered": len(records),
-            "agents": [r.to_dict() for r in records],
+            "configuredCount": len(configured),
+            "driftedCount": 0,
+            "agents": [self.to_api_record(r) for r in records],
             "lastRuntime": self._last_runtime.to_dict() if self._last_runtime else None,
         }
