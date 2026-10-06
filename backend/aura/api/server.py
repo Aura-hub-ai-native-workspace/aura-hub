@@ -446,7 +446,18 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     async def health(request: Request):
         return JSONResponse({
             "ok": True, "service": "aura-hub-backend",
-            "health": {"status": "ok", "backend": "python"},
+            # `ok` and `latencyMs` are the shape the desktop client declares
+            # in HealthResult and reads in four places (useProviderGate,
+            # RightPanel, Home, aurabug/scan). After the migration to this
+            # Python backend the nested object reported only `status`, so
+            # `health.health.ok` was undefined everywhere: the provider gate
+            # read that as "provider broken" and re-showed the onboarding
+            # overlay on every launch for an already-onboarded user, which
+            # covered the whole window and made the Workspace route
+            # unreachable. `status` is kept because this endpoint still
+            # answers callers that read it.
+            "health": {"ok": True, "status": "ok", "backend": "python",
+                       "latencyMs": 0},
             # scope="aura-backend" distinguishes this from the per-agent key
             # reported by /agent-runtime/discover (agents carry their own keys)
             "key": {"configured": bool(S["secrets"]), "scope": "aura-backend"},
@@ -920,13 +931,17 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         session_id = body.get("sessionId")
         if session_id is not None and not isinstance(session_id, str):
             return _err("sessionId must be a string")
+        web_research = body.get("webResearch")
+        if web_research is not None and not isinstance(web_research, bool):
+            return _err("webResearch must be a boolean")
         result = await anyio.to_thread.run_sync(
             lambda: agent.submit(message,
                                  project_id=body.get("projectId") or None,
                                  project_path=body.get("projectPath") or None,
                                  editor_context=editor_context,
                                  session_id=session_id,
-                                 request_id=rid))
+                                 request_id=rid,
+                                 web_research=bool(web_research)))
         return JSONResponse({"result": _model_dump(result),
                              "sessionId": sessions.last_session_id,
                              "requestId": rid},
@@ -948,12 +963,16 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         project_id = body.get("projectId")
         if project_id is not None and not isinstance(project_id, str):
             return _err("projectId must be a string")
+        web_research = body.get("webResearch")
+        if web_research is not None and not isinstance(web_research, bool):
+            return _err("webResearch must be a boolean")
         try:
             result = await anyio.to_thread.run_sync(
                 lambda: agent.message(request.path_params["sid"], message,
                                       body.get("projectPath"), editor_context,
                                       project_id or None,
-                                      request_id=rid))
+                                      request_id=rid,
+                                      web_research=bool(web_research)))
         except ValueError as exc:
             text = str(exc)
             if "no such session" in text:
@@ -1750,7 +1769,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     async def agent_runtime_discover(request: Request):
         import anyio
         records = await anyio.to_thread.run_sync(ar_svc.discover)
-        return JSONResponse({"agents": [r.to_dict() for r in records]})
+        # The desktop reads AgentRuntimeSummary (agents + the three counts),
+        # so discover returns that shape — never just the agent list.
+        return JSONResponse(ar_svc.summary_from_records(records))
 
     async def agent_runtime_summary(request: Request):
         import anyio
