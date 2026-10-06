@@ -87,6 +87,7 @@ class TestClassification:
         "Hi", "hi", "  hey  ", "Hello!", "howdy",
         "good morning", "How are you?", "thanks", "Thank you so much",
         "bye", "good night", "what can you do?", "who are you",
+        "what model are you using?", "which provider are you using?",
     ])
     def test_smalltalk_is_conversational(self, message):
         assert is_conversational(message) is True
@@ -128,6 +129,10 @@ class TestOfflineReply:
         assert "next" in (smalltalk_reply("thanks") or "")
         assert "here" in (smalltalk_reply("bye") or "")
         assert "AURA" in (smalltalk_reply("what can you do") or "")
+
+    def test_a_provider_question_needs_the_model_not_an_invented_reply(self):
+        assert smalltalk_reply("what model are you using?") is None
+        assert smalltalk_reply("which provider are you using?") is None
 
     def test_a_knowledge_question_gets_no_invented_answer(self):
         """None means "this needs a model" — never a fabricated reply."""

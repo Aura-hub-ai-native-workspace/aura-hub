@@ -334,35 +334,25 @@ class TestRiskyCapabilityStillGated:
 # ── H: WorkspaceScreen contains openPanel affordances ────────────────────────
 
 class TestWorkspacePanelAffordances:
-    def test_h_workspace_screen_imports_layout_store(self):
-        """WorkspaceScreen.tsx must import useLayoutStore (static source check)."""
+    def test_workspace_has_no_floating_panel_toolbar(self):
+        """The Workspace canvas does NOT carry the three bottom-right
+        floating quick-launch buttons (Documents / Artifacts /
+        Sovereign Monitor). They were removed by design; the panels and
+        their toolCategories grouping remain available elsewhere."""
         from pathlib import Path
         src = Path(__file__).parents[3] / "apps/desktop/src/screens/WorkspaceScreen.tsx"
         assert src.exists(), "WorkspaceScreen.tsx not found"
         text = src.read_text()
-        assert "useLayoutStore" in text, "WorkspaceScreen must import useLayoutStore"
-        assert "openPanel" in text, "WorkspaceScreen must call openPanel"
+        assert "sovereign-panel-toolbar" not in text, \
+            "WorkspaceScreen must not render the floating panel toolbar"
 
-    def test_h_documents_panel_affordance_present(self):
+    def test_no_floating_open_panel_affordances(self):
         from pathlib import Path
         src = Path(__file__).parents[3] / "apps/desktop/src/screens/WorkspaceScreen.tsx"
         text = src.read_text()
-        assert "open-panel-documents" in text or "'documents'" in text, \
-            "WorkspaceScreen must have a documents panel affordance"
-
-    def test_h_artifacts_panel_affordance_present(self):
-        from pathlib import Path
-        src = Path(__file__).parents[3] / "apps/desktop/src/screens/WorkspaceScreen.tsx"
-        text = src.read_text()
-        assert "open-panel-artifacts" in text or "'artifacts'" in text, \
-            "WorkspaceScreen must have an artifacts panel affordance"
-
-    def test_h_sovereign_monitor_affordance_present(self):
-        from pathlib import Path
-        src = Path(__file__).parents[3] / "apps/desktop/src/screens/WorkspaceScreen.tsx"
-        text = src.read_text()
-        assert "open-panel-sovereign-monitor" in text or "'sovereign-monitor'" in text, \
-            "WorkspaceScreen must have a sovereign-monitor panel affordance"
+        for testid in ("open-panel-documents", "open-panel-artifacts",
+                       "open-panel-sovereign-monitor"):
+            assert testid not in text, f"floating toolbar must be gone: {testid}"
 
     def test_h_tool_categories_includes_sovereign_panels(self):
         """All three new panel kinds appear in a toolCategories group."""

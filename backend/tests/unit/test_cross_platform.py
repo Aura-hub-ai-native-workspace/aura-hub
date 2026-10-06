@@ -134,13 +134,33 @@ class TestWindowsResolution:
         with simulate(Platform.WINDOWS):
             assert resolve_executable("tool", str(here)) == str(here / "tool.cmd")
 
-    def test_an_extensionless_match_still_wins_when_present(self, tmp_path, monkeypatch):
+    def test_a_bare_name_never_resolves_to_an_extensionless_file(
+            self, tmp_path, monkeypatch):
+        """A bare name must not pick an extensionless file over its .exe twin.
+
+        CreateProcess and cmd.exe only run PATHEXT-suffixed files. Trying
+        "" first resolved npm's extensionless shims (opencode, npm, code,
+        flutter) ahead of their .cmd/.bat twins and every probe died with
+        WinError 193, so ``resolve_executable`` no longer probes "" for a
+        bare name. This test used to assert the opposite; the behaviour it
+        pinned was changed deliberately and the expectation was left behind.
+        """
         here = tmp_path / "bin"
         touch(here / "tool")
         touch(here / "tool.exe")
         monkeypatch.setenv("PATHEXT", ".EXE")
         with simulate(Platform.WINDOWS):
-            assert resolve_executable("tool", str(here)) == str(here / "tool")
+            assert resolve_executable("tool", str(here)) == str(here / "tool.exe")
+
+    def test_a_name_already_carrying_an_extension_is_tried_literally(
+            self, tmp_path, monkeypatch):
+        """The documented exception: "tool.exe" is probed as itself first."""
+        here = tmp_path / "bin"
+        touch(here / "tool")
+        touch(here / "tool.exe")
+        monkeypatch.setenv("PATHEXT", ".EXE")
+        with simulate(Platform.WINDOWS):
+            assert resolve_executable("tool.exe", str(here)) == str(here / "tool.exe")
 
     def test_lowercase_extensions_resolve(self, tmp_path, monkeypatch):
         here = tmp_path / "bin"
