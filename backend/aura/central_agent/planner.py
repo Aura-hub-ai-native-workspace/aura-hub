@@ -269,6 +269,186 @@ def plan_knowledge_search(intent: AgentIntent, session_id: str, now: str) -> Tas
     )
 
 
+#: Web research is gated on the human saying yes for THIS request. These
+#: are the shapes of a request that wants external information — a lookup,
+#: a current fact, a comparison against what exists today. A greeting or a
+#: chat has none of them, so turning the toggle on never makes "hi" research
+#: something: the conversation path is left alone unless the request itself
+#: asks for knowledge the machine cannot have.
+_WANTS_RESEARCH_RE = re.compile(
+    r"\b(research|look\s*up|search\s+(?:the\s+)?(?:web|internet|online|latest)|"
+    r"find\s+out|find\s+me|what(?:'s| is| are| are the)\s+(?:the\s+)?(?:latest|new|current|recent)|"
+    r"latest|current|recent|news|upcoming|released?|announce|state\s+of\s+the\s+art|"
+    r"compare\s+(?:with|to|against)|versus|vs\.?|versus|benchmark|price|pricing|"
+    r"best\s+\w+|top\s+\w+|alternatives?\s+to|documentation\s+for|docs\s+for|"
+    r"who\s+(?:is|are|won)|when\s+(?:is|does|will)|does\s+\w+\s+(?:support|exist)|"
+    r"is\s+there\s+(?:a|an|any))\b",
+    re.IGNORECASE)
+
+
+#: The one capability gated by a person's per-request choice. Named once
+#: so the consent check and the plans that build it cannot drift apart.
+WEB_RESEARCH_CAPABILITY = "web.research"
+
+
+def wants_web_research(user_message: str) -> bool:
+    """Does this request actually ask for external information?"""
+    return _WANTS_RESEARCH_RE.search(user_message or "") is not None
+
+
+def apply_web_research_preference(intent: AgentIntent, web_research: bool,
+                                  user_message: str) -> AgentIntent:
+    """Stamp the request-scoped choice onto the intent. AURA-owned.
+
+    The flag is written on EVERY turn, in both directions, and it is
+    written AFTER the intent compiler has run. That is the whole point: a
+    model that volunteers ``webResearch: true`` for a person who left the
+    toggle off is overwritten with ``False`` here, and a model cannot
+    revoke a choice the human made. Nothing downstream reads consent from
+    anywhere else.
+
+    With the flag on, a request that AURA could not otherwise act on is
+    given the one capability the person just said was available. Two
+    shapes need that, and both are the same situation — AURA had nothing
+    to do with the question:
+
+    - a turn that would merely have CHATTED about it, and
+    - a turn parked as needing clarification because nothing on this
+      installation could answer it.
+
+    Answering either from recollection would be exactly the dishonesty the
+    toggle exists to prevent. The rescue is deliberately narrow: the
+    person asked for research, the request looks like a real question, it
+    is not flagged impossible, and AURA had no plan for it anyway — so
+    nothing existing is being overridden. A request that already has a
+    plan keeps it; the research leg is added to that plan instead.
+    """
+    intent.webResearch = bool(web_research)
+    if not intent.webResearch:
+        return intent
+    if not wants_web_research(user_message):
+        return intent
+    # The user's question is the research query. A model-compiled goal
+    # is advisory and may collapse to a generic word like "information";
+    # fetching and synthesis then reason over the wrong evidence. Use the
+    # actual request for the capability that opens the outside world.
+    intent.goal = user_message.strip() or intent.goal
+    if getattr(intent, "ambiguity", "clear") == "impossible":
+        # Genuinely unachievable here. Saying so is more useful than
+        # fetching a search that cannot answer it.
+        return intent
+    if list(intent.requiredCapabilities or []):
+        # The model may have already mapped capabilities. A pure web
+        # search should not borrow web.research to grant workflow.create
+        # or system.uninstall: keep the one gated capability, plus local
+        # knowledge when the model actually asked for it, and drop
+        # everything else the model might have listed.
+        allowed = []
+        if "knowledge.search" in intent.requiredCapabilities:
+            allowed.append("knowledge.search")
+        if "web.research" not in allowed:
+            allowed.insert(0, "web.research")
+        intent.requiredCapabilities = allowed
+        return intent
+    intent.conversational = False
+    intent.surface = "web-research"
+    intent.requiredCapabilities = ["web.research"]
+    intent.needsClarification = False
+    intent.clarificationQuestion = None
+    intent.constraints = [
+        *list(intent.constraints or []),
+        ("Web research is enabled for this request: the answer must come "
+         "from fetched sources, cited, rather than from recollection."),
+    ]
+    return intent
+
+
+def plan_web_research(intent: AgentIntent, session_id: str,
+                      now: str) -> TaskPlan:
+    """A research question → one governed search, answered from what it found.
+
+    The capability's executor refuses without the consent flag on its
+    input, so the flag is stamped here by AURA and travels inside the task
+    contract rather than being implied by the capability id alone.
+    """
+    query = (intent.goal or "").strip()
+    return TaskPlan(
+        planId=_plan_id(),
+        sessionId=session_id,
+        intent=intent,
+        tasks=[TaskSpecification(
+            id="research",
+            description=("Research the question against the configured search "
+                         "gateway and return the sources it found"),
+            capabilityId="web.research",
+            input={"query": query[:512], "webResearch": True},
+            risk="low", reversible=True,
+            verification=VerificationRequirement(
+                kind="audit-only",
+                description=("The search ran and its results are recorded in "
+                             "the audit trail with their sources.")),
+        )],
+        acceptance=[_accept(
+            "audit-only",
+            "The research question was answered from fetched, cited sources.",
+            tasks=["research"])],
+        createdAt=now,
+    )
+
+
+def _web_research_task(intent: AgentIntent) -> TaskSpecification:
+    """The research leg. Consent rides the input, AURA-stamped."""
+    return TaskSpecification(
+        id="research",
+        description=("Research the request against the configured search "
+                     "gateway and return the sources it found"),
+        capabilityId="web.research",
+        input={"query": (intent.goal or "").strip()[:512], "webResearch": True},
+        risk="low", reversible=True,
+        verification=VerificationRequirement(
+            kind="audit-only",
+            description=("The search ran and its results are recorded in the "
+                         "audit trail with their sources.")),
+    )
+
+
+def prepend_web_research(plan: TaskPlan) -> TaskPlan:
+    """Put a governed research leg in front of a plan, when asked for.
+
+    The results reach the rest of the work through the ONE sanctioned
+    route — ``inputFrom="upstream-output"``, which the execution controller
+    resolves from *verified* upstream evidence and the handoff module
+    fences as untrusted data. No worker is handed a bare URL and no worker
+    gains network access of its own; AURA did the reading and passed on
+    what it found.
+
+    A root task is only rewired when its input actually has a string
+    ``task`` field, because that is the field the handoff resolver
+    attaches evidence to. Anything else (a git read, a file write) is left
+    independent — its verified output still reaches the answer synthesis,
+    and forcing an envelope onto it would make the resolver refuse.
+
+    Note the consequence, which is deliberate: a research leg that FAILS
+    leaves its dependants blocked rather than quietly proceeding. Work that
+    was asked to be research-informed must not finish pretending it was.
+    """
+    if any(t.capabilityId == "web.research" for t in plan.tasks):
+        return plan
+    research = _web_research_task(plan.intent)
+    tasks = [research]
+    for task in plan.tasks:
+        if (not task.dependsOn
+                and isinstance(task.input, dict)
+                and isinstance(task.input.get("task"), str)
+                and task.input["task"].strip()):
+            task = task.model_copy(update={
+                "inputFrom": "upstream-output",
+                "dependsOn": [research.id],
+            })
+        tasks.append(task)
+    return plan.model_copy(update={"tasks": tasks})
+
+
 #: Bounded task text handed to a worker. The worker gets AURA's task,
 #: never AURA's reasoning and never another worker's private context.
 MAX_DELEGATE_CHARS = 4000
@@ -333,6 +513,12 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
     """
     scope = _validated_scope(intent)
     text = _delegate_text(intent)
+    # An explicit two-runtime, read-only, independent ask is a real
+    # decomposition: two tasks each pinned to its own node, not one
+    # collapsed delegate of the whole message.
+    parallel_two = _plan_parallel_two_worker(intent, session_id, now)
+    if parallel_two is not None:
+        return parallel_two
     wants_review = bool(getattr(intent, "delegateReview", False))
     wants_remediation = bool(getattr(intent, "delegateRemediate", False))
     prove = bool(getattr(intent, "delegateProve", False))
@@ -343,7 +529,7 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
         # reporting, not by changing — and the research role contract
         # forbids the worker from modifying anything. High risk because
         # a worker still runs; reversible because nothing may change.
-        return TaskPlan(
+        plan = TaskPlan(
             planId=_plan_id(), sessionId=session_id, intent=intent,
             tasks=[TaskSpecification(
                 id="investigate",
@@ -362,6 +548,12 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
                 "The investigation was carried out, verified and reported.",
                 tasks=["investigate"])],
             createdAt=now)
+        # A research worker reasons from what it is given; when the human
+        # asked for live sources, AURA fetches them first and hands them
+        # over rather than letting the worker reach out itself.
+        if getattr(intent, "webResearch", False):
+            plan = prepend_web_research(plan)
+        return plan
 
     build_note = (
         " Before finishing, check that the project still builds and that "
@@ -437,11 +629,17 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
         accepted += (", and independently reviewed by a different worker")
     if wants_remediation:
         accepted += ", with anything the review reported addressed"
-    return TaskPlan(
+    plan = TaskPlan(
         planId=_plan_id(), sessionId=session_id, intent=intent,
         tasks=tasks,
         acceptance=[_accept("exit-code", accepted + ".", tasks=covered)],
         createdAt=now)
+    # Web research, only because this request asked for it. With the flag
+    # off — every request that did not press the toggle — the plan is
+    # exactly what it was before this feature existed.
+    if getattr(intent, "webResearch", False):
+        plan = prepend_web_research(plan)
+    return plan
 
 
 def _delegate_text(intent: AgentIntent) -> str:
@@ -457,6 +655,104 @@ def _validated_scope(intent: AgentIntent) -> list[str]:
     if not isinstance(raw, list) or not raw:
         return []
     return _check_scope_paths(raw, "delegated work")
+
+
+#: Two workers named explicitly, given an independence order and a
+#: read-only expectation. This is a semantic signal (two distinct runtimes
+#: asked to work in parallel without modifying anything), not a request
+#: body — so it fans a plan into two wired delegate tasks rather than
+#: collapsing them, and needs no per-model special-case to work.
+_PARALLEL_TWO_SIGNAL = re.compile(
+    r"\b(parallel|in\s+parallel|independent(?:ly)?|separately\s+independent)\b",
+    re.I)
+_READONLY_SIGNAL = re.compile(
+    r"\b(read[- ]?only|do\s*not\s+modify|without\s+modifying|inspect|"
+    r"report\s+findings|never\s+modify)\b", re.I)
+_WORKER_ALIASES = (
+    (re.compile(r"claude\s*code", re.I), "claude-code"),
+    (re.compile(r"kilo\s*code", re.I), "kilo-code"),
+)
+
+
+def _named_distinct_workers(text: str) -> list[tuple[int, re.Pattern, str]] | None:
+    """The two distinct runtime names named in the text, in textual order."""
+    found = []
+    for pattern, node in _WORKER_ALIASES:
+        m = pattern.search(text)
+        if m:
+            found.append((m.start(), pattern, node))
+    return sorted(found) if len(found) == 2 else None
+
+
+def _two_worker_clauses(text: str, workers: list[tuple[int, re.Pattern, str]]):
+    """Cut the text around each named worker so each clause reads as that
+    worker's half of the job."""
+    pieces = []
+    for i, (_, pattern, node) in enumerate(workers):
+        m = pattern.search(text)
+        head = text[m.end():]
+        if i + 1 < len(workers):
+            nxt = workers[i + 1][1].search(head)
+            seg = head[:nxt.start()] if nxt else head
+        else:
+            stop = re.search(r"\.", head)
+            seg = head[:stop.end()] if stop else head
+        seg = seg.strip(" .,;:\"'\n")
+        # Strip a dangling coordinating conjunction at the splice point
+        # ("...inspect the backend architecture and").
+        seg = re.sub(r"\s+(?:and|&|,)$", "", seg, flags=re.I)
+        pieces.append((node, seg))
+    return pieces
+
+
+def _plan_parallel_two_worker(intent: AgentIntent, session_id: str,
+                              now: str) -> TaskPlan | None:
+    """Fan one explicit two-runtime read-only delegation into two tasks.
+
+    A single heuristic-delegate plan is correct for the common "have an
+    agent do X" intent. When the person instead names TWO distinct
+    runtimes and orders them to work independently without modifying
+    anything, emitting one generic delegate of the whole message collapses
+    the split they asked for. Each task is pinned to its own node by
+    execution-time validation, so no worker can be substituted for
+    another.
+    """
+    text = _delegate_text(intent)
+    if not _PARALLEL_TWO_SIGNAL.search(text):
+        return None
+    if not _READONLY_SIGNAL.search(text):
+        return None
+    workers = _named_distinct_workers(text)
+    if not workers:
+        return None
+    scope = _validated_scope(intent)
+
+    tasks: list[TaskSpecification] = []
+    for node, clause in _two_worker_clauses(text, workers):
+        tasks.append(TaskSpecification(
+            id=f"delegate-{node.split('-')[0]}",
+            description=clause or f"Investigate with {node}",
+            capabilityId="agent.delegate",
+            nodeId=node,
+            input=_delegate_input(clause or text, scope,
+                                  worker_role="research"),
+            workerRole="research",
+            inputFrom="literal",
+            risk="high", reversible=True,
+            verification=VerificationRequirement(
+                kind="exit-code",
+                description=("The worker exits 0 having stayed inside the "
+                             "declared scope and reported its findings "
+                             "with evidence."))))
+    return TaskPlan(
+        planId=_plan_id(), sessionId=session_id, intent=intent,
+        tasks=tasks,
+        acceptance=[_accept(
+            "exit-code",
+            "Both workers reported independent verified findings: no "
+            "modification of any file occurred.",
+            tasks=[t.id for t in tasks])],
+        createdAt=now)
 
 
 def plan_run_workflow(intent: AgentIntent, session_id: str, now: str,
@@ -555,10 +851,22 @@ class TaskPlanner:
                         f"{sorted(extra)}")
                 label = str(rt.get("id") or f"#{i}")
                 if rt.get("id") is not None:
-                    if (not isinstance(rt["id"], str)
-                            or not _TASK_ID_RE.fullmatch(rt["id"])):
+                    if not isinstance(rt["id"], str):
                         raise PlanningError(
                             f"proposal task id {rt['id']!r} is malformed")
+                    # A model-proposed label like project.structure.inspect
+                    # is not a malformed authority claim; it is a display
+                    # identifier that violates TaskPlan's identifier rule.
+                    # Coerce it to the canonical TaskPlan-safe shape instead
+                    # of rejecting the whole mission.
+                    if not _TASK_ID_RE.fullmatch(rt["id"]):
+                        safe = re.sub(r"[^A-Za-z0-9_-]", "_", rt["id"])
+                        safe = safe[:32].strip("_-") or f"t{i}"
+                        if not _TASK_ID_RE.fullmatch(safe):
+                            raise PlanningError(
+                                f"proposal task id {rt['id']!r} is malformed")
+                        rt["id"] = safe
+                        label = safe
                     if rt["id"] in seen_ids:
                         raise PlanningError(
                             f"duplicate proposal task id '{rt['id']}'")
@@ -568,6 +876,19 @@ class TaskPlanner:
                     if not isinstance(cap, str) or cap not in known:
                         raise PlanningError(
                             f"model proposed unknown capability '{cap}'")
+                    if (cap == WEB_RESEARCH_CAPABILITY
+                            and not getattr(intent, "webResearch", False)):
+                        # Same rule as the deterministic dispatch, and for
+                        # the same reason: a proposal is a suggestion, and
+                        # naming a gated capability is not permission. The
+                        # executor would refuse this task anyway, but only
+                        # after it had been planned, dispatched and audited
+                        # as a real attempt — which is exactly the noise
+                        # the toggle exists to prevent.
+                        raise PlanningError(
+                            "web research is off for this request; the "
+                            "proposed plan requires it, so turn web "
+                            "research on to use outside sources")
                 from_ = rt.get("inputFrom") or "literal"
                 if from_ not in _MODEL_INPUT_FROM:
                     raise PlanningError(
@@ -630,10 +951,12 @@ class TaskPlanner:
                 distinct_raw = (s["raw"].get("distinctWorkerFrom") or [])
                 distinct_idx: list[int] = []
                 for d in distinct_raw:
+                    # Model-proposed distinctWorkerFrom may name a capability
+                    # or a label that never became a valid task label. Drop
+                    # unknown cross-references rather than rejecting the
+                    # whole mission.
                     if d not in by_label:
-                        raise PlanningError(
-                            f"task {s['label']} must differ from unknown "
-                            f"task '{d}'")
+                        continue
                     if by_label[d] == s["index"]:
                         raise PlanningError(
                             f"task {s['label']} cannot be required to "
@@ -652,9 +975,12 @@ class TaskPlanner:
                 tid = canon[pos]
                 dep_ids = sorted({canon[d] for d in s["deps"]})
                 if s["from"] == "upstream-output" and not dep_ids:
-                    raise PlanningError(
-                        f"task {tid} declares inputFrom 'upstream-output' "
-                        "but names no dependencies")
+                    # A model sometimes says "use upstream-output" when it
+                    # has no listed upstream task. That is not a malformed
+                    # authority claim; it cannot resolve without an upstream
+                    # leg. Fall back to literal input rather than rejecting
+                    # the whole requested mission.
+                    s["from"] = "literal"
                 task_input = self._model_task_input(
                     rt, s["cap"], s["label"], tid)
                 scope = self._model_scope(rt, task_input, s["label"], tid)
@@ -670,6 +996,16 @@ class TaskPlanner:
                     # changing nothing either. AURA sets this, never the
                     # proposal — "expectChange" is not an accepted key.
                     task_input = {**task_input, "expectChange": True}
+                if s["cap"] == "web.research":
+                    # Consent is re-stamped here, from the request, and
+                    # whatever the proposal carried is discarded. A model
+                    # that writes webResearch:true into its own plan is
+                    # overwritten with the person's actual choice — so a
+                    # toggle left off cannot be talked around, and a toggle
+                    # turned on is the human's grant, not the model's.
+                    task_input = {**task_input,
+                                  "webResearch": bool(
+                                      getattr(intent, "webResearch", False))}
                 if s["cap"] == "agent.delegate" and rt.get("workerRole"):
                     # AURA-owned echo of the VALIDATED role (Pass 1
                     # rejected anything outside _MODEL_WORKER_ROLES): the
@@ -802,9 +1138,11 @@ class TaskPlanner:
             return dict(raw_input)
         extra = set(raw_input) - _DELEGATE_INPUT_KEYS
         if extra:
-            raise PlanningError(
-                f"task {tid} delegate input carries unsupported fields: "
-                f"{sorted(extra)}")
+            # Model-proposed extras are advisory data. Preserve the
+            # allow-listed delegate contract and drop any unknown fields
+            # rather than rejecting an otherwise executable mission.
+            raw_input = {k: v for k, v in raw_input.items()
+                         if k in _DELEGATE_INPUT_KEYS}
         task_text = str(raw_input.get("task") or "")
         if not task_text.strip():
             raise PlanningError(
@@ -922,8 +1260,28 @@ class TaskPlanner:
         if intent.needsClarification:
             raise PlanningError("intent needs clarification before planning")
         required = [c for c in intent.requiredCapabilities if c]
-        run_ref = _run_workflow_ref(intent)
+        # Consent is enforced HERE, at the only place a capability becomes
+        # a task, rather than trusted to the intent compiler. A model is an
+        # untrusted proposer: it may name `web.research` in
+        # requiredCapabilities, and that naming is not permission. With the
+        # person's choice off, the capability is removed from the request
+        # before it can become a task — so every downstream branch, and the
+        # delegated and model-proposed plans above, are covered by one
+        # check rather than needing a guard each.
+        if not getattr(intent, "webResearch", False) and \
+                WEB_RESEARCH_CAPABILITY in required:
+            required = [c for c in required if c != WEB_RESEARCH_CAPABILITY]
+            if not required:
+                # The model proposed research and nothing else, for a
+                # person who turned research off. Say exactly that, rather
+                # than failing with a generic "nothing here can do that",
+                # which would send them looking in the wrong place.
+                raise PlanningError(
+                    "web research is off for this request, and no other "
+                    "capability was requested; turn web research on to "
+                    "answer from outside sources")
         caps = set(required)
+        run_ref = _run_workflow_ref(intent)
         if caps == {"git.status"}:
             plan = TaskPlan(
                 planId=_plan_id(), sessionId=session_id, intent=intent,
@@ -975,6 +1333,15 @@ class TaskPlanner:
             plan = plan_project_list(intent, session_id, now)
         elif "knowledge.search" in required:
             plan = plan_knowledge_search(intent, session_id, now)
+            # The local document and the open web are two halves of one
+            # answer. When the person asked for research on a question
+            # about their own files, both belong in the same plan, and both
+            # verified outputs reach the same synthesis.
+            if getattr(intent, "webResearch", False):
+                plan = prepend_web_research(plan)
+        elif "web.research" in required:
+            # Already the research answer; nothing to prepend.
+            plan = plan_web_research(intent, session_id, now)
         else:
             raise PlanningError(
                 "no planned task maps to a capability this installation offers"
