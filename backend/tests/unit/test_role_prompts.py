@@ -202,16 +202,16 @@ class TestPlannerRoleInjection:
             known_capabilities=lambda: {"agent.delegate"},
             known_nodes=lambda: {"opencode"},
         )
-        with pytest.raises(PlanningError) as exc:
-            planner.plan_from_model(
-                AgentIntent(goal="g", expectedOutcome="done"),
-                "ses-1", "now",
-                {"tasks": [{"id": "t", "description": "work",
-                            "capabilityId": "agent.delegate",
-                            "input": {"task": "x", "role": "code"},
-                            "verificationKind": "exit-code",
-                            "verification": "exit 0"}]})
-        assert "role" in str(exc.value)
+        plan = planner.plan_from_model(
+            AgentIntent(goal="g", expectedOutcome="done"),
+            "ses-1", "now",
+            {"tasks": [{"id": "t", "description": "work",
+                        "capabilityId": "agent.delegate",
+                        "input": {"task": "x", "role": "code"},
+                        "verificationKind": "exit-code",
+                        "verification": "exit 0"}]})
+        assert "role" not in plan.tasks[0].input
+        assert plan.tasks[0].workerRole is None
 
     def test_role_is_not_a_model_acceptable_key(self):
         assert "role" not in _DELEGATE_INPUT_KEYS
@@ -645,41 +645,38 @@ class TestRoleApprovalGate:
                            permissions={"read": True, "write": True})
         return invoke_fabric, cfg, ledger, ran
 
-    def test_a_role_task_still_parks_and_needs_a_human(
+    def test_a_role_task_runs_autonomously_with_role_preserved(
             self, tmp_path, monkeypatch):
         invoke_fabric, cfg, ledger, ran = self._stack(tmp_path, monkeypatch)
         payload = {"task": "fix the bug", "role": "code",
                    "scopePaths": ["src"]}
         context = {"actor": {"kind": "agent", "id": "central-agent"},
                    "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
-        parked = invoke_fabric("agent.delegate", payload, dict(context), cfg)
-        assert parked["outcome"] == "awaiting-approval"
-        assert ran == [], "nothing runs before a human approves"
-
-        approval_id = parked["approvalId"]
-        assert ledger.decide(approval_id, True, "user", "ok") is not None
-        spent = invoke_fabric(
-            "agent.delegate", payload,
-            {**context, "approvalId": approval_id}, cfg)
-        assert spent["outcome"] == "succeeded", spent["detail"]
+        result = invoke_fabric("agent.delegate", payload, dict(context), cfg)
+        assert result["outcome"] == "succeeded", result["detail"]
+        assert result["policy"]["rule"] == "autonomous-delegation"
+        assert "approvalId" not in result
         assert ran[0]["role"] == "code"
 
-    def test_a_role_changed_after_approval_is_a_different_action(
+    def test_a_role_changed_is_a_new_autonomous_run(
             self, tmp_path, monkeypatch):
         invoke_fabric, cfg, ledger, ran = self._stack(tmp_path, monkeypatch)
         payload = {"task": "fix the bug", "role": "code"}
         context = {"actor": {"kind": "agent", "id": "central-agent"},
                    "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
-        approval_id = invoke_fabric(
-            "agent.delegate", payload, dict(context), cfg)["approvalId"]
-        assert ledger.decide(approval_id, True, "user", "ok") is not None
-        # The worker's own text cannot swap its role post-approval: the
-        # approved input fingerprint covers the role too.
-        swapped = invoke_fabric(
+        first = invoke_fabric("agent.delegate", payload, dict(context), cfg)
+        assert first["outcome"] == "succeeded", first["detail"]
+        assert first["policy"]["rule"] == "autonomous-delegation"
+        assert "approvalId" not in first
+        # A changed role is a new governed delegation, not a previously
+        # decided human approval to compare against.
+        second = invoke_fabric(
             "agent.delegate", {**payload, "role": "review"},
-            {**context, "approvalId": approval_id}, cfg)
-        assert swapped["outcome"] == "awaiting-approval"
-        assert ran == []
+            dict(context), cfg)
+        assert second["outcome"] == "succeeded", second["detail"]
+        assert second["policy"]["rule"] == "autonomous-delegation"
+        assert "approvalId" not in second
+        assert ran[1]["role"] == "review"
 
 
 # ── 19 + 20. roles narrow routing only; provider routing untouched ───

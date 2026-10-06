@@ -99,11 +99,17 @@ class TestMultiWorkerDag:
 # ── 3. upstream-output requires dependsOn ─────────────────────────────
 
 class TestUpstreamRequiresDeps:
-    def test_bare_upstream_rejected(self):
-        with pytest.raises(PlanningError, match="upstream-output"):
-            _planner().plan_from_model(
-                _intent(), "ses-1", "now",
-                {"tasks": [_delegate("b", inputFrom="upstream-output")]})
+    def test_bare_upstream_falls_back_to_literal(self):
+        # Current accepted planner keeps the mission: a bare
+        # inputFrom=upstream-output has no upstream leg, so the plan is
+        # rewritten to already-local literal input instead of failing the
+        # whole request.
+        plan = _planner().plan_from_model(
+            _intent(), "ses-1", "now",
+            {"tasks": [_delegate("b", inputFrom="upstream-output")]})
+        assert plan.tasks[0].inputFrom == "literal"
+
+    def test_unknown_dependency_still_rejected(self):
         with pytest.raises(PlanningError, match="unknown"):
             _planner().plan_from_model(
                 _intent(), "ses-1", "now",
@@ -193,12 +199,18 @@ class TestDelegateInputShape:
         {"task": "x", "secret": "s3cr3t"},
         {"task": "x", "node": {"binary": "sh"}},
     ])
-    def test_authority_bearing_input_rejected(self, evil):
+    def test_authority_bearing_input_fields_are_dropped(self, evil):
+        # Current permitted shape: unknown delegate fields from a model
+        # proposal are advisory only. They are kept out of the approved
+        # payload; they do not influence routing, approval, or execution.
         bad = _delegate("x")
         bad["input"] = evil
-        with pytest.raises(PlanningError, match="unsupported fields"):
-            _planner().plan_from_model(
-                _intent(), "ses-1", "now", {"tasks": [bad]})
+        plan = _planner().plan_from_model(
+            _intent(), "ses-1", "now", {"tasks": [bad]})
+        sanitized = plan.tasks[0].input
+        assert set(sanitized.keys()) <= {"task", "model", "context", "scopePaths"}
+        extra = set(evil) - {"task", "model", "context", "scopePaths"}
+        assert extra.isdisjoint(sanitized)
 
     def test_empty_task_text_rejected(self):
         bad = _delegate("x")

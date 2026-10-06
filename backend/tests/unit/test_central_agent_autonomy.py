@@ -377,7 +377,6 @@ class TestModelProposalValidation:
 
     @pytest.mark.parametrize("bad,needle", [
         ({"runWhen": "whenever-i-feel-like-it"}, "unknown runWhen"),
-        ({"distinctWorkerFrom": ["ghost"]}, "unknown task"),
         ({"distinctWorkerFrom": "code"}, "must be a list"),
         ({"workerRole": "supervisor"}, "unknown worker role"),
         ({"capabilityId": "shell.exec"}, "unknown capability"),
@@ -392,6 +391,16 @@ class TestModelProposalValidation:
             self._planner().plan_from_model(
                 self._intent(), "agt-1", "t", {"tasks": [task]})
         assert needle in str(err.value)
+
+    def test_unknown_distinct_worker_refs_are_dropped_not_fatal(self):
+        plan = self._planner().plan_from_model(
+            self._intent(), "agt-1", "t", {"tasks": [
+                {"id": "code", "description": "d",
+                 "capabilityId": "agent.delegate", "workerRole": "code",
+                 "distinctWorkerFrom": ["ghost"],
+                 "input": {"task": "x"},
+                 "verificationKind": "exit-code", "verification": "exit 0"}]})
+        assert plan.tasks[0].distinctWorkerFrom == []
 
     def test_a_task_cannot_be_required_to_differ_from_itself(self):
         with pytest.raises(PlanningError):
