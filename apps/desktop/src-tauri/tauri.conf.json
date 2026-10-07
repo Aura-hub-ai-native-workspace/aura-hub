@@ -39,16 +39,30 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "targets": ["appimage", "deb"],
-    "resources": ["resources/**/*"],
+    "targets": [
+      "appimage",
+      "deb",
+      "nsis"
+    ],
+    "resources": [
+      "resources/**/*"
+    ],
     "linux": {
       "deb": {
-        "depends": ["nodejs"]
+        "depends": [
+          "nodejs"
+        ]
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perUser",
+        "allowToChangeInstallationDirectory": true
       }
     },
     "category": "DeveloperTool",
-    "shortDescription": "AURA Hub — an AI Operating Environment",
-    "longDescription": "AURA Hub is an AI-native operating environment: missions, a governed Capability Fabric, and a Connected Environment of real local tools. External tools stay external — AURA detects what is installed and routes every action through its policy, approval and audit path.",
+    "shortDescription": "AURA Hub \u2014 an AI Operating Environment",
+    "longDescription": "AURA Hub is an AI-native operating environment: missions, a governed Capability Fabric, and a Connected Environment of real local tools. External tools stay external \u2014 AURA detects what is installed and routes every action through its policy, approval and audit path.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
