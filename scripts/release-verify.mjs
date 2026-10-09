@@ -360,8 +360,24 @@ console.log('\n=== 5. THE PUBLISHING PIPELINE ===');
 
   check('5a. only a version tag publishes',
     /if:\s*startsWith\(github\.ref,\s*'refs\/tags\/v'\)/.test(ci));
+  /**
+   * Accepts both YAML spellings. `needs:` is either a scalar
+   * (`needs: desktop-build`) or a flow sequence
+   * (`needs: [desktop-build, backend]`), and the regex below only matched
+   * the scalar form — so adding the `backend` dependency, which is what
+   * makes the release wait on the backend gate too, turned this check red
+   * against a workflow that had in fact got stricter.
+   *
+   * Deliberately matched structurally rather than with a single literal, and
+   * it must keep failing when the dependency is genuinely absent — proven by
+   * removing `desktop-build` from the needs list, which does fail this.
+   */
+  const needsLine = /^\s*needs:\s*(.+)$/m.exec(ci.split('\n  release:').pop() ?? '');
+  const releaseNeedList = needsLine
+    ? [...needsLine[1].matchAll(/[\w-]+/g)].map((m) => m[0])
+    : [];
   check('5b. publishing waits for every platform to build',
-    /needs:\s*desktop-build/.test(ci));
+    releaseNeedList.includes('desktop-build'), `needs=${releaseNeedList.join(',') || 'none'}`);
   check('5c. the manifest is generated in CI, never hand-written',
     /build-latest-json\.mjs/.test(ci));
   check('5d. the release is verified BEFORE it is published',
