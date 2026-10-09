@@ -225,7 +225,7 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
             win_cmdline, cwd=cwd,
             stdout=_sp.PIPE, stderr=_sp.PIPE, stdin=_sp.DEVNULL,
             env=merged_env,
-            creationflags=(_sp.CREATE_NEW_PROCESS_GROUP
+            creationflags=(getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0)
                            | getattr(_sp, "CREATE_NO_WINDOW", 0)))
         loop = asyncio.get_running_loop()
         waiter = asyncio.ensure_future(

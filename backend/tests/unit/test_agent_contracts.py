@@ -45,6 +45,20 @@ class TestTaskContracts:
         assert t.reversible is True
         assert t.verification.kind == "audit-only"
 
+    def test_mission_id_round_trips_through_plan_and_tasks(self):
+        intent = AgentIntent(goal="g", expectedOutcome="e")
+        plan = TaskPlan.model_validate({
+            "planId": "p1", "sessionId": "s1", "intent": intent,
+            "missionId": "m-123",
+            "tasks": [{"id": "t1", "description": "one", "missionId": "m-123"}],
+            "createdAt": "now",
+        })
+        assert plan.missionId == "m-123"
+        assert plan.tasks[0].missionId == "m-123"
+        clone = TaskPlan.model_validate(plan.model_dump())
+        assert clone.missionId == "m-123"
+        assert clone.tasks[0].missionId == "m-123"
+
     def test_plan_requires_tasks(self):
         intent = AgentIntent(goal="g", expectedOutcome="e")
         with pytest.raises(ValidationError):

@@ -34,6 +34,7 @@ from aura.capabilities.tools import (
 )
 from aura.central_agent.context import ContextAssembler
 from aura.central_agent.discovery import CapabilityDiscovery
+from aura.environment import pathsec
 from aura.environment.probe import _clear_cache
 
 POSIX_ONLY = pytest.mark.skipif(
@@ -49,11 +50,24 @@ def script(path: Path, body: str) -> Path:
 
 @pytest.fixture()
 def bindir(tmp_path: Path, monkeypatch) -> Path:
-    """A private machine: fixture bins FIRST, then the real system bins
-    (so `sh` keeps working) — but none of the real dev tools, so every
-    detection below is the fixture's or nothing's."""
+    """A private machine: fixture bins first, and the fixture PATH is the
+    ONLY thing AURA scans.
+
+    `aura.environment.pathsec.effective_path()` appends the known installer
+    directories (`/usr/bin`, `/usr/local/bin`, …) to the inherited PATH
+    whenever they exist, so setting PATH to the fixture directory alone does
+    NOT isolate the probe: a tool genuinely installed on the host is still
+    found. That is correct product behaviour and wrong test setup, so the
+    extra dirs are made not-to-exist for the duration instead — the fixture
+    bins stay authoritative and no real tool can leak in.
+    """
     d = tmp_path / "bin"
     d.mkdir()
+    # effective_path() appends only directories that EXIST, so pointing the
+    # extra-dir table at a path that cannot exist removes them without
+    # touching the real filesystem or the PATH order the fixture sets.
+    monkeypatch.setattr(
+        pathsec, "_EXTRA_POSIX", ("/nonexistent-aura-registry-test",))
     script(d / "git", 'echo "git version 2.99.0.fixture"\n')
     script(d / "node", 'echo "v22.9.9"\n')
     script(d / "python3", 'echo "Python 3.99.9"\n')

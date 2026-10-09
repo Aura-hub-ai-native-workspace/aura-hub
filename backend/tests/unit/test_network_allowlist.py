@@ -429,6 +429,21 @@ class TestEvidence:
 # ── fail closed ──────────────────────────────────────────────────────
 
 class TestFailClosed:
+    def _expected_refusal_state(self):
+        """Which refusal floor this host reaches.
+
+        `establish()` decides whether ALLOWLIST is enforceable at all BEFORE
+        it tries to stage the gateway, so on a host without bubblewrap —
+        which includes a GitHub runner — an injected failing `stage` is never
+        called and the refusal is `UNSUPPORTED` rather than
+        `INITIALIZATION_FAILED`. Both refuse; neither launches. Asserting
+        one state unconditionally made these three tests fail on every
+        runner while passing on a developer machine that has bubblewrap.
+        """
+        if netgov.capability()["modes"][netgov.ALLOWLIST] == netgov.UNSUPPORTED:
+            return netgov.UNSUPPORTED
+        return netgov.INITIALIZATION_FAILED
+
     def test_a_gateway_that_will_not_start_refuses_the_launch(self, tmp_path):
         def boom(policy, home):
             raise OSError("no socket for you")
@@ -437,7 +452,7 @@ class TestFailClosed:
             netgov.NetworkPolicy(mode=netgov.ALLOWLIST, domains=("x.test",)),
             str(tmp_path), stage=boom)
         assert result.ok is False
-        assert result.state == netgov.INITIALIZATION_FAILED
+        assert result.state == self._expected_refusal_state()
         assert result.argv_prefix == []
 
     def test_a_boundary_that_fails_its_check_refuses_the_launch(self,
@@ -457,8 +472,11 @@ class TestFailClosed:
             str(tmp_path), stage=lambda p, h: _Staged(),
             verify_allow=lambda home, staged: (False, "traffic escaped"))
         assert result.ok is False
-        assert result.state == netgov.INITIALIZATION_FAILED
-        assert closed, "a refused boundary must not leave its door open"
+        assert result.state == self._expected_refusal_state()
+        if result.state == netgov.INITIALIZATION_FAILED:
+            # The staged gateway was opened and then closed again; on a host
+            # that cannot enforce ALLOWLIST it was never opened at all.
+            assert closed, "a refused boundary must not leave its door open"
 
     def test_it_never_silently_becomes_unrestricted(self, tmp_path):
         result = netgov.establish(

@@ -142,15 +142,15 @@ function FilledWorkerSlot({
             : `${name} — ${worker?.reason || caption.toLowerCase()}. ${worker?.detail || ''}`.trim()
         }
         className={cn(
-          'neon-focus relative grid h-[68px] w-[68px] place-items-center rounded-2xl border transition-all duration-150 disabled:cursor-not-allowed',
+          'neon-focus relative grid h-[54px] w-[54px] place-items-center rounded-xl border transition-all duration-150 disabled:cursor-not-allowed',
           on
             ? 'border-[rgba(122,92,255,0.55)] bg-[rgba(122,92,255,0.12)] shadow-glow-violet hover:border-[rgba(122,92,255,0.8)]'
-            : 'border-[rgba(125,146,255,0.22)] bg-[rgba(13,19,38,0.9)] hover:border-[rgba(125,146,255,0.45)]',
+            : 'border-[rgba(125,146,255,0.18)] bg-[var(--ws-worker-off)] hover:border-[rgba(125,146,255,0.38)]',
         )}
       >
         <span
           className={cn(
-            'text-[20px] font-semibold tracking-tight',
+            'text-[15px] font-medium tracking-tight',
             on ? 'text-[#c9bcff]' : 'text-text-subtle',
           )}
         >
@@ -165,11 +165,11 @@ function FilledWorkerSlot({
           )}
         />
       </button>
-      <span className="mt-2 w-full truncate text-[12px] font-semibold text-text">{name}</span>
+      <span className="mt-1.5 w-full truncate text-[11px] font-medium text-text-subtle">{name}</span>
       <span
         className={cn(
-          'w-full truncate text-[10.5px]',
-          on ? 'text-neon-success' : 'text-text-subtle',
+          'w-full truncate text-[10px]',
+          on ? 'text-neon-success' : 'text-text-subtle opacity-60',
         )}
       >
         {caption}
@@ -186,7 +186,7 @@ function FilledWorkerSlot({
         data-worker-id={slot.workerId ?? undefined}
         aria-label={`Replace ${name} in this workspace`}
         title={`Replace ${name} in worker slot ${slot.index + 1}. Nothing is uninstalled.`}
-        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(122,92,255,0.4)] bg-[rgba(9,13,26,0.95)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-[#c9bcff] focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(122,92,255,0.4)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-[#c9bcff] focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="refresh" size={10} />
       </button>
@@ -202,7 +202,7 @@ function FilledWorkerSlot({
         data-worker-id={slot.workerId ?? undefined}
         aria-label={`Remove ${name} from workspace`}
         title={`Remove ${name} from this workspace. Nothing is uninstalled or disconnected.`}
-        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(125,146,255,0.32)] bg-[rgba(9,13,26,0.95)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(125,146,255,0.32)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="close" size={10} />
       </button>
@@ -232,10 +232,10 @@ function EmptyWorkerSlot({ index, onAddWorker }: { index: number; onAddWorker: (
         title="Add an AI worker to this workspace"
         className="neon-focus flex min-w-0 flex-col items-center text-center"
       >
-        <span className="grid h-[68px] w-[68px] place-items-center rounded-2xl border border-dashed border-[rgba(125,146,255,0.28)] bg-[rgba(10,16,34,0.55)] text-text-subtle transition-colors duration-150 hover:border-[rgba(122,92,255,0.5)] hover:text-[#c9bcff]">
-          <Icon name="plus" size={18} />
+        <span className="grid h-[54px] w-[54px] place-items-center rounded-xl border border-dashed border-[rgba(125,146,255,0.2)] bg-[var(--ws-worker-empty)] text-text-subtle opacity-50 transition-colors duration-150 hover:border-[rgba(122,92,255,0.5)] hover:opacity-80 hover:text-[#c9bcff]">
+          <Icon name="plus" size={14} />
         </span>
-        <span className="mt-2 w-full truncate text-[12px] font-medium text-text-subtle">
+        <span className="mt-1.5 w-full truncate text-[11px] font-medium text-text-subtle opacity-50">
           Add Worker
         </span>
       </button>
@@ -249,9 +249,9 @@ function EmptyWorkerSlot({ index, onAddWorker }: { index: number; onAddWorker: (
  * or readiness, and `SELECTED` deliberately makes no claim at all.
  */
 const SLOT_RING: Record<Exclude<ToolSlot['state'], 'EMPTY'>, string> = {
-  ACTIVE: 'border-[rgba(32,211,255,0.55)] bg-[rgba(10,26,36,0.92)] text-neon-cyan shadow-glow-cyan',
-  SELECTED: 'border-[rgba(32,211,255,0.28)] bg-[rgba(10,20,30,0.9)] text-neon-cyan',
-  UNAVAILABLE: 'border-[rgba(255,181,71,0.34)] bg-[rgba(26,20,10,0.85)] text-neon-warning',
+  ACTIVE: 'border-[rgba(32,211,255,0.55)] bg-[var(--ws-slot-active)] text-neon-cyan shadow-glow-cyan',
+  SELECTED: 'border-[rgba(32,211,255,0.28)] bg-[var(--ws-slot-selected)] text-neon-cyan',
+  UNAVAILABLE: 'border-[rgba(255,181,71,0.34)] bg-[var(--ws-slot-unavail)] text-neon-warning',
 };
 
 const SLOT_CAPTION: Record<Exclude<ToolSlot['state'], 'EMPTY'>, string> = {
@@ -329,7 +329,7 @@ function FilledSlot({
         data-node-id={slot.nodeId ?? undefined}
         aria-label={`Replace ${name} in this workspace`}
         title={`Replace ${name} in slot ${slot.index + 1}. Nothing is installed or uninstalled.`}
-        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(32,211,255,0.34)] bg-[rgba(9,13,26,0.95)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-neon-cyan focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(32,211,255,0.34)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-neon-cyan focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="refresh" size={10} />
       </button>
@@ -344,7 +344,7 @@ function FilledSlot({
         data-node-id={slot.nodeId ?? undefined}
         aria-label={`Remove ${name} from workspace`}
         title={`Remove ${name} from this workspace. Nothing is uninstalled.`}
-        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(125,146,255,0.32)] bg-[rgba(9,13,26,0.95)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(125,146,255,0.32)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="close" size={10} />
       </button>
@@ -374,7 +374,7 @@ function EmptySlot({ index, onAddTool }: { index: number; onAddTool: () => void 
         title="Add a tool to this workspace"
         className="neon-focus flex min-w-0 flex-col items-center gap-1.5 text-center"
       >
-        <span className="grid h-[56px] w-[56px] place-items-center rounded-2xl border border-dashed border-[rgba(125,146,255,0.28)] bg-[rgba(10,16,34,0.55)] text-text-subtle transition-colors duration-150 hover:border-[rgba(32,211,255,0.45)] hover:text-neon-cyan">
+        <span className="grid h-[56px] w-[56px] place-items-center rounded-2xl border border-dashed border-[rgba(125,146,255,0.28)] bg-[var(--ws-slot-empty)] text-text-subtle transition-colors duration-150 hover:border-[rgba(32,211,255,0.45)] hover:text-neon-cyan">
           <Icon name="plus" size={18} />
         </span>
         <span className="w-full truncate text-[11.5px] font-medium text-text-subtle">
@@ -385,40 +385,45 @@ function EmptySlot({ index, onAddTool }: { index: number; onAddTool: () => void 
   );
 }
 
-/** One connector: down out of a tile, across, and into the centre. */
-function Connectors({ count, direction }: { count: number; direction: 'down' | 'up' }) {
-  if (count === 0) return null;
+/**
+ * SVG branch connector matching the 3-column grid geometry.
+ *
+ * Column centres sit at ~16.7%, 50%, 83.3% of the container.
+ * preserveAspectRatio="none" lets x-coords act as percentages of the
+ * container width, so the lines track node positions exactly regardless
+ * of panel width. vectorEffect="non-scaling-stroke" keeps the stroke at
+ * a visual 1px even after the non-uniform scale.
+ *
+ * direction="down" — AURA (top) fans out to workers below.
+ * direction="up"   — tools (bottom) converge up toward AURA.
+ */
+function BranchConnector({ direction }: { direction: 'down' | 'up' }) {
+  const cols = [16, 50, 84] as const;
+  const mid = 14;
+
+  const d =
+    direction === 'down'
+      ? [
+          `M 50 0 L 50 ${mid}`,
+          `M ${cols[0]} ${mid} L ${cols[2]} ${mid}`,
+          ...cols.map((x) => `M ${x} ${mid} L ${x} 28`),
+        ].join(' ')
+      : [
+          ...cols.map((x) => `M ${x} 0 L ${x} ${mid}`),
+          `M ${cols[0]} ${mid} L ${cols[2]} ${mid}`,
+          `M 50 ${mid} L 50 28`,
+        ].join(' ');
+
   return (
-    <div aria-hidden className="relative h-7 w-full">
-      <span
-        className={cn(
-          'absolute left-1/2 h-full w-px -translate-x-1/2',
-          direction === 'down'
-            ? 'bg-gradient-to-b from-[rgba(122,92,255,0.5)] to-[rgba(77,124,255,0.55)]'
-            : 'bg-gradient-to-b from-[rgba(77,124,255,0.55)] to-[rgba(32,211,255,0.45)]',
-        )}
-      />
-      {count > 1 && (
-        <>
-          <span
-            className={cn(
-              'absolute top-1/2 h-px',
-              direction === 'down'
-                ? 'left-[16%] right-[16%] bg-[rgba(122,92,255,0.35)]'
-                : 'left-[16%] right-[16%] bg-[rgba(32,211,255,0.3)]',
-            )}
-          />
-          <span className="absolute left-[16%] top-1/2 h-1/2 w-px bg-[rgba(122,92,255,0.28)]" />
-          <span className="absolute right-[16%] top-1/2 h-1/2 w-px bg-[rgba(122,92,255,0.28)]" />
-          {direction === 'down' && (
-            <>
-              <span className="absolute left-[16%] top-0 h-1/2 w-px bg-[rgba(122,92,255,0.28)]" />
-              <span className="absolute right-[16%] top-0 h-1/2 w-px bg-[rgba(122,92,255,0.28)]" />
-            </>
-          )}
-        </>
-      )}
-    </div>
+    <svg
+      aria-hidden
+      viewBox="0 0 100 28"
+      preserveAspectRatio="none"
+      className="h-7 w-full"
+      style={{ fill: 'none', stroke: 'var(--ws-connector)', strokeWidth: 1 } as React.CSSProperties}
+    >
+      <path d={d} vectorEffect="non-scaling-stroke" />
+    </svg>
   );
 }
 
@@ -481,7 +486,35 @@ export function OrchestrationGraph({
 
   return (
     <div className="flex flex-col items-center">
-      {/* MINDS — six slots, always drawn. */}
+      {/* THE ORCHESTRATOR — first and dominant: AURA is the primary actor. */}
+      <div className="flex flex-col items-center" data-testid="hub-aura-node">
+        <span
+          className={cn(
+            'relative grid h-[104px] w-[104px] place-items-center rounded-full border-2 border-[rgba(122,92,255,0.6)] shadow-glow-violet',
+          )}
+          style={{ background: 'radial-gradient(circle at 50% 35%, rgba(122,92,255,0.35), var(--ws-aura-center) 70%)' }}
+        >
+          <AuraLogo size={52} />
+          {busy && (
+            <span
+              aria-hidden
+              className="aura-breathe absolute inset-0 rounded-full border-2 border-[rgba(122,92,255,0.5)]"
+            />
+          )}
+        </span>
+        <span className="mt-2.5 text-[17px] font-semibold tracking-[-0.01em] text-text">
+          AURA Agent
+        </span>
+        <span className="text-[11.5px] text-text-muted">Understand · Plan · Execute · Verify</span>
+        <span className="mt-0.5 max-w-full truncate text-[11px] text-neon-cyan">{phase}</span>
+      </div>
+
+      <BranchConnector direction="down" />
+
+      {/* AURA CAPABILITIES — six slots, subordinate to AURA. */}
+      <p className="mb-2 self-start text-[9.5px] font-semibold uppercase tracking-widest text-text-subtle">
+        Capabilities
+      </p>
       <div
         className="grid w-full grid-cols-3 gap-x-2 gap-y-4"
         role="list"
@@ -509,34 +542,12 @@ export function OrchestrationGraph({
         )}
       </div>
 
-      <Connectors count={WORKER_SLOTS} direction="down" />
-
-      {/* THE ORCHESTRATOR — the largest thing in the rail, on purpose. */}
-      <div className="flex flex-col items-center" data-testid="hub-aura-node">
-        <span
-          className={cn(
-            'relative grid h-[104px] w-[104px] place-items-center rounded-full border-2 border-[rgba(122,92,255,0.6)]',
-            'bg-[radial-gradient(circle_at_50%_35%,rgba(122,92,255,0.35),rgba(10,16,34,0.98)_70%)] shadow-glow-violet',
-          )}
-        >
-          <AuraLogo size={52} />
-          {busy && (
-            <span
-              aria-hidden
-              className="aura-breathe absolute inset-0 rounded-full border-2 border-[rgba(122,92,255,0.5)]"
-            />
-          )}
-        </span>
-        <span className="mt-2.5 text-[17px] font-semibold tracking-[-0.01em] text-text">
-          AURA Agent
-        </span>
-        <span className="text-[11.5px] text-text-muted">Plan · Use Tools · Get Results</span>
-        <span className="mt-0.5 max-w-full truncate text-[11px] text-neon-cyan">{phase}</span>
-      </div>
-
-      <Connectors count={ACTIVE_TOOL_SLOTS} direction="up" />
+      <BranchConnector direction="up" />
 
       {/* ACTIVE WORKSPACE TOOLS — three slots, always drawn. */}
+      <p className="mb-2 self-start text-[9.5px] font-semibold uppercase tracking-widest text-text-subtle">
+        Environment
+      </p>
       <div
         className="grid w-full grid-cols-3 gap-2"
         role="list"

@@ -278,7 +278,10 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         opts.onShutdownRequest?.();
         return;
       }
-      if (method === 'GET' && (seg.length === 0 || seg[0] === 'settings')) return json(res, 200, { settings: p.getSettings(), defaults: DEFAULT_SETTINGS, key: p.keyStatus() });
+      if (method === 'GET' && (seg.length === 0 || seg[0] === 'settings')) {
+        const byoak = manager.byoakStatus();
+        return json(res, 200, { settings: p.getSettings(), defaults: DEFAULT_SETTINGS, key: p.keyStatus(), connected: byoak.connected, active: byoak.active, activeModel: byoak.model });
+      }
       if (method === 'POST' && seg[0] === 'settings' && seg[1] === 'key') { const b = await readJson(req); return json(res, 200, p.setKey(String(b.apiKey ?? ''), Boolean(b.persist))); }
       if (method === 'DELETE' && seg[0] === 'settings' && seg[1] === 'key') { p.clearKey(); return json(res, 200, { ok: true }); }
       if (method === 'POST' && seg[0] === 'settings') { const b = await readJson(req); return json(res, 200, { settings: p.setSettings(b) }); }

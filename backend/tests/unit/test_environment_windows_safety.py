@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from aura.environment.hostplatform import Platform, simulate
+from aura.environment.hostplatform import Platform, path_sep, simulate
 from aura.environment.safeprobe import (
     allowed_to_probe,
     is_never_probe,
@@ -417,7 +417,7 @@ def test_stub_failure_falls_through_to_real_candidate(tmp_path, monkeypatch):
     tools.mkdir()
     (tools / "python.exe").write_bytes(b"real")
     monkeypatch.setenv("LOCALAPPDATA", str(local))
-    monkeypatch.setenv("PATH", os.pathsep.join([str(stubs), str(tools)]))
+    monkeypatch.setenv("PATH", path_sep().join([str(stubs), str(tools)]))
 
     calls: list[str] = []
 

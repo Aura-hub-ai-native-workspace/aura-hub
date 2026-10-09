@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,9 +26,18 @@ sys.path.insert(0, str(_ROOT / "differential"))
 sys.path.insert(0, str(_ROOT / "automation"))
 
 
+# The bundles esbuild produces, under the per-run temp dir _ensure_bundles()
+# writes to. These used to be absolute paths into one developer's /tmp, so
+# the module-level table pointed at files that do not exist on any other
+# checkout — the differential then failed while trying to import them, which
+# reads as a parity mismatch rather than as a missing build.
+_TSREF_DIR = Path(tempfile.gettempdir()) / "aura-tsref-automation"
+# Mismatch dumps land beside the bundles rather than in a hard-coded /tmp
+# path, so a parity failure is diagnosable wherever the suite runs.
+_DUMPS = Path(tempfile.gettempdir()) / "aura-diffdump"
 TSREF_PATHS = {
-    "autoengine": "/tmp/opencode/tsref/autoengine.mjs",
-    "autostore": "/tmp/opencode/tsref/autostore.mjs",
+    "autoengine": str(_TSREF_DIR / "autoengine.mjs"),
+    "autostore": str(_TSREF_DIR / "autostore.mjs"),
 }
 START_MS = int(datetime(2026, 8, 24, 10, 0, tzinfo=UTC).timestamp() * 1000)
 
@@ -197,15 +207,34 @@ SCENARIOS.append(("disabled-rule-no-run", {"actions": {"echo": {"ok": True}}},
 
 
 def _ensure_bundles() -> None:
-    """Build the REAL TS oracle bundles if missing (idempotent)."""
-    import subprocess
+    """Build the REAL TS oracle bundles if missing (idempotent).
 
-    tsref_dir = Path("/tmp/opencode/tsref")
+    esbuild and the repository are both located from this file rather than
+    from an absolute path typed in by hand. The old absolute path named one
+    developer's machine, so on any other checkout — CI included — this
+    raised FileNotFoundError while building the oracle and the differential
+    errored instead of reporting parity. A checkout without `npm ci` has no
+    esbuild; that is a missing test prerequisite, so it skips with the
+    reason rather than failing as though the engines disagreed.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    tsref_dir = Path(tempfile.gettempdir()) / "aura-tsref-automation"
     needed = [tsref_dir / "autoengine.mjs", tsref_dir / "autostore.mjs"]
     if all(f.exists() for f in needed):
         return
-    esbuild = Path("/mnt/storage/aura-hub/node_modules/.bin/esbuild")
-    repo = Path("/mnt/storage/aura-hub")
+    # _ROOT is backend/tests (it is the sys.path anchor below); the
+    # repository root is two levels above it.
+    repo = _ROOT.parents[1]
+    esbuild = repo / "node_modules" / ".bin" / (
+        "esbuild.cmd" if sys.platform == "win32" else "esbuild")
+    if not esbuild.exists():
+        pytest.skip(f"esbuild is absent at {esbuild} — run `npm ci` to build the TypeScript oracle")
+    if not (shutil.which("node") or shutil.which("node.exe")):
+        pytest.skip("node is not on PATH, so the bundled oracle cannot be executed")
+    tsref_dir.mkdir(parents=True, exist_ok=True)
     for entry, out in [
         ("packages/automation/src/engine.ts", "autoengine.mjs"),
         ("packages/automation/src/store.ts", "autostore.mjs")]:
@@ -240,7 +269,10 @@ def _run_auto(cfg, ops, home, start_ms):
         capture_output=True, text=True,
         env={"TSREF_AUTOENGINE": TSREF_PATHS["autoengine"],
              "TSREF_AUTOSTORE": TSREF_PATHS["autostore"],
-             "PATH": "/usr/bin:/bin:/usr/local/bin"},
+             # node is located through PATH, so PATH must be inherited
+             # rather than pinned to POSIX directories — a pinned path made
+             # this differential unrunnable on Windows and macOS.
+             "PATH": __import__("os").environ.get("PATH", "")},
         check=False)
     if proc.returncode != 0:
         raise AssertionError(f"driver rc={proc.returncode}: {proc.stderr[-400:]}")
@@ -251,8 +283,9 @@ def test_results_events_tree_parity(ran):
     problems = []
     for name, t, p in ran:
         if json.dumps(t["results"], sort_keys=True) != json.dumps(p["results"], sort_keys=True):
-            Path(f"/tmp/opencode/diffdump-{name}-ts.json").write_text(json.dumps(t["results"], indent=1, sort_keys=True))
-            Path(f"/tmp/opencode/diffdump-{name}-py.json").write_text(json.dumps(p["results"], indent=1, sort_keys=True))
+            _DUMPS.mkdir(parents=True, exist_ok=True)
+            (_DUMPS / f"diffdump-{name}-ts.json").write_text(json.dumps(t["results"], indent=1, sort_keys=True))
+            (_DUMPS / f"diffdump-{name}-py.json").write_text(json.dumps(p["results"], indent=1, sort_keys=True))
             problems.append(f"{name}: RESULTS\n TS={json.dumps(t['results'], sort_keys=True)[:500]}"
                             f"\n PY={json.dumps(p['results'], sort_keys=True)[:500]}")
         ev_t = [(e["type"], e.get("run", {}).get("id"), e.get("run", {}).get("status"), e.get("status")) for e in t["events"]]

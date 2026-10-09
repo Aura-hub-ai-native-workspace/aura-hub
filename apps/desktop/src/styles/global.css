@@ -52,6 +52,21 @@
 
   /* The canvas has a faint cool wash — the "desk" the surfaces sit on. */
   --canvas-wash: radial-gradient(120% 120% at 100% 0%, #f5f8ff 0%, #f7f8fa 40%, #f4f5f8 100%);
+
+  /* Workspace surface layer — theme-aware so the neon shell reads in both
+     light and dark. Override these per-theme, not per-component. */
+  --ws-panel: rgba(255, 255, 255, 0.96);
+  --ws-surface: rgba(248, 250, 252, 0.96);
+  --ws-card: rgba(255, 255, 255, 0.88);
+  --ws-slot-empty: rgba(236, 240, 248, 0.8);
+  --ws-worker-empty: rgba(236, 240, 248, 0.7);
+  --ws-worker-off: rgba(248, 250, 252, 0.88);
+  --ws-control: rgba(255, 255, 255, 0.97);
+  --ws-aura-center: rgba(245, 247, 255, 0.97);
+  --ws-slot-active: rgba(230, 248, 255, 0.95);
+  --ws-slot-selected: rgba(235, 245, 255, 0.9);
+  --ws-slot-unavail: rgba(255, 248, 230, 0.9);
+  --ws-connector: rgba(77, 100, 220, 0.35);
 }
 
 :root[data-theme='dark'] {
@@ -96,6 +111,20 @@
   --sidebar-active: rgba(70,100,255,0.14);
 
   --canvas-wash: radial-gradient(120% 120% at 100% 0%, #10141d 0%, #0d1015 45%, #0b0d11 100%);
+
+  /* Workspace surface layer — dark theme values. */
+  --ws-panel: rgba(9, 13, 26, 0.82);
+  --ws-surface: rgba(13, 19, 38, 0.85);
+  --ws-card: rgba(13, 19, 38, 0.6);
+  --ws-slot-empty: rgba(10, 16, 34, 0.55);
+  --ws-worker-empty: rgba(10, 16, 34, 0.4);
+  --ws-worker-off: rgba(13, 19, 38, 0.7);
+  --ws-control: rgba(9, 13, 26, 0.95);
+  --ws-aura-center: rgba(10, 16, 34, 0.98);
+  --ws-slot-active: rgba(10, 26, 36, 0.92);
+  --ws-slot-selected: rgba(10, 20, 30, 0.9);
+  --ws-slot-unavail: rgba(26, 20, 10, 0.85);
+  --ws-connector: rgba(122, 92, 255, 0.45);
 }
 
 * {
@@ -220,12 +249,30 @@ textarea,
   --text-subtle: #667085;
   color: var(--text);
 }
+/* Light-mode workspace: use the canvas background, restore theme text colours. */
+[data-theme='light'] .neon-shell {
+  background:
+    radial-gradient(900px 480px at 12% -8%, rgba(77, 124, 255, 0.06), transparent 60%),
+    radial-gradient(820px 520px at 88% 4%, rgba(122, 92, 255, 0.05), transparent 62%),
+    radial-gradient(700px 500px at 50% 110%, rgba(32, 211, 255, 0.03), transparent 60%),
+    var(--canvas);
+  --text: #14171d;
+  --text-muted: #5b6376;
+  --text-subtle: #9aa2b2;
+  color: var(--text);
+}
+
 .neon-grid {
   background-image:
     linear-gradient(rgba(125, 146, 255, 0.07) 1px, transparent 1px),
     linear-gradient(90deg, rgba(125, 146, 255, 0.07) 1px, transparent 1px);
   background-size: 28px 28px;
   mask-image: radial-gradient(80% 70% at 50% 30%, black 30%, transparent 100%);
+}
+[data-theme='light'] .neon-grid {
+  background-image:
+    linear-gradient(rgba(77, 100, 220, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(77, 100, 220, 0.05) 1px, transparent 1px);
 }
 .neon-focus:focus-visible {
   outline: 2px solid var(--neon-blue);

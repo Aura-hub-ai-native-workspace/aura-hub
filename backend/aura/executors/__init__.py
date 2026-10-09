@@ -45,7 +45,6 @@ from ..workers.adapters import (
     adapter_for_binary,
     verified_invocations,
 )
-
 MAX_READ_BYTES = 512 * 1024
 MAX_HTTP_BYTES = 512 * 1024
 

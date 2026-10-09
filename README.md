@@ -159,17 +159,20 @@ contributors: [Development Guide](docs/DEVELOPMENT.md).
 
 ## Get AURA Hub
 
-AURA Hub is a native desktop application for **macOS, Windows, and
-Linux**, built on Tauri v2. It's in active development — signed,
-packaged installers aren't published yet, so today there are two real
-ways to get it:
+AURA Hub is a native desktop application for **Linux x86_64** (AppImage and .deb),
+with macOS and Windows support planned. It's in active development —
+signed, packaged installers aren't published yet, so today there are two
+real ways to get it:
 
 - **Run it from source.** This is the current, working path — see
   [Development](#development) below for the exact commands. It's not a
   "clone a script" affair: you get the full native application, running
   locally, in a few minutes.
-- **Check the website** at [aurahub.is-a.dev](https://aurahub.is-a.dev)
-  for early access updates as packaged installers become available.
+- **Download the Alpha/Preview release artifacts** (Linux x86_64):
+  - **AppImage**: `AURA Hub_0.1.19_amd64.AppImage` — make executable (`chmod +x`) and run.
+  - **Debian package**: `AURA Hub_0.1.19_amd64.deb` — install with `sudo dpkg -i` or your package manager.
+
+> **Note:** The current release artifacts are **unsigned** because `TAURI_SIGNING_PRIVATE_KEY` was not configured in the build environment. They are functional but not cryptographically signed. Verify the checksum if you obtain them from a trusted source.
 
 One thing either path needs: an API key from any one of the 11
 supported AI providers (see [Core Features](#core-features)). AURA has
@@ -320,6 +323,134 @@ Start here: [`CONTRIBUTING.md`](CONTRIBUTING.md) ·
 [`docs/TEAM_GUIDE.md`](docs/TEAM_GUIDE.md) ·
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) ·
 [`SUPPORT.md`](SUPPORT.md)
+
+## Configuration
+
+AURA Hub requires an AI provider API key to function. Configure it in **Settings → AI Provider**. Supported providers: OpenAI, Anthropic, Gemini, Groq, Mistral, Cerebras, Kimi, NVIDIA, OpenRouter, Novita, Qwen. Groq offers a free tier.
+
+**Workers** (autonomous coding agents) are governed by AURA. Configure them in **Settings → AI Runtime**:
+
+- **Claude Code**: Install via `npm install -g @anthropic-ai/claude-code` (or download binary). Ensure `claude` is in PATH.
+- **Kilo Code**: Install via `npm install -g @kilocode/cli`. Ensure `kilo` is in PATH. Configure `~/.config/kilo/kilo.jsonc` with a provider (e.g., local Ollama).
+- **OpenCode**: Install via `npm install -g opencode-ai`. Ensure `opencode` is in PATH.
+
+**Local Ollama** (for local models): Install Ollama (`ollama serve`), pull a model (e.g., `ollama pull qwen2.5-coder:1.5b`). In Kilo configuration, set provider to Ollama with base URL `http://localhost:11434/v1` and model `qwen2.5-coder:1.5b`.
+
+**AI Runtime** settings allow you to enable/disable workers, set default model, and configure web research toggle.
+
+## Known Limitations
+
+- **Platform**: Current release artifacts are Linux x86_64 only (AppImage and .deb). macOS and Windows builds are not yet published.
+- **Unsigned artifacts**: The AppImage and .deb are unsigned because `TAURI_SIGNING_PRIVATE_KEY` is not configured in the build environment. Verify checksums if you obtain them from a trusted source.
+- **Local provider dependency**: Full functionality requires a local Ollama instance (or other provider) running. The bundled backend uses a local Ollama endpoint by default.
+- **Worker CLI availability**: Workers (Claude Code, Kilo Code, OpenCode) must be installed and configured separately. AURA does not install them automatically.
+- **Model quality**: Depends on the configured model. Local models (e.g., qwen2.5-coder:1.5b) may have limited tool-calling ability.
+- **GUI/Display required**: The Tauri desktop application requires a graphical environment (Wayland/X11). Headless operation is not supported.
+- **Alpha/Preview stability**: This is an Alpha/Preview release. Expect occasional bugs, UI changes, and breaking changes between releases.
+- **No cloud deployment**: AURA Hub is a local desktop application; it does not provide a hosted service.
+
+## Release Notes (v0.1.20)
+
+**Release readiness, not new features.** v0.1.20 makes the pipeline that
+builds AURA Hub honest about every target it has configured:
+
+- **Linux x64** — AppImage and .deb, built and run on `ubuntu-latest`.
+- **Windows x64** — NSIS installer, built and run on `windows-latest`.
+- **macOS arm64 / x64** — `.app` and `.dmg`, built and run on `macos-latest`
+  and `macos-15-intel`.
+
+Each artifact is produced by its own native toolchain on its own runner and
+then executed there — a build is not a run. Nothing is cross-compiled.
+
+**Fixed:** the Claude Code adapter no longer locates its launcher from a
+hard-coded POSIX path list (it is now per-OS); the `shell` capability no
+longer describes itself as a POSIX shell (it never invokes one); and a
+version drift in `package-lock.json` that blocked the canonical
+`scripts/bump-version.mjs` release step is reconciled — with the bump tool
+fixed so it moves both root-project entries a lockfile contains.
+
+**Verified while preparing this release (on Linux):** backend suite runs
+with zero failures (unit, non-unit, integration, e2e, differential policy
+and the Web Research fail-closed suite); frontend 245 passed; service
+suite 65 passed; `npm run typecheck` clean. All six version sources agree on
+0.1.20 per `node scripts/bump-version.mjs --check`.
+
+**NOT verified:** no v0.1.20 artifact exists yet for any platform, and
+`scripts/release-verify.mjs` cannot pass until signed artifacts do — run
+locally against the older unsigned files in `dist-release/` it correctly
+reports FAIL. `npm run build` (`tsc -b && vite build`) does pass; `cargo
+check` and a release-profile cargo build are unverified for this working
+tree.
+
+Hosted CI has since run on this branch and exposed nine real defects, all
+fixed — the list is in `CHANGELOG.md`. The pattern was the same in every
+case: a check that had only ever been observed on one Linux machine whose
+toolchain happened to satisfy it.
+
+Windows and macOS
+**runtime** is unverified: no Windows or macOS artifact was executed while
+preparing this release — those platforms are built and run only on native CI
+runners. Their status is *pipeline ready*, not *runtime verified*. The
+artifacts listed below are still the v0.1.19 ones; no v0.1.20 installer is
+published yet.
+
+## Release Notes (v0.1.19)
+
+**Validated capabilities:**
+
+- AURA Agent — autonomous intent compilation, planning, and synthesis.
+- Autonomous multi-worker delegation — Claude Code and Kilo Code run in parallel under AURA governance.
+- Claude Code integration — inspects backend architecture.
+- Kilo Code integration — inspects frontend architecture.
+- Governed execution — workers run under capability-based policy, with audit trail.
+- Verification — exit-code verification for research workers; audit trail records every delegation.
+- Audit trail — immutable JSONL log of every delegation, approval, and execution.
+- Shared mission identity — both workers share the same `missionId` and `projectId`.
+- Parallel independent work — workers execute concurrently with overlap.
+- Final synthesis — AURA combines both workers' findings into a single summary.
+- Tauri desktop application — Linux AppImage (159 MB) and Debian package (96 MB) built and verified.
+- Linux x86_64 release artifacts: `AURA Hub_0.1.19_amd64.AppImage` (159 MB) and `AURA Hub_0.1.19_amd64.deb` (96 MB).
+- Bundled Python backend verified against current repository source (central agent, planner, policy, execution, verification, API server).
+
+**Alpha/Preview**: This release is an Alpha/Preview. Expect occasional bugs, UI changes, and breaking changes between releases. Not recommended for production-critical workloads.
+
+## Security & Governance
+
+- **AURA controls workers** — workers are capabilities invoked through the governed Fabric; they do not independently decide authorization.
+- **Delegation passes through the governed execution path** — every `agent.delegate` goes through the Capability Fabric, policy engine, and approval ledger.
+- **Verification is separate from execution** — workers are verified by exit-code and audit trail, not by trusting their output.
+- **Audit records capture execution** — every delegation, approval, and execution is logged immutably in `audit/trail.jsonl`.
+- **Autonomous delegation does not mean unrestricted execution** — workers run under capability-based policy, with scope paths and permission grants enforced.
+- **Capabilities requiring human approval remain approval-gated** — e.g., `system.uninstall`, `git.push`, and other high-risk/irreversible capabilities still require explicit human approval.
+
+## Release Artifacts
+
+Current Alpha/Preview release artifacts (Linux x86_64):
+
+- `AURA Hub_0.1.19_amd64.AppImage` (159 MB) — make executable (`chmod +x`) and run.
+- `AURA Hub_0.1.19_amd64.deb` (96 MB) — install with `sudo dpkg -i` or your package manager.
+
+Both artifacts are **unsigned** because `TAURI_SIGNING_PRIVATE_KEY` was not configured in the build environment. They are functional but not cryptographically signed. Verify checksums (SHA256) if you obtain them from a trusted source.
+
+Artifacts are produced by the canonical build command `npm run desktop:build` (which runs `tauri build` after `desktop:prepare:build`). The bundled Python backend matches the current repository source (central agent, planner, policy, execution, verification, API server).
+
+## Release Checklist
+
+- [x] Backend tests pass (`python3 -m pytest backend/tests` — 2121 collected, zero failures)
+- [x] Frontend tests pass (`npm run test:front` → 245 passed)
+- [x] TypeScript check passes (`npm run typecheck`)
+- [x] Production build passes (`npm run build`)
+- [ ] Tauri `cargo check` passes (not run for this release)
+- [x] Worker readiness: 5 installed, 5 configured, 0 drifted
+- [x] Real Tauri E2E multi-worker mission passes (Claude + Kilo, autonomous, verified)
+- [x] Version consistency: `package.json` (0.1.20), `tauri.conf.json` (0.1.20), `Cargo.toml` (0.1.20)
+- [x] Secret audit: no accidental secrets committed (scanned for API keys, tokens, private keys, passwords)
+- [x] Artifact verification: AppImage and .deb generated, backend resources match source
+- [x] Release notes written (see above)
+- [x] Installation documentation updated (AppImage and .deb instructions)
+- [ ] Signing: configure `TAURI_SIGNING_PRIVATE_KEY` for production distribution (not required for Alpha/Preview)
+
+**Note:** The Tauri production build (`npm run desktop:build`) succeeds and produces both AppImage and .deb artifacts. The build warning about missing signing key is expected in CI environments without a private key.
 
 ## Security
 

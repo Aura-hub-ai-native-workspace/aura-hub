@@ -303,30 +303,51 @@ export const centralAgentClient = {
    * id BEFORE the run settles — to subscribe to events immediately or to
    * cancel early. Pass `editorContext` for code-intelligence entries.
    */
-  submit: (
-    message: string,
-    opts: { projectId?: string; projectPath?: string; editorContext?: EditorContext; sessionId?: string; signal?: AbortSignal } = {},
-  ) =>
-    jpost<SubmitResponse>('/agent/sessions', {
-      message,
-      projectId: opts.projectId,
-      projectPath: opts.projectPath,
-      editorContext: opts.editorContext,
-      sessionId: opts.sessionId,
-    }, opts.signal),
+      submit: (
+        message: string,
+        opts: {
+          projectId?: string;
+          projectPath?: string;
+          editorContext?: EditorContext;
+          sessionId?: string;
+          signal?: AbortSignal;
+          /**
+           * The person's choice for THIS request. Sent explicitly in both
+           * directions so the backend never has to infer it, and never
+           * inherits it from a previous turn.
+           */
+          webResearch?: boolean;
+        } = {},
+      ) =>
+        jpost<SubmitResponse>('/agent/sessions', {
+          message,
+          projectId: opts.projectId,
+          projectPath: opts.projectPath,
+          editorContext: opts.editorContext,
+          sessionId: opts.sessionId,
+          webResearch: opts.webResearch === true,
+        }, opts.signal),
 
-  /** Continue a conversation — answer a clarification or add follow-up. */
-  message: (
-    sessionId: string,
-    message: string,
-    opts: { projectPath?: string; projectId?: string; editorContext?: EditorContext; signal?: AbortSignal } = {},
-  ) =>
-    jpost<{ result: AgentResult; requestId?: string | null }>(`/agent/sessions/${encodeURIComponent(sessionId)}/message`, {
-      message,
-      projectPath: opts.projectPath,
-      projectId: opts.projectId,
-      editorContext: opts.editorContext,
-    }, opts.signal),
+      /** Continue a conversation — answer a clarification or add follow-up. */
+      message: (
+        sessionId: string,
+        message: string,
+        opts: {
+          projectPath?: string;
+          projectId?: string;
+          editorContext?: EditorContext;
+          signal?: AbortSignal;
+          /** Re-sent per leg: a follow-up carries its own choice. */
+          webResearch?: boolean;
+        } = {},
+      ) =>
+        jpost<{ result: AgentResult; requestId?: string | null }>(`/agent/sessions/${encodeURIComponent(sessionId)}/message`, {
+          message,
+          projectPath: opts.projectPath,
+          projectId: opts.projectId,
+          editorContext: opts.editorContext,
+          webResearch: opts.webResearch === true,
+        }, opts.signal),
 
   getSession: (sessionId: string) => jget<AgentSession>(`/agent/sessions/${encodeURIComponent(sessionId)}`),
 

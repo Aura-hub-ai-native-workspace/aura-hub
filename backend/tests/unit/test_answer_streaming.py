@@ -129,7 +129,10 @@ def test_hostile_worker_content_stays_fenced(tmp_path: Path) -> None:
     assert "<untrusted-data" in seen.get("user", "")
     assert hostile in seen.get("user", "")
     system = seen.get("system", "")
-    assert "DATA" in system and "never orders" in system
+    assert "<untrusted-data>" in system
+    assert "DATA" in system
+    # no internal-pipeline narration leaks into the synthesis instructions
+    assert "planner" in system and "upstream-output" in system
     assert result.outcome == "completed"
 
 
@@ -270,3 +273,69 @@ def test_routed_port_streams_sse_and_honours_stop() -> None:
     finally:
         request_mod.urlopen = real_urlopen  # type: ignore[assignment]
         del os.environ["AURA_TEST_STREAM_KEY"]
+
+
+def test_web_research_context_reaches_the_model_and_model_answer_is_used(
+        tmp_path: Path) -> None:
+    """Research is a tool; the AURA answering model generates the answer.
+
+    The model port receives the captured web content, fenced as
+    untrusted data inside the synthesis context, and the answer that
+    lands on the user is that port's streamed text — never a formatted
+    source dump (the rejected _render_captured_output), never the
+    deterministic execution record.
+    """
+    web_stdout = (
+        "[source=https://openai.com/about title=\"OpenAI\"]\n"
+        "OpenAI is an AI research and deployment company.\n[/source]"
+    )
+    port = ScriptedModelPort([
+        ("Search the web",
+         "OpenAI is an AI company founded in 2015 that ships models such as GPT and API tooling."),
+    ])
+    seen: dict = {}
+    orig_stream = port.complete_stream
+
+    def spy_stream(system, user, on_token=None, should_stop=None):
+        seen["system"] = system
+        seen["user"] = user
+        return orig_stream(system, user, on_token, should_stop)
+
+    port.complete_stream = spy_stream  # type: ignore[assignment]
+    agent = make_agent(tmp_path, port)
+    session = make_session(agent, "Search the web for OpenAI and tell me about it.")
+    result, kinds, _ = synth_with_spy(agent, session, make_plan(),
+                                      make_outcome(web_stdout))
+    assert "answer.started" in kinds and "answer.completed" in kinds
+    # The web content reached the model, fenced as untrusted data.
+    assert '<untrusted-data task="t1">' in seen["user"]
+    assert "OpenAI is an AI research and deployment company." in seen["user"]
+    assert "<untrusted-data>" in seen["system"]  # synthesis restates the fence
+    # The answer is the model's streamed text; the formatter dump is gone
+    # and must not be the lead.
+    assert "OpenAI is an AI company founded in 2015" in result.summary
+    assert "OpenAI is an AI research and deployment company.\n\nSource:" not in result.summary
+    assert "[source=https://openai.com/about" not in result.summary
+    assert not result.summary.startswith("1 task(s) executed")
+    assert "task(s) executed" not in result.summary
+    assert "audit invocation" not in result.summary
+
+    # The streamed answer becomes the user-facing record; nothing is lost.
+    assert result.outcome == "completed"
+    assert result.verified == ["t1"]
+    assert result.evidence is not None
+
+
+def test_answer_goal_uses_latest_user_question(tmp_path: Path) -> None:
+    """Multi-turn: synthesis always reasons over the LATEST user question."""
+    agent = make_agent(tmp_path, None)
+    session = agent.sessions.create("proj-1")
+    agent.sessions.append_message(
+        session, "user", "First, search the web for NVIDIA A100 and summarize it.")
+    agent.sessions.save(session)
+    agent.sessions.append_message(session, "agent", "The NVIDIA A100 is …")
+    agent.sessions.append_message(
+        session, "user", "Now search the web for AMD MI300X and compare.")
+    agent.sessions.save(session)
+    goal = agent._answer_goal(session)
+    assert goal == "Now search the web for AMD MI300X and compare."

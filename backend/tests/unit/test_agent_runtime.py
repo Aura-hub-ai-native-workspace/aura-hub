@@ -200,7 +200,7 @@ class TestClaudeCodeAdapter:
     def test_readCurrentConfig_not_installed(self, tmp_path: Path, monkeypatch):
         import aura.agent_runtime.adapters.claude_code as _mod
         monkeypatch.setattr(_mod, "_SETTINGS_PATH", tmp_path / "nonexistent.json")
-        monkeypatch.setattr(_mod, "_BINARY_CANDIDATES", [])
+        monkeypatch.setattr(_mod, "_binary_candidates", lambda: [])
         import shutil as _shutil
         monkeypatch.setattr(_shutil, "which", lambda x: None)
         from aura.agent_runtime.adapters.claude_code import ClaudeCodeAdapter

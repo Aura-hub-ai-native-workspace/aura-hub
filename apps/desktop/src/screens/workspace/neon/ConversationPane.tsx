@@ -89,9 +89,9 @@ const TONE_CLASS: Record<OutcomeTone, string> = {
 
 const SUGGESTIONS = [
   'What can you do?',
-  'Explain what this project does.',
+  'Review this project for issues.',
   'Show me the git status.',
-  'Review this project for security problems.',
+  'Run the tests and tell me what fails.',
 ];
 
 /**
@@ -301,7 +301,7 @@ export function ConversationPane({
         <span className="min-w-0 flex-1">
           <h2 className="truncate text-[15px] font-semibold tracking-[-0.01em] text-text" data-testid="workspace-chat-title">Execution Chat</h2>
           <p className="truncate text-[11.5px] text-text-subtle">
-            {projectName ? `Workspace execution in ${projectName}` : 'Ask anything, or tell me what to build'}
+            {projectName ? `Workspace execution in ${projectName}` : 'Give AURA a task — it plans, executes and verifies'}
           </p>
         </span>
         {agentUp === false && (
@@ -377,7 +377,7 @@ export function ConversationPane({
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
             data-testid="agent-composer"
-            placeholder="Message AURA…"
+            placeholder="Give AURA a task…"
             className="neon-focus w-full resize-none bg-transparent pr-12 text-[13.5px] leading-relaxed text-text outline-none placeholder:text-text-subtle"
           />
           {busy ? (

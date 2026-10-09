@@ -180,7 +180,9 @@ const LOCAL: CapabilityDescriptor[] = [
     id: 'agent.delegate', name: 'Delegate to coding agent', category: 'agent', surface: 'local-process',
     description:
       'Hands a task to a coding agent installed on this machine, which reads and edits files in the project root on its own. '
-      + 'Broad by nature: the agent decides which files to touch, so this is never auto-executed.',
+      + 'Broad by nature: the agent decides which files to touch. It stays governed — intent interpretation, a validated '
+      + 'plan, worker pin, project scope and audit — and the policy engine\'s autonomous-delegation rule decides whether '
+      + 'it runs directly or parks for approval (it parks whenever allowAutonomous is off).',
     // High is the honest reading: the blast radius is "whatever the agent
     // decides to change". The default policy maps high → require-approval,
     // so this needs no override to be gated.

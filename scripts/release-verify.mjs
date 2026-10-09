@@ -360,8 +360,24 @@ console.log('\n=== 5. THE PUBLISHING PIPELINE ===');
 
   check('5a. only a version tag publishes',
     /if:\s*startsWith\(github\.ref,\s*'refs\/tags\/v'\)/.test(ci));
+  /**
+   * Accepts both YAML spellings. `needs:` is either a scalar
+   * (`needs: desktop-build`) or a flow sequence
+   * (`needs: [desktop-build, backend]`), and the regex below only matched
+   * the scalar form — so adding the `backend` dependency, which is what
+   * makes the release wait on the backend gate too, turned this check red
+   * against a workflow that had in fact got stricter.
+   *
+   * Deliberately matched structurally rather than with a single literal, and
+   * it must keep failing when the dependency is genuinely absent — proven by
+   * removing `desktop-build` from the needs list, which does fail this.
+   */
+  const needsLine = /^\s*needs:\s*(.+)$/m.exec(ci.split('\n  release:').pop() ?? '');
+  const releaseNeedList = needsLine
+    ? [...needsLine[1].matchAll(/[\w-]+/g)].map((m) => m[0])
+    : [];
   check('5b. publishing waits for every platform to build',
-    /needs:\s*desktop-build/.test(ci));
+    releaseNeedList.includes('desktop-build'), `needs=${releaseNeedList.join(',') || 'none'}`);
   check('5c. the manifest is generated in CI, never hand-written',
     /build-latest-json\.mjs/.test(ci));
   check('5d. the release is verified BEFORE it is published',
@@ -410,7 +426,11 @@ console.log('\n=== 7. VERSION BUMP ===');
       'apps/desktop/src-tauri/tauri.conf.json': `{\n  "version": "${drift['tauri.conf.json'] ?? v}"\n}\n`,
       'apps/desktop/src-tauri/Cargo.toml': `[package]\nname = "aura-hub"\nversion = "${drift['Cargo.toml'] ?? v}"\n`,
       'apps/desktop/src-tauri/Cargo.lock': `[[package]]\nname = "aura-hub"\nversion = "${drift['Cargo.lock'] ?? v}"\n\n[[package]]\nname = "serde"\nversion = "1.0.200"\n`,
-      'package-lock.json': `{\n  "packages": {\n    "": {\n      "name": "aura-hub",\n      "version": "${drift['package-lock.json'] ?? v}"\n    }\n  }\n}\n`,
+      // The REAL shape: npm writes the root project at the top level AND
+      // again as `packages[""]`. A fixture carrying only one of the two is
+      // what let a non-global replace look correct while leaving the
+      // authoritative copy behind.
+      'package-lock.json': `{\n  "name": "aura-hub",\n  "version": "${drift['package-lock.json'] ?? v}",\n  "lockfileVersion": 3,\n  "packages": {\n    "": {\n      "name": "aura-hub",\n      "version": "${drift['package-lock.json'] ?? v}"\n    }\n  }\n}\n`,
     };
     for (const [f, content] of Object.entries(files)) {
       fs.mkdirSync(path.join(dir, path.dirname(f)), { recursive: true });
@@ -445,6 +465,13 @@ console.log('\n=== 7. VERSION BUMP ===');
     const after = versionsIn(dir);
     check('7a. a forward bump moves every source', r.ok && after.every((v) => v === '0.1.2'),
       after.join(', '));
+    // ...including EVERY copy of the root project inside package-lock.json.
+    // npm reads `packages[""]` as authoritative, so a bump that moves only
+    // the top-level entry leaves the lockfile internally inconsistent.
+    const lockJson = fs.readFileSync(path.join(dir, 'package-lock.json'), 'utf8');
+    const rootEntries = [...lockJson.matchAll(/"name": "aura-hub",\n\s*"version": "([^"]+)"/g)].map((m) => m[1]);
+    check('7a2. …including both root-project entries in package-lock.json',
+      rootEntries.length === 2 && rootEntries.every((v) => v === '0.1.2'), rootEntries.join(', '));
     // The lockfile's other packages must not be swept along with it.
     const lock = fs.readFileSync(path.join(dir, 'apps/desktop/src-tauri/Cargo.lock'), 'utf8');
     check('7b. …and leaves dependency versions alone', /name = "serde"\nversion = "1\.0\.200"/.test(lock));

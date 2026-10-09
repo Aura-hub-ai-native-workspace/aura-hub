@@ -56,6 +56,13 @@ class ProviderSpec:
     timeout_s: float = 30.0
     max_retries: int = 2
     max_context_chars: int = 24_000
+    #: Hard ceiling on generated tokens for a non-streaming completion.
+    #: A degenerate model can enter a verbatim repetition loop and never
+    #: terminate; without a ceiling the request can only end by socket
+    #: timeout, which is indistinguishable from an outage. Bounded
+    #: generation turns an unending loop into a normal, reportable
+    #: response (finish_reason="length"). 0 = provider default (unbounded).
+    max_output_tokens: int = 2048
     supports_json_mode: bool = True
     enabled: bool = True
     #: Extra HTTP headers for this endpoint only (e.g.
@@ -145,6 +152,7 @@ def load_providers(path: str | None = None) -> list[ProviderSpec]:
                 api_key_env=api_key_env,
                 timeout_s=float(e.get("timeoutS", 30)),
                 max_context_chars=int(e.get("maxContextChars", 24_000)),
+                max_output_tokens=int(e.get("maxOutputTokens", 2048)),
                 enabled=e.get("enabled", True) is not False,
                 headers=headers,
                 network_class=raw_class)
@@ -536,6 +544,8 @@ class RoutedModelPort(ModelPort):
                 ],
                 "temperature": 0,
             }
+            if spec.max_output_tokens > 0:
+                payload["max_tokens"] = spec.max_output_tokens
             headers: dict[str, str] = {
                 "content-type": "application/json",
                 **dict(spec.headers),

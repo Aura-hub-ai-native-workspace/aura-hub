@@ -1,15 +1,14 @@
 /**
- * LeftControlPanel — where a tool is added from, and where it is not.
+ * LeftControlPanel — capability graph + the one composer.
  *
- * The rail used to carry a standalone "Add Tool" button beneath the
- * composer, alongside "Add Worker". It has been removed. A tool belongs
- * to one of the graph's three slots, so the slot is the only place it is
- * added from: that button opened the same surface without saying which
- * slot it would fill, and on an empty workspace the words "Add Tool"
- * appeared four times in one rail.
+ * The rail used to carry a standalone "Add Tool" button. It was removed:
+ * a tool belongs to one of the graph's three slots, so the slot is the
+ * only place it is added from.
  *
- * These tests hold that removal, and hold the things that must survive
- * it: Add Worker, the three slots, and the per-slot Add Tool affordance.
+ * The composer lives here. Placing it in the left panel reads as:
+ * compose → AURA → capabilities, which matches the product interaction
+ * model. The right panel (AuraAgentWorkspace) shows the execution
+ * timeline only.
  *
  * Run with `npm run test:front` from the repo root.
  */
@@ -81,9 +80,6 @@ function rail(toolSlots: ToolSlot[], workerIds: (string | null)[] = ['claude', '
       toolSlots={toolSlots}
       workerSlots={deriveWorkerSlots(workerIds, ROSTER)}
       scanning={false}
-      projects={[]}
-      projectId={null}
-      onSelectProject={vi.fn()}
       phase="Ready when you are"
       onAddWorker={vi.fn()}
       onRemoveWorker={vi.fn()}
@@ -101,7 +97,14 @@ function rail(toolSlots: ToolSlot[], workerIds: (string | null)[] = ['claude', '
       onConnectWorker={vi.fn()}
       onDisconnectWorker={vi.fn()}
       agentBusy={false}
-    />,
+            text=""
+            setText={vi.fn()}
+            onSend={vi.fn()}
+            onStop={vi.fn()}
+            busy={false}
+            webResearch={false}
+            onWebResearchChange={vi.fn()}
+          />,
   );
 }
 
@@ -193,10 +196,10 @@ describe('LeftControlPanel — what the removal must not take with it', () => {
     expect(markup).toContain('AURA Agent');
   });
 
-  it('holds no composer of its own — the conversation owns the only one', () => {
+  it('carries the one composer — the rail is where you send tasks to AURA', () => {
     const markup = rail(slotsFor('git'));
-    expect(count(markup, 'agent-composer')).toBe(0);
-    expect(count(markup, 'agent-submit')).toBe(0);
-    expect(markup).not.toContain('<textarea');
+    expect(count(markup, 'agent-composer')).toBe(1);
+    expect(count(markup, 'agent-submit')).toBe(1);
+    expect(markup).toContain('<textarea');
   });
 });

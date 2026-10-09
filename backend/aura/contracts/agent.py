@@ -131,6 +131,10 @@ class TaskSpecification(ContractModel):
     id: str = Field(min_length=1)
     description: str
     capabilityId: str | None = None
+    missionId: str | None = None
+    """Durable umbrella identity for the natural user request that owns
+    this delegated task. All tasks from the same request share it; it is
+    identity/context only and never authority."""
     route: ExecutionRoute = "single-invocation"
     input: dict = Field(default_factory=dict)
     """Where the task's invocation arguments come from: a literal dict now,
@@ -179,6 +183,9 @@ class TaskPlan(ContractModel):
     planId: str = Field(min_length=1)
     sessionId: str = Field(min_length=1)
     intent: AgentIntent
+    missionId: str | None = None
+    """The durable mission identity for all tasks created from one natural
+    request. Absent only on legacy plans; normal service always stamps it."""
     tasks: list[TaskSpecification] = Field(min_length=1)
     estimatedApprovals: int = 0
     createdAt: str

@@ -40,10 +40,12 @@ class TestHeuristic:
         """"Fix my tests" used to be answered with a clarification
         question, because this installation had no way to act on it.
         It does now: the request becomes a delegated task under a task
-        contract. What must NOT change is that it stays governed —
-        agent.delegate is high risk, so it still parks for a human
-        before any worker runs, and "silently" was always the operative
-        word in the old name."""
+        contract. What must NOT change is that it stays governed — the
+        delegation travels the policy engine, task contracts and audit
+        trail, so a worker never runs outside AURA's accounting. The
+        policy engine decides whether that delegation parks for a human
+        or auto-executes under the autonomous-delegation rule; the intent
+        itself only records that approval is possible."""
         intent = heuristic_interpret("fix my tests")
         assert intent.requiredCapabilities == ["agent.delegate"]
         assert intent.approvalLikely is True

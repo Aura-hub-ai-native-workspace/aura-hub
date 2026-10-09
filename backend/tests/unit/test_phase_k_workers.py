@@ -501,10 +501,14 @@ def _done(inv, node, stdout, deviation=None):
 
 
 class TestApprovalGatedMultiWorkerRun:
-    """agent.delegate always requires approval, so in production the real
-    dispatch happens on a RESUMED leg. Everything the first leg does for
-    a multi-task plan has to happen there too, or a two-worker run cannot
-    get past its second approval."""
+    """These tests exercise the multi-leg resume machinery with a fake
+    invoke_fabric that parks every first leg. agent.delegate itself no
+    longer parks by default (the autonomous-delegation rule in
+    aura/policy/engine.py auto-executes a governed delegation), so in
+    production this shape now arises for capabilities that genuinely gate
+    — and for agent.delegate whenever allowAutonomous is False. Everything
+    the first leg does for a multi-task plan still has to happen on the
+    resumed leg, or a two-worker run cannot get past its second approval."""
 
     def test_two_tasks_two_approvals_reach_completion(self, tmp_path,
                                                       monkeypatch):
@@ -780,7 +784,7 @@ class TestApprovalSurvivesARestart:
     refused as if the action had changed."""
 
     @staticmethod
-    def _stack(home):
+    def _stack(home, capability_id="agent.delegate"):
         from aura.approvals import ApprovalLedger, usable_pending
         from aura.audit import AuditStore
         from aura.fabric import CapabilityFabric, FabricConfig
@@ -814,7 +818,7 @@ class TestApprovalSurvivesARestart:
         ran: list[dict] = []
 
         class _Exec:
-            capabilityId = "agent.delegate"
+            capabilityId = capability_id
 
             def supportsNode(self, _node):
                 return True
@@ -827,7 +831,7 @@ class TestApprovalSurvivesARestart:
             async def verify(self, _inv, _res):
                 return {"passed": True, "kind": "exit-code", "detail": "0"}
 
-        fabric.executors["agent.delegate"] = _Exec()
+        fabric.executors[capability_id] = _Exec()
         cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
                            permissions={"read": True, "write": True})
         return cfg, ledger, ran
@@ -837,21 +841,21 @@ class TestApprovalSurvivesARestart:
         from aura.fabric import invoke_fabric
 
         monkeypatch.setenv("AURA_HOME", str(tmp_path))
-        payload = {"task": "do the thing", "scopePaths": ["src"]}
+        payload = {"nodeId": "pnpm"}
         context = {"actor": {"kind": "agent", "id": "central-agent"},
                    "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
 
-        cfg, _ledger, _ran = self._stack(tmp_path)
-        parked = invoke_fabric("agent.delegate", payload, dict(context), cfg)
+        cfg, _ledger, _ran = self._stack(tmp_path, capability_id="system.uninstall")
+        parked = invoke_fabric("system.uninstall", payload, dict(context), cfg)
         assert parked["outcome"] == "awaiting-approval"
         approval_id = parked["approvalId"]
 
         # RESTART: everything is rebuilt from the files on disk.
-        cfg2, ledger2, ran2 = self._stack(tmp_path)
+        cfg2, ledger2, ran2 = self._stack(tmp_path, capability_id="system.uninstall")
         assert ledger2.decide(approval_id, True, "user", "ok") is not None
 
         spent = invoke_fabric(
-            "agent.delegate", payload,
+            "system.uninstall", payload,
             {**context, "approvalId": approval_id}, cfg2)
         assert spent["outcome"] == "succeeded", spent["detail"]
         assert len(ran2) == 1
@@ -875,28 +879,28 @@ class TestApprovalSurvivesARestart:
         assert "declined" in _named_refusal({"state": "denied"}, True)
 
     def test_a_replay_is_still_refused_after_a_restart(self, tmp_path,
-                                                       monkeypatch):
-        """Single-use survives the restart too: adopting the ledger must
-        share the record, not resurrect a spent grant."""
-        from aura.fabric import invoke_fabric
-
-        monkeypatch.setenv("AURA_HOME", str(tmp_path))
-        payload = {"task": "do the thing", "scopePaths": ["src"]}
-        context = {"actor": {"kind": "agent", "id": "central-agent"},
-                   "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
-        cfg, ledger, _ = self._stack(tmp_path)
-        approval_id = invoke_fabric(
-            "agent.delegate", payload, dict(context), cfg)["approvalId"]
-
-        cfg2, ledger2, ran2 = self._stack(tmp_path)
-        ledger2.decide(approval_id, True, "user", "ok")
-        assert invoke_fabric(
-            "agent.delegate", payload,
-            {**context, "approvalId": approval_id},
-            cfg2)["outcome"] == "succeeded"
-
-        cfg3, _l3, ran3 = self._stack(tmp_path)
-        replay = invoke_fabric("agent.delegate", payload,
-                               {**context, "approvalId": approval_id}, cfg3)
-        assert replay["outcome"] == "awaiting-approval"
-        assert ran3 == [], "a spent grant must not run anything again"
+                                                            monkeypatch):
+            """Single-use survives the restart too: adopting the ledger must
+            share the record, not resurrect a spent grant."""
+            from aura.fabric import invoke_fabric
+    
+            monkeypatch.setenv("AURA_HOME", str(tmp_path))
+            payload = {"nodeId": "pnpm"}
+            context = {"actor": {"kind": "agent", "id": "central-agent"},
+                       "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
+            cfg, ledger, _ = self._stack(tmp_path, capability_id="system.uninstall")
+            approval_id = invoke_fabric(
+                "system.uninstall", payload, dict(context), cfg)["approvalId"]
+    
+            cfg2, ledger2, ran2 = self._stack(tmp_path, capability_id="system.uninstall")
+            ledger2.decide(approval_id, True, "user", "ok")
+            assert invoke_fabric(
+                "system.uninstall", payload,
+                {**context, "approvalId": approval_id},
+                cfg2)["outcome"] == "succeeded"
+    
+            cfg3, _l3, ran3 = self._stack(tmp_path, capability_id="system.uninstall")
+            replay = invoke_fabric("system.uninstall", payload,
+                                    {**context, "approvalId": approval_id}, cfg3)
+            assert replay["outcome"] == "awaiting-approval"
+            assert ran3 == [], "a spent grant must not run anything again"

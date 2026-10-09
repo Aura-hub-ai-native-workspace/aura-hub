@@ -93,13 +93,30 @@ class TestCapabilityReporting:
         assert result.argv_prefix == []
 
     def test_a_failed_self_check_refuses_the_launch(self, tmp_path):
-        """If the boundary cannot be proven, the worker does not run."""
+        """If the boundary cannot be proven, the worker does not run.
+
+        Which floor refuses depends on the host. `establish()` checks
+        whether this platform can enforce DENY at all BEFORE it calls the
+        self-check, so on a host without bubblewrap (or with unprivileged
+        user namespaces disabled — the case on a GitHub runner) the refusal
+        is `UNSUPPORTED` and the injected `verify` is never reached. Both are
+        refusals and neither launches anything, which is the property; the
+        exact state is what this host produces, so both are asserted
+        explicitly instead of one being assumed.
+        """
         result = netgov.establish(
             netgov.NetworkPolicy(mode=netgov.DENY), str(tmp_path),
             verify=lambda home: (False, "the sandbox did not start"))
         assert result.ok is False
-        assert result.state == netgov.INITIALIZATION_FAILED
         assert result.verified is False
+        expected = (netgov.SUPPORTED_AND_ENFORCED
+                    if ENFORCEABLE else netgov.UNSUPPORTED)
+        assert result.state == (
+            netgov.INITIALIZATION_FAILED
+            if expected == netgov.SUPPORTED_AND_ENFORCED
+            else netgov.UNSUPPORTED), (
+            f"state={result.state} refusal={result.refusal} "
+            f"detail={result.detail}")
 
     def test_an_ungoverned_task_says_so(self, tmp_path):
         result = netgov.establish(None, str(tmp_path))

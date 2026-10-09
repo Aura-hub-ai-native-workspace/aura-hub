@@ -10,8 +10,10 @@ where available. Live-worker proof lives in the correction loop test.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -204,7 +206,7 @@ class TestOpencodeCompiler:
             proc = subprocess.run(
                 ["node", "-e", driver.replace("__GOV_PLUGIN__", plugin)],
                 capture_output=True, text=True, timeout=60,
-                env={"PATH": "/usr/bin:/bin", "AURA_ACTION_LOG": ""})
+                env={**os.environ, "AURA_ACTION_LOG": ""})
         assert "PLUGIN-VECTORS-OK" in proc.stdout, proc.stderr
 
     def test_destructive_vector_self_terminates(self):
@@ -229,7 +231,10 @@ class TestOpencodeCompiler:
                  "  {tool: 'edit'},"
                  "  {args: {filePath: 'src/billing/p.py'}}); })"],
                 capture_output=True, text=True, timeout=60,
-                env={"PATH": "/usr/bin:/bin", "AURA_ACTION_LOG": ""})
+                # PATH is inherited: node itself is resolved through it, and
+                # pinning it to POSIX directories made this fail on every
+                # runner where node is installed elsewhere.
+                env={**os.environ, "AURA_ACTION_LOG": ""})
         assert proc.returncode == 42
 
 
@@ -260,12 +265,19 @@ class TestClaudeCompiler:
         def run_hook(tool, target):
             payload = json.dumps({"tool_name": tool,
                                   "tool_input": {"file_path": target}})
-            env = {"PATH": "/usr/bin:/bin", "AURA_ACTION_LOG": str(log)}
+            # The hook is addressed relative to the backend package, which
+            # is located from this file. It used to be an absolute path into
+            # one developer's checkout, so on CI this failed with
+            # FileNotFoundError for a path that does not exist there.
+            import os
+            backend_root = Path(__file__).resolve().parents[2]
+            env = {"PATH": os.environ.get("PATH", ""),
+                   "AURA_ACTION_LOG": str(log)}
             return subprocess.run(
                 [sys.executable, "aura/governance/claude_hook.py",
                  str(scope_path)],
                 input=payload, capture_output=True, text=True, timeout=60,
-                cwd="/mnt/storage/aura-hub/backend", env=env)
+                cwd=str(backend_root), env=env)
 
         assert run_hook("Edit", "src/auth/a.py").returncode == 0
         denied = run_hook("Write", "src/billing/p.py")

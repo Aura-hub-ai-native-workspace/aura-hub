@@ -50,6 +50,17 @@ const info = (m) => console.log(`      ${m}`);
 const section = (t) => console.log(`\n=== ${t} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Catalog ids whose `caps` include `coding-agent` — the capability
+ * `agent.delegate` requires. Kept beside the check rather than derived at
+ * runtime, so adding a coding agent to the catalogue without updating this
+ * list makes the autonomous-delegation branch untested rather than silently
+ * skipped.
+ */
+const CODING_AGENT_IDS = [
+  'cursor', 'claude-code', 'codex-cli', 'gemini-cli', 'qwen-cli', 'opencode', 'kilo-code',
+];
+
 /* ── platform-neutral primitives ─────────────────────────────────── */
 
 /** Is anything accepting connections on the port? No `ss`, no `netstat`. */
@@ -251,18 +262,72 @@ try {
   const low = await post('/fabric/invoke', { capabilityId: 'git.status', input: {}, context: { projectId: 'rt-proj' } });
   info(`git.status → ${low.body?.outcome} (${String(low.body?.detail ?? '').slice(0, 60)})`);
   /**
-   * Which floor catches this depends on the machine, so the assertion must
-   * not. Where a coding agent is installed the request reaches
-   * `irreversible-floor` and waits for a human; where none is (a clean CI
-   * runner) `no-provider` denies it earlier. Both are correct refusals —
-   * the property being verified is that a high-risk capability NEVER
-   * auto-executes, which is true in both and is what is asserted.
+   * The floors are asserted on a capability that has NO autonomous
+   * exemption. This used to be `agent.delegate`, which does have one — so
+   * it can no longer carry the assertion — but the property still holds for
+   * everything else and has to be checked on something.
+   *
+   * `git.push` is a high-risk, irreversible capability with no exemption.
+   * Which floor catches it depends on the machine, so the assertion must
+   * not: any refusal is correct, and "never auto-executes" is what is
+   * asserted. The project is a temp directory that is not a git
+   * repository, so even a policy that wrongly let this through could not
+   * push anything — `git_push` returns "not a repository" before it ever
+   * invokes git.
    */
-  const high = await post('/fabric/invoke', { capabilityId: 'agent.delegate', input: { task: 'must not run' }, context: { projectId: 'rt-proj' } });
+  const high = await post('/fabric/invoke', { capabilityId: 'git.push', input: {}, context: { projectId: 'rt-proj' } });
   const refused = high.body?.outcome !== 'succeeded' && (high.body?.attempts ?? 0) === 0
     && ['awaiting-approval', 'denied'].includes(high.body?.outcome);
-  check('4a. a high-risk capability never auto-executes',
+  check('4a. a high-risk capability without an exemption never auto-executes',
     refused, `outcome=${high.body?.outcome} attempts=${high.body?.attempts ?? 0} rule=${high.body?.policy?.rule}`);
+
+  /**
+   * `agent.delegate` is the ONE sanctioned exception, and it is a product
+   * contract rather than an oversight: with autonomy on, a governed worker
+   * action whose permission, plan, worker pin and scope are already
+   * resolved auto-executes instead of parking behind a second human gate.
+   *
+   * So this asserts the contract in BOTH directions — including the branch
+   * the old blanket assertion never explored — rather than re-asserting the
+   * rule the contract deliberately replaced.
+   *
+   * BUT only where a coding agent actually exists to receive the delegation.
+   * `agent.delegate` declares `requiresNodeCapability: 'coding-agent'`, and
+   * `no-provider` is checked BEFORE the autonomous-delegation branch: on a
+   * runner with no coding agent on PATH the floor refuses first, and that
+   * refusal is correct — there is genuinely nothing to delegate to.
+   *
+   * This assertion ignored that and failed on all four runners with
+   * `rule=no-provider`. The property under test is the policy ORDERING, and
+   * `no-provider` winning is the ordering working. So the environment
+   * decides which branch is asserted, and both report which and why — a
+   * silent skip is the failure mode being avoided here.
+   */
+  const agentsPresent = CODING_AGENT_IDS.filter((k) => r[k]?.present);
+  const delegated = await post('/fabric/invoke', { capabilityId: 'agent.delegate', input: { task: 'must not run' }, context: { projectId: 'rt-proj' } });
+  const rule = delegated.body?.policy?.rule;
+  if (agentsPresent.length) {
+    check('4a2. autonomous delegation auto-executes under the autonomous-delegation contract',
+      rule === 'autonomous-delegation' && (delegated.body?.attempts ?? 0) >= 1,
+      `agents=${agentsPresent.join(',')} outcome=${delegated.body?.outcome} attempts=${delegated.body?.attempts ?? 0} rule=${rule}`);
+  } else {
+    info('4a2. no coding agent is installed on this machine, so the ordering is asserted instead: `no-provider` must refuse before the autonomy rule is reached.');
+    check('4a2. with no coding agent present, `no-provider` refuses before the autonomy rule',
+      rule === 'no-provider' && delegated.body?.outcome === 'denied'
+        && (delegated.body?.attempts ?? 0) === 0,
+      `agents=none outcome=${delegated.body?.outcome} attempts=${delegated.body?.attempts ?? 0} rule=${rule}`);
+  }
+
+  // ...and with autonomy switched OFF it returns to the ordinary risk path:
+  // the irreversible floor bites again and nothing is run.
+  await post('/fabric/policy', { allowAutonomous: false });
+  const gated = await post('/fabric/invoke', { capabilityId: 'agent.delegate', input: { task: 'must not run' }, context: { projectId: 'rt-proj' } });
+  const gatedRefused = gated.body?.outcome !== 'succeeded' && (gated.body?.attempts ?? 0) === 0
+    && ['awaiting-approval', 'denied'].includes(gated.body?.outcome)
+    && gated.body?.policy?.rule !== 'autonomous-delegation';
+  check('4a3. with autonomy off, delegation returns to the normal approval path',
+    gatedRefused, `outcome=${gated.body?.outcome} attempts=${gated.body?.attempts ?? 0} rule=${gated.body?.policy?.rule}`);
+  await post('/fabric/policy', { allowAutonomous: true });
   /**
    * The property that matters is that nothing was installed — not which
    * gate stopped it. On a fresh AURA_HOME the approval gate catches this

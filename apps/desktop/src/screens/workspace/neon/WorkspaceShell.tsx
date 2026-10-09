@@ -30,20 +30,20 @@ export function WorkspaceShell({ left, right }: { left: ReactNode; right: ReactN
         className={cn(
           'relative mx-auto grid min-h-0 w-full max-w-[1760px] flex-1 grid-cols-1 gap-3 overflow-hidden p-3 lg:gap-4 lg:p-4',
           railOpen
-            ? 'lg:grid-cols-[minmax(320px,26%)_minmax(0,1fr)]'
+            ? 'lg:grid-cols-[minmax(360px,30%)_minmax(0,1fr)]'
             : 'lg:grid-cols-[minmax(0,1fr)]',
         )}
       >
         {railOpen && (
           <div
             data-testid="capability-rail"
-            className="min-h-0 overflow-y-auto rounded-2xl border border-[rgba(125,146,255,0.28)] bg-[rgba(9,13,26,0.82)] p-4 shadow-card"
+            className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-[rgba(125,146,255,0.28)] bg-[var(--ws-panel)] shadow-card"
           >
             {left}
           </div>
         )}
 
-        <div className="relative flex min-h-0 flex-col overflow-hidden rounded-xl border border-[rgba(125,146,255,0.28)] bg-[rgba(9,13,26,0.82)] shadow-card">
+        <div className="relative flex min-h-0 flex-col overflow-hidden rounded-xl border border-[rgba(125,146,255,0.28)] bg-[var(--ws-panel)] shadow-card">
           {/* One control, present at every width. The conversation below
               it is unaffected either way. */}
           <button
@@ -55,7 +55,7 @@ export function WorkspaceShell({ left, right }: { left: ReactNode; right: ReactN
             className="neon-focus absolute right-3 top-3 z-10 inline-flex items-center gap-1.5 rounded-lg border border-[rgba(125,146,255,0.3)] bg-[rgba(9,13,26,0.9)] px-2.5 py-1.5 text-[11.5px] text-text-subtle transition-colors hover:text-text"
           >
             <Icon name="panel" size={13} />
-            {railOpen ? 'Hide tools' : 'Show tools'}
+            {railOpen ? 'Hide capabilities' : 'Show capabilities'}
           </button>
           {right}
         </div>

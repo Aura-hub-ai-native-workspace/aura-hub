@@ -7,6 +7,183 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.20] - 2026-10-08 — Cross-Platform Release Readiness
+
+This release moves the release *pipeline*, and fixes what stopped it from
+describing itself honestly. All four published targets — Linux x64
+(AppImage, deb), Windows x64 (NSIS), and macOS arm64/x64 (.app, .dmg) — are
+now built by their own native toolchain on their own runner and then *run*
+there. Nothing is cross-compiled and nothing is assumed: a compile on Linux
+is not a build on Windows.
+
+### Fixed
+
+- **Claude Code's launcher was located by a hard-coded POSIX path list.**
+  The adapter probed `/usr/bin/claude` and `/usr/local/bin/claude` on every
+  platform, so a Windows installation outside `PATH` was never found. The
+  candidates are now derived per OS — Homebrew's two prefixes on macOS, the
+  native installer's per-user bin directory elsewhere, with the `.exe`
+  suffix on Windows — and `shutil.which("claude")` still resolves first.
+- **The `shell` capability described itself as "POSIX sh".** It is not: the
+  execution boundary parses an allow-listed argv, rejects shell operators,
+  and invokes no shell at all. The description now matches the code.
+- **`package-lock.json` had drifted to 0.1.18** while the other five version
+  sources said 0.1.19 — pre-existing drift left by a release that edited the
+  version by hand, and exactly what `scripts/bump-version.mjs` refuses to
+  bump over. Both root-project entries are reconciled.
+- **`scripts/bump-version.mjs` moved only one of the lockfile's two
+  root-project entries.** npm writes the root project both at the top level
+  and again as `packages[""]`, and reads the nested copy as authoritative, so
+  a non-global replace left the file disagreeing with itself. Every
+  occurrence is now rewritten, and two copies that disagree are reported as
+  drift rather than half-corrected.
+
+- **The committed backend could not be imported at all.** `aura/executors`
+  imported a `web_research` module that had never been committed, and
+  registered a `web.research` capability that is in no manifest, so any clean
+  checkout raised `ModuleNotFoundError` and four test files could not even be
+  collected. The v0.1.19 tag is therefore not rebuildable — the published
+  artifact only worked because the bundler stages the working tree rather
+  than git. The dangling import and its registration are removed; Web
+  Research is excluded from this release until its implementation, manifest,
+  policy, execution and evidence path are complete.
+- **CI never ran the Python backend.** No `pytest` step existed anywhere in
+  the workflow, so the typecheck, the TypeScript suites and the Tauri build
+  all passed against a backend that could not be imported — which is how the
+  defect above shipped. A `backend` job now installs the declared `test`
+  extra, asserts the canonical imports resolve, and runs the suite; the
+  release job depends on it.
+- **`scripts/desktop-runtime-verify.mjs` asserted the wrong thing about
+  `agent.delegate`.** The high-risk floor check had been pointed at the one
+  capability carrying an autonomous exemption, so it could not have caught a
+  regression in the floors. It now asserts the floor on `git.push` (no
+  exemption) and asserts the autonomous-delegation contract in both
+  directions, including with autonomy switched off.
+- **Its autonomous-delegation assertion ignored where the rule is reached
+  from.** `agent.delegate` requires a `coding-agent` node capability, and the
+  `no-provider` floor is evaluated *before* the autonomy branch — so on a
+  runner with no coding agent installed the request was refused correctly and
+  the assertion failed anyway, on all four platforms. It now asserts the
+  branch the machine can reach: the autonomy rule where an agent is present,
+  the floor ordering where none is. Both report which and why.
+
+### Fixed after hosted CI ran on this branch
+
+The backend job went green locally and red on the runner. Nine defects, all
+the same shape: a check that had only ever been observed on one Linux machine
+whose toolchain happened to satisfy it. None was a product regression; every
+one was a gate that could not see past its author's machine.
+
+- **`cryptography` was never declared.** `aura/secrets/__init__.py` seals
+  every value with AESGCM and is wired into the API server, but the package
+  was in no dependency list. Seven secrets tests failed on a clean install of
+  the declared extras and passed only on machines whose global site-packages
+  already carried it. It is now a declared runtime dependency, which also
+  means `build-service-bundle.mjs` — which resolves the desktop bundle's
+  requirements from that same list — stops shipping a build whose secrets
+  store raises `ModuleNotFoundError` on first write.
+- **Three test files addressed the repository by absolute path**
+  (`/mnt/storage/aura-hub`). On any other checkout the secrets and automation
+  differentials ERRORED rather than failing, because the path did not exist.
+  They now derive the repo root from `__file__`, and skip with the reason
+  when the oracle's prerequisite (`esbuild`, from `npm ci`) is absent.
+- **The cron differential was pinned to its author's timezone.** Its oracle
+  vectors were captured on a machine at UTC+05:30 and the comparison
+  normalized both sides to *local* time, so every hour-anchored vector
+  diverged on a UTC runner by exactly that offset. The timezone is now pinned
+  to the offset the vectors were captured at; the test passes identically
+  under UTC, IST, New York, Tokyo and Sydney, and still fails when a vector
+  is mutated.
+- **Three network tests asserted one refusal floor where the host reaches
+  another.** `establish()` checks whether the platform can enforce a mode at
+  all *before* calling the injected failing `stage`/`verify`, so on a runner
+  without bubblewrap the refusal is `UNSUPPORTED`, not
+  `INITIALIZATION_FAILED`. Both refuse and neither launches; the tests now
+  assert the floor this host actually reaches instead of assuming one.
+- **A capability-registry fixture did not isolate the probe.**
+  `effective_path()` *appends* the known installer directories to the
+  inherited PATH whenever they exist, so pinning PATH to the fixture directory
+  did not prevent a genuinely installed tool from being found — `go` was
+  absent on the author's machine and present on the runner. The extra
+  directories are now made non-existent for the duration of the fixture.
+- **Two node-subprocess tests pinned `PATH=/usr/bin:/bin`,** making them
+  unrunnable wherever node lives elsewhere — which is every Windows and macOS
+  runner. PATH is now inherited.
+
+### Verified
+
+- Backend suite runs with zero failures: unit, non-unit, integration, e2e,
+  the Python/TypeScript policy differential, and the Web Research fail-closed
+  suite. Verified both in the working tree and in a clean checkout of the
+  release commit.
+- `npm run test:front` — 245 passed. `npm run test:service` — 65 passed.
+  The service script previously matched tests by substring, which pulled in
+  suites from a nested git worktree under `.claude/worktrees/`; it now scopes
+  by directory.
+- `npm run typecheck` clean. All six version sources agree on 0.1.20, per
+  `node scripts/bump-version.mjs --check`.
+- A Web Research mission fails closed: it stops at the discovery gate with
+  "No available capability for: web.research", nothing is performed, audited
+  or invoked, and no network request is made.
+
+### NOT VERIFIED
+
+- **No v0.1.20 artifact exists for any platform.** Nothing was built, signed
+  or published. The files already in `dist-release/` and the Tauri bundle
+  directory are the older v0.1.19 / v0.1.0 ones.
+- **`scripts/release-verify.mjs` does not pass locally**, and cannot until
+  signed artifacts exist: run against the older unsigned files in
+  `dist-release/` it correctly reports FAIL. It is a release-time gate, not a
+  pre-commit one.
+- `npm run build` (`tsc -b && vite build`) passes; `cargo check` and a
+  release-profile `cargo build` are unverified for this working tree.
+- **Windows and macOS runtime.** No Windows or macOS artifact was executed
+  while preparing this release. Those platforms are built and run only on the
+  native CI runners. Their status here is *pipeline ready*, not *runtime
+  verified* — and no Windows or macOS installer is published by this release.
+  A first hosted run did build and execute all four platform legs, and each
+  one reached its runtime-verification step before failing on the single
+  assertion described above; that is evidence the pipeline works, and it is
+  not evidence that the runtime checks pass.
+- **Signed artifacts.** No signed installer was produced locally. Signing
+  requires `TAURI_SIGNING_PRIVATE_KEY`, which is supplied to CI as a secret.
+
+## [0.1.19] - 2026-10-02 — Workspace AURA Execution UI
+
+The Workspace is redesigned around a single clear interaction model:
+**USER → AURA → WORK**. AURA is the primary actor; workers and tools
+are its capabilities, not the user's choices to manually orchestrate.
+
+### Changed
+
+- **Left rail tagline** — "One Prompt. Multiple Minds." replaced with
+  "Sovereign AI Agent", positioning AURA as the agent rather than
+  advertising multiple AI models for the user to select (neon workspace).
+- **AURA node lifecycle** — caption updated from "Plan · Use Tools · Get
+  Results" to "Understand · Plan · Execute · Verify", matching the actual
+  execution lifecycle described throughout the product.
+- **Capabilities section label** — worker slots in the orchestration graph
+  are now labelled "Capabilities" (above) and environment tools labelled
+  "Environment", communicating that workers are resources AURA selects, not
+  user-managed model choices.
+- **Capability rail toggle** — "Hide tools" / "Show tools" button renamed
+  to "Hide capabilities" / "Show capabilities".
+- **Composer prompt** — "Message AURA…" placeholder changed to
+  "Give AURA a task…" to reinforce the task-delegation model.
+- **No-project subtitle** — when no project is selected, the Execution
+  Chat subtitle now reads "Give AURA a task — it plans, executes and
+  verifies" instead of "Ask anything, or tell me what to build".
+- **Add Worker button styling** — demoted from a filled accent button to
+  a secondary ghost control; present and accessible but no longer the
+  visual headline of the left rail.
+
+### Unchanged
+
+- All conversation, approval, handoff and evidence logic unchanged.
+- All worker/tool slot mechanics, data-testids and layout unchanged.
+- AI Runtime provider system and Ollama integration unchanged.
+- All backend architecture unchanged.
+
 ## [0.1.18] - 2026-10-01 — Chat Scope Separation
 
 Ask AURA and Workspace Execution Chat are now distinct, scoped surfaces,
