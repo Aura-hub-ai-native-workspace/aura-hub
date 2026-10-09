@@ -186,7 +186,7 @@ TOOL_SPECS: dict[str, dict] = {
     },
     "shell": {
         "name": "Shell", "category": "system",
-        "description": "Command execution boundary (POSIX sh).",
+        "description": "Command execution boundary (allow-listed argv, no shell).",
         "nodes": ["bash"],
         "actions": [
             _mod("execute", "Run a vetted argv (composed by the governed executor, never by the model).", approval=False),

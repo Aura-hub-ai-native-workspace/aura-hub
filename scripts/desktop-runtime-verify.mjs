@@ -251,18 +251,50 @@ try {
   const low = await post('/fabric/invoke', { capabilityId: 'git.status', input: {}, context: { projectId: 'rt-proj' } });
   info(`git.status → ${low.body?.outcome} (${String(low.body?.detail ?? '').slice(0, 60)})`);
   /**
-   * Which floor catches this depends on the machine, so the assertion must
-   * not. Where a coding agent is installed the request reaches
-   * `irreversible-floor` and waits for a human; where none is (a clean CI
-   * runner) `no-provider` denies it earlier. Both are correct refusals —
-   * the property being verified is that a high-risk capability NEVER
-   * auto-executes, which is true in both and is what is asserted.
+   * The floors are asserted on a capability that has NO autonomous
+   * exemption. This used to be `agent.delegate`, which does have one — so
+   * it can no longer carry the assertion — but the property still holds for
+   * everything else and has to be checked on something.
+   *
+   * `git.push` is a high-risk, irreversible capability with no exemption.
+   * Which floor catches it depends on the machine, so the assertion must
+   * not: any refusal is correct, and "never auto-executes" is what is
+   * asserted. The project is a temp directory that is not a git
+   * repository, so even a policy that wrongly let this through could not
+   * push anything — `git_push` returns "not a repository" before it ever
+   * invokes git.
    */
-  const high = await post('/fabric/invoke', { capabilityId: 'agent.delegate', input: { task: 'must not run' }, context: { projectId: 'rt-proj' } });
+  const high = await post('/fabric/invoke', { capabilityId: 'git.push', input: {}, context: { projectId: 'rt-proj' } });
   const refused = high.body?.outcome !== 'succeeded' && (high.body?.attempts ?? 0) === 0
     && ['awaiting-approval', 'denied'].includes(high.body?.outcome);
-  check('4a. a high-risk capability never auto-executes',
+  check('4a. a high-risk capability without an exemption never auto-executes',
     refused, `outcome=${high.body?.outcome} attempts=${high.body?.attempts ?? 0} rule=${high.body?.policy?.rule}`);
+
+  /**
+   * `agent.delegate` is the ONE sanctioned exception, and it is a product
+   * contract rather than an oversight: with autonomy on, a governed worker
+   * action whose permission, plan, worker pin and scope are already
+   * resolved auto-executes instead of parking behind a second human gate.
+   *
+   * So this asserts the contract in BOTH directions — including the branch
+   * the old blanket assertion never explored — rather than re-asserting the
+   * rule the contract deliberately replaced.
+   */
+  const delegated = await post('/fabric/invoke', { capabilityId: 'agent.delegate', input: { task: 'must not run' }, context: { projectId: 'rt-proj' } });
+  check('4a2. autonomous delegation auto-executes under the autonomous-delegation contract',
+    delegated.body?.policy?.rule === 'autonomous-delegation' && (delegated.body?.attempts ?? 0) >= 1,
+    `outcome=${delegated.body?.outcome} attempts=${delegated.body?.attempts ?? 0} rule=${delegated.body?.policy?.rule}`);
+
+  // ...and with autonomy switched OFF it returns to the ordinary risk path:
+  // the irreversible floor bites again and nothing is run.
+  await post('/fabric/policy', { allowAutonomous: false });
+  const gated = await post('/fabric/invoke', { capabilityId: 'agent.delegate', input: { task: 'must not run' }, context: { projectId: 'rt-proj' } });
+  const gatedRefused = gated.body?.outcome !== 'succeeded' && (gated.body?.attempts ?? 0) === 0
+    && ['awaiting-approval', 'denied'].includes(gated.body?.outcome)
+    && gated.body?.policy?.rule !== 'autonomous-delegation';
+  check('4a3. with autonomy off, delegation returns to the normal approval path',
+    gatedRefused, `outcome=${gated.body?.outcome} attempts=${gated.body?.attempts ?? 0} rule=${gated.body?.policy?.rule}`);
+  await post('/fabric/policy', { allowAutonomous: true });
   /**
    * The property that matters is that nothing was installed — not which
    * gate stopped it. On a fresh AURA_HOME the approval gate catches this

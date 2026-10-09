@@ -61,8 +61,32 @@ _REAL_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 # Explicit operator opt-in for managing a live external Claude installation.
 _MANAGE_ENV_VAR = "AURA_MANAGE_EXTERNAL_CLAUDE"
 _OPT_IN_VALUES = {"1", "true", "yes", "on"}
-_BINARY_CANDIDATES = ["/usr/bin/claude", "/usr/local/bin/claude",
-                      str(Path.home() / ".local/bin/claude")]
+
+
+def _binary_candidates() -> list[str]:
+    """Where Claude Code's launcher lives besides ``PATH``, per platform.
+
+    These are FALLBACKS only — ``shutil.which("claude")`` is tried first and
+    already resolves through PATH (and, on Windows, PATHEXT: the native
+    installer's ``claude.exe`` and npm's ``claude.cmd`` shim are both found
+    there). The list exists for installations that are on disk but not on
+    the PATH this process inherited — which on a desktop launcher is the
+    common case, not the edge case.
+
+    The candidates are per-OS because the launcher's location is a platform
+    fact: Homebrew's two prefixes on macOS, the native installer's per-user
+    bin directory on every platform (with Windows' ``.exe`` suffix), and the
+    conventional Unix locations on Linux. Everything here is a READ — a
+    wrong candidate costs one ``exists()`` call, never an execution.
+    """
+    from aura.environment.hostplatform import Platform, current
+
+    home_bin = str(Path.home() / ".local" / "bin" / "claude")
+    if current() == Platform.WINDOWS:
+        return [str(Path.home() / ".local" / "bin" / "claude.exe")]
+    if current() == Platform.MACOS:
+        return ["/opt/homebrew/bin/claude", "/usr/local/bin/claude", home_bin]
+    return ["/usr/bin/claude", "/usr/local/bin/claude", home_bin]
 
 
 def _opted_in() -> bool:
@@ -133,14 +157,14 @@ class ClaudeCodeAdapter(AgentConfigurationAdapter):
 
     def detect(self) -> bool:
         return bool(shutil.which("claude")) or any(
-            Path(p).exists() for p in _BINARY_CANDIDATES
+            Path(p).exists() for p in _binary_candidates()
         )
 
     def _binary_path(self) -> str | None:
         found = shutil.which("claude")
         if found:
             return found
-        for p in _BINARY_CANDIDATES:
+        for p in _binary_candidates():
             if Path(p).exists():
                 return p
         return None

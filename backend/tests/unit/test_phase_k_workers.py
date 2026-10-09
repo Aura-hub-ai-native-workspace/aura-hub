@@ -501,10 +501,14 @@ def _done(inv, node, stdout, deviation=None):
 
 
 class TestApprovalGatedMultiWorkerRun:
-    """agent.delegate always requires approval, so in production the real
-    dispatch happens on a RESUMED leg. Everything the first leg does for
-    a multi-task plan has to happen there too, or a two-worker run cannot
-    get past its second approval."""
+    """These tests exercise the multi-leg resume machinery with a fake
+    invoke_fabric that parks every first leg. agent.delegate itself no
+    longer parks by default (the autonomous-delegation rule in
+    aura/policy/engine.py auto-executes a governed delegation), so in
+    production this shape now arises for capabilities that genuinely gate
+    — and for agent.delegate whenever allowAutonomous is False. Everything
+    the first leg does for a multi-task plan still has to happen on the
+    resumed leg, or a two-worker run cannot get past its second approval."""
 
     def test_two_tasks_two_approvals_reach_completion(self, tmp_path,
                                                       monkeypatch):

@@ -7,6 +7,93 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.20] - 2026-10-08 — Cross-Platform Release Readiness
+
+This release moves the release *pipeline*, and fixes what stopped it from
+describing itself honestly. All four published targets — Linux x64
+(AppImage, deb), Windows x64 (NSIS), and macOS arm64/x64 (.app, .dmg) — are
+now built by their own native toolchain on their own runner and then *run*
+there. Nothing is cross-compiled and nothing is assumed: a compile on Linux
+is not a build on Windows.
+
+### Fixed
+
+- **Claude Code's launcher was located by a hard-coded POSIX path list.**
+  The adapter probed `/usr/bin/claude` and `/usr/local/bin/claude` on every
+  platform, so a Windows installation outside `PATH` was never found. The
+  candidates are now derived per OS — Homebrew's two prefixes on macOS, the
+  native installer's per-user bin directory elsewhere, with the `.exe`
+  suffix on Windows — and `shutil.which("claude")` still resolves first.
+- **The `shell` capability described itself as "POSIX sh".** It is not: the
+  execution boundary parses an allow-listed argv, rejects shell operators,
+  and invokes no shell at all. The description now matches the code.
+- **`package-lock.json` had drifted to 0.1.18** while the other five version
+  sources said 0.1.19 — pre-existing drift left by a release that edited the
+  version by hand, and exactly what `scripts/bump-version.mjs` refuses to
+  bump over. Both root-project entries are reconciled.
+- **`scripts/bump-version.mjs` moved only one of the lockfile's two
+  root-project entries.** npm writes the root project both at the top level
+  and again as `packages[""]`, and reads the nested copy as authoritative, so
+  a non-global replace left the file disagreeing with itself. Every
+  occurrence is now rewritten, and two copies that disagree are reported as
+  drift rather than half-corrected.
+
+- **The committed backend could not be imported at all.** `aura/executors`
+  imported a `web_research` module that had never been committed, and
+  registered a `web.research` capability that is in no manifest, so any clean
+  checkout raised `ModuleNotFoundError` and four test files could not even be
+  collected. The v0.1.19 tag is therefore not rebuildable — the published
+  artifact only worked because the bundler stages the working tree rather
+  than git. The dangling import and its registration are removed; Web
+  Research is excluded from this release until its implementation, manifest,
+  policy, execution and evidence path are complete.
+- **CI never ran the Python backend.** No `pytest` step existed anywhere in
+  the workflow, so the typecheck, the TypeScript suites and the Tauri build
+  all passed against a backend that could not be imported — which is how the
+  defect above shipped. A `backend` job now installs the declared `test`
+  extra, asserts the canonical imports resolve, and runs the suite; the
+  release job depends on it.
+- **`scripts/desktop-runtime-verify.mjs` asserted the wrong thing about
+  `agent.delegate`.** The high-risk floor check had been pointed at the one
+  capability carrying an autonomous exemption, so it could not have caught a
+  regression in the floors. It now asserts the floor on `git.push` (no
+  exemption) and asserts the autonomous-delegation contract in both
+  directions, including with autonomy switched off.
+
+### Verified
+
+- Backend suite runs with zero failures: unit, non-unit, integration, e2e,
+  the Python/TypeScript policy differential, and the Web Research fail-closed
+  suite. Verified both in the working tree and in a clean checkout of the
+  release commit.
+- `npm run test:front` — 245 passed. `npm run test:service` — 65 passed.
+  The service script previously matched tests by substring, which pulled in
+  suites from a nested git worktree under `.claude/worktrees/`; it now scopes
+  by directory.
+- `npm run typecheck` clean. All six version sources agree on 0.1.20, per
+  `node scripts/bump-version.mjs --check`.
+- A Web Research mission fails closed: it stops at the discovery gate with
+  "No available capability for: web.research", nothing is performed, audited
+  or invoked, and no network request is made.
+
+### NOT VERIFIED
+
+- **No v0.1.20 artifact exists for any platform.** Nothing was built, signed
+  or published. The files already in `dist-release/` and the Tauri bundle
+  directory are the older v0.1.19 / v0.1.0 ones.
+- **`scripts/release-verify.mjs` does not pass locally**, and cannot until
+  signed artifacts exist: run against the older unsigned files in
+  `dist-release/` it correctly reports FAIL. It is a release-time gate, not a
+  pre-commit one.
+- `npm run build`, `cargo check` and a release-profile `cargo build` are
+  unverified for this working tree.
+- **Windows and macOS runtime.** No Windows or macOS artifact was executed
+  while preparing this release. Those platforms are built and run only on the
+  native CI runners. Their status here is *pipeline ready*, not *runtime
+  verified* — and no Windows or macOS installer is published by this release.
+- **Signed artifacts.** No signed installer was produced locally. Signing
+  requires `TAURI_SIGNING_PRIVATE_KEY`, which is supplied to CI as a secret.
+
 ## [0.1.19] - 2026-10-02 — Workspace AURA Execution UI
 
 The Workspace is redesigned around a single clear interaction model:

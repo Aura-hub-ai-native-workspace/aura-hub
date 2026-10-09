@@ -447,7 +447,7 @@
       "name": "Delegate to coding agent",
       "category": "agent",
       "surface": "local-process",
-      "description": "Hands a task to a coding agent installed on this machine, which reads and edits files in the project root on its own. Broad by nature: the agent decides which files to touch, so this is never auto-executed.",
+      "description": "Hands a task to a coding agent installed on this machine, which reads and edits files in the project root on its own. Broad by nature: the agent decides which files to touch. It stays governed — intent interpretation, a validated plan, worker pin, project scope and audit — and the policy engine's autonomous-delegation rule decides whether it runs directly or parks for approval (it parks whenever allowAutonomous is off).",
       "risk": "high",
       "permissions": [
         "project.read",

@@ -199,6 +199,30 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
     };
   }
 
+  // Autonomous worker delegation. A coding-agent delegation has already
+  // been through intent interpretation, a validated plan, worker-pin and
+  // permission resolution, and a project scope — so once those checks
+  // pass the policy decision is auto-execute, not a human handover.
+  // The high-risk / irreversible floors below are what would otherwise
+  // park a delegated worker behind "Approve and run": for agent.delegate
+  // specifically they must not demand a separate human go-ahead. Denial
+  // paths above (no provider, missing grants, unknown/unusable node)
+  // are unchanged, and this autonomous judgment is recorded.
+  // Mirrors backend/aura/policy/engine.py, which the differential suite
+  // (tests/differential/test_differential_policy.py) holds this engine to.
+  if (capability.id === 'agent.delegate' && config.allowAutonomous !== false) {
+    return {
+      decision: 'auto-execute',
+      rule: 'autonomous-delegation',
+      risk,
+      reason:
+        `${capability.name} is a governed, audited worker action: the ` +
+        'worker pin, permission grants and project scope are already ' +
+        'established by AURA, so it runs without a separate ' +
+        'human approval gate.',
+    };
+  }
+
   /**
    * The `require-approval` floors are a LOWER BOUND, not a final answer.
    *

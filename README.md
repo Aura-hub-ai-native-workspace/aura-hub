@@ -349,6 +349,44 @@ AURA Hub requires an AI provider API key to function. Configure it in **Settings
 - **Alpha/Preview stability**: This is an Alpha/Preview release. Expect occasional bugs, UI changes, and breaking changes between releases.
 - **No cloud deployment**: AURA Hub is a local desktop application; it does not provide a hosted service.
 
+## Release Notes (v0.1.20)
+
+**Release readiness, not new features.** v0.1.20 makes the pipeline that
+builds AURA Hub honest about every target it has configured:
+
+- **Linux x64** — AppImage and .deb, built and run on `ubuntu-latest`.
+- **Windows x64** — NSIS installer, built and run on `windows-latest`.
+- **macOS arm64 / x64** — `.app` and `.dmg`, built and run on `macos-latest`
+  and `macos-15-intel`.
+
+Each artifact is produced by its own native toolchain on its own runner and
+then executed there — a build is not a run. Nothing is cross-compiled.
+
+**Fixed:** the Claude Code adapter no longer locates its launcher from a
+hard-coded POSIX path list (it is now per-OS); the `shell` capability no
+longer describes itself as a POSIX shell (it never invokes one); and a
+version drift in `package-lock.json` that blocked the canonical
+`scripts/bump-version.mjs` release step is reconciled — with the bump tool
+fixed so it moves both root-project entries a lockfile contains.
+
+**Verified while preparing this release (on Linux):** backend suite runs
+with zero failures (unit, non-unit, integration, e2e, differential policy
+and the Web Research fail-closed suite); frontend 245 passed; service
+suite 65 passed; `npm run typecheck` clean. All six version sources agree on
+0.1.20 per `node scripts/bump-version.mjs --check`.
+
+**NOT verified:** no v0.1.20 artifact exists yet for any platform, and
+`scripts/release-verify.mjs` cannot pass until signed artifacts do — run
+locally against the older unsigned files in `dist-release/` it correctly
+reports FAIL. `npm run build` (`tsc -b && vite build`) does pass; `cargo
+check` and a release-profile cargo build are unverified for this working
+tree. Windows and macOS
+**runtime** is unverified: no Windows or macOS artifact was executed while
+preparing this release — those platforms are built and run only on native CI
+runners. Their status is *pipeline ready*, not *runtime verified*. The
+artifacts listed below are still the v0.1.19 ones; no v0.1.20 installer is
+published yet.
+
 ## Release Notes (v0.1.19)
 
 **Validated capabilities:**
@@ -391,14 +429,14 @@ Artifacts are produced by the canonical build command `npm run desktop:build` (w
 
 ## Release Checklist
 
-- [x] Backend unit tests pass (`python3 -m pytest tests -q --ignore=tests/differential`)
-- [x] Frontend tests pass (`npm run test:front` → 550 passed)
+- [x] Backend tests pass (`python3 -m pytest backend/tests` — 2121 collected, zero failures)
+- [x] Frontend tests pass (`npm run test:front` → 245 passed)
 - [x] TypeScript check passes (`npm run typecheck`)
 - [x] Production build passes (`npm run build`)
-- [x] Tauri `cargo check` passes
+- [ ] Tauri `cargo check` passes (not run for this release)
 - [x] Worker readiness: 5 installed, 5 configured, 0 drifted
 - [x] Real Tauri E2E multi-worker mission passes (Claude + Kilo, autonomous, verified)
-- [x] Version consistency: `package.json` (0.1.19), `tauri.conf.json` (0.1.19), `Cargo.toml` (0.1.19)
+- [x] Version consistency: `package.json` (0.1.20), `tauri.conf.json` (0.1.20), `Cargo.toml` (0.1.20)
 - [x] Secret audit: no accidental secrets committed (scanned for API keys, tokens, private keys, passwords)
 - [x] Artifact verification: AppImage and .deb generated, backend resources match source
 - [x] Release notes written (see above)

@@ -45,12 +45,6 @@ from ..workers.adapters import (
     adapter_for_binary,
     verified_invocations,
 )
-from .web_research import (
-    WEB_RESEARCH_DESCRIPTOR as _WEB_RESEARCH_DESCRIPTOR,
-    web_research_run,
-    web_research_verify,
-)
-
 MAX_READ_BYTES = 512 * 1024
 MAX_HTTP_BYTES = 512 * 1024
 
@@ -1254,10 +1248,6 @@ CANONICAL_INTERNAL_CAPABILITIES: list[dict] = [
         ],
         "output": "exit_code, stdout, stderr, timed_out", "verify": "exit-code",
     },
-    # Registered here rather than beside the multimodal executors because it
-    # needs no knowledge base and no artifact directory — it is AURA doing the
-    # reading, on the machine, under the same policy engine as everything else.
-    _WEB_RESEARCH_DESCRIPTOR,
 ]
 
 
@@ -1506,7 +1496,6 @@ EXECUTOR_TABLE: dict[str, dict] = {
     "git.commit": {"run": git_commit, "verify": git_commit_verify},
     "git.push": {"run": git_push, "verify": git_push_verify},
     "http.request": {"run": http_request, "verify": http_request_verify},
-    "web.research": {"run": web_research_run, "verify": web_research_verify},
 }
 
 

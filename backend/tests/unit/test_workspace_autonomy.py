@@ -295,16 +295,43 @@ class TestRiskyCapabilityStillGated:
         assert result["outcome"] == "awaiting-approval"
 
     def test_g_high_risk_floor_unchanged(self):
-        """agent.delegate remains require-approval — Phase 7 never lowers it."""
+        """agent.delegate keeps its high-risk tier, and the require-approval
+        floor still holds whenever autonomy is off. Since the autonomous
+        delegation rule (aura/policy/engine.py), the default decision for a
+        governed delegation is auto-execute — asserted here against the REAL
+        policy engine, not a simplified override lookup."""
         fabric = _wire_test_fabric()
-        # agent.delegate is high-risk in the manifest — Phase 7 must not touch it
+        # agent.delegate is high-risk in the manifest — autonomy changes the
+        # decision for this one capability, never its risk tier
         from aura.fabric import describe_capability
         cap = describe_capability("agent.delegate")
         assert cap is not None
         assert cap["risk"] == "high"
-        # And the effective policy must be require-approval (not softened)
-        action = _effective_action(fabric, "agent.delegate")
-        assert action == "require-approval"
+
+        from aura.policy import (
+            CapabilityDescriptor,
+            PolicyInput,
+            evaluate_policy,
+        )
+        desc = CapabilityDescriptor(
+            id="agent.delegate", name="Delegate to coding agent", risk="high",
+            permissions=["project.read", "project.write", "process.execute",
+                         "network.outbound"],
+        )
+        # Default policy: a governed delegation auto-executes, and says so.
+        out = evaluate_policy(PolicyInput(
+            capability=desc, config=fabric.policy,
+            granted=list(desc.permissions), nodeAvailable=True))
+        assert out["decision"] == "auto-execute"
+        assert out["rule"] == "autonomous-delegation"
+
+        # Autonomy off: the high-risk default (require-approval) holds —
+        # the floor was never lowered, only routed around by an explicit grant.
+        cfg = dict(fabric.policy, allowAutonomous=False)
+        out = evaluate_policy(PolicyInput(
+            capability=desc, config=cfg,
+            granted=list(desc.permissions), nodeAvailable=True))
+        assert out["decision"] == "require-approval"
 
     def test_g_p7_defaults_never_include_high_risk_caps(self):
         """Phase 7 defaults must only cover the intended low/medium caps."""

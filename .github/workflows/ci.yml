@@ -42,6 +42,78 @@ jobs:
       - name: Build
         run: npm run build
 
+  # The Python backend suite. It was absent from CI entirely until now, and
+  # that absence is not academic: v0.1.19 shipped a `aura.executors` module
+  # that imported a file which was never committed, so the backend could not
+  # be imported at all — and the TypeScript suite, the typecheck and the
+  # Tauri build all passed, because none of them import Python. A gate that
+  # cannot see the defect cannot catch it, and this repository's entire
+  # orchestration surface (Central Agent, policy engine, Capability Fabric,
+  # environment scanner, process boundary, evidence/audit) lives in this
+  # suite rather than in the TypeScript one.
+  #
+  # Linux-only for now, deliberately. The suite is platform-independent
+  # Python and this is the gate that must exist before anything ships;
+  # extending it to the Windows and macOS runners needs a real first run to
+  # shake out whatever genuinely differs on those kernels, and adding
+  # platform legs that have never been observed to go green would trade a
+  # known gap for a noisy one.
+  backend:
+    name: Backend tests (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      # The acceptance suite is not purely Python. `test_a26_tsc_noEmit_clean`
+      # shells out to `npx tsc --noEmit` in apps/desktop, which typechecks
+      # through TypeScript PROJECT REFERENCES — so it needs the referenced
+      # packages' emitted `dist/*.d.ts`. On a fresh checkout those do not
+      # exist, and every one of them fails with TS6305 ("output file has not
+      # been built from source file"), cascading into TS7006/TS2345 noise that
+      # looks like real type errors and is not.
+      #
+      # This was observed, not predicted: this job was first written without
+      # these three steps and the test failed on a clean tree while passing in
+      # a working tree that happened to hold build output. `packages/core` and
+      # friends declare no build script at all — `dist` is produced by the
+      # reference build, which is the same command the root `typecheck` script
+      # already runs.
+      #
+      # It is built rather than skipped. Skipping the only test in this job
+      # that can see a TypeScript break would let the job report green on a
+      # tree whose types do not compile.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript project references (test_a26 requires them)
+        run: npx tsc -b apps/desktop/tsconfig.json
+
+      # The declared `test` extra, not an ad-hoc pip line: it carries
+      # pytest, pytest-asyncio, jsonschema and — the one that is easy to
+      # forget — httpx, without which `starlette.testclient` refuses to
+      # import and every API test silently stops being collectable.
+      - name: Install the backend with its test extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "backend[test]"
+
+      - name: Verify the backend is importable
+        run: python -c "import sys; sys.path.insert(0, 'backend'); import aura.executors, aura.central_agent, aura.fabric"
+
+      - name: Backend tests
+        run: python -m pytest backend/tests
+
   # Native release packaging. Each OS builds its REAL Tauri artifact on its
   # own runner: AppImage + deb on Linux, NSIS on Windows, .app + .dmg on
   # macOS. A compile on Linux is not a build on Windows/macOS, so nothing
@@ -357,7 +429,12 @@ jobs:
   # until a fix does not reach them. So a release is all four or none.
   release:
     name: Publish release
-    needs: desktop-build
+    # `backend` is here for the same reason the job exists. A release that
+    # publishes a package whose backend cannot be imported is worse than no
+    # release: the installer succeeds, the window opens, and the failure only
+    # appears at runtime on the user's machine. Nothing else in this workflow
+    # can detect that, so the backend gate is a precondition for publishing.
+    needs: [desktop-build, backend]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

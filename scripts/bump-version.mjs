@@ -95,9 +95,22 @@ const SOURCES = [
     write: (t, v) => t.replace(/(name = "aura-hub"\nversion = ")[^"]+(")/, `$1${v}$2`),
   },
   {
+    // A lockfile names the root project TWICE — once at the top level and
+    // once as `packages[""]` — and npm reads the nested copy as the
+    // authoritative one. A non-global replace moves only the first, leaving
+    // the file internally disagreeing with itself. That is exactly how this
+    // repository's lockfile sat at a stale version while the other five
+    // sources had moved on. So every occurrence is read and every
+    // occurrence is written, and two copies that disagree are surfaced as
+    // drift instead of being half-corrected into a state npm would describe
+    // differently from the app.
     file: 'package-lock.json',
-    read: (t) => /"name": "aura-hub",\n\s*"version": "([^"]+)"/.exec(t)?.[1],
-    write: (t, v) => t.replace(/("name": "aura-hub",\n\s*"version": ")[^"]+(")/, `$1${v}$2`),
+    read: (t) => {
+      const found = [...t.matchAll(/"name": "aura-hub",\n\s*"version": "([^"]+)"/g)].map((m) => m[1]);
+      if (found.length === 0) return undefined;
+      return found.every((v) => v === found[0]) ? found[0] : found.join(' / ');
+    },
+    write: (t, v) => t.replace(/("name": "aura-hub",\n\s*"version": ")[^"]+(")/g, `$1${v}$2`),
   },
 ];
 
