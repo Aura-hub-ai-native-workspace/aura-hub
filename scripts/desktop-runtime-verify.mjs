@@ -50,6 +50,17 @@ const info = (m) => console.log(`      ${m}`);
 const section = (t) => console.log(`\n=== ${t} ===`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Catalog ids whose `caps` include `coding-agent` — the capability
+ * `agent.delegate` requires. Kept beside the check rather than derived at
+ * runtime, so adding a coding agent to the catalogue without updating this
+ * list makes the autonomous-delegation branch untested rather than silently
+ * skipped.
+ */
+const CODING_AGENT_IDS = [
+  'cursor', 'claude-code', 'codex-cli', 'gemini-cli', 'qwen-cli', 'opencode', 'kilo-code',
+];
+
 /* ── platform-neutral primitives ─────────────────────────────────── */
 
 /** Is anything accepting connections on the port? No `ss`, no `netstat`. */
@@ -279,11 +290,33 @@ try {
    * So this asserts the contract in BOTH directions — including the branch
    * the old blanket assertion never explored — rather than re-asserting the
    * rule the contract deliberately replaced.
+   *
+   * BUT only where a coding agent actually exists to receive the delegation.
+   * `agent.delegate` declares `requiresNodeCapability: 'coding-agent'`, and
+   * `no-provider` is checked BEFORE the autonomous-delegation branch: on a
+   * runner with no coding agent on PATH the floor refuses first, and that
+   * refusal is correct — there is genuinely nothing to delegate to.
+   *
+   * This assertion ignored that and failed on all four runners with
+   * `rule=no-provider`. The property under test is the policy ORDERING, and
+   * `no-provider` winning is the ordering working. So the environment
+   * decides which branch is asserted, and both report which and why — a
+   * silent skip is the failure mode being avoided here.
    */
+  const agentsPresent = CODING_AGENT_IDS.filter((k) => r[k]?.present);
   const delegated = await post('/fabric/invoke', { capabilityId: 'agent.delegate', input: { task: 'must not run' }, context: { projectId: 'rt-proj' } });
-  check('4a2. autonomous delegation auto-executes under the autonomous-delegation contract',
-    delegated.body?.policy?.rule === 'autonomous-delegation' && (delegated.body?.attempts ?? 0) >= 1,
-    `outcome=${delegated.body?.outcome} attempts=${delegated.body?.attempts ?? 0} rule=${delegated.body?.policy?.rule}`);
+  const rule = delegated.body?.policy?.rule;
+  if (agentsPresent.length) {
+    check('4a2. autonomous delegation auto-executes under the autonomous-delegation contract',
+      rule === 'autonomous-delegation' && (delegated.body?.attempts ?? 0) >= 1,
+      `agents=${agentsPresent.join(',')} outcome=${delegated.body?.outcome} attempts=${delegated.body?.attempts ?? 0} rule=${rule}`);
+  } else {
+    info('4a2. no coding agent is installed on this machine, so the ordering is asserted instead: `no-provider` must refuse before the autonomy rule is reached.');
+    check('4a2. with no coding agent present, `no-provider` refuses before the autonomy rule',
+      rule === 'no-provider' && delegated.body?.outcome === 'denied'
+        && (delegated.body?.attempts ?? 0) === 0,
+      `agents=none outcome=${delegated.body?.outcome} attempts=${delegated.body?.attempts ?? 0} rule=${rule}`);
+  }
 
   // ...and with autonomy switched OFF it returns to the ordinary risk path:
   // the irreversible floor bites again and nothing is run.

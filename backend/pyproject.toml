@@ -18,6 +18,16 @@ dependencies = [
     # Required by Starlette's request.form() for multipart/form-data uploads.
     # Without it the server starts fine but POST /documents/ingest returns 500.
     "python-multipart>=0.0.9",
+    # AES-GCM for the secrets store. `aura/secrets/__init__.py` seals every
+    # value with `cryptography.hazmat` AESGCM, and that store is wired into
+    # the API server, so this is a RUNTIME dependency rather than a test
+    # extra: `scripts/build-service-bundle.mjs` resolves the desktop
+    # bundle's requirements from this very list, and with the entry absent a
+    # shipped build raises ModuleNotFoundError the first time a secret is
+    # written. It was absent, which is why the secrets suite failed on a
+    # clean install of the declared extras while passing on any machine
+    # whose global site-packages already happened to carry cryptography.
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]

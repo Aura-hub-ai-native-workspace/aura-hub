@@ -59,6 +59,56 @@ is not a build on Windows.
   regression in the floors. It now asserts the floor on `git.push` (no
   exemption) and asserts the autonomous-delegation contract in both
   directions, including with autonomy switched off.
+- **Its autonomous-delegation assertion ignored where the rule is reached
+  from.** `agent.delegate` requires a `coding-agent` node capability, and the
+  `no-provider` floor is evaluated *before* the autonomy branch — so on a
+  runner with no coding agent installed the request was refused correctly and
+  the assertion failed anyway, on all four platforms. It now asserts the
+  branch the machine can reach: the autonomy rule where an agent is present,
+  the floor ordering where none is. Both report which and why.
+
+### Fixed after hosted CI ran on this branch
+
+The backend job went green locally and red on the runner. Nine defects, all
+the same shape: a check that had only ever been observed on one Linux machine
+whose toolchain happened to satisfy it. None was a product regression; every
+one was a gate that could not see past its author's machine.
+
+- **`cryptography` was never declared.** `aura/secrets/__init__.py` seals
+  every value with AESGCM and is wired into the API server, but the package
+  was in no dependency list. Seven secrets tests failed on a clean install of
+  the declared extras and passed only on machines whose global site-packages
+  already carried it. It is now a declared runtime dependency, which also
+  means `build-service-bundle.mjs` — which resolves the desktop bundle's
+  requirements from that same list — stops shipping a build whose secrets
+  store raises `ModuleNotFoundError` on first write.
+- **Three test files addressed the repository by absolute path**
+  (`/mnt/storage/aura-hub`). On any other checkout the secrets and automation
+  differentials ERRORED rather than failing, because the path did not exist.
+  They now derive the repo root from `__file__`, and skip with the reason
+  when the oracle's prerequisite (`esbuild`, from `npm ci`) is absent.
+- **The cron differential was pinned to its author's timezone.** Its oracle
+  vectors were captured on a machine at UTC+05:30 and the comparison
+  normalized both sides to *local* time, so every hour-anchored vector
+  diverged on a UTC runner by exactly that offset. The timezone is now pinned
+  to the offset the vectors were captured at; the test passes identically
+  under UTC, IST, New York, Tokyo and Sydney, and still fails when a vector
+  is mutated.
+- **Three network tests asserted one refusal floor where the host reaches
+  another.** `establish()` checks whether the platform can enforce a mode at
+  all *before* calling the injected failing `stage`/`verify`, so on a runner
+  without bubblewrap the refusal is `UNSUPPORTED`, not
+  `INITIALIZATION_FAILED`. Both refuse and neither launches; the tests now
+  assert the floor this host actually reaches instead of assuming one.
+- **A capability-registry fixture did not isolate the probe.**
+  `effective_path()` *appends* the known installer directories to the
+  inherited PATH whenever they exist, so pinning PATH to the fixture directory
+  did not prevent a genuinely installed tool from being found — `go` was
+  absent on the author's machine and present on the runner. The extra
+  directories are now made non-existent for the duration of the fixture.
+- **Two node-subprocess tests pinned `PATH=/usr/bin:/bin`,** making them
+  unrunnable wherever node lives elsewhere — which is every Windows and macOS
+  runner. PATH is now inherited.
 
 ### Verified
 
@@ -85,12 +135,16 @@ is not a build on Windows.
   signed artifacts exist: run against the older unsigned files in
   `dist-release/` it correctly reports FAIL. It is a release-time gate, not a
   pre-commit one.
-- `npm run build`, `cargo check` and a release-profile `cargo build` are
-  unverified for this working tree.
+- `npm run build` (`tsc -b && vite build`) passes; `cargo check` and a
+  release-profile `cargo build` are unverified for this working tree.
 - **Windows and macOS runtime.** No Windows or macOS artifact was executed
   while preparing this release. Those platforms are built and run only on the
   native CI runners. Their status here is *pipeline ready*, not *runtime
   verified* — and no Windows or macOS installer is published by this release.
+  A first hosted run did build and execute all four platform legs, and each
+  one reached its runtime-verification step before failing on the single
+  assertion described above; that is evidence the pipeline works, and it is
+  not evidence that the runtime checks pass.
 - **Signed artifacts.** No signed installer was produced locally. Signing
   requires `TAURI_SIGNING_PRIVATE_KEY`, which is supplied to CI as a secret.
 

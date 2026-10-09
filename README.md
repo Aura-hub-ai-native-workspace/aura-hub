@@ -380,7 +380,14 @@ suite 65 passed; `npm run typecheck` clean. All six version sources agree on
 locally against the older unsigned files in `dist-release/` it correctly
 reports FAIL. `npm run build` (`tsc -b && vite build`) does pass; `cargo
 check` and a release-profile cargo build are unverified for this working
-tree. Windows and macOS
+tree.
+
+Hosted CI has since run on this branch and exposed nine real defects, all
+fixed — the list is in `CHANGELOG.md`. The pattern was the same in every
+case: a check that had only ever been observed on one Linux machine whose
+toolchain happened to satisfy it.
+
+Windows and macOS
 **runtime** is unverified: no Windows or macOS artifact was executed while
 preparing this release — those platforms are built and run only on native CI
 runners. Their status is *pipeline ready*, not *runtime verified*. The

@@ -8,28 +8,49 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from aura.secrets import SecretStore
 
-SECRETS_MJS = "/tmp/opencode/tsref/secrets.mjs"
-DRIVER = "/tmp/opencode/tsref/secrets_driver.mjs"
+# Derived from this file, not typed in. The repo used to be addressed by an
+# absolute path from one developer's machine, so this differential ERRORED
+# at collection on every other checkout — including CI, where it failed with
+# FileNotFoundError on a path that does not exist there. Four spaces up from
+# this file is the repository root.
+REPO = Path(__file__).resolve().parents[3]
 SEED = "ab" * 32
+
+# Filled in by _ensure_oracle(); read by _ts(). Module-level because the
+# oracle is built once and used by every test in the file.
+_ORACLE: dict[str, Path] = {}
 
 
 def _ensure_oracle():
-    if Path(SECRETS_MJS).exists() and Path(DRIVER).exists():
-        return
-    esbuild = Path("/mnt/storage/aura-hub/node_modules/.bin/esbuild")
-    repo = Path("/mnt/storage/aura-hub")
-    tsref = Path("/tmp/opencode/tsref")
+    """Bundle the TypeScript oracle, or skip with the reason.
+
+    esbuild comes from the repository's own node_modules, so a checkout
+    without `npm ci` cannot build the oracle. That is a missing test
+    prerequisite rather than a product defect, and it is reported as a skip
+    that says which prerequisite is absent — not as a pass, and not as an
+    error that looks like a code fault.
+    """
+    tsref = Path(tempfile.gettempdir()) / "aura-tsref-secrets"
+    secrets_mjs = tsref / "secrets.mjs"
+    driver = tsref / "secrets_driver.mjs"
+    esbuild = REPO / "node_modules" / ".bin" / ("esbuild.cmd" if os.name == "nt" else "esbuild")
+    if not esbuild.exists():
+        pytest.skip(f"esbuild is absent at {esbuild} — run `npm ci` to build the TypeScript oracle")
+    if not (shutil.which("node") or shutil.which("node.exe")):
+        pytest.skip("node is not on PATH, so the bundled oracle cannot be executed")
     tsref.mkdir(parents=True, exist_ok=True)
-    subprocess.run([str(esbuild), str(repo / "packages/ai-service/src/secrets.ts"),
+    subprocess.run([str(esbuild), str(REPO / "packages/ai-service/src/secrets.ts"),
                     "--bundle", "--format=esm", "--platform=node",
-                    f"--outfile={SECRETS_MJS}"], cwd=repo, check=True, capture_output=True)
+                    f"--outfile={secrets_mjs}"], cwd=REPO, check=True, capture_output=True)
     DRIVER_SRC = '''// usage: node secrets_driver.mjs <op> <home> <seed> <argsJSON>
 const { secrets } = await import(process.env.TSREF_SECRETS);
 const [op, home, seed, argsJson] = process.argv.slice(2);
@@ -43,13 +64,16 @@ else if (op === 'list') { process.stdout.write(JSON.stringify(secrets.list())); 
 else if (op === 'has') { process.stdout.write(JSON.stringify(secrets.has(args[0]))); }
 else { throw new Error('op ' + op); }
 '''
-    (tsref / "secrets_driver.mjs").write_text(DRIVER_SRC, encoding="utf-8")
+    driver.write_text(DRIVER_SRC, encoding="utf-8")
+    _ORACLE.update(mjs=secrets_mjs, driver=driver)
 
 
 def _ts(op, home, args, seed=SEED):
-    env = {**os.environ, "TSREF_SECRETS": SECRETS_MJS,
+    _ensure_oracle()
+    env = {**os.environ, "TSREF_SECRETS": str(_ORACLE["mjs"]),
            "AURA_SECRET_SEED": seed}
-    proc = subprocess.run(["node", DRIVER, op, home, seed, json.dumps(args)],
+    proc = subprocess.run(["node", str(_ORACLE["driver"]), op, home, seed,
+                           json.dumps(args)],
                           capture_output=True, text=True, env=env, check=True)
     return json.loads(proc.stdout)
 
