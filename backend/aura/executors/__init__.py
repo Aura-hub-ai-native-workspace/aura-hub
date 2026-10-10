@@ -1248,6 +1248,36 @@ CANONICAL_INTERNAL_CAPABILITIES: list[dict] = [
         ],
         "output": "exit_code, stdout, stderr, timed_out", "verify": "exit-code",
     },
+    {
+        "id": "web.research",
+        "name": "Web research (on request)",
+        "category": "knowledge",
+        "surface": "aura-internal",
+        "description": (
+            "Bounded external web research against the search gateway "
+            "configured in ~/.aura/web.json. No engine is hardcoded and "
+            "none is invented: with no gateway configured this refuses rather "
+            "than reaching somewhere on its own. Runs ONLY when the human "
+            "enabled web research for this request."
+        ),
+        "risk": "low",
+        "permissions": ["network.outbound"],
+        "input": [
+            {"name": "query", "type": "string", "required": True,
+             "description": "The research question."},
+            {"name": "webResearch", "type": "boolean", "required": True,
+             "description": (
+                 "Must be true. Stamped by AURA from the person's "
+                 "request-scoped choice; absent or false, the call is refused.")},
+            {"name": "max_results", "type": "number", "required": False,
+             "description": "How many results to return (default 5, cap 10)."},
+        ],
+        "output": (
+            "Up to 10 results — title, url, bounded excerpt — plus a fenced "
+            "stdout block carrying the evidence as untrusted data."
+        ),
+        "verify": "audit-only",
+    },
 ]
 
 
@@ -1483,6 +1513,8 @@ def register_canonical_internal_capabilities(fabric) -> None:
             fab._BY_ID[d["id"]] = d
 
 
+from .web_research import web_research_run, web_research_verify  # noqa: E402
+
 EXECUTOR_TABLE: dict[str, dict] = {
     "filesystem.list": {"run": filesystem_list},
     "filesystem.read": {"run": filesystem_read},
@@ -1496,6 +1528,7 @@ EXECUTOR_TABLE: dict[str, dict] = {
     "git.commit": {"run": git_commit, "verify": git_commit_verify},
     "git.push": {"run": git_push, "verify": git_push_verify},
     "http.request": {"run": http_request, "verify": http_request_verify},
+    "web.research": {"run": web_research_run, "verify": web_research_verify},
 }
 
 
