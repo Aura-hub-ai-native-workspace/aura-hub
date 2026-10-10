@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from ..contracts import TaskOutcome, TaskPlan
@@ -82,6 +83,14 @@ class ExecutionOutcome:
     # Populated by _note_task_closed when the executor returns {"path":…}.
     # Consumed by EvidenceCollector to link artifacts to the evidence bundle.
     artifact_paths: list[str] = field(default_factory=list)
+    # Scope overlap conflicts detected BEFORE parallel dispatch: two or more
+    # concurrent write tasks declared overlapping scopePaths. Non-blocking
+    # (the run continues) but recorded for the evidence bundle and UI.
+    scope_conflicts: list[dict] = field(default_factory=list)
+    # Write conflicts detected AFTER parallel dispatch: two workers modified
+    # the same file path. Recorded for evidence; the service layer surfaces
+    # them through the verification report and worker lifecycle events.
+    write_conflicts: list[dict] = field(default_factory=list)
 
 
 #: Task state → worker lifecycle. Deliberately a restatement of the
@@ -337,6 +346,9 @@ class ExecutionController:
         """
         correlation = dict(correlation or {})
 
+        # Pre-dispatch: flag concurrent write tasks with overlapping scopes.
+        result.scope_conflicts = self._detect_scope_conflicts(plan)
+
         def _invoke(task) -> ExecutionOutcome:
             per = ExecutionOutcome()
             per.verified_outputs.update(result.verified_outputs)
@@ -381,6 +393,58 @@ class ExecutionController:
             result.timed_out = timed_out
             result.denied = denied
         result.request_id = correlation.get("request_id") or result.request_id
+
+        # Post-dispatch: detect actual file conflicts from verified changed_paths.
+        result.write_conflicts = self._detect_write_conflicts(plan, per_task)
+
+    # ── Concurrent-worker conflict detection ─────────────────────────
+    @staticmethod
+    def _detect_scope_conflicts(plan: TaskPlan) -> list[dict]:
+        """Pre-dispatch: return conflicts where two concurrent write tasks
+        declare overlapping scopePaths.  Non-blocking — the run proceeds —
+        but the conflicts are recorded in ExecutionOutcome and surface
+        through the evidence bundle so the UI can warn before a worker
+        overwrites another worker's files."""
+        write_tasks = [
+            (t.id, set(t.input.get("scopePaths") or []))
+            for t in plan.tasks
+            if (t.input or {}).get("expectChange") is True
+            and (t.input or {}).get("scopePaths")
+        ]
+        conflicts: list[dict] = []
+        for i, (id1, paths1) in enumerate(write_tasks):
+            for id2, paths2 in write_tasks[i + 1:]:
+                overlap = sorted(paths1 & paths2)
+                if overlap:
+                    conflicts.append({
+                        "tasks": [id1, id2],
+                        "overlappingPaths": overlap,
+                        "risk": "concurrent-write-conflict",
+                    })
+        return conflicts
+
+    @staticmethod
+    def _detect_write_conflicts(
+        plan: TaskPlan, per_task: dict[str, "ExecutionOutcome"]
+    ) -> list[dict]:
+        """Post-dispatch: find paths two or more workers actually modified.
+        Reads changed_paths from every task's verified evidence.  Returns
+        one record per conflicting path so the service layer can emit
+        worker.lifecycle events and the UI can highlight them."""
+        path_owners: dict[str, list[str]] = {}
+        for task in plan.tasks:
+            per = per_task.get(task.id)
+            if per is None:
+                continue
+            for evidence in per.verified_outputs.values():
+                for path in (evidence.get("changed_paths") or []):
+                    path_owners.setdefault(str(path), []).append(task.id)
+        return [
+            {"path": path, "tasks": task_ids,
+             "risk": "post-execution-write-conflict"}
+            for path, task_ids in path_owners.items()
+            if len(task_ids) > 1
+        ]
 
     # ── Phase G worker requirement matching ────────────────────────────
     def _present_nodes(self) -> list[dict]:
@@ -726,6 +790,7 @@ class ExecutionController:
             "capabilityId": task.capabilityId,
             **({"missionId": task.missionId} if getattr(task, "missionId", None) else {}),
             "lifecycle": "ACTIVE",
+            "startedAt": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             **({"taskType": _task_type} if _task_type else {}),
             **({"modelId": _routing_record.id,
                 "modelName": _routing_record.model_name,
@@ -844,6 +909,7 @@ class ExecutionController:
                 outcome.state, "FAILED")
             assignment["state"] = outcome.state
             assignment["verified"] = outcome.verified
+            assignment["completedAt"] = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
             # Handoff lineage: which verified upstream results fed this
             # worker. Read from the argument, not from the outcome — the
             # outcome is annotated with it further down this same method,

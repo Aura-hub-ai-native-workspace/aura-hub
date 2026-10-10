@@ -35,9 +35,11 @@ for p in (str(BACKEND),):
 
 #: Suites for capabilities that are not in this release, relative to this
 #: directory. Collected only when AURA_RUN_DEFERRED_TESTS is set.
-DEFERRED_SUITES = ("unit/test_web_research.py",)
+# NOTE: test_web_research.py was deferred while web.research was gated; it is
+# now in the default suite because the capability is live and governed (v0.1.20).
+DEFERRED_SUITES: tuple[()] = ()
 
-if os.environ.get("AURA_RUN_DEFERRED_TESTS") != "1":
+if os.environ.get("AURA_RUN_DEFERRED_TESTS") != "1" and DEFERRED_SUITES:
     collect_ignore = list(DEFERRED_SUITES)
 
 # Frozen-contract locations, shared by vector/golden suites.

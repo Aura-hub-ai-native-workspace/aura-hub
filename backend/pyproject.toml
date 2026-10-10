@@ -92,9 +92,15 @@ include = ["aura*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --basetemp=/mnt/storage/pytest-tmp"
 asyncio_mode = "auto"
 norecursedirs = ["target", "node_modules", ".git", "__pycache__"]
+# Keep only failed test sessions' tmp dirs and at most 2 previous runs.
+# Combined with basetemp on /mnt/storage, this prevents the per-user quota
+# on /tmp (tmpfs with usrquota) from being exhausted by fixture files created
+# by test_discovery_layers, test_environment_windows_safety, etc.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 2
 
 [tool.ruff]
 line-length = 110

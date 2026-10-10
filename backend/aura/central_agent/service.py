@@ -1017,6 +1017,17 @@ class CentralAgent:
                                        "; ".join(summary_bits), _now(),
                                        artifact_paths=outcome.artifact_paths,
                                        worker_assignments=outcome.worker_assignments)
+        # Surface concurrent-worker conflicts so the UI can highlight them.
+        # These are observability events only: the evidence bundle is
+        # authoritative; these frames carry no authority.
+        if getattr(outcome, "scope_conflicts", None):
+            self._emit("worker.lifecycle", sid,
+                       event="scope-conflict-detected",
+                       conflicts=outcome.scope_conflicts)
+        if getattr(outcome, "write_conflicts", None):
+            self._emit("worker.lifecycle", sid,
+                       event="write-conflict-detected",
+                       conflicts=outcome.write_conflicts)
         self._emit("result.ready", sid, passed=report.passed)
         # Model-backed read-only answer synthesis, streamed as
         # answer.token frames. This path only REASONS OVER records the
