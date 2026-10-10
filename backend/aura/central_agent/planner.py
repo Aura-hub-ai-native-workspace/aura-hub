@@ -513,6 +513,11 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
     """
     scope = _validated_scope(intent)
     text = _delegate_text(intent)
+    # Three or four explicitly named workers → multi-worker fan-out. Check
+    # before the two-worker path so a 3-worker intent never falls through.
+    parallel_multi = _plan_parallel_multi_worker(intent, session_id, now)
+    if parallel_multi is not None:
+        return parallel_multi
     # An explicit two-runtime, read-only, independent ask is a real
     # decomposition: two tasks each pinned to its own node, not one
     # collapsed delegate of the whole message.
@@ -671,6 +676,10 @@ _READONLY_SIGNAL = re.compile(
 _WORKER_ALIASES = (
     (re.compile(r"claude\s*code", re.I), "claude-code"),
     (re.compile(r"kilo\s*code", re.I), "kilo-code"),
+    (re.compile(r"\bopencode\b", re.I), "opencode"),
+    (re.compile(r"\bcodex(?:\s*cli)?\b", re.I), "codex"),
+    (re.compile(r"\bgemini(?:\s*cli)?\b", re.I), "gemini"),
+    (re.compile(r"\bqwen(?:[- ]?code)?\b", re.I), "qwen-code"),
 )
 
 
@@ -682,6 +691,17 @@ def _named_distinct_workers(text: str) -> list[tuple[int, re.Pattern, str]] | No
         if m:
             found.append((m.start(), pattern, node))
     return sorted(found) if len(found) == 2 else None
+
+
+def _named_multi_workers(text: str) -> list[tuple[int, re.Pattern, str]] | None:
+    """2-4 distinct runtime names named in the text, in textual order."""
+    found = []
+    for pattern, node in _WORKER_ALIASES:
+        m = pattern.search(text)
+        if m:
+            found.append((m.start(), pattern, node))
+    found = sorted(found)
+    return found if 2 <= len(found) <= 4 else None
 
 
 def _two_worker_clauses(text: str, workers: list[tuple[int, re.Pattern, str]]):
@@ -750,6 +770,67 @@ def _plan_parallel_two_worker(intent: AgentIntent, session_id: str,
         acceptance=[_accept(
             "exit-code",
             "Both workers reported independent verified findings: no "
+            "modification of any file occurred.",
+            tasks=[t.id for t in tasks])],
+        createdAt=now)
+
+
+def _plan_parallel_multi_worker(intent: AgentIntent, session_id: str,
+                                now: str) -> TaskPlan | None:
+    """Fan an explicit N-runtime (2-4) read-only independent request into N tasks.
+
+    Generalises _plan_parallel_two_worker: handles any combination of
+    supported worker names in one pass. The two-worker function stays for
+    pinned callers; this one runs first in plan_delegated_work so it
+    subsumes the two-worker case in the public path.
+    """
+    text = _delegate_text(intent)
+    if not _PARALLEL_TWO_SIGNAL.search(text):
+        return None
+    if not _READONLY_SIGNAL.search(text):
+        return None
+    workers = _named_multi_workers(text)
+    if not workers:
+        return None
+    scope = _validated_scope(intent)
+
+    tasks: list[TaskSpecification] = []
+    for i, (_, pattern, node) in enumerate(workers):
+        m = pattern.search(text)
+        head = text[m.end():]
+        if i + 1 < len(workers):
+            nxt = workers[i + 1][1].search(head)
+            seg = head[:nxt.start()] if nxt else head
+        else:
+            stop = re.search(r"\.", head)
+            seg = head[:stop.end()] if stop else head
+        seg = seg.strip(" .,;:\"'\n")
+        seg = re.sub(r"\s+(?:and|&|,)$", "", seg, flags=re.I)
+        # Unique task id: worker short name + index guard
+        short = node.split("-")[0]
+        task_id = f"delegate-{short}" if not any(t.id == f"delegate-{short}" for t in tasks) \
+            else f"delegate-{short}-{i}"
+        tasks.append(TaskSpecification(
+            id=task_id,
+            description=seg or f"Investigate with {node}",
+            capabilityId="agent.delegate",
+            nodeId=node,
+            input=_delegate_input(seg or text, scope, worker_role="research"),
+            workerRole="research",
+            inputFrom="literal",
+            risk="high", reversible=True,
+            verification=VerificationRequirement(
+                kind="exit-code",
+                description=("The worker exits 0 having stayed inside the "
+                             "declared scope and reported its findings "
+                             "with evidence."))))
+    n = len(tasks)
+    return TaskPlan(
+        planId=_plan_id(), sessionId=session_id, intent=intent,
+        tasks=tasks,
+        acceptance=[_accept(
+            "exit-code",
+            f"All {n} workers reported independent verified findings: no "
             "modification of any file occurred.",
             tasks=[t.id for t in tasks])],
         createdAt=now)
