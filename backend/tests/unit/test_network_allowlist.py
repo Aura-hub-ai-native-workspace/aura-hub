@@ -37,6 +37,27 @@ ENFORCEABLE = (
 needs_gateway = pytest.mark.skipif(
     not ENFORCEABLE, reason="this host cannot run the AURA egress gateway")
 
+
+def _probe_internet(host: str = ALLOWED_HOST, port: int = 80, timeout: int = 3) -> bool:
+    """Direct TCP probe to verify outbound internet access from this host.
+
+    Runs at module import time (before any fixture), so it executes on the
+    host process, not inside a bwrap namespace.  A 3-second timeout keeps
+    collection fast on isolated CI runners.
+    """
+    import socket as _socket
+    try:
+        _socket.create_connection((host, port), timeout=timeout)
+        return True
+    except OSError:
+        return False
+
+
+_INTERNET = _probe_internet()
+needs_internet = pytest.mark.skipif(
+    not _INTERNET,
+    reason="no outbound internet from this host; allowed-domain tests require it")
+
 PROXY = f"http://127.0.0.1:{netgov.__dict__.get('SANDBOX_PROXY_PORT', 3128)}"
 
 
@@ -95,6 +116,7 @@ class TestMatching:
 
 @needs_gateway
 class TestAllowAndDeny:
+    @needs_internet
     def test_1_4_an_allowed_domain_over_https_works(self, boundary):
         out = inside(boundary, (
             "import urllib.request,sys\n"
@@ -104,6 +126,7 @@ class TestAllowAndDeny:
             "sys.exit(0 if r.status==200 else 1)\n"))
         assert out.exit_code == 0, out.stderr
 
+    @needs_internet
     def test_6_an_allowed_domain_over_http_works(self, boundary):
         out = inside(boundary, (
             "import urllib.request,sys\n"
@@ -341,6 +364,7 @@ class TestRealClients:
         out = shell(boundary, f"curl -sS --max-time 20 https://{DENIED_HOST}")
         assert out.exit_code != 0
 
+    @needs_internet
     def test_19b_curl_allowed(self, boundary):
         out = shell(boundary, f"curl -sS --max-time 25 https://{ALLOWED_HOST}")
         assert out.exit_code == 0, out.stderr
@@ -360,6 +384,7 @@ class TestRealClients:
             "    sys.exit(0)\n"))
         assert out.exit_code == 0
 
+    @needs_internet
     def test_22_python_urllib_denied_allowed_pair(self, boundary):
         out = inside(boundary, (
             "import urllib.request,sys\n"
@@ -409,6 +434,7 @@ class TestRealClients:
 
 @needs_gateway
 class TestEvidence:
+    @needs_internet
     def test_every_destination_is_recorded_with_its_decision(self, boundary):
         decisions = boundary.decisions()
         assert decisions, "the gateway recorded nothing"
