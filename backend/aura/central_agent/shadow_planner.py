@@ -24,20 +24,24 @@ score. A score would hide which dimension disagrees.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import threading
+import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections import deque
+from concurrent.futures import Future
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from ..config import aura_home
 from ..contracts import AgentIntent, TaskPlan
-from ..jsonutil import read_json_file, write_json_atomic
+from ..jsonutil import read_json_file
 from .planner import PlanningError
 from .provider_bridge import ProviderBridge, redact_secrets
 
@@ -49,6 +53,13 @@ ENV_FLAG = "AURA_LAYA_SHADOW"
 MAX_ATTEMPTS = 2
 #: Oldest records are pruned beyond this many, across all sessions.
 RECORD_CAP = 200
+#: At most this many shadow runs in flight. A slow model cannot build a backlog.
+MAX_CONCURRENT = 2
+#: Sliding-window budget of shadow runs per minute. Shares provider quota with
+#: the authoritative planner, so it is capped deliberately.
+MAX_PER_MINUTE = 10
+#: The request text forwarded to the shadow model is bounded.
+PROMPT_CHAR_CAP = 4000
 
 #: Categories where retrying cannot help. Configuration, not transience.
 _PERMANENT = frozenset({
@@ -56,7 +67,7 @@ _PERMANENT = frozenset({
 })
 
 ShadowStatus = Literal[
-    "validated", "schema-rejected", "model-failed", "internal-error"]
+    "validated", "schema-rejected", "model-failed", "internal-error", "skipped"]
 
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]")
 
@@ -157,12 +168,20 @@ class ShadowPlanStore:
         return self.root / (_SAFE_ID.sub("-", session_id) or "session")
 
     def write(self, record: ShadowPlanRecord) -> Path:
-        path = self._session_dir(record.sessionId) / f"{record.shadowId}.json"
-        write_json_atomic(path, record.model_dump())
-        try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+        directory = self._session_dir(record.sessionId)
+        # Owner-only from creation. Creating the file with the default mode and
+        # chmod-ing afterwards leaves a window where candidate text is readable.
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.root, 0o700)
+        os.chmod(directory, 0o700)
+        path = directory / f"{record.shadowId}.json"
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(record.model_dump(), ensure_ascii=False,
+                                indent=2, sort_keys=True))
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
         self._prune()
         return path
 
@@ -205,16 +224,52 @@ def isolated_port(port: Any) -> Any:
     return port
 
 
+def _new_base(session_id: str, request_id: str | None,
+              authoritative_plan: TaskPlan | None) -> dict[str, Any]:
+    return {"shadowId": f"shadow-{uuid.uuid4().hex[:12]}",
+            "sessionId": session_id, "requestId": request_id,
+            "authoritativePlanId": getattr(authoritative_plan, "planId", None),
+            "createdAt": _now()}
+
+
 class ShadowPlanner:
-    """Runs candidate planning in the background and records the outcome."""
+    """Runs candidate planning in the background and records the outcome.
+
+    Bounded three ways: at most ``max_concurrent`` runs in flight, at most
+    ``max_per_minute`` runs started per sliding minute, and each run makes at
+    most ``max_attempts`` model calls. Work over budget is recorded as
+    ``skipped`` rather than queued. Threads are daemons, so a stalled provider
+    cannot hold process exit.
+    """
 
     def __init__(self, port: Any, store: ShadowPlanStore, *,
-                 enabled: bool = True, max_attempts: int = MAX_ATTEMPTS) -> None:
+                 enabled: bool = True, max_attempts: int = MAX_ATTEMPTS,
+                 max_concurrent: int = MAX_CONCURRENT,
+                 max_per_minute: int = MAX_PER_MINUTE,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.port = port
         self.store = store
         self.enabled = bool(enabled and port is not None)
         self.max_attempts = max(1, min(int(max_attempts), MAX_ATTEMPTS))
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="laya-shadow")
+        self._slots = threading.BoundedSemaphore(max(1, int(max_concurrent)))
+        self._max_per_minute = max(1, int(max_per_minute))
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._started: deque[float] = deque()
+        self._threads: list[threading.Thread] = []
+        self.skipped = 0
+
+    def _admit(self) -> bool:
+        now = self._clock()
+        with self._lock:
+            while self._started and now - self._started[0] >= 60.0:
+                self._started.popleft()
+            if len(self._started) >= self._max_per_minute:
+                return False
+            if not self._slots.acquire(blocking=False):
+                return False
+            self._started.append(now)
+            return True
 
     def observe(self, *, intent: AgentIntent, system: str, user: str,
                 session_id: str, request_id: str | None,
@@ -222,38 +277,70 @@ class ShadowPlanner:
                 planner: Any) -> Future | None:
         """Schedule one shadow run. Returns None when disabled.
 
-        The return value is for tests and diagnostics only. Callers must not
-        use it to make decisions: nothing it produces is a plan to execute.
+        The Future is for tests and diagnostics only. Callers must not use it
+        to make decisions: nothing it resolves to is a plan to execute.
         """
         if not self.enabled:
             return None
-        return self._pool.submit(
-            self._job, intent, system, user, session_id, request_id,
-            authoritative_plan, planner)
+        user = user[:PROMPT_CHAR_CAP]
+        base = _new_base(session_id, request_id, authoritative_plan)
+        future: Future = Future()
+        if not self._admit():
+            self.skipped += 1
+            record = ShadowPlanRecord(
+                **base, status="skipped", errorCategory="BUDGET",
+                error="shadow budget exhausted (concurrency or rate limit)")
+            self._persist(record)
+            future.set_result(record)
+            return future
+        thread = threading.Thread(
+            target=self._run,
+            args=(future, base, intent, system, user, session_id, request_id,
+                  authoritative_plan, planner),
+            name="laya-shadow", daemon=True)
+        with self._lock:
+            self._threads.append(thread)
+        thread.start()
+        return future
 
     def wait(self, timeout: float | None = None) -> None:
-        """Block until queued shadow work drains. Tests use this; production does not."""
-        self._pool.submit(lambda: None).result(timeout=timeout)
+        """Block until in-flight shadow work finishes. Tests and evaluation only."""
+        with self._lock:
+            threads = list(self._threads)
+        for thread in threads:
+            thread.join(timeout)
+        with self._lock:
+            self._threads = [t for t in self._threads if t.is_alive()]
 
     # ── background job ───────────────────────────────────────────────
 
-    def _job(self, intent, system, user, session_id, request_id,
+    def _run(self, future: Future, base, intent, system, user, session_id,
+             request_id, authoritative_plan, planner) -> None:
+        try:
+            future.set_result(self._job(base, intent, system, user, session_id,
+                                        request_id, authoritative_plan, planner))
+        except BaseException as exc:  # noqa: BLE001 — surfaced on the future only
+            future.set_exception(exc)
+        finally:
+            self._slots.release()
+
+    def _persist(self, record: ShadowPlanRecord) -> None:
+        try:
+            self.store.write(record)
+        except Exception:  # noqa: BLE001 — a write failure is logged, not raised
+            logger.warning("shadow plan record could not be written", exc_info=True)
+
+    def _job(self, base, intent, system, user, session_id, request_id,
              authoritative_plan, planner) -> ShadowPlanRecord:
-        base = {"shadowId": f"shadow-{uuid.uuid4().hex[:12]}",
-                "sessionId": session_id, "requestId": request_id,
-                "authoritativePlanId": getattr(authoritative_plan, "planId", None),
-                "createdAt": _now()}
         try:
             record = self._evaluate(base, intent, system, user, session_id,
                                     request_id, authoritative_plan, planner)
         except Exception as exc:  # noqa: BLE001 — shadow must never escape
             record = ShadowPlanRecord(
                 **base, status="internal-error",
-                errorCategory="INTERNAL", error=_clip(f"{type(exc).__name__}: {exc}"))
-        try:
-            self.store.write(record)
-        except Exception:  # noqa: BLE001 — a write failure is logged, not raised
-            logger.warning("shadow plan record could not be written", exc_info=True)
+                errorCategory="INTERNAL",
+                error=_clip(f"{type(exc).__name__}: {exc}"))
+        self._persist(record)
         return record
 
     def _evaluate(self, base, intent, system, user, session_id, request_id,

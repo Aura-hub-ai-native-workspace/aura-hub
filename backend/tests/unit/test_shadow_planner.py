@@ -387,3 +387,105 @@ class TestAuthoritativeResultUnchanged:
         # The shadow did run, and its record stayed evidence-only.
         records = shadow_store.list()
         assert records and all(r["executed"] is False for r in records)
+
+
+class _Gate:
+    """A port whose call blocks until released, to hold a shadow run in flight."""
+
+    def __init__(self) -> None:
+        import threading
+
+        self.release = threading.Event()
+        self.calls = 0
+
+    def complete_json(self, system, user):
+        self.calls += 1
+        self.release.wait(10)
+        return _good_proposal()
+
+
+def _observe(shadow, planner, session=SESSION):
+    return shadow.observe(intent=_intent(), system="s", user="u",
+                          session_id=session, request_id=None,
+                          authoritative_plan=_authoritative(planner),
+                          planner=planner)
+
+
+class TestBudgets:
+    def test_concurrency_is_bounded_and_overflow_is_skipped(self, tmp_path):
+        gate = _Gate()
+        store = sp.ShadowPlanStore(tmp_path)
+        shadow = sp.ShadowPlanner(gate, store, max_concurrent=1,
+                                  max_per_minute=100)
+        planner = _planner()
+        first = _observe(shadow, planner)
+        second = _observe(shadow, planner)  # slot still held by `first`
+        skipped = second.result(timeout=5)
+        assert skipped.status == "skipped"
+        assert skipped.errorCategory == "BUDGET"
+        gate.release.set()
+        assert first.result(timeout=10).status == "validated"
+        assert shadow.skipped == 1
+        assert gate.calls == 1  # the skipped run made no model call
+
+    def test_rate_limit_skips_over_budget_runs(self, tmp_path):
+        now = [0.0]
+        shadow = sp.ShadowPlanner(FakePort(_good_proposal()),
+                                  sp.ShadowPlanStore(tmp_path),
+                                  max_per_minute=2, clock=lambda: now[0])
+        planner = _planner()
+        for _ in range(2):
+            _observe(shadow, planner).result(timeout=10)
+        assert _observe(shadow, planner).result(timeout=5).status == "skipped"
+        now[0] = 61.0  # the sliding window has moved on
+        assert _observe(shadow, planner).result(timeout=10).status == "validated"
+
+    def test_skipped_runs_are_still_recorded(self, tmp_path):
+        gate = _Gate()
+        store = sp.ShadowPlanStore(tmp_path)
+        shadow = sp.ShadowPlanner(gate, store, max_concurrent=1,
+                                  max_per_minute=100)
+        planner = _planner()
+        _observe(shadow, planner)
+        _observe(shadow, planner)
+        gate.release.set()
+        shadow.wait(timeout=10)
+        assert sorted(r["status"] for r in store.list(SESSION)) == [
+            "skipped", "validated"]
+
+    def test_prompt_forwarded_to_the_model_is_bounded(self, tmp_path):
+        seen = {}
+
+        class Capture:
+            def complete_json(self, system, user):
+                seen["user"] = user
+                return _good_proposal()
+
+        shadow = sp.ShadowPlanner(Capture(), sp.ShadowPlanStore(tmp_path))
+        planner = _planner()
+        huge = "x" * (sp.PROMPT_CHAR_CAP * 3)
+        shadow.observe(intent=_intent(), system="s", user=huge,
+                       session_id=SESSION, request_id=None,
+                       authoritative_plan=_authoritative(planner),
+                       planner=planner).result(timeout=10)
+        assert len(seen["user"]) == sp.PROMPT_CHAR_CAP
+
+    def test_worker_threads_are_daemons(self, tmp_path):
+        gate = _Gate()
+        shadow = sp.ShadowPlanner(gate, sp.ShadowPlanStore(tmp_path))
+        _observe(shadow, _planner())
+        assert all(t.daemon for t in shadow._threads)
+        gate.release.set()
+        shadow.wait(timeout=10)
+
+
+class TestPrivateStorage:
+    def test_directories_and_files_are_owner_only_from_creation(self, tmp_path):
+        store = sp.ShadowPlanStore(tmp_path)
+        store.write(sp.ShadowPlanRecord(shadowId="shadow-p", sessionId=SESSION,
+                                        createdAt=NOW, status="model-failed"))
+        assert stat.S_IMODE(os.stat(store.root).st_mode) & 0o077 == 0
+        assert stat.S_IMODE(os.stat(store._session_dir(SESSION)).st_mode) & 0o077 == 0
+        file = store._session_dir(SESSION) / "shadow-p.json"
+        assert stat.S_IMODE(os.stat(file).st_mode) == 0o600
+        assert not list(store.root.rglob("*.tmp"))
