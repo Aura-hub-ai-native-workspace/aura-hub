@@ -637,6 +637,14 @@ class CentralAgent:
             + "\nYou are Laya, AURA's planning model. This is a SHADOW "
               "proposal: it is compared with the authoritative plan and is "
               "never executed."
+            + "\nTASK IDS AND DEPENDENCIES (strict): first define every task with a "
+              "unique \"id\". Then, for each task, \"dependsOn\" may list ONLY ids "
+              "that are the \"id\" of another task in THIS same JSON object. A task "
+              "never depends on itself. Do not invent a prerequisite that is not one "
+              "of your tasks: omit it. Dependency cycles are invalid."
+            + "\nACCEPTANCE: include a top-level \"acceptance\" list with at least one "
+              "criterion, e.g. {\"kind\": \"audit-only\", \"description\": \"what "
+              "proves success\", \"tasks\": [\"<task ids>\"]}, covering every task."
             + f"\nALLOWED CAPABILITIES: {', '.join(caps) or '(none)'}"
             + ("\nCONNECTED NODES: " + ", ".join(nodes)
                if nodes else "\nCONNECTED NODES: none — omit nodeId."))

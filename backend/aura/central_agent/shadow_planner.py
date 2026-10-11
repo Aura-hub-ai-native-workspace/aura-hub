@@ -43,7 +43,7 @@ from ..config import aura_home
 from ..contracts import AgentIntent, TaskPlan
 from ..jsonutil import read_json_file
 from .planner import PlanningError
-from .provider_bridge import ProviderBridge, redact_secrets
+from .provider_bridge import _SENSITIVE_KEY_RE, ProviderBridge
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,67 @@ def shadow_enabled(env: dict[str, str] | None = None) -> bool:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+#: Known secret SHAPES only. Plan identifiers and dependency labels are not
+#: secrets, so the generic "long token-looking string" rule of redact_secrets
+#: is deliberately NOT used here: it erased the very ids the evaluation needed
+#: to show (see PR #68 evaluation, three invalid candidates).
+_SECRET_SHAPES = [
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)"),
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=\-]{8,}", re.IGNORECASE),
+    re.compile(r"(?i)\b(password|passwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)\b\s*[:=]\s*\S+"),
+    re.compile(r"\b[A-Fa-f0-9]{40,}\b"),
+]
+
+
+def scrub_text(text: str) -> str:
+    """Replace secret-shaped substrings. Identifiers and labels are untouched."""
+    out = text
+    for pattern in _SECRET_SHAPES:
+        out = pattern.sub("[REDACTED]", out)
+    return out
+
+
+def scrub_structure(value: Any) -> Any:
+    """Recursively scrub a candidate or proposal before it is stored.
+
+    Values under secret-named keys are replaced whole. Strings are scrubbed
+    for known secret shapes. Everything else (ids, dependsOn labels,
+    capability ids, node ids) is kept, so a reviewer can see what the model
+    actually proposed.
+    """
+    if isinstance(value, dict):
+        return {k: ("[REDACTED]" if _SENSITIVE_KEY_RE.search(str(k))
+                    else scrub_structure(v)) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [scrub_structure(v) for v in value]
+    if isinstance(value, str):
+        return scrub_text(value)
+    return value
+
+
+#: Rejection reasons, classified from the validator's own messages. Used to
+#: count WHY candidates fail, not only that they did.
+_REJECTION_PATTERNS = [
+    ("unknown-dependency", re.compile(r"depends on unknown")),
+    ("self-dependency", re.compile(r"depends on itself")),
+    ("dependency-cycle", re.compile(r"cycle")),
+    ("duplicate-id", re.compile(r"duplicate")),
+    ("acceptance-unknown-task", re.compile(r"acceptance covers unknown")),
+    ("unknown-capability", re.compile(r"unknown capability")),
+    ("unknown-node", re.compile(r"node", re.IGNORECASE)),
+]
+
+
+def classify_rejection(message: str) -> str:
+    for label, pattern in _REJECTION_PATTERNS:
+        if pattern.search(message):
+            return label
+    return "other"
 
 
 class ShadowPlanRecord(BaseModel):
@@ -282,7 +343,7 @@ class ShadowPlanner:
         """
         if not self.enabled:
             return None
-        user = user[:PROMPT_CHAR_CAP]
+        user = scrub_text(user)[:PROMPT_CHAR_CAP]
         base = _new_base(session_id, request_id, authoritative_plan)
         future: Future = Future()
         if not self._admit():
@@ -368,19 +429,20 @@ class ShadowPlanner:
         except PlanningError as exc:
             return ShadowPlanRecord(
                 **base, **identity, status="schema-rejected",
-                errorCategory="SCHEMA", error=_clip(str(exc)),
-                candidate=redact_secrets(proposal))
+                errorCategory=f"SCHEMA:{classify_rejection(str(exc))}",
+                error=_clip(str(exc)),
+                candidate=scrub_structure(proposal))
         except Exception as exc:  # noqa: BLE001
             return ShadowPlanRecord(
                 **base, **identity, status="schema-rejected",
-                errorCategory="SCHEMA",
+                errorCategory=f"SCHEMA:{classify_rejection(str(exc))}",
                 error=_clip(f"{type(exc).__name__}: {exc}"),
-                candidate=redact_secrets(proposal))
+                candidate=scrub_structure(proposal))
 
         summary = summarize_plan(candidate)
         return ShadowPlanRecord(
             **base, **identity, status="validated",
-            candidate=redact_secrets(proposal),
+            candidate=scrub_structure(proposal),
             candidateSummary=summary,
             comparison=(compare_summaries(summarize_plan(authoritative_plan), summary)
                         if authoritative_plan is not None else None),
@@ -412,4 +474,4 @@ def _governance(candidate: TaskPlan, planner: Any) -> dict[str, Any]:
 def _clip(text: str | None, limit: int = 300) -> str | None:
     if text is None:
         return None
-    return str(redact_secrets(text))[:limit]
+    return scrub_text(str(text))[:limit]

@@ -13,6 +13,8 @@ import os
 import stat
 from pathlib import Path
 
+import pytest
+
 from aura.central_agent import shadow_planner as sp
 from aura.central_agent.planner import TaskPlanner
 from aura.contracts import AgentIntent, TaskPlan
@@ -132,7 +134,7 @@ class TestOutcomes:
                           "input": {"task": "rm -rf"}}]}
         record, store = _run(FakePort(bad), tmp_path)
         assert record.status == "schema-rejected"
-        assert record.errorCategory == "SCHEMA"
+        assert record.errorCategory == "SCHEMA:unknown-capability"
         assert record.error
         assert record.comparison is None
         assert record.executed is False
@@ -489,3 +491,175 @@ class TestPrivateStorage:
         file = store._session_dir(SESSION) / "shadow-p.json"
         assert stat.S_IMODE(os.stat(file).st_mode) == 0o600
         assert not list(store.root.rglob("*.tmp"))
+
+
+# ── dependency validation, regressions, scrubbing ────────────────────────
+#
+# The three candidates below reconstruct the invalid outputs observed in the
+# first real-model evaluation (PR #68). The stored records had task ids and
+# dependsOn values replaced by [REDACTED] by an over-broad redaction rule,
+# so the exact labels are rebuilt from the validator's own error messages.
+
+
+def _task(tid, depends=(), **extra):
+    return {"id": tid, "description": f"{tid} work",
+            "capabilityId": "agent.delegate",
+            "input": {"task": f"do {tid}"},
+            "verificationKind": "exit-code",
+            "verification": "the worker exits 0",
+            "dependsOn": list(depends), **extra}
+
+
+def _propose(candidate: dict) -> dict:
+    return candidate
+
+
+OBSERVED_INVALID = {
+    "unknown-dependency-token-refresh": (
+        "depends on unknown task 'token-refresh-implementation'",
+        _propose({"tasks": [
+            _task("token-refresh", ["token-refresh-implementation"]),
+            _task("ai-review", ["token-refresh"]),
+        ]})),
+    "unknown-dependency-test-failures": (
+        "depends on unknown task 'test-failures'",
+        _propose({"tasks": [
+            _task("open-code-investigate-tests", ["test-failures"]),
+            _task("kilo-investigate-tests", ["test-failures"]),
+        ]})),
+    "unknown-dependency-build-status": (
+        "depends on unknown task 'build-status'",
+        _propose({"tasks": [
+            _task("investigate-build-failure", ["build-status"]),
+            _task("fix-build-failure", ["investigate-build-failure"]),
+        ]})),
+}
+
+
+class TestDependencyRejections:
+    @pytest.mark.parametrize("name", sorted(OBSERVED_INVALID))
+    def test_observed_invalid_candidates_are_rejected_with_the_unknown_id(
+            self, tmp_path, name):
+        expected_message, proposal = OBSERVED_INVALID[name]
+        record, store = _run(FakePort(proposal), tmp_path)
+        assert record.status == "schema-rejected"
+        assert record.errorCategory == "SCHEMA:unknown-dependency"
+        assert expected_message in record.error
+        # The regression: the ids are kept, not replaced by [REDACTED].
+        stored_ids = [t["id"] for t in record.candidate["tasks"]]
+        assert "[REDACTED]" not in stored_ids
+        assert record.candidate["tasks"][0]["dependsOn"][0] != "[REDACTED]"
+        assert store.list(SESSION)[0]["status"] == "schema-rejected"
+
+    def test_duplicate_ids_are_rejected(self, tmp_path):
+        record, _ = _run(FakePort({"tasks": [_task("a"), _task("a")]}), tmp_path)
+        assert record.errorCategory == "SCHEMA:duplicate-id"
+
+    def test_self_dependency_is_rejected(self, tmp_path):
+        record, _ = _run(FakePort({"tasks": [_task("a", ["a"])]}), tmp_path)
+        assert record.errorCategory == "SCHEMA:self-dependency"
+
+    def test_cycle_is_rejected(self, tmp_path):
+        proposal = {"tasks": [_task("a", ["b"]), _task("b", ["a"])]}
+        record, _ = _run(FakePort(proposal), tmp_path)
+        assert record.errorCategory == "SCHEMA:dependency-cycle"
+
+    def test_acceptance_naming_unknown_task_is_rejected(self, tmp_path):
+        proposal = {"tasks": [_task("a")],
+                    "acceptance": [{"kind": "audit-only", "description": "x",
+                                    "tasks": ["ghost"]}]}
+        record, _ = _run(FakePort(proposal), tmp_path)
+        assert record.errorCategory == "SCHEMA:acceptance-unknown-task"
+
+    def test_a_valid_dependency_chain_validates(self, tmp_path):
+        proposal = {"tasks": [_task("investigate"),
+                              _task("fix", ["investigate"])],
+                    "acceptance": [{"kind": "audit-only", "description": "done",
+                                    "tasks": ["investigate", "fix"]}]}
+        record, _ = _run(FakePort(proposal), tmp_path)
+        assert record.status == "validated"
+        assert record.candidateSummary["dependencyEdges"] == [
+            ["agent.delegate", "agent.delegate"]]
+        assert record.candidateSummary["acceptanceCoverage"] == 1.0
+
+
+class TestScrubbing:
+    def test_identifiers_and_labels_are_never_scrubbed(self):
+        for text in ("token-refresh-implementation", "build-status",
+                     "open-code-investigate-tests"):
+            assert sp.scrub_text(text) == text
+
+    def test_known_secret_shapes_are_scrubbed(self):
+        samples = [
+            "use sk-abcdefghijklmnop1234 for it",
+            "token ghp_abcdefghijklmnop1234567890",
+            "AKIAABCDEFGHIJKLMNOP",
+            "Bearer abcdefghijklmnop1234567890",
+            "password=hunter2",
+            "api_key: somethingsecret",
+            "deadbeef" * 6,
+        ]
+        for text in samples:
+            out = sp.scrub_text(text)
+            assert "[REDACTED]" in out, text
+
+    def test_private_key_block_is_scrubbed(self):
+        header = "BEGIN " + "RSA PRIVATE" + " KEY"
+        footer = "END " + "RSA PRIVATE" + " KEY"
+        block = f"-----{header}-----\nMIIBOgIBAAJBAL\n-----{footer}-----"
+        assert "MIIBOg" not in sp.scrub_text(block)
+
+    def test_secret_named_keys_are_replaced_whole(self):
+        out = sp.scrub_structure({"tasks": [{"id": "t1",
+                                             "input": {"api_key": "x"}}]})
+        assert out["tasks"][0]["input"]["api_key"] == "[REDACTED]"
+        assert out["tasks"][0]["id"] == "t1"
+
+    def test_user_secret_is_not_forwarded_to_the_model(self, tmp_path):
+        seen = {}
+
+        class Capture:
+            def complete_json(self, system, user):
+                seen["user"] = user
+                return _good_proposal()
+
+        planner = _planner()
+        shadow = sp.ShadowPlanner(Capture(), sp.ShadowPlanStore(tmp_path))
+        shadow.observe(intent=_intent(), system="s",
+                       user="deploy with sk-live-abcdefghijklmnop123456 please",
+                       session_id=SESSION, request_id=None,
+                       authoritative_plan=_authoritative(planner),
+                       planner=planner).result(timeout=10)
+        assert "sk-live-" not in seen["user"]
+        assert "[REDACTED]" in seen["user"]
+
+    def test_secret_echoed_into_a_description_is_scrubbed_before_storage(
+            self, tmp_path):
+        proposal = {"tasks": [_task("a")]}
+        proposal["tasks"][0]["description"] = "use token ghp_abcdefghijklmnop1234567890"
+        record, store = _run(FakePort(proposal), tmp_path)
+        assert record.status == "validated"
+        assert "ghp_abcdefghijklmnop" not in record.candidate["tasks"][0]["description"]
+        assert "ghp_abcdefghijklmnop" not in next(store.root.rglob("*.json")).read_text()
+
+
+class TestShadowPrompt:
+    def test_prompt_defines_ids_before_dependency_references(self, tmp_path):
+        from aura.central_agent import AgentSessionStore, CentralAgent
+        from aura.central_agent.intent import IntentCompiler
+        from aura.fabric import FabricConfig
+
+        cfg = FabricConfig(fabric=None, audit_store=None, ledger=None,
+                           permissions={}, executors={}, secrets=None)
+        agent = CentralAgent(fabric_cfg=cfg,
+                             session_store=AgentSessionStore(tmp_path),
+                             intent_compiler=IntentCompiler(mode="heuristic"))
+        prompt = agent._shadow_system_prompt()
+        assert "TASK IDS AND DEPENDENCIES" in prompt
+        assert "define every task" in prompt
+        assert "ONLY ids" in prompt
+        assert "never depends on itself" in prompt
+        assert "ACCEPTANCE" in prompt
+        # The authoritative prompt is not changed by the shadow rules.
+        from aura.central_agent.service import _PLAN_PROPOSAL_SYSTEM
+        assert "TASK IDS AND DEPENDENCIES" not in _PLAN_PROPOSAL_SYSTEM
