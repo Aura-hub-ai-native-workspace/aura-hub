@@ -18,6 +18,23 @@ is not a build on Windows.
 
 ### Fixed
 
+- **A failed or unverified task could hand its output to downstream tasks
+  as if it had proven it.** When a fabric verification failed outright
+  (`passed: false`, e.g. a worker exiting non-zero) on an audit-only
+  task, an over-broad promotion filed the worker's stdout into
+  `verified_outputs` anyway — and any dependent task with
+  `inputFrom: "upstream-output"` then received it wrapped in an
+  `<AURA-VERIFIED-RESULT>` envelope. A run could cascade an unverified
+  result through an entire handoff chain, with every link claiming
+  evidence it never had. Evidence filing is now strictly gated: only a
+  `done` task the run actually verified (`verified is True`) files
+  evidence; the legitimate audit-only promotion (no mechanical check
+  configured; the invocation record is the verification) still applies
+  exactly one layer earlier, at outcome row creation, and is locked in
+  place by source-level regression tests. Locked by
+  `test_handoff.py::test_unverified_blocks` (a failed upstream check
+  keeps every dependent blocked) and the behavioural gate checks in the
+  source and the packaged bundle.
 - **Claude Code's launcher was located by a hard-coded POSIX path list.**
   The adapter probed `/usr/bin/claude` and `/usr/local/bin/claude` on every
   platform, so a Windows installation outside `PATH` was never found. The
