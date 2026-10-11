@@ -26,7 +26,7 @@ import os
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .intent import ModelPort
@@ -187,7 +187,23 @@ def _infer_network_class(base_url: str) -> str:
         return "unknown"
 
 
+def _response_diagnostics(content: str, choice: dict, extraction: str,
+                         exc: "json.JSONDecodeError | None") -> dict:
+    """Sizes, offsets and status words about a reply. Never reply text."""
+    finish = choice.get("finish_reason") if isinstance(choice, dict) else None
+    return {
+        "responseChars": len(content),
+        "finishReason": str(finish)[:32] if finish is not None else None,
+        "extraction": extraction,
+        "parseErrorOffset": exc.pos if exc is not None else None,
+        "parseErrorKind": type(exc).__name__ if exc is not None else None,
+    }
+
+
 class RoutingError(Exception):
+    diagnostics: dict | None = None
+    raw: str | None = None
+
     """All configured providers failed or none is configured.
 
     Carries a structured failure `category` (see classify_failure) in
@@ -561,17 +577,30 @@ class RoutedModelPort(ModelPort):
                     body = self._post(
                         f"{spec.base_url}/chat/completions",
                         payload, headers, spec.timeout_s)
-                    content = (body["choices"][0]["message"]["content"] or "")
-                    match = _first_json_object(content)
+                    choice = body["choices"][0]
+                    content = (choice["message"]["content"] or "")
+                    match, extraction = _extract_json_object(content)
                     if match is None:
                         # The provider SPOKE but produced no JSON object.
                         # Retrying the same endpoint hides a systematic
                         # problem — fail over with an honest reason instead.
-                        raise ValueError("provider returned no JSON object")
+                        raise ModelResponseError(
+                            "provider returned no JSON object",
+                            diagnostics=_response_diagnostics(
+                                content, choice, extraction, None),
+                            raw=content)
+                    try:
+                        parsed = json.loads(match)
+                    except json.JSONDecodeError as exc:
+                        raise ModelResponseError(
+                            f"provider JSON did not parse: {exc}",
+                            diagnostics=_response_diagnostics(
+                                content, choice, extraction, exc),
+                            raw=content) from None
                     health.consecutive_failures = 0
                     self._circuit_opened_at.pop(spec.id, None)
                     self._record_call(spec, started, True)
-                    return json.loads(match)
+                    return parsed
                 except Exception as exc:
                     health.consecutive_failures += 1
                     health.last_error = str(exc)[:200]
@@ -584,9 +613,12 @@ class RoutedModelPort(ModelPort):
                         self._record_call(spec, started, False, str(exc))
                         break
                     time.sleep(min(2 ** attempt * 0.25, 2.0))
-        raise RoutingError(f"model routing failed ({last_error})",
+        err = RoutingError(f"model routing failed ({last_error})",
                            _routing_category(self.providers, attempted,
                                              last_exc))
+        err.diagnostics = getattr(last_exc, "diagnostics", None)
+        err.raw = getattr(last_exc, "raw", None)
+        raise err
 
 
 def _routing_category(providers: list[ProviderSpec], attempted: bool,
@@ -622,12 +654,92 @@ def _http_post_json(url: str, payload: dict, headers: dict,
         return json.loads(resp.read(8 * 1024 * 1024))
 
 
-def _first_json_object(text: str) -> str | None:
+def _balanced_end(text: str, start: int) -> int | None:
+    """Index of the brace closing the object opened at ``start``, honouring
+    JSON string literals and escapes, or None when it never closes."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _extract_json_object(text: str) -> tuple[str | None, str]:
+    """The JSON object a reply carries, and how it was found.
+
+    Rules, chosen so that no nested fragment is ever accepted in place of a
+    malformed whole:
+      * a fenced block wins when present;
+      * otherwise each top-level ``{`` is tried in order. A candidate that
+        does not close means the reply was cut off inside it, so the scan
+        stops there; a candidate that closes and parses is returned;
+      * a candidate that closes but does not parse is skipped together with
+        everything inside it (no nested object is accepted from a malformed
+        outer one), so prose braces before the real object are tolerated.
+
+    Status: ``fenced``, ``balanced`` (a parse-valid object was found),
+    ``invalid`` (closed candidates existed, none parsed; the first is
+    returned so the parser can report its offset), ``unbalanced`` (the reply
+    was cut off inside an object) or ``none``.
+    """
     import re
 
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
     if fenced:
-        return fenced.group(1)
-    bare = re.search(r"\{.*\}", text, re.S)
-    return bare.group(0) if bare else None
+        return fenced.group(1), "fenced"
+    first_invalid: str | None = None
+    pos = text.find("{")
+    while pos != -1:
+        end = _balanced_end(text, pos)
+        if end is None:
+            if first_invalid is not None:
+                return first_invalid, "invalid"
+            return text[pos:], "unbalanced"
+        candidate = text[pos:end + 1]
+        try:
+            if isinstance(json.loads(candidate), dict):
+                return candidate, "balanced"
+        except ValueError:
+            pass
+        if first_invalid is None:
+            first_invalid = candidate
+        pos = text.find("{", end + 1)
+    if first_invalid is not None:
+        return first_invalid, "invalid"
+    return None, "none"
+
+
+def _first_json_object(text: str) -> str | None:
+    return _extract_json_object(text)[0]
+
+
+class ModelResponseError(ValueError):
+    """The provider answered, but the reply was not a usable JSON object.
+
+    ``diagnostics`` holds only sizes, offsets and status words, never reply
+    text. ``raw`` holds the reply in memory so a caller that opted in can
+    capture it. It is never placed in messages or logs.
+    """
+
+    def __init__(self, message: str, *, diagnostics: dict, raw: str) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics
+        self.raw = raw
 

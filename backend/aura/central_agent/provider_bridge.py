@@ -49,6 +49,11 @@ class BridgeResult:
     degraded: bool = False
     error_category: str | None = None
     error: str | None = None
+    #: Sizes, offsets and status words about an unusable reply. Never text.
+    diagnostics: dict | None = None
+    #: The unusable reply itself, held in memory only for an opted-in
+    #: capture. Excluded from repr so it cannot reach a log by accident.
+    raw_response: str | None = field(default=None, repr=False)
 
 
 _SENSITIVE_KEY_RE = re.compile(
@@ -141,7 +146,9 @@ class ProviderBridge:
                 else "INTERNAL_PROVIDER_ERROR"
             return BridgeResult(
                 ok=False, degraded=category in DEGRADED_CATEGORIES,
-                error_category=category, error=str(exc)[:300], **base)
+                error_category=category, error=str(exc)[:300],
+                diagnostics=getattr(exc, "diagnostics", None),
+                raw_response=getattr(exc, "raw", None), **base)
         except Exception as exc:
             return BridgeResult(
                 ok=False, degraded=False,
