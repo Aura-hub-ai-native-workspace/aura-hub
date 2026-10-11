@@ -169,7 +169,7 @@ vi.stubGlobal('fetch', fetchStub);
 const { useConversations } = await import('./useConversations');
 const { useAgentConversations } = await import('./useAgentConversations');
 
-const IDLE_ACTIVITY = { workers: {}, tools: [], phase: null, awaitingApproval: false };
+const IDLE_ACTIVITY = { workers: {}, workerNames: {}, tools: [], phase: null, awaitingApproval: false };
 
 const settle = async () => { for (let i = 0; i < 16; i += 1) await Promise.resolve(); };
 

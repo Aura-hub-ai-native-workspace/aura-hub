@@ -70,7 +70,7 @@ beforeEach(() => {
   useAgentConversations.setState({
     projectId: null, projectPath: null, conversations: [], activeId: 'conv-test',
     messages: [], phase: 'idle', loading: false, agentUp: null,
-    activity: { workers: {}, tools: [], phase: null, awaitingApproval: false },
+    activity: { workers: {}, workerNames: {}, tools: [], phase: null, awaitingApproval: false },
   });
 });
 

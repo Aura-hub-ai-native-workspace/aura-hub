@@ -189,8 +189,15 @@ function StageCard({
 function ActiveStageCard({ activity }: { activity: AgentActivity }) {
   if (!activity.phase) return null;
   const tools = activity.tools.length ? `using ${joinNames(activity.tools)}` : null;
-  const workers = Object.keys(activity.workers);
-  const workerLabel = workers.length > 0 ? ` · ${workers[0]}` : '';
+  // The worker label is the HUMAN name the backend's lifecycle frame
+  // reported for the node it assigned — the same attribution the
+  // execution record keeps. A node id ("claude-code") is never
+  // rendered, and a worker without a reported name is not rendered as
+  // a guess from something else: it simply contributes no label.
+  const workerNames = Object.entries(activity.workers)
+    .map(([nodeId]) => activity.workerNames[nodeId])
+    .filter((n): n is string => !!n);
+  const workerLabel = workerNames.length > 0 ? ` · ${workerNames[0]}` : '';
 
   return (
     <div className="flex gap-3" data-testid="agent-activity" role="status">

@@ -1070,16 +1070,6 @@ class CentralAgent:
                 how = task.verification.description or task.verification.kind \
                     if task else "audit-only"
                 verified_lines.append(f"{row.taskId}: verified ({how})")
-        audit_ref = (f"audit invocation {bundle.auditRecordIds[0]}"
-                     if bundle.auditRecordIds else "no governed invocations")
-        if report.unverifiedActions and report.passed is False:
-            tail = f" Unverified: {', '.join(report.unverifiedActions)}."
-        else:
-            tail = ""
-        # When no model synthesis is available, surface the worker's own
-        # report as the answer. The technical verification record stays in
-        # the evidence bundle; the worker's stdout is the most honest
-        # human-readable result we can give without a model port.
         _verified_map = getattr(outcome, "verified_outputs", None) or {}
         _worker_stdout = ""
         for _row in report.outcomes:
@@ -1089,6 +1079,74 @@ class CentralAgent:
                 if _out:
                     _worker_stdout = _out[:self._ANSWER_SUMMARY_CHARS]
                     break
+        audit_ref = (f"audit invocation {bundle.auditRecordIds[0]}"
+                     if bundle.auditRecordIds else "no governed invocations")
+        if report.unverifiedActions and report.passed is False:
+            tail = f" Unverified: {', '.join(report.unverifiedActions)}."
+        else:
+            tail = ""
+
+        def _deterministic_summary() -> str:
+            """The no-model answer, written for a person.
+
+            v0.1.20 and earlier fell back to the ORCHESTRATION record here
+            — "1 task(s) executed; all verifications passed. Verified — t1:
+            verified (audit-only). Audit: …" — which is precise, honest and
+            unreadable. It named internal task ids and audit ids in the
+            sentence, which is why the Linux desktop showed raw bookkeeping
+            as the reply (Issue B: responses that read like a pipeline dump
+            on one platform while another showed fluent answers, purely
+            depending on whether a model port happened to be configured).
+
+            The same facts, stated in sentences: what was asked, what ran
+            (capability, in words), what happened per task, and what was —
+            or was NOT — verified. Every number below comes from the run's
+            own records; nothing is invented and no failure is softened:
+            an unverified or failed task says so in its clause. Technical
+            ids stay where they have always lived — the evidence bundle —
+            and remain available on the diagnostics surface.
+            """
+            parts: list[str] = []
+            n = len(outcome.outcomes)
+            # Lead with the objective, in words — the intent's goal is the
+            # person's own request, not an invented claim.
+            goal = (getattr(getattr(plan, "intent", None), "goal", "")
+                    or "").strip()
+            objective = (f"Regarding “{goal[:200]}”: " if goal else "")
+            # What actually ran, per task, with its real verification state.
+            by_id = {t.id: t for t in plan.tasks}
+            ran: list[str] = []
+            for row in report.outcomes:
+                task = by_id.get(row.taskId)
+                cap = (getattr(task, "capabilityId", None)
+                       or (getattr(task, "description", "")[:60]
+                           if task else "")) or "the requested step"
+                if row.verified is True:
+                    ran.append(f"“{cap}” completed and was verified")
+                elif row.verified is False:
+                    ran.append(f"“{cap}” completed but its verification "
+                               "did not pass")
+                else:  # None — never claimed
+                    ran.append(f"“{cap}” could not be verified")
+            body = "; ".join(ran) if ran else "no task produced a result record"
+            if report.passed:
+                closing = (f"{n} task" + ("" if n == 1 else "s")
+                           + " ran, and every verification passed.")
+            elif report.unverifiedActions:
+                closing = ("I have not marked this done: "
+                           + ", ".join(report.unverifiedActions)
+                           + " could not be verified.")
+            else:
+                closing = ("I have not marked this done because a "
+                           "verification did not pass.")
+            parts.append(f"{objective}{closing}")
+            parts.append(f"Details: {body}.")
+            # State the ask, and where the real evidence lives, without
+            # dumping an audit id into the chat line.
+            parts.append("Full execution records, evidence and audit "
+                         "references are in this run's evidence bundle.")
+            return " ".join(parts)
+
         # Phase H honesty: every task verified but the objective
         # acceptance unmet is NOT success. Report the objective as
         # failed with the unmet criteria named — never fabricate it.
@@ -1120,16 +1178,12 @@ class CentralAgent:
                 evidence=bundle,
                 failureReason="objective-unaccepted",
             )
+        _deterministic = _deterministic_summary()
         return AgentResult(
             status="completed" if report.passed else "verifying",
             outcome="completed",
             summary=(
-                _worker_stdout if _worker_stdout else (
-                    f"{'; '.join(summary_bits)}. "
-                    + ("Verified — " + "; ".join(verified_lines) + ". "
-                       if verified_lines else "")
-                    + f"{tail}Audit: {audit_ref}.".strip()
-                )
+                _worker_stdout if _worker_stdout else _deterministic
             ),
             performed=[o.taskId for o in outcome.outcomes if o.performed],
             verified=[o.taskId for o in report.outcomes if o.verified is True],

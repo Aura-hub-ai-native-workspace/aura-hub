@@ -64,6 +64,14 @@ export type AgentConvPhase = 'idle' | 'working';
 export interface AgentActivity {
   /** Live worker node id → lifecycle word, for the capability graph. */
   workers: Record<string, string>;
+  /**
+   * Worker node id → human name, exactly as the backend's lifecycle
+   * frame reported it. The graph and the stage card use these instead
+   * of ever printing a raw node id — "Claude Code", never
+   * "claude-code". A worker without a reported name has no label:
+   * absent beats invented.
+   */
+  workerNames: Record<string, string>;
   /** Human names of what AURA actually reached for, in first-use order. */
   tools: string[];
   /** One short phrase, or null when nothing is happening. */
@@ -73,7 +81,7 @@ export interface AgentActivity {
 }
 
 const IDLE_ACTIVITY: AgentActivity = {
-  workers: {}, tools: [], phase: null, awaitingApproval: false,
+  workers: {}, workerNames: {}, tools: [], phase: null, awaitingApproval: false,
 };
 
 export interface AgentMsgMeta {
@@ -259,6 +267,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     const prev = get().activity;
     const next: AgentActivity = {
       workers: prev.workers,
+      workerNames: prev.workerNames,
       tools: prev.tools,
       phase: phrase ?? prev.phase,
       awaitingApproval:
@@ -270,9 +279,20 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     if (frame.type === 'worker.lifecycle') {
       const nodeId = typeof payload.nodeId === 'string' ? payload.nodeId : null;
       const lifecycle = typeof payload.lifecycle === 'string' ? payload.lifecycle : '';
-      if (nodeId) next.workers = { ...prev.workers, [nodeId]: lifecycle };
-      const worker = typeof payload.worker === 'string' ? payload.worker : null;
-      if (worker && !next.tools.includes(worker)) next.tools = [...next.tools, worker];
+      const workerName = typeof payload.worker === 'string' ? payload.worker : null;
+      if (nodeId) {
+        next.workers = { ...prev.workers, [nodeId]: lifecycle };
+        // The name rides the SAME frame the backend recorded the worker
+        // under, so the label on screen can only be the name of the
+        // worker AURA actually assigned — attribution by construction,
+        // never a guess from which workers exist.
+        if (workerName) {
+          next.workerNames = { ...prev.workerNames, [nodeId]: workerName };
+        }
+      }
+      // The name also joins the record of what ran, so a finished turn
+      // still says it used the worker. It is a record of reported use.
+      if (workerName && !next.tools.includes(workerName)) next.tools = [...next.tools, workerName];
     }
 
     const capability = typeof payload.capabilityId === 'string' ? payload.capabilityId : null;
@@ -437,7 +457,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
         // The tool list survives the turn: it is the record of what was
         // used, and the transcript shows it beside the answer. Only the
         // live phase clears.
-        set({ phase: 'idle', activity: { ...get().activity, phase: null, workers: {} } });
+        set({ phase: 'idle', activity: { ...get().activity, phase: null, workers: {}, workerNames: {} } });
         setTimeout(() => flight.unsubscribe?.(), 1500);
       }
     };
@@ -764,7 +784,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
         if (inflight === flight) {
           flight.settled = true;
           inflight = null;
-          set({ phase: 'idle', activity: { ...get().activity, phase: null, workers: {} } });
+          set({ phase: 'idle', activity: { ...get().activity, phase: null, workers: {}, workerNames: {} } });
         }
       };
       pushEvent(messageId, 'approval.required', granted ? 'Approval granted — resuming' : 'Approval denied');
@@ -816,7 +836,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       // "Working · using Git" after the user has stopped the work. The
       // tool list survives for the same reason it survives a normal
       // finish: it is the record of what ran before the stop.
-      set({ phase: 'idle', activity: { ...get().activity, phase: null, workers: {} } });
+      set({ phase: 'idle', activity: { ...get().activity, phase: null, workers: {}, workerNames: {} } });
     },
 
     async regenerate() {

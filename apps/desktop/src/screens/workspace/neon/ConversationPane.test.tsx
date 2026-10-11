@@ -42,7 +42,7 @@ import { ConversationPane } from './ConversationPane';
  */
 const SOURCE = readFileSync(new URL('./ConversationPane.tsx', import.meta.url), 'utf8');
 
-const IDLE: AgentActivity = { workers: {}, tools: [], phase: null, awaitingApproval: false };
+const IDLE: AgentActivity = { workers: {}, workerNames: {}, tools: [], phase: null, awaitingApproval: false };
 
 function user(content: string): AgentChatMessage {
   return { id: `u-${content.slice(0, 6)}`, role: 'user', content, status: 'done' };
@@ -188,7 +188,7 @@ describe('ConversationPane — activity appears only when it is real', () => {
     // "using Git" under a live dot would be claiming present tense for
     // something that is over.
     const finished: AgentActivity = {
-      workers: {}, tools: ['Git'], phase: null, awaitingApproval: false,
+      workers: {}, workerNames: {}, tools: ['Git'], phase: null, awaitingApproval: false,
     };
     const markup = render([user('Check the repo'), assistant('Clean.')], { activity: finished });
 
@@ -198,7 +198,7 @@ describe('ConversationPane — activity appears only when it is real', () => {
 
   it('names what AURA is doing and what it is using', () => {
     const activity: AgentActivity = {
-      workers: { opencode: 'ACTIVE' },
+      workers: { opencode: 'ACTIVE' }, workerNames: { opencode: 'OpenCode' },
       tools: ['Git', 'OpenCode'],
       phase: 'Working',
       awaitingApproval: false,
@@ -211,7 +211,7 @@ describe('ConversationPane — activity appears only when it is real', () => {
 
   it('never prints a raw event name, lifecycle word or node id', () => {
     const activity: AgentActivity = {
-      workers: { opencode: 'SPAWNING' },
+      workers: { opencode: 'SPAWNING' }, workerNames: { opencode: 'OpenCode' },
       tools: ['Git'],
       phase: 'Working',
       awaitingApproval: false,
