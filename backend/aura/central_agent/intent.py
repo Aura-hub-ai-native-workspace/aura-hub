@@ -173,6 +173,13 @@ def is_capability_question(message: str) -> bool:
         return False
     if _CAPABILITY_FRAME_RE.match(text) is None:
         return False
+    # A question ABOUT THE PROJECT is work-shaped (someone should read
+    # the code), not a question about AURA's abilities. Without this,
+    # "Can you explain this project's directory structure?" was
+    # answered by a canned capability line that never looked at the
+    # code — the same false friendly answer called out in v0.1.21.
+    if _INFO_PROJECT_RE.search(text) is not None:
+        return False
     # Wanting it done always wins over asking whether it could be.
     if _WORK_RE.search(text) is not None:
         return False
@@ -419,6 +426,48 @@ _NOT_WORK_RE = re.compile(
     r"\b(what|which|why|when|who|how many|explain|describe|tell me about)\b",
     re.IGNORECASE)
 
+#: An INFORMATIONAL question about this project or codebase: the user
+#: wants an answer grounded in the repository ("Explain the architecture
+#: of this project", "Where is authentication implemented?", "Trace how
+#: requests reach the backend"). Before v0.1.21 such questions were
+#: vetoed by _NOT_WORK_RE and fell through to a terminal clarification
+#: that asked what the user wanted to CHANGE — the wrong conversation
+#: for a question, on every platform. The honest route is the same
+#: read-only research delegation a no-modify review already takes: a
+#: worker reads the real project and reports findings, and nothing on
+#: this machine is modified.
+#:
+#: A match requires ALL of:
+#:   1. question/informational phrasing (explain, where is, how does,
+#:      what is, describe, show me, trace, walk me through …) — the
+#:      frame `_NOT_WORK_RE` already recognises, widened deliberately
+#:      to include "where" and "how", and
+#:   2. a project/codeback target (this project, the codebase, the
+#:      repository, the backend, its architecture, a feature name …) —
+#:      the question is ABOUT the code, not general knowledge, and
+#:   3. no effect verb: nothing here may change a file. "Explain the
+#:      architecture and then refactor it" carries _CHANGE_RE and is
+#:      implementation work, not a lookup — that stays with the
+#:      delegated-work rule below.
+#: Bounded at 200 chars because a normal question is one sentence; a
+#: message that exceeds it carries enough structure that the work-verb
+#: rules should see the whole thing.
+_INFO_PROJECT_RE = re.compile(
+    r"^\s*(?:hey|hi|ok(?:ay)?[\s,]+)?"
+    r"(?:(?:can|could|would|will)\s+(?:you|u|aura)\s+)?(?:please\s+)?"
+    r"(?:explain|describe|show\s+(?:me)?|tell\s+(?:me)?|"
+    r"walk\s+(?:me)\s+through|trace|outline|summari[sz]e|"
+    r"where\s+(?:is|are|does|do|can|would)|how\s+(?:is|are|does|do|"
+    r"can|would|should)|what\s+(?:is|are|was|were)|find\s+|locate\s+)\b"
+    r"[^.?]{0,120}?"
+    r"\b(?:the\s+)?(?:proj|code|repo(?:sitory)?|app(?:lication)?|"
+    r"backend|frontend|service|system|workspace|architecture|"
+    r"module|component|feature|flow|request|api|auth(?:entication)?|"
+    r"implement(?:ation)?|bug|failure|error|defect|regression|crash|"
+    r"fail(?:ure|ing)?[- ]?(?:test|case|check)?|"
+    r"\w+[\w.]*\.(?:py|ts|tsx|js|rs|go|md|toml|json))+",
+    re.IGNORECASE)
+
 #: A SECOND worker reviewing the first worker's verified result. Matched
 #: only alongside work, so "review" alone never plans a dispatch.
 _REVIEW_RE = re.compile(
@@ -651,13 +700,27 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
     # ("do not MODIFY"): without this, "Review … Do not modify" would
     # veto its own review. A bare "review the code please" (no
     # purpose) never matches _REVIEW_WORK_RE at all.
+    # An informational question about THIS project is a research ask,
+    # not a clarification. It survives the same vetoes as a diagnosis:
+    # no change verb, and nothing else in the message asking for work.
+    # ("Explain the architecture of this project.")
+    informational = (
+        _INFO_PROJECT_RE.search(user_message) is not None
+        and _CHANGE_RE.search(user_message) is None
+        and _EFFECT_RE.search(user_message) is None
+        and _WORK_RE.search(user_message) is None
+        and not direct_git_status and not authoring and not running_wf
+        and not file_write)
     denuded = _NO_MODIFY_RE.sub(" ", user_message)
     review_work = (
         _REVIEW_WORK_RE.search(denuded) is not None
         and _CHANGE_RE.search(denuded) is None
         and _EFFECT_RE.search(denuded) is None)
-    delegating = ((_WORK_RE.search(user_message) is not None or diagnosing or review_work or multi_worker)
-                   and (diagnosing or review_work or multi_worker or _NOT_WORK_RE.match(user_message.strip()) is None)
+    delegating = ((_WORK_RE.search(user_message) is not None or diagnosing
+                   or review_work or multi_worker or informational)
+                   and (diagnosing or review_work or multi_worker
+                        or informational
+                        or _NOT_WORK_RE.match(user_message.strip()) is None)
                    # A known direct capability is not investigation. This
                    # yields to the `git.status` branch below rather than
                    # answering here: one route, one executor, no second
@@ -670,8 +733,12 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
     # of an implementation task. A contradictory "fix it but change
     # nothing" honours the constraint — the safe direction — rather
     # than the verb.
+    # An informational question is read-only BY CONSTRUCTION — the
+    # regexes above refuse any effect or change verb, so the delegation
+    # is an investigation, never an edit.
     read_only = bool(delegating) and (
-        _NO_MODIFY_RE.search(user_message) is not None or review_work)
+        _NO_MODIFY_RE.search(user_message) is not None or review_work
+        or informational)
     if delegating:
         wants_review = _REVIEW_RE.search(user_message) is not None
         # Remediation only means something when someone reviewed first;

@@ -108,16 +108,38 @@ class ActionVerdict:
     # the action (the runtime self-terminates on these)
 
 
+_WIN_DRIVE_RE = _re.compile(r"^[A-Za-z]:")
+
+
+def _abs_marker(norm: str) -> bool:
+    """True when the (slash-normalized) path is ABSOLUTE where the worker
+    runs, on any platform.
+
+    Drives are load-bearing cross-platform: on Windows a target like
+    ``C:/repo/work/file`` does not start with ``/`` but is absolute in
+    every sense the runtime means. Treating it as relative made an
+    in-scope readiness write DENY (outside task scope) and the worker
+    self-terminate with exit 42 — the OpenCode connect failure on
+    Windows. A POSIX path stays POSIX: drive letters are also legal
+    leading characters in POSIX filenames, so a leading ``/`` is
+    the only POSIX check."""
+    if norm.startswith("/"):
+        return True
+    return bool(_WIN_DRIVE_RE.match(norm))
+
+
 def _inside_scope(target: str, scope_paths: list[str],
                   cwd: str = "") -> bool:
     norm = target.replace("\\", "/").strip()
     if not norm or norm.startswith("~"):
         return False
-    if norm.startswith("/"):
+    if _abs_marker(norm):
         # Absolute paths resolve against the task cwd: inside-cwd
         # targets judge by their repo-relative form, outside-cwd
         # targets never qualify. Runtimes routinely pass absolute
-        # paths for benign in-repo reads.
+        # paths for benign in-repo reads — and on Windows they pass
+        # drive-letter paths, which are absolute but do not start
+        # with a slash.
         base = cwd.replace("\\", "/").rstrip("/")
         if not base or not (norm == base or norm.startswith(base + "/")):
             return False

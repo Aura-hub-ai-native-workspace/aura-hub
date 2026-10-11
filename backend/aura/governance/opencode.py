@@ -121,11 +121,18 @@ export const AuraGovernance = async (ctx) => {
   };
   const scopes = (POLICY.scopePaths || []).map((s) => String(s).replace(/\/$/, ""));
   const norm = (p) => String(p ?? "").replace(/\\/g, "/");
+  // Absolute-on-any-platform: a leading slash, OR a Windows drive
+  // letter. On Windows the runtime hands tools drive-letter paths
+  // (C:/repo/work/...) that are absolute but start with a drive, not
+  // "/". Treating them as relative made an in-scope write DENY and
+  // the worker self-terminate (exit 42) — the Windows readiness
+  // failure. Mirrors actions._abs_marker, pinned by the same tests.
+  const isAbs = (t) => t.startsWith("/") || /^[A-Za-z]:/.test(t);
   const insideScope = (target) => {
     const cwdBase = norm(POLICY.cwd || "").replace(/\/$/, "");
     let t = norm(target).trim();
     if (!t || t.startsWith("~")) return false;
-    if (t.startsWith("/")) {
+    if (isAbs(t)) {
       if (!cwdBase || !(t === cwdBase || t.startsWith(cwdBase + "/"))) return false;
       t = t.slice(cwdBase.length).replace(/^\//, "");
       if (!t) return true;

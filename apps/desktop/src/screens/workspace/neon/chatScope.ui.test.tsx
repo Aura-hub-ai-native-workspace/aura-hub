@@ -22,7 +22,7 @@ import { ConversationPane } from './ConversationPane';
 
 const SOURCE = readFileSync(new URL('./ConversationPane.tsx', import.meta.url), 'utf8');
 
-const IDLE: AgentActivity = { workers: {}, tools: [], phase: null, awaitingApproval: false };
+const IDLE: AgentActivity = { workers: {}, workerNames: {}, tools: [], phase: null, awaitingApproval: false };
 
 function handoff(over: Partial<Handoff> = {}): Handoff {
   const now = new Date().toISOString();
