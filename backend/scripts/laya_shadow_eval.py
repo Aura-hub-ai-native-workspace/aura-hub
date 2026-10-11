@@ -16,17 +16,38 @@ Usage:
 
 The provider comes from ``<AURA_HOME>/agent/providers.json`` through the
 existing loader. No credentials are read or written by this script.
+
+``LAYA_EVAL_WAIT`` sets how long each request waits for its shadow run, in
+seconds. Default 180. Values that are not finite numbers above zero fall back
+to the default; values above 900 are capped at 900. A slow remote call must
+not be recorded as a false "none".
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import sys
 import time
 from pathlib import Path
+
+EVAL_WAIT_DEFAULT = 180.0
+EVAL_WAIT_MAX = 900.0
+
+
+def eval_wait_seconds(raw: str | None) -> float:
+    """The per-request shadow wait, bounded. See the module docstring."""
+    try:
+        value = float(raw) if raw is not None else EVAL_WAIT_DEFAULT
+    except ValueError:
+        return EVAL_WAIT_DEFAULT
+    if not math.isfinite(value) or value <= 0:
+        return EVAL_WAIT_DEFAULT
+    return min(value, EVAL_WAIT_MAX)
+
 
 REQUESTS: list[tuple[str, str]] = [
     ("informational", "Explain the architecture of this project."),
@@ -89,7 +110,9 @@ def run(home: Path, out: Path) -> dict:
         base_auth = _authoritative(base_result)
 
         result = shadowed.submit(message, project_id="laya-eval")
-        shadow.wait(timeout=180)
+        # A remote 27B call can exceed the 1.5B default; the wait must not
+        # turn a slow-but-valid candidate into a false "none" record.
+        shadow.wait(timeout=eval_wait_seconds(os.environ.get("LAYA_EVAL_WAIT")))
         auth = _authoritative(result)
         sid = shadowed.sessions.last_session_id
         session = shadowed.sessions.load(sid) if sid else None
