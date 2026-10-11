@@ -115,6 +115,7 @@ class CentralAgent:
         sovereign_policy: Any | None = None,
         agent_runtime: Any | None = None,
         model_registry: Any | None = None,
+        shadow_planner: Any | None = None,
     ) -> None:
         self.fabric_cfg = fabric_cfg
         self.sessions = session_store
@@ -172,6 +173,10 @@ class CentralAgent:
                 known_capabilities=lambda: {
                     c.id for c in all_capabilities()},
                 known_nodes=lambda: _connected_node_ids(self.fabric_cfg))
+        # Laya shadow planning. Off unless explicitly enabled; when off this
+        # is None and the planning path below is byte-for-byte unchanged.
+        self._shadow = shadow_planner if shadow_planner is not None \
+            else self._build_shadow()
         # ONE measured capability registry for this agent: what the
         # machine can actually do, cached in memory with a TTL and
         # never persisted as truth. Discovery grounds governed
@@ -498,6 +503,9 @@ class CentralAgent:
                    "scopePaths": list((t.input or {}).get("scopePaths") or [])}
                   for t in plan.tasks],
             acceptance=[c.description[:200] for c in (plan.acceptance or [])])
+        # Shadow: after the authoritative plan is set and announced, so it
+        # cannot influence what this request does. Failures are contained.
+        self._observe_shadow(intent, user_message, session, plan)
 
         # 3. discovery — what exists for these tasks (read-only)
         tools = self.discovery.available_for([t.capabilityId for t in plan.tasks if t.capabilityId])
@@ -607,6 +615,51 @@ class CentralAgent:
                 return corrected
 
         return self._synthesize(session, plan, outcome)
+
+    def _build_shadow(self) -> Any | None:
+        """A ShadowPlanner, only when explicitly enabled and a model exists."""
+        from .shadow_planner import (
+            ShadowPlanner, ShadowPlanStore, isolated_port, shadow_enabled)
+
+        if not shadow_enabled():
+            return None
+        port = getattr(self.intents, "model_port", None)
+        if port is None:
+            return None
+        home = getattr(self.sessions, "_home", None)
+        return ShadowPlanner(isolated_port(port), ShadowPlanStore(home))
+
+    def _shadow_system_prompt(self) -> str:
+        caps = sorted(self.planner.known_capability_ids())
+        nodes = sorted(self.planner.known_node_ids())
+        return (
+            _PLAN_PROPOSAL_SYSTEM
+            + "\nYou are Laya, AURA's planning model. This is a SHADOW "
+              "proposal: it is compared with the authoritative plan and is "
+              "never executed."
+            + f"\nALLOWED CAPABILITIES: {', '.join(caps) or '(none)'}"
+            + ("\nCONNECTED NODES: " + ", ".join(nodes)
+               if nodes else "\nCONNECTED NODES: none — omit nodeId."))
+
+    def _observe_shadow(self, intent: AgentIntent, user_message: str,
+                        session: AgentSession, plan: TaskPlan) -> None:
+        """Schedule a shadow run. Never raises and never returns a plan."""
+        shadow = getattr(self, "_shadow", None)
+        if shadow is None or not getattr(shadow, "enabled", False):
+            return
+        try:
+            user = (f"INTENT GOAL:\n{intent.goal}\n\nEXPECTED OUTCOME:\n"
+                    f"{intent.expectedOutcome}\n\nUSER REQUEST:\n{user_message}")
+            shadow.observe(
+                intent=intent, system=self._shadow_system_prompt(), user=user,
+                session_id=session.sessionId,
+                request_id=getattr(session, "lastRequestId", None),
+                authoritative_plan=plan, planner=self.planner)
+        except Exception:  # noqa: BLE001 — shadow must never affect the request
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "shadow planning could not be scheduled", exc_info=True)
 
     def _plan_from_model(self, intent: AgentIntent, session: AgentSession,
                          user_message: str, bundle: Any,
