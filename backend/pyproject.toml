@@ -92,13 +92,16 @@ include = ["aura*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --basetemp=/mnt/storage/pytest-tmp"
+# basetemp is NOT hard-coded: a machine-local absolute path here broke every
+# other checkout (the GitHub runner errored on '/mnt/storage/pytest-tmp' for
+# every tmp_path-using test). AURA_PYTEST_BASETEMP overrides it where the
+# per-user /tmp quota is too small (the original reason for the hard-code).
+# tmp_path_upgrade / defaults otherwise apply.
 asyncio_mode = "auto"
 norecursedirs = ["target", "node_modules", ".git", "__pycache__"]
-# Keep only failed test sessions' tmp dirs and at most 2 previous runs.
-# Combined with basetemp on /mnt/storage, this prevents the per-user quota
-# on /tmp (tmpfs with usrquota) from being exhausted by fixture files created
-# by test_discovery_layers, test_environment_windows_safety, etc.
+# Keep only failed test sessions' tmp dirs and at most 2 previous runs, so
+# fixture-heavy suites (test_discovery_layers etc.) cannot exhaust a
+# quota-limited tmp filesystem.
 tmp_path_retention_policy = "failed"
 tmp_path_retention_count = 2
 
