@@ -42,6 +42,7 @@ from pydantic import BaseModel, ConfigDict
 from ..config import aura_home
 from ..contracts import AgentIntent, TaskPlan
 from ..jsonutil import read_json_file
+from .intent import _NO_MODIFY_RE
 from .planner import PlanningError
 from .provider_bridge import _SENSITIVE_KEY_RE, ProviderBridge
 
@@ -60,6 +61,10 @@ MAX_CONCURRENT = 2
 MAX_PER_MINUTE = 10
 #: The request text forwarded to the shadow model is bounded.
 PROMPT_CHAR_CAP = 4000
+#: Opt-in raw capture of unusable model replies (never on by default).
+RAW_ENV_FLAG = "AURA_SHADOW_CAPTURE_RAW"
+RAW_CAP_FILES = 50
+RAW_CAP_CHARS = 65536
 
 #: Categories where retrying cannot help. Configuration, not transience.
 _PERMANENT = frozenset({
@@ -134,6 +139,9 @@ _REJECTION_PATTERNS = [
     ("unknown-capability", re.compile(r"unknown capability")),
     ("unsupported-field", re.compile(r"unsupported fields")),
     ("scope-widening", re.compile(r"expands beyond")),
+    ("duplicate-scope", re.compile(r"repeats a scope path")),
+    ("unbounded-scope", re.compile(
+        r"not a bounded|scopePaths|scope paths?|non-string scope")),
     ("invalid-node", re.compile(r"nodeId|node", re.IGNORECASE)),
 ]
 
@@ -143,6 +151,52 @@ def classify_rejection(message: str) -> str:
         if pattern.search(message):
             return label
     return "other"
+
+
+#: Verbs a read-only request may use for a direct capability. Allowlist, so
+#: an unknown or new capability is refused under a read-only constraint.
+READ_ONLY_VERBS = frozenset({
+    "status", "list", "read", "inspect", "search", "get", "show", "describe",
+    "view", "find", "diff", "log", "query", "info", "check", "summarize",
+})
+READ_ONLY_ROLE = "research"
+
+
+def read_only_request(intent: AgentIntent, user: str,
+                      authoritative_plan: TaskPlan | None) -> bool:
+    """A request is read-only when the user states a no-modify constraint,
+    or when the authority itself plans only research delegations. The
+    authority's classification is reused, not a second policy."""
+    text = " ".join([intent.goal, *intent.constraints, user])
+    if _NO_MODIFY_RE.search(text):
+        return True
+    if authoritative_plan is None:
+        return False
+    delegated = [t for t in authoritative_plan.tasks
+                 if t.capabilityId == "agent.delegate"]
+    return bool(delegated) and all(
+        t.workerRole == READ_ONLY_ROLE for t in delegated)
+
+
+def read_only_conflict(candidate: TaskPlan) -> tuple[str, str] | None:
+    """The first way a candidate breaks a read-only constraint, as (class,
+    message), or None. Fails closed: only research delegations and read-verb
+    direct capabilities pass. Nothing is rewritten."""
+    for task in candidate.tasks:
+        if task.capabilityId == "agent.delegate":
+            if task.workerRole != READ_ONLY_ROLE:
+                label = ("read-only-role" if task.workerRole
+                         else "read-only-unset-role")
+                return label, (
+                    f"read-only request: task {task.id} uses worker role "
+                    f"{task.workerRole!r}; only {READ_ONLY_ROLE!r} is allowed")
+        else:
+            verb = (task.capabilityId or "").rsplit(".", 1)[-1]
+            if verb not in READ_ONLY_VERBS:
+                return "read-only-capability", (
+                    f"read-only request: task {task.id} uses capability "
+                    f"{task.capabilityId!r}, which is not a read capability")
+    return None
 
 
 class ShadowPlanRecord(BaseModel):
@@ -169,6 +223,10 @@ class ShadowPlanRecord(BaseModel):
     candidateSummary: dict | None = None
     comparison: dict | None = None
     governance: dict | None = None
+    #: Sizes, offsets and status words about an unusable reply. Never text.
+    diagnostics: dict | None = None
+    #: Relative path of an opt-in raw capture, when one was written.
+    rawCapturePath: str | None = None
     executed: Literal[False] = False
 
 
@@ -247,6 +305,29 @@ class ShadowPlanStore:
         os.chmod(path, 0o600)
         self._prune()
         return path
+
+    def write_raw(self, record_session: str, shadow_id: str,
+                  text: str) -> str:
+        """Opt-in capture of an unusable reply. Scrubbed, capped, owner-only,
+        and the oldest captures are removed past RAW_CAP_FILES. Returns the
+        path relative to the store root."""
+        directory = self._session_dir(record_session)
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.root, 0o700)
+        os.chmod(directory, 0o700)
+        path = directory / f"{shadow_id}.raw.txt"
+        body = scrub_text(text)[:RAW_CAP_CHARS]
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+        raws = sorted(self.root.rglob("*.raw.txt"),
+                      key=lambda p: p.stat().st_mtime)
+        for old in raws[:-RAW_CAP_FILES]:
+            old.unlink(missing_ok=True)
+        return str(path.relative_to(self.root))
 
     def list(self, session_id: str | None = None) -> list[dict]:
         base = self._session_dir(session_id) if session_id else self.root
@@ -420,10 +501,16 @@ class ShadowPlanner:
         identity = {"provider": result.provider, "model": result.model,
                     "latencyMs": result.latencyMs, "attempts": attempts}
         if not result.ok:
+            raw_path = None
+            if os.environ.get(RAW_ENV_FLAG) == "1" and result.raw_response:
+                raw_path = self.store.write_raw(
+                    base["sessionId"], base["shadowId"], result.raw_response)
             return ShadowPlanRecord(
                 **base, **identity, status="model-failed",
                 errorCategory=result.error_category,
-                error=_clip(result.error))
+                error=_clip(result.error),
+                diagnostics=result.diagnostics,
+                rawCapturePath=raw_path)
 
         proposal = result.data
         try:
@@ -440,6 +527,17 @@ class ShadowPlanner:
                 errorCategory=f"SCHEMA:{classify_rejection(str(exc))}",
                 error=_clip(f"{type(exc).__name__}: {exc}"),
                 candidate=scrub_structure(proposal))
+
+        if read_only_request(intent, user, authoritative_plan):
+            conflict = read_only_conflict(candidate)
+            if conflict is not None:
+                label, message = conflict
+                # Rejected, not rewritten: the candidate is kept as evidence.
+                return ShadowPlanRecord(
+                    **base, **identity, status="schema-rejected",
+                    errorCategory=f"SCHEMA:{label}",
+                    error=_clip(message),
+                    candidate=scrub_structure(proposal))
 
         summary = summarize_plan(candidate)
         return ShadowPlanRecord(
