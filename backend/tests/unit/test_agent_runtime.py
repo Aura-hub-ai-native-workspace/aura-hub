@@ -459,22 +459,35 @@ class TestOpenCodeAdapter:
 # ── KiloAdapter ──────────────────────────────────────────────────────────────
 
 class TestKiloAdapter:
-    def test_apply_writes_env_block_to_jsonc(self, tmp_path: Path, monkeypatch):
+    def test_apply_writes_advisory_not_jsonc(self, tmp_path: Path, monkeypatch):
+        """kilo.jsonc does NOT support an "env" key — writing one makes kilo
+        refuse to start ("Unrecognized key: env", machine-verified).
+        apply() therefore writes ONLY the advisory env file that the
+        execution layer injects at spawn time, and leaves kilo.jsonc
+        untouched. Status is OK: the file AURA writes is fully supported.
+        """
         cfg_path = tmp_path / "kilo.jsonc"
         cfg_path.write_text('{"permission": {}}', encoding="utf-8")
+        advisory_path = tmp_path / "aura-runtime-env.sh"
         monkeypatch.setattr(
             "aura.agent_runtime.adapters.kilo._CONFIG_PATH", cfg_path)
         monkeypatch.setattr(
-            "aura.agent_runtime.adapters.kilo._ADVISORY_PATH",
-            tmp_path / "aura-runtime-env.sh")
+            "aura.agent_runtime.adapters.kilo._ADVISORY_PATH", advisory_path)
         monkeypatch.setattr("shutil.which",
                             lambda x: "/usr/bin/kilo" if x in ("kilo", "kilocode") else None)
         from aura.agent_runtime.adapters.kilo import KiloAdapter
         adapter = KiloAdapter()
+        before = cfg_path.read_text()
         change = adapter.apply(_runtime())
-        assert change.status == ConfigStatus.PARTIAL  # honest about uncertain env support
-        written = json.loads(cfg_path.read_text())
-        assert written["env"]["ANTHROPIC_BASE_URL"] == "http://localhost:11434/v1"
+        assert change.status == ConfigStatus.OK
+        advisory_text = advisory_path.read_text(encoding="utf-8")
+        assert 'ANTHROPIC_BASE_URL="http://localhost:11434/v1"' in advisory_text
+        # The JSONC config stays exactly as it was: no "env" key smuggled in.
+        assert cfg_path.read_text() == before
+        assert "env" not in json.loads(cfg_path.read_text())
+        # And verify() reads back the same endpoint from the advisory file.
+        verified = adapter.verify(_runtime("http://localhost:11434/v1"))
+        assert verified.status == ConfigStatus.OK
 
 
 # ── CodexAdapter ──────────────────────────────────────────────────────────────

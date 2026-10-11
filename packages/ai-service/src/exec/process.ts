@@ -42,14 +42,25 @@ import { launchSpec, spawnFlags } from './which';
 function runFile(
   bin: string,
   args: string[],
-  opts: { cwd?: string; timeout: number; signal?: AbortSignal },
+  opts: { cwd?: string; timeout: number; signal?: AbortSignal; env?: Record<string, string> },
   done: (err: unknown, stdout: string, stderr: string) => void,
 ) {
   const { target } = launchSpec(bin, args);
   return execFile(
     target.file,
     target.args,
-    { cwd: opts.cwd, timeout: opts.timeout, maxBuffer: MAX_BUFFER, signal: opts.signal, ...spawnFlags(target) },
+    {
+      cwd: opts.cwd,
+      timeout: opts.timeout,
+      maxBuffer: MAX_BUFFER,
+      signal: opts.signal,
+      // Merge caller-supplied env vars into the inherited environment so
+      // agent-specific endpoint config (base URL, API key) reaches the
+      // subprocess without leaking the full parent environment into an
+      // untrusted command.
+      ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+      ...spawnFlags(target),
+    },
     (err, stdout, stderr) => done(err, stdout, stderr),
   );
 }
@@ -204,7 +215,7 @@ export function runAgent(bin: string, args: string[], opts: SpawnOptions): Promi
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = runFile(resolved.bin, args, { cwd: opts.cwd, timeout, signal: opts.signal }, (err, stdout, stderr) => {
+      child = runFile(resolved.bin, args, { cwd: opts.cwd, timeout, signal: opts.signal, env: opts.env }, (err, stdout, stderr) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
           return reject(new Error(`${resolved.bin} is not installed`));
         }
@@ -234,6 +245,8 @@ export interface SpawnOptions {
   cwd: string;
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** Extra env vars merged into the subprocess environment at spawn time. */
+  env?: Record<string, string>;
 }
 
 const GIT_TIMEOUT_MS = 20_000;

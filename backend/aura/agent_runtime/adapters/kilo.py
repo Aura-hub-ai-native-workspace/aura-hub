@@ -1,17 +1,16 @@
 """KiloAdapter — configure Kilo Code to use a private inference endpoint.
 
-Config mechanism (verified by machine inspection 2026-09-23):
+Config mechanism (verified by machine inspection 2026-10-11):
   ~/.config/kilo/kilo.jsonc  (JSONC, $schema: app.kilo.ai/config.json)
-  Observed sections: permission only.
-  Kilo Code v7.5.14 is a Claude-architecture fork — it respects:
-    ANTHROPIC_BASE_URL  — overrides the inference endpoint
-    ANTHROPIC_API_KEY   — API key (use "ollama" for keyless local)
+  kilo.jsonc does NOT support an "env" key — writing one causes kilo to
+  refuse to start with "Unrecognized key: env".
 
-  AURA writes these into kilo.jsonc under an "env" key (same pattern as
-  Claude Code settings.json). If the kilo.jsonc schema does not support "env",
-  apply() falls back to writing ~/.config/kilo/aura-runtime-env.sh advisory.
+  AURA stores the endpoint config in an advisory shell file:
+    ~/.config/kilo/aura-runtime-env.sh
 
-  Status returned is PARTIAL until env-injection support is confirmed.
+  The execution layer (fabric/executors.ts _readAdvisoryEnv) reads this file
+  at spawn time and injects the vars into the subprocess environment so kilo
+  receives ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY without a process restart.
 """
 
 from __future__ import annotations
@@ -73,8 +72,20 @@ class KiloAdapter(AgentConfigurationAdapter):
                 config_status=ConfigStatus.NOT_INSTALLED,
             )
         cfg = _read_jsonc(_CONFIG_PATH)
-        env_block = cfg.get("env", {})
-        base_url = env_block.get("ANTHROPIC_BASE_URL") or os.environ.get("ANTHROPIC_BASE_URL")
+        # base_url lives in the advisory env file (injected at spawn time),
+        # NOT in kilo.jsonc (which does not support the "env" key).
+        base_url = None
+        try:
+            advisory_text = _ADVISORY_PATH.read_text(encoding="utf-8")
+            for line in advisory_text.splitlines():
+                m = re.match(r'^\s*export\s+ANTHROPIC_BASE_URL="?([^"\']+)"?\s*$', line)
+                if m:
+                    base_url = m.group(1).strip()
+                    break
+        except Exception:
+            pass
+        if not base_url:
+            base_url = os.environ.get("ANTHROPIC_BASE_URL")
         binary = shutil.which("kilo") or shutil.which("kilocode")
         version = self._get_version(binary)
         return AgentRecord(
@@ -101,33 +112,22 @@ class KiloAdapter(AgentConfigurationAdapter):
             return None
 
     def buildDesiredConfig(self, runtime: RuntimeConfig) -> dict:
-        cfg = _read_jsonc(_CONFIG_PATH)
-        env_block = dict(cfg.get("env", {}))
-        env_block["ANTHROPIC_BASE_URL"] = runtime.base_url
-        if runtime.auth_type == AuthType.KEYLESS:
-            env_block["ANTHROPIC_API_KEY"] = "ollama"
-        elif runtime.api_key_env:
-            env_block["ANTHROPIC_API_KEY"] = f"$ref:{runtime.api_key_env}"
-        return {"env": env_block}
+        # kilo.jsonc does not support an "env" key — desired config is
+        # expressed via the advisory env file, not the JSON config.
+        return {}
 
     def apply(self, runtime: RuntimeConfig) -> ConfigurationChange:
-        cfg = _read_jsonc(_CONFIG_PATH)
-        old_bytes = json.dumps(cfg, sort_keys=True).encode()
-        old_cs = checksum(old_bytes)
+        # kilo.jsonc does NOT support an "env" key — writing it crashes kilo
+        # on startup. The endpoint config is written ONLY to the advisory file;
+        # the execution layer (fabric/executors.ts) injects these vars at
+        # spawn time so kilo receives them without a process restart.
+        # Checksums track the advisory file, which is what actually changes.
+        try:
+            old_advisory_bytes = _ADVISORY_PATH.read_bytes()
+        except FileNotFoundError:
+            old_advisory_bytes = b""
+        old_cs = checksum(old_advisory_bytes)
 
-        env_block = dict(cfg.get("env", {}))
-        env_block["ANTHROPIC_BASE_URL"] = runtime.base_url
-        if runtime.auth_type == AuthType.KEYLESS:
-            env_block["ANTHROPIC_API_KEY"] = "ollama"
-        elif runtime.api_key_env:
-            actual = os.environ.get(runtime.api_key_env, "")
-            if actual:
-                env_block["ANTHROPIC_API_KEY"] = actual
-        cfg["env"] = env_block
-
-        _write_jsonc(_CONFIG_PATH, cfg)
-
-        # Also write advisory in case kilo ignores the env block
         key_line = (
             'export ANTHROPIC_API_KEY="ollama"\n'
             if runtime.auth_type == AuthType.KEYLESS
@@ -136,7 +136,7 @@ class KiloAdapter(AgentConfigurationAdapter):
         )
         advisory = (
             "# AURA-managed runtime env for Kilo Code\n"
-            "# Source before starting Kilo if env block in kilo.jsonc is not respected.\n"
+            "# Injected into the kilo subprocess by AURA at invocation time.\n"
             f'export ANTHROPIC_BASE_URL="{runtime.base_url}"\n'
             + key_line
         )
@@ -144,21 +144,30 @@ class KiloAdapter(AgentConfigurationAdapter):
         _ADVISORY_PATH.write_text(advisory, encoding="utf-8")
         _ADVISORY_PATH.chmod(0o600)
 
-        new_bytes = json.dumps(cfg, sort_keys=True).encode()
         return ConfigurationChange(
             agent_id="kilo",
             operation="apply",
-            status=ConfigStatus.PARTIAL,
-            fields_changed=["env.ANTHROPIC_BASE_URL", "env.ANTHROPIC_API_KEY"],
+            status=ConfigStatus.OK,
+            fields_changed=["aura-runtime-env.sh:ANTHROPIC_BASE_URL",
+                            "aura-runtime-env.sh:ANTHROPIC_API_KEY"],
             previous_checksum=old_cs,
-            new_checksum=checksum(new_bytes),
-            note="Written to kilo.jsonc env block; advisory also at "
-                 f"{_ADVISORY_PATH} if schema ignores env key",
+            new_checksum=checksum(advisory.encode("utf-8")),
+            note=f"Endpoint written to {_ADVISORY_PATH}; injected at spawn time.",
         )
 
     def verify(self, runtime: RuntimeConfig) -> ConfigurationChange:
-        cfg = _read_jsonc(_CONFIG_PATH)
-        actual = cfg.get("env", {}).get("ANTHROPIC_BASE_URL")
+        # Verify against the advisory file (the single source of truth for
+        # kilo's endpoint config — kilo.jsonc does not support "env").
+        actual = None
+        try:
+            advisory_text = _ADVISORY_PATH.read_text(encoding="utf-8")
+            for line in advisory_text.splitlines():
+                m = re.match(r'^\s*export\s+ANTHROPIC_BASE_URL="?([^"\']+)"?\s*$', line)
+                if m:
+                    actual = m.group(1).strip()
+                    break
+        except Exception:
+            pass
         ok = actual == runtime.base_url
         return ConfigurationChange(
             agent_id="kilo",
@@ -171,15 +180,17 @@ class KiloAdapter(AgentConfigurationAdapter):
         )
 
     def restore(self, backup_bytes: bytes) -> ConfigurationChange:
-        old_cs = checksum(_CONFIG_PATH.read_bytes()) if _CONFIG_PATH.exists() else None
-        tmp = _CONFIG_PATH.with_suffix(".tmp")
+        old_cs = checksum(_ADVISORY_PATH.read_bytes()) if _ADVISORY_PATH.exists() else None
+        tmp = _ADVISORY_PATH.with_suffix(".tmp")
         tmp.write_bytes(backup_bytes)
-        tmp.replace(_CONFIG_PATH)
+        tmp.replace(_ADVISORY_PATH)
+        _ADVISORY_PATH.chmod(0o600)
         return ConfigurationChange(
             agent_id="kilo",
             operation="restore",
             status=ConfigStatus.OK,
-            fields_changed=["env"],
+            fields_changed=["aura-runtime-env.sh:ANTHROPIC_BASE_URL",
+                            "aura-runtime-env.sh:ANTHROPIC_API_KEY"],
             previous_checksum=old_cs,
             new_checksum=checksum(backup_bytes),
         )

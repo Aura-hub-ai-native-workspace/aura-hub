@@ -561,6 +561,13 @@ _FILE_WRITE_RE = re.compile(
     r"(?:called\s+|named\s+)?['\"]?(.+?)['\"]?\s+(?:containing|with|that contains)\s+"
     r"['\"]?(.+?)['\"]?\s*$", re.IGNORECASE)
 
+#: Named AI workers that AURA can delegate to. Two or more names in the
+#: same message alongside "parallel" or "independent" is an unambiguous
+#: delegation request regardless of which verb precedes the worker names.
+_PARALLEL_WORKERS_RE = re.compile(
+    r"\b(opencode|open\s+code|claude\s+code|kilo\s+code)\b",
+    re.IGNORECASE)
+
 
 
 def heuristic_interpret(user_message: str) -> AgentIntent:
@@ -603,6 +610,12 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
     # else, so the direct executor answers it instead of a worker.
     direct_git_status = _DIRECT_GIT_STATUS_RE.match(user_message.strip()) is not None
     file_write = _FILE_WRITE_RE.search(user_message.strip()) is not None
+    # Two or more named workers + "parallel/independent" is an unambiguous
+    # delegation signal regardless of the preceding verb — "review", "use",
+    # "run", etc. all mean the same thing when two workers are named together.
+    _worker_hits = _PARALLEL_WORKERS_RE.findall(user_message)
+    multi_worker = (len(_worker_hits) >= 2
+                    and ("parallel" in text or "independent" in text))
 
     constraints: list[str] = []
     if "only" in text or "simple" in text:
@@ -643,8 +656,8 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
         _REVIEW_WORK_RE.search(denuded) is not None
         and _CHANGE_RE.search(denuded) is None
         and _EFFECT_RE.search(denuded) is None)
-    delegating = ((_WORK_RE.search(user_message) is not None or diagnosing or review_work)
-                   and (diagnosing or review_work or _NOT_WORK_RE.match(user_message.strip()) is None)
+    delegating = ((_WORK_RE.search(user_message) is not None or diagnosing or review_work or multi_worker)
+                   and (diagnosing or review_work or multi_worker or _NOT_WORK_RE.match(user_message.strip()) is None)
                    # A known direct capability is not investigation. This
                    # yields to the `git.status` branch below rather than
                    # answering here: one route, one executor, no second
@@ -667,9 +680,10 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
                              and _REMEDIATE_RE.search(user_message) is not None)
         wants_proof = _PROVE_RE.search(user_message) is not None
         scope = _delegate_scope(user_message)
-        if (re.search(r"\bclaude\s+code\b", text, re.IGNORECASE)
-                and re.search(r"\bkilo\s+code\b", text, re.IGNORECASE)
-                and ("parallel" in text or "independent" in text)):
+        if (multi_worker
+                or (re.search(r"\bclaude\s+code\b", text, re.IGNORECASE)
+                    and re.search(r"\bkilo\s+code\b", text, re.IGNORECASE)
+                    and ("parallel" in text or "independent" in text))):
             return AgentIntent.model_validate({
                 "goal": user_message.strip(),
                 "surface": "project",
@@ -946,8 +960,7 @@ class IntentCompiler:
         # never be allowed to collapse into a workflow-create intent from
         # the model. The model's proposal is advisory; this deterministic
         # worker signal is the mission intent.
-        if (re.search(r"\bclaude\s+code\b", user_message, re.IGNORECASE)
-                and re.search(r"\bkilo\s+code\b", user_message, re.IGNORECASE)
+        if (len(_PARALLEL_WORKERS_RE.findall(user_message)) >= 2
                 and ("parallel" in user_message.lower() or "independent" in user_message.lower())):
             intent.requiredCapabilities = ["agent.delegate"]
             intent.conversational = False

@@ -1076,6 +1076,19 @@ class CentralAgent:
             tail = f" Unverified: {', '.join(report.unverifiedActions)}."
         else:
             tail = ""
+        # When no model synthesis is available, surface the worker's own
+        # report as the answer. The technical verification record stays in
+        # the evidence bundle; the worker's stdout is the most honest
+        # human-readable result we can give without a model port.
+        _verified_map = getattr(outcome, "verified_outputs", None) or {}
+        _worker_stdout = ""
+        for _row in report.outcomes:
+            if _row.verified is True:
+                _rec = _verified_map.get(_row.taskId) or {}
+                _out = (_rec.get("stdout") or "").strip()
+                if _out:
+                    _worker_stdout = _out[:self._ANSWER_SUMMARY_CHARS]
+                    break
         # Phase H honesty: every task verified but the objective
         # acceptance unmet is NOT success. Report the objective as
         # failed with the unmet criteria named — never fabricate it.
@@ -1111,9 +1124,12 @@ class CentralAgent:
             status="completed" if report.passed else "verifying",
             outcome="completed",
             summary=(
-                f"{'; '.join(summary_bits)}. "
-                + ("Verified — " + "; ".join(verified_lines) + ". " if verified_lines else "")
-                + f"{tail}Audit: {audit_ref}.".strip()
+                _worker_stdout if _worker_stdout else (
+                    f"{'; '.join(summary_bits)}. "
+                    + ("Verified — " + "; ".join(verified_lines) + ". "
+                       if verified_lines else "")
+                    + f"{tail}Audit: {audit_ref}.".strip()
+                )
             ),
             performed=[o.taskId for o in outcome.outcomes if o.performed],
             verified=[o.taskId for o in report.outcomes if o.verified is True],

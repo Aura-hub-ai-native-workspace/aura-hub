@@ -12,6 +12,7 @@
     "tauri": "tauri",
     "service:bundle": "node ../../scripts/build-service-bundle.mjs",
     "desktop:prepare": "npm run service:bundle && npm run dev",
+    "desktop:prepare:dev": "AURA_DEV_BUNDLE=1 npm run service:bundle && npm run dev",
     "desktop:prepare:build": "npm run service:bundle && npm run build"
   },
   "dependencies": {

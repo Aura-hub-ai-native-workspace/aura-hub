@@ -17,6 +17,7 @@
  */
 
 import { readFile, writeFile, readdir, mkdir, stat } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
 import { git, parseCommand, resolveAgentBinary, runAgent, safeShellWithCode } from '../exec/process';
@@ -32,6 +33,43 @@ import { catalogEntry } from '@aura/connected-environment';
 import type { WorkspaceManager } from '../workspace';
 
 const MAX_READ_BYTES = 512 * 1024;
+
+// Advisory env files written by AURA's agent runtime manager. The execution
+// layer reads these at spawn time so an agent receives its configured endpoint
+// (base URL, API key) without requiring a restart of the AURA process or a
+// config-file key that the agent's schema may not support.
+const _AGENT_ENV_FILES: Record<string, string> = {
+  kilo:   path.join(homedir(), '.config', 'kilo',   'aura-runtime-env.sh'),
+  codex:  path.join(homedir(), '.codex',             'aura-runtime-env.sh'),
+  gemini: path.join(homedir(), '.gemini',            'aura-runtime-env.sh'),
+};
+
+async function _readAdvisoryEnv(bin: string): Promise<Record<string, string>> {
+  const file = _AGENT_ENV_FILES[bin];
+  if (!file) return {};
+  try {
+    const text = await readFile(file, 'utf8');
+    const env: Record<string, string> = {};
+    for (const line of text.split('\n')) {
+      const m = line.match(/^\s*export\s+([A-Z_][A-Z0-9_]*)=["']?([^"'\n]*)["']?\s*$/);
+      if (m) {
+        let value = m[2];
+        // Resolve ${VAR_NAME} shell references from the parent environment so the
+        // subprocess receives the actual key value, not a literal reference string.
+        // Without this, `export ANTHROPIC_API_KEY="${MY_VAR}"` would overwrite
+        // process.env[ANTHROPIC_API_KEY] with the unexpanded literal "${MY_VAR}".
+        const ref = value.match(/^\$\{([A-Z_][A-Z0-9_]*)\}$/);
+        if (ref && process.env[ref[1]] !== undefined) {
+          value = process.env[ref[1]] as string;
+        }
+        env[m[1]] = value;
+      }
+    }
+    return env;
+  } catch {
+    return {};
+  }
+}
 
 const s = (v: unknown, d = ''): string => (typeof v === 'string' ? v : d);
 const b = (v: unknown): boolean => v === true;
@@ -283,9 +321,14 @@ const agentDelegate: Executor = {
 
     const target = { nodeId: node.id, name: node.name, bin, invocation: invocationSpec };
     const args = target.invocation.args(brief, cwd, model);
+    // Read endpoint config (base URL, API key) from the AURA advisory env
+    // file written by the agent runtime manager. This is how env vars that
+    // the agent's own config schema cannot carry (e.g. kilo.jsonc has no
+    // "env" key) reach the subprocess without requiring a process restart.
+    const agentEnv = await _readAdvisoryEnv(target.bin);
     let res: Awaited<ReturnType<typeof runAgent>>;
     try {
-      res = await runAgent(target.bin, args, { cwd, timeoutMs: inv.context.timeoutMs });
+      res = await runAgent(target.bin, args, { cwd, timeoutMs: inv.context.timeoutMs, env: agentEnv });
     } catch (e) {
       return no(`${target.name} could not be run: ${(e as Error).message}`);
     }

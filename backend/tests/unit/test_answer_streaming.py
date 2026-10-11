@@ -144,10 +144,11 @@ def test_cancelled_run_does_not_stream(tmp_path: Path) -> None:
     result, kinds, _ = synth_with_spy(agent, session, make_plan(),
                                       make_outcome("some output"))
     assert not [e for e in kinds if e.startswith("answer.")]
-    assert "task(s) executed" in result.summary
+    # Cancelled synthesis: worker stdout is still surfaced (worker finished).
+    assert "some output" in result.summary
 
 
-def test_stream_failure_falls_back_to_deterministic(tmp_path: Path) -> None:
+def test_stream_failure_falls_back_to_worker_output(tmp_path: Path) -> None:
     class BrokenPort:
         def complete_stream(self, system, user, on_token=None,
                             should_stop=None):
@@ -160,18 +161,19 @@ def test_stream_failure_falls_back_to_deterministic(tmp_path: Path) -> None:
     assert "answer.started" in kinds
     assert "answer.failed" in kinds
     assert "answer.completed" not in kinds
-    # Deterministic record survives: tasks + verification, no fabrication.
-    assert "task(s) executed" in result.summary
+    # Worker stdout is the fallback when model synthesis fails.
+    assert "some output" in result.summary
     assert result.outcome == "completed"
 
 
-def test_no_port_means_no_streaming_no_change(tmp_path: Path) -> None:
+def test_no_port_surfaces_worker_output(tmp_path: Path) -> None:
     agent = make_agent(tmp_path, None)
     session = make_session(agent, "Summarize anything found.")
     result, kinds, _ = synth_with_spy(agent, session, make_plan(),
                                       make_outcome("some output"))
     assert not [e for e in kinds if e.startswith("answer.")]
-    assert "task(s) executed" in result.summary
+    # In heuristic (no-model) mode, worker stdout is the answer.
+    assert "some output" in result.summary
 
 
 def test_unaccepted_objective_never_streams(tmp_path: Path) -> None:

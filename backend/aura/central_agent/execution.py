@@ -945,6 +945,16 @@ class ExecutionController:
                 "approval_ids": ([outcome.approvalId] if outcome.approvalId
                                  else []),
             }
+        # Evidence is filed only for done tasks the run actually verified.
+        # Audit-only tasks whose invocation record IS the verification are
+        # promoted before their outcome row is appended (_invoke_single:
+        # fabric_verified None + audit-only + performed → True), so they
+        # arrive here with verified=True; a deliberately unverified task
+        # (passed=False, e.g. non-zero exit) must NOT file evidence — its
+        # dependents gate on verified_outputs, and handoff only ever
+        # carries results the run could prove. VerificationEngine applies
+        # its performed/audit-only relaxation to the user-facing report,
+        # never to what downstream tasks consume as input.
         if outcome.state != "done" or outcome.verified is not True:
             return
         # Collect artifact paths for the evidence bundle.

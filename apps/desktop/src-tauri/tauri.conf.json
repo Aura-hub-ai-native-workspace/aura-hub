@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": {
-      "script": "npm run desktop:prepare",
+      "script": "npm run desktop:prepare:dev",
       "wait": false
     },
     "beforeBuildCommand": "npm run desktop:prepare:build"

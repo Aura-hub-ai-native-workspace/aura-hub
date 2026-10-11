@@ -8,6 +8,7 @@ do (create: createdAt → genId(now,rand) → edge-ids → updatedAt).
 
 from __future__ import annotations
 
+import hmac
 import os
 from collections.abc import Callable
 from datetime import UTC, datetime, timezone
@@ -219,7 +220,7 @@ class WorkflowStore(CamelAlias):
     def verify_webhook_token(self, wid: str, token: str) -> dict | None:
         wf = self.get(wid)
         stored = (wf or {}).get("webhookToken")
-        if not wf or not stored or not token or stored != token:
+        if not wf or not stored or not token or not hmac.compare_digest(stored, token):
             return None
         return wf
 

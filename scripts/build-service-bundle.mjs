@@ -549,19 +549,24 @@ function dirBytes(dir) {
  * right answer, and using it removes a whole class of mismatch: the wheel
  * is built for this CPython because this CPython asked for it.
  */
-const nodeRuntime = await stageNodeRuntime();
-const stagingPython = await stagePythonRuntime();
-if (spawnSync(stagingPython, ['-c', 'import pip'], { stdio: 'ignore' }).status !== 0) {
-  throw new Error(
-    `The bundled interpreter at ${stagingPython} has no pip, so the backend's `
-    + 'dependencies cannot be vendored.',
-  );
-}
+const DEV_BUNDLE = Boolean(process.env.AURA_DEV_BUNDLE);
+const vendored = { bytes: 0, abis: [] };
+let trimmed = { before: 0, after: 0 };
+let nodeRuntime;
+if (!DEV_BUNDLE) {
+  nodeRuntime = await stageNodeRuntime();
+  const stagingPython = await stagePythonRuntime();
+  if (spawnSync(stagingPython, ['-c', 'import pip'], { stdio: 'ignore' }).status !== 0) {
+    throw new Error(
+      `The bundled interpreter at ${stagingPython} has no pip, so the backend's `
+      + 'dependencies cannot be vendored.',
+    );
+  }
 
-const pip = (args) => execFileSync(stagingPython, ['-m', 'pip', ...args], {
-  encoding: 'utf8',
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
+  const pip = (args) => execFileSync(stagingPython, ['-m', 'pip', ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 
 /**
  * Remove what a backend never reaches for.
@@ -710,12 +715,10 @@ function trimPythonRuntime(runtimeDir) {
   return { before, after: dirBytes(runtimeDir) };
 }
 
-const SITE_OUT = path.join(PY_OUT, 'site-packages');
-const vendored = { bytes: 0, abis: [] };
-let trimmed = { before: 0, after: 0 };
-try {
-  pip(['install', '--quiet', '--no-compile', '--target', SITE_OUT,
-    ...backendRequirements()]);
+  const SITE_OUT = path.join(PY_OUT, 'site-packages');
+  try {
+    pip(['install', '--quiet', '--no-compile', '--target', SITE_OUT,
+      ...backendRequirements()]);
 
   // Console scripts: a `uvicorn` launcher hard-coded to the BUILD machine's
   // interpreter path. Nothing runs it, and shipping it would only invite
@@ -781,22 +784,27 @@ try {
     + 'and then reports an empty machine.',
   );
 }
+}
 
 const mb = (p) => (statSync(p).size / 1024 / 1024).toFixed(1);
 console.log(`  ai-service.mjs        ${mb(path.join(OUT_DIR, 'ai-service.mjs'))} MB`);
-console.log(`  node runtime          ${mb(nodeRuntime)} MB (Node ${NODE_RUNTIME_VERSION}, ${process.platform}-${process.arch})`);
+if (!DEV_BUNDLE) {
+  console.log(`  node runtime          ${mb(nodeRuntime)} MB (Node ${NODE_RUNTIME_VERSION}, ${process.platform}-${process.arch})`);
+}
 console.log(`  typescript/lib        ${mb(path.join(TS_OUT, 'lib/typescript.js'))} MB`);
 console.log(
   `  python backend        ${(staged.bytes / 1024 / 1024).toFixed(1)} MB`
   + ` (${staged.files} files)`,
 );
-console.log(
-  `  python runtime        ${(trimmed.after / 1024 / 1024).toFixed(1)} MB`
-  + ` (CPython ${PY_RUNTIME_VERSION}, ${process.platform}-${process.arch};`
-  + ` trimmed from ${(trimmed.before / 1024 / 1024).toFixed(1)} MB)`,
-);
-console.log(
-  `  python deps           ${(vendored.bytes / 1024 / 1024).toFixed(1)} MB`
-  + ` (pydantic_core for ${vendored.abis.join(', ')})`,
-);
+if (!DEV_BUNDLE) {
+  console.log(
+    `  python runtime        ${(trimmed.after / 1024 / 1024).toFixed(1)} MB`
+    + ` (CPython ${PY_RUNTIME_VERSION}, ${process.platform}-${process.arch};`
+    + ` trimmed from ${(trimmed.before / 1024 / 1024).toFixed(1)} MB)`,
+  );
+  console.log(
+    `  python deps           ${(vendored.bytes / 1024 / 1024).toFixed(1)} MB`
+    + ` (pydantic_core for ${vendored.abis.join(', ')})`,
+  );
+}
 console.log(`  staged into           ${OUT_DIR}`);
