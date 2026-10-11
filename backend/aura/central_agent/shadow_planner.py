@@ -132,7 +132,9 @@ _REJECTION_PATTERNS = [
     ("duplicate-id", re.compile(r"duplicate")),
     ("acceptance-unknown-task", re.compile(r"acceptance covers unknown")),
     ("unknown-capability", re.compile(r"unknown capability")),
-    ("unknown-node", re.compile(r"node", re.IGNORECASE)),
+    ("unsupported-field", re.compile(r"unsupported fields")),
+    ("scope-widening", re.compile(r"expands beyond")),
+    ("invalid-node", re.compile(r"nodeId|node", re.IGNORECASE)),
 ]
 
 

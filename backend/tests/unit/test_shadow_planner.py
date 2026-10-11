@@ -583,6 +583,19 @@ class TestDependencyRejections:
         assert record.candidateSummary["acceptanceCoverage"] == 1.0
 
 
+class TestRejectionClasses:
+    @pytest.mark.parametrize("message,label", [
+        ("proposal task 0 carries unsupported fields: ['acceptance']", "unsupported-field"),
+        ("task git-status depends on itself", "self-dependency"),
+        ("task t1 has a malformed nodeId", "invalid-node"),
+        ("task t2 scope ['x'] expands beyond its dependencies' scope", "scope-widening"),
+        ("task x depends on unknown task 'y'", "unknown-dependency"),
+        ("model proposed unknown capability 'z'", "unknown-capability"),
+    ])
+    def test_each_observed_validator_message_has_its_own_class(self, message, label):
+        assert sp.classify_rejection(message) == label
+
+
 class TestScrubbing:
     def test_identifiers_and_labels_are_never_scrubbed(self):
         for text in ("token-refresh-implementation", "build-status",
@@ -655,11 +668,13 @@ class TestShadowPrompt:
                              session_store=AgentSessionStore(tmp_path),
                              intent_compiler=IntentCompiler(mode="heuristic"))
         prompt = agent._shadow_system_prompt()
-        assert "TASK IDS AND DEPENDENCIES" in prompt
-        assert "define every task" in prompt
+        assert "OUTPUT SHAPE" in prompt
+        # The skeleton places acceptance at the top level, where the validator
+        # requires it. Observed failure: the model nested it inside a task.
+        assert '"acceptance": [{' in prompt
+        assert 'NOT a field of a task' in prompt
         assert "ONLY ids" in prompt
-        assert "never depends on itself" in prompt
-        assert "ACCEPTANCE" in prompt
+        assert "never the task itself" in prompt
         # The authoritative prompt is not changed by the shadow rules.
         from aura.central_agent.service import _PLAN_PROPOSAL_SYSTEM
-        assert "TASK IDS AND DEPENDENCIES" not in _PLAN_PROPOSAL_SYSTEM
+        assert "OUTPUT SHAPE" not in _PLAN_PROPOSAL_SYSTEM
