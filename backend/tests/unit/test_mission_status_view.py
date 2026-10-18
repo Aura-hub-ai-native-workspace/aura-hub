@@ -110,3 +110,19 @@ def test_new_fields_have_safe_defaults_for_old_results(field):
 
     legacy = AgentResult(status="completed", outcome="completed", summary="ok")
     assert getattr(legacy, field) in (None, [])
+
+
+def test_answer_contains_every_verified_worker_output(tmp_path):
+    """Regression: the answer used to take only the first verified worker's
+    stdout, so a two-worker answer dropped the second worker's findings."""
+    svc = _service(tmp_path)
+    plan = _plan(_task("t1"), _task("t2"))
+    out = _outcome(_done("t1"), _done("t2"),
+                   workers={"t1": {"worker": "claude-code"},
+                            "t2": {"worker": "kilo-code"}})
+    out.verified_outputs["t1"] = {"stdout": "Finding from Claude A"}
+    out.verified_outputs["t2"] = {"stdout": "Finding from Kilo B"}
+    result = svc._synthesize(_session(tmp_path), plan, out)
+    assert result.outcome == "completed"
+    assert "Claude Code:" in result.summary and "Finding from Claude A" in result.summary
+    assert "Kilo Code:" in result.summary and "Finding from Kilo B" in result.summary

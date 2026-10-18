@@ -94,6 +94,14 @@ def _default_version_store(workflow_store):
     return WorkflowVersionStore(clock=workflow_store._clock)
 
 
+
+#: Human labels for worker ids in answers shown to the user.
+_WORKER_LABELS = {
+    "claude-code": "Claude Code",
+    "kilo-code": "Kilo Code",
+    "opencode": "OpenCode",
+}
+
 class CentralAgent:
     #: The ONE cancellation authority for this process, as a class
     #: default so every instance has one — including the bare instances
@@ -1181,14 +1189,21 @@ class CentralAgent:
         # the evidence bundle; the worker's stdout is the most honest
         # human-readable result we can give without a model port.
         _verified_map = getattr(outcome, "verified_outputs", None) or {}
-        _worker_stdout = ""
+        # Every verified worker's own output, labelled by who produced it.
+        # Taking only the first one dropped the other worker's findings from
+        # a multi-worker answer.
+        _worker_parts: list[str] = []
         for _row in report.outcomes:
             if _row.verified is True:
                 _rec = _verified_map.get(_row.taskId) or {}
                 _out = (_rec.get("stdout") or "").strip()
                 if _out:
-                    _worker_stdout = _out[:self._ANSWER_SUMMARY_CHARS]
-                    break
+                    _who = (outcome.worker_assignments or {}).get(
+                        _row.taskId, {}).get("worker") or _row.taskId
+                    _worker_parts.append(
+                        f"{_WORKER_LABELS.get(str(_who), str(_who))}:\n"
+                        f"{_out[:self._ANSWER_SUMMARY_CHARS]}")
+        _worker_stdout = "\n\n".join(_worker_parts)[:self._ANSWER_SUMMARY_CHARS * 2]
         # Phase H honesty: every task verified but the objective
         # acceptance unmet is NOT success. Report the objective as
         # failed with the unmet criteria named — never fabricate it.

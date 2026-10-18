@@ -704,9 +704,46 @@ def _named_multi_workers(text: str) -> list[tuple[int, re.Pattern, str]] | None:
     return found if 2 <= len(found) <= 4 else None
 
 
+def _sentence_worker_clauses(text: str, workers):
+    """Attribute each worker's instruction from the sentence that names it.
+
+    A header such as "Claude Code and Kilo Code: work in parallel, do not
+    modify anything." names both workers at once; cutting the text between
+    those two names leaves Claude with the word "and". Here each worker's
+    clause is taken from a sentence that names ONLY that worker ("Claude
+    Code, inspect alpha/a.txt"), and a header's text after its colon is a
+    constraint shared by both. Returns None when any worker has no usable
+    own sentence, so the older splitter still decides those cases.
+    """
+    nodes = [node for _, _, node in workers]
+    patterns = {node: pat for _, pat, node in workers}
+    sentences = [x.strip() for x in re.split(r"(?<=[.;!?])\s+|\n+", text) if x.strip()]
+    shared: list[str] = []
+    own: dict[str, str] = {}
+    for sent in sentences:
+        named = [n for n in nodes if patterns[n].search(sent)]
+        if len(named) >= 2:
+            head, colon, rest = sent.partition(":")
+            if colon and rest.strip():
+                shared.append(rest.strip(" .,;"))
+            continue
+        if len(named) == 1 and named[0] not in own:
+            m = patterns[named[0]].search(sent)
+            clause = sent[m.end():].lstrip(" ,:-\t").strip(" .,;:\"'")
+            if len(clause.split()) >= 2:
+                own[named[0]] = clause
+    if any(n not in own for n in nodes):
+        return None
+    suffix = ("; " + " ".join(shared)) if shared else ""
+    return [(n, own[n] + suffix) for n in nodes]
+
+
 def _two_worker_clauses(text: str, workers: list[tuple[int, re.Pattern, str]]):
     """Cut the text around each named worker so each clause reads as that
-    worker's half of the job."""
+    worker's half of the job. Own-sentence attribution is tried first."""
+    by_sentence = _sentence_worker_clauses(text, workers)
+    if by_sentence is not None:
+        return by_sentence
     pieces = []
     for i, (_, pattern, node) in enumerate(workers):
         m = pattern.search(text)
@@ -795,17 +832,10 @@ def _plan_parallel_multi_worker(intent: AgentIntent, session_id: str,
     scope = _validated_scope(intent)
 
     tasks: list[TaskSpecification] = []
-    for i, (_, pattern, node) in enumerate(workers):
-        m = pattern.search(text)
-        head = text[m.end():]
-        if i + 1 < len(workers):
-            nxt = workers[i + 1][1].search(head)
-            seg = head[:nxt.start()] if nxt else head
-        else:
-            stop = re.search(r"\.", head)
-            seg = head[:stop.end()] if stop else head
-        seg = seg.strip(" .,;:\"'\n")
-        seg = re.sub(r"\s+(?:and|&|,)$", "", seg, flags=re.I)
+    # One clause splitter for every fan-out path (see _two_worker_clauses).
+    # Two divergent copies of this logic caused the same request to hand a
+    # worker the word "and" whenever the multi-worker path ran first.
+    for i, (node, seg) in enumerate(_two_worker_clauses(text, workers)):
         # Unique task id: worker short name + index guard
         short = node.split("-")[0]
         task_id = f"delegate-{short}" if not any(t.id == f"delegate-{short}" for t in tasks) \

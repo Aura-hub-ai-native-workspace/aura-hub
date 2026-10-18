@@ -78,3 +78,48 @@ class TestParallelTwoWorkerPlan:
         assert len(plan.tasks) == 2
         caps = {t.capabilityId for t in plan.tasks}
         assert caps == {"agent.delegate"}
+
+
+class TestHeaderNamingBothWorkers:
+    """A header that names both workers must not cut the instructions.
+
+    Regression: "Claude Code and Kilo Code: … Claude Code, inspect a.txt …"
+    gave Claude the task text "and", so it ran with nothing to do.
+    """
+
+    MESSAGE = (
+        "Claude Code and Kilo Code: work in parallel and independently, "
+        "without modifying anything. Claude Code, inspect alpha/a.txt and "
+        "report its contents. Kilo Code, inspect alpha/b.txt and report its "
+        "contents."
+    )
+
+    def test_each_worker_receives_its_own_instruction(self):
+        plan = _plan_parallel_two_worker(heuristic_interpret(self.MESSAGE), "ses", "now")
+        by_id = {t.id: t for t in plan.tasks}
+        assert "alpha/a.txt" in by_id["delegate-claude"].input["task"]
+        assert "alpha/b.txt" in by_id["delegate-kilo"].input["task"]
+
+    def test_no_worker_gets_a_bare_connective(self):
+        plan = _plan_parallel_two_worker(heuristic_interpret(self.MESSAGE), "ses", "now")
+        for t in plan.tasks:
+            assert len(t.input["task"].split()) >= 4
+            assert t.input["task"].lower() not in ("and", "")
+
+    def test_shared_constraint_is_carried_to_both(self):
+        plan = _plan_parallel_two_worker(heuristic_interpret(self.MESSAGE), "ses", "now")
+        for t in plan.tasks:
+            assert "without modifying anything" in t.input["task"]
+
+
+def test_header_phrasing_through_the_live_front_door():
+    """plan_delegated_work is the path a real submit takes. The multi-worker
+    planner runs first for two names; it must split the same way."""
+    from aura.central_agent.planner import plan_delegated_work
+
+    msg = TestHeaderNamingBothWorkers.MESSAGE
+    plan = plan_delegated_work(heuristic_interpret(msg), "ses", "now")
+    by_id = {t.id: t for t in plan.tasks}
+    assert "alpha/a.txt" in by_id["delegate-claude"].input["task"]
+    assert "alpha/b.txt" in by_id["delegate-kilo"].input["task"]
+    assert by_id["delegate-claude"].input["task"].lower() != "and"
