@@ -146,6 +146,30 @@ class ExecutionController:
         prior_verified: dict[str, dict] | None = None,
         correlation: dict[str, str] | None = None,
     ) -> ExecutionOutcome:
+        """Run one plan leg (see _execute_plan), then check write conflicts
+        across the WHOLE run: every task that recorded changed paths,
+        whatever wave or sequential step it ran in."""
+        result = self._execute_plan(
+            plan, project_id, compiled_workflow=compiled_workflow,
+            cancel_check=cancel_check, cancel_token=cancel_token,
+            resume_grants=resume_grants, project_cwd=project_cwd,
+            prior_verified=prior_verified, correlation=correlation)
+        result.write_conflicts = self._detect_write_conflicts(
+            plan, result.verified_outputs)
+        return result
+
+    def _execute_plan(
+        self,
+        plan: TaskPlan,
+        project_id: str | None,
+        compiled_workflow: dict | None = None,
+        cancel_check: Any | None = None,
+        cancel_token: Any | None = None,
+        resume_grants: dict[str, str] | None = None,
+        project_cwd: str | None = None,
+        prior_verified: dict[str, dict] | None = None,
+        correlation: dict[str, str] | None = None,
+    ) -> ExecutionOutcome:
         """Run one plan leg. `prior_verified` seeds handoff evidence from an
         earlier leg of the same workflow (verified task_id → evidence
         record, as filed by _note_task_closed): a resumed leg must not
@@ -489,10 +513,7 @@ class ExecutionController:
         result.request_id = correlation.get("request_id") or result.request_id
 
         # Post-dispatch: detect actual file conflicts from verified changed_paths.
-        # Per wave: a conflict between tasks in different waves is not seen
-        # here. That is a known limit, not a silent pass; see the report.
-        result.write_conflicts.extend(
-            self._detect_write_conflicts(plan, per_task))
+
 
     # ── Concurrent-worker conflict detection ─────────────────────────
     @staticmethod
@@ -522,20 +543,22 @@ class ExecutionController:
 
     @staticmethod
     def _detect_write_conflicts(
-        plan: TaskPlan, per_task: dict[str, "ExecutionOutcome"]
+        plan: TaskPlan, verified_outputs: dict[str, dict]
     ) -> list[dict]:
-        """Post-dispatch: find paths two or more workers actually modified.
-        Reads changed_paths from every task's verified evidence.  Returns
-        one record per conflicting path so the service layer can emit
-        worker.lifecycle events and the UI can highlight them."""
+        """Post-dispatch: find paths two or more tasks actually modified.
+        Ownership is read from each task's OWN verified evidence record
+        (verified_outputs[task.id]), never from a copy of other tasks'
+        records, so a path is attributed only to the task that wrote it,
+        across every execution wave of the run. Returns one record per
+        conflicting path so the service layer can emit worker.lifecycle
+        events and the UI can highlight them."""
         path_owners: dict[str, list[str]] = {}
         for task in plan.tasks:
-            per = per_task.get(task.id)
-            if per is None:
-                continue
-            for evidence in per.verified_outputs.values():
-                for path in (evidence.get("changed_paths") or []):
-                    path_owners.setdefault(str(path), []).append(task.id)
+            evidence = verified_outputs.get(task.id) or {}
+            for path in (evidence.get("changed_paths") or []):
+                owners = path_owners.setdefault(str(path), [])
+                if task.id not in owners:
+                    owners.append(task.id)
         return [
             {"path": path, "tasks": task_ids,
              "risk": "post-execution-write-conflict"}

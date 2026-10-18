@@ -43,6 +43,8 @@ def timing(monkeypatch):
     lock = threading.Lock()
     # task id -> terminal state the fake worker reports; default "done".
     monkeypatch.setattr(sys.modules[__name__], "STATES", {}, raising=False)
+    # task id -> changed_paths the fake worker reports as its own evidence.
+    monkeypatch.setattr(sys.modules[__name__], "PATHS", {}, raising=False)
 
     def fake_invoke(self, task, project_id, compiled_workflow, result,
                     approval_id=None, project_cwd=None, cancel_token=None,
@@ -53,6 +55,9 @@ def timing(monkeypatch):
         with lock:
             spans[task.id] = (start, end)
         state = STATES.get(task.id, "done")
+        if task.id in PATHS:
+            result.verified_outputs[task.id] = {
+                "changed_paths": list(PATHS[task.id]), "verified": True}
         result.outcomes.append(TaskOutcome(
             taskId=task.id, state=state, performed=state == "done",
             verified=True if state == "done" else None,
@@ -155,3 +160,28 @@ def test_each_worker_keeps_its_own_task_id_and_single_outcome(timing):
     ids = [o.taskId for o in result.outcomes]
     assert sorted(ids) == ["t1", "t2", "t3"]  # one outcome per task, no duplicates
     assert all(o.state == "done" for o in result.outcomes)
+
+
+def _paths(monkeypatch, mapping):
+    monkeypatch.setitem(sys.modules[__name__].__dict__, "PATHS", mapping)
+
+
+def test_write_conflict_across_waves_is_detected(timing, monkeypatch):
+    """t1 and t3 write the same file, but t3 runs in a later wave (it
+    depends on t1). The conflict must still be reported."""
+    _paths(monkeypatch, {"t1": ["src/a.py"], "t2": ["src/b.py"],
+                         "t3": ["src/a.py"]})
+    tasks = [_task("t1"), _task("t2"), _task("t3", depends=["t1"])]
+    result = _controller().execute(_plan(tasks), project_id=None)
+    assert timing["t3"][0] >= timing["t1"][1]  # really a later wave
+    assert result.write_conflicts == [{
+        "path": "src/a.py", "tasks": ["t1", "t3"],
+        "risk": "post-execution-write-conflict"}]
+
+
+def test_disjoint_writes_report_no_conflict(timing, monkeypatch):
+    _paths(monkeypatch, {"t1": ["src/a.py"], "t2": ["src/b.py"],
+                         "t3": ["src/c.py"]})
+    tasks = [_task("t1"), _task("t2"), _task("t3", depends=["t1"])]
+    result = _controller().execute(_plan(tasks), project_id=None)
+    assert result.write_conflicts == []
