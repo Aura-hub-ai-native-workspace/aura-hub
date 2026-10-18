@@ -182,7 +182,11 @@ class ExecutionController:
                                     correlation=correlation)
             return result
 
+        # Tasks already launched as a concurrent wave (see _ready_wave).
+        dispatched: set[str] = set()
         for task in topo_order(plan.tasks):
+            if task.id in dispatched:
+                continue
             if _stop_requested():
                 result.cancelled = True
                 result.stopped = True
@@ -191,6 +195,29 @@ class ExecutionController:
                     "dispatched for it")
                 result.cancelled_before.append(task.id)
                 break
+
+            # Independent work runs concurrently even when the plan also has
+            # dependency-gated tasks: every ready, eligible task goes out as
+            # one wave, then the sequential loop resumes for the rest. A wave
+            # of one is just the normal sequential path below.
+            wave = self._ready_wave(plan, result, dispatched)
+            if len(wave) >= 2 and any(t.id == task.id for t in wave):
+                self._dispatch_parallel(
+                    plan, project_id, compiled_workflow, result,
+                    project_cwd=project_cwd, cancel_token=cancel_token,
+                    correlation=correlation, tasks=wave)
+                dispatched.update(t.id for t in wave)
+                # Same stop rules the sequential loop applies per task: a
+                # wave member that failed, was denied, timed out, was
+                # cancelled or is parked for approval halts the run before
+                # any dependent task starts. In-flight siblings finish.
+                wave_ids = {t.id for t in wave}
+                for o in result.outcomes:
+                    if o.taskId in wave_ids:
+                        self._stop_for_outcome(result, o)
+                if result.stopped:
+                    return result
+                continue
 
             # Resume without re-execution: a task whose verification is
             # already seeded (prior leg of the same workflow) is recorded
@@ -323,31 +350,89 @@ class ExecutionController:
             return False
         seeded_ids = set(getattr(seeded, "verified_outputs", {}) or {})
         for task in plan.tasks:
-            if (task.id in seeded_ids
-                    or task.route == "workflow-run"
-                    or task.inputFrom == "upstream-output"
-                    or getattr(task, "runWhen", "always") != "always"
-                    or list(getattr(task, "dependsOn", []) or [])
-                    or not task.capabilityId):
+            if (not self._task_parallel_eligible(task, seeded_ids)
+                    or list(getattr(task, "dependsOn", []) or [])):
                 return False
         return True
+
+    @staticmethod
+    def _task_parallel_eligible(task: Any, seeded_ids: set[str]) -> bool:
+        """Per-task rule for concurrent dispatch: no upstream-output
+        handoff, no conditional gate, not a workflow-run route, a bound
+        capability, and not already settled by a prior leg. Dependency
+        edges are a separate, ordering concern handled by the wave
+        scheduler in execute()."""
+        return not (
+            task.id in seeded_ids
+            or task.route == "workflow-run"
+            or task.inputFrom == "upstream-output"
+            or getattr(task, "runWhen", "always") != "always"
+            or not task.capabilityId
+        )
+
+    def _ready_wave(self, plan: TaskPlan, result: ExecutionOutcome,
+                    dispatched: set[str]) -> list[Any]:
+        """Every task that may start now concurrently: parallel-eligible,
+        not yet started, and with all dependsOn already settled (done or
+        skipped) in this run. Settled is read from the recorded outcomes,
+        never inferred from intent."""
+        seeded_ids = set(result.verified_outputs or {})
+        started = {o.taskId for o in result.outcomes} | dispatched
+        settled = {o.taskId for o in result.outcomes
+                   if o.state in ("done", "skipped")}
+        return [
+            t for t in plan.tasks
+            if t.id not in started
+            and self._task_parallel_eligible(t, seeded_ids)
+            and set(t.dependsOn or []) <= settled
+        ]
+
+    @staticmethod
+    def _stop_for_outcome(result: ExecutionOutcome, o: TaskOutcome) -> None:
+        """Apply the sequential loop's stop rules to one settled outcome.
+        Flags are always applied, so a timeout or denial is never lost
+        because a sibling already stopped the run. The first stop reason
+        recorded for the run is kept."""
+        if o.state == "awaiting-approval":
+            result.approval_id = o.approvalId
+            reason = "awaiting human approval"
+        elif o.state == "denied":
+            result.denied = True
+            reason = o.detail
+        elif o.state == "timed-out":
+            result.timed_out = True
+            reason = o.detail
+        elif o.state == "cancelled":
+            result.cancelled = True
+            reason = f"{o.taskId}: {o.detail}"
+        elif o.state in ("failed", "blocked"):
+            reason = f"{o.taskId}: {o.detail}"
+        else:
+            return
+        if not result.stopped or not result.stop_reason:
+            result.stop_reason = reason
+        result.stopped = True
 
     def _dispatch_parallel(self, plan: TaskPlan, project_id: str | None,
                            compiled_workflow: dict | None,
                            result: ExecutionOutcome,
                            *, project_cwd: str | None,
                            cancel_token: Any | None,
-                           correlation: dict[str, str] | None) -> None:
-        """Run all independent tasks concurrently through the SAME
-        _invoke_single path, each into its own ExecutionOutcome, then
-        merge deterministically in task-plan order. Each task keeps its
-        own invocation context, node assignment, exit code, stdout and
-        audit record — there is no shared mutable run state.
+                           correlation: dict[str, str] | None,
+                           tasks: list[Any] | None = None) -> None:
+        """Run the given tasks (default: all of the plan's tasks)
+        concurrently through the SAME _invoke_single path, each into its
+        own ExecutionOutcome, then merge deterministically in task-plan
+        order. Each task keeps its own invocation context, node
+        assignment, exit code, stdout and audit record — there is no
+        shared mutable run state.
         """
         correlation = dict(correlation or {})
+        batch = list(tasks) if tasks is not None else list(plan.tasks)
 
         # Pre-dispatch: flag concurrent write tasks with overlapping scopes.
-        result.scope_conflicts = self._detect_scope_conflicts(plan)
+        # Accumulated across waves so an earlier wave's conflicts persist.
+        result.scope_conflicts.extend(self._detect_scope_conflicts(batch))
 
         def _invoke(task) -> ExecutionOutcome:
             per = ExecutionOutcome()
@@ -359,8 +444,8 @@ class ExecutionController:
                                 correlation=correlation)
             return per
 
-        with ThreadPoolExecutor(max_workers=max(2, len(plan.tasks))) as pool:
-            futures = {pool.submit(_invoke, task): task for task in plan.tasks}
+        with ThreadPoolExecutor(max_workers=max(2, len(batch))) as pool:
+            futures = {pool.submit(_invoke, task): task for task in batch}
             per_task: dict[str, ExecutionOutcome] = {}
             for fut in as_completed(futures):
                 per = fut.result()
@@ -389,17 +474,29 @@ class ExecutionController:
             reason, cancelled, timed_out, denied = merged_stop
             result.stopped = True
             result.stop_reason = reason
-            result.cancelled = cancelled
-            result.timed_out = timed_out
-            result.denied = denied
+            result.cancelled = result.cancelled or cancelled
+            result.timed_out = result.timed_out or timed_out
+            result.denied = result.denied or denied
+        # The run's stop state follows each merged outcome's own state, as
+        # the sequential loop does. Per-task flags alone can miss a denial
+        # or timeout, so a denied worker could be lost at run level.
+        for task in batch:
+            per = per_task.get(task.id)
+            if per is None:
+                continue
+            for o in per.outcomes:
+                self._stop_for_outcome(result, o)
         result.request_id = correlation.get("request_id") or result.request_id
 
         # Post-dispatch: detect actual file conflicts from verified changed_paths.
-        result.write_conflicts = self._detect_write_conflicts(plan, per_task)
+        # Per wave: a conflict between tasks in different waves is not seen
+        # here. That is a known limit, not a silent pass; see the report.
+        result.write_conflicts.extend(
+            self._detect_write_conflicts(plan, per_task))
 
     # ── Concurrent-worker conflict detection ─────────────────────────
     @staticmethod
-    def _detect_scope_conflicts(plan: TaskPlan) -> list[dict]:
+    def _detect_scope_conflicts(tasks: list[Any]) -> list[dict]:
         """Pre-dispatch: return conflicts where two concurrent write tasks
         declare overlapping scopePaths.  Non-blocking — the run proceeds —
         but the conflicts are recorded in ExecutionOutcome and surface
@@ -407,7 +504,7 @@ class ExecutionController:
         overwrites another worker's files."""
         write_tasks = [
             (t.id, set(t.input.get("scopePaths") or []))
-            for t in plan.tasks
+            for t in tasks
             if (t.input or {}).get("expectChange") is True
             and (t.input or {}).get("scopePaths")
         ]
