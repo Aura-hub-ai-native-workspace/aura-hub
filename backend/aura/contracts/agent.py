@@ -334,9 +334,31 @@ class EvidenceBundle(ContractModel):
     artifactPaths: list[str] = Field(default_factory=list)
 
 
+class TaskStatus(ContractModel):
+    """One planned task's final state, for the workspace. Read from the
+    recorded outcome and the plan; never a claim. `state` is "pending" when
+    the task never reached a worker."""
+
+    taskId: str
+    description: str = ""
+    state: TaskState = "pending"
+    verified: bool | None = None
+    worker: str | None = None
+    dependsOn: list[str] = Field(default_factory=list)
+
+
 class AgentResult(ContractModel):
     """outcome is an HONEST terminal vocabulary: denied and timeout are
     never collapsed into failed (mission §15)."""
+
+    #: What AURA understood the request to be (the intent goal). Display only.
+    understanding: str | None = None
+    #: Mission-level acceptance. None when the plan declared no criteria.
+    objectiveAccepted: bool | None = None
+    unmetAcceptance: list[str] = Field(default_factory=list)
+    #: Per-task final states in plan order. Display only; authority stays in
+    #: the verification report and the evidence bundle.
+    tasks: list[TaskStatus] = Field(default_factory=list)
 
     status: AgentSessionState
     outcome: Literal[

@@ -20,6 +20,7 @@ from ..contracts import (
     AgentResult,
     AgentSession,
     TaskOutcome,
+    AgentVerificationReport,
     TaskPlan,
     TaskSpecification,
 )
@@ -1064,11 +1065,44 @@ class CentralAgent:
                     + "\n[truncated by AURA for synthesis]")
         return text or None
 
+    @staticmethod
+    def _mission_view(plan: TaskPlan, outcome: ExecutionOutcome,
+                      report: AgentVerificationReport) -> dict:
+        """Display fields for the workspace: what was understood, the
+        mission-level acceptance verdict, and each planned task's final
+        state. Read from the plan, the recorded outcomes and the verification
+        report; nothing here grants or changes authority."""
+        from ..contracts.agent import TaskStatus
+
+        by_outcome = {o.taskId: o for o in outcome.outcomes}
+        assignments = outcome.worker_assignments or {}
+        tasks = []
+        for task in plan.tasks:
+            rec = by_outcome.get(task.id)
+            assignment = assignments.get(task.id) or {}
+            worker = assignment.get("worker") or None
+            tasks.append(TaskStatus(
+                taskId=task.id,
+                description=task.description or "",
+                state=rec.state if rec is not None else "pending",
+                verified=rec.verified if rec is not None else None,
+                worker=str(worker) if worker else None,
+                dependsOn=list(task.dependsOn or []),
+            ))
+        return {
+            "understanding": plan.intent.goal if plan.intent else None,
+            "objectiveAccepted": report.objectiveAccepted
+            if plan.acceptance else None,
+            "unmetAcceptance": list(report.unmetAcceptance or []),
+            "tasks": tasks,
+        }
+
     def _synthesize(self, session: AgentSession, plan: TaskPlan,
                     outcome: ExecutionOutcome) -> AgentResult:
         """Steps 7-9: verify + evidence + result synthesis from records."""
         sid = session.sessionId
         report = self.verifier.verify(plan, outcome.outcomes)
+        mission = self._mission_view(plan, outcome, report)
         self._emit("verification.completed", sid, passed=report.passed,
                    unverified=report.unverifiedActions,
                    objectiveAccepted=report.objectiveAccepted,
@@ -1117,6 +1151,7 @@ class CentralAgent:
                 bundle = bundle.model_copy(
                     update={"modelProvider": provider, "modelName": model})
             return AgentResult(
+                **mission,
                 status="completed",
                 outcome="completed",
                 summary=streamed,
@@ -1171,6 +1206,7 @@ class CentralAgent:
         if report.objectiveAccepted is False and report.outcomes:
             unmet = "; ".join(report.unmetAcceptance)
             return AgentResult(
+                **mission,
                 status="failed", outcome="failed",
                 # Worker-level checks and the mission-level verdict are
                 # reported separately: a passed worker check never reads as
@@ -1189,7 +1225,46 @@ class CentralAgent:
                 evidence=bundle,
                 failureReason="objective-unaccepted",
             )
+        if not report.passed and not any(
+                o.state == "awaiting-approval" for o in outcome.outcomes):
+            # Honest terminal state for a run that did not fully pass. A
+            # failed, denied, timed-out or cancelled worker must never be
+            # reported as a completed run, even when no acceptance criteria
+            # were declared and a verified worker supplied the summary text.
+            states = {o.state for o in outcome.outcomes}
+            if "denied" in states:
+                term, reason = "denied", "action-denied"
+            elif "timed-out" in states:
+                term, reason = "timeout", "timed-out"
+            elif "cancelled" in states:
+                term, reason = "cancelled", "cancelled"
+            elif states & {"failed", "blocked"}:
+                term, reason = "failed", "task-failed"
+            else:
+                term, reason = "failed", "unverified-actions"
+            names = [o.taskId for o in outcome.outcomes
+                     if o.state not in ("done", "skipped")] or list(
+                         report.unverifiedActions)
+            return AgentResult(
+                **mission,
+                status="cancelled" if term == "cancelled" else "failed",
+                outcome=term,
+                summary=(
+                    f"{'; '.join(summary_bits)}. "
+                    + (f"Not finished or not verified: {', '.join(names)}. "
+                       if names else "")
+                    + (f"Verified — {'; '.join(verified_lines)}. "
+                       if verified_lines else "")
+                    + f"Audit: {audit_ref}.".strip()
+                ),
+                performed=[o.taskId for o in outcome.outcomes if o.performed],
+                verified=[o.taskId for o in report.outcomes
+                          if o.verified is True],
+                evidence=bundle,
+                failureReason=reason,
+            )
         return AgentResult(
+                **mission,
             status="completed" if report.passed else "verifying",
             outcome="completed",
             summary=(
