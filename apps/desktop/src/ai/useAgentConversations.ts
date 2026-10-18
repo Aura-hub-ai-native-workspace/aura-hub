@@ -41,6 +41,7 @@ import {
   type AgentResult,
   type EditorContext,
   type PlanReview,
+  type AgentTaskStatus,
 } from './centralAgentClient';
 import {
   aiClient,
@@ -95,6 +96,26 @@ export interface AgentMsgMeta {
   cancelled: boolean;
   /** Human names of what this turn actually used. Record, not claim. */
   tools: string[];
+  /** What AURA understood the request to be. Display only. */
+  understanding?: string | null;
+  /** Mission-level verdict; null when no acceptance criteria were declared. */
+  objective?: { accepted: boolean | null; unmet: string[] } | null;
+  /** Each planned task's final state, in plan order. */
+  tasks?: AgentTaskStatus[];
+  failureReason?: string | null;
+}
+
+/** The mission-status fields of a result, for the message metadata. */
+function missionMeta(result: AgentResult): Pick<AgentMsgMeta,
+  'understanding' | 'objective' | 'tasks' | 'failureReason'> {
+  const unmet = result.unmetAcceptance ?? [];
+  const accepted = result.objectiveAccepted ?? null;
+  return {
+    understanding: result.understanding ?? null,
+    objective: accepted === null && unmet.length === 0 ? null : { accepted, unmet },
+    tasks: result.tasks ?? [],
+    failureReason: result.failureReason ?? null,
+  };
 }
 
 export interface AgentChatMessage {
@@ -340,7 +361,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
         status: 'done',
         content: result.summary,
         agent: m.agent ? {
-          ...m.agent, outcome: result.outcome, plan, approvalId,
+          ...m.agent, outcome: result.outcome, plan, approvalId, ...missionMeta(result),
           performed: result.performed, verified: result.verified,
           evidenceSummary: result.evidence?.summary ?? null, runId: result.runId ?? null,
         } : m.agent,
@@ -353,7 +374,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
         status: 'done',
         content: result.summary,
         agent: m.agent ? {
-          ...m.agent, outcome: result.outcome,
+          ...m.agent, outcome: result.outcome, ...missionMeta(result),
           performed: result.performed, verified: result.verified,
           evidenceSummary: result.evidence?.summary ?? null, runId: result.runId ?? null,
         } : m.agent,
@@ -369,14 +390,14 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       patchMsg(assistantId, (m) => ({
         ...m,
         status: 'cancelled',
-        agent: m.agent ? { ...m.agent, outcome: result.outcome, cancelled: true } : m.agent,
+        agent: m.agent ? { ...m.agent, outcome: result.outcome, cancelled: true, ...missionMeta(result) } : m.agent,
       }));
     } else {
       patchMsg(assistantId, (m) => ({
         ...m,
         status: 'error',
         error: result.summary || `The request ${result.outcome}.`,
-        agent: m.agent ? { ...m.agent, outcome: result.outcome } : m.agent,
+        agent: m.agent ? { ...m.agent, outcome: result.outcome, ...missionMeta(result) } : m.agent,
       }));
     }
     const final = get().messages.find((m) => m.id === assistantId);
@@ -606,6 +627,10 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
                 needsInput: agent.needsInput ?? false,
                 cancelled: agent.cancelled ?? false,
                 tools: agent.tools ?? [],
+                understanding: agent.understanding ?? null,
+                objective: agent.objective ?? null,
+                tasks: agent.tasks ?? [],
+                failureReason: agent.failureReason ?? null,
               }
               : undefined;
             const status = m.error ? 'error' as const : full?.cancelled ? 'cancelled' as const : 'done' as const;

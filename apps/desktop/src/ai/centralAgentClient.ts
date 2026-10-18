@@ -110,6 +110,18 @@ export interface AgentEvidenceBundle {
   artifactPaths?: string[];
 }
 
+/** One planned task's final state. Mirrors backend TaskStatus. */
+export interface AgentTaskStatus {
+  taskId: string;
+  description: string;
+  /** Backend TaskState; "pending" means it never reached a worker. */
+  state: string;
+  verified: boolean | null;
+  /** Worker that ran the task, e.g. "claude-code". Null when none did. */
+  worker: string | null;
+  dependsOn: string[];
+}
+
 /** The backend's terminal report. See docs/AURA_CENTRAL_AGENT_API.md. */
 export interface AgentResult {
   status: AgentSessionState;
@@ -121,6 +133,13 @@ export interface AgentResult {
   failureReason?: string | null;
   /** Engine run leg for parked/resumed work, when one exists. */
   runId?: string | null;
+  /** What AURA understood the request to be. Display only. */
+  understanding?: string | null;
+  /** Mission-level acceptance; null when no criteria were declared. */
+  objectiveAccepted?: boolean | null;
+  unmetAcceptance?: string[];
+  /** Per-task final states in plan order. Display only. */
+  tasks?: AgentTaskStatus[];
 }
 
 export interface AgentMessage {

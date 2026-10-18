@@ -11,6 +11,8 @@ import {
 import type { AgentActivity, AgentChatMessage } from '../../../ai/useAgentConversations';
 import type { Handoff } from '../../../ai/aiClient';
 import { ApprovalGate } from '../../missions/ApprovalGate';
+import { MissionStatusPanel } from './MissionStatusPanel';
+import { missionView } from '../../../ai/missionStatus';
 import type { ApprovalRequest } from '../../../ai/fabricClient';
 import type { ProjectRecord } from '../../../ai/aiClient';
 
@@ -181,6 +183,7 @@ function StageCard({
             {!streaming && <ToolTrace tools={tools} />}
           </>
         )}
+        <MissionStatusPanel view={missionView(message.agent)} />
       </div>
     </div>
   );
