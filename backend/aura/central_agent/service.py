@@ -1172,11 +1172,15 @@ class CentralAgent:
             unmet = "; ".join(report.unmetAcceptance)
             return AgentResult(
                 status="failed", outcome="failed",
+                # Worker-level checks and the mission-level verdict are
+                # reported separately: a passed worker check never reads as
+                # a verified mission while an acceptance criterion is unmet.
                 summary=(
                     f"{'; '.join(summary_bits)}. "
-                    + ("Verified — " + "; ".join(verified_lines) + ". "
+                    + ("Worker checks passed: " + "; ".join(verified_lines) + ". "
                        if verified_lines else "")
-                    + f"Objective NOT verified: {unmet}. "
+                    + f"Mission not verified: the acceptance criteria are not met "
+                    + f"({unmet}). "
                     + f"Audit: {audit_ref}.".strip()
                 ),
                 performed=[o.taskId for o in outcome.outcomes if o.performed],

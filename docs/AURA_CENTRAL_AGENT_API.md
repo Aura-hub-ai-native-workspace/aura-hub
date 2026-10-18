@@ -19,6 +19,14 @@ Submit one user intent. Creates a session and drives it synchronously.
 ```
 → `{ "result": AgentResult, "sessionId": "agt-…", "requestId": "req-…" }`
 
+**Session ids and continuation (decision).** A caller may propose a
+`sessionId` shaped `agt-` + 12 hex. If that id is already taken, the server
+does NOT reuse it: `POST /agent/sessions` starts a fresh session under a new
+server id. This is deliberate, so a plain submit can never hijack or
+overwrite an existing session. To answer a clarification or continue a
+conversation, call `POST /agent/sessions/{sid}/message`, which loads the
+session and continues it. Pinned by `tests/unit/test_clarification_lifecycle.py`.
+
 Every leg-creating or leg-resuming route (`/agent/sessions`,
 `/message`, `/approve`, `/resume`, `/resume-cancelled`, `/cancel`)
 generates one server-side `requestId` (`req-` + 12 hex), returns it in
