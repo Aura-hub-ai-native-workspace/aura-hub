@@ -250,7 +250,13 @@ class TestProviderFailures:
                 mode="model", model_port=port)
             # fixture returns HTTP 429 once (times counts down), then 200.
             i = compiler.compile("show my git status please")
-            assert i.goal == "show repository status"
+            # Proof the retried model reply was used: these fields come only
+            # from GIT_STATUS_REPLY. The heuristic fallback gives confidence
+            # 1.0 and no requestedOutcome. The goal no longer distinguishes
+            # the two: a read-only git status request keeps the user's words.
+            assert i.confidence == 0.94
+            assert i.requestedOutcome == "branch and changed files listed"
+            assert i.goal == "show my git status please"
         finally:
             harness.stop()
 

@@ -166,6 +166,10 @@ class CentralAgent:
         # refused rather than spawning a duplicate orchestrator.
         self._orchestrator_threads: dict[str, threading.Thread] = {}
         self._orchestrator_lock = threading.Lock()
+        # Background runs created by _run but not yet started. submit() starts
+        # them only after it has saved the "started" result; see
+        # _start_pending_orchestration.
+        self._pending_orchestration: dict[str, threading.Thread] = {}
         # Model port: built with the sovereign policy so cloud endpoints are
         # blocked at the routing layer when sovereign_mode is enabled.
         # Falls back to heuristic IntentCompiler when no providers.json is
@@ -418,12 +422,35 @@ class CentralAgent:
             # background thread: its token must survive.
             self.runs.clear(session.sessionId)
 
-        self._finish(session, result)
-        self._record_answer(session, result)
-        # Terminal outcomes drop the verified evidence a leg carried.
-        session.verifiedEvidence = {}
-        self.sessions.save(session)
+        try:
+            self._finish(session, result)
+            self._record_answer(session, result)
+            # Terminal outcomes drop the verified evidence a leg carried.
+            session.verifiedEvidence = {}
+            self.sessions.save(session)
+        finally:
+            # After the save, so the thread's own terminal result is the
+            # last write to this session, never overwritten by this one.
+            self._start_pending_orchestration(session.sessionId,
+                                              start=result.outcome == "started")
         return result
+
+    def _start_pending_orchestration(self, session_id: str, *, start: bool) -> None:
+        """Start the background run _run prepared for this session, if any.
+        When the leg did not end "started", the prepared thread is dropped
+        unstarted (nothing was launched, so nothing runs)."""
+        lock = getattr(self, "_orchestrator_lock", None)
+        pending = getattr(self, "_pending_orchestration", None)
+        if lock is None or pending is None:
+            return
+        with lock:
+            thread = pending.pop(session_id, None)
+            if thread is not None and not start:
+                if self._orchestrator_threads.get(session_id) is thread:
+                    del self._orchestrator_threads[session_id]
+                thread = None
+        if thread is not None:
+            thread.start()
 
     def execute_handoff(self, raw_plan: object, session_id: str | None = None,
                         project_id: str | None = None,
@@ -797,7 +824,12 @@ class CentralAgent:
                         "Orchestration is already running for this session.",
                         failure_reason="duplicate-orchestration")
                 self._orchestrator_threads[session.sessionId] = thread
-            thread.start()
+                # Not started here: submit() still has to save this "started"
+                # result. Started first, a run that ends quickly (a crash, a
+                # fast failure) saved its terminal result before that save,
+                # which then overwrote it, leaving the session "started" for
+                # good. submit() starts the thread once its save is done.
+                self._pending_orchestration[session.sessionId] = thread
             return AgentResult(
                 status="started", outcome="started",
                 summary="Plan created; execution started.",
@@ -2759,6 +2791,34 @@ class CentralAgent:
             return (answer, True) if answer else (NO_OUTPUT, False)
         return None
 
+    @staticmethod
+    def _read_only_answer(plan: TaskPlan, outcome: ExecutionOutcome,
+                          report: AgentVerificationReport) -> tuple[str, bool] | None:
+        """(answer, has_output) for a verified plain read-only request, else None.
+
+        Applies to a one-task plan for git diff, the current branch, a file
+        listing, reading a file, or listing projects or workflows, when the
+        request itself is that read (projects and workflows are listings by
+        construction). The answer is the tool's recorded output; a missing
+        record is reported as missing and the run is not complete."""
+        from . import requested
+        from .read_only_answer import NO_OUTPUT, RENDERED, describe
+
+        if not report.passed or len(plan.tasks) != 1:
+            return None
+        task = plan.tasks[0]
+        capability = getattr(task, "capabilityId", None)
+        if capability not in RENDERED:
+            return None
+        goal = str(getattr(getattr(plan, "intent", None), "goal", "") or "")
+        if capability not in ("project.list", "workflow.list") and \
+                requested.read_only_request(goal) is None:
+            return None
+        record = (getattr(outcome, "verified_outputs", None) or {}).get(task.id)
+        if record is None:
+            return (NO_OUTPUT, False)
+        return (describe(capability, dict(task.input or {}), str(record.get("stdout") or "")), True)
+
     def _synthesize(self, session: AgentSession, plan: TaskPlan,
                     outcome: ExecutionOutcome) -> AgentResult:
         """Steps 7-9: verify + evidence + result synthesis from records."""
@@ -2805,7 +2865,9 @@ class CentralAgent:
         # A verified git status read is answered from git's own output, not
         # paraphrased by a model: a small model given "## main" answered that
         # no status was available. Missing output is reported as missing.
-        observed = None if accept_failed else self._git_status_answer(plan, outcome, report)
+        observed = None if accept_failed else (
+            self._git_status_answer(plan, outcome, report)
+            or self._read_only_answer(plan, outcome, report))
         if observed is not None:
             text, has_output = observed
             return AgentResult(

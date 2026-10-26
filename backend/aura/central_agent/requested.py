@@ -60,6 +60,69 @@ def asks_for_git_status(text: str) -> bool:
     return bool(GIT_STATUS_WORDS.search(text)) and not GIT_WRITE_WORDS.search(text)
 
 
+#: Words that mean the request changes something. A request containing one is
+#: never answered by a read-only tool alone ("fix the diff", "delete the files
+#: in src", "switch to branch main", "read README.md and update it").
+READ_ONLY_BLOCKERS = re.compile(
+    r"\b(fix|commit|push|merge|rebase|stage|create|write|implement|change|"
+    r"edit|update|add|delete|remove|rename|move|refactor|revert|reset|stash|"
+    r"switch|checkout|install|run|build|test|make|generate)\b", re.IGNORECASE)
+_DIFF_WORDS = re.compile(
+    r"\bgit\s+diff\b|\bdiff\b|\bwhat(?:'s|\s+has|\s+have)?\s+changed\b|"
+    r"\buncommitted\s+changes\b|\bshow\s+(?:me\s+)?(?:the\s+)?(?:current\s+)?changes\b",
+    re.IGNORECASE)
+_BRANCH_WORDS = re.compile(
+    r"\b(?:what|which)\s+branch\b|\bcurrent\s+branch\b|\bbranch\s+am\s+i\s+on\b",
+    re.IGNORECASE)
+_LIST_WORDS = re.compile(r"\b(?:list|show)\b(?:\s+\S+){0,4}?\s+files\b", re.IGNORECASE)
+_LIST_DIR = re.compile(r"\bfiles\s+(?:in|under|inside)\s+(?:the\s+)?([\w.-]+(?:/[\w.-]+)*)/?\s*[.?!]*$",
+                       re.IGNORECASE)
+_WHOLE_REPO = frozenset({"repo", "repository", "project", "folder", "directory", "workspace"})
+_READ_WORDS = re.compile(r"\b(read|show|open|display|print|cat|view)\b", re.IGNORECASE)
+
+
+def read_only_request(text: str) -> tuple[str, dict] | None:
+    """The read-only capability and its input when the request is plainly one
+    of: a git diff, the current branch, a file listing, or reading one named
+    file. None for anything else, for a request that also asks for a change,
+    and for a request that fits more than one of these (left to the planner).
+    Git status has its own rule (`asks_for_git_status`)."""
+    text = (text or "").strip()
+    if not text or READ_ONLY_BLOCKERS.search(text) or asks_for_git_status(text):
+        return None
+    found: list[tuple[str, dict]] = []
+    if _DIFF_WORDS.search(text):
+        found.append(("git.diff", {}))
+    if _BRANCH_WORDS.search(text):
+        # `git status --short --branch` names the branch. git.branch is the
+        # capability that creates or switches branches, never a read.
+        found.append(("git.status", {}))
+    if _LIST_WORDS.search(text):
+        match = _LIST_DIR.search(text)
+        where = match.group(1) if match else "."
+        if where.lower().split("/")[-1] in _WHOLE_REPO or where.lower() in {"this", "here"}:
+            where = "."
+        found.append(("filesystem.list", {"path": where}))
+    files = named_files(text)
+    if len(files) == 1 and _READ_WORDS.search(text) and not _DIFF_WORDS.search(text):
+        found.append(("filesystem.read", {"path": files[0]}))
+    return found[0] if len(found) == 1 else None
+
+
+def asks_for_current_branch(text: str) -> bool:
+    """True when the request is a plain question about the current branch."""
+    return read_only_request(text) == ("git.status", {})
+
+
+#: The request each read-only capability serves, for the verifier.
+READ_ONLY_LABELS = {
+    "git.diff": "git diff",
+    "git.status": "the current branch",
+    "filesystem.list": "a file listing",
+    "filesystem.read": "the contents of a file",
+}
+
+
 def asks_for_workflow(text: str) -> bool:
     """True when the request itself asks for a workflow to be defined."""
     return bool(WORKFLOW_WORDS.search(text or ""))
@@ -100,10 +163,14 @@ def unaddressed_files(request: str, targeted_files: list[str],
 
 __all__ = [
     "FILE_RE",
+    "READ_ONLY_BLOCKERS",
+    "READ_ONLY_LABELS",
     "WORKFLOW_WORDS",
     "addresses",
+    "asks_for_current_branch",
     "asks_for_git_status",
     "asks_for_workflow",
     "named_files",
+    "read_only_request",
     "unaddressed_files",
 ]

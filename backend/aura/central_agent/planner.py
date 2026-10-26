@@ -269,6 +269,44 @@ def plan_status(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
     )
 
 
+#: Plain read-only requests and the task each one runs.
+_READ_ONLY_TASKS = {
+    "git.diff": "Read the working-tree diff with real git",
+    "filesystem.list": "List files",
+    "filesystem.read": "Read a file",
+}
+
+
+def plan_read_only(intent: AgentIntent, session_id: str, now: str,
+                   capability: str) -> TaskPlan:
+    """One read-only invocation whose real output is the answer. A file or
+    directory comes from the intent's path entity; the executor confines it
+    to the project."""
+    from .requested import READ_ONLY_LABELS
+
+    path = next((e.value for e in intent.entities if e.type == "path" and e.value), None)
+    task_input: dict = {}
+    description = _READ_ONLY_TASKS[capability]
+    if capability == "filesystem.list":
+        task_input = {"path": path or "."}
+        description += f" in {task_input['path']}"
+    elif capability == "filesystem.read":
+        if not path:
+            raise PlanningError("reading a file needs the file's path")
+        task_input = {"path": path}
+        description += f": {path}"
+    return TaskPlan(
+        planId=_plan_id(), sessionId=session_id, intent=intent,
+        tasks=[_task("t1", description, capability_id=capability, input=task_input,
+                     verification=VerificationRequirement(
+                         kind="audit-only",
+                         description="Invocation recorded in the audit trail."))],
+        acceptance=[_accept("audit-only",
+                            f"{READ_ONLY_LABELS[capability].capitalize()} shown from the real tool.",
+                            tasks=["t1"])],
+        createdAt=now)
+
+
 def plan_project_list(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
     """Read-only project listing → one low-risk invocation."""
     return TaskPlan(
@@ -1144,7 +1182,7 @@ class TaskPlanner:
                     # scopePaths (bound in _bind_filesystem_input) and a
                     # missing or invalid path/content fails the plan closed.
                     # Rerouting them to a worker would bypass that contract.
-                    _DIRECT_FILE_CAPS = {"filesystem.read", "filesystem.write", "agent.delegate"}
+                    _DIRECT_FILE_CAPS = {"filesystem.read", "filesystem.write", "filesystem.list", "agent.delegate"}
                     # Also correct any capability that has a targetFile or
                     # description mentioning a file but is not executable.
                     _has_file_hint = False
@@ -1608,6 +1646,8 @@ class TaskPlanner:
                     "Accurate repository status reported from real git.",
                     tasks=["t1"])],
                 createdAt=now)
+        elif len(caps) == 1 and next(iter(caps)) in _READ_ONLY_TASKS:
+            plan = plan_read_only(intent, session_id, now, next(iter(caps)))
         elif caps == {"filesystem.write"}:
             write_input = _write_inputs(intent)
             plan = TaskPlan(

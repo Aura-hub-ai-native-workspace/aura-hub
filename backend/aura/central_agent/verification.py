@@ -19,6 +19,14 @@ from . import requested
 _SETTLED = frozenset({"done", "skipped"})
 
 
+def _input_path(task) -> list[str]:
+    """The file a filesystem task reads or writes, from its input."""
+    if not str(getattr(task, "capabilityId", "") or "").startswith("filesystem."):
+        return []
+    path = (getattr(task, "input", None) or {}).get("path")
+    return [str(path).removeprefix("./")] if isinstance(path, str) and path.strip() else []
+
+
 class VerificationEngine:
     def verify(self, plan: TaskPlan, outcomes: list[TaskOutcome]) -> AgentVerificationReport:
         by_task = {t.id: t for t in plan.tasks}
@@ -110,6 +118,7 @@ class VerificationEngine:
         however well the plan verified its own."""
         unmet: list[str] = list(VerificationEngine.unaddressed_request(plan))
         unmet += VerificationEngine.unaddressed_git_status(plan, rows)
+        unmet += VerificationEngine.unaddressed_read_only(plan, rows)
         criteria = list(getattr(plan, "acceptance", None) or [])
         if not criteria:
             return (not unmet), unmet
@@ -164,6 +173,31 @@ class VerificationEngine:
         return []
 
     @staticmethod
+    def unaddressed_read_only(plan: TaskPlan, rows: list[TaskOutcome]) -> list[str]:
+        """A plain read-only request (git diff, current branch, a file listing,
+        reading one named file) is served only by evidence from its own tool:
+        a task with that capability that ran, finished and left an invocation
+        record. Any other successful result does not answer it."""
+        intent = getattr(plan, "intent", None)
+        request = str(getattr(intent, "goal", "") or "") if intent else ""
+        routed = requested.read_only_request(request)
+        if routed is None:
+            return []
+        capability, payload = routed
+        label = requested.READ_ONLY_LABELS[capability]
+        ids = [t.id for t in (getattr(plan, "tasks", None) or [])
+               if getattr(t, "capabilityId", None) == capability
+               and ("path" not in payload
+                    or requested.addresses([str((t.input or {}).get("path") or "")], [],
+                                           payload["path"]))]
+        if not ids:
+            return [f"the request asked for {label}, which no {capability} task addressed"]
+        if not any(r.taskId in ids and r.state == "done" and r.performed and r.invocationIds
+                   for r in rows):
+            return [f"the request asked for {label}, and no {capability} task produced evidence of it"]
+        return []
+
+    @staticmethod
     def unaddressed_request(plan: TaskPlan) -> list[str]:
         """What the REQUEST asked for that the plan never addressed.
 
@@ -198,7 +232,8 @@ class VerificationEngine:
         targeted = [p for t in tasks
                     for p in (([getattr(t, "targetFile", None)]
                                if getattr(t, "targetFile", None) else [])
-                              + list(getattr(t, "files", None) or []))]
+                              + list(getattr(t, "files", None) or [])
+                              + _input_path(t))]
         mentioned = [str(getattr(t, k, "") or "") for t in tasks
                      for k in ("description", "title", "expectedOutput",
                                "verification")]

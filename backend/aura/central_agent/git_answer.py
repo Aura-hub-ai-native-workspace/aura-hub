@@ -32,6 +32,20 @@ def _branch_phrase(header: str) -> str:
     return phrase
 
 
+def current_branch(output: str) -> str | None:
+    """The branch named by `git status --short --branch`, or None for a
+    detached HEAD or output that is not that command's."""
+    lines = [ln for ln in (output or "").splitlines() if ln.strip()]
+    if not lines or not lines[0].startswith("## "):
+        return None
+    head = lines[0][3:].strip()
+    if head.startswith("HEAD (no branch)"):
+        return None
+    if head.startswith("No commits yet on "):
+        return head[len("No commits yet on "):].strip() or None
+    return head.split(" [", 1)[0].partition("...")[0].strip() or None
+
+
 def describe_git_status(output: str) -> str | None:
     """A plain answer built from `git status --short --branch` output, or
     None when the output does not look like that command's output."""
@@ -54,4 +68,4 @@ NO_OUTPUT = ("Git status ran, but no status output was recorded, so the branch "
              "and working-tree state cannot be reported.")
 
 
-__all__ = ["MAX_LISTED", "NO_OUTPUT", "describe_git_status"]
+__all__ = ["MAX_LISTED", "NO_OUTPUT", "current_branch", "describe_git_status"]

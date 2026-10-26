@@ -22,6 +22,36 @@ from ..fabric import FabricConfig, invoke_fabric
 from ..workflow import EngineConfig, WorkflowEngine
 from .planner import topo_order
 
+#: Read-only tools whose real result is the answer. Their executors return the
+#: result itself (text, a list of names, records), not a worker's
+#: {"stdout": ...}, and the record kept only `stdout`, so the result was
+#: dropped and the answer said "1 task(s) executed". It is recorded as text.
+_TEXT_RESULT_CAPS = frozenset({"git.diff", "filesystem.list",
+                               "filesystem.read", "project.list", "workflow.list"})
+
+
+def _result_text(value: Any) -> str:
+    """A read-only tool's result as plain text, without inventing anything."""
+    import json
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and len(value) == 1 and isinstance(next(iter(value.values())), list):
+        value = next(iter(value.values()))  # {"workflows": [...]} -> the list
+    if isinstance(value, list):
+        return "\n".join(v if isinstance(v, str) else json.dumps(v, sort_keys=True, default=str)
+                         for v in value)
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _recorded_output(capability: Any, output: Any) -> dict:
+    """The executor output as the mapping the record reads, with a read-only
+    tool's result carried as `stdout`."""
+    if capability in _TEXT_RESULT_CAPS and output is not None and not (
+            isinstance(output, dict) and "stdout" in output):
+        return {"stdout": _result_text(output)}
+    return output if isinstance(output, dict) else {}
+
 #: Fabric outcome → leg state. Unknown outcomes fail closed as "failed":
 #: a new outcome string must never crash the leg with KeyError (the
 #: engine path already defaults this way).
@@ -1484,7 +1514,7 @@ class ExecutionController:
         # structured results). The metadata reads below assume a mapping;
         # text carries none, so normalize once here instead of at every
         # .get — a second instance of the crash fixed above.
-        output = output if isinstance(output, dict) else {}
+        output = _recorded_output(getattr(task, "capabilityId", None), output)
         assignment = result.worker_assignments.get(task.id)
         if assignment is not None:
             if output.get("nodeId"):

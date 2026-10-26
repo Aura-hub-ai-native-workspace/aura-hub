@@ -26,7 +26,7 @@ import logging
 import re
 from typing import Any, Protocol
 
-from ..contracts import AgentIntent
+from ..contracts import AgentIntent, IntentEntity
 from . import requested
 
 _SCHEMA_HINT = """{
@@ -574,6 +574,24 @@ _PARALLEL_WORKERS_RE = re.compile(
 
 
 
+def _apply_read_only(intent: AgentIntent, capability: str, payload: dict,
+                     user_message: str) -> AgentIntent:
+    """Route a plain read-only request to its tool. The request decides, not a
+    model: the user's words become the goal, and a file or directory travels
+    as a path entity for the planner (the executor confines it)."""
+    intent.requiredCapabilities = [capability]
+    intent.conversational = False
+    intent.surface = "project"
+    intent.goal = user_message.strip()
+    if "path" in payload:
+        intent.entities = [IntentEntity(type="path", value=payload["path"], role="target")]
+    if "Read-only" not in intent.constraints:
+        intent.constraints = [*intent.constraints, "Read-only"]
+    intent.needsClarification = False
+    intent.clarificationQuestion = None
+    return intent
+
+
 def heuristic_interpret(user_message: str) -> AgentIntent:
     """Transparent keyword rules → AgentIntent. No I/O, no authority."""
     text = user_message.strip().lower()
@@ -773,6 +791,16 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             urgency="immediate",
             complexity="single",
         )
+    read_only = requested.read_only_request(user_message)
+    if read_only is not None and not authoring and not running_wf:
+        capability, payload = read_only
+        return _apply_read_only(AgentIntent(
+            goal=user_message.strip(),
+            expectedOutcome=f"Show {requested.READ_ONLY_LABELS[capability]} from the real tool.",
+            constraints=list(constraints),
+            urgency="immediate",
+            complexity="single",
+        ), capability, payload, user_message)
     if running_wf and not authoring:
         return AgentIntent(
             goal=user_message.strip(),
@@ -958,6 +986,12 @@ class IntentCompiler:
             intent.needsClarification = False
             intent.clarificationQuestion = None
             return intent
+        # The same for the other plain read-only requests (git diff, current
+        # branch, file listing, reading one named file): the tool runs, and a
+        # model's "conversational" label or other capability is discarded.
+        read_only = requested.read_only_request(user_message)
+        if read_only is not None:
+            return _apply_read_only(intent, *read_only, user_message)
 
         # Conversation, decided deterministically. The floor wins first:
         # a greeting is conversation whatever the model said. Above that

@@ -69,3 +69,51 @@ def test_a_crashing_background_thread_still_records_a_failed_result(client, monk
     assert s["lastResult"]["failureReason"] == "orchestration-crashed"
     assert "injected dispatch failure" in s["lastResult"]["summary"]
 
+
+
+def test_a_quickly_ending_run_is_not_overwritten_by_the_started_save(client, monkeypatch):
+    """The race behind the intermittent crash test, made deterministic.
+
+    submit() saves the "started" result; the background thread saves the
+    terminal result. If the thread is already running when submit() saves,
+    the losing order (terminal first, then "started" over it) is forced here:
+    the "started" save waits for the thread's save. That left the session
+    "started" for good. With the thread started only after submit()'s save,
+    the wait never applies and the terminal result is the last write."""
+    import threading
+
+    from aura.central_agent import service as svc
+    from aura.central_agent.session import AgentSessionStore
+
+    def boom(self, *a, **k):
+        raise RuntimeError("injected dispatch failure")
+
+    monkeypatch.setattr(svc.CentralAgent, "_dispatch_plan", boom)
+    order: list[str] = []
+    thread_saved = threading.Event()
+    original_save = AgentSessionStore.save
+
+    def save(self, session):
+        orchestration = threading.current_thread().name.startswith("orch-")
+        result = session.lastResult
+        outcome = getattr(result, "outcome", None) if result is not None else None
+        if not orchestration and outcome == "started":
+            running = any(t.name == f"orch-{session.sessionId}" and t.is_alive()
+                          for t in threading.enumerate())
+            if running:  # only possible when the thread was started too early
+                thread_saved.wait(timeout=5)
+        path = original_save(self, session)
+        order.append(f"{'thread' if orchestration else 'request'}:{outcome}")
+        if orchestration:
+            thread_saved.set()
+        return path
+
+    monkeypatch.setattr(AgentSessionStore, "save", save)
+    api, proj = client
+    proj.mkdir()
+    body = api.post("/agent/sessions", json={
+        "message": "show me git status", "projectPath": str(proj)}).json()
+    s = _settle(api, body["sessionId"], timeout=15.0)
+    assert s["state"] == "failed"
+    assert s["lastResult"]["failureReason"] == "orchestration-crashed"
+    assert order.index("request:started") < order.index("thread:failed"), order

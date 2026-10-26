@@ -49,7 +49,7 @@ TOOL_SPECS: dict[str, dict] = {
         "name": "Git", "category": "version-control",
         "description": "Distributed version control.",
         "nodes": ["git"],
-        "fabric_capabilities": ["git.status"],
+        "fabric_capabilities": ["git.status", "git.diff"],
         "actions": [
             _ro("status", "Working tree status.", ["{exe}", "status", "--porcelain=v1", "-b"]),
             _ro("diff", "Uncommitted changes.", ["{exe}", "diff", "--no-color"]),
@@ -213,6 +213,7 @@ ROLE_TOOL_NEEDS: dict[str, list[str]] = {
 #: else is decided by manifest + authority exactly as before.
 CAPABILITY_MACHINE_NEEDS: dict[str, list[str]] = {
     "git.status": ["git"],
+    "git.diff": ["git"],
 }
 
 
