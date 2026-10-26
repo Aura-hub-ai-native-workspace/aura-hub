@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent.__main__ import build_fabric_config
 from aura.fabric import FabricConfig, invoke_fabric
@@ -26,12 +25,12 @@ from aura.fabric import FabricConfig, invoke_fabric
 
 def _stores(home: Path):
     audit = AuditStore(home / "audit.jsonl")
-    return audit, ApprovalLedger(audit_append=audit.append)
+    return audit, None
 
 
 def test_factory_wires_live_fabric_by_default(tmp_path: Path) -> None:
     audit, ledger = _stores(tmp_path)
-    cfg = build_fabric_config(audit, ledger)
+    cfg = build_fabric_config(audit)
     assert cfg.fabric is not None
     assert cfg.policy_config == {}
     assert "git.status" in cfg.executors
@@ -40,35 +39,36 @@ def test_factory_wires_live_fabric_by_default(tmp_path: Path) -> None:
 def test_factory_honors_policy_override(tmp_path: Path) -> None:
     audit, ledger = _stores(tmp_path)
     strict = {"byRisk": {"low": "require-approval"}}
-    cfg = build_fabric_config(audit, ledger, policy_config=strict)
+    cfg = build_fabric_config(audit, policy_config=strict)
     assert cfg.fabric is not None
     merged = cfg.sanitized_policy()
     assert merged["byRisk"]["low"] == "require-approval"
-    # defaults survive alongside the override (merge, not replace)
-    assert merged["byRisk"]["high"] == "require-approval"
-    assert merged["byRisk"]["medium"] == "ask-user"
+    # defaults survive alongside the override (merge, not replace); the
+    # shipped defaults run routine work directly
+    assert merged["byRisk"]["high"] == "auto-execute"
+    assert merged["byRisk"]["medium"] == "auto-execute"
 
 
-def test_strict_policy_parks_through_canonical_factory(tmp_path: Path) -> None:
+def test_strict_policy_refuses_through_canonical_factory(tmp_path: Path) -> None:
     from aura.central_agent import AgentSessionStore, CentralAgent
 
     home = tmp_path
     audit, _ = _stores(home)
     cfg = build_fabric_config(
-        audit, ApprovalLedger(),
+        audit,
         policy_config={"byRisk": {"low": "require-approval",
                                   "medium": "ask-user",
                                   "high": "require-approval"}})
     agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
     r = agent.submit("list my workflows")
-    assert r.outcome == "awaiting-approval", r.summary
-    assert r.evidence.approvalIds, "parked run must name its approval"
+    # A refused step is refused at once: nothing waits for a person.
+    assert r.outcome in ("denied", "failed"), r.summary
 
 
 def test_fabricless_config_fails_closed_on_invoke(tmp_path: Path) -> None:
     audit, ledger = _stores(tmp_path)
     cfg = FabricConfig(permissions={"read": True}, executors={},
-                       audit_store=audit, ledger=ledger)
+                       audit_store=audit)
     assert cfg.fabric is None
     with pytest.raises(RuntimeError, match="no CapabilityFabric wired"):
         invoke_fabric("git.status", {}, {"actor": {"kind": "agent"}}, cfg)
@@ -83,7 +83,7 @@ def test_git_status_audit_is_honest_null_check(tmp_path: Path) -> None:
 
     home = tmp_path
     audit, ledger = _stores(home)
-    cfg = build_fabric_config(audit, ledger)
+    cfg = build_fabric_config(audit)
     agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
     r = agent.submit("show me git status")
     assert r.outcome in ("completed", "failed"), r.summary

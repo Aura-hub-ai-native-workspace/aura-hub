@@ -22,6 +22,7 @@ Config mechanism (verified by machine inspection 2026-09-23):
 
 from __future__ import annotations
 
+from ..tmpname import unique_sibling
 import json
 import os
 import shutil
@@ -51,7 +52,7 @@ def _read_json(path: Path) -> dict:
 
 def _write_json(path: Path, data: dict) -> None:
     text = json.dumps(data, indent=2, ensure_ascii=False)
-    tmp = path.with_suffix(".tmp")
+    tmp = unique_sibling(path)
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 
@@ -91,30 +92,44 @@ class OpenCodeAdapter(AgentConfigurationAdapter):
             config_status=ConfigStatus.OK if base_url else ConfigStatus.PARTIAL,
         )
 
+    def mutable_paths(self) -> list:
+        return [_CONFIG_PATH, _KEY_FILE]
+
     def buildDesiredConfig(self, runtime: RuntimeConfig) -> dict:
+        return {"provider": {_AURA_PROVIDER_ID: self._provider_entry(runtime)}}
+
+    @staticmethod
+    def _model_entry(runtime: RuntimeConfig) -> dict:
+        """Model fields from verified metadata only.
+
+        ``tool_call`` is written only when the server reported its capability
+        list. ``limit`` is written only when both the context window and the
+        output limit are known, because OpenCode rejects a limit block that has
+        only one of them. Nothing is defaulted.
+        """
+        entry: dict = {"name": runtime.model_id}
+        if runtime.tool_calling is not None:
+            entry["tool_call"] = bool(runtime.tool_calling)
+        if runtime.context_length and runtime.max_output_tokens:
+            entry["limit"] = {"context": int(runtime.context_length),
+                              "output": int(runtime.max_output_tokens)}
+        return entry
+
+    @classmethod
+    def _provider_entry(cls, runtime: RuntimeConfig) -> dict:
         key_ref = (
             "{file:~/.config/opencode/aura-private.key}"
             if runtime.auth_type != AuthType.KEYLESS
             else "aura-keyless"
         )
         return {
-            "provider": {
-                _AURA_PROVIDER_ID: {
-                    "npm": "@ai-sdk/openai-compatible",
-                    "name": "AURA Private Runtime",
-                    "options": {
-                        "baseURL": runtime.base_url,
-                        "apiKey": key_ref,
-                    },
-                    "models": {
-                        runtime.model_id: {
-                            "name": runtime.model_id,
-                            "tool_call": True,
-                            "limit": {"context": 128000, "output": 8192},
-                        }
-                    },
-                }
-            }
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "AURA Private Runtime",
+            "options": {
+                "baseURL": runtime.base_url,
+                "apiKey": key_ref,
+            },
+            "models": {runtime.model_id: cls._model_entry(runtime)},
         }
 
     def apply(self, runtime: RuntimeConfig) -> ConfigurationChange:
@@ -123,26 +138,7 @@ class OpenCodeAdapter(AgentConfigurationAdapter):
         old_cs = checksum(old_bytes)
 
         providers = cfg.setdefault("provider", {})
-        key_ref = (
-            "{file:~/.config/opencode/aura-private.key}"
-            if runtime.auth_type != AuthType.KEYLESS
-            else "aura-keyless"
-        )
-        providers[_AURA_PROVIDER_ID] = {
-            "npm": "@ai-sdk/openai-compatible",
-            "name": "AURA Private Runtime",
-            "options": {
-                "baseURL": runtime.base_url,
-                "apiKey": key_ref,
-            },
-            "models": {
-                runtime.model_id: {
-                    "name": runtime.model_id,
-                    "tool_call": True,
-                    "limit": {"context": 128000, "output": 8192},
-                }
-            },
-        }
+        providers[_AURA_PROVIDER_ID] = self._provider_entry(runtime)
 
         # Write API key to key file (never in JSON)
         if runtime.auth_type != AuthType.KEYLESS and runtime.api_key_env:
@@ -188,7 +184,7 @@ class OpenCodeAdapter(AgentConfigurationAdapter):
 
     def restore(self, backup_bytes: bytes) -> ConfigurationChange:
         old_cs = checksum(_CONFIG_PATH.read_bytes()) if _CONFIG_PATH.exists() else None
-        tmp = _CONFIG_PATH.with_suffix(".tmp")
+        tmp = unique_sibling(_CONFIG_PATH)
         tmp.write_bytes(backup_bytes)
         tmp.replace(_CONFIG_PATH)
         return ConfigurationChange(

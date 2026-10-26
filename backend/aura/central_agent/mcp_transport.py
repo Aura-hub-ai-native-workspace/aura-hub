@@ -185,7 +185,7 @@ class McpSession:
 
     def call(self, tool_name: str, arguments: dict | None) -> dict:
         """Raw protocol call. Prefer invoke via the Fabric executor instead —
-        that path carries policy, approval, verification and audit."""
+        that path carries policy, verification and audit."""
         return self.client.call_tool(tool_name, arguments)
 
     def close(self) -> None:

@@ -1,3 +1,4 @@
+import { decideProviderCheck, PROVIDER_CHECK_ATTEMPTS, PROVIDER_CHECK_INTERVAL_MS } from './providerCheck';
 import { useCallback, useEffect, useState } from 'react';
 import { aiClient } from '../ai/aiClient';
 import { providerGate, type ProviderGate } from './gateRules';
@@ -58,22 +59,26 @@ export function useProviderGate(enabled: boolean): { gate: ProviderGate; markRea
     let alive = true;
     setGate('checking');
     (async () => {
-      try {
+      /* Retry while the services have not answered: at boot the shell may
+         still be starting them, and an unanswered check is not evidence that
+         setup is needed. A definitive "no provider" ends the retries at once;
+         exhausting them with no answer falls back to setup, as before. */
+      for (let attempt = 0; attempt < PROVIDER_CHECK_ATTEMPTS && alive; attempt++) {
         const [providers, health] = await Promise.all([
           aiClient.getProviders().catch(() => null),
           aiClient.health().catch(() => null),
         ]);
         if (!alive) return;
-        const active = providers?.active ?? null;
-        const model = providers?.activeModel ?? '';
-        const ok = health?.health?.ok === true;
-        // All three, because any one alone can be true of a broken setup:
-        // an active pointer with no model, or a model with a server that
-        // stopped answering.
-        setGate(active && model && ok ? 'ready' : 'needs-setup');
-      } catch {
-        if (alive) setGate('needs-setup');
+        const result = decideProviderCheck({
+          providers: providers
+            ? { active: providers.active ?? null, activeModel: providers.activeModel ?? '' }
+            : null,
+          healthOk: health ? health.health?.ok === true : null,
+        });
+        if (result !== 'retry') { setGate(result); return; }
+        await new Promise((r) => setTimeout(r, PROVIDER_CHECK_INTERVAL_MS));
       }
+      if (alive) setGate('needs-setup');
     })();
     return () => { alive = false; };
   }, [enabled, checkedAtStart]);

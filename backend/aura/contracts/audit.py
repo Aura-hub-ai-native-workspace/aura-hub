@@ -1,7 +1,7 @@
 """AuditRecord — schema/audit-record.schema.json.
 
 Append-only trail semantics frozen in invariants.md §3. One record per settled
-invocation AND per human approval decision (approvalDecision/decidedBy).
+invocation.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pydantic import Field
 from ._base import ContractModel, PolicyDecision, RiskLevel
 
 InvocationOutcome = Literal[
-    "succeeded", "unverified", "denied", "awaiting-approval", "failed", "unsupported"
+    "succeeded", "unverified", "denied", "failed", "unsupported"
 ]
 
 
@@ -41,9 +41,6 @@ class AuditRecord(ContractModel):
     workflowId: str | None = None
     runId: str | None = None
     workflowNodeId: str | None = None
-    approvalId: str | None = None
     nodeId: str | None = None
     requestedNodeId: str | None = None
     executedNodeId: str | None = None
-    approvalDecision: Literal["granted", "denied"] | None = None
-    decidedBy: str | None = None

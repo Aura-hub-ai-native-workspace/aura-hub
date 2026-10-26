@@ -5,7 +5,7 @@ Why this exists and why it is shaped this way
 AURA's own capability surface is where research belongs, not inside a
 worker. A worker reaching the network means opening the sandbox's egress
 door to arbitrary hosts; this capability runs in AURA's process, so the
-Fabric's policy engine, approval ledger and audit trail all see it, and
+Fabric's policy engine and audit trail all see it, and
 the single door (``governance.netgate``) stays shut for the worker.
 
 No search provider is hardcoded
@@ -131,6 +131,133 @@ def load_web_config(home=None) -> dict:
     return cfg
 
 
+def _public_endpoint(url: str) -> str:
+    """The address as it may be shown or logged: scheme, host, port and path only."""
+    u = urllib.parse.urlsplit(url)
+    port = f":{u.port}" if u.port else ""
+    return f"{u.scheme}://{u.hostname or ''}{port}{u.path}".rstrip("/")
+
+
+def check_endpoint_syntax(raw: object) -> tuple[str | None, str]:
+    """(endpoint, "") when usable, else (None, reason). Pure; no network.
+
+    A credential in the address (``user:pass@host``) is refused: the address is
+    stored in a plain JSON file, and this build does not keep gateway secrets.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return None, "Enter the address of a SearXNG-compatible search endpoint."
+    url = raw.strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return None, "The address must start with http:// or https://."
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = (parts.hostname or "").lower()
+        parts.port  # noqa: B018 — raises ValueError on a bad port
+    except ValueError:
+        return None, "That address is not valid."
+    if not host or host in _BLOCKED_HOSTS:
+        return None, "That address is not allowed."
+    if parts.username or parts.password:
+        return None, ("Credentials in the address are not accepted: it is stored in a plain file. "
+                      "Use a gateway that needs none.")
+    return url, ""
+
+
+def probe_gateway(endpoint: str, *, timeout_ms: int = 4_000, fetch_fn=None) -> dict:
+    """One bounded test query. ``{"ok": bool, "reason": str, "results": int}``.
+
+    Never saves anything. It asks the gateway a harmless query and checks that
+    what comes back is what a search gateway returns, so an address that merely
+    answers (a web page, an API of something else) is not accepted as a gateway.
+    """
+    fetch = fetch_fn or http_get
+    joiner = "&" if urllib.parse.urlsplit(endpoint).query else "?"
+    try:
+        status, payload = fetch(f"{endpoint}{joiner}q=test&format=json", timeout_ms, accept="application/json")
+    except urllib.error.HTTPError as exc:
+        code = getattr(exc, "code", 0) or 0
+        reason = ("The gateway refused the request (HTTP %d). A SearXNG instance answers 403 when its JSON "
+                  "format is not enabled: add `json` to `search.formats` in its settings.yml." % code
+                  if code in (401, 403) else
+                  "The gateway is rate limiting requests (429). Try again shortly." if code == 429 else
+                  f"The gateway answered HTTP {code}.")
+        return {"ok": False, "reason": reason, "results": 0}
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        why = getattr(exc, "reason", exc)
+        return {"ok": False, "reason": f"Could not reach the gateway: {type(why).__name__}.", "results": 0}
+    if not (200 <= status < 300):
+        return {"ok": False, "reason": f"The gateway answered HTTP {status}.", "results": 0}
+    if not gateway_answer_is_wellformed(payload):
+        return {"ok": False, "reason": "That address answered, but it is not a SearXNG-compatible "
+                                       "search endpoint (no JSON \"results\" list).", "results": 0}
+    return {"ok": True, "reason": "", "results": len(parse_results(payload))}
+
+
+def research_config_status() -> dict:
+    """Where search is configured from, without credentials. Never invents an endpoint."""
+    cfg = load_web_config()
+    endpoint = _endpoint(cfg)
+    if endpoint is None:
+        return {"configured": False, "endpoint": None, "source": None}
+    return {"configured": True, "endpoint": _public_endpoint(endpoint),
+            "source": "environment" if os.environ.get("AURA_SEARCH_ENDPOINT") else "file"}
+
+
+def save_search_endpoint(raw: object, *, fetch_fn=None) -> dict:
+    """Validate, probe, and only then save ``searchEndpoint`` in ``web.json``.
+
+    Other keys in the file are kept. Atomic write. Refuses when the environment
+    variable overrides the file (the saved value would not take effect).
+    """
+    endpoint, why = check_endpoint_syntax(raw)
+    if endpoint is None:
+        return {"ok": False, "reason": why, "saved": False}
+    if os.environ.get("AURA_SEARCH_ENDPOINT"):
+        return {"ok": False, "saved": False,
+                "reason": "AURA_SEARCH_ENDPOINT is set in the environment and overrides the saved address. "
+                          "Unset it to configure the gateway here."}
+    probe = probe_gateway(endpoint, fetch_fn=fetch_fn)
+    if not probe["ok"]:
+        return {"ok": False, "saved": False, "reason": probe["reason"]}
+    from pathlib import Path
+
+    from ..config import aura_home
+
+    path = Path(aura_home()) / "web.json"
+    try:
+        current = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {"ok": False, "saved": False,
+                "reason": "The existing web.json could not be read, so it was left untouched."}
+    if not isinstance(current, dict):
+        return {"ok": False, "saved": False, "reason": "The existing web.json is not an object; left untouched."}
+    current["searchEndpoint"] = endpoint
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return {"ok": True, "saved": True, "reason": "", "results": probe["results"],
+            "endpoint": _public_endpoint(endpoint)}
+
+
+def clear_search_endpoint() -> dict:
+    from pathlib import Path
+
+    from ..config import aura_home
+
+    path = Path(aura_home()) / "web.json"
+    try:
+        current = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {"ok": False, "reason": "The existing web.json could not be read; left untouched."}
+    if isinstance(current, dict) and "searchEndpoint" in current:
+        del current["searchEndpoint"]
+        tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+    return {"ok": True, "reason": ""}
+
+
 def _endpoint(cfg: dict) -> str | None:
     raw = cfg.get("searchEndpoint")
     if not isinstance(raw, str):
@@ -218,6 +345,15 @@ def _clip(text: str, limit: int, label: str = "") -> str:
     if len(text) > limit:
         text = text[:limit].rstrip() + " …[truncated]"
     return text
+
+
+def gateway_answer_is_wellformed(payload: str) -> bool:
+    """True when the answer is a JSON object carrying a ``results`` list (possibly empty)."""
+    try:
+        data = json.loads(payload or "")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(data, dict) and isinstance(data.get("results"), list)
 
 
 def parse_results(payload: str) -> list[dict]:
@@ -334,7 +470,9 @@ async def web_research_run(inv: dict, *, fetch_fn=http_get) -> dict:
         code = getattr(exc, "code", 0) or 0
         if code in (401, 403):
             return _no(f"The search gateway refused the request ({code}). "
-                       "Its credentials are not usable from this machine.")
+                       "A SearXNG instance answers 403 when its JSON format is not enabled "
+                       "(add `json` to `search.formats` in its settings.yml); otherwise its "
+                       "credentials are not usable from this machine.")
         return _no(f"The search gateway answered {code}.")
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
@@ -347,6 +485,12 @@ async def web_research_run(inv: dict, *, fetch_fn=http_get) -> dict:
     if not (200 <= status < 300):
         return _no(f"The search gateway answered {status}.")
 
+    if not gateway_answer_is_wellformed(payload):
+        # An answer this cannot read is a gateway problem, not "no results":
+        # calling it empty would hide a misconfigured endpoint.
+        return _no("The search gateway answered, but not in the expected format "
+                   "(a JSON object with a \"results\" list). Check that the address is a "
+                   "SearXNG-compatible search endpoint.")
     results = parse_results(payload)[:max_results]
     if not results:
         return _ok(

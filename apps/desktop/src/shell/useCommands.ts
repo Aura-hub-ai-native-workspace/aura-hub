@@ -4,7 +4,6 @@ import { useWorkspace } from '../data/useWorkspace';
 import { useLayoutStore } from '../ops/layoutStore';
 import { hasUnsavedWorkFor } from '../editor/editorStore';
 import { useAgentLink } from '../ai/agentLinkStore';
-import { useFabric } from '../data/useFabric';
 
 /**
  * Builds the command registry for the palette — the Global Command
@@ -27,8 +26,6 @@ export function useCommands(): Command[] {
   const openPanel = useLayoutStore((s) => s.openPanel);
   const focusAskAura = useAgentLink((s) => s.focusAskAura);
   const lastSessionId = useAgentLink((s) => s.lastSessionId);
-  const pendingApproval = useFabric((s) =>
-    s.approvals.find((a) => a.state === 'pending')) ?? null;
 
   return useMemo<Command[]>(() => {
       const inWorkspace = (run: () => void) => () => { setNav('workspace'); run(); };
@@ -80,14 +77,14 @@ export function useCommands(): Command[] {
       },
       {
         id: 'ops-mission-control',
-        title: 'Open Mission Control',
+        title: 'Open Planner',
         section: 'Actions',
         icon: 'deploy',
         run: inWorkspace(() => openPanel('missions')),
       },
       {
         id: 'ops-create-mission',
-        title: 'Create Mission',
+        title: 'Create Plan',
         section: 'Actions',
         icon: 'plus',
         run: inWorkspace(() => openPanel('missions')),
@@ -151,7 +148,7 @@ export function useCommands(): Command[] {
       },
       {
         id: 'ops-search-missions',
-        title: 'Search Missions',
+        title: 'Search Plans',
         section: 'Actions',
         icon: 'deploy',
         run: inWorkspace(() => { setSearchScope('missions'); openPanel('search'); }),
@@ -205,7 +202,7 @@ export function useCommands(): Command[] {
     const agentCommands: Command[] = [
       {
         id: 'agent-ask',
-        title: 'Ask AURA',
+        title: 'Start Building',
         section: 'Central Agent',
         icon: 'spark',
         keywords: ['intent', 'assistant', 'task'],
@@ -222,17 +219,7 @@ export function useCommands(): Command[] {
         run: () => setNav('home'),
       });
     }
-    if (pendingApproval) {
-      agentCommands.push({
-        id: 'agent-decide-approval',
-        title: `Decide approval: ${pendingApproval.items[0]?.title ?? pendingApproval.summary}`,
-        section: 'Central Agent',
-        icon: 'shield',
-        keywords: ['approve', 'deny', 'permission'],
-        run: () => setNav('workflows'),
-      });
-    }
 
     return [...actions, ...nav, ...projects, ...agentCommands];
-  }, [setNav, openProject, openAddProjectDialog, openWorkspace, projectList, toggleTheme, toggleRightPanel, toggleSidebar, setSearchScope, openPanel, focusAskAura, lastSessionId, pendingApproval]);
+  }, [setNav, openProject, openAddProjectDialog, openWorkspace, projectList, toggleTheme, toggleRightPanel, toggleSidebar, setSearchScope, openPanel, focusAskAura, lastSessionId]);
 }

@@ -5,11 +5,11 @@ The supervisor enforces what can be decided WITHOUT model judgment:
 - scope paths must be well-formed before anything runs;
 - after a worker runs, the changed files (via `git status`) must fall
   inside the declared scope, or the run is reported as a scope
-  deviation — stopped and parked, never silently accepted, never
+  deviation — stopped and recorded, never silently accepted, never
   silently reverted.
 
 Interpretation of a deviation (what it means, what to do next) belongs
-to the Central Agent behind an approval; enforcement belongs here.
+to the Central Agent; enforcement belongs here.
 """
 
 from __future__ import annotations
@@ -18,6 +18,39 @@ from dataclasses import dataclass, field
 
 MAX_SCOPE_PATHS = 32
 MAX_SCOPE_PATH_CHARS = 256
+
+#: Directories that never hold authored project content: build output,
+#: dependency trees, tool and interpreter state, version-control
+#: internals. A worker that installs a dependency or imports its own
+#: module produces these; they are side effects of working, not work.
+#:
+#: One list, so a path is project content EVERYWHERE or nowhere. The
+#: Workspace change report (central_agent/change_observer) skips the
+#: same directories; a path the report calls "not a change" must not be
+#: a scope violation either.
+IGNORED_CONTENT_DIRS = frozenset({
+    ".git", ".hg", ".svn", "node_modules", ".aura", "__pycache__", ".venv", "venv",
+    "dist", "build", "target", ".next", ".nuxt", ".cache", ".turbo", ".gradle",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".idea", ".vscode", "coverage",
+})
+
+
+def is_ignored_content_path(path: str) -> bool:
+    """True when a repo-relative path lives inside an ignored directory.
+
+    Matched on path COMPONENTS, not on the whole string: the same
+    directory name means the same thing wherever it appears, and
+    ``__pycache__/backend.cpython-312.pyc`` is ignored because
+    ``__pycache__`` is, not because the whole path matches.
+
+    Only a component that is a DIRECTORY counts, which is how the
+    Workspace change report reads the same list: a file named ``build``
+    is a file the worker wrote, and is judged like any other.
+    """
+    if not path:
+        return False
+    parts = path.split("/")
+    return any(part in IGNORED_CONTENT_DIRS for part in parts[:-1])
 
 
 def _normalize_scope_path(raw: object) -> str | None:
@@ -234,7 +267,9 @@ async def check_worker_scope(cwd: str, scope: list[str],
         return ScopeCheck(
             supported=False, allowed=True, changed=[], outside=[],
             detail="Scope could not be evidenced here: not a git working tree.")
-    changed = parse_porcelain_status(res.out)
+    # Only authored project content is judged (see IGNORED_CONTENT_DIRS).
+    changed = [p for p in parse_porcelain_status(res.out)
+               if not is_ignored_content_path(p)]
     return check_scope_paths(changed, scope)
 
 
@@ -290,7 +325,10 @@ async def snapshot_worktree(cwd: str,
         return None
     if res.code != 0:
         return None
-    paths = [p for p in parse_porcelain_status(res.out) if "\n" not in p]
+    # Ignored content is not hashed: it is never judged, and hashing a
+    # whole node_modules tree is pure cost.
+    paths = [p for p in parse_porcelain_status(res.out)
+             if "\n" not in p and not is_ignored_content_path(p)]
     snapshot = WorktreeSnapshot()
     if len(paths) > SNAPSHOT_PATH_CAP:
         snapshot.capped = True

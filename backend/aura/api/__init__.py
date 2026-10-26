@@ -3,8 +3,8 @@
 stdlib HTTP (no framework dependency). Every route is documented in
 docs/AURA_CENTRAL_AGENT_API.md. Design rules:
 
-- The agent API NEVER duplicates governance routes: approvals are decided
-  through the SAME ledger the Fabric uses; this server only exposes it.
+- The agent API NEVER duplicates governance routes; it exposes the Fabric's
+  governed invocation only (there is no approval gate in AURA Hub Alpha).
 - SSE streams carry AgentEvent payloads from the real execution path.
   Live events are observability, never evidence — durable audit stays
   authoritative and every session reloads from persisted state.
@@ -20,7 +20,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.errors import AuraError, NotFound
@@ -34,7 +33,6 @@ MAX_BODY_BYTES = 1 * 1024 * 1024
 class ApiDeps:
     agent: CentralAgent
     sessions: AgentSessionStore
-    ledger: ApprovalLedger
     audit: AuditStore
     missions: MissionStore = field(default_factory=MissionStore)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -209,37 +207,6 @@ class AgentApiServer:
                         raise AuraError(text_err, status=409)
                 return {"result": result.model_dump(), "requestId": rid}
 
-            if sub == "approve" and method == "POST":
-                from aura.central_agent.correlation import new_request_id
-
-                rid = new_request_id()
-                body = read_body()
-                approval_id = str(body.get("approvalId") or "")
-                granted = bool(body.get("granted", True))
-                with d.lock:
-                    try:
-                        d.agent.check_approval_binding(sid, approval_id)
-                    except ValueError as exc:
-                        raise AuraError(str(exc), status=409)
-                    decided = d.ledger.decide(approval_id, granted, "user",
-                                              body.get("reason"))
-                if decided is None:
-                    raise AuraError("this request was already decided", status=409)
-                if not granted:
-                    try:
-                        result = d.agent.resume(sid, request_id=rid)
-                    except (ValueError, PermissionError) as exc:
-                        raise AuraError(str(exc), status=409)
-                    return {"approval": decided,
-                            "result": result.model_dump(), "requestId": rid}
-                with d.lock:
-                    try:
-                        result = d.agent.resume(sid, request_id=rid)
-                    except (ValueError, PermissionError) as exc:
-                        raise AuraError(str(exc), status=409)
-                return {"approval": decided, "result": result.model_dump(),
-                        "requestId": rid}
-
             if sub == "resume" and method == "POST":
                 from aura.central_agent.correlation import new_request_id
 
@@ -267,18 +234,6 @@ class AgentApiServer:
                 return (session.lastResult.evidence.model_dump()
                         if session.lastResult and session.lastResult.evidence
                         else {"evidence": None})
-
-        if seg[:2] == ["fabric", "approvals"]:
-            if method == "GET" and len(seg) == 2:
-                return {"approvals": d.ledger.pending()}
-            if method == "POST" and len(seg) == 4 and seg[3] == "decide":
-                body = read_body()
-                decided = d.ledger.decide(
-                    seg[2], bool(body.get("granted")), "user",
-                    body.get("reason"))
-                if decided is None:
-                    raise AuraError("this request was already decided", status=409)
-                return {"approval": decided}
 
         if seg[:2] == ["workflow-runs"] and method == "GET" and len(seg) == 3:
             run = d.agent.run_store.find(seg[2])
@@ -310,16 +265,10 @@ class AgentApiServer:
                 rec = d.missions.get(pid, mid)
                 if rec is None:
                     raise NotFound("no such mission")
-                if action in ("approve", "reject", "start", "pause", "resume", "cancel"):
-                    body = read_body() if action in ("reject", "cancel", "review") else {}
+                if action in ("start", "pause", "resume", "cancel"):
+                    body = read_body() if action == "cancel" else {}
                     patch = {}
-                    if action == "approve":
-                        patch["approval"] = "approved"
-                    elif action == "reject":
-                        patch["approval"] = "rejected"
-                        if body.get("reason"):
-                            patch["rejectionReason"] = body["reason"]
-                    elif action == "start":
+                    if action == "start":
                         import datetime as _dt
                         patch["execution"] = {
                             "status": "running",
@@ -374,12 +323,11 @@ def build_default_api(home=None, host: str = "127.0.0.1",
     H = aura_home()
     H.mkdir(parents=True, exist_ok=True)
     audit = AuditStore(H / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
     from aura.central_agent import EventBus, IntentCompiler
     from aura.fabric_wiring import default_fabric_config
     from aura.workflow import WorkflowEngine
 
-    cfg = default_fabric_config(audit, ledger)
+    cfg = default_fabric_config(audit)
     sessions = AgentSessionStore(H)
     ws, vs, rs = make_stores()
     bus = EventBus()
@@ -389,8 +337,7 @@ def build_default_api(home=None, host: str = "127.0.0.1",
                          workflow_engine=WorkflowEngine(
                              cfg, ws, vs, rs,
                              config=_engine_config_for(bus)))
-    server = AgentApiServer(ApiDeps(agent=agent, sessions=sessions,
-                                    ledger=ledger, audit=audit),
+    server = AgentApiServer(ApiDeps(agent=agent, sessions=sessions, audit=audit),
                             host=host, port=port)
     return server, agent
 

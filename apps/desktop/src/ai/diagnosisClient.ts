@@ -1,3 +1,4 @@
+import { backendFetch } from '../backend/backendSession';
 /**
  * diagnosisClient — fetch wrappers for the Engineering Diagnosis Engine,
  * matching `aiClient.ts`'s style. `startDiagnosis` reuses the exact SSE
@@ -59,7 +60,7 @@ export interface PatchLimiterStats {
   importsRemovedCount: number;
   architectureLayerChanged: boolean;
 }
-export type PatchDecision = 'auto-approved' | 'requires-manual-approval' | 'auto-rejected';
+export type PatchDecision = 'auto-approved' | 'requires-manual-review' | 'auto-rejected';
 export interface PatchLimiterResult { decision: PatchDecision; reasons: string[]; stats: PatchLimiterStats }
 
 export interface ImpactReport {
@@ -149,14 +150,14 @@ async function readJson<T>(res: Response, what = 'Diagnosis request'): Promise<T
 
 export const diagnosisClient = {
   list: (projectId: string): Promise<{ diagnoses: DiagnosisSummary[] }> =>
-    fetch(`${BASE}/projects/${projectId}/diagnose`).then((r) => readJson(r, 'Listing diagnoses')),
+    backendFetch(`${BASE}/projects/${projectId}/diagnose`).then((r) => readJson(r, 'Listing diagnoses')),
 
   get: (projectId: string, id: string): Promise<DiagnosisRecord | { error: string }> =>
-    fetch(`${BASE}/projects/${projectId}/diagnose/${id}`).then((r) => readJson(r, 'Reading diagnosis')),
+    backendFetch(`${BASE}/projects/${projectId}/diagnose/${id}`).then((r) => readJson(r, 'Reading diagnosis')),
 
   accept: async (projectId: string, id: string, candidateId: 'A' | 'B' | 'C'): Promise<{ ok: boolean; error?: string }> => {
     try {
-      const r = await fetch(`${BASE}/projects/${projectId}/diagnose/${id}/accept`, {
+      const r = await backendFetch(`${BASE}/projects/${projectId}/diagnose/${id}/accept`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ candidateId }),
       });
       return await r.json();
@@ -167,7 +168,7 @@ export const diagnosisClient = {
 
   reject: async (projectId: string, id: string, candidateId?: 'A' | 'B' | 'C', reason?: string): Promise<{ ok: boolean; error?: string }> => {
     try {
-      const r = await fetch(`${BASE}/projects/${projectId}/diagnose/${id}/reject`, {
+      const r = await backendFetch(`${BASE}/projects/${projectId}/diagnose/${id}/reject`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ candidateId, reason }),
       });
       return await r.json();
@@ -179,7 +180,7 @@ export const diagnosisClient = {
   async run(projectId: string, req: DiagnosisRequest, onEvent: (e: DiagnosisEvent) => void, signal?: AbortSignal): Promise<void> {
     let res: Response;
     try {
-      res = await fetch(`${BASE}/projects/${projectId}/diagnose`, {
+      res = await backendFetch(`${BASE}/projects/${projectId}/diagnose`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(req), signal,
       });
     } catch (e) {

@@ -10,8 +10,6 @@ import {
 } from '../../../ai/agentNarration';
 import type { AgentActivity, AgentChatMessage } from '../../../ai/useAgentConversations';
 import type { Handoff } from '../../../ai/aiClient';
-import { ApprovalGate } from '../../missions/ApprovalGate';
-import type { ApprovalRequest } from '../../../ai/fabricClient';
 
 /**
  * ConversationPane — the workspace IS the conversation.
@@ -58,13 +56,13 @@ function HandoffInbox({ handoffs, onAccept }: { handoffs: Handoff[]; onAccept: (
           className="rounded-xl border border-[rgba(255,181,71,0.4)] bg-[rgba(255,181,71,0.07)] px-4 py-3"
         >
           <p className="text-[11px] font-semibold uppercase tracking-wider text-neon-warning">
-            Task received from Project Ask AURA
+            Task received from Let's Chat
           </p>
           <p className="mt-1 text-[13.5px] leading-relaxed text-text">{h.title}</p>
           {h.notes && <p className="mt-1 whitespace-pre-wrap text-[12.5px] text-text-muted">{h.notes}</p>}
           <div className="mt-2.5 flex items-center justify-between gap-3">
             <span className="text-[11px] text-text-subtle">
-              Source: Ask AURA · {h.sourceMessageIds.length} message(s)
+              Source: Let's Chat · {h.sourceMessageIds.length} message(s)
             </span>
             <button
               type="button"
@@ -116,7 +114,7 @@ function ActivityLine({ activity }: { activity: AgentActivity }) {
         aria-hidden
         className={cn(
           'h-1.5 w-1.5 shrink-0 rounded-full',
-          activity.awaitingApproval ? 'bg-neon-warning' : 'bg-neon-cyan aura-breathe',
+          'bg-neon-cyan aura-breathe',
         )}
       />
       <span className="min-w-0 truncate">
@@ -157,14 +155,8 @@ function ToolTrace({ tools }: { tools: string[] }) {
 
 function MessageRow({
   message,
-  approval,
-  onDecide,
-  deciding,
 }: {
   message: AgentChatMessage;
-  approval: ApprovalRequest | null | undefined;
-  onDecide: (granted: boolean, reason?: string) => void;
-  deciding: boolean;
 }) {
   if (message.role === 'user') {
     return (
@@ -215,20 +207,6 @@ function MessageRow({
               </p>
             )}
 
-            {/* The existing gate, against the existing ledger. */}
-            {message.agent?.approvalId && approval && (
-              <ApprovalGate
-                request={approval}
-                busy={deciding}
-                onDecide={(_id, granted, reason) => onDecide(granted, reason)}
-              />
-            )}
-            {message.agent?.approvalId && approval === null && (
-              <p className="mt-2 text-[12px] text-text-subtle">
-                Loading the authorization details…
-              </p>
-            )}
-
             {!streaming && <ToolTrace tools={tools} />}
           </>
         )}
@@ -242,12 +220,9 @@ export function ConversationPane({
   activity,
   busy,
   agentUp,
-  approvals,
-  deciding,
   onSend,
   onStop,
   onRegenerate,
-  onDecide,
   handoffs,
   onAcceptHandoff,
   projectName,
@@ -257,13 +232,9 @@ export function ConversationPane({
   busy: boolean;
   /** Liveness of the agent service itself. Null while unknown. */
   agentUp: boolean | null;
-  /** approvalId → the pending request, null while still loading. */
-  approvals: Record<string, ApprovalRequest | null>;
-  deciding: boolean;
   onSend: (text: string) => void;
   onStop: () => void;
   onRegenerate: () => void;
-  onDecide: (messageId: string, granted: boolean, reason?: string) => void;
   /** Handoffs offered to this workspace by the project's Ask AURA. */
   handoffs: Handoff[];
   onAcceptHandoff: (h: Handoff) => void;
@@ -324,7 +295,7 @@ export function ConversationPane({
             <div>
               <p className="text-[16px] font-semibold text-text">Ready to execute.</p>
               <p className="mt-1 text-[12.5px] text-text-muted">
-                This workspace does the work — plans and discussions live in the project's Ask AURA.
+                This workspace does the work — plans and discussions live in the project's Let's Chat.
               </p>
             </div>
             <div className="flex flex-wrap justify-center gap-2">
@@ -348,9 +319,6 @@ export function ConversationPane({
               <MessageRow
                 key={m.id}
                 message={m}
-                approval={m.agent?.approvalId ? approvals[m.agent.approvalId] ?? null : undefined}
-                deciding={deciding}
-                onDecide={(granted, reason) => onDecide(m.id, granted, reason)}
               />
             ))}
           </>

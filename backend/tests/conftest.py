@@ -47,3 +47,51 @@ MIGRATION_DOCS = REPO / "docs" / "migration"
 VECTORS_FILE = MIGRATION_DOCS / "canonicalization-vectors.json"
 GOLDEN_DIR = MIGRATION_DOCS / "golden"
 SCHEMA_DIR = MIGRATION_DOCS / "schemas"
+
+
+# ── worker billing policy in tests ────────────────────────────────────────
+# Product default is deny-all (aura/workers/billing.py). Tests that exercise
+# dispatch with fake workers would all be refused, so they run under a policy
+# that lets every worker id through. This is test-only plumbing: the product
+# reads the owner's file and has no bypass. Tests that check the policy itself
+# opt out with ``@pytest.mark.real_billing_policy``.
+import pytest  # noqa: E402
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "real_billing_policy: run with the product's real deny-by-default worker billing policy")
+    config.addinivalue_line(
+        "markers", "real_agent_architecture: run with the product's default (agents write code, Laya does not)")
+
+
+@pytest.fixture(autouse=True)
+def _workers_allowed_unless_testing_the_policy(request, monkeypatch):
+    if request.node.get_closest_marker("real_billing_policy"):
+        return
+    from aura.workers import billing
+
+    class _All(frozenset):
+        def __contains__(self, item):  # every worker id is allowed
+            return True
+
+    monkeypatch.setattr(billing, "load_policy", lambda home=None: (frozenset(), _All()))
+
+
+@pytest.fixture(autouse=True)
+def _aura_authoring_allowed_unless_testing_the_architecture(request, monkeypatch):
+    """Older tests exercise AURA-written files. The product default is that the
+    planning model writes nothing (plan_handoff.authoring_allowed), so those tests
+    opt in here; tests of the architecture itself use ``real_agent_architecture``."""
+    if request.node.get_closest_marker("real_agent_architecture"):
+        return
+    from aura.central_agent import plan_handoff
+
+    monkeypatch.setattr(plan_handoff, "authoring_allowed", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _every_test_gets_its_own_aura_home(tmp_path_factory, monkeypatch):
+    """No test may read or write the person's real ~/.aura. A test that wants a
+    specific home sets AURA_HOME itself (that overrides this)."""
+    monkeypatch.setenv("AURA_HOME", str(tmp_path_factory.mktemp("aura-home")))

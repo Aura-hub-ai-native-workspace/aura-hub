@@ -47,8 +47,7 @@ def _evidence(rec: dict) -> UpstreamEvidence:
         stdout=rec["stdout"], stdout_chars=int(rec.get("stdout_chars") or 0),
         scope_paths=list(rec["scope_paths"]),
         changed_paths=list(rec["changed_paths"]),
-        invocation_ids=list(rec["invocation_ids"]),
-        approval_ids=list(rec["approval_ids"]))
+        invocation_ids=list(rec["invocation_ids"]))
 
 
 def _round_trip(rec: dict) -> dict:

@@ -6,7 +6,7 @@ An MCP tool becomes a Fabric capability ONLY through this module:
   • permissions are NEVER inferred from the MCP description — the
     descriptor carries none, and the policy risk floor for MCP is HIGH,
     so every invocation parks for a human decision;
-  • execution happens inside CapabilityFabric.invoke (policy → approval →
+  • execution happens inside CapabilityFabric.invoke (policy →
     audit), never by calling the transport directly from callers;
   • output is fenced as untrusted data with provenance markers.
 

@@ -5,6 +5,9 @@ import type { ProviderAdapter, DiscoveredModel, ProviderHealth, ModelCapabilitie
 import { ProviderHttpError } from '../errorTranslator';
 import { pinnedFetch } from '../redirectGuard';
 
+/** The longest any single non-streaming call may be given, whatever a caller asks for. */
+export const MAX_CALL_TIMEOUT_MS = 600_000;
+
 /** Classify an OpenAI-compatible HTTP status into a user-facing validation state. */
 function classifyError(status: number): string {
   if (status === 401) return 'Invalid API key (401)';
@@ -116,7 +119,7 @@ class OpenAICompatibleRuntime implements Runtime {
 
   private headers() { return { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` }; }
 
-  private buildBody(messages: RuntimeMessage[], opts: { model?: string; temperature?: number; maxTokens?: number; stream: boolean }): string {
+  private buildBody(messages: RuntimeMessage[], opts: { model?: string; temperature?: number; maxTokens?: number; frequencyPenalty?: number; stream: boolean }): string {
     const model = opts.model || this.defaultModel;
     const p: Record<string, unknown> = {
       model,
@@ -124,6 +127,7 @@ class OpenAICompatibleRuntime implements Runtime {
       stream: opts.stream,
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...(opts.frequencyPenalty !== undefined ? { frequency_penalty: opts.frequencyPenalty } : {}),
       ...(opts.stream ? { stream_options: { include_usage: true } } : {}),
     };
     return JSON.stringify(p);
@@ -131,10 +135,10 @@ class OpenAICompatibleRuntime implements Runtime {
 
   async generate(request: GenerateRequest): Promise<GenerateResponse> {
     const msgs = [...(request.system ? [{ role: 'system' as const, content: request.system }] : []), ...request.messages];
-    const body = this.buildBody(msgs, { model: request.model, temperature: request.temperature, maxTokens: request.maxTokens, stream: false });
+    const body = this.buildBody(msgs, { model: request.model, temperature: request.temperature, maxTokens: request.maxTokens, frequencyPenalty: request.frequencyPenalty, stream: false });
     this.ac?.abort();
     this.ac = new AbortController();
-    const json = await this.post<{ choices: { finish_reason: string; message: { content: string | null } }[]; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; model: string }>('/chat/completions', body);
+    const json = await this.post<{ choices: { finish_reason: string; message: { content: string | null } }[]; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }; model: string }>('/chat/completions', body, request.timeoutMs);
     const choice = json.choices?.[0];
     if (!choice) throw new Error('No response choices');
     return {
@@ -147,7 +151,7 @@ class OpenAICompatibleRuntime implements Runtime {
 
   async *stream(request: GenerateRequest): AsyncIterable<StreamChunk> {
     const msgs = [...(request.system ? [{ role: 'system' as const, content: request.system }] : []), ...request.messages];
-    const body = this.buildBody(msgs, { model: request.model, temperature: request.temperature, maxTokens: request.maxTokens, stream: true });
+    const body = this.buildBody(msgs, { model: request.model, temperature: request.temperature, maxTokens: request.maxTokens, frequencyPenalty: request.frequencyPenalty, stream: true });
     this.ac?.abort();
     this.ac = new AbortController();
     /*
@@ -226,8 +230,11 @@ class OpenAICompatibleRuntime implements Runtime {
       return { ok: res.ok, status: res.ok ? 'connected' : 'error', latencyMs: Math.round(performance.now() - start) };
     } catch (e) { return { ok: false, status: 'offline', latencyMs: Math.round(performance.now() - start), error: (e as Error).message }; }
   }
-  private async post<T>(path: string, body: string): Promise<T> {
-    const signal = AbortSignal.any([this.ac?.signal ?? new AbortController().signal, AbortSignal.timeout(this.timeoutMs)].filter(Boolean));
+  private async post<T>(path: string, body: string, callerTimeoutMs?: number): Promise<T> {
+    // The caller's deadline reaches the transport itself: a wrapper that
+    // gives up at 180s is pointless if this socket gives up at 120s.
+    const budget = callerTimeoutMs && callerTimeoutMs > 0 ? Math.min(callerTimeoutMs, MAX_CALL_TIMEOUT_MS) : this.timeoutMs;
+    const signal = AbortSignal.any([this.ac?.signal ?? new AbortController().signal, AbortSignal.timeout(budget)].filter(Boolean));
     const res = await this.send(`${this.baseUrl}${path}`, { method: 'POST', headers: this.headers(), body, signal });
     if (!res.ok) { const t = await res.text().catch(() => ''); throw new ProviderHttpError(this.providerName, res.status, t || res.statusText); }
     return res.json() as Promise<T>;

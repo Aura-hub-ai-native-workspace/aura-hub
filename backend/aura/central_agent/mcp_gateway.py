@@ -10,7 +10,7 @@ is contacted. What exists and is enforced here:
   tools, and every mapped tool arrives with EMPTY permissions — authority
   is never inferred from a description or an annotation.
 - Risk floors: unknown/untrusted servers yield high risk, which the policy
-  engine maps to require-approval at invocation time. The gateway cannot
+  engine refuses it at invocation time. The gateway cannot
   lower it; it does not try.
 
 When live transports land (next milestone), invocations will still be

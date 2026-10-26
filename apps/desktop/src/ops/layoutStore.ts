@@ -442,8 +442,8 @@ export interface PanelMeta {
 }
 
 export const PANEL_META: Record<PanelKind, PanelMeta> = {
-  missions: { label: 'Mission Control', icon: 'deploy', hint: 'Create and manage missions' },
-  'mission-detail': { label: 'Mission Detail', icon: 'clipboard', hint: 'The focused mission' },
+  missions: { label: 'Planner', icon: 'deploy', hint: 'Turn a goal into an editable plan' },
+  'mission-detail': { label: 'Plan', icon: 'clipboard', hint: 'The focused plan' },
   search: { label: 'Universal Search', icon: 'search', hint: 'Files, symbols, knowledge, more' },
   knowledge: { label: 'Knowledge', icon: 'knowledge', hint: 'Knowledge fabric browser' },
   architecture: { label: 'Architecture', icon: 'architecture', hint: 'Layered structure and dependency explorer' },

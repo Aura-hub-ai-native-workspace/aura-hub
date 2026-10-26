@@ -4,6 +4,7 @@ import { PROJECT_TABS, pageVariants, spring, useAppStore, cn } from '@aura/core'
 import { Badge, Button, Icon } from '@aura/ui';
 import { ProjectSection } from './sections';
 import { EmptyState } from '../../components/EmptyState';
+import { ProjectIntro } from '../../components/ProjectIntro';
 import { useWorkspace } from '../../data/useWorkspace';
 
 /**
@@ -33,6 +34,8 @@ export function ProjectWorkspace() {
   const askAuraOpen = useAppStore((s) => s.askAuraOpen);
   const setAskAuraOpen = useAppStore((s) => s.setAskAuraOpen);
   const { projects, openId, status } = useWorkspace();
+  const pendingIntro = useWorkspace((s) => s.pendingIntro);
+  const clearIntro = useWorkspace((s) => s.clearIntro);
 
   const project = projects.find((p) => p.id === activeProjectId) ?? null;
 
@@ -41,6 +44,17 @@ export function ProjectWorkspace() {
      mounted whenever it is ACTIVE — not only while this screen is on
      display. Doing it here meant the Hub could be working against a project
      the service had not mounted. */
+
+  // The first time a project is opened (decided and remembered by the
+  // service, not by this screen), its opening moment plays once. A project
+  // that was just created from an idea then continues straight into its
+  // Let's Chat; an existing folder stays on its overview.
+  const intro = project && pendingIntro?.projectId === project.id ? pendingIntro : null;
+  const introEnded = () => {
+    const wasNew = pendingIntro?.kind === 'new';
+    clearIntro();
+    if (wasNew) setAskAuraOpen(true);
+  };
 
   if (!project) {
     return (
@@ -63,9 +77,14 @@ export function ProjectWorkspace() {
   // Mounting is driven by `useActiveProjectSync` in AppShell now, so by the
   // time this screen is reachable the mount is normally already in flight —
   // this gate just avoids rendering the chat against the previous project.
+  const introOverlay = intro && project
+    ? <ProjectIntro kind={intro.kind} projectName={project.name} onDone={introEnded} />
+    : null;
+
   if (askAuraOpen) {
     return (
       <div className="flex h-full min-h-full flex-col">
+        {introOverlay}
         <div className="flex shrink-0 items-center justify-between gap-4 border-b border-line bg-surface/40 px-8 py-2.5 backdrop-blur-sm sm:px-10 lg:px-12">
           <button
             onClick={() => setAskAuraOpen(false)}
@@ -76,7 +95,7 @@ export function ProjectWorkspace() {
           </button>
           <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-text-muted">
             <Icon name="spark" size={14} className="text-accent" />
-            Ask AURA
+            Let's Chat
           </span>
         </div>
         <div className="min-h-0 flex-1">
@@ -101,6 +120,7 @@ export function ProjectWorkspace() {
 
   return (
     <div className={cn('flex flex-col', isCode ? 'h-full min-h-full' : 'min-h-full')}>
+      {introOverlay}
       <div className="shrink-0 border-b border-line bg-surface/40 px-8 pt-6 backdrop-blur-sm sm:px-10 lg:px-12">
         <button onClick={closeProject} className="mb-4 inline-flex items-center gap-1.5 text-[12px] font-medium text-text-muted transition-colors hover:text-text">
           <Icon name="chevron-right" size={14} className="rotate-180" />
@@ -126,7 +146,7 @@ export function ProjectWorkspace() {
             </div>
           </div>
           <div className="flex gap-2.5">
-            <Button variant="secondary" icon="spark" onClick={() => setAskAuraOpen(true)}>Ask AURA</Button>
+            <Button variant="secondary" icon="spark" onClick={() => setAskAuraOpen(true)}>Let's Chat</Button>
           </div>
         </div>
 

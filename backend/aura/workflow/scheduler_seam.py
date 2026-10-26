@@ -1,7 +1,7 @@
 """Scheduler fire seam — the ONLY way a schedule starts a workflow.
 
 The seam does exactly one thing: call the canonical runner with an
-automation trigger. It cannot approve, cannot execute nodes, cannot
+automation trigger. It cannot grant anything, cannot execute nodes, cannot
 bypass policy — it has no such parameters.
 """
 from __future__ import annotations

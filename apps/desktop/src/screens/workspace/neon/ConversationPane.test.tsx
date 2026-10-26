@@ -24,7 +24,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ComponentProps } from 'react';
 
-import type { ApprovalRequest } from '../../../ai/fabricClient';
 
 import type { AgentActivity, AgentChatMessage } from '../../../ai/useAgentConversations';
 import type { Handoff } from '../../../ai/aiClient';
@@ -42,7 +41,7 @@ import { ConversationPane } from './ConversationPane';
  */
 const SOURCE = readFileSync(new URL('./ConversationPane.tsx', import.meta.url), 'utf8');
 
-const IDLE: AgentActivity = { workers: {}, tools: [], phase: null, awaitingApproval: false };
+const IDLE: AgentActivity = { workers: {}, tools: [], phase: null };
 
 function user(content: string): AgentChatMessage {
   return { id: `u-${content.slice(0, 6)}`, role: 'user', content, status: 'done' };
@@ -60,7 +59,7 @@ function assistant(
     status: 'done',
     agent: {
       sessionId: 'agt-3f1a9b2c4d5e', outcome: 'completed', requestId: 'req-aabbccddeeff',
-      progress: [], events: [], plan: null, approvalId: null,
+      progress: [], events: [], plan: null,
       performed: [], verified: [], evidenceSummary: null, runId: null,
       needsInput: false, cancelled: false, tools: [],
       ...agent,
@@ -77,12 +76,9 @@ function pane(messages: AgentChatMessage[], over: Partial<PaneProps> = {}) {
     activity: IDLE,
     busy: false,
     agentUp: true,
-    approvals: {},
-    deciding: false,
     onSend: vi.fn(),
     onStop: vi.fn(),
     onRegenerate: vi.fn(),
-    onDecide: vi.fn(),
     handoffs: [] as Handoff[],
     onAcceptHandoff: vi.fn(),
     projectName: null,
@@ -188,7 +184,7 @@ describe('ConversationPane — activity appears only when it is real', () => {
     // "using Git" under a live dot would be claiming present tense for
     // something that is over.
     const finished: AgentActivity = {
-      workers: {}, tools: ['Git'], phase: null, awaitingApproval: false,
+      workers: {}, tools: ['Git'], phase: null,
     };
     const markup = render([user('Check the repo'), assistant('Clean.')], { activity: finished });
 
@@ -201,7 +197,6 @@ describe('ConversationPane — activity appears only when it is real', () => {
       workers: { opencode: 'ACTIVE' },
       tools: ['Git', 'OpenCode'],
       phase: 'Working',
-      awaitingApproval: false,
     };
     const markup = render([user('Fix the bug')], { activity, busy: true });
 
@@ -214,7 +209,6 @@ describe('ConversationPane — activity appears only when it is real', () => {
       workers: { opencode: 'SPAWNING' },
       tools: ['Git'],
       phase: 'Working',
-      awaitingApproval: false,
     };
     const markup = render([user('Fix the bug')], { activity, busy: true });
 
@@ -306,58 +300,3 @@ describe('ConversationPane — the transcript carries no internals', () => {
   });
 });
 
-/* ── approvals go through the existing gate ──────────────────────── */
-
-describe('ConversationPane — approvals', () => {
-  const parked = assistant('', {}, { outcome: 'awaiting-approval', approvalId: 'apr-1' });
-
-  it('says an approval is needed, in words', () => {
-    const markup = render([parked]);
-    expect(count(markup, 'outcome-note')).toBe(1);
-    expect(markup).toContain('needs your approval');
-  });
-
-  it('renders no gate until the real request has been resolved', () => {
-    const markup = render([parked], { approvals: { 'apr-1': null } });
-    expect(markup).toContain('Loading the authorization details');
-    expect(markup).not.toContain('Authorization required');
-  });
-
-  it('renders the existing gate once the real request is in hand', () => {
-    const request: ApprovalRequest = {
-      id: 'apr-1',
-      state: 'pending',
-      requestedAt: '2026-01-01T00:00:00Z',
-      summary: 'Write the migration file',
-      items: [{
-        invocationId: 'inv-1',
-        capabilityId: 'filesystem.write',
-        title: 'Write a file',
-        detail: 'db/migrations/0004.sql',
-        risk: 'high',
-        irreversible: true,
-      }],
-    };
-    const markup = render([parked], { approvals: { 'apr-1': request } });
-
-    expect(markup).toContain('Authorization required');
-    expect(markup).toContain('Approve and run');
-    expect(markup).toContain('Write the migration file');
-    expect(markup).not.toContain('Loading the authorization details');
-  });
-
-  it('never decides locally — the answer leaves through the prop', () => {
-    // The gate owns its own decline-reason state, so the click cannot be
-    // driven here. The claim under test is that this pane forwards and
-    // stores nothing: no ledger call, no local grant, no state of its own.
-    expect(SOURCE).toContain('onDecide={(_id, granted, reason) => onDecide(granted, reason)}');
-    expect(SOURCE).toContain('onDecide(m.id, granted, reason)');
-    expect(SOURCE.match(/onDecide\(/g)).toHaveLength(2);
-
-    for (const decidingLocally of ['approve(', 'decide(', 'granted: true', 'setApprov']) {
-      expect(SOURCE).not.toContain(decidingLocally);
-    }
-    // The gate itself is the existing one, not a copy.
-    expect(SOURCE).toContain("import { ApprovalGate } from '../../missions/ApprovalGate'");
-  });
-});

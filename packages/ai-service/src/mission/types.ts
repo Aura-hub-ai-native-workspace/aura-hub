@@ -179,7 +179,7 @@ export interface MissionGoal {
 export type AutomationLevel = 'automatic' | 'assisted' | 'manual';
 
 /** What a task IS — drives Stage 6's execution routing (§ Execution Planning: never treat every task equally). */
-export type TaskKind = 'file-operation' | 'git-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
+export type TaskKind = 'file-operation' | 'git-operation' | 'manual-operation' | 'review' | 'documentation' | 'research';
 
 export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
 export type TaskRisk = 'low' | 'medium' | 'high';
@@ -213,6 +213,20 @@ export interface MissionTask {
   owner: 'ai' | 'human';
   automationLevel: AutomationLevel;
   status: TaskStatus;
+  /** Planner: other project files this task works with (relative paths). */
+  files?: string[];
+  /** Planner: what the task should leave behind, in words (shown and handed to the worker). */
+  expectedOutput?: string;
+  /** Planner: how completion is checked, in words. Workspace still verifies by evidence. */
+  verification?: string;
+  /** Planner: catalogue ids of tools the task needs on the machine (e.g. "pnpm"). */
+  requires?: string[];
+  /**
+   * Planner: who carries the task out in Workspace — `'aura'` (AURA writes
+   * `targetFile` itself) or a connected coding agent's node id. Absent on
+   * plans made before the Planner; treated as `'aura'`.
+   */
+  worker?: string;
 }
 
 export interface GoalGraph {
@@ -304,6 +318,47 @@ export interface MissionApproval {
   at?: string;
 }
 
+/** One Planner → Workspace handoff of a plan revision. */
+export interface PlanHandoff {
+  id: string;
+  revision: number;
+  /** The Workspace session the plan runs in (agt-…); reserved before sending. */
+  sessionId: string;
+  /** reserved → started (Workspace accepted it) | failed (it did not start). */
+  status: 'reserved' | 'started' | 'failed';
+  at: string;
+  error?: string;
+}
+
+/** How the current plan was produced — reported, never estimated. */
+export interface PlanningRecord {
+  path: 'deterministic' | 'model';
+  startedAt: string;
+  finishedAt?: string;
+  durationMs?: number;
+  /** The provider/model that wrote it, on the model path. */
+  model?: string | null;
+}
+
+/** One saved revision of a plan, kept so edits never lose what came before. */
+export interface PlanRevision {
+  revision: number;
+  at: string;
+  /** The tasks as they stood at that revision. */
+  tasks: { id: string; title: string; description: string; targetFile: string | null; files: string[]; dependencies: string[]; worker?: string }[];
+  acceptance: string[];
+}
+
+/** What a plan was built from: the shared project context and its sources. */
+export interface PlanContext {
+  /** The bounded context package text the plan builder read (decisions, requirements, research). */
+  text: string;
+  scope: string;
+  records: number;
+  /** Research sources behind the plan (real URLs only). */
+  sources: { title: string; url: string }[];
+}
+
 export interface MissionRecord {
   id: string;
   projectId: string;
@@ -327,6 +382,18 @@ export interface MissionRecord {
    */
   execution?: MissionExecution;
   error?: string;
+  /** Planner: bumped on every saved edit; a handoff names the revision it sends. */
+  revision?: number;
+  /** Planner: what must be true for the goal to count as met. */
+  acceptance?: string[];
+  /** Planner: the shared context this plan was built from. */
+  context?: PlanContext;
+  /** Planner: earlier revisions, oldest first (bounded). */
+  history?: PlanRevision[];
+  /** Planner: deterministic validation of the current plan (see mission/planner.ts). */
+  planIssues?: { message: string; taskId?: string; blocksHandoff: boolean }[];
+  planning?: PlanningRecord;
+  handoffs?: PlanHandoff[];
 }
 
 export interface MissionSummary {
@@ -347,6 +414,8 @@ export interface MissionSummary {
 
 export type MissionEvent =
   | { type: 'stage'; stage: string; status: 'start' | 'done'; at: string }
+  /** A heartbeat while one long model call runs: real elapsed time against its real deadline. */
+  | { type: 'progress'; stage: string; elapsedMs: number; deadlineMs: number; receivedChars: number }
   | { type: 'classification'; classification: IntentClassification }
   | { type: 'intent'; intent: ExtractedIntent }
   | { type: 'signals'; signals: MissionSignals }

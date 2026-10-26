@@ -53,7 +53,6 @@ class MissionStore:
                 "category": (rec.get("classification") or {}).get("category") or "unknown",
                 "goalCount": len((rec.get("goalGraph") or {}).get("goals") or []),
                 "taskCount": len((rec.get("goalGraph") or {}).get("tasks") or []),
-                "approval": rec.get("approval"),
                 "qualityOverall": (rec.get("quality") or {}).get("overall"),
                 "execution": rec.get("execution"),
             }
@@ -100,18 +99,16 @@ class MissionStore:
                 "projects": 1,
                 "missions": len(missions),
                 "planned": sum(1 for m in missions if m["taskCount"] > 0),
-                "approved": sum(1 for m in missions if m["approval"] == "approved"),
             }
         # Scan all project dirs
         base = aura_path("missions")
         try:
             project_dirs = [d for d in base.iterdir() if d.is_dir()]
         except OSError:
-            return {"projects": 0, "missions": 0, "planned": 0, "approved": 0}
-        total = planned = approved = 0
+            return {"projects": 0, "missions": 0, "planned": 0}
+        total = planned = 0
         for pd in project_dirs:
             ms = self.list(pd.name)
             total += len(ms)
             planned += sum(1 for m in ms if m["taskCount"] > 0)
-            approved += sum(1 for m in ms if m["approval"] == "approved")
-        return {"projects": len(project_dirs), "missions": total, "planned": planned, "approved": approved}
+        return {"projects": len(project_dirs), "missions": total, "planned": planned}

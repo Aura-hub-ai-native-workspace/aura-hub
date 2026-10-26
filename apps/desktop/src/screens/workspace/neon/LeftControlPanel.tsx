@@ -94,7 +94,6 @@ export function LeftControlPanel({
   onWebResearchChange: (next: boolean) => void;
 }) {
   const connected = workers.filter((w) => w.connected).length;
-  const governed = workers.filter((w) => w.governance === 'FULLY_GOVERNED').length;
 
   return (
     <aside
@@ -157,12 +156,7 @@ export function LeftControlPanel({
           >
             <span className="font-semibold text-neon-success">{connected}</span> of{' '}
             <span className="font-semibold">{workers.length}</span> connected
-            {governed > 0 && (
-              <>
-                {' · '}
-                <span className="font-semibold text-neon-success">{governed}</span> governed live
-              </>
-            )}
+
             <button
               type="button"
               onClick={onRefreshWorkers}

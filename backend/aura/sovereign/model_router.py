@@ -25,11 +25,34 @@ the ModelRegistry with those capabilities and returns the best match.
 
 from __future__ import annotations
 
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, FrozenSet, Optional
 
+from .candidate_policy import (
+    CostState,
+    Eligible,
+    Exclusion,
+    TaskRequest,
+    candidate_from_record,
+    filter_candidates,
+)
 from .model_registry import ModelRecord, ModelRegistry
+from .policy import SovereignPolicy, load_sovereign_policy
+from .policy_config import ModelPolicy, load_model_policy
+from .usage_ledger import UsageLedger, spent_for_grants
+
+#: Feature flag. Off by default; when off, routing is the legacy code path, unchanged.
+POLICY_ROUTING_ENV = "AURA_MODEL_POLICY_ROUTING"
+#: Output ceiling used to bound a call's cost. Matches the existing dispatch default.
+POLICY_ROUTING_MAX_OUTPUT_TOKENS = 1024
+
+
+def policy_routing_enabled(env=None) -> bool:
+    """True only for an explicit 1/true/yes/on. Anything else, including unset, is off."""
+    source = os.environ if env is None else env
+    return str(source.get(POLICY_ROUTING_ENV, "")).strip().lower() in ("1", "true", "yes", "on")
 
 # ---------------------------------------------------------------------------
 # Capability requirements per task type
@@ -66,6 +89,8 @@ class RoutingDecision:
     record: Optional[ModelRecord]
     reason: str              # human-readable, no secrets
     candidates_seen: int     # how many registry entries were considered
+    #: Stable exclusion reasons from the policy filter. Empty on the legacy path.
+    exclusions: tuple = field(default=())
 
 
 class TaskClassifier:
@@ -136,13 +161,102 @@ class ModelRouter:
     """
 
     def __init__(self, registry: ModelRegistry,
-                 classifier: TaskClassifier | None = None) -> None:
+                 classifier: TaskClassifier | None = None, *,
+                 policy: ModelPolicy | None = None,
+                 sovereign: SovereignPolicy | None = None,
+                 ledger: UsageLedger | None = None) -> None:
         self._registry = registry
         self._classifier = classifier or TaskClassifier()
+        # Used only when the policy flag is on. None means load from AURA_HOME.
+        self._policy = policy
+        self._sovereign = sovereign
+        self._ledger = ledger
 
     def route(self, task_description: str,
               task_type: str | None = None,
               network_classes: frozenset | None = None) -> RoutingDecision:
+        """Select the best model for the task.
+
+        With the policy feature flag off (the default) this is exactly the legacy
+        routing. With it on, candidates pass through the policy filter first.
+        """
+        if policy_routing_enabled():
+            return self._route_with_policy(task_description, task_type, network_classes)
+        return self._route_legacy(task_description, task_type, network_classes)
+
+    def _route_with_policy(self, task_description: str, task_type: str | None,
+                           network_classes: frozenset | None) -> RoutingDecision:
+        """Policy-gated routing. Any failure in policy, accounting or filtering fails closed."""
+        if task_type is None:
+            task_type = self._classifier.classify(task_description)
+        required_caps = self._classifier.required_capabilities(task_type)
+
+        def closed(reason: str, seen: int = 0, excluded=()) -> RoutingDecision:
+            return RoutingDecision(task_type=task_type, required_caps=required_caps,
+                                   record=None, reason=reason, candidates_seen=seen,
+                                   exclusions=tuple(excluded))
+
+        try:
+            policy: ModelPolicy = self._policy if self._policy is not None else load_model_policy()
+            sovereign: SovereignPolicy = (self._sovereign if self._sovereign is not None
+                                          else load_sovereign_policy())
+            ledger = self._ledger
+            if ledger is None:
+                from aura.config import aura_path
+                ledger = UsageLedger(aura_path("agent", "usage.sqlite3"))
+            spent = spent_for_grants(ledger, policy.grants)
+        except Exception as exc:
+            return closed(f"Model policy unavailable; routing fails closed: "
+                          f"{type(exc).__name__}: {exc}")
+
+        nc = network_classes if network_classes is not None else SOVEREIGN_NETWORK_CLASSES
+        records = self._registry.query(required_caps=required_caps, network_classes=nc,
+                                       healthy_only=False)
+        by_key = {(r.endpoint_id, r.model_name): r for r in records}
+        request = TaskRequest(required_tags=required_caps,
+                              max_output_tokens=POLICY_ROUTING_MAX_OUTPUT_TOKENS,
+                              spent_by_grant=spent)
+        try:
+            result = filter_candidates([candidate_from_record(r) for r in records],
+                                       request, sovereign, policy.endpoints, policy.grants)
+        except Exception as exc:
+            return closed(f"Policy evaluation failed; routing fails closed: "
+                          f"{type(exc).__name__}: {exc}", seen=len(records))
+
+        exclusions = [Exclusion(e.endpoint_id, e.model_name, e.reason, e.detail)
+                      for e in result.excluded]
+        # Paid dispatch is not metered: the worker's own CLI makes the model call and
+        # AURA never sees its usage, so a paid candidate cannot be reserved or settled.
+        # Until dispatch-time metering exists, a paid candidate is never selected here.
+        usable: list[Eligible] = []
+        for item in result.eligible:
+            if item.cost_state is CostState.PAID:
+                exclusions.append(Exclusion(item.endpoint_id, item.model_name,
+                                            "paid-dispatch-not-metered",
+                                            "paid use needs dispatch-time metering"))
+            else:
+                usable.append(item)
+
+        if usable:
+            best = by_key[(usable[0].endpoint_id, usable[0].model_name)]
+            return RoutingDecision(
+                task_type=task_type, required_caps=required_caps, record=best,
+                reason=(f"Routed to {best.id!r} by policy filter "
+                        f"(caps={sorted(best.capabilities)}, network={best.network_class})"),
+                candidates_seen=len(records), exclusions=tuple(exclusions))
+
+        reasons = sorted({e.reason for e in exclusions})
+        hint = ""
+        if "cost-unknown" in reasons:
+            hint = (" Declare each private endpoint's cost ('free' or 'paid') in "
+                    "model_policy.json; undeclared endpoints are not treated as free.")
+        return closed(
+            f"No eligible model for task_type={task_type!r}: "
+            f"{', '.join(reasons) or 'no candidates'}.{hint}",
+            seen=len(records), excluded=exclusions)
+
+    def _route_legacy(self, task_description: str, task_type: str | None,
+                      network_classes: frozenset | None) -> RoutingDecision:
         """Select the best model for the task.
 
         Args:

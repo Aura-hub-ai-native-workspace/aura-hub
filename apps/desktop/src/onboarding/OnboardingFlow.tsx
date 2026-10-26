@@ -10,8 +10,12 @@ import { ReadyScreen } from './ReadyScreen';
  * Activation → Ready. Plays exactly once (gated by appStore.onboarded);
  * see App.tsx for the mount condition.
  */
-export function OnboardingFlow({ onComplete }: { onComplete: () => void }) {
-  const [step, setStep] = useState<OnboardingStep>('welcome');
+export function OnboardingFlow({ onComplete, initialStep = 'welcome' }: {
+  onComplete: () => void;
+  /** Where the flow opens. Returning users missing a provider open at activation. */
+  initialStep?: OnboardingStep;
+}) {
+  const [step, setStep] = useState<OnboardingStep>(initialStep);
 
   return (
     <OnboardingLayout step={step}>

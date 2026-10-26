@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useStatusStore } from '../ops/statusStore';
+import { homeEnvironmentLabel } from '../shell/environmentStatus';
 import { motion } from 'framer-motion';
 import { useAppStore, cn, spring } from '@aura/core';
 import { Badge, Button, Card, CardHeader, Icon, IconButton, Input, Menu, useToast } from '@aura/ui';
 import { PageContainer, PageBlock } from './PageContainer';
 import { EmptyState } from '../components/EmptyState';
 import { AddProjectDialog } from '../components/AddProjectDialog';
-import { CreateProjectDialog } from '../components/CreateProjectDialog';
-import { AskAuraChatbox } from '../components/AskAuraChatbox';
+import { GeneralChat } from '../components/GeneralChat';
+import { useAgentLink } from '../ai/agentLinkStore';
 import { useWorkspace } from '../data/useWorkspace';
 import { hasUnsavedWorkFor } from '../editor/editorStore';
 import { aiClient, type HealthResult, type ProjectRecord } from '../ai/aiClient';
@@ -43,19 +45,29 @@ export function Home() {
   const addProjectDialogOpen = useAppStore((s) => s.addProjectDialogOpen);
   const openAddProjectDialog = useAppStore((s) => s.openAddProjectDialog);
   const closeAddProjectDialog = useAppStore((s) => s.closeAddProjectDialog);
-  const createProjectDialogOpen = useAppStore((s) => s.createProjectDialogOpen);
-  const openCreateProjectDialog = useAppStore((s) => s.openCreateProjectDialog);
-  const closeCreateProjectDialog = useAppStore((s) => s.closeCreateProjectDialog);
   const { projects, localProjects, status, refresh, open } = useWorkspace();
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [reachable, setReachable] = useState<boolean | null>(null);
+  const pythonOk = useStatusStore((st) => st.pythonOk);
+  const pythonMessage = useStatusStore((st) => st.pythonMessage);
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [isAskAuraOpen, setIsAskAuraOpen] = useState(false);
   const { push } = useToast();
 
   useEffect(() => {
     void refresh();
-    aiClient.health().then((h) => { setHealth(h); setReachable(true); }).catch(() => setReachable(false));
+    // Probe until reachable, then re-check now and then. A single probe at mount
+    // read "Backend offline" for the whole session whenever the services were
+    // still starting (the packaged app), while the status bar had already connected.
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const probe = () => {
+      aiClient.health()
+        .then((h) => { if (!alive) return; setHealth(h); setReachable(true); timer = setTimeout(probe, 15000); })
+        .catch(() => { if (!alive) return; setReachable(false); timer = setTimeout(probe, 2000); });
+    };
+    probe();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [refresh]);
 
   const hour = new Date().getHours();
@@ -72,6 +84,9 @@ export function Home() {
     openProjectNav(id);
   };
   const askAura = () => setIsAskAuraOpen(true);
+  // The command bar's "Start Building" raises this counter.
+  const focusTick = useAgentLink((s) => s.focusTick);
+  useEffect(() => { if (focusTick > 0) setIsAskAuraOpen(true); }, [focusTick]);
 
   const subtitle = allProjects.length === 0
     ? 'No projects yet — add a real folder to begin.'
@@ -80,8 +95,7 @@ export function Home() {
   return (
     <PageContainer wide>
       <AddProjectDialog open={addProjectDialogOpen} onClose={closeAddProjectDialog} />
-      <CreateProjectDialog open={createProjectDialogOpen} onClose={closeCreateProjectDialog} />
-      <AskAuraChatbox isOpen={isAskAuraOpen} onClose={() => setIsAskAuraOpen(false)} />
+      <GeneralChat isOpen={isAskAuraOpen} onClose={() => setIsAskAuraOpen(false)} />
 
       <PageBlock className="mb-8">
         <div className="relative overflow-hidden rounded-3xl border border-line bg-surface p-8">
@@ -90,7 +104,7 @@ export function Home() {
             <div>
               <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-accent">
                 <Icon name="spark" size={15} />
-                {reachable === false ? 'Backend offline' : 'Environment ready'}
+                {homeEnvironmentLabel({ nodeReachable: reachable, pythonOk: pythonOk, pythonMessage: pythonMessage })}
               </div>
               <h1 className="text-[32px] font-semibold tracking-[-0.02em] text-text">{greeting}, Groot</h1>
               <p className="mt-2 max-w-lg text-[14px] text-text-muted">{subtitle}</p>
@@ -101,11 +115,12 @@ export function Home() {
                 whileHover={{ scale: 1.03 }}
                 whileTap={{ scale: 0.95 }}
                 transition={spring.snappy}
-                onClick={openCreateProjectDialog}
+                onClick={() => setIsAskAuraOpen(true)}
+                data-testid="start-building"
                 className="relative inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-[#00b3ff] px-4 text-[13px] font-medium text-white shadow-[0_0_16px_rgba(0,179,255,0.45)] outline-none select-none transition-all duration-200 hover:bg-[#2fc2ff] hover:shadow-[0_0_26px_rgba(0,179,255,0.65)] active:bg-[#0093d4] active:shadow-[0_0_12px_rgba(0,179,255,0.35)] focus-visible:ring-2 focus-visible:ring-cyan-300/60"
               >
-                <Icon name="folder" size={16} />
-                <span className="truncate">Create Project</span>
+                <Icon name="spark" size={16} />
+                <span className="truncate">Start Building</span>
               </motion.button>
               <Button variant="primary" icon="plus" onClick={openAddProjectDialog}>Add Project</Button>
               <Button variant="secondary" icon="command" onClick={() => setPaletteOpen(true)}>Command Bar</Button>
@@ -180,7 +195,7 @@ export function Home() {
             <CardHeader title="Quick actions" />
             <div className="mt-4 grid grid-cols-2 gap-2.5">
               <QuickAction icon="plus" label="Add Project" hint="Import a real folder" onClick={openAddProjectDialog} />
-              <QuickAction icon="spark" label="Ask AURA" hint="Chat over your project" onClick={askAura} />
+              <QuickAction icon="spark" label="Start Building" hint="Explore an idea with researched answers" onClick={askAura} />
               <QuickAction icon="command" label="Command Bar" hint="Do anything, instantly" onClick={() => setPaletteOpen(true)} />
               <QuickAction icon="settings" label="AI Provider" hint="Connect an AI provider" onClick={() => setNav('settings')} />
             </div>

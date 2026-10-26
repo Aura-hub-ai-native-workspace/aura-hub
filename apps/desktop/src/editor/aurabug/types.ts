@@ -27,7 +27,7 @@ export interface AuraBugFixPatch {
 }
 
 /** Bug Bot lifecycle for a single finding. Mirrors the required statuses:
- *  detected → analyzed → fix-proposed → awaiting-approval → approved →
+ *  detected → analyzed → fix-proposed → applying →
  *  fixing → verifying → verified | verification-failed → reverted | rejected,
  *  with `failed` reserved for operation errors (e.g. a disk write that broke).
  *  `reverted` means the user rolled back a fix whose verification failed and
@@ -38,8 +38,7 @@ export type BugBotStatus =
   | 'analyzing'
   | 'analyzed'
   | 'fix-proposed'
-  | 'awaiting-approval'
-  | 'approved'
+  | 'applying'
   | 'fixing'
   | 'verifying'
   | 'verified'
@@ -86,9 +85,9 @@ export interface AuraBugIssue {
   rootCause?: string;
   /** Bug Bot lifecycle status (defaults to `detected` until analyzed). */
   status: BugBotStatus;
-  /** Set after an approved fix has been re-scanned. */
+  /** Set after an applied fix has been re-scanned. */
   verification?: AuraBugVerification;
-  /** The exact pre-fix file text, captured when a fix is approved so the
+  /** The exact pre-fix file text, captured when a fix is applied so the
    *  change can be reverted deterministically if verification fails. */
   preFixContent?: string;
   /** True while this finding's fix is being written/verified. */

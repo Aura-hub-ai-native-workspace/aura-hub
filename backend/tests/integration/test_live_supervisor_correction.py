@@ -68,7 +68,7 @@ class TestLiveCorrectionLoop:
             "scopeDeviation": True,
             "scopeCheck": (out1.get("output") or {}).get("scopeCheck") or {},
         }, verified=None)
-        assert v1.status == "parked-deviation"
+        assert v1.status == "stopped-deviation"
         assert not os.path.exists(os.path.join(worker_repo, "offscope.txt"))
         governed = (out1.get("output") or {}).get("governedActions") or {}
         assert governed.get("governed") is True

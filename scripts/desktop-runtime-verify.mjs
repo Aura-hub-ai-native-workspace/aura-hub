@@ -336,10 +336,26 @@ try {
    * `install-verify` separately proves the install guard specifically,
    * against a warmed policy where the request reaches it.
    */
-  const install = await post('/fabric/invoke', { capabilityId: 'terminal.execute', input: { command: 'npm install --global cowsay' }, context: { projectId: 'rt-proj' } });
-  const blocked = install.body?.outcome !== 'succeeded' && (install.body?.attempts ?? 0) === 0;
+  /* Routine commands now auto-execute, so the approval gate no longer
+     stops this one: the executor is reached (attempts=1) and must refuse
+     BEFORE spawning anything. It runs in the REAL project registered above:
+     the service assigns its own id (the `rt-proj` the other checks name
+     never resolves to a directory), so it is looked up by path. The
+     refusal then has to come from the install guard itself — not from a
+     missing working directory, which would prove nothing. Only this check
+     uses the real id: the delegation checks above must stay unable to
+     launch a coding agent. */
+  const listed = await get('/projects');
+  const installProjectId = (listed.body?.projects ?? []).find((p) => p.path === RUN_DIR)?.id;
+  info(`install check project: ${installProjectId ?? `none registered at ${RUN_DIR}`}`);
+  const install = await post('/fabric/invoke', { capabilityId: 'terminal.execute', input: { command: 'npm install --global cowsay' }, context: { projectId: installProjectId } });
+  const detail = String(install.body?.detail ?? '');
+  const gate = (install.body?.attempts ?? 0) === 0 ? `approval (${install.body?.policy?.rule})`
+    : /Installing software is not something this can do/.test(detail) ? 'install guard'
+      : null;
+  const blocked = install.body?.outcome !== 'succeeded' && gate !== null;
   check('4b. an install attempt through terminal.execute never runs',
-    blocked, `outcome=${install.body?.outcome} attempts=${install.body?.attempts ?? 0} rule=${install.body?.policy?.rule ?? 'install-guard'}`);
+    blocked, `outcome=${install.body?.outcome} attempts=${install.body?.attempts ?? 0} stopped by=${gate ?? 'NOTHING PROVABLE'}`);
 
   /* ── 5. port reuse and foreign refusal ───────────────────────────── */
   section('5. PORT 4319 — REUSE AND FOREIGN REFUSAL');

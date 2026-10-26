@@ -9,6 +9,7 @@ tool output beyond what the Fabric already redacted.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,35 @@ from pathlib import Path
 from ..config import aura_home
 from ..contracts import AgentEvent, AgentMessage, AgentResult, AgentSession
 from ..jsonutil import read_json_file, write_json_atomic
+
+logger = logging.getLogger(__name__)
+
+
+_APPROVAL_REMOVED = (
+    "This request was waiting for an approval that no longer exists in AURA Hub, "
+    "so nothing ran. Submit the request again.")
+
+
+def migrate_legacy_approval_state(raw: dict) -> dict:
+    """Sessions written before the approval workflow was removed may hold a
+    parked state. The work they were waiting on never ran, so they are
+    recorded as failed with that reason. Nothing is ever marked completed
+    or verified by this migration."""
+    if raw.get("state") == "awaiting-approval":
+        raw["state"] = "failed"
+    if raw.get("orchestrationState") == "awaiting-approval":
+        raw["orchestrationState"] = "failed"
+    queue = raw.get("taskQueue")
+    if isinstance(queue, list):
+        for entry in queue:
+            if isinstance(entry, dict) and entry.get("state") == "awaiting-approval":
+                entry["state"] = "failed"
+    last = raw.get("lastResult")
+    if isinstance(last, dict) and last.get("outcome") == "awaiting-approval":
+        raw["lastResult"] = {**last, "status": "failed", "outcome": "failed",
+                             "failureReason": "approval-workflow-removed",
+                             "summary": _APPROVAL_REMOVED}
+    return raw
 
 
 def _now() -> str:
@@ -72,12 +102,25 @@ class AgentSessionStore:
         return path
 
     def load(self, session_id: str) -> AgentSession | None:
-        raw = read_json_file(self._dir() / f"{session_id}.json", None)
+        """The session, or None. None is a plain 'no such session' only when
+        the file is absent; a file that exists but cannot be read or validated
+        is logged, because callers otherwise see the session vanish with no
+        trace (the 404 'no such session' that hid a parked approval)."""
+        path = self._dir() / f"{session_id}.json"
+        raw = read_json_file(path, None)
+        if isinstance(raw, dict):
+            raw = migrate_legacy_approval_state(raw)
         if not isinstance(raw, dict):
+            if path.exists():
+                logger.error("agent session %s exists but is not a readable JSON object: %s",
+                             session_id, path)
             return None
         try:
             return AgentSession.model_validate(raw)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+            first = str(exc).strip().splitlines()[0][:300] if str(exc).strip() else type(exc).__name__
+            logger.error("agent session %s failed schema validation and cannot be loaded: %s",
+                         session_id, first)
             return None
 
     def append_message(self, session: AgentSession, role: str, content: str) -> AgentSession:

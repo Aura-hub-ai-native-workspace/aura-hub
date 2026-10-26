@@ -134,6 +134,9 @@ export function App() {
       */}
       {!onboarded || providerGate === 'needs-setup' ? (
         <OnboardingFlow
+          // A person who already finished onboarding and now lacks a usable
+          // provider is asked only for the provider, not the welcome again.
+          initialStep={onboarded ? 'activate' : 'welcome'}
           onComplete={() => {
             // Tell the gate directly. Completing onboarding does not always
             // change `onboarded` — a user sent back through setup already

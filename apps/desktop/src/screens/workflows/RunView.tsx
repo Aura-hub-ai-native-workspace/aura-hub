@@ -23,9 +23,7 @@ import { Badge, Button, Icon, IconButton } from '@aura/ui';
 import type { IconName } from '@aura/ui';
 import type { EvidenceRef, NodeRunRecord, NodeSpecInfo, NodeState, WorkflowRun, WorkflowRunSummary } from '../../ai/aiClient';
 
-import type { ApprovalRequest } from '../../ai/fabricClient';
 import { AiMarkdown } from '../../ai/AiMarkdown';
-import { ApprovalGate } from '../missions/ApprovalGate';
 import { CATEGORY } from './shared';
 import { AgentTrace } from './agent/AgentTrace';
 import { isPartialTrace, type AgentTrace as AgentTraceShape, type AnyAgentTrace } from './agent/types';
@@ -50,7 +48,6 @@ type Tab = 'steps' | 'output' | 'evidence' | 'logs';
 const STATE_ICON: Record<NodeState, IconName> = {
   queued: 'dot',
   running: 'activity',
-  'awaiting-approval': 'shield',
   succeeded: 'check',
   failed: 'close',
   denied: 'shield',
@@ -61,11 +58,6 @@ const STATE_ICON: Record<NodeState, IconName> = {
 
 /** Why a node is waiting, in the node's own terms. */
 function waitReason(node: NodeRunRecord, spec?: NodeSpecInfo): string {
-  if (node.state === 'awaiting-approval') {
-    return node.approval
-      ? `waiting for you to authorize ${node.approval.capabilityId}`
-      : 'waiting for you to authorize a governed action';
-  }
   if (node.type === 'delay') return 'waiting — this node is a deliberate pause';
   if (nodeEffect(node.type, spec).needsNetwork) return 'waiting on the network';
   return 'running';
@@ -76,9 +68,6 @@ export interface RunViewProps {
   specs: Map<string, NodeSpecInfo>;
   /** Graph order, so queued nodes list in a stable, meaningful sequence. */
   graphOrder: string[];
-  approvals?: ApprovalRequest[];
-  onDecideApproval?: (id: string, granted: boolean, reason?: string) => void;
-  decidingId?: string | null;
   onFocusNode?: (nodeId: string) => void;
   onCancel?: () => void;
   onResume?: () => void;
@@ -104,9 +93,6 @@ export function RunView({
   run,
   specs,
   graphOrder,
-  approvals = [],
-  onDecideApproval,
-  decidingId,
   onFocusNode,
   onCancel,
   onResume,
@@ -120,7 +106,7 @@ export function RunView({
   const [now, setNow] = useState(() => Date.now());
   // A parked run is still live from the operator's perspective: the clock
   // is running on their answer, so freezing the timer misreports the wait.
-  const live = run.state === 'running' || run.state === 'queued' || run.state === 'awaiting-approval';
+  const live = run.state === 'running' || run.state === 'queued';
 
   useEffect(() => {
     if (!live) return;
@@ -134,19 +120,6 @@ export function RunView({
   const slowest = Math.max(1, ...Object.values(run.nodes).map((n) => n.ms || 0));
   const labelOf = (type: string) => specs.get(type)?.label ?? type;
 
-  // The service parks a node on an approval and records its request id;
-  // matching by that id is what keeps this from being a second store.
-  const parked = ordered.filter((n) => n.state === 'awaiting-approval' && n.approval);
-  const parkedRequests = parked
-    .map((n) => approvals.find((a) => a.id === n.approval!.requestId))
-    .filter((a): a is ApprovalRequest => Boolean(a) && a!.state === 'pending');
-  // A parked node whose request is gone from the pending list (expired,
-  // decided in another window, consumed) must not render as merely
-  // "waiting": without a gate the run looks stuck with no recourse.
-  const parkedStale = parked.filter(
-    (n) => !approvals.some((a) => a.id === n.approval!.requestId && a.state === 'pending'),
-  );
-
   return (
     <div className="flex h-full min-h-0 flex-col bg-canvas">
       {/* ── header ──────────────────────────────────────────────── */}
@@ -158,11 +131,11 @@ export function RunView({
             </motion.span>
           ) : (
             <Icon
-              name={run.state === 'succeeded' ? 'check' : run.state === 'awaiting-approval' ? 'shield' : run.state === 'cancelled' ? 'bell' : 'close'}
+              name={run.state === 'succeeded' ? 'check' : run.state === 'cancelled' ? 'bell' : 'close'}
               size={13}
               className={
                 run.state === 'succeeded' ? 'text-positive'
-                  : run.state === 'cancelled' || run.state === 'awaiting-approval' ? 'text-attention'
+                  : run.state === 'cancelled' ? 'text-attention'
                   : 'text-danger'
               }
             />
@@ -183,7 +156,7 @@ export function RunView({
           <span className="flex items-center gap-1.5 text-[12px] text-text">
             <span className="text-text-subtle">now:</span>
             <span className="font-medium">{labelOf(progress.current.type)}</span>
-            <span className={progress.current.state === 'awaiting-approval' ? 'text-attention' : 'text-text-muted'}>
+            <span className={'text-text-muted'}>
               — {waitReason(run.nodes[progress.current.nodeId], specs.get(progress.current.type))}
             </span>
           </span>
@@ -236,19 +209,6 @@ export function RunView({
           </p>
         </Notice>
       )}
-      {/* A superseded leg is NOT waiting on anybody. Its state stays
-          `awaiting-approval` because that is the honest account of how it
-          ended, so the difference between "still parked" and "already
-          continued" has to be drawn from the chain rather than the state —
-          otherwise finished work keeps asking to be approved. */}
-      {run.state === 'awaiting-approval' && !live && !run.supersededBy && (
-        <Notice tone="attention" icon="shield" title="Parked, waiting on a decision.">
-          <p className="mt-0.5 text-[11.5px] leading-relaxed text-text-muted">
-            Approving the request below records your decision; the service then continues the work as a linked resume
-            run rather than reopening this record. This one stays as the account of where it stopped.
-          </p>
-        </Notice>
-      )}
       {run.supersededBy && (
         <Notice tone="neutral" icon="refresh" title="This run was continued as another run.">
           <p className="mt-0.5 text-[11.5px] leading-relaxed text-text-muted">
@@ -270,32 +230,6 @@ export function RunView({
       {/* ── the whole execution, when it took more than one run ──── */}
       {chain && chain.length > 1 && <ChainStrip chain={chain} currentId={run.id} onOpenRun={onOpenRun} />}
 
-      {/* ── approvals parked on this run ─────────────────────────── */}
-
-      {parkedRequests.length > 0 && onDecideApproval && (
-        <div className="border-b border-line px-4 py-2.5">
-          <div className="mb-1.5 flex items-center gap-2">
-            <Icon name="shield" size={13} className="text-attention" />
-            <span className="text-[12px] font-semibold text-text">
-              {parkedRequests.length === 1 ? 'This run is waiting on your authorization' : `${parkedRequests.length} actions need your authorization`}
-            </span>
-          </div>
-          <div className="space-y-2">
-            {parkedRequests.map((a) => (
-              <ApprovalGate key={a.id} request={a} busy={decidingId === a.id} onDecide={onDecideApproval} />
-            ))}
-          </div>
-        </div>
-      )}
-      {parkedRequests.length === 0 && parkedStale.length > 0 && !run.supersededBy && (
-        <div className="border-b border-line px-4 py-2.5">
-          <p className="text-[12px] text-text-muted">
-            {parkedStale.length === 1 ? 'An authorization for this run' : `${parkedStale.length} authorizations for this run`} is no longer
-            pending — it expired, was decided elsewhere, or was consumed. Re-run the step if it still needs doing.
-          </p>
-        </div>
-      )}
-
       {/* ── tabs ────────────────────────────────────────────────── */}
       <nav className="flex shrink-0 items-center gap-1 border-b border-line px-3 py-1.5" role="tablist">
         <TabButton id="steps" tab={tab} setTab={setTab} label="Steps" count={progress.total} />
@@ -314,9 +248,6 @@ export function RunView({
                 spec={specs.get(n.type)}
                 slowest={slowest}
                 onFocus={onFocusNode}
-                approvals={approvals}
-                onDecideApproval={onDecideApproval}
-                decidingId={decidingId}
                 carriedThrough={carriedThrough?.[n.nodeId]}
               />
             ))}
@@ -504,18 +435,12 @@ function StepRow({
   spec,
   slowest,
   onFocus,
-  approvals,
-  onDecideApproval,
-  decidingId,
   carriedThrough,
 }: {
   node: NodeRunRecord;
   spec?: NodeSpecInfo;
   slowest: number;
   onFocus?: (id: string) => void;
-  approvals: ApprovalRequest[];
-  onDecideApproval?: (id: string, granted: boolean, reason?: string) => void;
-  decidingId?: string | null;
   carriedThrough?: number;
 }) {
   const cat = spec?.category ?? 'source';
@@ -558,9 +483,6 @@ function StepRow({
             <span className="mt-0.5 block text-[11.5px] leading-snug text-attention">
               {node.error ?? 'Your policy refused this action. The workflow is not broken — it was not permitted.'}
             </span>
-          )}
-          {node.state === 'awaiting-approval' && (
-            <span className="mt-0.5 block text-[11.5px] text-attention">{waitReason(node, spec)}</span>
           )}
           {(node.state === 'failed' || node.state === 'timed-out') && node.error && (
             <span className="mt-0.5 block break-words text-[11.5px] leading-snug text-danger">{node.error}</span>
@@ -625,9 +547,6 @@ function StepRow({
             <div className="max-h-[420px] overflow-y-auto border-t border-line/50">
               <AgentTrace
                 trace={trace}
-                approvals={approvals}
-                onDecideApproval={onDecideApproval}
-                decidingId={decidingId}
                 carriedThrough={carriedThrough}
               />
             </div>
@@ -717,7 +636,6 @@ function EvidenceRow({ ev }: { ev: EvidenceRef }) {
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10.5px] text-text-muted">
         <span>decided <span className="text-text">{ev.decision}</span> by rule <code className="rounded bg-surface-active px-1">{ev.decisionRule}</code></span>
-        {ev.approvalId && <span>authorized by you</span>}
         {ev.nodeId && <span>on node {ev.nodeId}</span>}
       </div>
       <div className="mt-1 flex items-center gap-1.5 text-[10.5px]">

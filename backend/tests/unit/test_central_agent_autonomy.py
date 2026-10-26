@@ -432,7 +432,6 @@ class TestModelProposalValidation:
 # ── I. one conversation, carried forward ─────────────────────────────
 
 def _agent(tmp_path):
-    from aura.approvals import ApprovalLedger
     from aura.audit import AuditStore
     from aura.central_agent import AgentSessionStore, CentralAgent
     from aura.executors import all_executors
@@ -440,7 +439,7 @@ def _agent(tmp_path):
     from aura.fabric.host import WiringHost
 
     audit = AuditStore(tmp_path / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
 
     class _Nodes:
         def list_nodes(self):
@@ -453,8 +452,7 @@ def _agent(tmp_path):
 
     fabric = CapabilityFabric(WiringHost(_Nodes()))
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.use_ledger(ledger)
-    cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
+    cfg = FabricConfig(fabric=fabric, audit_store=audit,
                        permissions={"read": True, "write": True},
                        executors={e.capabilityId: e
                                   for e in all_executors(None)})

@@ -14,8 +14,7 @@
  *   4. Execution beats carry their audit reference, so a claim in the
  *      ledger can be followed to the Fabric's own record of it.
  *   5. The bounds deplete in the header and turn to attention at 80%.
- *   6. An intervention renders the real ApprovalGate inline — never a
- *      modal, which would divorce the decision from its reasoning.
+ *   6. An intervention is shown inline with its reasoning, never in a modal.
  *   7. No confidence scores. Only measured quantities.
  */
 
@@ -24,8 +23,6 @@ import { motion } from 'framer-motion';
 import { Badge, Icon } from '@aura/ui';
 import type { IconName } from '@aura/ui';
 import type { EvidenceRef } from '../../../ai/aiClient';
-import type { ApprovalRequest } from '../../../ai/fabricClient';
-import { ApprovalGate } from '../../missions/ApprovalGate';
 import { fmtDuration } from '../runs';
 import {
   ACTOR_LABEL,
@@ -78,9 +75,6 @@ export interface AgentTraceProps {
   trace: AnyAgentTrace;
   model?: string;
   running?: boolean;
-  approvals?: ApprovalRequest[];
-  onDecideApproval?: (id: string, granted: boolean, reason?: string) => void;
-  decidingId?: string | null;
   /**
    * The last `seq` the previous leg of this execution reached, when this
    * run continues another. Used only to mark where the resume happened.
@@ -139,7 +133,6 @@ function PartialTrace({
         hiddenAuto={0}
         onShowAuto={() => {}}
         carriedThrough={carriedThrough}
-        parked={null}
       />
     </div>
   );
@@ -149,9 +142,6 @@ function FinishedTrace({
   trace,
   model,
   running,
-  approvals = [],
-  onDecideApproval,
-  decidingId,
   carriedThrough,
 }: AgentTraceProps & { trace: Trace }) {
 
@@ -166,8 +156,6 @@ function FinishedTrace({
   const collapse = !showAuto && auto.length > 4;
   const beats = collapse ? trace.beats.filter((b) => !auto.includes(b)) : trace.beats;
 
-  const parked = trace.approval ? approvals.find((a) => a.id === trace.approval!.requestId && a.state === 'pending') ?? null : null;
-  const resumable = trace.stopReason === 'awaiting-approval' && Boolean(trace.resume);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -254,34 +242,6 @@ function FinishedTrace({
       )}
 
       {/* ── the parked call, and what resuming would do ───────────── */}
-      {resumable && trace.resume && (
-        <div className="border-b border-attention/25 bg-attention/[0.06] px-4 py-2.5">
-          <div className="flex items-center gap-2">
-            <Icon name="shield" size={13} className="text-attention" />
-            <span className="text-[12px] font-semibold text-text">A tool call is parked on your decision</span>
-          </div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-2">
-            <code className="rounded bg-surface-active px-1.5 py-0.5 text-[10.5px] text-text">
-              {trace.resume.pendingCall.capabilityId}
-            </code>
-            <span className="text-[10.5px] text-text-subtle">
-              iteration {trace.resume.iteration} · {trace.resume.tokensUsed.toLocaleString()} tokens used ·{' '}
-              {fmtDuration(trace.resume.elapsedMs)} elapsed
-            </span>
-          </div>
-          {Object.keys(trace.resume.pendingCall.input).length > 0 && (
-            <code className="mt-1 block break-words rounded bg-surface-active px-2 py-1 text-[10.5px] text-text-muted">
-              {JSON.stringify(trace.resume.pendingCall.input)}
-            </code>
-          )}
-          <p className="mt-1.5 text-[10.5px] leading-relaxed text-text-muted">
-            Approving re-issues exactly this call and the agent continues from iteration {trace.resume.iteration} with
-            the budget it has already spent — resuming does not restart the clock. Declining ends the run here. Its
-            reasoning so far ({trace.resume.transcript.length} turn
-            {trace.resume.transcript.length === 1 ? '' : 's'}) is kept so it does not lose its place.
-          </p>
-        </div>
-      )}
 
       {/* ── a policy refusal is not a malfunction ─────────────────── */}
       {trace.stopReason === 'denied' && (
@@ -322,9 +282,6 @@ function FinishedTrace({
         hiddenAuto={collapse ? auto.length : 0}
         onShowAuto={() => setShowAuto(true)}
         carriedThrough={carriedThrough}
-        parked={parked}
-        onDecideApproval={onDecideApproval}
-        decidingId={decidingId}
       >
         {/* The typed result, or the reason there is none. */}
         {!running && trace.output && (
@@ -347,18 +304,12 @@ function Ledger({
   hiddenAuto,
   onShowAuto,
   carriedThrough,
-  parked,
-  onDecideApproval,
-  decidingId,
   children,
 }: {
   beats: AgentBeat[];
   hiddenAuto: number;
   onShowAuto: () => void;
   carriedThrough?: number;
-  parked: ApprovalRequest | null;
-  onDecideApproval?: (id: string, granted: boolean, reason?: string) => void;
-  decidingId?: string | null;
   children?: React.ReactNode;
 }) {
   return (
@@ -394,9 +345,6 @@ function Ledger({
               (i === 0 || beats[i - 1].seq <= carriedThrough)
             }
             beat={b}
-            approval={b.kind === 'intervention' ? parked : null}
-            onDecideApproval={onDecideApproval}
-            decidingId={decidingId}
           />
         ))}
       </ol>
@@ -412,16 +360,10 @@ function Ledger({
 function BeatRow({
   beat,
   resumedHere,
-  approval,
-  onDecideApproval,
-  decidingId,
 }: {
   beat: AgentBeat;
   /** True when this beat begins a new leg after a resume. */
   resumedHere?: boolean;
-  approval: ApprovalRequest | null;
-  onDecideApproval?: (id: string, granted: boolean, reason?: string) => void;
-  decidingId?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const lines = beat.text.split('\n');
@@ -490,10 +432,6 @@ function BeatRow({
         )}
 
         {beat.evidence && <EvidenceLine ev={beat.evidence} />}
-
-        {beat.kind === 'intervention' && approval && onDecideApproval && (
-          <ApprovalGate request={approval} busy={decidingId === approval.id} onDecide={onDecideApproval} />
-        )}
 
         <span className="mt-1 block text-[10px] text-text-subtle">
           iteration {beat.iteration} · {new Date(beat.at).toLocaleTimeString()}

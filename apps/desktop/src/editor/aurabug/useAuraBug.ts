@@ -7,13 +7,13 @@
  *   • auto-scan when the active file changes or is saved (file scope),
  *   • manual rescan with optional AI augmentation (active file only),
  *   • a governed fix lifecycle: detect → analyze → propose → review →
- *     approve (write through the editor's own save authority) → verify
+ *     apply (write through the editor's own save authority) → verify
  *     by deterministic re-scan → revert on failed verification.
  *
  * Nothing here invents results: deterministic findings come from Monaco's
  * language service + the static heuristics; AI augmentation is gated
  * behind service health + a provider key, exactly as before. Fixes are
- * only ever written after an explicit user approval, and every approved /
+ * only ever written when the user applies it, and every applied /
  * rejected / reverted decision is recorded to Engineering Memory.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -67,8 +67,7 @@ export const STATUS_LABEL: Record<AuraBugIssue['status'], string> = {
   analyzing: 'Analyzing',
   analyzed: 'Analyzed',
   'fix-proposed': 'Fix proposed',
-  'awaiting-approval': 'Awaiting approval',
-  approved: 'Approved',
+  applying: 'Applying',
   fixing: 'Fixing',
   verifying: 'Verifying',
   verified: 'Verified',
@@ -98,7 +97,7 @@ export interface AuraBugController {
   rescan: () => void;
   navigateTo: (issue: AuraBugIssue) => void;
   reviewFix: (issueId: string) => void;
-  approveFix: (issueId: string) => void;
+  applyFix: (issueId: string) => void;
   rejectFix: (issueId: string) => void;
   revertFix: (issueId: string) => void;
 }
@@ -316,11 +315,11 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
     [],
   );
 
-  /** Move a finding into the review step — it now awaits explicit approval. */
+  /** Move a finding into the review step: the person reads the fix and applies it. */
   const reviewFix = useCallback((issueId: string) => {
     const issue = issuesRef.current.find((i) => i.id === issueId);
     if (!issue) return;
-    patchIssue(issueId, { status: 'awaiting-approval' });
+    patchIssue(issueId, { status: 'fix-proposed' });
     setReviewId(issueId);
     setSelectedId(issueId);
   }, [patchIssue]);
@@ -330,12 +329,12 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
   }, []);
 
   /**
-   * Approve & apply a fix through the editor's own governed change
+   * Apply a fix through the editor's own governed change
    * authority (the same path AIActionDialog uses): update the live buffer,
    * save to disk via the confined Tauri bridge, then re-verify the file
    * deterministically. Only a genuine re-scan can mark the fix verified.
    */
-  const approveFix = useCallback(
+  const applyFix = useCallback(
     async (issueId: string) => {
       const issue = issuesRef.current.find((i) => i.id === issueId);
       if (!issue?.fix) return;
@@ -358,7 +357,7 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
 
       const preFixContent = file.content;
       const patched = applyPatch(preFixContent, issue);
-      patchIssue(issueId, { status: 'approved', applying: true, preFixContent });
+      patchIssue(issueId, { status: 'applying', applying: true, preFixContent });
 
       try {
         state.updateContent(issue.filePath, patched);
@@ -378,7 +377,7 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
         });
         recordBugBotMemory({
           filePath: issue.filePath,
-          event: 'fix-approved',
+          event: 'fix-applied',
           title: `Bug Bot fix applied: ${issue.title}`,
           summary: verification.passed === true ? 'Applied and verified by deterministic re-scan.' : `Applied, but ${verification.detail}`,
           severity: issue.severity,
@@ -495,7 +494,7 @@ export function useAuraBug(projectId: string | null, graph: GraphView | null, in
     rescan,
     navigateTo,
     reviewFix,
-    approveFix,
+    applyFix,
     rejectFix,
     revertFix,
   };

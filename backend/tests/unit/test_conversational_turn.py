@@ -23,7 +23,6 @@ from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent import AgentSessionStore, CentralAgent, IntentCompiler
 from aura.central_agent.intent import (
@@ -48,15 +47,11 @@ def _agent(home: Path, intent_compiler=None) -> tuple[CentralAgent, AuditStore]:
         def node_available(self, _cap):
             return True
 
-        async def request_approval(self, _req, _ctx):
-            return False
 
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
     fabric = CapabilityFabric(_H())
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     from aura.executors import all_executors
 
     execs = {e.capabilityId: e for e in all_executors(home)}
@@ -67,7 +62,7 @@ def _agent(home: Path, intent_compiler=None) -> tuple[CentralAgent, AuditStore]:
             pass
     cfg = FabricConfig(fabric=fabric, policy_config={},
                        permissions={"read": True, "write": True},
-                       executors=execs, audit_store=audit, ledger=ledger)
+                       executors=execs, audit_store=audit)
     return CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home),
                         intent_compiler=intent_compiler), audit
 
@@ -239,7 +234,6 @@ class TestConversationalTurnRunsNothing:
         agent.submit("Hi")
         session = agent.sessions.load(agent.sessions.last_session_id)
 
-        assert session.parkedTaskId is None
         assert not session.verifiedEvidence
         assert session.lastResult is not None
         assert session.lastResult.evidence is None
@@ -365,16 +359,42 @@ class TestNoParallelArchitecture:
         app = create_api_server()
         paths = {getattr(r, "path", "") for r in app.routes}
 
-        assert not [p for p in paths if "chat" in p or "conversation" in p]
-        # The agent surface is exactly the routes that already existed.
+        assert not [p for p in paths
+                    if ("chat" in p or "conversation" in p)
+                    and p not in ("/agent/chat", "/agent/chats")]
+        # The agent surface is the routes that exist. /agent/route is the one
+        # addition: a read-only routing decision that calls the same intent
+        # compiler and gates as submit, creating no session and running no
+        # work. It is not a second conversation architecture.
+        # /agent/chat is Let's Chat: the same agent, session store, event bus
+        # and model port, on a chat-mode session that can only converse. It
+        # is the one deliberate conversation route, kept apart from the work
+        # routes on purpose (each refuses the other's sessions).
+        # /agent/plans/execute is the Planner → Workspace handoff: a plan
+        # becomes a work session on the same dispatch as /agent/sessions.
+        # /agent/chats lists the chat sessions already in that same store
+        # (read-only), /agent/models/status reports the model and local runtime,
+        # /agent/context/{scope} reads the bounded Shared Context package, and
+        # /agent/projects/{pid}/adopt carries a general chat's settled context
+        # into a new project. None adds a conversation engine or store.
+        # /agent/research/config reads, validates (one bounded test query) and
+        # saves the search-gateway address in web.json: configuration of the
+        # existing web.research capability, not a research engine.
         assert {p for p in paths if p.startswith("/agent/")} == {
-            "/agent/bounds", "/agent/tools", "/agent/model",
+            "/agent/bounds", "/agent/tools", "/agent/model", "/agent/route",
+            "/agent/chat", "/agent/chats", "/agent/plans/execute",
+            "/agent/models/status", "/agent/context/{scope}",
+            "/agent/projects/{pid}/adopt", "/agent/research/config",
             "/agent/sessions", "/agent/sessions/{sid}",
-            "/agent/sessions/{sid}/message", "/agent/sessions/{sid}/approve",
-            "/agent/sessions/{sid}/resume", "/agent/sessions/{sid}/cancel",
+            "/agent/sessions/{sid}/message",
+            "/agent/sessions/{sid}/cancel",
             "/agent/sessions/{sid}/resume-cancelled",
-            "/agent/sessions/{sid}/plan", "/agent/sessions/{sid}/evidence",
+            "/agent/sessions/{sid}/plan",
+            "/agent/sessions/{sid}/evidence",
             "/agent/sessions/{sid}/events",
+            # Read-only authoritative orchestration status (task queue and
+            # state). Deliberately part of the surface; it carries no effect.
+            "/agent/sessions/{sid}/status",
         }
 
     def test_no_new_module_backs_the_conversation(self):

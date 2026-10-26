@@ -29,6 +29,27 @@ def last_seq(frames):
     return max(seqs) if seqs else None
 
 
+def await_result(get, body, timeout=90.0):
+    """Workspace runs in the background: the submit answers `started` and
+    the run's terminal result lands on the session. Return the POST result
+    when it is already terminal; otherwise poll the session until its
+    orchestration has left `running` and recorded a `lastResult`."""
+    import time
+
+    res = body["result"]
+    if res.get("status") != "started":
+        return res
+    sid = body["sessionId"]
+    deadline = time.monotonic() + timeout
+    while True:
+        s = get(f"/agent/sessions/{sid}")
+        if s.get("orchestrationState") not in (None, "running") and (s.get("lastResult") or {}).get("outcome") not in (None, "started"):
+            return s["lastResult"]
+        if time.monotonic() > deadline:
+            raise AssertionError(f"session {sid} never settled: {str(s)[:300]}")
+        time.sleep(0.25)
+
+
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     home = tmp_path / "home"
@@ -43,7 +64,13 @@ def env(tmp_path, monkeypatch):
     return client, proj, home, tmp_path
 
 
-def make_gated(client, proj, name="gated"):
+def make_gated(client, proj, name="gated", ask=True):
+    """A workflow whose export-file step writes. With `ask`, the person's
+    own policy makes medium-risk steps ask — the only way a routine write
+    waits now (defaults never ask) — so the ledger cycle below is real."""
+    if ask:
+        assert client.post("/fabric/policy",
+                           json={"byRisk": {"medium": "ask-user"}}).status_code == 200
     wf = {"name": name, "description": "", "category": "t", "favorite": False,
           "nodes": [{"id": "n0", "type": "user-input", "x": 0, "y": 0,
                      "config": {"prompt": "content", "default": ""}},
@@ -53,11 +80,31 @@ def make_gated(client, proj, name="gated"):
     wid = client.post("/workflows", json=wf).json()["id"]
 
     def start(payload):
-        s = client.post(f"/workflows/{wid}/run", json={
-            "projectPath": str(proj), "inputs": {"n0": payload}})
-        return next(e["runId"] for e in frames_of(s) if e.get("runId"))
+        """A run started through the app's own canonical runner."""
+        import asyncio
+
+        stored = client.app.state.wf_store.get(wid)
+        out = asyncio.run(client.app.state.runner.start_workflow_run(
+            stored, project_id="default", project_path=str(proj),
+            trigger={"kind": "automation", "ruleId": "rule-t",
+                     "runId": "ar-t", "event": "test"},
+            inputs={"n0": payload}))
+        return out["run"]["id"]
 
     return wid, start
+
+
+def test_a_workflow_write_runs_without_an_approval_by_default(env):
+    """With the shipped defaults a workflow's write step simply runs: no
+    approval is raised anywhere."""
+    client, proj, _h, _t = env
+    wid, _start = make_gated(client, proj, name="byhand", ask=False)
+    s = client.post(f"/workflows/{wid}/run", json={
+        "projectPath": str(proj), "inputs": {"n0": "payload"}})
+    done = next(e for e in frames_of(s) if e.get("type") == "done")
+    assert done["runState"] == "succeeded", done
+    assert (proj / "byhand.txt").read_text() == "payload"
+    assert client.get("/fabric/approvals").status_code == 404  # the approval queue no longer exists
 
 
 # ── items 1–4, 12: intent → plan → discovery → authority → auto-exec ────────
@@ -74,111 +121,33 @@ def test_agent_low_risk_autoexecutes_via_connected_node_routing(env):
     r = client.post("/agent/sessions", json={
         "message": "show me git status",
         "projectId": "p", "projectPath": str(proj)})
-    res = r.json()["result"]
-    # 4: low-risk auto-execution — completed WITHOUT any approval decision
+    res = await_result(lambda p: client.get(p).json(), r.json())
+    # 4: Workspace runs it at once — completed WITHOUT any approval decision
     assert res["status"] == "completed", str(res)[:300]
     assert res.get("verified") == ["t1"]
-    pend = client.get("/fabric/approvals").json()["approvals"]
-    assert all(p.get("state") != "pending" for p in pend)
+    assert client.get("/fabric/approvals").status_code == 404  # no queue; nothing can be pending
 
 
-def test_unconnected_capability_is_denied_before_any_effect(env):
+def test_unconnected_capability_is_denied_before_any_effect(env, monkeypatch):
     client, proj, _h, _t = env
+    # The tool is found but cannot be recorded as connected: policy has no
+    # node to authorize, so the run is denied before any effect.
+    monkeypatch.setattr("aura.central_agent.provisioner.connect_verified_tool",
+                        lambda node_id, version: False)
     # SECURITY: policy denial BEFORE effect when nothing provides the node cap
     r = client.post("/agent/sessions", json={
         "message": "show me git status",
         "projectId": "p", "projectPath": str(proj)})
-    res = r.json()["result"]
+    res = await_result(lambda p: client.get(p).json(), r.json())
     assert res["status"] == "failed"
     assert "Policy denies this plan" in res["summary"]
+    # The executor never ran: a run that executed would list the task here.
+    assert res.get("performed") == [] and res.get("verified") == [], res
     # zero side effects: only the pre-existing .git fixture dir remains
     assert [x.name for x in proj.iterdir()] == [".git"]
 
 
 # ── items 5–11: governed write → park → decide → approved resume ────────────
-
-def test_governed_write_full_approval_cycle(env):
-    client, proj, _h, _t = env
-    wid, start = make_gated(client, proj)
-
-    # 5: governed write parks; NO effect yet
-    rid = start("payload-1")
-    rec = (client.get(f"/workflows/{wid}/runs/{rid}").json())
-    rec = rec.get("run") or rec
-    assert rec["state"] == "awaiting-approval"
-    assert not (proj / "gated.txt").exists()
-
-    # 6: human decision on the canonical ledger
-    pend = [p for p in
-            client.get("/fabric/approvals").json()["approvals"]
-            if p.get("state") == "pending"]
-    assert pend, "parked effect must persist a PENDING approval"
-    aid = pend[-1]["id"]
-    assert client.post(f"/fabric/approvals/{aid}/decide",
-                       json={"granted": True}).status_code == 200
-
-    # 7: HTTP resume WITH approved capabilities completes the SUCCESSOR leg
-    rs = client.post(f"/workflows/{wid}/runs/{rid}/resume",
-                     json={"approvedCapabilities": ["filesystem.write"]})
-    assert rs.status_code == 200
-    chain = (client.get(f"/workflows/{wid}/runs/{rid}/chain").json())["chain"]
-
-    # 8: EXACTLY ONE side effect, on disk, exact bytes
-    assert (proj / "gated.txt").read_text() == "payload-1"
-    writes = [x for x in chain if x["state"] == "succeeded"]
-    assert len(writes) == 1
-
-    # 9: superseded/resume chain recorded honestly — one parked leg points
-    # at its successor by id, and that successor exists in the chain.
-    superseded = [x for x in chain if x.get("supersededBy")]
-    assert len(superseded) == 1 and len(chain) >= 2
-    successor_id = superseded[0]["supersededBy"]
-    assert any(x["id"] == successor_id and x["state"] == "succeeded"
-               for x in chain)
-
-    # 10: replay refusal — resuming the ORIGINAL parked run again refuses
-    rr = client.post(f"/workflows/{wid}/runs/{rid}/resume",
-                     json={"approvedCapabilities": ["filesystem.write"]})
-    body = rr.text
-    assert "already continued as run" in body or '"failed"' in body
-    assert (proj / "gated.txt").read_text() == "payload-1"  # still one effect
-
-
-def test_denial_is_not_a_standing_bar_but_never_authorizes_by_itself(env):
-    """Frozen semantics verified as observed: a DECISION answers exactly ONE
-    parked question. Denial leaves nothing executed; it also confers no
-    standing bar — but equally confers NO grant: every fresh gated run
-    parks again, and only an explicit per-call authorization (the resume
-    carrying approvedCapabilities from the operator console, or a granted
-    fingerprint-bound record) may spend. Nothing persists as authority."""
-    client, proj, _h, _t = env
-    wid, start = make_gated(client, proj, name="denied")
-
-    rid = start("attempt-1")
-    pend = [p for p in
-            client.get("/fabric/approvals").json()["approvals"]
-            if p.get("state") == "pending"]
-    aid = pend[-1]["id"]
-    client.post(f"/fabric/approvals/{aid}/decide", json={"granted": False})
-
-    # plain resume WITHOUT operator authorization still cannot execute
-    client.post(f"/workflows/{wid}/runs/{rid}/resume")
-    chain = (client.get(f"/workflows/{wid}/runs/{rid}/chain").json())["chain"]
-    assert not (proj / "denied.txt").exists()
-    assert all(x["state"] != "succeeded" for x in chain)
-
-    # denied record itself is spent/closed — deciding it again refuses
-    again = client.post(f"/fabric/approvals/{aid}/decide",
-                        json={"granted": True})
-    assert again.status_code == 409
-
-    # no standing grant: a BRAND-NEW gated run parks on its own merits
-    rid2 = start("fresh")
-    rec2 = (client.get(f"/workflows/{wid}/runs/{rid2}").json())
-    rec2 = rec2.get("run") or rec2
-    assert rec2["state"] == "awaiting-approval"
-    assert not (proj / "denied.txt").exists()
-
 
 # ── items 13–15: intelligence node, MCP tool, MCP context ───────────────────
 
@@ -260,83 +229,6 @@ def _mcp_client(tmp_path):
     return StdioMcpClient([sys.executable, str(script)])
 
 
-def test_mcp_tool_invocation_parks_high_spends_once_fenced(env):
-    import asyncio
-
-    client, _proj, _h, tmp_path = env
-    from aura.fabric import CapabilityFabric
-    from aura.fabric.mcp_bridge import register_mcp_capabilities
-
-    class Host:
-        def permissions_for(self, _c, _x):
-            return {"read": True, "write": True, "execute": True,
-                    "autonomous": True}
-
-        def node_available(self, _c):
-            return None
-
-        async def request_approval(self, _r, _x):
-            return False
-
-    fabric = CapabilityFabric(Host())
-    mc = _mcp_client(tmp_path)
-    try:
-        tools = asyncio.run(asyncio.to_thread(mc.list_tools))
-
-        def _call(server_id, name, args):
-            raw = mc.call_tool(name, args)
-            content = (raw or {}).get("content") or []
-            text = "".join(c.get("text", "") for c in content
-                           if isinstance(c, dict))
-            return {"ok": "isError" not in (raw or {}), "text": text}
-
-        async def call_async(server_id, name, args, timeout_s=10.0):
-            return await asyncio.to_thread(_call, server_id, name, args)
-
-        reg = register_mcp_capabilities(fabric, "fx-final", tools, call_async)
-        assert reg["registered"], reg
-        cap = reg["registered"][0]
-        ctx = {"actor": {"kind": "agent", "id": "t"}, "projectId": "p"}
-
-        async def invoke(**extra):
-            return await fabric.invoke(cap, {"text": "hi"}, {**ctx, **extra})
-
-        first = asyncio.run(invoke())
-        # HIGH risk floor: parks; nothing executed
-        assert first["outcome"] == "awaiting-approval", first.get("outcome")
-        pending = fabric.pending_approvals()
-        aid = pending[-1]["id"]
-        assert fabric.decide_approval(aid, granted=True)
-
-        # named, fingerprint-bound spend
-        second = asyncio.run(invoke(approvalId=aid))
-        assert second["outcome"] == "succeeded", second
-        out = second["output"]
-        assert out["untrusted"] is True and "ECHO:hi" in out["text"]
-        assert out["provenance"].startswith("mcp:fx-final:")
-
-        # single-use: the SAME approval cannot buy a third invocation
-        third = asyncio.run(invoke(approvalId=aid))
-        assert third["outcome"] in ("awaiting-approval", "failed"), third
-
-        # fingerprint binding: a NEW pending grant does NOT authorize altered
-        # arguments — the named approval matches only its exact fingerprint.
-        fourth = asyncio.run(invoke())          # fresh ask → new pending
-        assert fourth["outcome"] == "awaiting-approval"
-        p2 = [p for p in fabric.pending_approvals() if p.get("state") == "pending"]
-        aid2 = p2[-1]["id"]
-        assert fabric.decide_approval(aid2, granted=True)
-
-        async def invoke_tampered():
-            return await fabric.invoke(cap, {"text": "EVIL"},
-                                       {**ctx, "approvalId": aid2})
-
-        tampered = asyncio.run(invoke_tampered())
-        assert tampered["outcome"] != "succeeded", tampered
-    finally:
-        mc.close()
-
-
 def test_mcp_resources_prompts_context_fenced_and_fresh(env):
     client, _proj, _h, tmp_path = env
     from aura.central_agent.mcp_context import (
@@ -397,7 +289,8 @@ def test_evidence_audit_sse_replay_and_restart(env, tmp_path, monkeypatch):
             "message": "show me git status",
             "projectId": "p", "projectPath": str(proj)})
         sid = body.get("sessionId")
-        assert body["result"]["status"] == "completed"
+        res = await_result(lambda p: _live_get(base, p)[1], body)
+        assert res["status"] == "completed", str(res)[:300]
 
         # 18: live SSE stream carries the session lifecycle; consumed as
         # a BOUNDED read stopping at the terminal result (never waits

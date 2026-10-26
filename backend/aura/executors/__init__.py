@@ -38,6 +38,7 @@ from ..central_agent.role_prompts import (
     contract_for,
     role_echo,
 )
+from ..workers.timeouts import worker_timeout_ms
 from ..workers.adapters import (
     GOV_CLAUDE_HOOK,
     GOV_NONE,
@@ -283,6 +284,12 @@ def agent_delegate_invocation(node: dict):
 
 
 def agent_delegate_supports_node(node: dict) -> bool:
+    """Selection and failover only ever see workers that may run: a worker the
+    billing policy denies is not "usable", so it is never chosen over one that is."""
+    from ..workers.billing import decide, worker_id_of
+
+    if not decide(worker_id_of(node)).allowed:
+        return False
     return agent_delegate_invocation(node) is not None
 
 
@@ -293,7 +300,7 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
     Returns {"args" | None, "env", "logPath", "supports", "worker"}.
     Anything unsupported or any staging failure yields an empty
     governance bundle — the run proceeds under the pre-existing
-    boundaries (allow-lists, approvals, post-hoc delta verification),
+    boundaries (allow-lists, policy, post-hoc delta verification),
     and the output says so honestly instead of claiming supervision.
     """
     bundle: dict = {"args": None, "env": {}, "logPath": "",
@@ -302,14 +309,14 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
     if adapter is None or adapter.governance == GOV_NONE:
         # No PROVEN pre-execution interception point for this runtime.
         # Report that honestly, enforce nothing new, and keep the
-        # pre-existing boundaries (allow-lists, approvals, post-hoc
+        # pre-existing boundaries (allow-lists, policy, post-hoc
         # delta verification). Flag parity is never taken as evidence.
         bundle["supports"] = {"NOTE": "unsupported — no proven "
                                       "interception point for this runtime"}
         return bundle
     if not scope_paths:
         # Governance is scope-derived: unscoped runs keep the legacy
-        # boundaries (allow-lists, approvals, post-hoc verification)
+        # boundaries (allow-lists, policy, post-hoc verification)
         # instead of a deny-all config. Reported in the output.
         return bundle
     try:
@@ -535,12 +542,13 @@ async def agent_delegate_run(inv: dict) -> dict:
     # Optional task contract: deterministic scope boundaries for the run.
     # Validated BEFORE anything spawns; malformed scope is a refusal, and
     # the accepted scope travels in the output so evidence shows what was
-    # enforced. Scope never widens an approval: it is part of the approved
+    # enforced. Scope never widens a grant: it is part of the approved
     # input fingerprint via the manifest's scopePaths field.
     from ..fabric.supervision import (
         check_scope_paths,
         delta_since,
         hash_paths,
+        is_ignored_content_path,
         parse_porcelain_status,
         snapshot_worktree,
         validate_scope_paths,
@@ -562,7 +570,7 @@ async def agent_delegate_run(inv: dict) -> dict:
     # The role-framed brief: AURA-authored role instructions around the
     # fenced task text, with the validated scope in the runtime context.
     brief = compose_role_prompt(role, task, scope_paths=scope_paths,
-                                approval_state="granted")
+                                policy_state="granted")
     brief = with_context(brief, _s(inv["input"].get("context")))
 
     node = inv.get("node")
@@ -573,26 +581,39 @@ async def agent_delegate_run(inv: dict) -> dict:
         return _no(f"{node['name']} has no executable recorded in the catalogue, so it cannot be run.")
     if not resolve_agent_binary(bin_name).ok:
         return _no(f"{node['name']} is not on the coding-agent allow-list, so it was not run.")
-    # GOV_NONE approval floor: workers whose runtime AURA cannot intercept
-    # at the action level require explicit human pre-approval, because no
-    # real-time enforcement is possible. An unapproved invocation is parked
-    # here before any spawn attempt.
-    _gov_adapter = adapter_for_binary(bin_name)
-    if (_gov_adapter is None or _gov_adapter.governance == GOV_NONE) and \
-            not (inv.get("context") or {}).get("approvalId"):
+    # Billing policy, enforced at the dispatch boundary itself (a pinned or
+    # approved task reaches here too). Nothing is spawned for a worker the
+    # owner has not allowed; governance is a separate check, not a cost one.
+    from ..workers.billing import decide, worker_id_of
+
+    _billing = decide(worker_id_of(node))
+    if not _billing.allowed:
         return {
             "ok": False,
-            "requiresApproval": True,
+            "detail": _billing.reason,
+            "output": {"nodeId": node.get("id"), "agent": node.get("name"),
+                       "exitCode": None, "stdout": "", "billing": _billing.to_dict(),
+                       "blocked": "billing-policy",
+                       **({"role": role} if role else {})},
+        }
+    # GOV_NONE floor: a runtime AURA cannot intercept at the action level is
+    # refused here, before any spawn attempt. Autonomous operation has no
+    # human to pre-approve it, and an unmanaged runtime is not run.
+    _gov_adapter = adapter_for_binary(bin_name)
+    if _gov_adapter is None or _gov_adapter.governance == GOV_NONE:
+        return {
+            "ok": False,
+            "refused": True,
             "detail": (
-                f"{node['name']} requires explicit human approval before "
-                "running: AURA has no proven real-time interception point "
-                "for this runtime (GOV_NONE). Request approval and retry "
-                "with the issued approvalId."
+                f"{node['name']} was refused: AURA has no proven real-time interception "
+                "point for this runtime (GOV_NONE), so it cannot be governed while it runs. "
+                "Nothing was started."
             ),
             "output": {
                 "nodeId": node["id"], "agent": node["name"],
                 "exitCode": None, "stdout": "",
                 "governanceKind": "GOV_NONE",
+                "blocked": "no-real-time-governance",
                 **({"role": role} if role else {}),
             },
         }
@@ -656,7 +677,7 @@ async def agent_delegate_run(inv: dict) -> dict:
     try:
         res = await _run_governed(
             bin_name, args, cwd,
-            _timeout_ms(inv.get("context"), 10 * 60_000),
+            worker_timeout_ms(inv.get("context")),
             governance, action_events, cancel_token=cancel_token,
             argv_prefix=net.argv_prefix)
     except Exception as e:  # noqa: BLE001 — TS catches all too
@@ -716,7 +737,7 @@ async def agent_delegate_run(inv: dict) -> dict:
     if governed:
         output["governedActions"] = governed
     denied = list((governed or {}).get("denied") or [])
-    # Only HARD violations park the run: soft denials (refused recon
+    # Only HARD violations stop the run: soft denials (refused recon
     # the worker adapted around) are logged evidence, and the run's
     # fate stays with post-hoc verification. A hard denial stopped the
     # action AND (via worker self-termination) the worker.
@@ -725,9 +746,9 @@ async def agent_delegate_run(inv: dict) -> dict:
         output["scopePaths"] = list(scope_paths)
     if hard or res.code == _SELF_KILL_CODE:
         # Real-time denial happened BEFORE execution: the forbidden
-        # action never ran. This is a deviation by construction — park
-        # for a decision through the existing correction loop, with the
-        # denied actions named as evidence.
+        # action never ran. This is a deviation by construction, recorded
+        # with the denied actions named as evidence; the automated
+        # correction loop (bounded) decides what happens next.
         targets = [str(d.get("target") or d.get("command") or d.get("tool"))
                    for d in hard]
         targets = [t for t in targets if t][:5]
@@ -748,18 +769,17 @@ async def agent_delegate_run(inv: dict) -> dict:
         return {
             "ok": False,
             "detail": (
-                f"{node['name']} was governed in real time and parked: "
+                f"{node['name']} was governed in real time and stopped: "
                 f"{why} ({', '.join(targets) or 'see governedActions'}). "
-                "Nothing denied was executed; the run is parked for a "
-                "decision through the correction loop."
+                "Nothing denied was executed; the deviation is recorded and goes "
+                "to the automated correction loop, within its budget."
             ),
             "output": {**output, "scopeDeviation": True},
         }
     if res.code == 0 and scope_paths:
         # Post-execution scope verification over the DELTA since task
         # start: only files this run dirtied are judged. A deviation stops
-        # here — parked for a decision, never silently accepted, never
-        # reverted.
+        # here — recorded, never silently accepted, never reverted.
         from ..exec_ import git as run_git
 
         delta: list[str] | None = None
@@ -776,7 +796,14 @@ async def agent_delegate_run(inv: dict) -> dict:
             if post is None or post.code != 0:
                 delta_note = "Scope could not be evidenced here: git status failed after the run."
             else:
-                after_changed = parse_porcelain_status(post.out)
+                # Only AUTHORED project content is judged. A worker that
+                # installs a dependency or imports its own module leaves
+                # build output and interpreter caches behind; those are
+                # side effects of working, not work, and the Workspace
+                # change report already skips them. Judging them would
+                # stop a run that did exactly what it was asked.
+                after_changed = [p for p in parse_porcelain_status(post.out)
+                                 if not is_ignored_content_path(p)]
                 after_hashes = await hash_paths(cwd, after_changed)
                 worker_files = delta_since(scope_snapshot, after_changed,
                                            after_hashes)
@@ -797,7 +824,7 @@ async def agent_delegate_run(inv: dict) -> dict:
                         "ok": False,
                         "detail": (
                             f"{node['name']} finished, but {check.detail} "
-                            "The run is parked for a decision: nothing was "
+                            "The run stopped on a deviation: nothing was "
                             "reverted, and the changes are evidence, not an "
                             "accepted result."
                         ),
@@ -841,14 +868,69 @@ async def agent_delegate_verify(inv: dict, result: dict) -> dict:
         shown = ", ".join(outside[:5])
         return _fail("read-back",
                      f"Worker files fell outside the declared scope: {shown}."
-                     " Parked for a decision; nothing was reverted.")
+                     " Stopped on a deviation; nothing was reverted.")
     exit_code = output.get("exitCode")
     if exit_code != 0:
         return _fail("exit-code",
                      f"The agent exited {exit_code if exit_code is not None else 'unknown'}.")
+    required = (inv.get("input") or {}).get("requiredEvidence")
+    if required is not None:
+        if not (isinstance(required, list) and required
+                and all(isinstance(r, str) and r.strip() for r in required)):
+            # Malformed evidence metadata fails closed; it never silently
+            # degrades to a process-only check.
+            return _fail("evidence-present",
+                         "The task's required-evidence list is malformed, so the "
+                         "work cannot be verified.")
+        return _evidence_verdict(inv, output, list(required))
     verdict = _required_change_verdict(inv, output)
     return verdict if verdict is not None else _pass(
-        "exit-code", "The agent exited 0.")
+        "exit-code", "The agent exited 0. This records the process result only; "
+        "no evidence of the requested work was checked.")
+
+
+#: The longest line of an artifact used as its evidence marker.
+_EVIDENCE_LINE_CHARS = 200
+
+
+def _evidence_verdict(inv: dict, output: dict, required: list[str]) -> dict:
+    """Did the worker's output show it read each required artifact?
+
+    The marker is the artifact's own first non-empty line, read from the
+    project by AURA. A path mentioned in output proves little (a tool trace
+    names the file it touched), and a non-empty stdout proves little (CLI
+    chrome and banners); the content of the file itself is what a worker
+    could only have produced by reading it. Paths are confined to the
+    project directory.
+    """
+    from pathlib import Path
+
+    root = Path(cwd_of(inv)).resolve()
+    stdout = str(output.get("stdout") or "")
+    found: list[str] = []
+    missing: list[str] = []
+    for rel in required:
+        target = (root / rel).resolve()
+        if Path(rel).is_absolute() or root not in target.parents or not target.is_file():
+            missing.append(f"{rel} (not a file in the project)")
+            continue
+        try:
+            lines = [ln.strip() for ln in target.read_text(errors="replace").splitlines()
+                     if ln.strip()]
+        except OSError:
+            missing.append(f"{rel} (could not be read)")
+            continue
+        if not lines:
+            missing.append(f"{rel} (empty, so there is no marker to find)")
+            continue
+        marker = lines[0][:_EVIDENCE_LINE_CHARS]
+        (found if marker in stdout else missing).append(
+            rel if marker in stdout else f"{rel} (its content was not in the worker's output)")
+    if missing:
+        return _fail("evidence-present",
+                     "Required evidence not found: " + "; ".join(missing) + ".")
+    return _pass("evidence-present",
+                 "The worker's output contains the content of: " + ", ".join(found) + ".")
 
 
 def _required_change_verdict(inv: dict, output: dict) -> dict | None:
@@ -904,8 +986,21 @@ async def git_status(inv: dict) -> dict:
     if not await git_is_repo(cwd):
         return git_not_a_repo()
     res = await run_git(["status", "--short", "--branch"], cwd)
-    return _ok("Working tree has changes." if res.out else "Working tree is clean.",
-               res.out or "clean")
+    # `--branch` always prints a "## <branch>" line, even for a clean tree, so
+    # the working-tree state is read from the lines after it, not from output.
+    lines = res.out.splitlines() if res.out else []
+    head = lines[0][3:].split("...")[0] if lines and lines[0].startswith("## ") else ""
+    branch = head.strip() or "(unknown branch)"
+    changes = [ln for ln in lines if not ln.startswith("## ")]
+    if changes:
+        detail = f"On branch {branch}. Working tree has {len(changes)} changed path(s)."
+    else:
+        detail = f"On branch {branch}. Working tree is clean."
+    # The text lives under "stdout" like every other command result: the
+    # verified record and the answer read that field, and an empty field is
+    # what made a real run answer "no specific output was provided".
+    return _ok(detail, {"stdout": res.out or "", "branch": branch,
+                        "changes": changes, "exitCode": res.code})
 
 
 async def git_diff(inv: dict) -> dict:
@@ -1514,6 +1609,7 @@ def register_canonical_internal_capabilities(fabric) -> None:
 
 
 from .web_research import web_research_run, web_research_verify  # noqa: E402
+from ..environment.provisioning import tool_provision_run, tool_provision_verify  # noqa: E402
 
 EXECUTOR_TABLE: dict[str, dict] = {
     "filesystem.list": {"run": filesystem_list},
@@ -1529,6 +1625,7 @@ EXECUTOR_TABLE: dict[str, dict] = {
     "git.push": {"run": git_push, "verify": git_push_verify},
     "http.request": {"run": http_request, "verify": http_request_verify},
     "web.research": {"run": web_research_run, "verify": web_research_verify},
+    "tool.provision": {"run": tool_provision_run, "verify": tool_provision_verify},
 }
 
 

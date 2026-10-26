@@ -24,7 +24,6 @@ import {
 import { aiClient, type NodeSpecInfo, type WorkflowRun } from '../../ai/aiClient';
 import { useWorkflows } from '../../data/useWorkflows';
 import { useWorkspace } from '../../data/useWorkspace';
-import { useFabric, pendingApprovals } from '../../data/useFabric';
 import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
 import { RunView } from '../workflows/RunView';
@@ -275,7 +274,7 @@ function Row({
               >
                 <Icon name="workflows" size={10} />
                 {workflowName(p.workflowId)}
-                <Badge tone={p.state === 'succeeded' ? 'positive' : p.state === 'awaiting-approval' ? 'attention' : p.state === 'failed' || p.state === 'timed-out' ? 'critical' : 'neutral'}>
+                <Badge tone={p.state === 'succeeded' ? 'positive' : p.state === 'failed' || p.state === 'timed-out' ? 'critical' : 'neutral'}>
                   {p.state}
                 </Badge>
               </button>
@@ -327,13 +326,7 @@ function LinkedRunPane({
   specs: Map<string, NodeSpecInfo>;
   onBack: () => void;
 }) {
-  const approvals = useFabric((s) => s.approvals);
-  const deciding = useFabric((s) => s.deciding);
-  const decide = useFabric((s) => s.decide);
-  const watch = useFabric((s) => s.watchApprovals);
-  const [current, setCurrent] = useState(run);
-
-  useEffect(() => watch(), [watch]);
+  const [current] = useState(run);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -347,13 +340,6 @@ function LinkedRunPane({
           run={current}
           specs={specs}
           graphOrder={Object.keys(current.nodes)}
-          approvals={pendingApprovals(approvals)}
-          decidingId={deciding}
-          onDecideApproval={async (id, granted, reason) => {
-            await decide(id, granted, reason);
-            const fresh = await aiClient.workflowRun(current.workflowId, current.id).catch(() => null);
-            if (fresh && 'id' in fresh) setCurrent(fresh);
-          }}
         />
       </div>
     </div>

@@ -27,6 +27,7 @@ import re
 from typing import Any, Protocol
 
 from ..contracts import AgentIntent
+from . import requested
 
 _SCHEMA_HINT = """{
   "goal": string (required),
@@ -40,7 +41,6 @@ _SCHEMA_HINT = """{
   "urgency": "immediate" | "background" | "scheduled",
   "complexity": "single" | "multi-step" | "workflow",
   "requiredCapabilities": [string],
-  "approvalLikely": boolean,
   "needsClarification": boolean,
   "clarificationQuestion": string | null,
   "conversational": boolean
@@ -67,6 +67,10 @@ _GREETINGS = frozenset({
     "good evening", "good day", "morning", "afternoon", "evening",
     "how are you", "how are you doing", "hows it going", "how is it going",
     "hows things", "you there", "are you there",
+    # Greetings with an address term ("hi there", "hello aura"). Without
+    # these a plain greeting falls into the clarification path.
+    "hi there", "hello there", "hey there", "hiya there", "hi aura",
+    "hello aura", "hey aura", "good morning aura", "good evening aura",
 })
 
 _THANKS = frozenset({
@@ -495,7 +499,7 @@ _PROVE_RE = re.compile(
 #: capability. Adding `check` to `_WORK_RE` made "Check git status" look
 #: like open-ended investigation, so it started dispatching a worker for
 #: an answer AURA can already give directly, for free and under no
-#: approval. This rule exists to hand that one shape back to the
+#: policy gate. This rule exists to hand that one shape back to the
 #: existing `git.status` capability — it adds no route of its own, it
 #: only stops the delegation predicate from claiming a message the
 #: git-status branch below already handles.
@@ -633,7 +637,6 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "requiredCapabilities": ["filesystem.write"],
             "urgency": "immediate",
             "complexity": "single",
-            "approvalLikely": True,
             "writePath": path,
             "writeContent": content,
         })
@@ -692,7 +695,6 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
                 "requiredCapabilities": ["agent.delegate"],
                 "urgency": "immediate",
                 "complexity": "multi-step",
-                "approvalLikely": True,
                 "delegateTask": user_message.strip(),
                 "delegateReview": wants_review,
                 "delegateRemediate": wants_remediation,
@@ -731,7 +733,6 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             "requiredCapabilities": ["agent.delegate"],
             "urgency": "immediate",
             "complexity": "multi-step" if len(shape) > 1 else "single",
-            "approvalLikely": True,
             # AURA-owned planning inputs, not authority: the planner
             # reads these to build the task contract, and every one of
             # them is re-validated there.
@@ -751,7 +752,6 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             requiredCapabilities=["project.list"],
             urgency="immediate",
             complexity="single",
-            approvalLikely=False,
         )
     if knowledge_search and not authoring and not running_wf and not delegating:
         return AgentIntent(
@@ -762,7 +762,6 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             requiredCapabilities=["knowledge.search"],
             urgency="immediate",
             complexity="single",
-            approvalLikely=False,
         )
     if git_status and not authoring and not running_wf:
         return AgentIntent(
@@ -773,7 +772,6 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             requiredCapabilities=["git.status"],
             urgency="immediate",
             complexity="single",
-            approvalLikely=False,
         )
     if running_wf and not authoring:
         return AgentIntent(
@@ -784,7 +782,6 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             requiredCapabilities=[],
             urgency="scheduled" if scheduled else "immediate",
             complexity="workflow",
-            approvalLikely=True,
         )
     if authoring:
         goal = f"Author a workflow: {user_message.strip()}"
@@ -796,7 +793,6 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             requiredCapabilities=["workflow.create"],
             urgency="scheduled" if scheduled else "immediate",
             complexity="workflow",
-            approvalLikely=False,
         )
     if status:
         goal = f"Report project/workflow status: {user_message.strip()}"
@@ -808,7 +804,6 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             requiredCapabilities=["workflow.list"],
             urgency="scheduled" if scheduled else "immediate",
             complexity="single",
-            approvalLikely=False,
         )
     if fixing:
         # A fix-shaped question with no actionable target ("which tests
@@ -824,7 +819,6 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
             constraints=[*constraints, "Simple fixes only"],
             requiredCapabilities=[],
             complexity="multi-step",
-            approvalLikely=True,
             needsClarification=True,
             clarificationQuestion=(
                 "Which failing tests should I work on, and what should "
@@ -866,6 +860,11 @@ class IntentCompiler:
     ambiguity/confidence claims never grant anything — they only feed the
     FIXED clarification policy below, which cannot be talked through them.
     """
+
+    #: True when this compiler's model port was resolved from the provider
+    #: files, so CentralAgent may re-resolve it when they change. A port a
+    #: caller injected on purpose (tests, tooling) stays exactly as given.
+    follows_provider_files = False
 
     def __init__(
         self,
@@ -940,6 +939,26 @@ class IntentCompiler:
             c for c in intent.requiredCapabilities
             if _re.fullmatch(r"[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*", c or "")
         ]
+        # A read-only git status request is answered by the git.status
+        # capability and by nothing else. The model may propose other
+        # capabilities for it; a real run proposed project.list for "show me
+        # the git status", and the wrong task then ran and was reported as
+        # verified. The request decides here, and the model's proposal is
+        # discarded rather than executed, and that includes a model marking
+        # the turn as conversation: a real run answered "run git status in
+        # your terminal" and executed nothing. The goal is the user's own words,
+        # so the verifier judges the request that was actually made.
+        if requested.asks_for_git_status(user_message):
+            intent.requiredCapabilities = ["git.status"]
+            intent.conversational = False
+            intent.surface = "project"
+            intent.goal = user_message.strip()
+            if "Read-only" not in intent.constraints:
+                intent.constraints = [*intent.constraints, "Read-only"]
+            intent.needsClarification = False
+            intent.clarificationQuestion = None
+            return intent
+
         # Conversation, decided deterministically. The floor wins first:
         # a greeting is conversation whatever the model said. Above that
         # the model may mark a turn answerable in words alone, but a
