@@ -11,9 +11,15 @@ import { aiClient, type HealthResult, type IndexStatus, type ProviderStatus } fr
 import { missionClient } from '../ai/missionClient';
 import { diagnosisClient } from '../ai/diagnosisClient';
 import { useWorkspace } from '../data/useWorkspace';
+import { BackendRefusedError, refreshBackendSession } from '../backend/backendSession';
 
 interface StatusState {
   reachable: boolean | null;
+  /** Whether the Python backend is available and is this launch's own. Null until checked. */
+  pythonOk: boolean | null;
+  pythonMessage: string | null;
+  /** Set when the Node service is refused because its identity is not ours. */
+  identity: string | null;
   health: HealthResult | null;
   provider: ProviderStatus | null;
   index: IndexStatus | null;
@@ -30,6 +36,9 @@ let inflight: Promise<void> | null = null;
 
 export const useStatusStore = create<StatusState>((set) => ({
   reachable: null,
+  pythonOk: null,
+  pythonMessage: null,
+  identity: null,
   health: null,
   provider: null,
   index: null,
@@ -44,6 +53,14 @@ export const useStatusStore = create<StatusState>((set) => ({
     if (inflight) return inflight;
     inflight = (async () => {
       const ws = useWorkspace.getState();
+      // Ownership before any request. A backend that is not this launch's
+      // is refused here, and no request is sent to it.
+      const session = await refreshBackendSession();
+      set({ pythonOk: session.python.ok, pythonMessage: session.python.ok ? null : session.python.message });
+      if (!session.ai.ok) {
+        set({ reachable: false, identity: session.ai.message });
+        return;
+      }
       try {
         const health = await aiClient.health();
         let provider: ProviderStatus | null = null;
@@ -53,9 +70,9 @@ export const useStatusStore = create<StatusState>((set) => ({
         } catch {
           provider = null;
         }
-        set({ health, provider, index: health.index ?? null, reachable: true });
-      } catch {
-        set({ reachable: false });
+        set({ health, provider, index: health.index ?? null, reachable: true, identity: null });
+      } catch (e) {
+        set({ reachable: false, identity: e instanceof BackendRefusedError ? e.message : null });
         return;
       }
 

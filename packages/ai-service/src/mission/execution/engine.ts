@@ -11,10 +11,11 @@
  *   • `persist`  — the engine hands the fully-updated record back for
  *                  atomic save + SSE broadcast.
  *
- * Human gating is unchanged from v2: no task runs before the plan is
- * approved, and no diff is ever written to disk before an explicit
- * per-task Accept. The engine automates only ordering and proposal
- * generation — the two gates stay human.
+ * No human gates on routine work: a mission's plan is accepted with the
+ * goal that created it, its tasks run, generated changes are written
+ * through the Fabric as part of the task, and the mission completes once
+ * every task is resolved. An Accept remains only for a write the person's
+ * own policy made wait.
  *
  * The machine is intentionally honest: every transition is computed
  * from current state, and invalid transitions (e.g. accepting a task
@@ -27,7 +28,6 @@ import {
   emptyCheckpoints,
   setCheckpoint,
   checkpointStatus,
-  nextCheckpoint,
   statusFromCheckpoints,
 } from './checkpoints';
 import {
@@ -278,13 +278,25 @@ export class MissionExecutionEngine {
 
   /* ── Approval gate ──────────────────────────────────────────────── */
 
-  approve(record: MissionRecord): MissionRecord {
+  /**
+   * Pass the planning checkpoint. `withGoal` is the normal path: the plan
+   * is accepted together with the goal the person assigned, so nothing
+   * waits for a separate approval. Without it, an explicit approval of a
+   * mission that predates this (still pending) is recorded as the
+   * person's.
+   */
+  approve(record: MissionRecord, withGoal = false): MissionRecord {
     if (!record.execution) this.hydrate(record);
     if (!record.execution) return record;
-    record.execution.checkpoints = setCheckpoint(record.execution.checkpoints, 'planning', 'passed', 'Plan approved by operator');
+    record.execution.checkpoints = setCheckpoint(record.execution.checkpoints, 'planning', 'passed',
+      withGoal ? 'Plan accepted with the assigned goal' : 'Plan approved by operator');
     record.execution.status = 'approved';
-    record.execution.timeline.push(timeline('approved', 'human', 'Mission plan approved', { checkpoint: 'planning' }));
-    record.execution.activity.push(activity('human', 'approved', 'Plan approved — execution unlocked'));
+    record.execution.timeline.push(withGoal
+      ? timeline('approved', 'system', 'Mission plan accepted with the goal', { checkpoint: 'planning' })
+      : timeline('approved', 'human', 'Mission plan approved', { checkpoint: 'planning' }));
+    record.execution.activity.push(withGoal
+      ? activity('system', 'approved', 'Plan ready — execution unlocked')
+      : activity('human', 'approved', 'Plan approved — execution unlocked'));
     // Keep the legacy v2 `approval` field in sync — workspace.ts's
     // startMissionExecution()/runMissionTask() (and several UI surfaces:
     // TaskList's per-task Run button, MissionDetail's approval badges,
@@ -363,10 +375,10 @@ export class MissionExecutionEngine {
    * completed, bounded by `maxParallel`. The wave's hooks (LLM
    * proposal generation, git preflight) run CONCURRENTLY, bounded by
    * `maxParallel`; per-task bookkeeping commits and the result
-   * application stay serial, and the wave commits once. Proposals only:
-   * nothing is written until each task is Accepted, which then unlocks
-   * the next wave. This is what makes ordering automated while the two
-   * human gates (plan approval, per-task Accept) stay intact.
+   * application stay serial, and the wave commits once. A task's generated
+   * change is written within the task itself (the hook applies it through
+   * the Fabric); only a write the person's own policy made wait is left as
+   * a proposal for Accept.
    */
   /**
    * Task kinds that resolve to the MANUAL node — no governed executor, no
@@ -375,7 +387,7 @@ export class MissionExecutionEngine {
    * them would fabricate a failure). Matches the fabric's capability map:
    * every one of these kinds resolves to `manual`.
    */
-  static MANUAL_KINDS: ReadonlySet<MissionTask['kind']> = new Set(['manual-operation', 'approval', 'review', 'documentation', 'research']);
+  static MANUAL_KINDS: ReadonlySet<MissionTask['kind']> = new Set(['manual-operation', 'review', 'documentation', 'research']);
 
   async runReadyTasks(record: MissionRecord, opts: RunReadyOptions = {}): Promise<MissionRecord> {
     if (!record.execution) return record;
@@ -526,7 +538,10 @@ private finishTask(record: MissionRecord, task: MissionTask, result: RunTaskResu
     if (status === 'done' || status === 'accepted' || status === 'rejected') this.maybeComplete(record);
   }
 
-  /** Human Accept — the ONLY path that allows a side effect (file write or governed git mutation). */
+  /**
+   * Human Accept of a proposal whose write the person's own policy made
+   * wait. Routine writes never reach this: they run in the task.
+   */
   acceptTask(record: MissionRecord, taskId: string): MissionRecord {
     if (!record.execution) return record;
     const run = record.taskRuns.find((r) => r.taskId === taskId);
@@ -595,33 +610,24 @@ private finishTask(record: MissionRecord, task: MissionTask, result: RunTaskResu
     if (ids.length === 0) return;
     const allCompleted = ids.every((id) => statuses[id] === 'completed');
     const exec = record.execution;
-    if (allCompleted) {
-      exec.status = 'reviewing';
-      if (checkpointStatus(exec.checkpoints, 'review') === 'not-started') {
-        exec.checkpoints = setCheckpoint(exec.checkpoints, 'review', 'pending', 'All tasks resolved — mission review required');
-        exec.timeline.push(timeline('checkpoint', 'system', 'Review checkpoint opened', { checkpoint: 'review' }));
-        exec.activity.push(activity('system', 'checkpoint', 'All tasks complete — mission review required'));
-      }
+    if (!allCompleted || exec.status === 'completed') return;
+    // The completion check is AURA's: every task resolved means the review
+    // step is satisfied and the mission completes — no separate sign-off.
+    if (checkpointStatus(exec.checkpoints, 'review') !== 'passed') {
+      exec.checkpoints = setCheckpoint(exec.checkpoints, 'review', 'passed', 'Every task resolved');
+      exec.timeline.push(timeline('review-passed', 'system', 'Mission checked: every task resolved', { checkpoint: 'review' }));
+      exec.activity.push(activity('system', 'review-passed', 'Every task resolved'));
     }
+    this.completeMission(record);
   }
 
-  /** Human decision on the mission-review checkpoint. */
-  reviewCheckpoint(record: MissionRecord, pass: boolean, note?: string): MissionRecord {
-    if (!record.execution) return record;
-    if (nextCheckpoint(record.execution.checkpoints)?.key !== 'review') return record;
-    record.execution.checkpoints = setCheckpoint(record.execution.checkpoints, 'review', pass ? 'passed' : 'failed', note);
-    record.execution.timeline.push(
-      pass
-        ? timeline('review-passed', 'human', 'Mission review passed', { checkpoint: 'review', detail: note })
-        : timeline('checkpoint', 'human', 'Mission review returned for changes', { checkpoint: 'review', detail: note }),
-    );
-    record.execution.activity.push(
-      pass
-        ? activity('human', 'review-passed', 'Mission review passed by operator')
-        : activity('human', 'checkpoint', 'Mission review returned for changes', { checkpoint: 'review' }),
-    );
-    if (pass) this.completeMission(record);
-    else this.apply(record, () => undefined, 'checkpoint', new Map());
+  /**
+   * Complete a mission left in 'reviewing' by the removed sign-off step:
+   * the same completion check every mission now gets.
+   */
+  settle(record: MissionRecord): MissionRecord {
+    if (record.execution?.status !== 'reviewing') return record;
+    this.maybeComplete(record);
     this.commit(record);
     return record;
   }

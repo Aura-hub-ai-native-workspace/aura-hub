@@ -12,7 +12,7 @@ const AiRuntime = lazy(() => import('./ai/AiRuntime').then((m) => ({ default: m.
 const Workflows = lazy(() => import('./workflows/Workflows').then((m) => ({ default: m.Workflows })));
 const WorkspaceScreen = lazy(() => import('./WorkspaceScreen').then((m) => ({ default: m.WorkspaceScreen })));
 const ConnectedEnvironment = lazy(() =>
-  import('../environment/ConnectedEnvironment').then((m) => ({ default: m.ConnectedEnvironment })),
+  import('../environment/EnvironmentStatusTable').then((m) => ({ default: m.ConnectedEnvironment })),
 );
 
 /** Content-shaped placeholder — screens lazy-load on first visit. */

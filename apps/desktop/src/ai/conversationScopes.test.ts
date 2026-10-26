@@ -23,8 +23,15 @@
  * Run with `npm run test:front` from the repo root.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+// This suite checks routing and conversation state, not backend identity: its
+// fetch stub stands in for the backends. Identity is covered by
+// backend/backendSession.test.ts. The ownership gate is replaced here, and only here.
+vi.mock('../backend/backendSession', async (orig) => ({
+  ...(await orig<typeof import('../backend/backendSession')>()),
+  backendFetch: (url: string, init?: RequestInit) => fetch(url, init),
+}));
 
-const calls = { submit: [] as unknown[][], message: [] as unknown[][] };
+const calls = { submit: [] as unknown[][], message: [] as unknown[][], chat: [] as unknown[][] };
 
 /* In-memory stand-in for the service's disjoint conversation files.
    Keys mirror the ROUTE namespaces, which mirror the on-disk families:
@@ -82,6 +89,17 @@ vi.mock('./centralAgentClient', () => ({
         },
         sessionId: 'agt-new-session',
         requestId: 'req-1',
+      });
+    },
+    chat: (...args: unknown[]) => {
+      calls.chat.push(args);
+      return Promise.resolve({
+        result: {
+          status: 'completed', outcome: 'completed', summary: 'chat answer',
+          performed: [], verified: [], evidence: null,
+        },
+        sessionId: 'agt-new-session',
+        requestId: 'req-3',
       });
     },
     message: (...args: unknown[]) => {
@@ -179,6 +197,7 @@ beforeEach(() => {
   handoffPosts.length = 0;
   calls.submit.length = 0;
   calls.message.length = 0;
+  calls.chat.length = 0;
   convSeq = 0;
   msgSeq = 0;
   useConversations.setState({
@@ -233,14 +252,17 @@ describe('advisory /stream has no execution authority', () => {
   });
 });
 
-describe('Ask AURA (project scope) and the Workspace stay separate', () => {
-  it('Ask AURA drives the agent and persists through project routes only', async () => {
+describe("Let's Chat (project scope) and the Workspace stay separate", () => {
+  it("Let's Chat only converses and persists through project routes only", async () => {
     await useAgentConversations.getState().loadForProject('projA');
     await settle();
     void useAgentConversations.getState().send('Why is the retry failing?');
     await settle();
 
-    expect(calls.submit.length).toBe(1);
+    // Conversation only: /agent/chat, never the work routes.
+    expect(calls.chat.length).toBe(1);
+    expect(calls.submit.length).toBe(0);
+    expect(calls.message.length).toBe(0);
     const writes = fetched.filter((f) => f.startsWith('POST') && f.includes('/message'));
     expect(writes.length).toBeGreaterThan(0);
     expect(writes.every((f) => f.includes('/projects/projA/'))).toBe(true);

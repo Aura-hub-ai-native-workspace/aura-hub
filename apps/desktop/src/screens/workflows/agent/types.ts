@@ -59,8 +59,6 @@ export type AgentStopReason =
   | 'timeout'
   | 'token-budget'
   | 'consecutive-failures'
-  /** A tool call is parked on a human decision. The one resumable stop. */
-  | 'awaiting-approval'
   /**
    * Policy refused a tool call outright. Distinct from `failed` because it
    * is the governance layer working, not a malfunction — the response is a
@@ -92,7 +90,6 @@ export const STOP_SENTENCE: Record<AgentStopReason, string> = {
   timeout: 'Ran out of its wall-clock budget before producing a final answer.',
   'token-budget': 'Used its whole token budget before producing a final answer.',
   'consecutive-failures': 'Stopped after too many tool calls failed in a row.',
-  'awaiting-approval': 'Parked on a decision only you can make. This is the one stop that can be resumed.',
   denied: 'Your policy refused a tool call. Nothing is broken — the governance layer did its job, and a retry would only spend the remaining budget rediscovering the refusal.',
   cancelled: 'Cancelled before it finished.',
   failed: 'Stopped on a terminal failure — the model, a tool, or output validation.',
@@ -104,7 +101,6 @@ export const STOP_TONE: Record<AgentStopReason, 'positive' | 'attention' | 'crit
   timeout: 'attention',
   'token-budget': 'attention',
   'consecutive-failures': 'critical',
-  'awaiting-approval': 'attention',
   // Not critical: a refusal is the system working as designed.
   denied: 'attention',
   cancelled: 'attention',
@@ -114,7 +110,6 @@ export const STOP_TONE: Record<AgentStopReason, 'positive' | 'attention' | 'crit
 /** Which port the outer workflow continued from, per stop reason. */
 export const PORT_FOR_STOP: Record<AgentStopReason, AgentPort> = {
   completed: 'done',
-  'awaiting-approval': 'needs-human',
   denied: 'needs-human',
   'max-iterations': 'failed',
   timeout: 'failed',

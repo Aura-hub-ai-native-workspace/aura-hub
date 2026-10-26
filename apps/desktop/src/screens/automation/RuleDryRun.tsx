@@ -117,7 +117,6 @@ export function RuleDryRun({ rule, projectId, projectName, onClose }: RuleDryRun
 
   const previewed = (steps ?? []).filter((s) => s.report);
   const anyDenied = previewed.some((s) => s.report!.denials.length > 0);
-  const anyApproval = previewed.some((s) => s.report!.approvalsRequired.length > 0);
   const anyUnknown = (steps ?? []).some((s) => s.certainty === 'UNKNOWN');
   const trigger = TRIGGERS[rule.trigger.type];
 
@@ -228,32 +227,27 @@ export function RuleDryRun({ rule, projectId, projectName, onClose }: RuleDryRun
             <section
               className={`rounded-xl border p-3 ${
                 anyDenied ? 'border-danger/40 bg-danger/[0.06]'
-                  : anyApproval ? 'border-attention/40 bg-attention/[0.06]'
                   : anyUnknown ? 'border-line bg-canvas'
                   : 'border-positive/40 bg-positive/[0.06]'
               }`}
             >
               <div className="flex items-center gap-2">
                 <Icon
-                  name={anyDenied ? 'close' : anyApproval ? 'shield' : anyUnknown ? 'eye' : 'check'}
+                  name={anyDenied ? 'close' : anyUnknown ? 'eye' : 'check'}
                   size={14}
-                  className={anyDenied ? 'text-danger' : anyApproval ? 'text-attention' : anyUnknown ? 'text-text-subtle' : 'text-positive'}
+                  className={anyDenied ? 'text-danger' : anyUnknown ? 'text-text-subtle' : 'text-positive'}
                 />
                 <h3 className="text-[13px] font-semibold text-text">
                   {anyDenied
                     ? 'This rule would not complete'
-                    : anyApproval
-                      ? 'This rule would park waiting for you'
-                      : anyUnknown
-                        ? 'Partly unknown'
-                        : 'This rule would run unattended'}
+                    : anyUnknown
+                      ? 'Partly unknown'
+                      : 'This rule would run unattended'}
                 </h3>
               </div>
               <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
                 {anyDenied
                   ? 'Your policy would refuse at least one action in a workflow this rule runs.'
-                  : anyApproval
-                    ? 'An automation fires with nobody present and authorizes nothing, so a gated step parks the workflow run at “waiting for you” until you answer it in Approvals.'
                     : anyUnknown
                       ? 'Some steps have no dry-run contract, so what they would do cannot be previewed. What is shown above is real; what is missing is marked UNKNOWN rather than assumed safe.'
                       : 'Nothing would be refused and nothing would need a person.'}

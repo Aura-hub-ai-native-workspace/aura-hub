@@ -34,8 +34,32 @@ describe('missionView — a finished worker is not a verified mission', () => {
     expect(view?.tasks[0].stateLabel).toBe('Done');
     expect(view?.tasks[0].tone).toBe('ok');
     expect(view?.verdict?.tone).toBe('bad');
-    expect(view?.verdict?.text).toContain('Mission not verified');
-    expect(view?.verdict?.text).toContain('parser handles empty input');
+    expect(view?.verdict?.text).toBe('Mission not verified.');
+  });
+
+  it('names the unverified step, never the raw criterion or task id', () => {
+    // The exact unmet string the backend stored for a real missing-file run.
+    const view = missionView({
+      understanding: 'Inspect the project',
+      objective: {
+        accepted: false,
+        unmet: ['The requested work was carried out and verified.: unverified tasks: implement'],
+      },
+      tasks: [task({
+        taskId: 'implement',
+        description: 'Inspect the requested files and report their contents',
+        verified: false,
+        worker: 'claude-code',
+        verification: 'evidence-present',
+      })],
+      failureReason: 'objective-unaccepted',
+    });
+    expect(view?.verdict).toEqual({
+      tone: 'bad',
+      text: 'Mission not verified. Not verified: Inspect the requested files and report their contents.',
+    });
+    expect(view?.verdict?.text).not.toContain('carried out');
+    expect(view?.verdict?.text).not.toContain('implement');
   });
 
   it('confirms verification only when every criterion is met', () => {
@@ -150,5 +174,76 @@ describe('worker and reason names', () => {
   it('gives an honest sentence for an unknown failure reason', () => {
     expect(failureReasonText('some-new-reason')).toBe('The run did not finish as planned.');
     expect(failureReasonText(null)).toBeNull();
+  });
+});
+
+describe('missionView — process finished is not evidence found', () => {
+  it('labels an exit-code-only task as process only, not verified', () => {
+    const view = missionView({
+      understanding: null,
+      objective: null,
+      tasks: [task({ taskId: 't1', verified: true, verification: 'exit-code' })],
+      failureReason: null,
+    });
+    expect(view?.tasks[0].stateLabel).toBe('Finished (process only, no evidence checked)');
+    expect(view?.tasks[0].tone).toBe('neutral');
+  });
+
+  it('labels a task whose evidence was found as done', () => {
+    const view = missionView({
+      understanding: null,
+      objective: null,
+      tasks: [task({ taskId: 't1', verified: true, verification: 'evidence-present' })],
+      failureReason: null,
+    });
+    expect(view?.tasks[0].stateLabel).toBe('Done');
+    expect(view?.tasks[0].tone).toBe('ok');
+  });
+
+  it('treats results without the verification field as before', () => {
+    const view = missionView({
+      understanding: null,
+      objective: null,
+      tasks: [task({ taskId: 't1', verified: true })],
+      failureReason: null,
+    });
+    expect(view?.tasks[0].stateLabel).toBe('Done');
+  });
+});
+
+describe('missionView — a stopped run', () => {
+  // The shape the backend now settles a stopped run into (session agt-783c2ab7e0a9).
+  const stopped = {
+    understanding: 'Inspect two files in parallel',
+    objective: { accepted: false, unmet: ['delegate-kilo: reported findings and made no modification.: unverified tasks: delegate-kilo'] },
+    tasks: [
+      task({ taskId: 'delegate-claude', description: 'inspect alpha/a.txt and report its contents', worker: 'claude-code', verified: true, verification: 'evidence-present' }),
+      task({ taskId: 'delegate-kilo', description: 'inspect alpha/missing.txt and report its contents', worker: 'kilo-code', state: 'cancelled', verified: null, verification: 'evidence-present' }),
+    ],
+    failureReason: 'cancelled-by-user',
+  };
+
+  it('keeps the completed task as done and verified, by its worker', () => {
+    const view = missionView(stopped);
+    expect(view?.tasks[0]).toMatchObject({ stateLabel: 'Done', tone: 'ok', byline: 'by Claude Code' });
+  });
+
+  it('labels the interrupted task as stopped, not failed or done', () => {
+    const view = missionView(stopped);
+    expect(view?.tasks[1]).toMatchObject({ stateLabel: 'Stopped', tone: 'neutral', byline: 'by Kilo Code' });
+  });
+
+  it('says the mission was stopped and not verified', () => {
+    expect(missionView(stopped)?.verdict).toEqual({
+      tone: 'bad', text: 'Stopped before the mission finished. Mission not verified.',
+    });
+  });
+
+  it('shows no internal ids or criteria anywhere it renders', () => {
+    const view = missionView(stopped);
+    const shown = JSON.stringify({ verdict: view?.verdict, tasks: view?.tasks.map(({ taskId: _id, ...rest }) => rest) });
+    for (const internal of ['delegate-claude', 'delegate-kilo', 'claude-code', 'kilo-code', 'cancelled-by-user', 'unverified tasks']) {
+      expect(shown).not.toContain(internal);
+    }
   });
 });

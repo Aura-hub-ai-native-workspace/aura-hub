@@ -3,7 +3,7 @@
 These are NEW canonical schemas (no frozen TS counterpart exists). They
 describe what the agent DECIDES and OBSERVES; they never restate governance.
 RiskLevel / PolicyDecision come from _base; execution outcomes reference the
-frozen AuditRecord/ApprovalRequest/Workflow vocabularies by id, never by
+frozen AuditRecord/Workflow vocabularies by id, never by
 redefinition. extra="allow" everywhere; wire naming is camelCase.
 
 Layering rule (python-backend-architecture.md §1): contracts is importable by
@@ -23,15 +23,20 @@ from ._base import ContractModel, PolicyDecision, RiskLevel
 IntentUrgency = Literal["immediate", "background", "scheduled"]
 IntentComplexity = Literal["single", "multi-step", "workflow"]
 AgentSessionState = Literal[
-    "planning", "awaiting-approval", "executing", "verifying", "completed",
-    "failed", "cancelled",
+    "planning", "executing", "verifying", "started",
+    "completed", "failed", "cancelled", "interrupted", "paused",
 ]
 TaskState = Literal[
-    "pending", "blocked", "ready", "awaiting-approval", "running", "done",
+    "pending", "blocked", "ready", "running", "done",
     "failed", "skipped", "denied", "timed-out", "cancelled",
 ]
 ExecutionRoute = Literal["single-invocation", "workflow-run", "external-tool"]
-VerificationKind = Literal["read-back", "exit-code", "schema-match", "audit-only"]
+#: read-back: the effect was re-read and matched. exit-code: the process
+#: finished with status 0 (execution only, says nothing about the work).
+#: evidence-present: the task's own required artifact content appears in its
+#: output. audit-only: the invocation was recorded.
+VerificationKind = Literal["read-back", "exit-code", "evidence-present",
+                           "schema-match", "audit-only"]
 ToolSource = Literal["aura-manifest", "mcp", "plugin"]
 TrustLevel = Literal["verified", "known", "unknown", "untrusted"]
 #: Closed worker-role vocabulary for task requirements (Phase G, extended
@@ -47,7 +52,7 @@ AgentEventType = Literal[
     "session.started", "intent.compiled", "intent.clarification-needed",
     "plan.created", "capability.discovery", "authority.checked",
     "workflow.compiled", "workflow.validated", "execution.started",
-    "invocation.observed", "approval.required", "verification.completed",
+    "invocation.observed", "verification.completed",
     "result.ready", "agent.failed", "agent.cancelled",
     "worker.action", "worker.lifecycle",
     # Model-backed read-only answer synthesis streams user-facing text
@@ -59,7 +64,28 @@ AgentEventType = Literal[
     # settled. Three events rather than one so the workspace can show
     # "stopping" honestly instead of claiming a stop it has not seen.
     "run.cancellation-requested", "run.stopping", "run.cancelled",
-    "worker.terminated", "approval.invalidated",
+    "worker.terminated",
+    # Coordinator: a worker task retried (possibly on another worker) after
+    # a recoverable failure, and the completion check's verdict per round.
+    "task.retried", "run.recovery",
+    # Planner → Workspace: a plan arrived whole, and AURA wrote a file a
+    # task assigned to it (before the Fabric writes and reads it back).
+    "plan.received", "task.authored",
+    # General / project chat pipeline: each is emitted when it really happens.
+    "intent.classified", "context.retrieved", "research.started",
+    "research.completed", "research.sources", "model.invoked",
+    "answer.citations",
+    # Execution observability: errors written down, workers queued behind
+    # the project's single worker slot.
+    "error.recorded", "worker.queued", "task.state", "files.changed",
+    "worker.handoff", "verification.started", "tool.provisioning",
+    "workflow.considered",
+    # A model plan failed validation and was sent back once with the reason.
+    "plan.correction-requested",
+    # Laya chose a connected coding agent for a task (who, why, who was not available).
+    "worker.selected",
+    # A chat reply was a near copy of the previous answer and was asked for again once.
+    "answer.retried",
 ]
 
 
@@ -89,7 +115,6 @@ class AgentIntent(ContractModel):
     requiredCapabilities: list[str] = Field(default_factory=list)
     urgency: IntentUrgency = "immediate"
     complexity: IntentComplexity = "single"
-    approvalLikely: bool = False
     needsClarification: bool = False
     clarificationQuestion: str | None = None
     """Milestone-3 structured fields:"""
@@ -156,6 +181,9 @@ class TaskSpecification(ContractModel):
     role never widens authority — an unsatisfiable role fails the task
     closed before anything dispatches."""
     workerRole: WorkerRole | None = None
+    #: Who chose this task's worker: "named" (the person did) or "selected" (Laya did,
+    #: so a failed attempt may be retried on another allowed agent instead of the same one).
+    workerChoice: str | None = None
     """Task ids whose worker must NOT be reused for this task. An
     independent review is only independent if a different worker
     performs it, so "have another AI review it" has to be enforceable
@@ -187,7 +215,6 @@ class TaskPlan(ContractModel):
     """The durable mission identity for all tasks created from one natural
     request. Absent only on legacy plans; normal service always stamps it."""
     tasks: list[TaskSpecification] = Field(min_length=1)
-    estimatedApprovals: int = 0
     createdAt: str
     """Objective acceptance criteria (Phase H): what must hold for the
     USER's objective to count as verified, beyond per-task success.
@@ -234,7 +261,6 @@ class AuthorityRequirement(ContractModel):
     reason: str
     risk: RiskLevel
     available: bool = True
-    approvalRequired: bool = False
     """Scope narrowing is policy-owned; effectiveScope can only be NARROWER
     than requestedScope — never equal-wider, never widened by the agent."""
     requestedScope: str | None = None
@@ -285,7 +311,6 @@ class TaskOutcome(ContractModel):
     performed: bool = False
     verified: bool | None = None
     invocationIds: list[str] = Field(default_factory=list)
-    approvalId: str | None = None
     detail: str = ""
     consumedFrom: list[str] = Field(default_factory=list)
     """Invocation ids of verified upstream tasks whose results were
@@ -316,7 +341,6 @@ class EvidenceBundle(ContractModel):
     sessionId: str
     planId: str
     auditRecordIds: list[str] = Field(default_factory=list)
-    approvalIds: list[str] = Field(default_factory=list)
     summary: str
     createdAt: str
     #: Request legs that contributed to this evidence (see
@@ -345,6 +369,9 @@ class TaskStatus(ContractModel):
     verified: bool | None = None
     worker: str | None = None
     dependsOn: list[str] = Field(default_factory=list)
+    #: The verification kind the plan declared for this task. Lets a reader
+    #: tell "process finished" from "evidence was found". None on old results.
+    verification: VerificationKind | None = None
 
 
 class AgentResult(ContractModel):
@@ -362,16 +389,44 @@ class AgentResult(ContractModel):
 
     status: AgentSessionState
     outcome: Literal[
-        "completed", "failed", "blocked", "awaiting-approval",
+        "started", "completed", "failed", "blocked",
         "cancelled", "denied", "timeout", "needs-clarification", "unsupported",
+        "interrupted",
     ]
     summary: str
     performed: list[str] = Field(default_factory=list)
     verified: list[str] = Field(default_factory=list)
     evidence: EvidenceBundle | None = None
     failureReason: str | None = None
-    """Parked/resumed engine run this result refers to."""
+    """Engine run this result refers to."""
     runId: str | None = None
+    #: General / project chat only. The web sources the answer was built from
+    #: (``id`` is the number the answer cites as ``[n]``), the research
+    #: outcome, and what the answer's own conversation makes possible next.
+    #: Empty/None on every work result. Never carries model reasoning.
+    sources: list[dict] = Field(default_factory=list)
+    research: dict | None = None
+    #: Next actions the UI may offer, decided from real conversation state:
+    #: "create-project" | "create-plan". Offering is not doing — each needs a
+    #: person's click.
+    nextActions: list[str] = Field(default_factory=list)
+    #: Provider/model that actually wrote the answer (identity from the
+    #: routing layer, never claimed by the model itself).
+    model: dict | None = None
+    #: Set instead of ``model`` when a configured model was asked and did not
+    #: answer: {category, reason, provider, model}. Never an attribution.
+    modelFailure: dict | None = None
+    #: Names and outcome statements in a chat reply that nothing supports (a chat
+    #: executes nothing). The reply also carries a plain note saying so.
+    unsupportedClaims: list[str] = Field(default_factory=list)
+    #: What this turn added to Shared Context ({kind, title}); shown to the
+    #: person so memory is never silent.
+    recorded: list[dict] = Field(default_factory=list)
+    #: Work results only: what was measured about the run — verified work,
+    #: files observed changing, tools installed or reused, test commands the
+    #: worker ran, evidence, errors and their state, handoffs, and what is
+    #: NOT verified. Built from measurements, never from a worker's claim.
+    report: dict | None = None
 
 
 class AgentMessage(ContractModel):
@@ -398,23 +453,28 @@ class AgentSession(ContractModel):
     restart resumes the SAME plan instead of re-deriving (or re-proposing)
     it from intent. AURA-owned data, never model input at read time."""
     activePlan: dict | None = None
-    """The task that actually parked on the pending approval. Recorded
-    at park time because a plan can have MORE than one task: assuming
-    the parked task is the last planned one spends the human's grant on
-    the wrong task, which parks the run a second time on a question the
-    human already answered."""
-    parkedTaskId: str | None = None
-    """Bounded verified handoff evidence from the latest parked leg
-    (Phase I): task id → evidence record, seeded as prior_verified on
-    resume so verified work is skipped, never re-executed. Cleared when
-    the run reaches a terminal non-parked outcome."""
+    """Bounded verified handoff evidence from the latest leg: task id →
+    evidence record, seeded as prior_verified on a restart so verified work
+    is skipped, never re-executed. Cleared when the run settles."""
     verifiedEvidence: dict[str, dict] = Field(default_factory=dict)
+    #: Chat sessions (Let's Chat) only converse: they never plan, invoke,
+    #: or execute, whatever the message says. Set when the session is
+    #: created through the chat route; never changed afterwards.
+    mode: Literal["work", "chat"] = "work"
     lastResult: AgentResult | None = None
     eventCount: int = 0
+    # Phase P1 — durable orchestration state (all default so existing
+    # session files load unchanged: a session without a queue is idle).
+    taskQueue: list[dict] = Field(default_factory=list)
+    orchestrationState: Literal[
+        "idle", "running", "paused", "completed", "failed",
+        "cancelled", "interrupted"] = "idle"
+    currentTaskId: str | None = None
+    orchestrationStartedAt: str | None = None
+    orchestrationFinishedAt: str | None = None
     """The user's stop, and what it settled. Persisted so the decision
-    survives a restart: a cancelled run must come back cancelled, must
-    not continue on its own, and must never be resurrected by an
-    approval that was pending when it was stopped."""
+    survives a restart: a cancelled run must come back cancelled and must
+    not continue on its own."""
     cancellation: dict | None = None
     correctionChain: list[dict] = Field(default_factory=list)
     """Supervisor correction history: one entry per correction dispatch

@@ -22,9 +22,12 @@ from aura.contracts.agent import AgentIntent, TaskOutcome, TaskPlan, TaskSpecifi
 WORK_SECONDS = 0.4
 
 
-def _task(tid, depends=()):
+def _task(tid, depends=(), cap="git.status"):
+    """Wave mechanics are exercised with READ-ONLY tasks: those may share a
+    wave. Project-mutating tasks (a coding worker, a file write…) never do —
+    see test_one_mutating_task_at_a_time.py."""
     return TaskSpecification(
-        id=tid, description=f"work {tid}", capabilityId="agent.delegate",
+        id=tid, description=f"work {tid}", capabilityId=cap,
         dependsOn=list(depends),
     )
 
@@ -117,15 +120,6 @@ def test_failed_wave_member_stops_dependents_but_not_siblings(timing, monkeypatc
     by_id = {o.taskId: o for o in result.outcomes}
     assert by_id["t1"].state == "failed"
     assert by_id["t2"].state == "done"
-
-
-def test_awaiting_approval_in_wave_parks_run_before_dependents(timing, monkeypatch):
-    _states(monkeypatch, {"t2": "awaiting-approval"})
-    tasks = [_task("t1"), _task("t2"), _task("t3", depends=["t2"])]
-    result = _controller().execute(_plan(tasks), project_id=None)
-    assert result.stopped is True
-    assert result.approval_id == "apr-1"
-    assert "t3" not in timing
 
 
 def test_timeout_in_wave_is_reported_not_success(timing, monkeypatch):

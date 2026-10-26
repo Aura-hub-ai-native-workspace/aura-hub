@@ -105,7 +105,6 @@ interface AppState {
   addProjectDialogOpen: boolean;
   /** "Create project" dialog open state — a frontend-only scaffold flow,
    *  kept separate from "Add project" (which registers a real folder). */
-  createProjectDialogOpen: boolean;
   /** Whether the boot/intro sequence has finished. */
   booted: boolean;
   /** Whether the first-run onboarding experience has been completed. */
@@ -148,8 +147,6 @@ interface AppState {
   setAutoUpdateCheck: (enabled: boolean) => void;
   openAddProjectDialog: () => void;
   closeAddProjectDialog: () => void;
-  openCreateProjectDialog: () => void;
-  closeCreateProjectDialog: () => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -162,7 +159,6 @@ export const useAppStore = create<AppState>((set) => ({
   rightPanelOpen: false,
   paletteOpen: false,
   addProjectDialogOpen: false,
-  createProjectDialogOpen: false,
   booted: false,
   onboarded: initialOnboarded(),
   recentCommandIds: [],
@@ -221,8 +217,6 @@ export const useAppStore = create<AppState>((set) => ({
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   openAddProjectDialog: () => set({ addProjectDialogOpen: true }),
   closeAddProjectDialog: () => set({ addProjectDialogOpen: false }),
-  openCreateProjectDialog: () => set({ createProjectDialogOpen: true }),
-  closeCreateProjectDialog: () => set({ createProjectDialogOpen: false }),
   setAutoUpdateCheck: (autoUpdateCheck) => {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(AUTO_UPDATE_KEY, autoUpdateCheck ? 'true' : 'false');

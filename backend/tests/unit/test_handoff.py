@@ -96,10 +96,10 @@ class TestEnvelope:
             task_id="tA", node_id="opencode", agent="OpenCode",
             stdout="found the bug in auth.py",
             scope_paths=["src/auth"], changed_paths=["src/auth/login.py"],
-            invocation_ids=["inv-1"], approval_ids=["apr-1"])])
+            invocation_ids=["inv-1"])])
         assert "found the bug in auth.py" in env["text"]
         assert "tA" in env["text"] and "OpenCode" in env["text"]
-        assert "inv-1" in env["text"] and "apr-1" in env["text"]
+        assert "inv-1" in env["text"]
         assert "src/auth/login.py" in env["text"]
         assert env["truncated"] is False
         assert env["consumed_ids"] == ["inv-1"]
@@ -202,8 +202,13 @@ class TestControllerHandoff:
             _task("tB", input={"task": "do tB"}, input_from="upstream-output",
                   depends_on=["tA"]))
         result = controller.execute(plan, project_id="p")
-        assert len(calls) == 1  # B never dispatched
-        assert result.outcomes[1].state == "blocked"
+        # tA is retried within the bounded budget; it never verifies, so B
+        # is never dispatched and stays blocked.
+        from aura.central_agent.execution import MAX_TASK_ATTEMPTS
+
+        assert len(calls) == MAX_TASK_ATTEMPTS
+        assert all(p.get("task", "").startswith("do tA") for _c, p in calls)
+        assert [o.state for o in result.outcomes if o.taskId == "tB"] == ["blocked"]
         assert result.stopped is True
 
     def test_failed_blocks(self, monkeypatch):
@@ -223,10 +228,12 @@ class TestControllerHandoff:
             _task("tB", input={"task": "do tB"}, input_from="upstream-output",
                   depends_on=["tA"]))
         result = controller.execute(plan, project_id="p")
-        # The loop stops at the terminal failure: tB is never dispatched
-        # (blocking by non-execution) and gets no outcome of its own.
-        assert len(calls) == 1
-        assert len(result.outcomes) == 1
+        # tA is retried within the bounded budget and fails again; tB is
+        # never dispatched (blocking by non-execution) and gets no outcome.
+        from aura.central_agent.execution import MAX_TASK_ATTEMPTS
+
+        assert len(calls) == MAX_TASK_ATTEMPTS
+        assert [o.taskId for o in result.outcomes] == ["tA"]
         assert result.outcomes[0].state == "failed"
         assert result.stopped is True
 
@@ -303,7 +310,11 @@ class TestControllerHandoff:
         ])
         plan = _plan(_task("tA", input={"task": "do tA", "scopePaths": ["x"]}))
         result = controller.execute(plan, project_id="p")
-        assert calls[0][1] == {"task": "do tA", "scopePaths": ["x"]}
+        sent = dict(calls[0][1])
+        # The shared run board is AURA-composed context added to every
+        # worker brief; the task's own literal input is passed unchanged.
+        assert sent.pop("context").startswith("AURA RUN BOARD")
+        assert sent == {"task": "do tA", "scopePaths": ["x"]}
         assert result.outcomes[0].consumedFrom == []
 
 

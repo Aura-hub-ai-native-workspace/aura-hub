@@ -175,7 +175,7 @@ PURE_RUNNERS: dict[str, Callable] = {
 }
 
 # Model/compute nodes - pure compute per the frozen design; they invoke
-# nothing, so no approval gate applies.
+# nothing, so no policy gate applies.
 #
 # PARITY NOTE (explicit): the FROZEN TypeScript workflow ENGINE skips every
 # one of these types (the oracle differential probes research-engine as the

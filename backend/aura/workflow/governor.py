@@ -35,8 +35,6 @@ def evidence_of(result: dict, node_id: str | None = None) -> dict:
         "at": result["endedAt"],
         "durationMs": result["durationMs"],
     }
-    if result.get("approvalId"):
-        ev["approvalId"] = result["approvalId"]
     if node_id:
         ev["nodeId"] = node_id
     return ev
@@ -44,14 +42,13 @@ def evidence_of(result: dict, node_id: str | None = None) -> dict:
 
 class NodeGovernor:
     def __init__(self, fabric, secrets, *, workflow_id, run_id, project_id,
-                 project_path, actor, approved_capabilities=None, timeout_ms=None) -> None:
+                 project_path, actor, timeout_ms=None) -> None:
         self.fabric = fabric
         self.workflow_id = workflow_id
         self.run_id = run_id
         self.project_id = project_id
         self.project_path = project_path
         self.actor = actor
-        self.approved_capabilities = approved_capabilities
         self.timeout_ms = timeout_ms
         self._bindings = bindings()
         self._secret_store = secrets if hasattr(secrets, "resolve") else None
@@ -98,8 +95,6 @@ class NodeGovernor:
             "workflowId": self.workflow_id,
             "runId": self.run_id,
             "workflowNodeId": node["id"],
-            **({"approvedCapabilities": self.approved_capabilities}
-               if self.approved_capabilities else {}),
             **({"timeoutMs": self.timeout_ms} if self.timeout_ms else {}),
         })
 
@@ -124,15 +119,6 @@ class NodeGovernor:
             return {"kind": "denied", "text": "",
                     "summary": f"denied · {result['policy']['rule']}",
                     "error": self.redact(result.get("detail") or ""), "evidence": evidence}
-        if outcome == "awaiting-approval":
-            approval = None
-            if result.get("approvalId"):
-                approval = {"requestId": result["approvalId"],
-                            "capabilityId": plan["capabilityId"],
-                            "requestedAt": result["startedAt"],
-                            "summary": self.redact(plan["describe"])}
-            return {"kind": "awaiting-approval", "text": "", "summary": "waiting on you",
-                    "evidence": evidence, "approval": approval}
         if outcome == "unsupported":
             return {"kind": "failed", "text": "", "summary": "not supported",
                     "error": self.redact(result.get("detail") or ""), "evidence": evidence}

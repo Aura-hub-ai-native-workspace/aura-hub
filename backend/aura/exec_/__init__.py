@@ -120,7 +120,7 @@ def parse_command(command: str) -> ParsedCommand:
         return ParsedCommand(
             False, "", [],
             f"Installing software is not something this can do. '{installing}' changes what is installed on "
-            + "this machine, which goes through system.install — where it is gated by approval and verified "
+            + "this machine, which goes through system.install — where it is gated by policy and verified "
             + "by a real probe.")
     return ParsedCommand(True, binary, parts[1:], "")
 
@@ -214,6 +214,12 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
         for key, value in env.items():
             if isinstance(key, str) and isinstance(value, str):
                 merged_env[key] = value
+    # Some runtimes (OpenCode) resolve their working directory from the
+    # PWD environment variable rather than the process cwd, so a subprocess
+    # spawned with cwd=X but an inherited PWD=parent would operate on the
+    # wrong tree. Keep PWD honest with cwd.
+    if isinstance(cwd, str) and cwd:
+        merged_env["PWD"] = cwd
     if win_cmdline is not None:
         import subprocess as _sp
 
@@ -272,7 +278,16 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
                              SIGNAL_EXIT_BASE + 15, True, "SIGTERM", None)
     if not waiter.done():
         _signal_tree(proc, "KILL")
-        out_b, err_b = await waiter
+        # Bounded like the cancel path above. A descendant that started its
+        # own session survives the group KILL and keeps the pipes open; an
+        # unbounded wait here never returned, and a later STOP could not
+        # reach it, because the cancel check is already behind this point.
+        await asyncio.wait([waiter], timeout=5)
+        if waiter.done() and not waiter.cancelled():
+            out_b, err_b = waiter.result()
+        else:
+            out_b, err_b = b"", b""
+            waiter.cancel()
         out = (out_b or b"").decode(errors="replace")
         err = (err_b or b"").decode(errors="replace")
         combined = f"{out}\n{err}" if err else out

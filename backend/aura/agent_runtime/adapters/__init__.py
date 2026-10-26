@@ -30,6 +30,15 @@ class AgentConfigurationAdapter(ABC):
     - If sovereign_policy would block the runtime's network_class, raise ValueError.
     """
 
+    def mutable_paths(self) -> list:
+        """Every file that apply() may write, so a backup covers all of them.
+
+        The default (empty) means "only the record's config_path", which is
+        correct for adapters that write a single file. Adapters that write
+        companion files must override this, or a rollback will miss them.
+        """
+        return []
+
     @abstractmethod
     def detect(self) -> bool:
         """Return True if this agent is installed and runnable."""

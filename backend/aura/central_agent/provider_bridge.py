@@ -3,7 +3,7 @@
 A narrow facade over the existing `ModelPort`, adding structure without
 transport: structured results with provider/model identity, failure
 taxonomy, correlation propagation, and secret hygiene. It performs no
-planning, approval, execution, or verification — inference only, so it
+planning, policy, execution, or verification — inference only, so it
 can never become a second execution authority.
 
 Contract: docs/architecture/PROVIDER-BRIDGE-CONTRACT.md.
@@ -49,6 +49,9 @@ class BridgeResult:
     degraded: bool = False
     error_category: str | None = None
     error: str | None = None
+    #: Useful text written before a stream was stopped (a loop, a deadline).
+    #: Never presented as a finished answer.
+    partial: str | None = None
     #: Sizes, offsets and status words about an unusable reply. Never text.
     diagnostics: dict | None = None
     #: The unusable reply itself, held in memory only for an opted-in
@@ -131,6 +134,34 @@ class ProviderBridge:
                       request_id: str | None = None) -> BridgeResult:
         """Structured JSON completion. Returns ok=False (never raises
         for provider conditions) except on programmer errors."""
+        return self._complete_json(
+            purpose, system, user, session_id, request_id,
+            getattr(self._port, "complete_json", None), "complete_json")
+
+    def complete_plan_json(self, purpose: str, system: str, user: str,
+                           session_id: str | None = None,
+                           request_id: str | None = None) -> BridgeResult:
+        """A PLANNING completion: one JSON object on the planning budget.
+
+        A plan is a long generation, not a chat turn, so it does not share
+        the transport budget: the provider's request timeout becomes an
+        IDLE check between chunks, and the overall ceiling is the
+        planning budget. Ports that cannot plan this way fall back to the
+        ordinary JSON path rather than failing the plan.
+        """
+        port = self._port
+        plan_fn = getattr(port, "complete_json_plan", None)
+        if not callable(plan_fn):
+            return self.complete_json(purpose, system, user,
+                                      session_id, request_id)
+        return self._complete_json(
+            purpose, system, user, session_id, request_id,
+            plan_fn, "complete_json_plan")
+
+    def _complete_json(self, purpose: str, system: str, user: str,
+                       session_id: str | None, request_id: str | None,
+                       call, method: str) -> BridgeResult:
+        """Shared plumbing for the structured-JSON paths."""
         base = self._base(purpose, session_id, request_id)
         port = self._port
         if port is None:
@@ -139,7 +170,7 @@ class ProviderBridge:
                                 error="no model provider configured", **base)
         started = time.monotonic()
         try:
-            data = port.complete_json(system, user)
+            data = call(system, user)
         except RoutingError as exc:
             category = exc.category \
                 if exc.category in FAILURE_CATEGORIES \
@@ -202,7 +233,8 @@ class ProviderBridge:
                 else "INTERNAL_PROVIDER_ERROR"
             return BridgeResult(
                 ok=False, degraded=category in DEGRADED_CATEGORIES,
-                error_category=category, error=str(exc)[:300], **base)
+                error_category=category, error=str(exc)[:300],
+                partial=getattr(exc, "partial", None), **base)
         except Exception as exc:
             return BridgeResult(
                 ok=False, degraded=False,

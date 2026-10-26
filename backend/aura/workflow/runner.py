@@ -82,7 +82,6 @@ class WorkflowRunner:
     async def start_workflow_run(self, workflow: dict, *, project_id: str,
                                  project_path: str, project_name: str = "",
                                  trigger: dict, inputs: dict | None = None,
-                                 approved_capabilities: list[str] | None = None,
                                  actor: dict | None = None,
                                  emit: Any = lambda e: None,
                                  on_run_created=None,
@@ -91,7 +90,6 @@ class WorkflowRunner:
                                  "projectPath": project_path,
                                  "projectName": project_name or workflow.get("name", ""),
                                  "trigger": trigger, "inputs": inputs,
-                                 "approvedCapabilities": approved_capabilities,
                                  "actor": actor,
                                  "maxNodeExecutions": max_node_executions}, emit)
 
@@ -156,16 +154,13 @@ class WorkflowRunner:
             return {"error": f"the version this run executed ({previous['versionId']}) no longer exists, so it cannot be resumed"}
 
         replay: dict[str, dict] = {}
-        agent_resume: dict[str, dict] = {}
         for node in previous["nodes"].values():
             if node["state"] == "succeeded" and node.get("output"):
                 replay[node["nodeId"]] = {"text": node["output"].get("text"),
                                           "data": node["output"].get("data"),
                                           "files": node["output"].get("files"),
                                           "port": node["output"].get("port")}
-            elif node["state"] == "awaiting-approval" and node.get("agentTrace"):
-                agent_resume[node["nodeId"]] = node["agentTrace"]
-        if not replay and not agent_resume and previous["state"] != "awaiting-approval":
+        if not replay:
             return {"error": "no node completed in that run, so there is no checkpoint to resume from"}
 
         envelope = compute_envelope(version["nodes"])
@@ -188,9 +183,8 @@ class WorkflowRunner:
              "projectId": previous["projectId"], "projectPath": previous["projectPath"],
              "projectName": workflow.get("name", ""), "trigger": run["trigger"],
              "inputs": previous.get("inputs"),
-             "approvedCapabilities": opts.get("approvedCapabilities"),
              "actor": opts.get("actor") or {"kind": "human", "id": "user"},
-             "replay": replay, "agentResume": agent_resume},
+             "replay": replay},
             version, envelope, run, opts.get("actor") or {"kind": "human", "id": "user"},
             cancel_event, emit)
         self.live_runs.pop(run["id"], None)
@@ -213,7 +207,6 @@ class WorkflowRunner:
                 workflow_id=run["workflowId"], run_id=run["id"],
                 project_id=run["projectId"], project_path=run["projectPath"],
                 actor=actor,
-                approved_capabilities=input.get("approvedCapabilities"),
             )
         signal = {"aborted": False, "event": cancel_event}
         watcher = asyncio.ensure_future(_watch(cancel_event, signal))
@@ -232,7 +225,6 @@ class WorkflowRunner:
                                              signal=signal),
                 "timeoutMs": input.get("timeoutMs"),
                 "replay": input.get("replay"),
-                "agentResume": input.get("agentResume"),
                 "maxNodeExecutions": input.get("maxNodeExecutions"),
             }, emit)
         finally:

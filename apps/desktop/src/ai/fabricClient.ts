@@ -1,3 +1,4 @@
+import { backendFetch } from '../backend/backendSession';
 /**
  * fabricClient — the Capability Fabric's governance surface.
  * ------------------------------------------------------------------
@@ -5,7 +6,7 @@
  * over the service, no state of its own.
  *
  * The important property of this file is what it *cannot* say. There is
- * no way to send a capability grant: `decide()` names an approval
+ * no way to send a capability grant
  * request id and an answer, and the service looks the capability up from
  * the request it stored. A compromised or hand-crafted client can
  * therefore replay a decision, but it can never invent an authorization
@@ -24,109 +25,7 @@ import { userActionHeaders } from './uiToken';
 const BASE = aiClient.base;
 
 export type RiskLevel = 'low' | 'medium' | 'high';
-export type PolicyDecision = 'auto-execute' | 'ask-user' | 'require-approval' | 'deny';
-export type ApprovalState = 'pending' | 'granted' | 'denied' | 'expired';
-
-export interface ApprovalItem {
-  invocationId: string;
-  capabilityId: string;
-  title: string;
-  detail: string;
-  risk: RiskLevel;
-  irreversible: boolean;
-}
-
-/** Mirrors the service's `ApprovalRequest`. Read-only on this side. */
-export interface ApprovalRequest {
-  id: string;
-  state: ApprovalState;
-  requestedAt: string;
-  decidedAt?: string;
-  decidedBy?: string;
-  consumedAt?: string;
-  summary: string;
-  items: ApprovalItem[];
-  projectId?: string;
-  missionId?: string;
-  taskId?: string;
-  /** Owning agent session, when parked by the central agent. The unified
-   * inbox routes the decision to /agent/sessions/{sessionId}/approve. */
-  sessionId?: string;
-  rule?: string;
-  onAccept?: string;
-  onDecline?: string;
-  target?: string;
-}
-
-/**
- * One capability as the *running service* describes it. Only the fields
- * the desktop actually reads are typed here — notably
- * `requiresNodeCapability`, which is the sole real link between a Fabric
- * capability and a Connected Environment node.
- */
-export interface CapabilityDescriptorView {
-  id: string;
-  name: string;
-  risk: RiskLevel;
-  supported: boolean;
-  requiresNodeCapability?: string;
-  /**
-   * The rest of the descriptor as the service sends it. `/fabric/capabilities`
-   * spreads the whole `CapabilityDescriptor` (`{ ...c, supported }`), so these
-   * are on the wire already — they are typed here because the Permission
-   * Envelope reads them, and reading them from the service is what keeps the
-   * service authoritative about risk rather than the renderer.
-   */
-  description?: string;
-  category?: string;
-  surface?: 'aura-internal' | 'local-process' | 'http' | 'browser';
-  permissions?: PermissionScope[];
-  irreversible?: boolean;
-  output?: string;
-  verify?: 'read-back' | 'exit-code' | 'http-status' | null;
-}
-
-/** Coarse permission scopes, as declared by the service's manifest. */
-export type PermissionScope =
-  | 'project.read'
-  | 'project.write'
-  | 'process.execute'
-  | 'network.outbound'
-  | 'account.authorize'
-  | 'resource.destroy'
-  | 'system.modify'
-  | 'aura.read'
-  | 'aura.write';
-
-export interface CapabilityCatalogue {
-  capabilities: CapabilityDescriptorView[];
-  supportedCount: number;
-  providedNodeCapabilities: string[];
-  policy: PolicyConfig;
-}
-
-export interface PolicyConfig {
-  byRisk: Record<RiskLevel, PolicyDecision>;
-  overrides: Record<string, PolicyDecision>;
-  /**
-   * Per-node rules, keyed `"@<nodeId>"` or `"<capabilityId>@<nodeId>"`.
-   * Deny-only in effect: these can exclude a node, never lower what
-   * acting through it costs.
-   */
-  nodeOverrides?: Record<string, PolicyDecision>;
-  /** capability id → node ids permitted to perform it. */
-  nodeAllowlists?: Record<string, string[]>;
-  allowAutonomous: boolean;
-}
-
-export interface DecideResult {
-  approval?: ApprovalRequest;
-  resumed?: boolean;
-  declined?: boolean;
-  ok?: boolean;
-  error?: string;
-  detail?: string;
-}
+export type PolicyDecision = 'auto-execute' | 'deny';
 
 /* ── Mission capability annotation ────────────────────────────────── */
 
@@ -203,7 +102,7 @@ export interface UninstallResultView {
 /** What `/fabric/invoke` returns. Only the fields this app reads. */
 export interface InvocationResultView {
   invocationId: string;
-  outcome: 'succeeded' | 'failed' | 'denied' | 'awaiting-approval' | 'unsupported';
+  outcome: 'succeeded' | 'failed' | 'denied' | 'unsupported';
   detail: string;
   output?: unknown;
   policy?: { decision: PolicyDecision; rule: string; risk: RiskLevel; reason: string };
@@ -234,24 +133,80 @@ async function readJson<T>(res: Response, what: string, acceptStatuses: number[]
   return body as T;
 }
 
-export const fabricClient = {
-  approvals: (): Promise<{ approvals: ApprovalRequest[] }> =>
-    fetch(`${BASE}/fabric/approvals`).then((r) => readJson(r, 'Reading approvals')),
+/**
+ * One capability as the *running service* describes it. Only the fields
+ * the desktop actually reads are typed here — notably
+ * `requiresNodeCapability`, which is the sole real link between a Fabric
+ * capability and a Connected Environment node.
+ */
+export interface CapabilityDescriptorView {
+  id: string;
+  name: string;
+  risk: RiskLevel;
+  supported: boolean;
+  requiresNodeCapability?: string;
+  /**
+   * The rest of the descriptor as the service sends it. `/fabric/capabilities`
+   * spreads the whole `CapabilityDescriptor` (`{ ...c, supported }`), so these
+   * are on the wire already — they are typed here because the Permission
+   * Envelope reads them, and reading them from the service is what keeps the
+   * service authoritative about risk rather than the renderer.
+   */
+  description?: string;
+  category?: string;
+  surface?: 'aura-internal' | 'local-process' | 'http' | 'browser';
+  permissions?: PermissionScope[];
+  irreversible?: boolean;
+  output?: string;
+  verify?: 'read-back' | 'exit-code' | 'http-status' | null;
+}
 
+/** Coarse permission scopes, as declared by the service's manifest. */
+export type PermissionScope =
+  | 'project.read'
+  | 'project.write'
+  | 'process.execute'
+  | 'network.outbound'
+  | 'account.authorize'
+  | 'resource.destroy'
+  | 'system.modify'
+  | 'aura.read'
+  | 'aura.write';
+
+export interface CapabilityCatalogue {
+  capabilities: CapabilityDescriptorView[];
+  supportedCount: number;
+  providedNodeCapabilities: string[];
+  policy: PolicyConfig;
+}
+
+export interface PolicyConfig {
+  byRisk: Record<RiskLevel, PolicyDecision>;
+  overrides: Record<string, PolicyDecision>;
+  /**
+   * Per-node rules, keyed `"@<nodeId>"` or `"<capabilityId>@<nodeId>"`.
+   * Deny-only in effect: these can exclude a node, never lower what
+   * acting through it costs.
+   */
+  nodeOverrides?: Record<string, PolicyDecision>;
+  /** capability id → node ids permitted to perform it. */
+  nodeAllowlists?: Record<string, string[]>;
+  allowAutonomous: boolean;
+}
+
+export const fabricClient = {
   /**
    * Run a capability through the Fabric.
    *
-   * Carries no authority of its own: the service decides policy, raises
-   * the approval and records the audit. A caller cannot smuggle a grant
-   * through here — `awaiting-approval` comes back, and the existing
-   * approval gate is the only way past it.
+   * Carries no authority of its own: the service decides policy and records
+   * the audit. A call the policy refuses comes back refused, at once.
    */
   invoke: (
     capabilityId: string,
     input: Record<string, unknown>,
     context: Record<string, unknown> = {},
   ): Promise<InvocationResultView> =>
-    fetch(`${BASE}/fabric/invoke`, {
+    backendFetch(`${BASE}/fabric/invoke`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ capabilityId, input, context }),
@@ -275,7 +230,7 @@ export const fabricClient = {
     input: Record<string, unknown>,
     context: Record<string, unknown> = {},
   ): Promise<InvocationResultView> => {
-    const res = await fetch(`${BASE}/fabric/invoke`, {
+    const res = await backendFetch(`${BASE}/fabric/invoke`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(await userActionHeaders()) },
       body: JSON.stringify({ capabilityId, input, context }),
@@ -283,23 +238,8 @@ export const fabricClient = {
     return readJson(res, 'Running capability');
   },
 
-  /**
-   * Answer one request. `granted` is the whole decision — the capability,
-   * the mission and the task all come from the stored request.
-   *
-   * A 409 means it was already decided (another tab, a double-click, a
-   * replayed request). That is a successful outcome for the user, not an
-   * error to retry: the answer they wanted is already recorded.
-   */
-  decide: (id: string, granted: boolean, reason?: string): Promise<DecideResult> =>
-    fetch(`${BASE}/fabric/approvals/${id}/decide`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ granted, reason }),
-    }).then((r) => readJson(r, 'Recording decision', [409])),
-
   policy: (): Promise<{ policy: PolicyConfig }> =>
-    fetch(`${BASE}/fabric/capabilities`).then((r) => readJson(r, 'Reading policy')),
+    backendFetch(`${BASE}/fabric/capabilities`).then((r) => readJson(r, 'Reading policy')),
 
   /**
    * The full manifest as the running service holds it, including each
@@ -312,17 +252,17 @@ export const fabricClient = {
    * this architecture avoids.
    */
   capabilities: (): Promise<CapabilityCatalogue> =>
-    fetch(`${BASE}/fabric/capabilities`).then((r) => readJson(r, 'Capability catalogue')),
+    backendFetch(`${BASE}/fabric/capabilities`).then((r) => readJson(r, 'Capability catalogue')),
 
   setPolicy: (patch: Partial<PolicyConfig>): Promise<{ policy: PolicyConfig; file: string }> =>
-    fetch(`${BASE}/fabric/policy`, {
+    backendFetch(`${BASE}/fabric/policy`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(patch),
     }).then((r) => readJson(r, 'Saving policy')),
 
   audit: (): Promise<{ audit: unknown[] }> =>
-    fetch(`${BASE}/fabric/audit`).then((r) => readJson(r, 'Reading audit')),
+    backendFetch(`${BASE}/fabric/audit`).then((r) => readJson(r, 'Reading audit')),
 
   /**
    * What a planned mission will actually need, and what is missing.
@@ -336,5 +276,5 @@ export const fabricClient = {
     projectId: string,
     missionId: string,
   ): Promise<MissionCapabilityAnnotation | { error: string }> =>
-    fetch(`${BASE}/fabric/mission/${projectId}/${missionId}`).then((r) => readJson(r, 'Reading mission capabilities')),
+    backendFetch(`${BASE}/fabric/mission/${projectId}/${missionId}`).then((r) => readJson(r, 'Reading mission capabilities')),
 };

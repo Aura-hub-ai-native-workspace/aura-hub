@@ -30,7 +30,6 @@ from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.central_agent.intent import (
@@ -77,15 +76,11 @@ def governed_agent(home: Path) -> tuple[CentralAgent, AuditStore]:
         def node_available(self, _cap):
             return True
 
-        async def request_approval(self, _req, _ctx):
-            return False
 
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
     fabric = CapabilityFabric(_PermissiveHost())
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     execs = {e.capabilityId: e for e in all_executors(home)}
     for exe in execs.values():
         try:
@@ -94,7 +89,7 @@ def governed_agent(home: Path) -> tuple[CentralAgent, AuditStore]:
             pass
     cfg = FabricConfig(fabric=fabric, policy_config={},
                        permissions={"read": True, "write": True},
-                       executors=execs, audit_store=audit, ledger=ledger)
+                       executors=execs, audit_store=audit)
     return (CentralAgent(fabric_cfg=cfg,
                          session_store=AgentSessionStore(home)), audit)
 
@@ -199,7 +194,6 @@ class TestEngineeringRequestsAssignAWorker:
         assert intent.requiredCapabilities == ["agent.delegate"]
         assert intent.needsClarification is False
         # Delegation is approval-sensitive, and says so before it runs.
-        assert intent.approvalLikely is True
 
     @pytest.mark.parametrize("message", [
         "Check why login is failing",
@@ -301,7 +295,6 @@ class TestNoParallelRouting:
             intent = heuristic_interpret(message)
             assert intent.conversational is True
             assert intent.requiredCapabilities == []
-            assert intent.approvalLikely is False
 
 
 class TestKnownCapabilitiesAnswerThemselves:
@@ -338,7 +331,6 @@ class TestKnownCapabilitiesAnswerThemselves:
         assert route(message) == "capability"
         # Read-only means read-only: no worker, no approval, no scope.
         assert "agent.delegate" not in intent.requiredCapabilities
-        assert intent.approvalLikely is False
         assert intent.needsClarification is False
         assert "Read-only" in intent.constraints
         assert intent.goal == message.strip()
@@ -394,7 +386,6 @@ class TestKnownCapabilitiesAnswerThemselves:
         assert intent.requiredCapabilities in ([], ["git.status"])
         for granted in intent.requiredCapabilities:
             assert granted == "git.status", f"effect capability granted: {granted}"
-        assert intent.approvalLikely is False
 
     def test_no_second_route_was_added(self) -> None:
         """The direct rule yields to the capability branch that already
@@ -408,7 +399,6 @@ class TestKnownCapabilitiesAnswerThemselves:
         assert newly_fixed.surface == already_worked.surface
         assert newly_fixed.constraints == already_worked.constraints
         assert newly_fixed.expectedOutcome == already_worked.expectedOutcome
-        assert newly_fixed.approvalLikely == already_worked.approvalLikely
 
 
 class TestEffectFramedCapabilityQuestionsCannotAct:

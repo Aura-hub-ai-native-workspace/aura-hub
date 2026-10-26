@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.central_agent.intent import (
@@ -35,20 +34,16 @@ def env(tmp_path, monkeypatch):
             return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
         def node_available(self, _cap):
             return None
-        async def request_approval(self, _req, _ctx):
-            return False
     home = tmp_path / "home"
     proj = tmp_path / "project"
     proj.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
     monkeypatch.setenv("AURA_HOME", str(home))
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
     host = _H()
     fabric = CapabilityFabric(host)
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     from aura.executors import all_executors
     execs = {e.capabilityId: e for e in all_executors(home)}
     for exe in execs.values():
@@ -56,7 +51,7 @@ def env(tmp_path, monkeypatch):
             fabric.register(exe)
         except Exception:
             pass
-    cfg = FabricConfig(fabric=fabric, policy_config={}, permissions={"read": True, "write": True}, executors=execs, audit_store=audit, ledger=ledger)
+    cfg = FabricConfig(fabric=fabric, policy_config={}, permissions={"read": True, "write": True}, executors=execs, audit_store=audit)
     return home, proj, audit, ledger, cfg
 
 
@@ -111,12 +106,9 @@ class TestCapabilityEscalation:
                 return {"read": True, "write": False, "execute": True, "autonomous": True, "network": True}
             def node_available(self, _cap):
                 return None
-            async def request_approval(self, _req, _ctx):
-                return False
         host = _H()
         fabric = CapabilityFabric(host)
         fabric.attach_audit_store(audit.load, audit.append)
-        fabric.attach_approval_store(lambda: [], lambda x: None)
         from aura.executors import all_executors
         execs = {e.capabilityId: e for e in all_executors(home)}
         for exe in execs.values():
@@ -124,7 +116,7 @@ class TestCapabilityEscalation:
                 fabric.register(exe)
             except Exception:
                 pass
-        cfg = FabricConfig(fabric=fabric, policy_config={}, permissions={"read": True, "write": False}, executors=execs, audit_store=audit, ledger=ledger)
+        cfg = FabricConfig(fabric=fabric, policy_config={}, permissions={"read": True, "write": False}, executors=execs, audit_store=audit)
         result = invoke_fabric("filesystem.write",
                                {"path": "x.txt", "content": "y"},
                                {"actor": {"kind": "agent", "id": "t"},
@@ -209,58 +201,6 @@ class TestMaliciousWorkflow:
         assert "execution limit" in (run.get("error") or "")
 
 
-class TestApprovalIntegrity:
-    def test_replay_and_cross_task_confusion(self, env):
-        home, proj, audit, ledger, cfg = env
-        payload = {"path": "a.txt", "content": "1"}
-        ctx = {"actor": {"kind": "agent", "id": "t"}, "cwd": str(proj),
-               "taskId": "task-1"}
-        parked = invoke_fabric("filesystem.write", payload, ctx, cfg)
-        apr = parked["approvalId"]
-        ledger.decide(apr, True, "user")
-        ok = invoke_fabric("filesystem.write", payload,
-                           {**ctx, "approvalId": apr}, cfg)
-        assert ok["outcome"] == "succeeded"
-        # replay on a DIFFERENT task: same grant must not authorize it
-        other = invoke_fabric("filesystem.write",
-                              {"path": "b.txt", "content": "2"},
-                              {"actor": {"kind": "agent", "id": "t"},
-                               "cwd": str(proj), "taskId": "task-2",
-                               "approvalId": apr}, cfg)
-        assert other["outcome"] == "awaiting-approval"
-        assert not (proj / "b.txt").exists()
-
-    def test_consumed_grant_not_respendable_after_reload(self, env):
-        home, proj, audit, ledger, cfg = env
-        payload = {"path": "r.txt", "content": "x"}
-        ctx = {"actor": {"kind": "agent", "id": "t"}, "cwd": str(proj)}
-        apr = invoke_fabric("filesystem.write", payload,
-                            {**ctx, "taskId": "k"}, cfg)["approvalId"]
-        ledger.decide(apr, True, "user")
-        first = invoke_fabric("filesystem.write", payload,
-                              {**ctx, "taskId": "k", "approvalId": apr}, cfg)
-        assert first["outcome"] == "succeeded"
-        # fresh ledger restored only PENDING requests: spent grants vanish
-        ledger2 = ApprovalLedger()
-        request = ledger2.by_id(apr)
-        assert request is None
-
-    def test_tampered_audit_trail_is_visible(self, env):
-        home, proj, audit, ledger, cfg = env
-        invoke_fabric("git.status", {}, {"actor": {"kind": "agent", "id": "t"},
-                                         "cwd": str(proj)}, cfg)
-        trail = home / "audit" / "trail.jsonl"
-        original = trail.read_text()
-        lines = original.splitlines()
-        tampered = json.loads(lines[0])
-        tampered["outcome"] = "succeeded"  # forger upgrades a denial
-        lines[0] = json.dumps(tampered, separators=(",", ":"))
-        trail.write_text("\n".join(lines) + "\n")
-        reloaded = AuditStore(trail).load()
-        # the store cannot silently heal, but the record no longer matches
-        # what the pipeline wrote — detection is by comparison to invocation
-        # ids referenced elsewhere (evidence), not by trusting content.
-        assert isinstance(reloaded, list)
 
 
 class TestPathAndInputSafety:
@@ -271,15 +211,6 @@ class TestPathAndInputSafety:
                                    {"path": bad, "content": "x"},
                                    {"actor": {"kind": "agent", "id": "t"},
                                     "cwd": str(proj)}, cfg)
-            if result["outcome"] == "awaiting-approval":
-                apr = result["approvalId"]
-                ledger.decide(apr, True, "user")
-                result = invoke_fabric("filesystem.write",
-                                       {"path": bad, "content": "x"},
-                                       {"actor": {"kind": "agent", "id": "t"},
-                                        "cwd": str(proj),
-                                        "taskId": f"k-{bad}",
-                                        "approvalId": apr}, cfg)
             assert result["outcome"] == "failed", bad
         assert not (Path.home() / ".ssh").exists() or True
 
@@ -291,11 +222,6 @@ class TestPathAndInputSafety:
         payload = {"path": "link.txt", "content": "pwned"}
         ctx = {"actor": {"kind": "agent", "id": "t"}, "cwd": str(proj)}
         r1 = invoke_fabric("filesystem.write", payload, ctx, cfg)
-        if r1["outcome"] == "awaiting-approval":
-            ledger.decide(r1["approvalId"], True, "user")
-            r1 = invoke_fabric("filesystem.write", payload,
-                               {**ctx, "taskId": "sy", "approvalId": r1["approvalId"]},
-                               cfg)
         # resolve() follows the symlink OUT of root → confined guard refuses
         assert r1["outcome"] in ("failed", "denied") or not outside.exists()
 
@@ -312,6 +238,7 @@ class TestSessionSafety:
         agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
         agent.submit("create a file called s.txt containing v",
                              project_path=str(proj))
+        written = (proj / "s.txt").read_text()  # the legitimate, autonomous write
         sid = agent.sessions.last_session_id
         # An attacker edits the persisted session to claim completed state.
         path = home / "agent" / "sessions" / f"{sid}.json"
@@ -319,47 +246,13 @@ class TestSessionSafety:
         data["state"] = "completed"
         data["lastResult"]["outcome"] = "completed"
         path.write_text(json.dumps(data))
-        # resume now REFUSES: not awaiting approval → nothing executes
+        # resume REFUSES: the session was not stopped, so nothing executes.
         agent2 = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
         with pytest.raises(ValueError):
             agent2.resume(sid)
-        assert not (proj / "s.txt").exists()
+        # The tampered record caused no second effect.
+        assert (proj / "s.txt").read_text() == written
 
-    def test_resume_with_foreign_approval_id_refused(self, env):
-        home, proj, audit, ledger, cfg = env
-        from aura.fabric import CapabilityFabric, FabricHost
-        class _H(FabricHost):
-            def permissions_for(self, _cap, _ctx):
-                return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
-            def node_available(self, _cap):
-                return None
-            async def request_approval(self, _req, _ctx):
-                return False
-        host = _H()
-        fabric = CapabilityFabric(host)
-        from aura.executors import all_executors
-        execs = {e.capabilityId: e for e in all_executors(home)}
-        for exe in execs.values():
-            try:
-                fabric.register(exe)
-            except Exception:
-                pass
-        from aura.fabric import FabricConfig
-        cfg2 = FabricConfig(fabric=fabric, policy_config={}, permissions={"read": True, "write": True}, executors=execs, audit_store=audit, ledger=ledger)
-        agent = CentralAgent(fabric_cfg=cfg2, session_store=AgentSessionStore(home))
-        agent.submit("create a file called t.txt containing v",
-                     project_path=str(proj))
-        sid = agent.sessions.last_session_id
-        # forge an unrelated GRANTED approval into the session's evidence set
-        path = home / "agent" / "sessions" / f"{sid}.json"
-        data = json.loads(path.read_text())
-        forged_id = "apr-forged000000000000000"
-        data["lastResult"]["evidence"]["approvalIds"] = [forged_id]
-        path.write_text(json.dumps(data))
-        # the forged approval does not exist in the ledger → refused
-        with pytest.raises(PermissionError):
-            agent.resume(sid)
-        assert not (proj / "t.txt").exists()
 
 
 class TestEvidenceIntegrity:
@@ -389,13 +282,6 @@ class TestOversizedRequests:
                                {"actor": {"kind": "agent", "id": "t"},
                                 "cwd": str(proj)}, cfg)
         # contract accepts strings; executor bounds bytes — after any approval
-        if result["outcome"] == "awaiting-approval":
-            ledger.decide(result["approvalId"], True, "user")
-            result = invoke_fabric("filesystem.write",
-                                   {"path": "big.txt", "content": huge},
-                                   {"actor": {"kind": "agent", "id": "t"},
-                                    "cwd": str(proj), "taskId": "big",
-                                    "approvalId": result["approvalId"]}, cfg)
         assert result["outcome"] == "failed"
         assert not (proj / "big.txt").exists()
 

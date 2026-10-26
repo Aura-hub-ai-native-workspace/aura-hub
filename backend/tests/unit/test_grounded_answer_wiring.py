@@ -102,7 +102,6 @@ def test_context_assembler_includes_all_capabilities():
             type("V", (), {"id": c.id, "description": c.description,
                            "risk": c.risk})()
             for c in caps],
-        approval_lister=lambda: [],
         session_loader=None,
         capability_summary=lambda: [],
         project_inspect=lambda *a, **k: None,

@@ -157,14 +157,14 @@ def test_run_streams_wire_frames_and_persists(svc):
     assert detail["state"] == "succeeded"
 
 
-def test_cross_workflow_index_stats_awaiting_find(svc):
+def test_cross_workflow_index_stats_find(svc):
     c, _ = svc
     index = c.get("/workflow-runs").json()
     assert set(index) >= {"runs", "total", "offset", "limit"}
     stats = c.get("/workflow-runs/stats").json()["stats"]
     assert isinstance(stats, dict)
-    awaiting = c.get("/workflow-runs/awaiting").json()["runs"]
-    assert isinstance(awaiting, list)
+    # There is no awaiting-runs listing: no run waits for a person.
+    assert c.get("/workflow-runs/awaiting").status_code == 404
 
 
 # ── approvals: THE ledger ────────────────────────────────────────────────────
@@ -180,58 +180,13 @@ class _ParkingHost:
         return False  # always park
 
 
-def test_governed_invoke_parks_decide_grants_then_replay_is_409(tmp_path, monkeypatch):
-    """Default server wiring uses DefaultHost which parks on ask-user.
-    Named approval reuse: pass approvalId in context to spend a granted approval."""
-    monkeypatch.setenv("AURA_HOME", str(tmp_path))
-    app = create_app()
-    c = TestClient(app)
+def _ask_for_medium(home) -> None:
+    """The person's own saved policy: medium risk asks. Not the old shipped
+    default, so it is honored as written."""
+    import json
 
-    def invoke(approval_id=None, tmp_path=tmp_path):
-        ctx = {"actor": {"kind": "human", "id": "user"}, "projectId": "p", "cwd": str(tmp_path)}
-        if approval_id:
-            ctx["approvalId"] = approval_id
-        return c.post("/fabric/invoke", json={
-            "capabilityId": "filesystem.write",
-            "input": {"path": "demo.txt", "content": "hello"},
-            "context": ctx}).json()
-
-    first = invoke()
-    assert first["outcome"] == "awaiting-approval", first
-    assert first.get("approvalId")
-
-    pending = c.get("/fabric/approvals").json()["approvals"]
-    assert len(pending) == 1
-    aid = pending[0]["id"]
-
-    decided = c.post(f"/fabric/approvals/{aid}/decide",
-                     json={"granted": True, "reason": "fine"}).json()
-    assert decided["approval"]["state"] == "granted"
-    # replay / double-click / second tab
-    replay = c.post(f"/fabric/approvals/{aid}/decide", json={"granted": True})
-    assert replay.status_code == 409
-    assert "error" in replay.json()
-
-    # Reuse the GRANTED approval by passing its ID in context — this spends it
-    spent = invoke(approval_id=aid)
-    assert spent["outcome"] == "succeeded"
-    audit = c.get("/fabric/audit").json()["audit"]
-    assert any(a.get("approvalId") == aid for a in audit)
-
-
-def test_denied_decision_records_audit_not_effect(tmp_path, monkeypatch):
-    monkeypatch.setenv("AURA_HOME", str(tmp_path))
-    app = create_app()
-    c = TestClient(app)
-    inv = c.post("/fabric/invoke", json={
-        "capabilityId": "filesystem.write",
-        "input": {"path": "no.txt", "content": "x"},
-        "context": {"projectId": "p", "cwd": str(tmp_path)}}).json()
-    assert inv["outcome"] == "awaiting-approval"
-    aid = c.get("/fabric/approvals").json()["approvals"][0]["id"]
-    denied = c.post(f"/fabric/approvals/{aid}/decide", json={"granted": False})
-    assert denied.status_code == 200
-    assert not (tmp_path / "no.txt").exists()
+    (home / "fabric-policy.json").write_text(json.dumps(
+        {"byRisk": {"medium": "ask-user", "high": "require-approval"}}))
 
 
 # ── central agent sessions ───────────────────────────────────────────────────

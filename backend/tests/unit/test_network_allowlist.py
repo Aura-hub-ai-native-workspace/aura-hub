@@ -18,6 +18,7 @@ attempts split into two families, and both fail:
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import sys
 
@@ -38,26 +39,6 @@ needs_gateway = pytest.mark.skipif(
     not ENFORCEABLE, reason="this host cannot run the AURA egress gateway")
 
 
-def _probe_internet(host: str = ALLOWED_HOST, port: int = 80, timeout: int = 3) -> bool:
-    """Direct TCP probe to verify outbound internet access from this host.
-
-    Runs at module import time (before any fixture), so it executes on the
-    host process, not inside a bwrap namespace.  A 3-second timeout keeps
-    collection fast on isolated CI runners.
-    """
-    import socket as _socket
-    try:
-        _socket.create_connection((host, port), timeout=timeout)
-        return True
-    except OSError:
-        return False
-
-
-_INTERNET = _probe_internet()
-needs_internet = pytest.mark.skipif(
-    not _INTERNET,
-    reason="no outbound internet from this host; allowed-domain tests require it")
-
 PROXY = f"http://127.0.0.1:{netgov.__dict__.get('SANDBOX_PROXY_PORT', 3128)}"
 
 
@@ -71,6 +52,67 @@ def boundary(tmp_path_factory):
     assert result.ok and result.verified, result.detail
     yield result
     result.close()
+
+
+@contextlib.contextmanager
+def local_tls_boundary(tmp_path, *, tls: bool = True):
+    """A local HTTPS server reached only through the egress gateway.
+
+    The server uses a self-signed certificate for ``localhost``. The gateway's policy
+    names exactly that host and that ephemeral port, so the only route to the server is
+    the gateway. The client trusts the certificate through the CA embedded in its own
+    code, so TLS verification stays on. Yields (result, port, ca_pem, served), where
+    ``served`` lists the request paths the server actually answered.
+    """
+    import http.server
+    import ssl
+    import subprocess
+    import threading
+
+    cert = tmp_path / "tls-cert.pem"
+    key = tmp_path / "tls-key.pem"
+    ca_pem = ""
+    if tls:
+        subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt",
+             "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", str(key),
+             "-out", str(cert), "-days", "1", "-subj", "/CN=localhost",
+             "-addext", "subjectAltName=DNS:localhost"],
+            check=True, capture_output=True)
+        ca_pem = cert.read_text(encoding="utf-8")
+    served: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):                      # noqa: N802
+            import urllib.parse
+            # A proxied plain-HTTP request carries the absolute URL; record its path.
+            served.append(urllib.parse.urlsplit(self.path).path)
+            body = b"aura-tls-fixture\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_a):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    if tls:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(str(cert), str(key))
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    result = netgov.establish(
+        netgov.NetworkPolicy(mode=netgov.ALLOWLIST, domains=("localhost",), ports=(port,)),
+        str(tmp_path))
+    try:
+        assert result.ok and result.verified, result.detail
+        yield result, port, ca_pem, served
+    finally:
+        result.close()
+        server.shutdown()
+        server.server_close()
 
 
 def inside(boundary, code: str, timeout_ms: int = 90_000):
@@ -116,25 +158,31 @@ class TestMatching:
 
 @needs_gateway
 class TestAllowAndDeny:
-    @needs_internet
-    def test_1_4_an_allowed_domain_over_https_works(self, boundary):
-        out = inside(boundary, (
-            "import urllib.request,sys\n"
-            f"op=urllib.request.build_opener(urllib.request.ProxyHandler("
-            f"{{'https':'{PROXY}','http':'{PROXY}'}}))\n"
-            f"r=op.open('https://{ALLOWED_HOST}',timeout=25)\n"
-            "sys.exit(0 if r.status==200 else 1)\n"))
-        assert out.exit_code == 0, out.stderr
+    def test_1_4_an_allowed_domain_over_https_works(self, tmp_path):
+        with local_tls_boundary(tmp_path) as (result, port, ca_pem, served):
+            out = inside(result, (
+                "import ssl,urllib.request,sys\n"
+                f"ctx=ssl.create_default_context(cadata={ca_pem!r})\n"
+                f"op=urllib.request.build_opener(urllib.request.ProxyHandler("
+                f"{{'https':'{PROXY}'}}),urllib.request.HTTPSHandler(context=ctx))\n"
+                f"r=op.open('https://localhost:{port}/ok',timeout=25)\n"
+                "sys.exit(0 if r.status==200 else 1)\n"))
+            assert out.exit_code == 0, out.stderr
+            # The request reached the server, and it did so through the gateway:
+            assert served == ["/ok"], served
+            assert any(d["decision"] == "ALLOW" and d["host"] == "localhost"
+                       and d["port"] == port for d in result.decisions())
 
-    @needs_internet
-    def test_6_an_allowed_domain_over_http_works(self, boundary):
-        out = inside(boundary, (
-            "import urllib.request,sys\n"
-            f"op=urllib.request.build_opener(urllib.request.ProxyHandler("
-            f"{{'https':'{PROXY}','http':'{PROXY}'}}))\n"
-            f"r=op.open('http://{ALLOWED_HOST}',timeout=25)\n"
-            "sys.exit(0 if r.status in (200,301,302) else 1)\n"))
-        assert out.exit_code == 0, out.stderr
+    def test_6_an_allowed_domain_over_http_works(self, tmp_path):
+        with local_tls_boundary(tmp_path, tls=False) as (result, port, _ca, served):
+            out = inside(result, (
+                "import urllib.request,sys\n"
+                f"op=urllib.request.build_opener(urllib.request.ProxyHandler("
+                f"{{'https':'{PROXY}','http':'{PROXY}'}}))\n"
+                f"r=op.open('http://localhost:{port}/ok',timeout=25)\n"
+                "sys.exit(0 if r.status==200 else 1)\n"))
+            assert out.exit_code == 0, out.stderr
+            assert served == ["/ok"], served
 
     def test_2_5_7_a_denied_domain_fails(self, boundary):
         out = inside(boundary, (
@@ -364,10 +412,15 @@ class TestRealClients:
         out = shell(boundary, f"curl -sS --max-time 20 https://{DENIED_HOST}")
         assert out.exit_code != 0
 
-    @needs_internet
-    def test_19b_curl_allowed(self, boundary):
-        out = shell(boundary, f"curl -sS --max-time 25 https://{ALLOWED_HOST}")
-        assert out.exit_code == 0, out.stderr
+    def test_19b_curl_allowed(self, tmp_path):
+        with local_tls_boundary(tmp_path) as (result, port, _ca_pem, served):
+            cafile = tmp_path / "tls-cert.pem"
+            out = shell(result, (f"curl -sS --max-time 25 --cacert {cafile} "
+                                 f"https://localhost:{port}/ok"))
+            assert out.exit_code == 0, out.stderr
+            assert served == ["/ok"], served
+            assert any(d["decision"] == "ALLOW" and d["host"] == "localhost"
+                       and d["port"] == port for d in result.decisions())
 
     def test_20_wget_denied(self, boundary):
         out = shell(boundary,
@@ -384,19 +437,53 @@ class TestRealClients:
             "    sys.exit(0)\n"))
         assert out.exit_code == 0
 
-    @needs_internet
-    def test_22_python_urllib_denied_allowed_pair(self, boundary):
-        out = inside(boundary, (
-            "import urllib.request,sys\n"
-            f"op=urllib.request.build_opener(urllib.request.ProxyHandler("
-            f"{{'https':'{PROXY}'}}))\n"
-            f"ok = op.open('https://{ALLOWED_HOST}',timeout=25).status==200\n"
-            "try:\n"
-            f"    op.open('https://{DENIED_HOST}',timeout=25); bad=True\n"
-            "except Exception:\n"
-            "    bad=False\n"
-            "sys.exit(0 if (ok and not bad) else 1)\n"))
-        assert out.exit_code == 0, out.stderr
+    def test_22_python_urllib_denied_allowed_pair(self, tmp_path):
+        with local_tls_boundary(tmp_path) as (result, port, ca_pem, served):
+            out = inside(result, (
+                "import ssl,urllib.request,sys\n"
+                f"ctx=ssl.create_default_context(cadata={ca_pem!r})\n"
+                f"op=urllib.request.build_opener(urllib.request.ProxyHandler("
+                f"{{'https':'{PROXY}'}}),urllib.request.HTTPSHandler(context=ctx))\n"
+                f"ok = op.open('https://localhost:{port}/ok',timeout=25).status==200\n"
+                "try:\n"
+                f"    op.open('https://{DENIED_HOST}',timeout=25); bad=True\n"
+                "except Exception:\n"
+                "    bad=False\n"
+                "sys.exit(0 if (ok and not bad) else 1)\n"))
+            assert out.exit_code == 0, out.stderr
+            assert served == ["/ok"], served
+            decisions = result.decisions()
+            assert any(d["decision"] == "ALLOW" and d["host"] == "localhost" for d in decisions)
+            assert any(d["decision"] == "DENY" and d["host"] == DENIED_HOST for d in decisions)
+
+    def test_23_untrusted_certificate_is_still_refused(self, tmp_path):
+        """TLS is enforced end to end: a client that does not trust the fixture CA fails,
+        and the server never answers the request."""
+        with local_tls_boundary(tmp_path) as (result, port, _ca_pem, served):
+            out = inside(result, (
+                "import urllib.request,sys\n"
+                f"op=urllib.request.build_opener(urllib.request.ProxyHandler("
+                f"{{'https':'{PROXY}'}}))\n"
+                "try:\n"
+                f"    op.open('https://localhost:{port}/refused',timeout=25)\n"
+                "    sys.exit(1)\n"
+                "except Exception:\n"
+                "    sys.exit(0)\n"))
+            assert out.exit_code == 0, out.stderr
+            assert "/refused" not in served
+
+    def test_24_a_direct_connection_to_the_fixture_has_no_route(self, tmp_path):
+        """The fixture is reachable only through the gateway: a direct socket fails."""
+        with local_tls_boundary(tmp_path) as (result, port, _ca_pem, served):
+            out = inside(result, (
+                "import socket,sys\n"
+                "try:\n"
+                f"    socket.create_connection(('127.0.0.1',{port}),timeout=5)\n"
+                "    sys.exit(1)\n"
+                "except OSError:\n"
+                "    sys.exit(0)\n"))
+            assert out.exit_code == 0, out.stderr
+            assert served == []
 
     def test_23_node_denied(self, boundary):
         out = shell(boundary,
@@ -434,15 +521,28 @@ class TestRealClients:
 
 @needs_gateway
 class TestEvidence:
-    @needs_internet
-    def test_every_destination_is_recorded_with_its_decision(self, boundary):
-        decisions = boundary.decisions()
-        assert decisions, "the gateway recorded nothing"
-        assert any(d["decision"] == "ALLOW" for d in decisions)
-        assert any(d["decision"] == "DENY" for d in decisions)
-        for d in decisions:
-            assert d["actionType"] == "NETWORK"
-            assert d["reason"]
+    def test_every_destination_is_recorded_with_its_decision(self, tmp_path):
+        """Self-contained: this test makes its own ALLOW and DENY, so it does not depend
+        on what other tests happened to send through a shared boundary."""
+        with local_tls_boundary(tmp_path) as (result, port, ca_pem, _served):
+            inside(result, (
+                "import ssl,urllib.request,sys\n"
+                f"ctx=ssl.create_default_context(cadata={ca_pem!r})\n"
+                f"op=urllib.request.build_opener(urllib.request.ProxyHandler("
+                f"{{'https':'{PROXY}'}}),urllib.request.HTTPSHandler(context=ctx))\n"
+                f"op.open('https://localhost:{port}/ok',timeout=25)\n"
+                "try:\n"
+                f"    op.open('https://{DENIED_HOST}',timeout=25)\n"
+                "except Exception:\n"
+                "    pass\n"
+                "sys.exit(0)\n"))
+            decisions = result.decisions()
+            assert decisions, "the gateway recorded nothing"
+            assert any(d["decision"] == "ALLOW" and d["host"] == "localhost" for d in decisions)
+            assert any(d["decision"] == "DENY" and d["host"] == DENIED_HOST for d in decisions)
+            for d in decisions:
+                assert d["actionType"] == "NETWORK"
+                assert d["reason"]
 
     def test_no_payload_is_recorded(self, boundary):
         """AURA decides WHERE a connection goes. It does not read what

@@ -1,3 +1,4 @@
+import { AGENT_BASE, backendFetch } from '../backend/backendSession';
 /**
  * centralAgentClient — the renderer's one client for the AURA Central
  * Agent service.
@@ -20,9 +21,7 @@
  */
 
 import { FrameDeduper, parseBlock, splitBlocks } from './agentEventStream';
-import type { AgentApprovalRow } from './agentApprovals';
 
-const ENV = import.meta.env as unknown as Record<string, string | undefined>;
 /**
  * Base URL resolution:
  *   • explicit VITE_AGENT_URL always wins;
@@ -35,12 +34,10 @@ const ENV = import.meta.env as unknown as Record<string, string | undefined>;
  *     SAME origin the Environment surface uses (`service::PYTHON_PORT`).
  *     There is one Python backend and it serves both.
  */
-const BASE =
-  ENV.VITE_AGENT_URL?.replace(/\/$/, '') ??
-  (import.meta.env.DEV ? '/agent-api' : 'http://127.0.0.1:4320');
+const BASE = AGENT_BASE;
 
 async function jget<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+  const res = await backendFetch(`${BASE}${path}`);
   if (!res.ok) {
     let message = `request failed (${res.status})`;
     try {
@@ -53,7 +50,7 @@ async function jget<T>(path: string): Promise<T> {
 }
 
 async function jpost<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await backendFetch(`${BASE}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body ?? {}),
@@ -77,7 +74,6 @@ export type AgentOutcome =
   | 'completed'
   | 'failed'
   | 'blocked'
-  | 'awaiting-approval'
   | 'cancelled'
   | 'denied'
   | 'timeout'
@@ -87,7 +83,6 @@ export type AgentOutcome =
 
 export type AgentSessionState =
   | 'planning'
-  | 'awaiting-approval'
   | 'executing'
   | 'verifying'
   | 'completed'
@@ -98,7 +93,6 @@ export interface AgentEvidenceBundle {
   sessionId: string;
   planId: string;
   auditRecordIds: string[];
-  approvalIds: string[];
   summary: string;
   createdAt: string;
   /** Request legs that contributed (absent on older backends). */
@@ -120,6 +114,8 @@ export interface AgentTaskStatus {
   /** Worker that ran the task, e.g. "claude-code". Null when none did. */
   worker: string | null;
   dependsOn: string[];
+  /** Verification kind the plan declared. Absent on results from older builds. */
+  verification?: string | null;
 }
 
 /** The backend's terminal report. See docs/AURA_CENTRAL_AGENT_API.md. */
@@ -140,6 +136,67 @@ export interface AgentResult {
   unmetAcceptance?: string[];
   /** Per-task final states in plan order. Display only. */
   tasks?: AgentTaskStatus[];
+  /** Chat only: the sources the answer cites (`id` is the [n] in the text). */
+  sources?: ChatSource[];
+  /** Chat only: what web research did for this answer. */
+  research?: ChatResearch | null;
+  /** Chat only: next steps the conversation has earned. Offering is not doing. */
+  nextActions?: ('create-project' | 'create-plan')[];
+  /** Chat only: provider/model that wrote the answer (from routing, not the model). */
+  model?: { provider?: string; model?: string; latencyMs?: number } | null;
+  /** Chat only: what this turn added to Shared Context. */
+  recorded?: { kind: string; title: string }[];
+  /** Work only: what was measured about the run (see ExecutionReport). */
+  report?: ExecutionReport | null;
+}
+
+export interface ChatSource { id: number; title: string; url: string; snippet?: string; retrievedAt?: string }
+
+export interface ChatResearch {
+  status: 'ok' | 'empty' | 'unavailable' | 'cancelled' | 'skipped';
+  detail: string;
+  consulted: number;
+  cited: number;
+  requested?: number;
+  reason?: string;
+  kind?: 'not-configured' | 'timeout' | 'refused' | 'failed';
+  allSources?: ChatSource[];
+}
+
+/** The measured completion report of a Workspace run. */
+export interface ExecutionReport {
+  outcome: string;
+  workCompleted: { taskId: string; sourceId?: string | null; description: string; worker: string | null }[];
+  unfinished: { taskId: string; sourceId?: string | null; description: string; state: string; detail: string }[];
+  filesChanged: { path: string; op: 'created' | 'modified' | 'deleted'; taskId: string; worker: string | null; verified: boolean }[];
+  testsObserved: { taskId?: string; worker?: string; command: string; decision?: string }[];
+  toolsInstalled: ToolRecord[];
+  toolsReused: ToolRecord[];
+  verificationEvidence: { taskId: string; invocations: string[] }[];
+  acceptanceStated?: string[];
+  errors: { id: string; status: 'open' | 'workaround' | 'resolved'; summary: string; taskId: string | null; path: string }[];
+  handoffs: { taskId: string; fromNode: string; toNode: string; reason: string; round: number; verified: boolean }[];
+  limitations: string[];
+}
+
+export interface ToolRecord {
+  nodeId: string; name: string; outcome: string; version?: string; reason?: string; detail?: string;
+  exitCode?: number | null; durationMs?: number | null; command?: string | null;
+}
+
+export interface ModelStatus {
+  laya: {
+    configured: boolean; usable: boolean; note: string;
+    providers: { id: string; model: string; networkClass: string; enabled: boolean; circuit: string; calls?: number; check?: { state: 'ready' | 'unreachable' | 'model-missing' | 'unchecked' | 'disabled'; detail?: string } }[];
+    /** What Settings selected, and whether the Central Agent can call it. */
+    settings?: { configured: boolean; providerId?: string; model?: string; callable?: boolean; reason?: string };
+  };
+  local: { runtime: string; installed: boolean; running: boolean; state: string; configured: boolean; models: { name: string; sizeMB: number; parameters: string; embeddingOnly: boolean }[] };
+  recommendation: null | {
+    model: string; required: false; note: string; compatible?: boolean; needsConfiguration?: boolean;
+    approxDownloadMB?: number; ramGB?: number | null; freeDiskGB?: number | null;
+    benefit?: string; limitations?: string; problems?: string[]; command?: string; thenConfigure?: string;
+  };
 }
 
 export interface AgentMessage {
@@ -158,6 +215,8 @@ export interface AgentSession {
   activePlanId?: string | null;
   lastResult?: AgentResult | null;
   eventCount: number;
+  /** Background orchestration: `running` until the run settles. */
+  orchestrationState?: 'idle' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | null;
 }
 
 export interface PlanReviewStep {
@@ -173,15 +232,6 @@ export interface PlanReviewStep {
 export interface PlanReview {
   planId: string;
   steps: PlanReviewStep[];
-  estimatedApprovals: number;
-}
-
-export interface ApprovalDecision {
-  id: string;
-  state: 'pending' | 'granted' | 'denied' | 'expired';
-  decidedAt?: string | null;
-  decidedBy?: string | null;
-  summary?: string;
 }
 
 /** One lifecycle event from the live SSE stream. */
@@ -309,9 +359,22 @@ export function newClientSessionId(): string {
 
 /* ── the client ────────────────────────────────────────────────────── */
 
+/** The read-only routing decision for one message. See /agent/route. */
+export interface AskRouteDecision {
+  route: 'conversation' | 'clarify' | 'mission';
+  reason?: string;
+  question?: string;
+}
+
 export const centralAgentClient = {
   /** Liveness probe for the honest "Central Agent unavailable" states. */
   health: () => jget<{ ok: boolean; service: string }>('/health'),
+
+  /**
+   * Read-only routing decision for one message: conversation, clarify or
+   * mission. Creates no session and runs nothing.
+   */
+  route: (message: string) => jpost<AskRouteDecision>('/agent/route', { message }),
 
   /**
    * Submit an intent. Creates a session and drives it synchronously to a
@@ -371,23 +434,79 @@ export const centralAgentClient = {
   getSession: (sessionId: string) => jget<AgentSession>(`/agent/sessions/${encodeURIComponent(sessionId)}`),
 
   /**
-   * Pending approvals from the AGENT's own ledger. NOTE: during the
-   * migration there are TWO ledgers — this one (:4320) parks agent
-   * requests; `aiClient`/useFabric read the workflow service's (:4319).
-   * An agent-parked id must be resolved HERE, never through useFabric.
+   * Planner → Workspace: run a handed-over plan now, in Workspace. The
+   * backend validates the whole plan, refuses a revision already sent (409
+   * naming its sessionId) or one Workspace cannot carry out, and otherwise
+   * runs it on the same engine as `submit`. Resolves when the run settles;
+   * live progress arrives through `events(sessionId)` meanwhile.
    */
-  pendingApprovals: () => jget<{ approvals: AgentApprovalRow[] }>('/fabric/approvals'),
+  executePlan: async (
+    plan: import('./missionClient').WorkspacePlan,
+    opts: { sessionId: string; projectId?: string; projectPath: string; signal?: AbortSignal },
+  ): Promise<{ result: AgentResult; sessionId: string; requestId?: string | null }> => {
+    const res = await backendFetch(`${BASE}/agent/plans/execute`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plan, sessionId: opts.sessionId, projectId: opts.projectId, projectPath: opts.projectPath }),
+      signal: opts.signal,
+    });
+    if (!res.ok) {
+      // Keep the refusal's class: a duplicate (this revision already
+      // started, under `sessionId`) is not a failure to start.
+      const body = await res.json().catch(() => ({})) as { error?: string; code?: string; sessionId?: string };
+      throw Object.assign(new Error(body.error || `request failed (${res.status})`), {
+        status: res.status, code: body.code, sessionId: body.sessionId,
+      });
+    }
+    return res.json();
+  },
 
   /**
-   * Record THIS human decision through the same single-use ledger the
-   * Fabric spends, then resume the session in one call. Replays are
-   * refused by the backend with 409 — surfaced here as a thrown Error.
+   * Let's Chat: one conversational turn. The backend answers on a
+   * chat-mode session that can never plan, invoke a capability, dispatch a
+   * worker or write a file — work goes to Workspace (`submit`). Pass the
+   * returned `sessionId` back to continue the same conversation.
    */
-  approve: (sessionId: string, approvalId: string, granted: boolean, reason?: string) =>
-    jpost<{ approval: AgentApprovalRow; result: AgentResult; requestId?: string | null }>(
-      `/agent/sessions/${encodeURIComponent(sessionId)}/approve`,
-      { approvalId, granted, reason },
-    ),
+  chat: (
+    message: string,
+    opts: { sessionId?: string; projectId?: string; projectPath?: string; surface?: 'general-chat' | 'project-chat'; signal?: AbortSignal } = {},
+  ) =>
+    jpost<{ result: AgentResult; sessionId: string; requestId?: string | null }>('/agent/chat', {
+      message,
+      sessionId: opts.sessionId,
+      projectId: opts.projectId,
+      projectPath: opts.projectPath,
+      surface: opts.surface,
+    }, opts.signal),
+
+  /** Recent chat conversations: general chats, or one project's. */
+  chats: (projectId?: string, limit = 20) =>
+    jget<{ chats: { sessionId: string; title: string; updatedAt: string; turns: number; adoptedBy?: string | null }[] }>(
+      `/agent/chats?limit=${limit}${projectId ? `&projectId=${encodeURIComponent(projectId)}` : ''}`),
+
+  /** Provider status, local runtime detection and the optional small-model suggestion. */
+  modelsStatus: () => jget<ModelStatus>('/agent/models/status'),
+
+  /** Where web research is configured from (never credentials). */
+  researchConfig: () => jget<{ configured: boolean; endpoint: string | null; source: 'file' | 'environment' | null }>('/agent/research/config'),
+
+  /** Test a search-gateway address with one bounded query and save it only if it answers like one. */
+  saveResearchEndpoint: async (searchEndpoint: string) => {
+    const res = await backendFetch(`${BASE}/agent/research/config`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ searchEndpoint }),
+    });
+    return (await res.json()) as { ok: boolean; saved: boolean; reason: string; results?: number; endpoint?: string };
+  },
+
+  /** A bounded Shared Context package (decisions, requirements, research) for a scope. */
+  contextPackage: (scope: string, query = '', chars = 12000) =>
+    jget<{ text: string; records: number; available: number; budgetChars: number; scope: string; goal: string | null }>(
+      `/agent/context/${encodeURIComponent(scope)}?q=${encodeURIComponent(query)}&chars=${chars}`),
+
+  /** Carry a general-chat conversation into a newly created project. */
+  adoptConversation: (projectId: string, sessionId: string, idea?: string) =>
+    jpost<{ projectId: string; fromSession: string; carried: Record<string, number>; goal: string }>(
+      `/agent/projects/${encodeURIComponent(projectId)}/adopt`, { sessionId, idea }),
 
   resume: (sessionId: string) =>
     jpost<{ result: AgentResult; requestId?: string | null }>(`/agent/sessions/${encodeURIComponent(sessionId)}/resume`),
@@ -426,9 +545,6 @@ export const centralAgentClient = {
 
   /** What this host can really enforce for worker network access. */
   networkCapability: () => jget<NetworkCapability>('/governance/network'),
-
-  /** Reasoning-free plan review: steps, capabilities, risks, approvals. */
-  planReview: (sessionId: string) => jget<PlanReview>(`/agent/sessions/${encodeURIComponent(sessionId)}/plan`),
 
   /* Agent Runtime Control Plane ───────────────────────────────────── */
 
@@ -515,7 +631,7 @@ export const centralAgentClient = {
     const connectLoop = async () => {
       while (!stopped && !controller.signal.aborted) {
         try {
-          const res = await fetch(
+          const res = await backendFetch(
             `${BASE}/agent/sessions/${encodeURIComponent(sessionId)}/events`,
             {
               signal: controller.signal,
@@ -595,7 +711,7 @@ export const centralAgentClient = {
   }> => {
     const form = new FormData();
     form.append('file', file);
-    const res = await fetch(`${BASE}/documents/ingest`, { method: 'POST', body: form });
+    const res = await backendFetch(`${BASE}/documents/ingest`, { method: 'POST', body: form });
     if (!res.ok) {
       let msg = `request failed (${res.status})`;
       try {

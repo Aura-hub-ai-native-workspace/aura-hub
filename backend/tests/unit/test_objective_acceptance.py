@@ -183,7 +183,7 @@ class TestSynthesisHonesty:
         assert result.outcome == "failed"
         assert result.failureReason == "objective-unaccepted"
         # Worker-level pass and mission-level verdict are stated separately.
-        assert "Worker checks passed: t1:" in result.summary
+        assert "Worker checks passed: task t1:" in result.summary
         assert "Mission not verified" in result.summary
         assert "Objective NOT verified" not in result.summary
         assert result.verified == ["t1"]  # records stay honest

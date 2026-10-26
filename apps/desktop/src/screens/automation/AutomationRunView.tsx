@@ -24,7 +24,6 @@ import {
 } from '../../ai/automationClient';
 import { aiClient, type NodeSpecInfo, type WorkflowRun } from '../../ai/aiClient';
 import { useAutomation } from '../../data/useAutomation';
-import { useFabric, pendingApprovals } from '../../data/useFabric';
 import { useWorkflows } from '../../data/useWorkflows';
 import { EmptyState } from '../../components/EmptyState';
 import { RunView } from '../workflows/RunView';
@@ -332,7 +331,7 @@ function ChainStrip({ run, links }: { run: AutomationRun; links: VerifiedLink[] 
     {
       label: 'Workflow run',
       detail: links.length ? links.map((l) => l.run.state).join(', ') : 'none started',
-      tone: links.length ? (links.some((l) => l.run.state === 'awaiting-approval') ? 'warn' : 'ok') : 'muted',
+      tone: links.length ? 'ok' : 'muted',
     },
     { label: 'Evidence', detail: evidence ? `${evidence} governed` : 'none', tone: evidence ? 'ok' : 'muted' },
   ];
@@ -367,9 +366,6 @@ function ActionStep({
   onOpenWorkflowRun: (l: VerifiedLink) => void;
 }) {
   const meta = ACTIONS[action.action];
-  // A workflow parked on an approval is the automation working correctly:
-  // it fired without a person present and the policy engine stopped it.
-  const parked = link?.run.state === 'awaiting-approval';
 
   return (
     <li className="px-3 py-2.5">
@@ -388,11 +384,11 @@ function ActionStep({
       {action.summary && !link && <p className="ml-7 mt-0.5 text-[11.5px] text-text-muted">{action.summary}</p>}
 
       {link && (
-        <div className={`ml-7 mt-1.5 rounded-lg border px-2.5 py-2 ${parked ? 'border-attention/40 bg-attention/[0.06]' : 'border-line bg-surface'}`}>
+        <div className={`ml-7 mt-1.5 rounded-lg border px-2.5 py-2 border-line bg-surface`}>
           <div className="flex flex-wrap items-center gap-2">
-            <Icon name="workflows" size={12} className={parked ? 'text-attention' : 'text-text-subtle'} />
+            <Icon name="workflows" size={12} className="text-text-subtle" />
             <span className="text-[11.5px] text-text">{link.run.workflowName}</span>
-            <Badge tone={parked ? 'attention' : link.run.state === 'succeeded' ? 'positive' : link.run.state === 'failed' || link.run.state === 'timed-out' ? 'critical' : 'neutral'}>
+            <Badge tone={link.run.state === 'succeeded' ? 'positive' : link.run.state === 'failed' || link.run.state === 'timed-out' ? 'critical' : 'neutral'}>
               {link.run.state}
             </Badge>
             {link.run.evidence.length > 0 && (
@@ -404,12 +400,6 @@ function ActionStep({
               Open run
             </Button>
           </div>
-          {parked && (
-            <p className="mt-1 text-[10.5px] leading-relaxed text-text-muted">
-              The automation did its job and the workflow is waiting on a person. An automation authorizes nothing, so a
-              governed step above auto-execute parks here until you answer it.
-            </p>
-          )}
         </div>
       )}
     </li>
@@ -430,13 +420,6 @@ function WorkflowRunPane({
   onReload: () => void;
 }) {
   const [run, setRun] = useState<WorkflowRun>(link.run);
-  const approvals = useFabric((s) => s.approvals);
-  const deciding = useFabric((s) => s.deciding);
-  const decide = useFabric((s) => s.decide);
-  const watch = useFabric((s) => s.watchApprovals);
-
-  useEffect(() => watch(), [watch]);
-
   const reload = useCallback(async () => {
     const fresh = await aiClient.workflowRun(link.workflowId, link.workflowRunId).catch(() => null);
     if (fresh && 'id' in fresh) setRun(fresh);
@@ -453,17 +436,11 @@ function WorkflowRunPane({
       </div>
       <div className="min-h-0 flex-1">
         {/* The single implementation of run detail. Nothing is re-rendered
-            here — approvals, evidence, steps and states all come from it. */}
+            here — evidence, steps and states all come from it. */}
         <RunView
           run={run}
           specs={specOf}
           graphOrder={Object.keys(run.nodes)}
-          approvals={pendingApprovals(approvals)}
-          onDecideApproval={async (id, granted, reason) => {
-            await decide(id, granted, reason);
-            await reload();
-          }}
-          decidingId={deciding}
         />
       </div>
     </div>

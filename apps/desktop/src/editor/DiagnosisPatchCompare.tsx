@@ -17,12 +17,12 @@ import { splicePatch } from './editorTypes';
 
 const DECISION_TONE: Record<PatchDecision, StatusTone> = {
   'auto-approved': 'positive',
-  'requires-manual-approval': 'attention',
+  'requires-manual-review': 'attention',
   'auto-rejected': 'critical',
 };
 const DECISION_LABEL: Record<PatchDecision, string> = {
   'auto-approved': 'Passed safety gates',
-  'requires-manual-approval': 'Requires manual approval',
+  'requires-manual-review': 'Needs manual review',
   'auto-rejected': 'Auto-rejected',
 };
 

@@ -3,7 +3,7 @@
  * notifications. Runs on mount (App shell) and then on a 15s cadence.
  * ------------------------------------------------------------------
  * Every notification is derived from a public engine response:
- *   · mission lists  → approval-required / review-required / mission-completed
+ *   · mission lists  → review-required / mission-completed
  *   · mission detail → architecture-warning, documentation-outdated (from real signals)
  *   · diagnosis list → diagnosis-ready
  *   · health endpoint → health-changed (fired only on state transitions)
@@ -15,7 +15,6 @@ import { useWorkspace } from '../data/useWorkspace';
 import { missionClient, type MissionSummary } from '../ai/missionClient';
 import { diagnosisClient } from '../ai/diagnosisClient';
 import { aiClient } from '../ai/aiClient';
-import { fabricClient } from '../ai/fabricClient';
 import { useNotificationsStore, unreadCount } from './notificationsStore';
 
 export function useNotificationsFeed(intervalMs = 15000) {
@@ -29,28 +28,6 @@ export function useNotificationsFeed(intervalMs = 15000) {
     const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
 
     const poll = async () => {
-      // Fabric authorization gates. The dedupe key is the service's own
-      // approval-request id, so one request produces exactly one
-      // notification no matter how many times this polls, how often the
-      // app reloads, or how many windows are open.
-      try {
-        const res = await fabricClient.approvals();
-        for (const request of res.approvals ?? []) {
-          const item = request.items[0];
-          notify({
-            key: `fabric-approval:${request.id}`,
-            kind: 'approval-required',
-            title: `Authorization required — ${item?.title ?? 'action'}`,
-            detail: request.target ? `${request.target} · ${request.summary}` : request.summary,
-            at: request.requestedAt,
-            projectId: request.projectId,
-            missionId: request.missionId,
-          });
-        }
-      } catch {
-        /* the gate is service-side; a failed poll changes nothing */
-      }
-
       // Health transition
       try {
         const h = await aiClient.health();
@@ -96,18 +73,6 @@ export function useNotificationsFeed(intervalMs = 15000) {
 
         for (const m of missions.slice(0, 40)) {
           const name = projectName(pid);
-          if (m.approval.status === 'pending' && !seenByPoll.has(`approve:${pid}:${m.id}`)) {
-            seenByPoll.add(`approve:${pid}:${m.id}`);
-            notify({
-              key: `approve:${pid}:${m.id}`,
-              kind: 'approval-required',
-              title: 'Approval required',
-              detail: `${name} · ${m.text}`,
-              at: m.createdAt,
-              projectId: pid,
-              missionId: m.id,
-            });
-          }
           if (m.execution?.status === 'reviewing' && !seenByPoll.has(`review:${pid}:${m.id}`)) {
             seenByPoll.add(`review:${pid}:${m.id}`);
             notify({

@@ -2,7 +2,7 @@
  * useAgentConversations — scoped chats over the Central Agent.
  * ==================================================================
  * ONE engine, TWO scopes:
- *   · project   — "Ask AURA": plans, decisions and understanding.
+ *   · project   — "Let's Chat": conversation only (/agent/chat); it never runs work.
  *   · workspace — "Execution Chat": the Hub workspace's doing-thread.
  * Each scope lists, selects and persists through its OWN routes and its
  * own file family on the service, so the transcripts cannot mix. The
@@ -25,13 +25,17 @@
  * "Hi" does not require choosing a directory first. Nothing else
  * changes: one store, one session contract, one event stream.
  *
- * Intelligence path (only):
- *   centralAgentClient.submit/message → :4320 /agent/sessions
+ * Intelligence paths (only):
+ *   project   — centralAgentClient.chat → :4320 /agent/chat (answers only)
+ *   workspace — centralAgentClient.submit/message → :4320 /agent/sessions
  *   → CentralAgent → intent/plan/authority/Fabric/verify/evidence
  *   → answer.token frames + terminal AgentResult over the session SSE.
  * There is NO aiClient.stream (/stream) reference in this file.
  */
 
+import { metaWithReason, reasonFromMeta } from './failureReason';
+import { isStartedResult, waitForRun } from './backgroundRun';
+import { foldPlanEvent, type BuildingDraft, type PlanStage } from './planProgress';
 import { create } from 'zustand';
 import {
   centralAgentClient,
@@ -41,6 +45,8 @@ import {
   type AgentResult,
   type EditorContext,
   type PlanReview,
+  type ChatResearch,
+  type ChatSource,
   type AgentTaskStatus,
 } from './centralAgentClient';
 import {
@@ -49,9 +55,15 @@ import {
   type ConversationSummary,
   type Handoff,
 } from './aiClient';
+import { useAppStore } from '@aura/core';
 import { useWorkspace } from '../data/useWorkspace';
+import { resolveWorkspaceProjectPath } from './workspaceProject';
 import { eventPhrase, toolName } from './agentNarration';
-import type { AgentApprovalRow } from './agentApprovals';
+import { EMPTY_TURN, foldChatEvent, type ChatStep } from './chatEvents';
+import { missionClient } from './missionClient';
+import { useLayoutStore } from '../ops/layoutStore';
+import type { WorkspacePlan } from './missionClient';
+import { BackendRefusedError } from '../backend/backendSession';
 
 export type AgentConvPhase = 'idle' | 'working';
 
@@ -70,11 +82,47 @@ export interface AgentActivity {
   /** One short phrase, or null when nothing is happening. */
   phase: string | null;
   /** A decision is pending. */
-  awaitingApproval: boolean;
+}
+
+/** Shown when this view stops waiting. The run itself is not cancelled. */
+const STILL_RUNNING_NOTE = 'Still running on the server. This view stopped waiting; the result appears here when you reopen the conversation.';
+
+/**
+ * Runs accepted in the background and not yet settled, per viewer. A reload
+ * must not forget a run that is still working on the server. This is a
+ * per-viewer convenience only: the authoritative result is the session.
+ */
+const PENDING_RUNS_KEY = 'aura.pendingRuns.v1';
+interface PendingRun { convId: string; assistantId: string; sessionId: string; owner: Owner }
+
+function readPendingRuns(): PendingRun[] {
+  try {
+    const raw = globalThis.localStorage?.getItem(PENDING_RUNS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? (parsed as PendingRun[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writePendingRuns(runs: PendingRun[]): void {
+  try {
+    globalThis.localStorage?.setItem(PENDING_RUNS_KEY, JSON.stringify(runs));
+  } catch {
+    /* storage may be unavailable; the run is still followed in this session */
+  }
+}
+
+function rememberPendingRun(run: PendingRun): void {
+  writePendingRuns([...readPendingRuns().filter((r) => r.sessionId !== run.sessionId), run]);
+}
+
+function forgetPendingRun(sessionId: string): void {
+  writePendingRuns(readPendingRuns().filter((r) => r.sessionId !== sessionId));
 }
 
 const IDLE_ACTIVITY: AgentActivity = {
-  workers: {}, tools: [], phase: null, awaitingApproval: false,
+  workers: {}, tools: [], phase: null,
 };
 
 export interface AgentMsgMeta {
@@ -87,7 +135,6 @@ export interface AgentMsgMeta {
   /** Raw event types behind the labels — drives AgentPhaseStrip. */
   events: string[];
   plan: PlanReview | null;
-  approvalId: string | null;
   performed: string[];
   verified: string[];
   evidenceSummary: string | null;
@@ -103,6 +150,16 @@ export interface AgentMsgMeta {
   /** Each planned task's final state, in plan order. */
   tasks?: AgentTaskStatus[];
   failureReason?: string | null;
+  /** Chat: the real pipeline steps seen while the answer was made. */
+  chatSteps?: ChatStep[];
+  /** Chat: sources the answer cites, what research did, what AURA noted, and the next steps offered. */
+  sources?: ChatSource[];
+  research?: ChatResearch | null;
+  recorded?: { kind: string; title: string }[];
+  nextActions?: string[];
+  modelUsed?: { provider?: string; model?: string } | null;
+  /** Chat: a plan built from this conversation's context, ready to send to the Planner. */
+  planDraft?: { status: 'building' | 'ready' | 'failed'; missionId?: string; goal?: string; taskCount?: number; error?: string; stage?: PlanStage; elapsedMs?: number; receivedChars?: number };
 }
 
 /** The mission-status fields of a result, for the message metadata. */
@@ -117,6 +174,20 @@ function missionMeta(result: AgentResult): Pick<AgentMsgMeta,
     failureReason: result.failureReason ?? null,
   };
 }
+
+/** What the Planner hands over: the reserved session and the actual plan. */
+export interface PlanExecution {
+  plan: WorkspacePlan;
+  sessionId: string;
+  projectId: string;
+  projectPath: string;
+}
+
+export type PlanStartResult =
+  | { status: 'started' }
+  /** This revision is already running or ran, under `sessionId`. */
+  | { status: 'duplicate'; sessionId: string }
+  | { status: 'failed'; error: string };
 
 export interface AgentChatMessage {
   id: string;
@@ -152,21 +223,36 @@ interface AgentConvState {
   reloadList: () => Promise<void>;
   select: (cid: string) => Promise<void>;
   newConversation: () => Promise<string | null>;
+  /**
+   * Planner → Workspace: run a handed-over plan as a live Workspace turn in
+   * the plan's own project. Resolves once Workspace has CONFIRMED the run
+   * exists (its session was created) — or with why it did not start; the
+   * run itself keeps going in the transcript.
+   */
+  executePlan: (handoff: PlanExecution) => Promise<PlanStartResult>;
   rename: (cid: string, title: string) => Promise<void>;
   remove: (cid: string) => Promise<void>;
   send: (text: string, opts?: { editorContext?: EditorContext; webResearch?: boolean }) => Promise<void>;
   /** Answer a needs-clarification prompt on the thread's live session. */
   answer: (text: string) => Promise<void>;
-  decide: (messageId: string, granted: boolean, reason?: string) => Promise<AgentApprovalRow | null>;
   stop: () => void;
   regenerate: () => Promise<void>;
-  /** Offer a project Ask AURA message (or messages) to the workspace. */
+  /** Project chat: build a plan from this conversation's shared context. */
+  buildPlan: (messageId: string) => Promise<void>;
+  /** Stop a plan that is being built from chat. */
+  cancelPlan: (messageId: string) => void;
+  /** Open the Planner on the plan a chat message built. */
+  sendToPlanner: (messageId: string) => void;
+  /** Offer a project Let's Chat message (or messages) to the workspace. */
   handoffToWorkspace: (convId: string, messageIds: string[], title: string, notes?: string) => Promise<Handoff>;
   /** Re-read the workspace's handoff inbox. */
   reloadHandoffs: () => Promise<void>;
   /** Accept an offered handoff into the active execution chat. */
   acceptHandoff: (handoff: Handoff) => Promise<void>;
 }
+
+/** Plans being built from chat, by message: the duplicate guard and the cancel handle. */
+const planControllers = new Map<string, AbortController>();
 
 let seq = 0;
 const nid = () => `am${Date.now().toString(36)}${seq++}`;
@@ -175,7 +261,9 @@ const EVENT_LABELS: Array<[RegExp, string]> = [
   [/^session\.started$/, 'Request received'],
   [/^intent\.compiled$/, 'Understanding request'],
   [/^intent\.clarification-needed$/, 'Needs your input'],
+  [/^plan\.received$/, 'Plan received from Planner'],
   [/^plan\.created$/, 'Plan ready'],
+  [/^task\.authored$/, 'AURA wrote a file'],
   [/^capability\.discovery$/, 'Checking capabilities'],
   [/^authority\.checked$/, 'Authority check'],
   [/^workflow\.(compiled|validated)$/, 'Plan validated'],
@@ -183,8 +271,8 @@ const EVENT_LABELS: Array<[RegExp, string]> = [
   [/^worker\.lifecycle$/, 'Working'],
   [/^worker\.action$/, 'Governed action'],
   [/^invocation\.observed$/, 'Governed action'],
-  [/^approval\.required$/, 'Waiting for approval'],
   [/^verification\.completed$/, 'Verifying'],
+  [/^task\.retried$/, 'Retrying a failed task'],
   [/^answer\.started$/, 'Composing answer'],
   [/^result\.ready$/, 'Completed'],
   [/^agent\.(failed|cancelled)$/, 'Settling'],
@@ -199,7 +287,19 @@ function labelForEvent(type: string): string | null {
   return null;
 }
 
+/** Real web sources cited anywhere in this conversation (for the plan's provenance). */
+export function sourcesFromContext(messages: AgentChatMessage[]): { title: string; url: string }[] {
+  const seen = new Map<string, { title: string; url: string }>();
+  for (const m of messages) for (const s of m.agent?.sources ?? []) {
+    if (/^https?:\/\//i.test(s.url) && !seen.has(s.url)) seen.set(s.url, { title: s.title, url: s.url });
+  }
+  return [...seen.values()].slice(0, 12);
+}
+
 function errorText(e: unknown): string {
+  // A backend that is not this launch's is refused before any request. Say so,
+  // and say why, rather than the generic unreachable message.
+  if (e instanceof BackendRefusedError) return e.message;
   const msg = (e as Error)?.message ?? String(e);
   if (/failed to fetch|networkerror|load failed|connection refused/i.test(msg)) {
     return 'Central Agent unavailable — could not reach the agent service. Check that AURA is running and try again.';
@@ -282,10 +382,6 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       workers: prev.workers,
       tools: prev.tools,
       phase: phrase ?? prev.phase,
-      awaitingApproval:
-        frame.type === 'approval.required' ? true
-          : frame.type === 'result.ready' || frame.type === 'run.cancelled'
-            ? false : prev.awaitingApproval,
     };
 
     if (frame.type === 'worker.lifecycle') {
@@ -314,7 +410,9 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
   async function persistAssistant(convId: string, m: AgentChatMessage, owner: Owner) {
     if (!owner.projectId) return;
     try {
-      const meta = m.agent ? { agent: { ...m.agent, events: m.agent.events.slice(-100), progress: m.agent.progress.slice(-20), plan: m.agent.plan ? { planId: m.agent.plan.planId, steps: m.agent.plan.steps.length } : null } } : undefined;
+      const agentMeta = m.agent ? { agent: { ...m.agent, events: m.agent.events.slice(-100), progress: m.agent.progress.slice(-20), plan: m.agent.plan ? { planId: m.agent.plan.planId, steps: m.agent.plan.steps.length } : null } } : undefined;
+      // A failed turn keeps its specific (scrubbed) reason across a restart.
+      const meta = metaWithReason(agentMeta, m.status === 'error', m.error);
       if (owner.scope === 'workspace' && owner.workspaceId) {
         await aiClient.appendWorkspaceMessage(owner.workspaceId, convId, {
           role: 'assistant', content: m.content, meta, error: m.status === 'error',
@@ -329,7 +427,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
   }
 
   /** Route a terminal-or-parked result into the assistant message. */
-  async function adoptResult(convId: string, assistantId: string, result: AgentResult, sessionId: string, owner: Owner) {
+  async function adoptResult(convId: string, assistantId: string, result: AgentResult, owner: Owner) {
     // The turn keeps the record of what it used, so the transcript can
     // still say "Used Git and OpenCode" after the live line has gone.
     // It is a record of reported use, never a claim of success.
@@ -337,36 +435,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     if (used.length) {
       patchMsg(assistantId, (m) => (m.agent ? { ...m, agent: { ...m.agent, tools: used } } : m));
     }
-    if (result.outcome === 'awaiting-approval') {
-      let plan: PlanReview | null = null;
-      try {
-        plan = await centralAgentClient.planReview(sessionId);
-      } catch { /* advisory; approval ids are authoritative */ }
-      // Exact correlation only: the approval id comes from THIS
-      // result's evidence. When it is absent we render a deterministic
-      // error rather than guessing another session's pending
-      // approval (the backend would refuse it with 409).
-      const approvalId: string | null = result.evidence?.approvalIds?.[0] ?? null;
-      if (!approvalId) {
-        const entry = get().messages.find((m) => m.id === assistantId);
-        patchMsg(assistantId, (m) => ({
-          ...m, status: 'error',
-          error: 'The run parked for approval but named no approval. Nothing was approved; start a new request.',
-        }));
-        if (entry) void persistAssistant(convId, { ...entry, status: 'error', error: 'Parked approval reference missing.' }, owner);
-        return;
-      }
-      patchMsg(assistantId, (m) => ({
-        ...m,
-        status: 'done',
-        content: result.summary,
-        agent: m.agent ? {
-          ...m.agent, outcome: result.outcome, plan, approvalId, ...missionMeta(result),
-          performed: result.performed, verified: result.verified,
-          evidenceSummary: result.evidence?.summary ?? null, runId: result.runId ?? null,
-        } : m.agent,
-      }));
-    } else if (result.outcome === 'completed') {
+    if (result.outcome === 'completed') {
       // Authoritative summary replaces streamed tokens (it carries the
       // deterministic trailer); streamed text was progress, not record.
       patchMsg(assistantId, (m) => ({
@@ -377,6 +446,11 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
           ...m.agent, outcome: result.outcome, ...missionMeta(result),
           performed: result.performed, verified: result.verified,
           evidenceSummary: result.evidence?.summary ?? null, runId: result.runId ?? null,
+          ...(owner.scope === 'project' ? {
+            sources: result.sources ?? [], research: result.research ?? m.agent.research ?? null,
+            recorded: result.recorded ?? [], nextActions: result.nextActions ?? [],
+            modelUsed: result.model ?? null,
+          } : {}),
         } : m.agent,
       }));
     } else if (result.outcome === 'needs-clarification') {
@@ -404,6 +478,101 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     if (final && final.status !== 'cancelled') void persistAssistant(convId, final, owner);
   }
 
+  /**
+   * Follow a background run the server accepted: the turn stays live until
+   * the run settles, is stopped, or this view's wait ceiling passes. The
+   * result comes from the run's own session, never from `started`.
+   */
+  async function followBackgroundRun(
+    convId: string, assistantId: string, sessionId: string, owner: Owner, flight: Inflight,
+  ) {
+    rememberPendingRun({ convId, assistantId, sessionId, owner });
+    const wait = await waitForRun({
+      sessionId,
+      getSession: (sid) => centralAgentClient.getSession(sid),
+      signal: flight.controller.signal,
+    });
+    // A settled or stopped wait is over, so its pending record goes. A
+    // timed-out wait keeps it, so a reload can pick the run back up.
+    if (wait.kind !== 'timeout') forgetPendingRun(sessionId);
+    // Stop() has already settled this turn and owns its message.
+    if (inflight !== flight || flight.settled) return;
+    if (wait.kind === 'cancelled') return;
+    if (wait.kind === 'timeout') {
+      patchMsg(assistantId, (m) => ({ ...m, status: 'streaming', content: STILL_RUNNING_NOTE }));
+      return;
+    }
+    await adoptResult(convId, assistantId, wait.result, owner);
+  }
+
+  /**
+   * Re-attach to a run that was still working when this conversation was
+   * last open: restore its placeholder, then follow it like a live turn.
+   */
+  async function resumePendingRuns(convId: string) {
+    if (inflight) return;
+    const pending = readPendingRuns().find((r) => r.convId === convId);
+    if (!pending) return;
+    if (!get().messages.some((m) => m.id === pending.assistantId)) {
+      set({
+        messages: [
+          ...get().messages,
+          {
+            id: pending.assistantId, role: 'assistant', content: '', status: 'streaming',
+            agent: {
+              sessionId: pending.sessionId, outcome: null, requestId: null, progress: [], events: [],
+              plan: null, performed: [], verified: [], evidenceSummary: null,
+              runId: null, needsInput: false, cancelled: false, tools: [],
+            },
+          },
+        ],
+      });
+    }
+    const flight: Inflight = {
+      seq: Date.now(), sessionId: pending.sessionId, convId,
+      assistantId: pending.assistantId, controller: new AbortController(),
+      unsubscribe: null, settled: false, owner: pending.owner,
+    };
+    inflight = flight;
+    set({ phase: 'working', activity: IDLE_ACTIVITY });
+    try {
+      await followBackgroundRun(convId, pending.assistantId, pending.sessionId, pending.owner, flight);
+    } finally {
+      if (inflight === flight) {
+        flight.settled = true;
+        inflight = null;
+        set({ phase: 'idle', activity: { ...get().activity, phase: null, workers: {} } });
+      }
+    }
+  }
+
+  /**
+   * One Let's Chat turn. Project conversations are conversation-only: they
+   * go to /agent/chat, which can never plan, invoke, dispatch or write. A
+   * thread saved before the split may still point at a work session the
+   * chat route refuses; the conversation then continues on a fresh chat
+   * session instead of failing.
+   */
+  async function chatTurn(
+    sessionId: string,
+    instruction: string,
+    followUp: boolean,
+    projectId: string | null,
+    projectPath: string | null,
+    signal: AbortSignal,
+  ): Promise<{ result: AgentResult; sessionId: string; requestId: string | null }> {
+    const ask = (sid: string) => centralAgentClient.chat(instruction, {
+      sessionId: sid, projectId: projectId ?? undefined, projectPath: projectPath ?? undefined,
+      surface: 'project-chat', signal,
+    }).then((r) => ({ result: r.result, sessionId: r.sessionId, requestId: r.requestId ?? null }));
+    try {
+      return await ask(sessionId);
+    } catch (e) {
+      if (!followUp || !/belongs to Workspace/i.test(errorText(e))) throw e;
+      return ask(newClientSessionId());
+    }
+  }
+
   async function drive(
     convId: string,
     assistantId: string,
@@ -418,6 +587,11 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
      * off the session, so one turn's choice cannot leak into the next.
      */
     webResearch: boolean = false,
+    /**
+     * Run this leg through a different request (the Planner handoff), with
+     * everything else — events, Stop, persistence, result — unchanged.
+     */
+    request?: (signal: AbortSignal) => Promise<{ result: AgentResult; sessionId: string; requestId?: string | null }>,
   ) {
     const { projectId, projectPath } = get();
     const mySeq = (inflight?.seq ?? 0) + 1;
@@ -446,6 +620,18 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
         }));
         return;
       }
+      if (owner.scope === 'project') {
+        // The chat pipeline's own events become the visible trace. Tokens are
+        // handled above; here only the steps, sources and research status.
+        patchMsg(assistantId, (m) => {
+          if (!m.agent) return m;
+          const next = foldChatEvent({ ...EMPTY_TURN, steps: m.agent.chatSteps ?? [], sources: m.agent.sources ?? [],
+            research: m.agent.research ? { status: m.agent.research.status, detail: m.agent.research.detail, kind: m.agent.research.kind } : null }, frame);
+          return { ...m, agent: { ...m.agent, chatSteps: next.steps,
+            sources: next.sources.length ? next.sources : m.agent.sources,
+            research: next.research ? { ...(m.agent.research ?? { consulted: 0, cited: 0 }), ...next.research } as ChatResearch : m.agent.research } };
+        });
+      }
       const label = labelForEvent(frame.type);
       pushEvent(assistantId, frame.type, label);
       absorbActivity(frame);
@@ -464,7 +650,11 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     };
 
     try {
-      const res = followUp
+      const res = request
+        ? await request(controller.signal).then((r) => ({ ...r, requestId: r.requestId ?? null }))
+        : owner.scope === 'project'
+        ? await chatTurn(sessionId, instruction, followUp, projectId, projectPath, controller.signal)
+        : followUp
         ? await centralAgentClient.message(sessionId, instruction, {
           projectId: projectId ?? undefined,
           projectPath: projectPath ?? undefined,
@@ -480,7 +670,13 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       if (!alive()) return; // cancelled or superseded mid-flight
       const finalSid = res.sessionId ?? sessionId;
       patchMsg(assistantId, (m) => (m.agent ? { ...m, agent: { ...m.agent, sessionId: finalSid, requestId: res.requestId } } : m));
-      await adoptResult(convId, assistantId, res.result, finalSid, owner);
+      if (isStartedResult(res.result)) {
+        // Accepted and running on the server. `started` is not an outcome:
+        // the turn stays live and subscribed until the run settles.
+        await followBackgroundRun(convId, assistantId, finalSid, owner, flight);
+      } else {
+        await adoptResult(convId, assistantId, res.result, owner);
+      }
     } catch (e) {
       if (!alive()) return;
       if ((e as Error)?.name === 'AbortError') {
@@ -515,7 +711,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     async loadForProject(projectId, projectPath = null) {
       // Same project, already in project scope: nothing to do. A scope
       // change ALWAYS reloads — arriving here from a workspace means the
-      // Ask AURA threads must replace the execution transcript.
+      // Let's Chat threads must replace the execution transcript.
       if (get().scope === 'project' && get().projectId === projectId) return;
       if (inflight) {
         inflight.controller.abort();
@@ -552,13 +748,16 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       // session whose invocations have no cwd, and every worker dispatch
       // fails with "No project directory is set". Resolve the active
       // project's registered path so delegated work has a home.
-      const activeProject = useWorkspace.getState().projects
-        .find((p) => p.id === activeId);
+      const projectPath = resolveWorkspaceProjectPath(
+        useWorkspace.getState().projects,
+        activeId,
+        useAppStore.getState().activeProjectId,
+      );
       set({
         scope: 'workspace',
         workspaceId,
         projectId: activeId,
-        projectPath: activeProject?.path ?? null,
+        projectPath,
         handoffs: [],
         conversations: [], activeId: null, messages: [], phase: 'idle', activity: IDLE_ACTIVITY,
         loading: true, agentUp: null,
@@ -619,7 +818,6 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
                 progress: agent.progress ?? [],
                 events: agent.events ?? [],
                 plan: null,
-                approvalId: agent.approvalId ?? null,
                 performed: agent.performed ?? [],
                 verified: agent.verified ?? [],
                 evidenceSummary: agent.evidenceSummary ?? null,
@@ -634,9 +832,12 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
               }
               : undefined;
             const status = m.error ? 'error' as const : full?.cancelled ? 'cancelled' as const : 'done' as const;
-            return { id: m.id, role: m.role, content: m.content, status, agent: full };
+            return { id: m.id, role: m.role, content: m.content, status, agent: full, ...(status === 'error' ? { error: reasonFromMeta(m.meta) } : {}) };
           }),
         });
+        // A run still working on the server when this conversation was last
+        // open is re-attached, so its result lands here when it settles.
+        void resumePendingRuns(cid);
       } catch {
         if (get().activeId === cid) set({ messages: [] });
       }
@@ -664,6 +865,65 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       set({ activeId: conv.id, messages: [], phase: 'idle' });
       await get().reloadList();
       return conv.id;
+    },
+
+    async executePlan(handoff) {
+      const wsId = `workspace:${handoff.projectId}`;
+      // Already started (a reload, a second window, a retried click): the
+      // backend has this session, so never send the plan again.
+      const existing = await centralAgentClient.getSession(handoff.sessionId).catch(() => null);
+      if (existing) return { status: 'duplicate', sessionId: handoff.sessionId };
+      if (get().scope !== 'workspace' || get().workspaceId !== wsId) {
+        await get().loadForWorkspace(wsId);
+      }
+      if (get().phase !== 'idle') {
+        return { status: 'failed', error: 'Workspace is still running another request in this project. Send the plan again when it finishes.' };
+      }
+      const owner: Owner = { scope: 'workspace', projectId: handoff.projectId, workspaceId: wsId };
+      const convId = await get().newConversation();
+      if (!convId) return { status: 'failed', error: 'Workspace could not open a conversation for this plan.' };
+      const { plan } = handoff;
+      const instruction = `Run plan from Planner: ${plan.goal} — ${plan.tasks.length} task${plan.tasks.length === 1 ? '' : 's'}, revision ${plan.revision}`;
+      void get().rename(convId, `Plan: ${plan.goal}`.slice(0, 80)).catch(() => {});
+      const userId = nid();
+      const assistantId = nid();
+      set({
+        messages: [
+          ...get().messages,
+          { id: userId, role: 'user', content: instruction, status: 'done' },
+          {
+            id: assistantId, role: 'assistant', content: '', status: 'streaming',
+            agent: {
+              sessionId: handoff.sessionId, outcome: null, requestId: null, progress: [], events: [],
+              plan: null, performed: [], verified: [], evidenceSummary: null,
+              runId: null, needsInput: false, cancelled: false, tools: [],
+            },
+          },
+        ],
+      });
+      aiClient.appendWorkspaceMessage(wsId, convId, { role: 'user', content: instruction })
+        .then(() => get().reloadList()).catch(() => {});
+
+      let refused: (Error & { code?: string; sessionId?: string }) | null = null;
+      const run = drive(convId, assistantId, handoff.sessionId, instruction, undefined, false, owner, false,
+        (signal) => centralAgentClient.executePlan(plan, {
+          sessionId: handoff.sessionId, projectId: handoff.projectId, projectPath: handoff.projectPath, signal,
+        }).catch((e) => { refused = e as Error & { code?: string; sessionId?: string }; throw e; }));
+
+      // Confirmation is the backend's, never assumed: the run's session
+      // exists once Workspace has accepted the plan and started it.
+      for (let i = 0; i < 120; i += 1) {
+        const err = refused as (Error & { code?: string; sessionId?: string }) | null;
+        if (err) {
+          return err.code === 'duplicate' && err.sessionId
+            ? { status: 'duplicate', sessionId: err.sessionId }
+            : { status: 'failed', error: err.message };
+        }
+        if (await centralAgentClient.getSession(handoff.sessionId).catch(() => null)) return { status: 'started' };
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      void run;
+      return { status: 'failed', error: 'Workspace did not confirm the run within a minute. Check Workspace before sending again.' };
     },
 
     async rename(cid, title) {
@@ -726,7 +986,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       const agentMeta: AgentMsgMeta = {
         sessionId: priorSid, outcome: null, requestId: null,
         progress: [], events: [],
-        plan: null, approvalId: null, performed: [], verified: [],
+        plan: null, performed: [], verified: [],
         evidenceSummary: null, runId: null, needsInput: false, cancelled: false,
         tools: [],
       };
@@ -764,50 +1024,65 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       await get().send(text);
     },
 
-    async decide(messageId, granted, reason) {
+
+    cancelPlan(messageId) {
+      planControllers.get(messageId)?.abort();
+    },
+
+    async buildPlan(messageId) {
+      const { projectId } = get();
       const msg = get().messages.find((m) => m.id === messageId);
-      const sessionId = msg?.agent?.sessionId;
-      const approvalId = msg?.agent?.approvalId;
-      const cid = get().activeId;
-      if (!sessionId || !approvalId || !msg?.agent || !cid) return null;
-      // A resumed run is a live run: it is registered as the in-flight
-      // turn so Stop reaches it (phase 'working' swaps the composer for
-      // the stop control) and so a stop during the approve call settles
-      // the message as cancelled instead of adopting a result nobody is
-      // waiting for. (Ported from the context-fix line's engine.)
+      // One plan per message at a time: checked on the controller map, not only
+      // on rendered state, so a fast double click cannot start two.
+      if (!projectId || !msg?.agent || msg.agent.planDraft?.status === 'building' || planControllers.has(messageId)) return;
       const controller = new AbortController();
-      const owner: Owner = { scope: get().scope, projectId: get().projectId, workspaceId: get().workspaceId };
-      const flight: Inflight = {
-        seq: (inflight?.seq ?? 0) + 1, sessionId, convId: cid,
-        assistantId: messageId, controller, unsubscribe: null,
-        settled: false, owner,
-      };
-      inflight = flight;
-      const alive = () => inflight === flight && !flight.settled;
-      set({ phase: 'working' });
-      const finish = () => {
-        if (inflight === flight) {
-          flight.settled = true;
-          inflight = null;
-          set({ phase: 'idle', activity: { ...get().activity, phase: null, workers: {} } });
-        }
-      };
-      pushEvent(messageId, 'approval.required', granted ? 'Approval granted — resuming' : 'Approval denied');
-      patchMsg(messageId, (m) => ({ ...m, status: 'streaming' }));
+      planControllers.set(messageId, controller);
+      const setDraft = (planDraft: NonNullable<AgentMsgMeta['planDraft']>) =>
+        patchMsg(messageId, (m) => (m.agent ? { ...m, agent: { ...m.agent, planDraft } } : m));
+      setDraft({ status: 'building' });
       try {
-        const { result, approval } = await centralAgentClient.approve(sessionId, approvalId, granted, reason);
-        if (!alive()) return null;
-        await adoptResult(cid, messageId, result, sessionId, owner);
-        // The ledger's own decided record, so the gate renders the
-        // outcome instead of an actionable prompt for a spent request.
-        return approval ?? null;
+        // The plan builder reads what this project has settled: goal,
+        // requirements, decisions, rejected options, research. It is data the
+        // planner must honour, sized to the planner's budget.
+        const pkg = await centralAgentClient.contextPackage(projectId, 'plan implementation tasks', 12000);
+        const goal = pkg.goal ?? get().messages.find((m) => m.role === 'user')?.content ?? '';
+        if (!goal.trim()) throw new Error('There is no goal to plan yet. Say what you want to build first.');
+        const sources = sourcesFromContext(get().messages);
+        let mission: { id: string; goalGraph?: { tasks: unknown[] } | null; error?: string } | null = null;
+        let failure: string | null = null;
+        let building: BuildingDraft = { status: 'building' };
+        await missionClient.create(projectId, goal, (e) => {
+          if (e.type === 'done') mission = e.mission;
+          else if (e.type === 'error') failure = e.message;
+          else {
+            const next = foldPlanEvent(building, e);
+            if (next !== building) { building = next; setDraft(next); }
+          }
+        }, controller.signal, { text: pkg.text, scope: projectId, records: pkg.records, sources });
+        // A stop that lands after the plan was already saved changes nothing: the
+        // finished plan is real, so it is reported as it is. Only a stop that cut
+        // the build short (no finished plan came back) is reported as stopped.
+        if (controller.signal.aborted && !mission) throw new Error('Stopped before the plan was finished. Nothing was saved to the Planner.');
+        const done = mission as { id: string; goalGraph?: { tasks: unknown[] } | null; error?: string } | null;
+        if (!done || done.error || !done.goalGraph?.tasks.length) {
+          throw new Error(done?.error ?? failure ?? 'The plan could not be built.');
+        }
+        setDraft({ status: 'ready', missionId: done.id, goal, taskCount: done.goalGraph.tasks.length });
       } catch (e) {
-        if (!alive()) return null;
-        patchMsg(messageId, (m) => ({ ...m, status: 'error', error: errorText(e) }));
-        return null;
+        setDraft({ status: 'failed', error: errorText(e) });
       } finally {
-        finish();
+        planControllers.delete(messageId);
       }
+    },
+
+    sendToPlanner(messageId) {
+      const draft = get().messages.find((m) => m.id === messageId)?.agent?.planDraft;
+      if (!draft?.missionId) return;
+      useAppStore.getState().setAskAuraOpen(false);
+      useAppStore.getState().setNav('workspace');
+      const layout = useLayoutStore.getState();
+      layout.setFocused({ missionId: draft.missionId });
+      layout.openPanel('missions');
     },
 
     stop() {
@@ -817,7 +1092,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       const attempt = async (triesLeft: number): Promise<void> => {
         if (inflight !== flight) return;
         try {
-          await centralAgentClient.cancel(sid, get().scope === 'workspace' ? 'cancelled from Execution Chat' : 'cancelled from Ask AURA');
+          await centralAgentClient.cancel(sid, get().scope === 'workspace' ? 'cancelled from Execution Chat' : "cancelled from Let's Chat");
         } catch (e) {
           const msg = (e as Error)?.message ?? '';
           if (/no such session/i.test(msg) && triesLeft > 0) {
@@ -826,7 +1101,28 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
           }
         }
       };
-      void attempt(25);
+      // The backend settles a stopped run into one terminal result — the
+      // verified work kept, the stopped step marked, the objective not
+      // accepted. Stopping drops the live stream, so read that result from
+      // the session and show it; until it lands the message says "Stopped.".
+      const adoptSettled = async (triesLeft: number): Promise<void> => {
+        let result: AgentResult | null | undefined;
+        try {
+          result = (await centralAgentClient.getSession(sid))?.lastResult;
+        } catch { result = null; }
+        if (result && result.outcome === 'cancelled') {
+          patchMsg(flight.assistantId, (m) => ({
+            ...m, status: 'cancelled', content: result!.summary,
+            agent: m.agent ? { ...m.agent, outcome: 'cancelled', cancelled: true, ...missionMeta(result!) } : m.agent,
+          }));
+          return;
+        }
+        if (triesLeft > 0) {
+          await new Promise((r) => { setTimeout(r, 750); });
+          return adoptSettled(triesLeft - 1);
+        }
+      };
+      void attempt(25).then(() => adoptSettled(40));
       flight.controller.abort();
       if (flight.unsubscribe) flight.unsubscribe();
       flight.settled = true;
@@ -862,7 +1158,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       // Only a PROJECT discussion can be handed off. The workspace's
       // execution chat is the destination, never the source.
       if (scope !== 'project' || !projectId) {
-        throw new Error('handoffs can only be sent from a project Ask AURA conversation');
+        throw new Error("handoffs can only be sent from a project Let's Chat conversation");
       }
       if (!messageIds.length) throw new Error('a handoff needs at least one message');
       return aiClient.createHandoff(projectId, {

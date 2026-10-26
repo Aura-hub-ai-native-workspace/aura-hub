@@ -1,9 +1,11 @@
 import { useEffect } from 'react';
 import { useAppStore, cn } from '@aura/core';
 import { Icon, type IconName } from '@aura/ui';
-import { useWorkspace } from '../data/useWorkspace';
+import { useActiveProject } from '../data/useActiveProject';
 import { useStatusStore } from '../ops/statusStore';
 import { useLayoutStore } from '../ops/layoutStore';
+import { indexStat } from './statusBarIndex';
+import { pythonStatusLabel } from './environmentStatus';
 
 /**
  * Bottom status bar — the environment's eight live vitals (Part 5):
@@ -16,9 +18,9 @@ export function StatusBar() {
   const nav = useAppStore((s) => s.nav);
   const setNav = useAppStore((s) => s.setNav);
   const openPanel = useLayoutStore((s) => s.openPanel);
-  const openId = useWorkspace((s) => s.openId);
-  const projects = useWorkspace((s) => s.projects);
-  const project = projects.find((p) => p.id === openId);
+  // The status bar shows the active-project AUTHORITY, not the service mount:
+  // the mount is a derived value that outlives a cleared authority.
+  const { record: project } = useActiveProject();
   const refresh = useStatusStore((s) => s.refresh);
   const st = useStatusStore();
 
@@ -28,6 +30,8 @@ export function StatusBar() {
     return () => window.clearInterval(id);
   }, [refresh]);
 
+  const knowledge = indexStat(Boolean(project), st.index);
+
   const providerLabel =
     st.reachable === false ? null : st.provider ? `${st.provider.label} · ${st.provider.model}` : 'No provider';
 
@@ -35,7 +39,12 @@ export function StatusBar() {
     <footer className="flex h-8 shrink-0 items-center gap-1 overflow-x-auto border-t border-line bg-surface/70 px-3 text-[11.5px] text-text-muted backdrop-blur-xl">
       <div className="flex items-center gap-1.5 rounded-md px-2 py-1">
         <span className={cn('inline-block h-1.5 w-1.5 rounded-full', st.reachable === false ? 'bg-critical' : 'bg-positive aura-live')} />
-        <span>{st.reachable === false ? 'Backend offline' : st.reachable === null ? 'Connecting…' : 'Connected'}</span>
+        <span title={st.identity ?? undefined}>{st.reachable === false ? (st.identity ? 'Backend identity mismatch — connection refused.' : 'Backend offline') : st.reachable === null ? 'Connecting…' : 'Connected'}</span>
+      </div>
+      <Divider />
+      <div className="flex items-center gap-1.5 rounded-md px-2 py-1" data-testid="python-status">
+        <span className={cn('inline-block h-1.5 w-1.5 rounded-full', st.pythonOk === true ? 'bg-positive' : st.pythonOk === false ? 'bg-critical' : 'bg-text-subtle')} />
+        <span title={st.pythonMessage ?? undefined}>{pythonStatusLabel({ pythonOk: st.pythonOk, pythonMessage: st.pythonMessage })}</span>
       </div>
       <Divider />
       <Stat icon="folder" label={project ? project.name : `Workspace: ${nav}`} />
@@ -53,10 +62,10 @@ export function StatusBar() {
             <Stat icon="deploy" label={`${st.activeMissions} active${st.reviewingMissions ? ` · ${st.reviewingMissions} review` : ''}`} tone={st.reviewingMissions ? 'attention' : 'info'} />
           </>
         )}
-        {st.index && st.index.phase !== 'empty' && (
+        {knowledge && (
           <>
             <Divider />
-            <Stat icon="knowledge" tone={st.index.phase === 'ready' ? 'positive' : 'info'} label={st.index.phase === 'ready' ? `${st.index.coding.chunks} chunks` : st.index.phase} />
+            <Stat icon="knowledge" tone={knowledge.ready ? 'positive' : 'info'} label={knowledge.label} />
           </>
         )}
         {st.pendingDiagnoses > 0 && (

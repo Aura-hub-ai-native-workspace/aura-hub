@@ -1,0 +1,22 @@
+# ADR-004: Capability Fabric Remains the Single Governed Execution Path
+
+- **Date:** 2026-09-01
+- **Status:** Accepted
+- **Context:** Physical engineering introduces new execution surfaces (CAD tools, EDA tools, simulators, device flashers). The question is whether these should bypass the Capability Fabric.
+- **Problem:** Engineering agents must not execute tools directly — they must go through governance.
+- **Decision:** The Capability Fabric remains the ONLY governed execution path for all engineering capabilities. No engineering agent can bypass it.
+- **Reason:**
+  - The Fabric provides: resolve → policy → approval → execute → verify → recover → audit
+  - Physical engineering actions can be destructive (device flash, manufacturing export)
+  - AURA's differentiator IS the governance model — removing it for engineering would destroy the value proposition
+  - Existing Fabric architecture supports new capability namespaces without modification
+- **Consequences:**
+  - New capability namespaces: `cad.*`, `electronics.*`, `device.*`, `simulation.*`, `manufacturing.*`
+  - Each engineering capability goes through the full Fabric pipeline
+  - Risk classifications extend to physical engineering actions
+  - Approval gates protect high-risk physical actions
+- **Rejected Alternatives:**
+  - Direct tool execution for "simple" operations: Violates governance invariant
+  - Parallel governance system: Creates two authority models, confusing and dangerous
+  - Relaxed policy for engineering: Undermines safety model
+- **Evidence:** The Capability Fabric's existing risk vocabulary (`low`/`medium`/`high`) and policy decisions (`auto-execute`/`ask-user`/`require-approval`/`deny`) naturally extend to physical engineering.

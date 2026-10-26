@@ -60,7 +60,7 @@ class WorkflowEngine:
     """Central-agent-facing facade over the canonical runner.
 
     Shapes returned are the runner's own persisted run records
-    (`nodes: {id → {state, summary, approval?, evidence[]}}`,
+    (`nodes: {id → {state, summary, evidence[]}}`,
     `evidence: [{invocationId,…}]`), which is what the agent's outcome
     projection reads.
     """
@@ -69,7 +69,7 @@ class WorkflowEngine:
     # effects (filesystem.write) go through invoke_fabric directly: the
     # frozen export-file binding sources content from UPSTREAM node input,
     # which a synthesized single-node graph cannot supply honestly — and
-    # the direct governed invoke has identical policy/approval/audit.
+    # the direct governed invoke has identical policy/audit.
     NODE_TO_CAPABILITY = {
         "git-status": "git.status",
     }
@@ -130,7 +130,6 @@ class WorkflowEngine:
     # ── single-invocation route through the SAME interpreter ─────────────
     def run_ad_hoc(self, capability_id: str, payload: dict,
                    project_cwd: str | None, project_id: str | None,
-                   approval_id: str | None = None,
                    task_label: str = "") -> tuple[dict, str]:
         node_type = {v: k for k, v in self.NODE_TO_CAPABILITY.items()}.get(capability_id)
         if node_type is None:

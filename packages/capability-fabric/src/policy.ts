@@ -26,23 +26,48 @@ import type {
 } from './types';
 
 /**
- * The shipped default. Matches §5 of the brief: low risk runs, medium
- * risk asks, high risk requires an explicit authorization record.
+ * The shipped default. Routine project work runs directly: no risk level
+ * asks. What still stops is the hard floors in `evaluatePolicy` (account
+ * authorization, machine changes, destructive and irreversible actions)
+ * and anything the person explicitly configures to ask. Mirrors
+ * backend/aura/policy/engine.py DEFAULT_POLICY.
  */
 export const DEFAULT_POLICY: PolicyConfig = {
   byRisk: {
     low: 'auto-execute',
-    medium: 'ask-user',
-    high: 'require-approval',
+    medium: 'auto-execute',
+    high: 'auto-execute',
   },
   overrides: {
-    // Human gates by definition — approving a plan or authorizing an
-    // account is the moment the human is *supposed* to be present.
-    'mission.approve': 'ask-user',
-    'provider.connect': 'require-approval',
+    // Connecting a provider acts on an account: always the person's call.
+    'provider.connect': 'deny',
   },
   allowAutonomous: true,
 };
+
+const LEGACY_DEFAULT_BY_RISK: Record<RiskLevel, PolicyDecision> = {
+  low: 'auto-execute', medium: 'ask-user', high: 'require-approval',
+};
+const LEGACY_DEFAULT_OVERRIDES: Record<string, PolicyDecision> = {
+  'mission.approve': 'ask-user', 'provider.connect': 'require-approval',
+};
+
+/**
+ * Read a stored policy that is exactly the old shipped default as today's
+ * default. Anything the person customized keeps the policy as it is. Pure:
+ * nothing is written. Mirrors engine.py upgrade_legacy_default_policy.
+ */
+export function upgradeLegacyDefaultPolicy(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const input = raw as Record<string, unknown>;
+  const byRisk = input.byRisk as Record<string, unknown> | undefined;
+  if (!byRisk || Object.keys(byRisk).length !== 3
+    || (['low', 'medium', 'high'] as RiskLevel[]).some((l) => byRisk[l] !== LEGACY_DEFAULT_BY_RISK[l])) return raw;
+  const overrides = (input.overrides ?? {}) as Record<string, unknown>;
+  if (typeof overrides !== 'object' || Object.entries(overrides).some(([k, v]) => LEGACY_DEFAULT_OVERRIDES[k] !== v)) return raw;
+  const kept = Object.fromEntries(Object.entries(overrides).filter(([k]) => k !== 'mission.approve'));
+  return { ...input, byRisk: { ...DEFAULT_POLICY.byRisk }, overrides: kept };
+}
 
 /**
  * Scopes no node flag can ever grant. Only a human authorization
@@ -54,9 +79,19 @@ const HUMAN_ONLY_SCOPES = new Set<PermissionScope>([
   'system.modify',
 ]);
 
-const DECISIONS = new Set<PolicyDecision>(['auto-execute', 'ask-user', 'require-approval', 'deny']);
+/**
+ * Saved policy values from before the approval workflow was removed map to
+ * the decisions that exist now: a legacy "ask" runs under policy, and a
+ * legacy "require approval" is refused. Nothing parks for a person.
+ */
+const LEGACY_DECISION: Record<string, PolicyDecision> = { 'ask-user': 'auto-execute', 'require-approval': 'deny' };
 
-const isDecision = (v: unknown): v is PolicyDecision => typeof v === 'string' && DECISIONS.has(v as PolicyDecision);
+/** The current decision a configured value means, or null if it is not one. */
+function currentDecision(v: unknown): PolicyDecision | null {
+  if (v === 'auto-execute' || v === 'deny') return v;
+  if (typeof v === 'string' && v in LEGACY_DECISION) return LEGACY_DECISION[v];
+  return null;
+}
 
 /**
  * Coerce untrusted input — a hand-edited file on disk, or a request body —
@@ -72,16 +107,18 @@ const isDecision = (v: unknown): v is PolicyDecision => typeof v === 'string' &&
  * as "not require-approval" and quietly wave through.
  */
 export function sanitizePolicy(raw: unknown): PolicyConfig {
-  const input = (raw ?? {}) as Partial<PolicyConfig>;
+  const input = (upgradeLegacyDefaultPolicy(raw) ?? {}) as Partial<PolicyConfig>;
   const byRisk = { ...DEFAULT_POLICY.byRisk };
   for (const level of ['low', 'medium', 'high'] as RiskLevel[]) {
     const v = (input.byRisk as Record<string, unknown> | undefined)?.[level];
-    if (isDecision(v)) byRisk[level] = v;
+    const d = currentDecision(v);
+    if (d) byRisk[level] = d;
   }
 
   const overrides: Record<string, PolicyDecision> = {};
   for (const [id, v] of Object.entries((input.overrides ?? {}) as Record<string, unknown>)) {
-    if (typeof id === 'string' && id && isDecision(v)) overrides[id] = v;
+    const d = currentDecision(v);
+    if (typeof id === 'string' && id && d) overrides[id] = d;
   }
 
   // Absent means "never configured" → the shipped default. Present but not
@@ -93,7 +130,8 @@ export function sanitizePolicy(raw: unknown): PolicyConfig {
   // corrupt allowlist must fail closed (deny everything) rather than open.
   const nodeOverrides: Record<string, PolicyDecision> = {};
   for (const [key, v] of Object.entries((input.nodeOverrides ?? {}) as Record<string, unknown>)) {
-    if (typeof key === 'string' && key.includes('@') && isDecision(v)) nodeOverrides[key] = v;
+    const d = currentDecision(v);
+    if (typeof key === 'string' && key.includes('@') && d) nodeOverrides[key] = d;
   }
 
   const nodeAllowlists: Record<string, string[]> = {};
@@ -224,7 +262,7 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
   }
 
   /**
-   * The `require-approval` floors are a LOWER BOUND, not a final answer.
+   * The floors are a LOWER BOUND (deny), not a final answer.
    *
    * They used to return immediately, which made them a ceiling as well as
    * a floor: nothing could ever be *stricter* than "needs approval", so a
@@ -265,7 +303,7 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
   let reason = userDirect ? 'You asked for this directly, so AURA is doing it now.' : '';
 
   const floor = (name: string, why: string) => {
-    decision = stricter(decision, 'require-approval');
+    decision = stricter(decision, 'deny');
     rule = name;
     reason = why;
   };
@@ -351,7 +389,7 @@ export function evaluatePolicy(input: PolicyInput): PolicyEvaluation {
   // a button is the opposite of that, so turning autonomy off must not
   // disable the user's own controls — it would read as the app breaking.
   if (!config.allowAutonomous && decision === 'auto-execute' && !userDirect) {
-    decision = 'ask-user';
+    decision = 'deny';
     rule = 'autonomy-disabled';
     reason = '';
   }
@@ -363,11 +401,8 @@ function reasonFor(decision: PolicyDecision, capability: CapabilityDescriptor): 
   switch (decision) {
     case 'auto-execute':
       return `${capability.name} is low risk and reversible, so it runs without interrupting you.`;
-    case 'ask-user':
-      return `${capability.name} changes something. One confirmation and it proceeds.`;
-    case 'require-approval':
-      return `${capability.name} needs your explicit authorization, recorded against this mission.`;
-    case 'deny':
+    default:
+      // deny, and any value a legacy file still carries that is not a current decision.
       return `${capability.name} is not permitted under the current policy.`;
   }
 }

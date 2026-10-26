@@ -14,7 +14,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Badge, Button, Icon, IconButton } from '@aura/ui';
 import { aiClient, type NodeSpecInfo, type RunState, type WorkflowRun, type WorkflowRunSummary } from '../../ai/aiClient';
-import { useFabric, pendingApprovals } from '../../data/useFabric';
 import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
 import { RunView } from './RunView';
@@ -23,14 +22,13 @@ import {
   TRIGGER_LABEL,
   carriedThroughFor,
   fmtDuration,
-  isPending,
   runStateLabel,
   runStateTone,
   sortRuns,
 } from './runs';
 
 
-type Filter = 'all' | 'failed' | 'succeeded' | 'awaiting-approval';
+type Filter = 'all' | 'failed' | 'succeeded';
 
 export interface RunHistoryProps {
   specs: Map<string, NodeSpecInfo>;
@@ -47,11 +45,6 @@ export interface RunHistoryProps {
 export function RunHistory({ specs, workflowId, graphOrder = [], onRerun, onOpenWorkflow, title = 'Runs' }: RunHistoryProps) {
   // A run opened from history can still be parked on a decision — without
   // these it would show "waiting for you" and offer no way to answer.
-  const approvals = useFabric((s) => s.approvals);
-  const deciding = useFabric((s) => s.deciding);
-  const decide = useFabric((s) => s.decide);
-  const watchApprovals = useFabric((s) => s.watchApprovals);
-  useEffect(() => watchApprovals(), [watchApprovals]);
 
   const [runs, setRuns] = useState<WorkflowRunSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,14 +69,8 @@ export function RunHistory({ specs, workflowId, graphOrder = [], onRerun, onOpen
   }, [workflowId]);
 
   useEffect(() => { void reload(); }, [reload]);
-
-  /* The "waiting for you" filter asks whether someone is actually waiting,
-     which is not the same question as the state. A superseded leg keeps
-     `awaiting-approval` — that is how it ended — but its question has been
-     answered and its work picked up by another run, so listing it as
-     pending would be an invitation to act on something already decided. */
   const matches = (r: WorkflowRunSummary, f: Filter): boolean =>
-    f === 'all' ? true : f === 'awaiting-approval' ? isPending(r) : r.state === f;
+    f === 'all' ? true : r.state === f;
 
   const shown = useMemo(() => (runs ?? []).filter((r) => matches(r, filter)), [runs, filter]);
 
@@ -147,13 +134,6 @@ export function RunHistory({ specs, workflowId, graphOrder = [], onRerun, onOpen
             run={open}
             specs={specs}
             graphOrder={graphOrder.length ? graphOrder : Object.keys(open.nodes)}
-            approvals={pendingApprovals(approvals)}
-            decidingId={deciding}
-            onDecideApproval={async (id, granted, reason) => {
-              await decide(id, granted, reason);
-              const fresh = await aiClient.workflowRun(open.workflowId, open.id).catch(() => null);
-              if (fresh && 'id' in fresh) setOpen(fresh);
-            }}
             onRerun={onRerun ? () => onRerun(open.workflowId) : undefined}
             chain={chain}
             onOpenRun={(id) => void openRun(id)}
@@ -196,7 +176,7 @@ export function RunHistory({ specs, workflowId, graphOrder = [], onRerun, onOpen
 
       {runs !== null && runs.length > 0 && (
         <div className="mb-3 flex flex-wrap items-center gap-1.5">
-          {(['all', 'failed', 'succeeded', 'awaiting-approval'] as Filter[]).map((f) => (
+          {(['all', 'failed', 'succeeded'] as Filter[]).map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}
@@ -264,7 +244,6 @@ export function RunHistory({ specs, workflowId, graphOrder = [], onRerun, onOpen
                     </td>
                     <td className="px-3 py-2 tabular-nums text-text-muted">
                       {r.evidenceCount || '—'}
-                      {r.approvalCount > 0 && <span className="text-attention"> · {r.approvalCount} approved</span>}
                     </td>
                     <td className="px-3 py-2 tabular-nums text-text-muted">{fmtDuration(r.ms)}</td>
                   </tr>

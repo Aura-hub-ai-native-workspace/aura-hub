@@ -22,19 +22,13 @@ import {
   TRIGGER_LABEL,
   carriedThroughFor,
   fmtDuration,
-  isPending,
   runStateLabel,
   runStateTone,
 } from './runs';
 
-type Filter = 'all' | 'failed' | 'awaiting-approval';
-
-/* "Waiting for you" is a question about whether anyone is actually
-   waiting, not about the stored state: a superseded leg keeps
-   `awaiting-approval` because that is how it ended, but another run has
-   already picked its work up. See `docs/AGENT_RESUME_SEMANTICS.md`. */
+type Filter = 'all' | 'failed';
 const matches = (r: WorkflowRunSummary, f: Filter): boolean =>
-  f === 'all' ? true : f === 'awaiting-approval' ? isPending(r) : r.state === f;
+  f === 'all' ? true : r.state === f;
 
 /** Runs a rule started, versus runs a person started. */
 type Origin = 'any' | 'automation' | 'manual';
@@ -146,7 +140,7 @@ export function AllRuns({
 
       {all.length > 0 && (
         <div className="mb-3 flex flex-wrap items-center gap-1.5">
-          {(['all', 'failed', 'awaiting-approval'] as Filter[]).map((f) => (
+          {(['all', 'failed'] as Filter[]).map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f)}

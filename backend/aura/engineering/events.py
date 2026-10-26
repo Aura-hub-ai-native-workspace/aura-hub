@@ -3,7 +3,7 @@
 Events capture what happened in the engineering workspace:
 - Artifact creation/update/verification
 - Tool detection
-- Capability requests/approvals
+- Capability requests
 - Change impact detection
 - Validation results
 

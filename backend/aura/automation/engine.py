@@ -2,9 +2,8 @@
 
 Automation decides WHEN. It never executes workflows directly: the
 `run-workflow` action handler (injected by the host) calls
-WorkflowRunner.start_workflow_run — the ONE canonical path — and carries
-NO approvedCapabilities, so scheduled/event runs park exactly like manual
-ones when policy demands a human.
+WorkflowRunner.start_workflow_run — the ONE canonical path. Scheduled and
+event runs are governed by the same policy as manual runs.
 """
 from __future__ import annotations
 

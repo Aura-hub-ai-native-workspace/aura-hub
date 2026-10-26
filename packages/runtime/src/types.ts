@@ -26,6 +26,14 @@ export interface GenerateRequest {
   maxTokens?: number;
   topP?: number;
   stop?: string[];
+  /** Penalises tokens already used; raised on the one retry after a looping stream. */
+  frequencyPenalty?: number;
+  /**
+   * The caller's deadline for this one request, in milliseconds. A runtime
+   * must apply it to its transport (not only to a wrapper around it) and may
+   * clamp it to MAX_CALL_TIMEOUT_MS. Absent: the runtime's own default.
+   */
+  timeoutMs?: number;
 }
 
 export interface GenerateResponse {

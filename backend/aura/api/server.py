@@ -6,8 +6,7 @@ anything itself:
 
   workflow runs  → WorkflowRunner (THE path)
   agent sessions → aura.central_agent.CentralAgent on the same runner
-  approvals      → THE ApprovalLedger the Fabric spends (single-use)
-  fabric invoke  → CapabilityFabric.invoke (policy→approval→audit)
+  fabric invoke  → CapabilityFabric.invoke (policy→audit; no approval gate)
   automation     → AutomationEngine → WorkflowService(runner facade)
 
 SSE streams use text/event-stream frames with a [DONE] sentinel; the
@@ -27,6 +26,8 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+
+from .instance_guard import InstanceGuard
 
 # python-multipart is required for Starlette's request.form() used by
 # POST /documents/ingest. Starlette raises an AssertionError deep inside a
@@ -67,7 +68,6 @@ ALLOWED_ORIGIN = (
 )
 
 MSGS = {
-    "awaiting-approval": "waiting on your authorization",
     "denied": "policy refused a tool call",
 }
 
@@ -184,24 +184,9 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     H = aura_home()
     H.mkdir(parents=True, exist_ok=True)
 
-    from ..approvals import ApprovalLedger
     from ..audit import AuditStore
 
     audit = AuditStore(H / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
-
-    ap_file = H / "fabric-approvals.json"
-
-    def _ap_load():
-        raw = read_json_file(ap_file, [])
-        from ..approvals import usable_pending
-        return [r for r in raw if usable_pending(r)]
-
-    def _ap_save(reqs):
-        write_json_atomic(ap_file, reqs)
-
-    # Ledger shares the SAME file-backed store → one canonical ledger.
-    ledger.attach_store(_ap_load, _ap_save)
 
     if secrets_store is None:
         secrets_store = AuraSecrets()
@@ -227,34 +212,15 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         for executor in _multimodal_executors(_kb, H / "artifacts"):
             fabric.register(executor)
         from ..policy import DEFAULT_POLICY
+        from ..policy.engine import upgrade_legacy_default_policy
 
-        fabric.policy = read_json_file(H / "fabric-policy.json", DEFAULT_POLICY)
-        # Phase 7: explicit per-capability policy defaults for governed agentic ops.
-        # Applied AFTER loading the user's fabric-policy.json so any explicit choice
-        # there always wins.  We only fill gaps — never clobber an existing override.
-        # Safety invariant: every default here is at most as restrictive as the
-        # capability's byRisk tier (low→auto-execute, medium→ask-user).  We never
-        # lower a risk floor.
-        _P7_DEFAULTS: dict[str, str] = {
-            "knowledge.search":  "auto-execute",   # low-risk KB read
-            "document.ingest":   "auto-execute",   # low-risk write to KB
-            "artifact.generate": "auto-execute",   # low-risk write to artifacts dir
-            "sandbox.execute":   "ask-user",        # medium-risk subprocess
-            "terminal.execute":  "ask-user",        # medium-risk subprocess
-        }
-        _cur = fabric.policy.setdefault("overrides", {})
-        for _cap, _act in _P7_DEFAULTS.items():
-            if _cap not in _cur:
-                _cur[_cap] = _act
-    if hasattr(fabric, "attach_approval_store"):
-        fabric.attach_approval_store(_ap_load, _ap_save)
+        # A stored policy that is exactly the old shipped default reads as
+        # today's default (routine work runs directly); anything the person
+        # customized is kept. The file itself is not rewritten here.
+        fabric.policy = upgrade_legacy_default_policy(
+            read_json_file(H / "fabric-policy.json", DEFAULT_POLICY))
+    if hasattr(fabric, "attach_audit_store"):
         fabric.attach_audit_store(audit.load, audit.append)
-        # The ONE ledger instance backs both the fabric's gates and HTTP —
-        # and, after a restart, the ONE record object per approval. Both
-        # sides restore from the same file but parse their own dicts, so
-        # adopting is what makes "one ledger" true across a restart
-        # rather than only within a process.
-        fabric.use_ledger(ledger)
 
     wf_store = WorkflowStore()
     ver_store = WorkflowVersionStore()
@@ -289,9 +255,10 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
                               allow_heuristic_fallback=True)
                if model_port is not None
                else IntentCompiler(mode="heuristic"))
+    intents.follows_provider_files = True
 
     agent_bus = EventBus()
-    agent_cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
+    agent_cfg = FabricConfig(fabric=fabric, audit_store=audit,
                              permissions={"read": True, "write": True},
                              executors={}, secrets=secrets_store)
     sessions = AgentSessionStore(H)
@@ -332,26 +299,23 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     # Silently skips offline Ollama endpoints and missing config files.
     _model_registry = None
     try:
+        from ..sovereign.discovery_config import discover_configured_endpoints
         from ..sovereign.model_registry import ModelRegistry as _MReg
-        import json as _json
         _model_registry = _MReg()
-        _pjson = H / "agent" / "providers.json"
-        if _pjson.exists():
-            _pdata = _json.loads(_pjson.read_text())
-            _SOVEREIGN_NC = frozenset({"local", "private"})
-            for _pspec in (_pdata if isinstance(_pdata, list) else []):
-                _nc = (_pspec.get("network_class") or "").strip()
-                _bu = (_pspec.get("base_url") or "").strip()
-                if _nc in _SOVEREIGN_NC and _bu:
-                    try:
-                        _model_registry.discover_from_ollama(
-                            endpoint_id=_pspec.get("id") or _bu,
-                            base_url=_bu,
-                            network_class=_nc,
-                        )
-                    except Exception:
-                        pass
-    except Exception:
+        _report = discover_configured_endpoints(
+            _model_registry, path=H / "agent" / "providers.json")
+        # Kept on the registry so a configuration failure is never mistaken for an
+        # empty, healthy registry. A missing file is normal and not a failure.
+        _model_registry.configuration_status = _report
+        if _report.file_status not in ("ok", "missing"):
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "sovereign model discovery: provider file is %s (%s); no endpoints discovered",
+                _report.file_status, _report.file_detail)
+    except Exception as _exc:
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "sovereign model discovery failed: %s", type(_exc).__name__)
         _model_registry = None
 
     agent = CentralAgent(
@@ -361,6 +325,12 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         agent_runtime=agent_runtime_svc,
         model_registry=_model_registry,
     )
+    # Work that was in flight when a previous process died is not running
+    # any more: say so now, rather than leaving it looking active.
+    try:
+        agent.recover_interrupted_sessions()
+    except Exception:  # noqa: BLE001 — recovery must never stop the service starting
+        pass
 
     # ── automation engine + scheduler on the same runner ────────────
     from ..automation import AutomationEngine, make_workflow_action
@@ -385,7 +355,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         lambda project_id: str(H), auto_engine)
 
     return {
-        "home": H, "fabric": fabric, "ledger": ledger, "audit": audit,
+        "home": H, "fabric": fabric, "audit": audit,
         "registry": registry,
         "nodes": nodes,
         "wf_store": wf_store, "ver_store": ver_store, "run_store": run_store,
@@ -757,7 +727,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
                 wf, project_id=str(body.get("projectId") or "default"),
                 project_path=str(body.get("projectPath") or aura_home()),
                 trigger={"kind": "manual", "by": "user"},
-                inputs=body.get("inputs"), approved_capabilities=body.get("approvedCapabilities"),
+                inputs=body.get("inputs"),
                 emit=emit)
 
         return _stream_run(coro_factory)
@@ -771,8 +741,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
         def coro_factory(emit):
             return runner.resume(wf, p["rid"], emit,
-                                 {"approvedCapabilities": body.get("approvedCapabilities"),
-                                  "actor": {"kind": "human", "id": "user"}})
+                                 {"actor": {"kind": "human", "id": "user"}})
 
         return _stream_run(coro_factory)
 
@@ -866,10 +835,6 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             stats[r["state"]] = stats.get(r["state"], 0) + 1
         return JSONResponse({"stats": stats})
 
-    async def runs_awaiting(request: Request):
-        rows = run_store.list_awaiting_approval()  # already excludes superseded legs
-        return JSONResponse({"runs": rows})
-
     async def run_get(request: Request):
         found = run_store.find(request.path_params["rid"])
         if not found:
@@ -915,6 +880,18 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         except Exception:
             return None
 
+    async def agent_route(request: Request):
+        """Read-only routing decision: conversation, clarify, or mission.
+        Nothing is created or executed. See CentralAgent.classify."""
+        body = await _json_body(request)
+        message = str(body.get("message") or "").strip()
+        if not message:
+            return _err("message is required")
+        import anyio
+
+        decision = await anyio.to_thread.run_sync(lambda: agent.classify(message))
+        return JSONResponse(decision)
+
     async def agent_submit(request: Request):
         body = await _json_body(request)
         message = str(body.get("message") or "").strip()
@@ -941,7 +918,8 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
                                  editor_context=editor_context,
                                  session_id=session_id,
                                  request_id=rid,
-                                 web_research=bool(web_research)))
+                                 web_research=bool(web_research),
+                                 background=True))
         return JSONResponse({"result": _model_dump(result),
                              "sessionId": sessions.last_session_id,
                              "requestId": rid},
@@ -988,58 +966,176 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             return _err("no such session", 404)
         return JSONResponse(_model_dump(session))
 
-    async def agent_approve(request: Request):
-        body = await _json_body(request)
-        approval_id = str(body.get("approvalId") or "")
-        granted = bool(body.get("granted"))
-        reason = body.get("reason")
-        import anyio
+    async def agent_session_status(request: Request):
+        """Authoritative orchestration status for a session.
 
-        sid = request.path_params["sid"]
-        try:
-            # Binding BEFORE deciding: a mismatched approval must not
-            # even be recorded, let alone spent.
-            await anyio.to_thread.run_sync(
-                lambda: agent.check_approval_binding(sid, approval_id))
-            decided = S["ledger"].decide(approval_id, granted, "user", reason)
-        except ValueError as exc:
-            return _err(str(exc), 409)
-        if decided is None:
-            return _err("this request was already decided", 409)
-
-        from ..central_agent.correlation import new_request_id
-
-        rid = new_request_id()
-        try:
-            result = await anyio.to_thread.run_sync(
-                lambda: agent.resume(sid, request_id=rid))
-        except (ValueError, PermissionError) as exc:
-            return _err(str(exc), 409)
-        return JSONResponse({"approval": decided,
-                             "result": _model_dump(result),
-                             "requestId": rid},
-                            headers={"X-Aura-Request": rid})
-
-    async def agent_resume(request: Request):
-        import anyio
-
-        from ..central_agent.correlation import new_request_id
-
-        rid = new_request_id()
+        Returns the persisted orchestration state, task queue, and current
+        task. The UI polls this to track background execution progress.
+        """
         session = _session_or_none(request.path_params["sid"])
         if session is None:
             return _err("no such session", 404)
-        if session.state != "awaiting-approval":
-            return _err("that session is not awaiting approval", 400)
+        from ..central_agent.task_queue import TaskQueue
+        q = TaskQueue.from_dict(getattr(session, "taskQueue", None))
+        return JSONResponse({
+            "sessionId": session.sessionId,
+            "projectId": session.projectId,
+            "state": session.state,
+            "orchestrationState": getattr(session, "orchestrationState", "idle"),
+            "currentTaskId": getattr(session, "currentTaskId", None),
+            "orchestrationStartedAt": getattr(session, "orchestrationStartedAt", None),
+            "orchestrationFinishedAt": getattr(session, "orchestrationFinishedAt", None),
+            "taskQueue": q.to_dict(),
+            "taskSummary": q.summary(),
+            "performed": (session.lastResult.performed if session.lastResult else []),
+            "verified": (session.lastResult.verified if session.lastResult else []),
+            "outcome": (session.lastResult.outcome if session.lastResult else None),
+            "failureReason": (session.lastResult.failureReason if session.lastResult else None),
+            "summary": (session.lastResult.summary if session.lastResult else None),
+        })
+
+    # No pause route: the orchestration loop does not honor a "paused" state,
+    # so accepting a pause would report an effect that never happens. Stop
+    # (cancel) is the supported way to end a running session.
+
+    async def agent_chat(request: Request):
+        """Let's Chat: conversation only. Every message is answered in words
+        on a chat-mode session — no plan, no authority check, no invocation,
+        no worker, no workflow, whatever the message asks. A chat session can
+        never be continued by the work routes, and a work session can never
+        be continued here."""
+        body = await _json_body(request)
+        message = str(body.get("message") or "").strip()
+        if not message:
+            return _err("message is required")
+        sid = body.get("sessionId")
+        if sid is not None and (not isinstance(sid, str) or not sid.startswith("agt-")):
+            return _err("sessionId must be an agt- id")
+        project_id = body.get("projectId")
+        if project_id is not None and not isinstance(project_id, str):
+            return _err("projectId must be a string")
+        import anyio
+
+        from ..central_agent.correlation import new_request_id
+
+        rid = new_request_id()
         try:
-            result = await anyio.to_thread.run_sync(
-                lambda: agent.resume(request.path_params["sid"],
-                                     request_id=rid))
-        except (ValueError, PermissionError) as exc:
+            result, session_id = await anyio.to_thread.run_sync(
+                lambda: agent.chat(message, session_id=sid,
+                                   project_id=project_id or None,
+                                   project_path=body.get("projectPath"),
+                                   request_id=rid,
+                                   surface=body.get("surface")))
+        except ValueError as exc:
+            text = str(exc)
+            return _err(text, 404 if "no such session" in text else 409)
+        return JSONResponse({"result": _model_dump(result), "sessionId": session_id,
+                             "requestId": rid}, headers={"X-Aura-Request": rid})
+
+    async def agent_models_status(request: Request):
+        """Laya/provider status, local runtime detection and the optional
+        small-model recommendation. Detects only; never installs."""
+        import anyio
+
+        return JSONResponse(await anyio.to_thread.run_sync(agent.model_status))
+
+    async def research_config_get(request: Request):
+        """Where web research is configured from. Never returns credentials."""
+        from ..executors.web_research import research_config_status
+
+        return JSONResponse(research_config_status())
+
+    async def research_config_set(request: Request):
+        """Validate a gateway address with one bounded test query, then save it."""
+        import anyio
+
+        from ..executors.web_research import save_search_endpoint
+
+        try:
+            body = await request.json()
+        except ValueError:
+            return _err("a JSON body is required", 400)
+        endpoint = body.get("searchEndpoint") if isinstance(body, dict) else None
+        out = await anyio.to_thread.run_sync(lambda: save_search_endpoint(endpoint))
+        return JSONResponse(out, status_code=200 if out.get("ok") else 400)
+
+    async def research_config_clear(request: Request):
+        from ..executors.web_research import clear_search_endpoint
+
+        return JSONResponse(clear_search_endpoint())
+
+    async def agent_chats(request: Request):
+        """Recent chat conversations (general chats, or one project's)."""
+        import anyio
+
+        project = request.query_params.get("projectId") or None
+        limit = max(1, min(50, int(request.query_params.get("limit", "20") or 20)))
+        return JSONResponse({"chats": await anyio.to_thread.run_sync(
+            lambda: agent.list_chats(project, limit))})
+
+    async def agent_context_package(request: Request):
+        """Bounded Shared Context for a scope (project id, or 'general')."""
+        from ..central_agent.shared_context import ContextError
+
+        scope = request.path_params["scope"]
+        q = request.query_params.get("q", "")
+        try:
+            chars = max(1000, min(60_000, int(request.query_params.get("chars", "12000"))))
+            return JSONResponse(agent.context_package(scope, q, chars))
+        except (ValueError, ContextError) as exc:
+            return _err(str(exc))
+
+    async def agent_adopt(request: Request):
+        """Carry a general-chat conversation into a newly created project."""
+        from ..central_agent.shared_context import ContextError
+
+        body = await _json_body(request)
+        sid = body.get("sessionId")
+        if not isinstance(sid, str) or not sid.startswith("agt-"):
+            return _err("sessionId must be the agt- id of the conversation")
+        try:
+            return JSONResponse(agent.adopt_conversation(
+                request.path_params["pid"], sid, idea=body.get("idea")))
+        except ContextError as exc:
             return _err(str(exc), 409)
-        return JSONResponse({"result": _model_dump(result),
-                             "requestId": rid},
-                            headers={"X-Aura-Request": rid})
+
+    async def agent_plan_execute(request: Request):
+        """Planner → Workspace: run a handed-over plan now.
+
+        Body: {plan: {source, planId, revision, goal, tasks[]}, sessionId?,
+        projectId?, projectPath}. The plan becomes a work session that runs
+        on the same engine as a typed Workspace request. 400 when the plan
+        is malformed or not actionable; 409 when this plan revision was
+        already sent (the body names the existing sessionId) or Workspace
+        cannot carry it out as configured. Nothing runs in either case."""
+        body = await _json_body(request)
+        sid = body.get("sessionId")
+        if sid is not None and (not isinstance(sid, str) or not sid.startswith("agt-")):
+            return _err("sessionId must be an agt- id")
+        project_id = body.get("projectId")
+        if project_id is not None and not isinstance(project_id, str):
+            return _err("projectId must be a string")
+        project_path = body.get("projectPath")
+        if not isinstance(project_path, str) or not project_path.strip():
+            return _err("projectPath is required: a plan runs inside its project")
+        import anyio
+
+        from ..central_agent.correlation import new_request_id
+        from ..central_agent.plan_handoff import HandoffError
+
+        rid = new_request_id()
+        try:
+            result, session_id = await anyio.to_thread.run_sync(
+                lambda: agent.execute_handoff(body.get("plan"), session_id=sid,
+                                              project_id=project_id or None,
+                                              project_path=project_path,
+                                              request_id=rid))
+        except HandoffError as exc:
+            status = 400 if exc.code == "invalid" else 409
+            return JSONResponse({"error": str(exc), "code": exc.code, **exc.extra},
+                                status_code=status)
+        return JSONResponse({"result": _model_dump(result), "sessionId": session_id,
+                             "requestId": rid}, headers={"X-Aura-Request": rid})
 
     async def agent_network_capability(request: Request):
         """What this host can really enforce. Read by the UI so it can
@@ -1103,7 +1199,8 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         telemetry, and honest unavailability — never keys, prompts, or
         completions, and never a fabricated identity.
         """
-        port = S.get("model_port")
+        agent.model_status()  # re-resolves the port if a provider file changed
+        port = getattr(getattr(agent, "intents", None), "model_port", None)
         telemetry = (port.telemetry() if port is not None
                      and hasattr(port, "telemetry")
                      else {"configured": False, "providers": [],
@@ -1204,40 +1301,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
                                  headers={"cache-control": "no-cache",
                                           "x-accel-buffering": "no"})
 
-    # ── governance: approvals + fabric ──────────────────────────────
-    async def fabric_approvals(request: Request):
-        return JSONResponse({"approvals": S["ledger"].pending()})
-
-    async def fabric_approvals_decide(request: Request):
-        body = await _json_body(request)
-        # Accept canonical `granted` (bool) or alias `decision: "approve"/"deny"`
-        if "granted" in body:
-            granted = bool(body["granted"])
-        elif "decision" in body:
-            decision_str = str(body["decision"]).lower()
-            if decision_str == "approve":
-                granted = True
-            elif decision_str == "deny":
-                granted = False
-            else:
-                return _err('decision must be "approve" or "deny"', 400)
-        else:
-            return _err('body must include "granted" (boolean) or "decision" ("approve"/"deny")', 400)
-        decided = S["ledger"].decide(
-            request.path_params["aid"], granted,
-            "user", body.get("reason"))
-        if decided is None:
-            return _err("this request was already decided", 409)
-        # Sync granted approval into fabric's internal cache so next invoke sees it
-        if decided.get("state") == "granted":
-            # The ledger and fabric share the same dedup key format.
-            # Copy the granted entry so fabric's next lookup finds it.
-            for k, v in S["ledger"]._approvals.items():
-                if v.get("id") == decided["id"]:
-                    S["fabric"]._approvals_by_key[k] = v
-                    break
-        return JSONResponse({"approval": decided})
-
+    # ── governance: fabric ──────────────────────────────
     async def fabric_invoke(request: Request):
         body = await _json_body(request)
         capability_id = str(body.get("capabilityId") or "")
@@ -1272,8 +1336,10 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             if requires and supported:
                 provided_node_caps.add(requires)
             caps.append({**d, "supported": supported})
-        policy = read_json_file(aura_home() / "fabric-policy.json",
-                                S["fabric"].policy)
+        from ..policy.engine import upgrade_legacy_default_policy
+
+        policy = upgrade_legacy_default_policy(read_json_file(
+            aura_home() / "fabric-policy.json", S["fabric"].policy))
         return JSONResponse({
             "capabilities": caps,
             "supportedCount": supported_count,
@@ -1283,17 +1349,19 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
     async def fabric_policy_get(request: Request):
         from ..policy import DEFAULT_POLICY
+        from ..policy.engine import upgrade_legacy_default_policy
 
-        return JSONResponse({"policy": read_json_file(
-            aura_home() / "fabric-policy.json", DEFAULT_POLICY),
+        return JSONResponse({"policy": upgrade_legacy_default_policy(read_json_file(
+            aura_home() / "fabric-policy.json", DEFAULT_POLICY)),
             "file": str(aura_home() / "fabric-policy.json")})
 
     async def fabric_policy_set(request: Request):
         patch = await _json_body(request)
         file_path = aura_home() / "fabric-policy.json"
         from ..policy import DEFAULT_POLICY
+        from ..policy.engine import upgrade_legacy_default_policy
 
-        current = read_json_file(file_path, DEFAULT_POLICY)
+        current = upgrade_legacy_default_policy(read_json_file(file_path, DEFAULT_POLICY))
         merged = {**current}
         for key in ("byRisk", "overrides", "nodeOverrides", "nodeAllowlists"):
             if key in patch and isinstance(patch[key], dict):
@@ -1318,7 +1386,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     async def fabric_nodes_register(request: Request):
         # Local connector-configuration seam (until a live connector lands):
         # registering a node makes it ROUTABLE, never authorized — policy,
-        # approval floors and single-use grants are unchanged.
+        # policy floors are unchanged.
         body = await _json_body(request)
         try:
             record = S["nodes"].register(
@@ -2120,16 +2188,24 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/workflows/{wid}/webhook-token", workflow_webhook_token, methods=["POST"]),
         Route("/workflow-runs", runs_list, methods=["GET"]),
         Route("/workflow-runs/stats", run_stats, methods=["GET"]),
-        Route("/workflow-runs/awaiting", runs_awaiting, methods=["GET"]),
         Route("/workflow-runs/{rid}", run_get, methods=["GET"]),
         Route("/agent/bounds", agent_bounds, methods=["GET"]),
         Route("/agent/tools", agent_tools, methods=["GET"]),
         Route("/agent/model", agent_model, methods=["GET"]),
+        Route("/agent/route", agent_route, methods=["POST"]),
         Route("/agent/sessions", agent_submit, methods=["POST"]),
         Route("/agent/sessions/{sid}", agent_session_get, methods=["GET"]),
+        Route("/agent/sessions/{sid}/status", agent_session_status, methods=["GET"]),
         Route("/agent/sessions/{sid}/message", agent_message, methods=["POST"]),
-        Route("/agent/sessions/{sid}/approve", agent_approve, methods=["POST"]),
-        Route("/agent/sessions/{sid}/resume", agent_resume, methods=["POST"]),
+        Route("/agent/chat", agent_chat, methods=["POST"]),
+        Route("/agent/plans/execute", agent_plan_execute, methods=["POST"]),
+        Route("/agent/models/status", agent_models_status, methods=["GET"]),
+        Route("/agent/research/config", research_config_get, methods=["GET"]),
+        Route("/agent/research/config", research_config_set, methods=["POST"]),
+        Route("/agent/research/config", research_config_clear, methods=["DELETE"]),
+        Route("/agent/chats", agent_chats, methods=["GET"]),
+        Route("/agent/context/{scope}", agent_context_package, methods=["GET"]),
+        Route("/agent/projects/{pid}/adopt", agent_adopt, methods=["POST"]),
         Route("/agent/sessions/{sid}/cancel", agent_cancel, methods=["POST"]),
         Route("/agent/sessions/{sid}/resume-cancelled",
               agent_resume_cancelled, methods=["POST"]),
@@ -2137,8 +2213,6 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/agent/sessions/{sid}/plan", agent_plan, methods=["GET"]),
         Route("/agent/sessions/{sid}/evidence", agent_evidence, methods=["GET"]),
         Route("/agent/sessions/{sid}/events", agent_events, methods=["GET"]),
-        Route("/fabric/approvals", fabric_approvals, methods=["GET"]),
-        Route("/fabric/approvals/{aid}/decide", fabric_approvals_decide, methods=["POST"]),
         Route("/fabric/invoke", fabric_invoke, methods=["POST"]),
         Route("/fabric/capabilities", fabric_capabilities, methods=["GET"]),
         Route("/fabric/policy", fabric_policy_get, methods=["GET"]),
@@ -2217,7 +2291,11 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
                                allow_origin_regex=ALLOWED_ORIGIN,
                                allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
                                allow_headers=["Content-Type", "x-aura-shutdown",
-                                              "Last-Event-ID"])],
+                                              "Last-Event-ID", "x-aura-instance-token"]),
+                    # Inside CORS, so refusals still carry CORS headers. Refuses
+                    # every route except /health and /instance/proof unless the
+                    # request presents the launched instance's token.
+                    Middleware(InstanceGuard)],
         exception_handlers={_MalformedBody: _handle_malformed_body})
     app.state.services = S
     app.state.runner = runner
@@ -2226,7 +2304,6 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     app.state.run_store = run_store
     app.state.secrets = secrets_store
     app.state.agent = agent
-    app.state.ledger = S["ledger"]
     app.state.bus = bus
     return app
 
@@ -2438,7 +2515,7 @@ async def environment_probe(request: Request):
 
 
 async def environment_install(request: Request):
-    """Direct human installation — bypasses Fabric approval gate.
+    """Direct human installation, initiated by the person in the UI.
 
     POST /environment/install
     Body: { id: string }

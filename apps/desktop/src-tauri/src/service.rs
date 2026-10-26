@@ -12,8 +12,8 @@
 //!
 //! Two rules shape everything here.
 //!
-//! **Never attach to a process we cannot identify.** Port 4319 being open
-//! is not evidence that AURA is behind it. Something else on this machine
+//! **Never attach to a backend that cannot prove it is ours.** Port 4319 being
+//! open is not evidence that AURA is behind it. Something else on this machine
 //! may own that port, and pointing the UI at an unknown local server —
 //! then sending it project paths and capability invocations — is worse
 //! than failing to start. So the port is fingerprinted, and anything that
@@ -74,23 +74,13 @@ pub const PYTHON_PORT: u16 = 4320;
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 const READ_TIMEOUT: Duration = Duration::from_millis(4000);
 
-/// What is currently listening on the port, if anything.
-pub enum PortState {
-    /// Nothing is listening — we may start our own.
-    Free,
-    /// AURA's service, positively identified. Safe to reuse.
-    Aura,
-    /// Something is listening but it is not AURA. We must not use it and
-    /// must not kill it.
-    Foreign(String),
-}
-
-/// How the service came to be running, for honest reporting to the user.
-pub enum Startup {
-    /// A compatible AURA service was already running and was reused.
-    Reused,
-    /// We started it, and it passed its health check.
-    Spawned,
+/// Whether the backend on a port has proved it belongs to this launch.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Ownership {
+    /// The backend answered the challenge with the launch token's proof.
+    Owned,
+    /// Refused, with the reason. Nothing is sent to a refused backend.
+    Refused(String),
 }
 
 /// The supervised child, plus whether this process owns it.
@@ -99,21 +89,39 @@ pub enum Startup {
 /// started it — quitting AURA must not take it down.
 pub struct ServiceHandle {
     child: Mutex<Option<Child>>,
+    /// The per-launch token this backend was started with. Never logged,
+    /// never on a command line; the ownership check proves against it.
+    pub(crate) token: String,
     /// Port the supervised service listens on, for a graceful shutdown
     /// request on platforms without POSIX signals (Windows).
     #[cfg_attr(not(windows), allow(dead_code))]
     port: u16,
     /// Which `SERVICE_PIDS` slot this handle owns.
     slot: usize,
+    /// True once AURA has started a process for this handle. Distinguishes
+    /// "AURA never started one" (the port was taken) from "it crashed".
+    launched: std::sync::atomic::AtomicBool,
 }
 
 impl ServiceHandle {
-    pub fn new(port: u16, slot: usize) -> Self {
+    pub fn new(port: u16, slot: usize, token: String) -> Self {
         assert!(slot < SLOT_COUNT, "service slot out of range");
-        Self { child: Mutex::new(None), port, slot }
+        Self {
+            child: Mutex::new(None),
+            token,
+            port,
+            slot,
+            launched: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// The name this backend gives itself in its ownership answer.
+    fn backend_name(&self) -> &'static str {
+        if self.slot == SLOT_PYTHON { "python" } else { "node" }
     }
 
     fn adopt(&self, child: Child) {
+        self.launched.store(true, Ordering::SeqCst);
         SERVICE_PIDS[self.slot].store(child.id() as i32, Ordering::SeqCst);
         *self.child.lock().unwrap() = Some(child);
     }
@@ -192,7 +200,7 @@ impl ServiceHandle {
 
 impl Default for ServiceHandle {
     fn default() -> Self {
-        Self::new(DEFAULT_PORT, SLOT_AI)
+        Self::new(DEFAULT_PORT, SLOT_AI, String::new())
     }
 }
 
@@ -407,32 +415,78 @@ fn request_graceful_shutdown(port: u16) -> bool {
     matches!(http_post(port, "/shutdown", CONNECT_TIMEOUT), Ok((200, _)))
 }
 
-/// Is the thing on this port actually AURA's service?
+/// Refuse to start on a port that already has a listener.
 ///
-/// Fingerprinted on two endpoints rather than one. `/health` alone is a
-/// common enough path that another local dev server could answer it with
-/// a 200 and something JSON-shaped; `/fabric/capabilities` returning a
-/// capability catalogue *and* a policy is specific to this application.
-/// Requiring both is what makes "reuse" safe rather than optimistic.
-fn identify(port: u16) -> PortState {
-    let health = match http_get(port, "/health", CONNECT_TIMEOUT) {
-        Ok(v) => v,
-        // Nothing accepted the connection: the port is genuinely free.
-        Err(_) => return PortState::Free,
+/// A listener the shell did not start cannot prove it belongs to this
+/// launch: it was not given this launch's token. So AURA neither reuses it
+/// nor kills it. Nothing is sent to it.
+fn refuse_if_occupied(port: u16, what: &str) -> Result<(), String> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    if TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).is_err() {
+        return Ok(());
+    }
+    Err(format!(
+        "Port {port} is already in use, so AURA cannot start {what} on it. AURA only attaches to a \
+         backend it started itself, because only that backend holds this launch's identity. Nothing \
+         was sent to the program on that port and nothing was changed. Stop it, or free port {port}, \
+         then start AURA again."
+    ))
+}
+
+/// Ask the backend on `port` to prove it holds `token`.
+///
+/// A fresh challenge per call, so a recorded answer cannot be replayed. A
+/// healthy answer on `/health` is deliberately not enough: the proof is what
+/// establishes ownership.
+pub fn prove(port: u16, token: &str, backend: &str) -> Ownership {
+    if token.is_empty() {
+        return Ownership::Refused("no launch identity was created".into());
+    }
+    let challenge = match crate::instance::new_challenge() {
+        Ok(c) => c,
+        Err(e) => return Ownership::Refused(e),
     };
+    let (code, body) = match http_get(port, &format!("/instance/proof?challenge={challenge}"), CONNECT_TIMEOUT) {
+        Ok(v) => v,
+        Err(_) => return Ownership::Refused("nothing answered on the port".into()),
+    };
+    if code == 404 {
+        return Ownership::Refused("has no identity check, so it is not this AURA's backend".into());
+    }
+    if code != 200 {
+        return Ownership::Refused(format!("failed the identity check with HTTP {code}"));
+    }
+    let answer: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(_) => return Ownership::Refused("gave an identity answer that is not JSON".into()),
+    };
+    let named = answer["backend"].as_str().unwrap_or("");
+    if named != backend {
+        return Ownership::Refused(format!("identifies as the {named} backend, expected {backend}"));
+    }
+    let Some(proof) = answer["proof"].as_str() else {
+        return Ownership::Refused("did not present a proof of its identity".into());
+    };
+    if crate::instance::constant_time_eq(proof, &crate::instance::expected_proof(token, &challenge)) {
+        Ownership::Owned
+    } else {
+        Ownership::Refused("presented a proof for a different AURA instance".into())
+    }
+}
 
-    if health.0 != 200 {
-        return PortState::Foreign(format!("answered /health with HTTP {}", health.0));
+/// Re-check ownership of a backend this shell started. Called on every
+/// status query, so a reconnect or retry repeats the check.
+pub fn verify(handle: &ServiceHandle) -> Ownership {
+    if !handle.launched.load(Ordering::SeqCst) {
+        return Ownership::Refused(format!(
+            "AURA did not start its own backend on port {}, so no backend AURA started answers there",
+            handle.port
+        ));
     }
-    if !(health.1.contains("\"health\"") && health.1.contains("\"index\"")) {
-        return PortState::Foreign("answered /health, but not in AURA's shape".into());
+    if !handle.is_alive() {
+        return Ownership::Refused("the process AURA started is no longer running".into());
     }
-
-    match http_get(port, "/fabric/capabilities", CONNECT_TIMEOUT) {
-        Ok((200, body)) if body.contains("\"capabilities\"") && body.contains("\"policy\"") => PortState::Aura,
-        Ok((code, _)) => PortState::Foreign(format!("has no Capability Fabric (/fabric/capabilities → HTTP {code})")),
-        Err(e) => PortState::Foreign(format!("has no Capability Fabric ({e})")),
-    }
+    prove(handle.port, &handle.token, handle.backend_name())
 }
 
 /* ── locating what we need to run ────────────────────────────────── */
@@ -694,25 +748,11 @@ fn resolve_node(bundled: Option<&std::path::Path>) -> Result<PathBuf, String> {
 /// `script` is the resolved `ai-service.mjs` bundle — the caller owns
 /// finding it, because that differs between a dev tree and a packaged
 /// resource directory and the shell should not guess.
-pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Result<Startup, String> {
-    match identify(port) {
-        // Case 1 — AURA is already there (a developer's `npm run ai`, or a
-        // second window). Reuse it, and leave its lifecycle to its owner.
-        PortState::Aura => return Ok(Startup::Reused),
-
-        // Case 2 — occupied by something else. Refuse, clearly. Killing it
-        // would be destroying a process that was here first, and using it
-        // would mean sending AURA's traffic to an unknown server.
-        PortState::Foreign(why) => {
-            return Err(format!(
-                "Port {port} is in use by another program ({why}). AURA will not take over a port \
-                 it does not own, and will not use a service it cannot identify. Stop that program, \
-                 or free port {port}, then start AURA again."
-            ))
-        }
-
-        PortState::Free => {}
+pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Result<(), String> {
+    if handle.token.is_empty() {
+        return Err("AURA could not create this launch's identity, so it will not start its service.".into());
     }
+    refuse_if_occupied(port, "its local service")?;
 
     if !script.is_file() {
         return Err(format!(
@@ -767,6 +807,7 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
         .env("PATH", augmented_path(node_dir.as_ref()))
         .env("AI_PORT", port.to_string())
         .env("AURA_HOME", &home)
+        .env("AURA_INSTANCE_TOKEN", &handle.token)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
@@ -787,8 +828,8 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
 
     handle.adopt(child);
 
-    match wait_healthy(handle, port, Duration::from_secs(90)) {
-        Ok(()) => Ok(Startup::Spawned),
+    match wait_ready(handle, Duration::from_secs(90), "AURA's local service") {
+        Ok(()) => Ok(()),
         Err(e) => {
             // Do not leave a half-started process behind on a failed launch.
             handle.shutdown();
@@ -797,29 +838,13 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
     }
 }
 
-/// Poll until the service answers as AURA, it dies, or we run out of time.
-///
-/// Watching the child while polling is what turns "start failed" into a
-/// distinct outcome from "start timed out": a process that exits during
-/// startup is detected immediately instead of costing the full timeout.
-fn wait_healthy(handle: &ServiceHandle, port: u16, timeout: Duration) -> Result<(), String> {
-    wait_ready(handle, port, timeout, identify, "AURA's local service")
-}
-
-/// The same wait, for any backend and any fingerprint.
-///
-/// `what` names the backend in the two messages a caller can receive, so a
-/// failed Python start does not report itself as the Node service dying.
-fn wait_ready(
-    handle: &ServiceHandle,
-    port: u16,
-    timeout: Duration,
-    fingerprint: fn(u16) -> PortState,
-    what: &str,
-) -> Result<(), String> {
+/// Poll until this shell's own child passes the ownership check, it dies,
+/// or we run out of time. Watching the child is what makes "start failed"
+/// distinct from "start timed out".
+fn wait_ready(handle: &ServiceHandle, timeout: Duration, what: &str) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if let PortState::Aura = fingerprint(port) {
+        if verify(handle) == Ownership::Owned {
             return Ok(());
         }
         if !handle.is_alive() {
@@ -827,80 +852,16 @@ fn wait_ready(
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    Err(format!(
-        "{what} did not become ready within {}s.",
-        timeout.as_secs()
-    ))
+    Err(format!("{what} did not become ready within {}s.", timeout.as_secs()))
 }
 
-/// Public probe used by the readiness command and the crash watcher.
-pub fn is_healthy(port: u16) -> bool {
-    matches!(identify(port), PortState::Aura)
-}
-
-/// The same, for the canonical Python backend.
-pub fn is_python_healthy(port: u16) -> bool {
-    matches!(identify_python(port), PortState::Aura)
-}
-
-/* ── the canonical Python backend ────────────────────────────────── */
-//
-// The Node service above owns workflows, providers and the knowledge
-// index. It does NOT own machine state: discovery, the machine inventory,
-// the safe-probe boundary, install and connect live only in the Python
-// backend (`backend/aura/environment/**`, routed by `aura/api/server.py`).
-//
 // Nothing used to start that backend. The renderer asked
 // `127.0.0.1:4320/environment/inventory` for the machine inventory, found
 // nobody listening, and the Machine Inventory panel read "0 installed" on
 // a machine with thousands of packages on it. Supervising it here is what
 // makes the authoritative answer reachable — and it is supervised exactly
 // like the Node service, under the same two rules: never attach to a
-// process we cannot identify, and never fake readiness.
-
-/// Is the thing on this port the canonical Python backend?
-///
-/// Two questions, both of which have to be answered yes.
-///
-/// *Is it AURA?* — `/health` in AURA's shape plus a Capability Fabric on
-/// `/fabric/capabilities`, the same pair `identify` requires, for the same
-/// reason: `/health` alone is a path any local dev server might answer.
-///
-/// *Is it the PYTHON one?* — `/health` reports `"backend":"python"`. The
-/// Node service answers `/health` and `/fabric/capabilities` in shapes
-/// close enough to pass the first test, and adopting it as the Environment
-/// backend is the specific mistake that produced an empty inventory that
-/// looked like a working one. A backend that does not say it is Python is
-/// reported as foreign rather than used.
-fn identify_python(port: u16) -> PortState {
-    let health = match http_get(port, "/health", CONNECT_TIMEOUT) {
-        Ok(v) => v,
-        Err(_) => return PortState::Free,
-    };
-
-    if health.0 != 200 {
-        return PortState::Foreign(format!("answered /health with HTTP {}", health.0));
-    }
-    if !(health.1.contains("\"health\"") && health.1.contains("\"index\"")) {
-        return PortState::Foreign("answered /health, but not in AURA's shape".into());
-    }
-    if !health.1.contains("\"python\"") {
-        return PortState::Foreign(
-            "is an AURA backend, but not the Python one — it cannot serve the machine inventory"
-                .into(),
-        );
-    }
-
-    match http_get(port, "/fabric/capabilities", CONNECT_TIMEOUT) {
-        Ok((200, body)) if body.contains("\"capabilities\"") && body.contains("\"policy\"") => {
-            PortState::Aura
-        }
-        Ok((code, _)) => PortState::Foreign(format!(
-            "has no Capability Fabric (/fabric/capabilities → HTTP {code})"
-        )),
-        Err(e) => PortState::Foreign(format!("has no Capability Fabric ({e})")),
-    }
-}
+// process that cannot prove it is ours, and never fake readiness.
 
 /// A Python interpreter that can actually run the backend.
 ///
@@ -1139,20 +1100,11 @@ pub fn ensure_python_running(
     entry: PathBuf,
     backend_root: PathBuf,
     port: u16,
-) -> Result<Startup, String> {
-    match identify_python(port) {
-        // Already there — a developer's `npm run environment:api`, or a
-        // second window. Reuse it and leave its lifecycle to its owner.
-        PortState::Aura => return Ok(Startup::Reused),
-        PortState::Foreign(why) => {
-            return Err(format!(
-                "Port {port} is in use by another program ({why}). AURA will not take over a port \
-                 it does not own, and will not read machine state from a service it cannot \
-                 identify. Stop that program, or free port {port}, then start AURA again."
-            ))
-        }
-        PortState::Free => {}
+) -> Result<(), String> {
+    if handle.token.is_empty() {
+        return Err("AURA could not create this launch's identity, so it will not start the environment backend.".into());
     }
+    refuse_if_occupied(port, "the environment backend")?;
 
     if !entry.is_file() {
         return Err(format!(
@@ -1237,6 +1189,7 @@ pub fn ensure_python_running(
         // during startup, and a buffered one loses the traceback.
         .env("PYTHONUNBUFFERED", "1")
         .env("AURA_HOME", &home)
+        .env("AURA_INSTANCE_TOKEN", &handle.token)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
@@ -1255,17 +1208,179 @@ pub fn ensure_python_running(
 
     handle.adopt(child);
 
-    match wait_ready(
-        handle,
-        port,
-        Duration::from_secs(60),
-        identify_python,
-        "AURA's environment backend",
-    ) {
-        Ok(()) => Ok(Startup::Spawned),
+    match wait_ready(handle, Duration::from_secs(60), "AURA's environment backend") {
+        Ok(()) => Ok(()),
         Err(e) => {
             handle.shutdown();
             Err(format!("{e} The backend log is at {}.", log_path.display()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    //! `prove` against a real loopback listener. These are the trust-boundary
+    //! tests: a genuine instance is accepted, and every other listener is not.
+    use super::*;
+    use std::io::{BufRead, BufReader, Write as _};
+    use std::net::TcpListener;
+
+    /// Serve one connection per request. `answer` gets the challenge from the
+    /// request line and returns (status, body).
+    fn serve(answer: impl Fn(&str) -> (u16, String) + Send + 'static) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut line = String::new();
+                if BufReader::new(&stream).read_line(&mut line).is_err() {
+                    continue;
+                }
+                let challenge = line
+                    .split("challenge=")
+                    .nth(1)
+                    .and_then(|r| r.split(|c: char| c == ' ' || c == '&').next())
+                    .unwrap_or("")
+                    .to_string();
+                let (code, body) = answer(&challenge);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        port
+    }
+
+    const TOKEN: &str = "launch-token-of-this-instance-0123456789";
+
+    #[test]
+    fn a_genuine_instance_is_owned() {
+        let port = serve(|c| {
+            let proof = crate::instance::expected_proof(TOKEN, c);
+            (200, format!(r#"{{"backend":"python","proof":"{proof}"}}"#))
+        });
+        assert_eq!(prove(port, TOKEN, "python"), Ownership::Owned);
+    }
+
+    #[test]
+    fn a_foreign_backend_with_its_own_token_is_refused() {
+        let port = serve(|c| {
+            let proof = crate::instance::expected_proof("another-home-token", c);
+            (200, format!(r#"{{"backend":"python","proof":"{proof}"}}"#))
+        });
+        assert!(matches!(prove(port, TOKEN, "python"), Ownership::Refused(_)));
+    }
+
+    #[test]
+    fn a_replayed_answer_to_an_old_challenge_is_refused() {
+        // Always answers with the proof for one fixed challenge.
+        let port = serve(|_| {
+            let proof = crate::instance::expected_proof(TOKEN, "0000000000000000");
+            (200, format!(r#"{{"backend":"python","proof":"{proof}"}}"#))
+        });
+        assert!(matches!(prove(port, TOKEN, "python"), Ownership::Refused(_)));
+    }
+
+    #[test]
+    fn a_backend_without_the_check_is_refused() {
+        let port = serve(|_| (404, "{}".into()));
+        assert!(matches!(prove(port, TOKEN, "python"), Ownership::Refused(_)));
+    }
+
+    #[test]
+    fn a_healthy_answer_with_no_proof_is_refused() {
+        let port = serve(|_| (200, r#"{"health":{"ok":true},"index":{}}"#.into()));
+        assert!(matches!(prove(port, TOKEN, "python"), Ownership::Refused(_)));
+    }
+
+    #[test]
+    fn the_wrong_backend_is_refused_even_with_a_valid_proof() {
+        // The Node service with the right token but asked to be the Python one.
+        let port = serve(|c| {
+            let proof = crate::instance::expected_proof(TOKEN, c);
+            (200, format!(r#"{{"backend":"node","proof":"{proof}"}}"#))
+        });
+        assert!(matches!(prove(port, TOKEN, "python"), Ownership::Refused(_)));
+    }
+
+    #[test]
+    fn no_launch_identity_means_no_ownership() {
+        let port = serve(|c| (200, format!(r#"{{"backend":"python","proof":"{}"}}"#, crate::instance::expected_proof("", c))));
+        assert!(matches!(prove(port, "", "python"), Ownership::Refused(_)));
+    }
+
+    #[test]
+    fn an_occupied_port_is_refused_and_nothing_is_sent_to_it() {
+        // A listener this shell did not start. It is refused, not reused.
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let err = refuse_if_occupied(port, "its local service").unwrap_err();
+        assert!(err.contains("already in use"));
+        assert!(err.contains("Nothing"));
+    }
+
+    #[test]
+    fn a_free_port_is_allowed_to_start() {
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        assert!(refuse_if_occupied(port, "its local service").is_ok());
+    }
+
+    #[test]
+    fn nothing_listening_is_refused_not_owned() {
+        let port = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        assert!(matches!(prove(port, TOKEN, "python"), Ownership::Refused(_)));
+    }
+}
+
+#[cfg(test)]
+mod live_ownership_tests {
+    //! Opt-in: runs `prove` against real processes. Set AURA_LIVE_OWN_PORT and
+    //! AURA_LIVE_OWN_TOKEN for a backend this test should accept, and
+    //! AURA_LIVE_FOREIGN_PORT for a healthy backend it must refuse.
+    //! Run: cargo test --lib live_ownership -- --ignored --nocapture
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn a_live_owned_backend_is_accepted_and_a_live_foreign_one_is_refused() {
+        let own_port: u16 = std::env::var("AURA_LIVE_OWN_PORT").unwrap().parse().unwrap();
+        let own_token = std::env::var("AURA_LIVE_OWN_TOKEN").unwrap();
+        let foreign_port: u16 = std::env::var("AURA_LIVE_FOREIGN_PORT").unwrap().parse().unwrap();
+
+        let own = prove(own_port, &own_token, "python");
+        println!("own backend on {own_port}: {own:?}");
+        assert_eq!(own, Ownership::Owned);
+
+        let foreign = prove(foreign_port, &own_token, "python");
+        println!("foreign backend on {foreign_port}: {foreign:?}");
+        assert!(matches!(foreign, Ownership::Refused(_)));
+    }
+}
+
+
+#[cfg(test)]
+mod never_launched_tests {
+    use super::*;
+
+    #[test]
+    fn a_backend_aura_never_started_is_not_reported_as_having_crashed() {
+        let handle = ServiceHandle::new(4320, SLOT_PYTHON, "token".into());
+        match verify(&handle) {
+            Ownership::Refused(reason) => {
+                assert!(reason.contains("did not start"), "{reason}");
+                assert!(reason.contains("4320"), "{reason}");
+                assert!(!reason.contains("no longer running"), "{reason}");
+            }
+            Ownership::Owned => panic!("an unstarted backend must never be owned"),
         }
     }
 }

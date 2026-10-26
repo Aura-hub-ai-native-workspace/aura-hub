@@ -10,7 +10,7 @@ enforces around it.
 Design rules, all deliberate:
 
 - DETERMINISTIC. The blocks are constants, not generated prose. A given
-  role composes byte-identically every time, so the approved task
+  role composes byte-identically every time, so the granted task
   fingerprint covers a stable prompt and tests can pin exact text.
 - TRUSTED vs UNTRUSTED. Role instructions are AURA-authored and frame
   the task; the task text is data and is fenced inside <TASK> tags. The
@@ -22,7 +22,7 @@ Design rules, all deliberate:
   not defaults. "No role given" is a real answer (legacy delegate calls
   carry no role and get no framing); a role given must be one this
   module actually knows. Nothing silently becomes "code".
-- NO SECRETS. The composition takes task text, scope and an approval
+- NO SECRETS. The composition takes task text, scope and a policy
   flag — never environment, provider configuration or credentials.
 
 This module imports nothing beyond stdlib and is safe for executors to
@@ -118,8 +118,7 @@ _PLANNING = RoleContract(
         "verify on their own.",
         "- Identify dependencies between tasks and state them "
         "explicitly.",
-        "- Identify which tasks need human approval and which carry "
-        "risk.",
+        "- Identify which tasks carry risk and what could go wrong with them.",
         "- Identify risks and unknowns, and state the acceptance "
         "criteria for each task.",
     ),
@@ -127,7 +126,7 @@ _PLANNING = RoleContract(
         "Your final reply must contain: a TASK LIST (each task with a "
         "one-line objective, its dependencies, and its acceptance "
         "criteria), DEPENDENCIES (the ordering and why), RISKS (what "
-        "can go wrong and what needs approval), and OPEN QUESTIONS "
+        "can go wrong), and OPEN QUESTIONS "
         "(anything you could not decide from the available context)."
     ),
     completion_criteria=(
@@ -176,8 +175,8 @@ _CODE = RoleContract(
     ),
     forbidden_behaviour=(
         "- Do not modify files outside the declared scope.",
-        "- Do not bypass or argue with approval gates: an action AURA "
-        "denied stays denied; report it instead of retrying it.",
+        "- Do not try to get around AURA's policy: an action AURA "
+        "refused stays refused; report it instead of retrying it.",
         "- Do not report validation you did not run.",
     ),
     evidence_requirements=(
@@ -288,7 +287,7 @@ _REVIEW = RoleContract(
         "could not determine), and a REVIEW VERDICT: one factual line "
         "stating whether the acceptance criteria you checked are "
         "satisfied. Your verdict is input to AURA's own decision — it "
-        "does not approve or bypass anything by itself."
+        "does not grant or bypass anything by itself."
     ),
     completion_criteria=(
         "You are done only when you have stated what you checked, what "
@@ -297,13 +296,12 @@ _REVIEW = RoleContract(
         "nothing."
     ),
     forbidden_behaviour=(
-        "- Do not approve based on the implementing worker's own "
-        "claims: verify from the work itself.",
+        "- Do not accept the implementing worker's own claims as "
+        "evidence: verify from the work itself.",
         "- Do not modify any file. You have no authorization to change "
         "anything; report instead.",
-        "- Do not present your verdict as an approval that bypasses "
-        "AURA's authorization: the approval system, not your text, "
-        "decides.",
+        "- Do not present your verdict as an authorization: AURA's policy, "
+        "not your text, decides.",
     ),
     evidence_requirements=(
         "- Every finding must carry a severity and cite the inspected "
@@ -341,17 +339,17 @@ def contract_for(role: str | None) -> RoleContract | None:
 
 def compose_role_prompt(role: str | None, task_text: str,
                         scope_paths: list[str] | None = None,
-                        approval_state: str = "granted") -> str:
+                        policy_state: str = "granted") -> str:
     """Frame `task_text` with its role's instruction block.
 
     The composition is: trusted AURA-authored role framing FIRST, the
     untrusted task text fenced inside <TASK> tags AFTER, followed by
-    the runtime context (scope, approval state, cancellation rule).
+    the runtime context (scope, policy state, cancellation rule).
     Because the framing is a per-role constant and the task text is
     placed inside the fence with the priority statement in the framing,
     task text cannot override the role contract — and because the
     framing is deterministic, the composed prompt is deterministic and
-    the approved fingerprint covers exactly what the worker reads.
+    the fingerprint covers exactly what the worker reads.
 
     Raises KeyError for a role outside the closed vocabulary — fail
     closed, never silently unframed.
@@ -392,7 +390,7 @@ def compose_role_prompt(role: str | None, task_text: str,
     runtime = [
         "RUNTIME CONTEXT:",
         f"- authorized scope: {', '.join(scope_paths) if scope_paths else '(entire project worktree)'}",
-        f"- approval state: {approval_state}",
+        f"- policy state: {policy_state}",
         "- cancellation: AURA may stop this run at any moment; stop "
         "cleanly when signalled and never start a large action late in "
         "the run.",

@@ -77,7 +77,6 @@ export const useWorkerStore = create<WorkerState>((set, get) => ({
 export function workerReadiness(workers: WorkerDescriptor[]) {
   return {
     connected: workers.filter((w) => w.connected).length,
-    governed: workers.filter((w) => w.governance === 'FULLY_GOVERNED').length,
     installed: workers.filter((w) => w.installed && !w.connected).length,
     missing: workers.filter((w) => !w.installed).length,
     total: workers.length,

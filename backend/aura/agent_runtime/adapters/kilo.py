@@ -15,13 +15,12 @@ Config mechanism (verified by machine inspection 2026-10-11):
 
 from __future__ import annotations
 
+from ..tmpname import unique_sibling
 import json
 import os
 import re
 import shutil
 from pathlib import Path
-
-from aura.environment.procexec import ExecStatus, run_argv
 
 from aura.agent_runtime.adapters import AgentConfigurationAdapter
 from aura.agent_runtime.model import (
@@ -32,6 +31,7 @@ from aura.agent_runtime.model import (
     RuntimeConfig,
     checksum,
 )
+from aura.environment.procexec import ExecStatus, run_argv
 
 _CONFIG_PATH = Path.home() / ".config" / "kilo" / "kilo.jsonc"
 _ADVISORY_PATH = Path.home() / ".config" / "kilo" / "aura-runtime-env.sh"
@@ -49,7 +49,7 @@ def _read_jsonc(path: Path) -> dict:
 
 def _write_jsonc(path: Path, data: dict) -> None:
     text = json.dumps(data, indent=2, ensure_ascii=False)
-    tmp = path.with_suffix(".tmp")
+    tmp = unique_sibling(path)
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 
@@ -110,6 +110,9 @@ class KiloAdapter(AgentConfigurationAdapter):
             return outcome.stdout.strip() if outcome.status is ExecStatus.OK else None
         except Exception:
             return None
+
+    def mutable_paths(self) -> list:
+        return [_ADVISORY_PATH]
 
     def buildDesiredConfig(self, runtime: RuntimeConfig) -> dict:
         # kilo.jsonc does not support an "env" key — desired config is
@@ -181,7 +184,7 @@ class KiloAdapter(AgentConfigurationAdapter):
 
     def restore(self, backup_bytes: bytes) -> ConfigurationChange:
         old_cs = checksum(_ADVISORY_PATH.read_bytes()) if _ADVISORY_PATH.exists() else None
-        tmp = _ADVISORY_PATH.with_suffix(".tmp")
+        tmp = unique_sibling(_ADVISORY_PATH)
         tmp.write_bytes(backup_bytes)
         tmp.replace(_ADVISORY_PATH)
         _ADVISORY_PATH.chmod(0o600)

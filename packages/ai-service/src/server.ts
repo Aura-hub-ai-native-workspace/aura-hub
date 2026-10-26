@@ -1,6 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs';
-import { WorkspaceManager } from './workspace';
+import { WorkspaceManager, planNewProject } from './workspace';
 import type { PipelineOptions, StreamEmit } from './pipeline';
 import { DEFAULT_SETTINGS } from './settings';
 import type { MemoryKind } from './memory';
@@ -28,6 +28,7 @@ import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate, validateRule } fro
 import type { AutomationEvent, AutomationRule } from '@aura/automation';
 import { automationEvent } from './automation';
 import type { DiagnosisEvent, DiagnosisRequest } from './diagnosis/types';
+import { configuredToken, CORS_ALLOW_HEADERS, decide } from './instanceGuard';
 import type { MissionEvent } from './mission/types';
 import type { ExecutionEvent } from './mission/execution/types';
 import {
@@ -40,7 +41,7 @@ import {
 
 const CORS = {
   'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-  'access-control-allow-headers': 'content-type',
+  'access-control-allow-headers': CORS_ALLOW_HEADERS,
 };
 
 /** Local-only server: reflect the origin only for known local clients. */
@@ -247,6 +248,8 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     (e) => console.warn('[environment] boot scan failed:', (e as Error).message),
   );
 
+  // Read once per process: the launch token never changes while it runs.
+  const instanceToken = configuredToken();
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const seg = url.pathname.split('/').filter(Boolean);
@@ -254,6 +257,11 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     const origin = req.headers.origin;
     if (origin && ALLOWED_ORIGIN.test(origin)) res.setHeader('access-control-allow-origin', origin);
     if (method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
+    // Instance ownership before any route runs. See instanceGuard.ts.
+    const guard = decide(method, url.pathname, req.headers, instanceToken,
+      url.searchParams.get('challenge'));
+    if (guard.kind === 'proof') { json(res, guard.status, guard.body); return; }
+    if (guard.kind === 'refused') { json(res, guard.status, guard.body); return; }
     const p = manager.pipeline;
 
     try {
@@ -581,6 +589,24 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             catch (e) { return json(res, 400, { error: (e as Error).message }); }
           }
         }
+        /* Create a brand-new project folder and register it. The folder name
+           is derived from the project name (never taken from it) and an
+           existing folder is never reused. */
+        /* Where a project with this name WOULD be created — the same function
+           creation uses, so the dialog's preview cannot disagree with the result. */
+        if (seg.length === 2 && seg[1] === 'location' && method === 'GET') {
+          try { return json(res, 200, planNewProject(url.searchParams.get('name') ?? '')); }
+          catch (e) { return json(res, 400, { error: (e as Error).message }); }
+        }
+        if (seg.length === 2 && seg[1] === 'create' && method === 'POST') {
+          const b = await readJson(req);
+          try {
+            return json(res, 200, manager.createProject({
+              name: String(b.name ?? ''),
+              parentPath: typeof b.parentPath === 'string' && b.parentPath.trim() ? b.parentPath : undefined,
+            }));
+          } catch (e) { return json(res, 400, { error: (e as Error).message }); }
+        }
         const id = seg[1];
         if (seg[2] === 'open' && method === 'POST') {
           try { return json(res, 200, manager.open(id)); }
@@ -806,7 +832,22 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             res.on('close', () => ac.abort());
             const emit = (e: MissionEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
             try {
-              await manager.runMissionCreation(id, text, emit, ac.signal);
+              // Optional shared context the plan must honour (decisions,
+              // requirements, research). Validated and bounded here: it is
+              // data for the planner, never instructions or paths.
+              const c = b.context as { text?: unknown; scope?: unknown; records?: unknown; sources?: unknown } | undefined;
+              const context = c && typeof c.text === 'string' && c.text.trim()
+                ? {
+                  text: c.text.slice(0, 8000),
+                  scope: typeof c.scope === 'string' ? c.scope.slice(0, 96) : id,
+                  records: typeof c.records === 'number' ? c.records : 0,
+                  sources: (Array.isArray(c.sources) ? c.sources : [])
+                    .filter((s): s is { title: string; url: string } => !!s && typeof (s as { url?: unknown }).url === 'string' && /^https?:\/\//i.test((s as { url: string }).url))
+                    .map((s) => ({ title: String(s.title ?? '').slice(0, 200), url: s.url.slice(0, 500) }))
+                    .slice(0, 12),
+                }
+                : undefined;
+              await manager.runMissionCreation(id, text, emit, ac.signal, context);
             } catch (e) {
               emit({ type: 'error', message: (e as Error).message });
             }
@@ -818,9 +859,37 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             const m = manager.getMission(id, mid);
             return m ? json(res, 200, m) : json(res, 404, { error: 'no such mission' });
           }
-          if (seg[4] === 'approve' && method === 'POST') {
-            const m = manager.approveMission(id, mid);
-            return m ? json(res, 200, m) : json(res, 404, { error: 'no such mission' });
+          /* ── Planner: edit, retry planning, hand off to Workspace ── */
+          if (seg[4] === 'plan' && seg.length === 5 && method === 'PUT') {
+            const b = await readJson(req);
+            const r = manager.savePlan(id, mid, Number(b.revision), Array.isArray(b.tasks) ? b.tasks : [], Array.isArray(b.acceptance) ? b.acceptance : undefined);
+            return json(res, r.status, r);
+          }
+          if (seg[4] === 'replan' && method === 'POST') {
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
+            const ac = new AbortController();
+            res.on('close', () => ac.abort());
+            const emit = (e: MissionEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
+            try {
+              const r = await manager.replanMission(id, mid, emit, ac.signal);
+              if (!r) emit({ type: 'error', message: 'no such plan' });
+            } catch (e) {
+              emit({ type: 'error', message: (e as Error).message });
+            }
+            res.end();
+            return;
+          }
+          if (seg[4] === 'handoff' && seg.length === 5 && method === 'POST') {
+            const b = await readJson(req);
+            const r = manager.reserveHandoff(id, mid, Number(b.revision));
+            return json(res, r.status, r);
+          }
+          if (seg[4] === 'handoff' && seg.length === 6 && method === 'POST') {
+            const b = await readJson(req);
+            const status = b.status === 'started' ? 'started' : b.status === 'failed' ? 'failed' : null;
+            if (!status) return json(res, 400, { error: "status must be 'started' or 'failed'" });
+            const r = manager.settleHandoff(id, mid, seg[5], status, typeof b.error === 'string' ? b.error : undefined);
+            return json(res, r.status, r);
           }
           if (seg[4] === 'reject' && method === 'POST') {
             const b = await readJson(req);
@@ -859,11 +928,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (seg[4] === 'cancel' && method === 'POST') {
             const b = await readJson(req);
             const r = manager.cancelMissionExecution(id, mid, typeof b.reason === 'string' ? b.reason : undefined);
-            return json(res, r.ok ? 200 : 400, r);
-          }
-          if (seg[4] === 'review' && method === 'POST') {
-            const b = await readJson(req);
-            const r = manager.reviewMissionCheckpoint(id, mid, b.pass === true, typeof b.note === 'string' ? b.note : undefined);
             return json(res, r.ok ? 200 : 400, r);
           }
           if (seg[4] === 'replay' && method === 'GET') {

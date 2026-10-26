@@ -1,3 +1,4 @@
+import { AI_BASE, backendFetch } from '../backend/backendSession';
 /**
  * Type-only, and deliberately so.
  *
@@ -11,8 +12,7 @@
  */
 import type { AgentBeat } from '../screens/workflows/agent/types';
 
-const ENV = import.meta.env as unknown as Record<string, string | undefined>;
-const BASE = ENV.VITE_AI_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:4319';
+const BASE = AI_BASE;
 
 
 export interface ProjectRecord {
@@ -143,8 +143,14 @@ export interface IndexStatus {
   finishedAt: string | null;
 }
 
-export type MemoryKind = 'conversation' | 'decision' | 'code' | 'accepted' | 'rejected' | 'correction' | 'pinned' | 'learning' | 'diagnosis';
-export interface MemoryItem { id: string; kind: MemoryKind; title: string; body: string; pinned: boolean; at: string }
+export type MemoryKind = 'conversation' | 'decision' | 'code' | 'accepted' | 'rejected' | 'correction' | 'pinned' | 'learning' | 'diagnosis'
+  // Written by the agent's Shared Context (the same per-project file).
+  | 'goal' | 'requirement' | 'constraint' | 'convention' | 'architecture' | 'research' | 'plan' | 'execution' | 'environment' | 'error' | 'origin';
+export interface MemoryItem {
+  id: string; kind: MemoryKind; title: string; body: string; pinned: boolean; at: string;
+  key?: string; taskId?: string; planId?: string; source?: string;
+  refs?: { title: string; url: string; retrievedAt?: string; excerpt?: string }[];
+}
 
 export interface GraphEntity { id: string; kind: string; layer: string; name: string; relPath: string; line?: number; summary?: string }
 export interface GraphRelation { id: string; from: string; to: string; kind: string; confidence: number }
@@ -298,7 +304,7 @@ export interface NodeSpecInfo {
  */
 export type NodeRunState =
   | 'queued' | 'running' | 'waiting' | 'completed' | 'failed' | 'skipped'
-  | 'awaiting-approval' | 'denied' | 'cancelled' | 'timed-out';
+  | 'denied' | 'cancelled' | 'timed-out';
 
 export type WfRunEvent =
   | { type: 'start'; workflowId: string; at: string; runId?: string; versionId?: string }
@@ -448,7 +454,6 @@ export interface DryRunReport {
   validation: WorkflowValidationReport;
   envelope: AuthorityEnvelope;
   plan: PlannedStep[];
-  approvalsRequired: { nodeId: string; capabilityId: string; reason: string; rule: string }[];
   /** Non-empty means this run cannot finish as written. */
   denials: { nodeId: string; capabilityId: string; reason: string; rule: string }[];
   wouldRunUnattended: boolean;
@@ -510,11 +515,11 @@ export interface WorkflowVersion extends WorkflowVersionSummary {
 /* ── runs (GET /workflows/:id/runs) ───────────────────────────────── */
 
 export type RunState =
-  | 'queued' | 'running' | 'awaiting-approval'
+  | 'queued' | 'running'
   | 'succeeded' | 'failed' | 'cancelled' | 'timed-out';
 
 export type NodeState =
-  | 'queued' | 'running' | 'awaiting-approval' | 'succeeded'
+  | 'queued' | 'running' | 'succeeded'
   | 'failed' | 'denied' | 'skipped' | 'cancelled' | 'timed-out';
 
 /**
@@ -531,7 +536,6 @@ export interface EvidenceRef {
   risk: string;
   /** Null when the capability has no mechanical check. */
   verified: boolean | null;
-  approvalId?: string;
   nodeId?: string;
   at: string;
   durationMs: number;
@@ -695,7 +699,6 @@ export interface EvidenceRef {
   decisionRule: string;
   risk: string;
   verified: boolean | null;
-  approvalId?: string;
   nodeId?: string;
   at: string;
   durationMs: number;
@@ -707,9 +710,9 @@ export interface StateTransition {
   note?: string;
 }
 
-const jget = <T>(p: string): Promise<T> => fetch(BASE + p).then((r) => r.json() as Promise<T>);
+const jget = <T>(p: string): Promise<T> => backendFetch(BASE + p).then((r) => r.json() as Promise<T>);
 const jsend = <T>(method: string, p: string, body?: unknown): Promise<T> =>
-  fetch(BASE + p, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as Promise<T>);
+  backendFetch(BASE + p, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }).then((r) => r.json() as Promise<T>);
 const jpost = <T>(p: string, body: unknown): Promise<T> => jsend<T>('POST', p, body);
 
 /**
@@ -730,7 +733,7 @@ async function streamRun(
 ): Promise<void> {
   let res: Response;
   try {
-    res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
+    res = await backendFetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
   } catch (e) {
     onEvent({ type: 'done', status: 'failed', ms: 0, error: (e as Error).message || 'Service unreachable' });
     return;
@@ -845,7 +848,17 @@ export const aiClient = {
     registry?: { readable: boolean; error: string | null };
   }>('/projects'),
   addProject: (path: string, name?: string) => jpost<{ project: ProjectRecord; profile: ProjectProfile } | { error: string }>('/projects', { path, name }),
-  openProject: (id: string) => jpost<{ project: ProjectRecord; profile: ProjectProfile; status: IndexStatus } | { error: string }>(`/projects/${id}/open`, {}),
+  openProject: (id: string) => jpost<{
+    project: ProjectRecord; profile: ProjectProfile; status: IndexStatus;
+    /** Whether this open is the project's first (drives the opening animation). */
+    intro?: { firstOpen: boolean; kind: 'new' | 'existing' };
+  } | { error: string }>(`/projects/${id}/open`, {}),
+  /** Create a brand-new project folder and register it (the folder name is derived, never taken from the name). */
+  createProject: (name: string, parentPath?: string) =>
+    jpost<{ project: ProjectRecord; profile: ProjectProfile } | { error: string }>('/projects/create', { name, parentPath }),
+  /** Where a project with this name would be created: the service's own answer, the one creation uses. */
+  projectLocation: (name: string) =>
+    jget<{ parent: string; dirName: string; target: string; overridden: boolean; renamed: boolean }>(`/projects/location?name=${encodeURIComponent(name)}`),
   renameProject: (id: string, name: string) => jsend<ProjectRecord>('PATCH', `/projects/${id}`, { name }),
   favoriteProject: (id: string, favorite: boolean) => jsend<ProjectRecord>('PATCH', `/projects/${id}`, { favorite }),
   removeProject: (id: string) => jsend<{ ok: boolean }>('DELETE', `/projects/${id}`),
@@ -878,13 +891,13 @@ export const aiClient = {
 
   /* graphify graph visualization */
   projectGraphifyHtml: (id: string): Promise<string> =>
-    fetch(`${BASE}/projects/${id}/graphify`).then((r) => r.ok ? r.text() : ''),
+    backendFetch(`${BASE}/projects/${id}/graphify`).then((r) => r.ok ? r.text() : ''),
   graphifyStatus: (id: string): Promise<{ exists: boolean; phase: 'idle' | 'running' | 'done' | 'error' | 'unavailable'; error?: string }> =>
-    fetch(`${BASE}/projects/${id}/graphify/status`)
+    backendFetch(`${BASE}/projects/${id}/graphify/status`)
       .then((r) => (r.ok ? r.json() : { exists: false, phase: 'unavailable' as const }))
       .catch(() => ({ exists: false, phase: 'unavailable' as const })),
   generateGraphify: (id: string): Promise<{ ok: boolean; unavailable?: boolean }> =>
-    fetch(`${BASE}/projects/${id}/graphify/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    backendFetch(`${BASE}/projects/${id}/graphify/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
       .then((r) => (r.ok ? r.json() : { ok: false, unavailable: true }))
       .catch(() => ({ ok: false, unavailable: true })),
   projectArchitectureLayers: (id: string): Promise<{ layers: ArchitectureLayer[]; edges: ArchitectureLayerEdge[] }> =>
@@ -1045,7 +1058,7 @@ export const aiClient = {
     let res: Response;
     try {
       const body = { text, ...scope };
-      res = await fetch(BASE + '/stream', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
+      res = await backendFetch(BASE + '/stream', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
     } catch (e) {
       handlers.onError?.({ type: 'network', message: (e as Error).message || 'Service unreachable', retryable: true });
       return;

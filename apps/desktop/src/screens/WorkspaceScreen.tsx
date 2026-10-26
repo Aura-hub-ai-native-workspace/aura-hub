@@ -34,11 +34,8 @@ import { useWorkspace } from '../data/useWorkspace';
 import { ACTIVE_TOOL_SLOTS, useHubStore } from '../workspace/hubStore';
 import { deriveToolSlots } from '../workspace/toolSlots';
 import { deriveWorkerSlots } from '../workspace/workerSlots';
-import { fabricClient, type ApprovalRequest } from '../ai/fabricClient';
-import { centralAgentClient } from '../ai/centralAgentClient';
-import { agentApprovalToRequest, type AgentApprovalRow } from '../ai/agentApprovals';
 import { AddNodeDialog } from '../workspace/AddNodeDialog';
-import { NodeInspector } from '../environment/NodeInspector';
+import { NodeStatusCard } from '../environment/NodeStatusCard';
 import { FloatingSurface } from '../environment/windows/FloatingSurface';
 import { useWindowManager } from '../environment/windows/windowManager';
 import { CATEGORY_ICON, STATUS_TONE, TONE_DOT } from '../environment/presentation';
@@ -48,8 +45,9 @@ import { WorkspaceShell } from './workspace/neon/WorkspaceShell';
 import { LeftControlPanel } from './workspace/neon/LeftControlPanel';
 import { AuraAgentWorkspace } from './workspace/neon/AuraAgentWorkspace';
 import { useAgentConversations } from '../ai/useAgentConversations';
-import { AuraEverything } from '../environment/AuraEverything';
+import { ToolPlacement } from '../environment/ToolPlacement';
 import { AddWorkerPanel } from '../workspace/AddWorkerPanel';
+import { WorkspaceWindowLayer } from '../ops/WorkspaceCanvas';
 
 export function WorkspaceScreen() {
   const [adding, setAdding] = useState(false);
@@ -78,8 +76,6 @@ export function WorkspaceScreen() {
   // Installation runs through the existing environment store action, which
   // posts a catalogue id to /environment/install. The UI never builds a
   // command and never learns one.
-  const installNode = useEnvironmentStore((s) => s.install);
-  const busyNodes = useEnvironmentStore((s) => s.busy);
 
   /* The project the conversation works in. The Hub reads the SHELL's
      active project rather than remembering its own, so the two can
@@ -251,76 +247,6 @@ export function WorkspaceScreen() {
     [conv.activity.workers],
   );
 
-  /* Pending approvals, read from the ledgers by id. A parked message
-     names its approval; this resolves that id to the real request so
-     the existing gate can render it. The Central Agent parks on its
-     OWN ledger (:4320), so that ledger is authoritative for a parked
-     id — resolving it through the workflow ledger (:4319) left the
-     gate on "Loading the authorization details…" with a working
-     Approve path underneath that nobody could reach. The workflow
-     ledger remains as a fallback for ids parked outside the agent.
-     Never guessed: an id with no match stays null and the gate is
-     not shown. */
-  const [approvals, setApprovals] = useState<Record<string, ApprovalRequest | null>>({});
-  const [deciding, setDeciding] = useState(false);
-  const parkedIds = useMemo(
-    () => conv.messages.map((m) => m.agent?.approvalId).filter((x): x is string => !!x),
-    [conv.messages],
-  );
-  useEffect(() => {
-    const missing = parkedIds.filter((id) => approvals[id] === undefined);
-    if (!missing.length) return;
-    setApprovals((prev) => {
-      const next = { ...prev };
-      for (const id of missing) next[id] = null;
-      return next;
-    });
-    // Ledger reads are idempotent: a response only ever fills the ids
-    // it was asked for, from the ledger that owns them, so overlapping
-    // resolutions converge instead of corrupting. There is deliberately
-    // NO cancellation guard here — render churn (every message patch
-    // re-runs this effect) used to discard every in-flight resolution,
-    // and the pre-marked null above then blocked all retries, leaving
-    // the gate on "Loading…" forever with a working Approve underneath.
-    void (async () => {
-      let agentRows: AgentApprovalRow[] = [];
-      try {
-        ({ approvals: agentRows } = await centralAgentClient.pendingApprovals());
-      } catch { /* the fallback below still gets its chance */ }
-      const agentById = new Map(agentRows.map((r) => [r.id, r]));
-      const needFallback = missing.filter((id) => !agentById.has(id));
-      let fabricList: ApprovalRequest[] = [];
-      if (needFallback.length) {
-        try {
-          ({ approvals: fabricList } = await fabricClient.approvals());
-        } catch { /* the gate stays unrendered rather than guessing */ }
-      }
-      const fabricById = new Map(fabricList.map((a) => [a.id, a]));
-      setApprovals((prev) => {
-        const next = { ...prev };
-        for (const id of missing) {
-          const agentRow = agentById.get(id);
-          next[id] = (agentRow ? agentApprovalToRequest(agentRow) : null)
-            ?? fabricById.get(id)
-            ?? null;
-        }
-        return next;
-      });
-    })();
-  }, [parkedIds, approvals]);
-
-  const decide = useCallback(async (messageId: string, granted: boolean, reason?: string) => {
-    setDeciding(true);
-    try {
-      const decided = await conv.decide(messageId, granted, reason);
-      if (decided && typeof decided.id === 'string') {
-        const settled = agentApprovalToRequest(decided);
-        if (settled) setApprovals((prev) => ({ ...prev, [settled.id]: settled }));
-      }
-    }
-    finally { setDeciding(false); }
-  }, [conv]);
-
   /* The graph's status line: what AURA is doing, in the same words the
      conversation uses. One vocabulary, two places. */
   const agentPhase = conv.activity.phase
@@ -366,11 +292,8 @@ export function WorkspaceScreen() {
             activity={conv.activity}
             busy={conv.phase === 'working'}
             agentUp={conv.agentUp}
-            approvals={approvals}
-            deciding={deciding}
             onSend={sendWithPreference}
             onRegenerate={() => void conv.regenerate()}
-            onDecide={(id, granted, reason) => void decide(id, granted, reason)}
             handoffs={conv.handoffs}
             onAcceptHandoff={(h) => void conv.acceptHandoff(h)}
             projects={projects}
@@ -421,9 +344,7 @@ export function WorkspaceScreen() {
                 }}
               />
             ) : (
-              <AuraEverything
-                installing={busyNodes}
-                onInstall={(catalogId) => void installNode(catalogId)}
+              <ToolPlacement
                 inWorkspace={placedIds}
                 hasFreeSlot={hasFreeSlot}
                 replacing={replacing}
@@ -448,23 +369,23 @@ export function WorkspaceScreen() {
       <AddNodeDialog open={adding} onClose={() => setAdding(false)} />
       <NodeWindows canvasRef={canvasRef} />
       <WindowTray />
+      {/* The command-palette panels (Mission Control, Knowledge, …) render
+          through this layer. The Workspace redesign dropped it, which left
+          every "Open …" command mutating a store nothing displayed. */}
+      <WorkspaceWindowLayer canvasRef={canvasRef} />
     </div>
   );
 }
 
 /* ── Floating node inspectors ───────────────────────────────────────
    Same proven surface as ConnectedEnvironment: clicking a capability
-   opens its live inspector (probe state, connect, permissions) above the
+   opens a read-only status card (what the machine reports) above the
    shell. Windows are working surfaces — closing one never removes the
    capability. Copied contract, not a second implementation. */
 
 function NodeWindows({ canvasRef }: { canvasRef: RefObject<HTMLDivElement | null> }) {
   const windows = useWindowManager((s) => s.windows);
   const nodes = useEnvironmentStore((s) => s.nodes);
-  const busy = useEnvironmentStore((s) => s.busy);
-  const connect = useEnvironmentStore((s) => s.connect);
-  const disconnect = useEnvironmentStore((s) => s.disconnect);
-  const setNodePermissions = useEnvironmentStore((s) => s.setNodePermissions);
 
   return (
     <AnimatePresence>
@@ -482,13 +403,7 @@ function NodeWindows({ canvasRef }: { canvasRef: RefObject<HTMLDivElement | null
             subtitle={node.health.version}
             toneClass={TONE_DOT[tone]}
           >
-            <NodeInspector
-              node={node}
-              busy={busy.includes(node.id)}
-              onConnect={() => void connect(node.id)}
-              onDisconnect={() => disconnect(node.id)}
-              onPermissions={(partial) => setNodePermissions(node.id, partial)}
-            />
+            <NodeStatusCard node={node} />
           </FloatingSurface>
         );
       })}

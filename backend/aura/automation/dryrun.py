@@ -191,7 +191,6 @@ def dry_run_rule(*, rule: dict, resolve_workflow, dry_run_workflow,
 
     # ── which actions, and what would they ask for? ─────────────────
     actions: list[dict] = []
-    approvals_required: list[dict] = []
     denials: list[dict] = []
     capabilities_requested: set[str] = set()
     prior_continues = True
@@ -242,11 +241,8 @@ def dry_run_rule(*, rule: dict, resolve_workflow, dry_run_workflow,
                             "decision": step["policy"]["decision"],
                             "rule": step["policy"]["rule"],
                             "risk": step["policy"]["risk"],
-                            "wouldAskHuman": step.get("wouldAskHuman") is True,
                             "wouldBeDenied": step.get("wouldBeDenied") is True,
                         })
-                    for a in report.get("approvalsRequired") or []:
-                        approvals_required.append({"actionId": action.get("id"), **a})
                     for d in report.get("denials") or []:
                         denials.append({"actionId": action.get("id"), **d})
                     plan_types = {p.get("type") for p in report.get("plan") or []}
@@ -280,8 +276,6 @@ def dry_run_rule(*, rule: dict, resolve_workflow, dry_run_workflow,
         unattended = _known(False, f"This rule cannot run: {issues[0]['message']}")
     elif denials:
         unattended = _known(False, f"{len(denials)} action{'s' if len(denials) != 1 else ''} would be refused by policy.")
-    elif approvals_required:
-        unattended = _known(False, f"{len(approvals_required)} action{'s' if len(approvals_required) != 1 else ''} would stop and ask you.")
     elif accepted["certainty"] == "known" and accepted["value"] is False:
         unattended = _known(False, accepted["reason"])
     elif (outcome["certainty"] == "known" and outcome["value"] is True
@@ -303,13 +297,12 @@ def dry_run_rule(*, rule: dict, resolve_workflow, dry_run_workflow,
         "conditions": {"outcome": outcome, "evaluations": evaluations},
         "actions": actions,
         "capabilitiesRequested": sorted(capabilities_requested),
-        "approvalsRequired": approvals_required,
         "denials": denials,
         "wouldRunUnattended": unattended,
         "unknowns": unknowns,
         "sideEffects": {
             "automationRunsCreated": 0, "workflowRunsCreated": 0,
-            "invocations": 0, "approvalsCreated": 0, "filesWritten": 0,
-            "note": "A rule dry run evaluates conditions and policy. It creates no run, invokes no capability, opens no approval and writes nothing.",
+            "invocations": 0, "filesWritten": 0,
+            "note": "A rule dry run evaluates conditions and policy. It creates no run, invokes no capability and writes nothing.",
         },
     }

@@ -9,7 +9,7 @@ say whether that operating system actually can.
 
 The contract is deliberately small, because everything interesting stays
 where it already is: the Central Agent owns the run, the policy engine
-owns the decision, the ledger owns approval, the executor owns the
+owns the decision, the executor owns the
 launch, and the audit trail owns the evidence. An adapter answers two
 questions and nothing else — what can this host enforce, and can it be
 established right now.

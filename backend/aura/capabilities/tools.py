@@ -24,22 +24,22 @@ from .model import Category
 
 def _ro(name: str, description: str, argv: list[str] | None = None) -> dict:
     return {"name": name, "description": description, "risk": "read-only",
-            "argv": list(argv or []), "requires_approval": False}
+            "argv": list(argv or [])}
 
 
 def _low(name: str, description: str, argv: list[str] | None = None) -> dict:
     return {"name": name, "description": description, "risk": "low-risk",
-            "argv": list(argv or []), "requires_approval": False}
+            "argv": list(argv or [])}
 
 
-def _mod(name: str, description: str, approval: bool = False) -> dict:
+def _mod(name: str, description: str) -> dict:
     return {"name": name, "description": description, "risk": "modify",
-            "argv": [], "requires_approval": approval}
+            "argv": []}
 
 
 def _des(name: str, description: str) -> dict:
     return {"name": name, "description": description, "risk": "destructive",
-            "argv": [], "requires_approval": True}
+            "argv": []}
 
 
 #: capability id → spec. ``nodes`` are python-catalog node ids probed
@@ -57,8 +57,8 @@ TOOL_SPECS: dict[str, dict] = {
             _ro("branch-list", "Local branches.", ["{exe}", "branch", "--list"]),
             _low("branch-create", "Create a branch (name supplied by the governed caller)."),
             _mod("stage", "Stage paths (supplied by the governed caller)."),
-            _mod("commit", "Record a commit (message supplied by the governed caller).", approval=False),
-            _mod("push", "Publish commits elsewhere; leaves this machine.", approval=True),
+            _mod("commit", "Record a commit (message supplied by the governed caller)."),
+            _mod("push", "Publish commits elsewhere; leaves this machine."),
             _des("reset-hard", "Discard uncommitted work and move the branch tip."),
         ],
     },
@@ -132,8 +132,8 @@ TOOL_SPECS: dict[str, dict] = {
         "actions": [
             _ro("version", "Client version.", ["{exe}", "--version"]),
             _ro("list", "Running containers.", ["{exe}", "ps", "--format", "{{.Names}}"]),
-            _mod("build", "Build an image from the project's Dockerfile.", approval=False),
-            _mod("run", "Run a container (image and flags supplied by the governed caller).", approval=True),
+            _mod("build", "Build an image from the project's Dockerfile."),
+            _mod("run", "Run a container (image and flags supplied by the governed caller)."),
         ],
     },
     "curl": {
@@ -171,7 +171,7 @@ TOOL_SPECS: dict[str, dict] = {
         "actions": [
             _ro("version", "Tool version.", ["{exe}", "--version"]),
             _ro("query", "Run a read-only query (SQL supplied by the governed caller)."),
-            _mod("execute", "Run a write statement (SQL supplied by the governed caller).", approval=True),
+            _mod("execute", "Run a write statement (SQL supplied by the governed caller)."),
         ],
     },
     "ollama": {
@@ -189,7 +189,7 @@ TOOL_SPECS: dict[str, dict] = {
         "description": "Command execution boundary (allow-listed argv, no shell).",
         "nodes": ["bash"],
         "actions": [
-            _mod("execute", "Run a vetted argv (composed by the governed executor, never by the model).", approval=False),
+            _mod("execute", "Run a vetted argv (composed by the governed executor, never by the model)."),
         ],
     },
 }

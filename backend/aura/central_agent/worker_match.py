@@ -7,7 +7,7 @@ usability check, and the winner travels the EXISTING explicit-nodeId path
 (routing validates again at dispatch; never substitutes, only denies).
 
 Advisory for routing, never authoritative: Fabric policy, the binary
-allow-list, verified invocation, approval, and audit all still decide.
+allow-list, verified invocation, policy, and audit all still decide.
 No cost/latency/health scoring, no ranking, no discovery — first eligible
 node in catalogue order, exactly like existing auto-selection.
 """

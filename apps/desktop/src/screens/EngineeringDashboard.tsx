@@ -90,10 +90,10 @@ export function EngineeringDashboard() {
 
       {/* mission totals */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
-        <Stat label="Missions" value={t.missions} sub={`${t.planned} planned`} color="var(--text)" />
-        <Stat label="Active" value={t.active} sub={`${t.approved} ready to run`} color="var(--accent)" />
-        <Stat label="In review" value={t.reviewing} sub="awaiting human gate" color="var(--attention)" />
-        <Stat label="Completed" value={t.completed} sub={`${Math.round(t.missions ? (t.completed / Math.max(1, t.planned + t.approved + t.active + t.reviewing + t.completed)) * 100 : 0)}% of started`} color="var(--positive)" />
+        <Stat label="Plans" value={t.missions} sub={`${t.planned} planned`} color="var(--text)" />
+        <Stat label="Active" value={t.active} sub="executing now" color="var(--accent)" />
+        <Stat label="In review" value={t.reviewing} sub="under review" color="var(--attention)" />
+        <Stat label="Completed" value={t.completed} sub={`${Math.round(t.missions ? (t.completed / Math.max(1, t.planned + t.active + t.reviewing + t.completed)) * 100 : 0)}% of started`} color="var(--positive)" />
         <Stat label="Failed / cancelled" value={t.failed + t.cancelled} sub={`${t.failed} failed`} color="var(--danger)" />
       </div>
 
@@ -120,9 +120,9 @@ export function EngineeringDashboard() {
             <div className="mt-3 flex items-center gap-3 border-t border-line pt-3 text-[11px] text-text-muted">
               <span>Completion</span>
               <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-active">
-                <div className="h-full rounded-full bg-positive" style={{ width: `${Math.round(tk.completion * 100)}%` }} />
+                <div className="h-full rounded-full bg-positive" style={{ width: `${Math.round(tk.completion)}%` }} />
               </div>
-              <span className="tabular-nums text-text">{Math.round(tk.completion * 100)}%</span>
+              <span className="tabular-nums text-text">{Math.round(tk.completion)}%</span>
             </div>
           </section>
 
@@ -171,7 +171,7 @@ export function EngineeringDashboard() {
             <div className="mt-2 space-y-1.5">
               {data.recent.length === 0 && <p className="text-[11.5px] text-text-subtle">No missions yet.</p>}
               {data.recent.map((m) => {
-                const progress = m.execution?.metrics ? Math.round(m.execution.metrics.completion * 100) : null;
+                const progress = m.execution?.metrics ? Math.round(m.execution.metrics.completion) : null;
                 const name = projects.find((p) => p.id === m.projectId)?.name ?? m.projectId;
                 return (
                   <button key={m.id} onClick={() => openMission(m.projectId)} className="block w-full rounded-lg border border-line bg-surface px-3 py-2 text-left transition-colors hover:bg-surface-hover">
@@ -179,7 +179,7 @@ export function EngineeringDashboard() {
                       <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-text">{m.text}</span>
                       <Badge tone={CATEGORY_TONE[m.category]}>{CATEGORY_LABEL[m.category]}</Badge>
                       <Badge tone={m.execution ? EXECUTION_STATUS_TONE[m.execution.status] : 'neutral'}>
-                        {m.execution ? EXECUTION_STATUS_LABEL[m.execution.status] : m.approval.status}
+                        {m.execution ? EXECUTION_STATUS_LABEL[m.execution.status] : 'Not started'}
                       </Badge>
                     </div>
                     <div className="mt-1 flex items-center gap-2">

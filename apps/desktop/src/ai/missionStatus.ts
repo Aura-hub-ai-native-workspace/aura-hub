@@ -50,7 +50,10 @@ const FAILURE_REASON: Record<string, string> = {
   'task-failed': 'A task failed, so the rest of the plan did not run.',
   'action-denied': 'An action was refused by policy, so the run stopped.',
   'timed-out': 'A task took too long, so the run stopped.',
+  'timeout': 'The work exceeded its time budget, so the run stopped.',
+  'planning-failed': 'No usable plan could be produced, so nothing ran.',
   'cancelled': 'The run was stopped before it finished.',
+  'cancelled-by-user': 'Stopped before the mission finished. Mission not verified.',
   'unverified-actions': 'Some actions could not be verified.',
   'objective-unaccepted': 'The acceptance criteria were not met.',
   'ambiguous-intent': 'The request needs more detail before work can start.',
@@ -68,15 +71,22 @@ function stateView(task: AgentTaskStatus, titles: Map<string, string>): Omit<Mis
     .join(', ');
   switch (task.state) {
     case 'done':
-      return task.verified === false
-        ? { stateLabel: 'Finished, not verified', tone: 'bad', waitingOn: null }
-        : { stateLabel: 'Done', tone: 'ok', waitingOn: null };
+      if (task.verified === false) {
+        return { stateLabel: 'Finished, not verified', tone: 'bad', waitingOn: null };
+      }
+      // Only a task whose own required evidence was found is "verified".
+      // A process that exited 0 is finished, and says so.
+      if (task.verification === 'exit-code') {
+        return { stateLabel: 'Finished (process only, no evidence checked)', tone: 'neutral', waitingOn: null };
+      }
+      return { stateLabel: 'Done', tone: 'ok', waitingOn: null };
     case 'skipped':
       return { stateLabel: 'Already done earlier', tone: 'ok', waitingOn: null };
     case 'running':
       return { stateLabel: 'Working', tone: 'working', waitingOn: null };
     case 'awaiting-approval':
-      return { stateLabel: 'Waiting for your approval', tone: 'waiting', waitingOn: null };
+      // Legacy state from before the approval step was removed: the task never ran.
+      return { stateLabel: 'Not started', tone: 'neutral', waitingOn: null };
     case 'failed':
       return { stateLabel: 'Failed', tone: 'bad', waitingOn: null };
     case 'denied':
@@ -120,11 +130,20 @@ export function missionView(agent: Pick<AgentMsgMeta,
   });
 
   let verdict: MissionView['verdict'] = null;
-  if (objective && objective.accepted === true) {
+  if (agent.failureReason === 'cancelled-by-user') {
+    // A stopped run is never accepted, whatever finished before the stop.
+    verdict = { tone: 'bad', text: 'Stopped before the mission finished. Mission not verified.' };
+  } else if (objective && objective.accepted === true) {
     verdict = { tone: 'ok', text: 'Mission verified: every acceptance criterion is met.' };
   } else if (objective && objective.accepted === false) {
-    const unmet = objective.unmet.length ? ` Not met: ${objective.unmet.join('; ')}.` : '';
-    verdict = { tone: 'bad', text: `Mission not verified.${unmet}` };
+    // The raw criteria ("<criterion>: unverified tasks: <ids>") stay in the
+    // run timeline for diagnostics. Here the person reads which steps were
+    // not verified, by name.
+    const unverified = tasks
+      .filter((t) => t.state !== 'skipped' && t.verified !== true)
+      .map((t) => t.description || 'A step');
+    const which = unverified.length ? ` Not verified: ${unverified.join('; ')}.` : '';
+    verdict = { tone: 'bad', text: `Mission not verified.${which}` };
   } else if (agent.failureReason) {
     verdict = { tone: 'bad', text: failureReasonText(agent.failureReason) ?? 'The run did not finish.' };
   }

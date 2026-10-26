@@ -45,7 +45,7 @@ def compile_graph_for_intent(intent: AgentIntent) -> tuple[list[WfNode], list[Wf
     """Deterministic template graphs keyed on goal text.
 
     Pure/read-only nodes by default; a recognized write clause adds ONE
-    governed export-file node whose effect still passes policy + approval
+    governed export-file node whose effect still passes policy
     at run time. Compilation never executes anything.
     """
     text = f"{intent.goal} {intent.surface}".lower()

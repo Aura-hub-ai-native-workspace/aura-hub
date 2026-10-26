@@ -6,7 +6,7 @@ two are compared. Nothing Laya produces can reach execution:
 
 - The candidate is validated by ``TaskPlanner.plan_from_model``, which is
   pure: it reads the capability and node registries and builds an object.
-  It performs no dispatch, approval, permission or persistence.
+  It performs no dispatch, permission or persistence.
 - The candidate is written to an evidence record. It is never returned to
   the caller, never stored in the session's ``activePlan``, and the record
   carries ``executed: False`` as a literal.
@@ -227,6 +227,10 @@ class ShadowPlanRecord(BaseModel):
     diagnostics: dict | None = None
     #: Relative path of an opt-in raw capture, when one was written.
     rawCapturePath: str | None = None
+    #: Redacted, read-only candidate snapshot for this request (see sovereign.shadow_view).
+    candidateView: dict | None = None
+    #: "ok", "no-candidates", "not-provided", or "unavailable: <bounded reason>".
+    candidateViewStatus: str | None = None
     executed: Literal[False] = False
 
 
@@ -418,7 +422,8 @@ class ShadowPlanner:
     def observe(self, *, intent: AgentIntent, system: str, user: str,
                 session_id: str, request_id: str | None,
                 authoritative_plan: TaskPlan | None,
-                planner: Any) -> Future | None:
+                planner: Any,
+                candidate_view_provider: Callable[[], Any] | None = None) -> Future | None:
         """Schedule one shadow run. Returns None when disabled.
 
         The Future is for tests and diagnostics only. Callers must not use it
@@ -440,7 +445,7 @@ class ShadowPlanner:
         thread = threading.Thread(
             target=self._run,
             args=(future, base, intent, system, user, session_id, request_id,
-                  authoritative_plan, planner),
+                  authoritative_plan, planner, candidate_view_provider),
             name="laya-shadow", daemon=True)
         with self._lock:
             self._threads.append(thread)
@@ -459,10 +464,12 @@ class ShadowPlanner:
     # ── background job ───────────────────────────────────────────────
 
     def _run(self, future: Future, base, intent, system, user, session_id,
-             request_id, authoritative_plan, planner) -> None:
+             request_id, authoritative_plan, planner,
+             candidate_view_provider=None) -> None:
         try:
             future.set_result(self._job(base, intent, system, user, session_id,
-                                        request_id, authoritative_plan, planner))
+                                        request_id, authoritative_plan, planner,
+                                        candidate_view_provider))
         except BaseException as exc:  # noqa: BLE001 — surfaced on the future only
             future.set_exception(exc)
         finally:
@@ -475,7 +482,7 @@ class ShadowPlanner:
             logger.warning("shadow plan record could not be written", exc_info=True)
 
     def _job(self, base, intent, system, user, session_id, request_id,
-             authoritative_plan, planner) -> ShadowPlanRecord:
+             authoritative_plan, planner, candidate_view_provider=None) -> ShadowPlanRecord:
         try:
             record = self._evaluate(base, intent, system, user, session_id,
                                     request_id, authoritative_plan, planner)
@@ -484,8 +491,28 @@ class ShadowPlanner:
                 **base, status="internal-error",
                 errorCategory="INTERNAL",
                 error=_clip(f"{type(exc).__name__}: {exc}"))
+        view, view_status = self._candidate_view(candidate_view_provider)
+        record = record.model_copy(update={"candidateView": view,
+                                           "candidateViewStatus": view_status})
         self._persist(record)
         return record
+
+    @staticmethod
+    def _candidate_view(provider) -> tuple[dict | None, str]:
+        """Build the redacted snapshot. Any failure is a bounded status, never an exception.
+
+        Runs on the shadow thread, so a slow or broken view cannot delay the request.
+        """
+        if provider is None:
+            return None, "not-provided"
+        try:
+            from aura.sovereign.shadow_view import view_to_record
+            result = provider()
+            status = str(getattr(result, "status", "ok"))
+            view = getattr(result, "view", None)
+            return (view_to_record(view) if view is not None else None), status[:200]
+        except Exception as exc:  # noqa: BLE001 — diagnostics only
+            return None, _clip(f"unavailable: {type(exc).__name__}")
 
     def _evaluate(self, base, intent, system, user, session_id, request_id,
                   authoritative_plan, planner) -> ShadowPlanRecord:
@@ -493,8 +520,8 @@ class ShadowPlanner:
         result = None
         attempts = 0
         for attempts in range(1, self.max_attempts + 1):
-            result = bridge.complete_json("plan", system, user,
-                                          session_id=session_id, request_id=request_id)
+            result = bridge.complete_plan_json("plan", system, user,
+                                               session_id=session_id, request_id=request_id)
             if result.ok or result.error_category in _PERMANENT:
                 break
         assert result is not None
@@ -565,7 +592,7 @@ def _governance(candidate: TaskPlan, planner: Any) -> dict[str, Any]:
         "capabilitiesKnown": caps <= known_caps,
         "nodePinsKnown": nodes <= known_nodes,
         "structureValid": structurallyValid,
-        # An observation for review. Approval is decided by the authority
+        # An observation for review. Permission is decided by the authority
         # layer, never by this record.
         "highRiskTaskPresent": any(t.risk == "high" for t in candidate.tasks),
     }

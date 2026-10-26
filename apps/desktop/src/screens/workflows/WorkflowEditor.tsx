@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Badge, Button, Dialog, Icon, IconButton, Input, useMediaQuery, useToast } from '@aura/ui';
+import { useFabric } from '../../data/useFabric';
 import { aiClient, type FieldSpec, type NodeSpecInfo, type WfNode } from '../../ai/aiClient';
 import { useWorkflows } from '../../data/useWorkflows';
 import { useWorkspace } from '../../data/useWorkspace';
 import { AiBuilderPanel } from './AiBuilderPanel';
 import { CATEGORY, NODE_W, inPortY, nodeHeight, outPortY } from './shared';
-import { useFabric, pendingApprovals } from '../../data/useFabric';
 import type { CapabilityDescriptorView } from '../../ai/fabricClient';
 import type { DryRunReport } from '../../ai/aiClient';
 import { nodeEffect } from './effects';
@@ -117,13 +117,8 @@ export function WorkflowEditor() {
   const catalogue = useFabric((s) => s.catalogue);
   const catalogueReachable = useFabric((s) => s.reachable);
   const loadCatalogue = useFabric((s) => s.loadCatalogue);
-  const approvals = useFabric((s) => s.approvals);
-  const deciding = useFabric((s) => s.deciding);
-  const decideApproval = useFabric((s) => s.decide);
-  const watchApprovals = useFabric((s) => s.watchApprovals);
 
   useEffect(() => { void loadCatalogue(); }, [loadCatalogue]);
-  useEffect(() => watchApprovals(), [watchApprovals]);
 
   const gestureRef = useRef(gesture);
   gestureRef.current = gesture;
@@ -401,7 +396,6 @@ export function WorkflowEditor() {
     [wf.serverRun, run, def, wf.runId, wf.versionId, project, runStartedAt],
   );
   const graphOrder = useMemo(() => def.nodes.map((n) => n.id), [def.nodes]);
-  const pending = useMemo(() => pendingApprovals(approvals), [approvals]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -827,9 +821,6 @@ export function WorkflowEditor() {
               run={shownRun}
               specs={specOf}
               graphOrder={graphOrder}
-              approvals={pending}
-              onDecideApproval={decideApproval}
-              decidingId={deciding}
               onFocusNode={focusNode}
               onCancel={run?.active ? () => void wf.stopRun() : undefined}
               onResume={!run?.active && shownRun.resumable ? () => void wf.resumeRun(shownRun.id) : undefined}

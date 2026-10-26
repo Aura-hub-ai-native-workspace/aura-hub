@@ -26,7 +26,7 @@ const EditorWorkspace = lazy(() =>
 
 /**
  * Maps a project tab to its section. Each section is a self-contained
- * environment fed by getProjectEnv(projectId) mock data. Adding a section
+ * environment derived from the project's real folder (see shared.tsx: there is no sample data). Adding a section
  * is one entry here plus one PROJECT_TABS entry — a clean extension point.
  */
 export function ProjectSection({ tab, projectId }: { tab: ProjectTab; projectId: string }) {

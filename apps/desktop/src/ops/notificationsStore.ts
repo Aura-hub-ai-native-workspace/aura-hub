@@ -10,7 +10,6 @@
 import { create } from 'zustand';
 
 export type NotificationKind =
-  | 'approval-required'
   | 'mission-completed'
   | 'review-required'
   | 'diagnosis-ready'
@@ -144,7 +143,6 @@ export function persistNotifications(items: AuraNotification[]): void {
 }
 
 export const NOTIFICATION_KIND_META: Record<NotificationKind, { label: string; icon: string; tone: 'positive' | 'attention' | 'critical' | 'info' | 'neutral' }> = {
-  'approval-required': { label: 'Approval required', icon: 'shield', tone: 'attention' },
   'mission-completed': { label: 'Mission completed', icon: 'check', tone: 'positive' },
   'review-required': { label: 'Review required', icon: 'eye', tone: 'attention' },
   'diagnosis-ready': { label: 'Diagnosis ready', icon: 'bug', tone: 'info' },

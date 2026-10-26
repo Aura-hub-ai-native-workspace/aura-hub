@@ -10,10 +10,9 @@ import {
 } from '../../../ai/agentNarration';
 import type { AgentActivity, AgentChatMessage } from '../../../ai/useAgentConversations';
 import type { Handoff } from '../../../ai/aiClient';
-import { ApprovalGate } from '../../missions/ApprovalGate';
 import { MissionStatusPanel } from './MissionStatusPanel';
+import { RunObserverPanel } from './RunObserverPanel';
 import { missionView } from '../../../ai/missionStatus';
-import type { ApprovalRequest } from '../../../ai/fabricClient';
 import type { ProjectRecord } from '../../../ai/aiClient';
 
 const TONE_CLASS: Record<OutcomeTone, string> = {
@@ -75,7 +74,7 @@ function HandoffInbox({
           className="rounded-xl border border-[rgba(255,181,71,0.4)] bg-[rgba(255,181,71,0.07)] px-4 py-3"
         >
           <p className="text-[11px] font-semibold uppercase tracking-wider text-neon-warning">
-            Task received from Project Ask AURA
+            Task received from Let's Chat
           </p>
           <p className="mt-1 text-[13.5px] leading-relaxed text-text">{h.title}</p>
           {h.notes && (
@@ -83,7 +82,7 @@ function HandoffInbox({
           )}
           <div className="mt-2.5 flex items-center justify-between gap-3">
             <span className="text-[11px] text-text-subtle">
-              Source: Ask AURA · {h.sourceMessageIds.length} message(s)
+              Source: Let's Chat · {h.sourceMessageIds.length} message(s)
             </span>
             <button
               type="button"
@@ -102,14 +101,8 @@ function HandoffInbox({
 
 function StageCard({
   message,
-  approval,
-  onDecide,
-  deciding,
 }: {
   message: AgentChatMessage;
-  approval: ApprovalRequest | null | undefined;
-  onDecide: (granted: boolean, reason?: string) => void;
-  deciding: boolean;
 }) {
   if (message.role === 'user') {
     return (
@@ -123,6 +116,10 @@ function StageCard({
 
   const note = outcomeNote(message.agent?.outcome);
   const streaming = message.status === 'streaming';
+  // Work turns (a plan was made or received) get the live run account;
+  // plain answers do not.
+  const ranWork = message.role === 'assistant' && !!message.agent?.sessionId &&
+    (message.agent.events.some((e) => e === 'plan.created' || e === 'plan.received') || (message.agent.tasks?.length ?? 0) > 0);
   const tools = message.agent?.tools ?? [];
 
   return (
@@ -145,7 +142,12 @@ function StageCard({
             {failureText(message.error)}
           </p>
         ) : message.status === 'cancelled' ? (
-          <p className="text-[13px] text-text-subtle">Stopped.</p>
+          <p className="text-[13px] text-text-subtle">
+            {/* The backend's settled summary once it lands; partial streamed
+                text is never shown for a stopped run. */}
+            {message.agent?.failureReason === 'cancelled-by-user' && message.content
+              ? message.content : 'Stopped.'}
+          </p>
         ) : (
           <>
             {message.content ? (
@@ -167,23 +169,11 @@ function StageCard({
               </p>
             )}
 
-            {message.agent?.approvalId && approval && (
-              <ApprovalGate
-                request={approval}
-                busy={deciding}
-                onDecide={(_id, granted, reason) => onDecide(granted, reason)}
-              />
-            )}
-            {message.agent?.approvalId && approval === null && (
-              <p className="mt-2 text-[12px] text-text-subtle">
-                Loading the authorization details…
-              </p>
-            )}
-
             {!streaming && <ToolTrace tools={tools} />}
           </>
         )}
         <MissionStatusPanel view={missionView(message.agent)} />
+        {ranWork && <RunObserverPanel sessionId={message.agent?.sessionId} live={streaming} />}
       </div>
     </div>
   );
@@ -202,7 +192,7 @@ function ActiveStageCard({ activity }: { activity: AgentActivity }) {
           aria-hidden
           className={cn(
             'h-2 w-2 rounded-full',
-            activity.awaitingApproval ? 'bg-neon-warning' : 'bg-neon-cyan aura-breathe',
+            'bg-neon-cyan aura-breathe',
           )}
         />
       </span>
@@ -221,11 +211,8 @@ export function AuraAgentWorkspace({
   activity,
   busy,
   agentUp,
-  approvals,
-  deciding,
   onSend,
   onRegenerate,
-  onDecide,
   handoffs,
   onAcceptHandoff,
   projects,
@@ -236,12 +223,9 @@ export function AuraAgentWorkspace({
   activity: AgentActivity;
   busy: boolean;
   agentUp: boolean | null;
-  approvals: Record<string, ApprovalRequest | null>;
-  deciding: boolean;
   /** Used by idle-state suggestion chips. */
   onSend: (text: string) => void;
   onRegenerate: () => void;
-  onDecide: (messageId: string, granted: boolean, reason?: string) => void;
   handoffs: Handoff[];
   onAcceptHandoff: (h: Handoff) => void;
   projects: ProjectRecord[];
@@ -348,9 +332,6 @@ export function AuraAgentWorkspace({
                   <StageCard
                     key={m.id}
                     message={m}
-                    approval={m.agent?.approvalId ? approvals[m.agent.approvalId] ?? null : undefined}
-                    deciding={deciding}
-                    onDecide={(granted, reason) => onDecide(m.id, granted, reason)}
                   />
                 ))}
                 {busy && <ActiveStageCard activity={activity} />}

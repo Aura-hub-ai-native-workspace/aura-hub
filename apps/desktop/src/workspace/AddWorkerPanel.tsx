@@ -102,7 +102,7 @@ function WorkerRow({
           </span>
           <span className="text-text-muted">
             {worker.connected
-              ? `Connected${worker.governance === 'FULLY_GOVERNED' ? ' · governed in real time' : ''}`
+              ? 'Connected'
               : REASON_LABEL[worker.reason] ?? 'Not connected to AURA'}
           </span>
         </li>

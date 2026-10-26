@@ -1,71 +1,69 @@
 /**
- * useMissions — Mission Control v3's data hook.
+ * useMissions — the Planner's data hook.
  * ------------------------------------------------------------------
- * Mission CREATION still streams real SSE stage events (same reader loop
- * as before): creation is a genuine multi-LLM-call pipeline but only
- * ever computes and stores a plan — nothing touches the real filesystem.
+ * The Planner turns a goal into a structured, editable plan. It never
+ * executes: execution belongs to Workspace and is reached only through
+ * `sendToWorkspace`, the explicit handoff.
  *
- * EXECUTION is now engine-driven (`mission/execution/`): an approved plan
- * becomes a DAG (dependencies/blocks/critical path/parallel batches/auto-
- * ordering) and the engine advances tasks wave by wave. `runBatch` streams
- * ExecutionEvents over SSE so the UI stays live while proposals generate.
- * Human gating is unchanged: the whole plan needs an explicit Approve
- * before any task runs, and each proposal needs an explicit Accept before
- * it is ever written to disk.
+ *   · planning streams the planner's real stages (context → plan → check)
+ *     from the service; a failed run keeps the goal and is retried in place
+ *   · edits are saved against the revision the editor started from, so a
+ *     plan changed elsewhere is never silently overwritten
+ *   · sendToWorkspace saves, reserves the handoff of THIS revision (the
+ *     service makes that idempotent), opens the plan's project in
+ *     Workspace and starts the run there — and reports "started" only once
+ *     Workspace has confirmed it
+ *
+ * (The file keeps its name: plans are stored as mission records for
+ * compatibility with existing data and the `mission.*` capabilities.)
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { fabricClient, type ApprovalRequest } from '../../ai/fabricClient';
+import { useAppStore } from '@aura/core';
 import {
   missionClient,
-  type ExtractedIntent,
   type GoalGraph,
-  type IntentClassification,
   type MissionEvent,
   type MissionRecord,
-  type MissionReplayPayload,
-  type MissionReviewVerdict,
-  type MissionSignals,
-  type MissionStrategy,
   type MissionSummary,
-  type QualityScore,
-  type RiskAnalysis,
+  type PlanIssue,
+  type PlanTaskEdit,
 } from '../../ai/missionClient';
+import { centralAgentClient } from '../../ai/centralAgentClient';
+import { useAgentConversations } from '../../ai/useAgentConversations';
+import { useLayoutStore } from '../../ops/layoutStore';
 
-export type CreationStage = 'idle' | 'classify' | 'signals' | 'intent' | 'strategy' | 'goal-graph' | 'risk' | 'review' | 'quality' | 'done' | 'error';
+/** The planner's real stages, in the order the service emits them. */
+export type CreationStage = 'idle' | 'context' | 'plan' | 'check' | 'done' | 'error';
 
 export interface CreationState {
   stage: CreationStage;
-  classification: IntentClassification | null;
-  intent: ExtractedIntent | null;
-  signals: MissionSignals | null;
-  strategy: MissionStrategy | null;
   goalGraph: GoalGraph | null;
-  risk: RiskAnalysis | null;
-  review: MissionReviewVerdict | null;
-  quality: QualityScore | null;
   errorMessage: string | null;
+  /** While one long model call runs: real elapsed time against its real deadline. */
+  waiting: { elapsedMs: number; deadlineMs: number; receivedChars: number } | null;
 }
 
-const IDLE_CREATION: CreationState = {
-  stage: 'idle', classification: null, intent: null, signals: null, strategy: null,
-  goalGraph: null, risk: null, review: null, quality: null, errorMessage: null,
-};
+const IDLE_CREATION: CreationState = { stage: 'idle', goalGraph: null, errorMessage: null, waiting: null };
+const STAGES = new Set<CreationStage>(['context', 'plan', 'check']);
+
+export type HandoffPhase = 'idle' | 'saving' | 'sending' | 'started' | 'failed';
+
+/** What Workspace reports about the run a plan revision started. */
+export interface RunState { sessionId: string; state: string; outcome: string | null; summary: string | null }
 
 export function useMissions(projectId: string | null) {
   const [missions, setMissions] = useState<MissionSummary[]>([]);
   const [active, setActive] = useState<MissionRecord | null>(null);
   const [loadingList, setLoadingList] = useState(false);
   const [creation, setCreation] = useState<CreationState>(IDLE_CREATION);
-  const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
-  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
-  const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
-  const [batchBusy, setBatchBusy] = useState(false);
-  const [replay, setReplay] = useState<MissionReplayPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [issues, setIssues] = useState<PlanIssue[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [handoff, setHandoff] = useState<{ phase: HandoffPhase; message: string | null }>({ phase: 'idle', message: null });
+  const [run, setRun] = useState<RunState | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const batchAbortRef = useRef<AbortController | null>(null);
-  /** Monotonic run id: a superseded batch must not clear a newer one's spinner. */
-  const batchGenRef = useRef(0);
+  /** Guards Send to Workspace against a second click while one is in flight. */
+  const sendingRef = useRef(false);
 
   const refreshList = useCallback(async () => {
     if (!projectId) return;
@@ -83,11 +81,10 @@ export function useMissions(projectId: string | null) {
   const selectMission = useCallback(async (id: string) => {
     if (!projectId) return;
     setError(null);
-    setReplay(null);
+    setIssues(null);
+    setHandoff({ phase: 'idle', message: null });
     try {
       const mission = await missionClient.get(projectId, id);
-      // An {error:''} shape must not fall through both branches leaving
-      // stale content with no error: an empty message still reports.
       if ('error' in mission) setError(mission.error || 'The service reported an error with no message.');
       else setActive(mission);
     } catch (e) {
@@ -95,315 +92,161 @@ export function useMissions(projectId: string | null) {
     }
   }, [projectId]);
 
-  const createMission = useCallback(async (text: string) => {
-    const busy = creation.stage !== 'idle' && creation.stage !== 'done' && creation.stage !== 'error';
-    if (!projectId || busy) return;
+  const busy = creation.stage !== 'idle' && creation.stage !== 'done' && creation.stage !== 'error';
+
+  /** Shared stream handling for a new plan and a retried one. */
+  const stream = useCallback(async (start: (onEvent: (e: MissionEvent) => void, signal: AbortSignal) => Promise<void>) => {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
-
-    setCreation({ ...IDLE_CREATION, stage: 'classify' });
+    setCreation({ ...IDLE_CREATION, stage: 'context' });
     setError(null);
-
-    const STAGE_NAMES = new Set(['classify', 'signals', 'intent', 'strategy', 'goal-graph', 'risk', 'review', 'quality']);
-
-    // Collected out-of-band: state updaters must stay pure (StrictMode
-    // double-invokes them), so cross-store effects happen after the await.
-    let doneMission: MissionRecord | null = null;
-    await missionClient.create(projectId, text, (e: MissionEvent) => {
-      if (e.type === 'done') {
-        doneMission = e.mission;
-        setCreation((s) => ({ ...s, stage: 'done' }));
-        return;
-      }
+    let done: MissionRecord | null = null;
+    await start((e) => {
+      if (e.type === 'done') { done = e.mission; return; }
       setCreation((s) => {
-        switch (e.type) {
-          case 'stage':
-            return e.status === 'start' && STAGE_NAMES.has(e.stage) ? { ...s, stage: e.stage as CreationStage } : s;
-          case 'classification':
-            return { ...s, classification: e.classification };
-          case 'signals':
-            return { ...s, signals: e.signals };
-          case 'intent':
-            return { ...s, intent: e.intent };
-          case 'strategy':
-            return { ...s, strategy: e.strategy };
-          case 'goal-graph':
-            return { ...s, goalGraph: e.goalGraph };
-          case 'risk':
-            return { ...s, risk: e.risk };
-          case 'review':
-            return { ...s, review: e.review };
-          case 'quality':
-            return { ...s, quality: e.quality };
-          case 'error':
-            return { ...s, errorMessage: e.message, stage: 'error' };
-          default:
-            return s;
-        }
+        if (e.type === 'stage') return e.status === 'start' && STAGES.has(e.stage as CreationStage) ? { ...s, stage: e.stage as CreationStage } : s;
+        if (e.type === 'progress') return { ...s, waiting: { elapsedMs: e.elapsedMs, deadlineMs: e.deadlineMs, receivedChars: e.receivedChars ?? 0 } };
+        if (e.type === 'goal-graph') return { ...s, goalGraph: e.goalGraph, waiting: null };
+        if (e.type === 'error') return { ...s, errorMessage: e.message, stage: 'error' };
+        return s;
       });
     }, ac.signal);
-    if (doneMission && !ac.signal.aborted) {
-      setActive(doneMission);
+    if (ac.signal.aborted) return;
+    const finished = done as MissionRecord | null;
+    if (finished) {
+      setActive(finished);
+      setCreation((s) => (s.stage === 'error' ? s : { ...s, stage: 'done' }));
       void refreshList();
     }
-  }, [projectId, creation.stage, refreshList]);
+  }, [refreshList]);
 
-  const approve = useCallback(async () => {
-    if (!projectId || !active) return;
+  const createMission = useCallback(async (text: string) => {
+    if (!projectId || busy) return;
+    setHandoff({ phase: 'idle', message: null });
+    await stream((onEvent, signal) => missionClient.create(projectId, text, onEvent, signal));
+  }, [projectId, busy, stream]);
+
+  /** Retry planning for the open plan, in place. */
+  const replan = useCallback(async () => {
+    if (!projectId || !active || busy) return;
+    const mid = active.id;
+    setHandoff({ phase: 'idle', message: null });
+    await stream((onEvent, signal) => missionClient.replan(projectId, mid, onEvent, signal));
+  }, [projectId, active, busy, stream]);
+
+  /** Save edited tasks. Returns the saved plan, or null with `error` set. */
+  const savePlan = useCallback(async (tasks: PlanTaskEdit[], acceptance?: string[]): Promise<MissionRecord | null> => {
+    if (!projectId || !active) return null;
+    setSaving(true);
     setError(null);
     try {
-      const mission = await missionClient.approve(projectId, active.id);
-      // The service answers errors as 200+{error}: rendering that as the
-      // active mission crashes MissionDetail on the wrong shape.
-      if ('error' in mission && mission.error) setError(mission.error);
-      else if (!('error' in mission)) {
-        setActive(mission);
-        void refreshList();
+      const r = await missionClient.savePlan(projectId, active.id, active.revision ?? 1, tasks, acceptance);
+      if (!r.ok || !r.mission) {
+        setError(r.error ?? 'The plan could not be saved.');
+        return null;
       }
+      setActive(r.mission);
+      void refreshList();
+      return r.mission;
     } catch (e) {
-      setError((e as Error).message || 'Could not approve the mission plan.');
-    }
-  }, [projectId, active, refreshList]);
-
-  const rejectPlan = useCallback(async () => {
-    if (!projectId || !active) return;
-    setError(null);
-    try {
-      const mission = await missionClient.reject(projectId, active.id);
-      if ('error' in mission && mission.error) setError(mission.error);
-      else if (!('error' in mission)) {
-        setActive(mission);
-        void refreshList();
-      }
-    } catch (e) {
-      setError((e as Error).message || 'Could not reject the mission plan.');
-    }
-  }, [projectId, active, refreshList]);
-
-  const startExecution = useCallback(async () => {
-    if (!projectId || !active) return;
-    setBatchBusy(true);
-    setError(null);
-    try {
-      const result = await missionClient.start(projectId, active.id);
-      if (result.mission) setActive(result.mission);
-      if (!result.ok && result.error) setError(result.error);
-    } catch (e) {
-      setError((e as Error).message || 'Could not start execution.');
+      setError((e as Error).message || 'The plan could not be saved.');
+      return null;
     } finally {
-      setBatchBusy(false);
+      setSaving(false);
     }
-  }, [projectId, active]);
-
-  /** Stream the current ready wave — proposals generate live over SSE. */
-  const runBatch = useCallback(async () => {
-    if (!projectId || !active) return;
-    batchAbortRef.current?.abort();
-    const ac = new AbortController();
-    batchAbortRef.current = ac;
-    const gen = batchGenRef.current + 1;
-    batchGenRef.current = gen;
-    setBatchBusy(true);
-    setError(null);
-    await missionClient.execute(projectId, active.id, (e) => {
-      if (batchGenRef.current !== gen) return;
-      if (e.type === 'execution') {
-        setActive((prev) => (prev ? { ...prev, execution: e.record.execution } : prev));
-      } else if (e.type === 'error') {
-        setError(e.message);
-      }
-    }, { signal: ac.signal });
-    // A superseded batch resolves after its replacement started: it must
-    // not clear the newer run's spinner or refresh over its state.
-    if (batchGenRef.current !== gen) return;
-    setBatchBusy(false);
-    void refreshList();
   }, [projectId, active, refreshList]);
 
   /**
-   * Pending authorization requests, refreshed from the service.
-   *
-   * Deliberately not cached beyond a render: the service owns approval
-   * state, so a reload, a reconnect or a second window all converge on
-   * the same list rather than on anything this hook remembers.
+   * The explicit handoff. `edits` (unsaved changes, if any) are saved
+   * first, so what runs is exactly what the person sees.
    */
-  const refreshApprovals = useCallback(async () => {
+  const sendToWorkspace = useCallback(async (edits: PlanTaskEdit[] | null, acceptance?: string[]) => {
+    if (!projectId || !active || sendingRef.current) return;
+    sendingRef.current = true;
+    setIssues(null);
     try {
-      const res = await fabricClient.approvals();
-      // Keep the last known list on an error shape: blanking the inbox
-      // on a failed poll hides pending grants instead of reporting them.
-      if (!res || !Array.isArray(res.approvals)) return;
-      setApprovals(res.approvals);
-    } catch {
-      /* the gate is service-side; a failed poll just means no update */
-    }
-  }, []);
-
-  const runTask = useCallback(async (taskId: string) => {
-    if (!projectId || !active) return;
-    setBusyTaskId(taskId);
-    setError(null);
-    try {
-      const result = await missionClient.runTask(projectId, active.id, taskId);
-      if (result.mission) setActive(result.mission);
-      // A parked task is not an error — it is a question. Surfacing it as
-      // one would push the user toward Retry when they need Approve.
-      if (!result.ok && result.error && !result.awaitingApproval) setError(result.error);
-      if (result.awaitingApproval) await refreshApprovals();
-    } catch (e) {
-      setError((e as Error).message || 'Could not run the task.');
-    } finally {
-      setBusyTaskId(null);
-    }
-  }, [projectId, active, refreshApprovals]);
-
-  /**
-   * Answer an authorization request. The service resumes the same mission
-   * task on approval and declines it on refusal, so this only reports the
-   * outcome — it never runs anything itself and never names a capability.
-   */
-  const decideApproval = useCallback(async (id: string, granted: boolean, reason?: string) => {
-    setApprovalBusyId(id);
-    setError(null);
-    try {
-      const result = await fabricClient.decide(id, granted, reason);
-      if (result.error && !result.approval) setError(result.error);
-      if (projectId && active) {
-        const rec = await missionClient.get(projectId, active.id);
-        if (!('error' in rec)) setActive(rec);
+      let plan = active;
+      if (edits) {
+        setHandoff({ phase: 'saving', message: 'Saving your changes…' });
+        const saved = await savePlan(edits, acceptance);
+        if (!saved) { setHandoff({ phase: 'failed', message: 'The plan was not sent: saving your changes failed.' }); return; }
+        plan = saved;
       }
+      setHandoff({ phase: 'sending', message: 'Sending to Workspace…' });
+      const reservation = await missionClient.reserveHandoff(projectId, plan.id, plan.revision ?? 1);
+      if (!reservation.ok || !reservation.handoff || !reservation.plan || !reservation.projectPath) {
+        setIssues(reservation.issues ?? null);
+        setHandoff({ phase: 'failed', message: reservation.error ?? 'The plan could not be sent.' });
+        return;
+      }
+      const reserved = reservation.handoff;
+      if (reservation.duplicate && reserved.status === 'started') {
+        setHandoff({ phase: 'started', message: 'This version of the plan is already running in Workspace.' });
+        openWorkspace(projectId);
+        return;
+      }
+      openWorkspace(projectId);
+      const started = await useAgentConversations.getState().executePlan({
+        plan: reservation.plan, sessionId: reserved.sessionId, projectId, projectPath: reservation.projectPath,
+      });
+      if (started.status === 'failed') {
+        await missionClient.settleHandoff(projectId, plan.id, reserved.id, 'failed', started.error).catch(() => null);
+        setHandoff({ phase: 'failed', message: `Workspace did not start the plan: ${started.error}` });
+      } else {
+        await missionClient.settleHandoff(projectId, plan.id, reserved.id, 'started').catch(() => null);
+        setHandoff({
+          phase: 'started',
+          message: started.status === 'duplicate'
+            ? 'This version of the plan is already running in Workspace.'
+            : 'Running in Workspace.',
+        });
+      }
+      const fresh = await missionClient.get(projectId, plan.id).catch(() => null);
+      if (fresh && !('error' in fresh)) setActive(fresh);
     } catch (e) {
-      setError((e as Error).message || 'Could not record that decision.');
+      setHandoff({ phase: 'failed', message: (e as Error).message || 'The plan could not be sent.' });
     } finally {
-      setApprovalBusyId(null);
-      await refreshApprovals();
+      sendingRef.current = false;
     }
-  }, [projectId, active, refreshApprovals]);
+  }, [projectId, active, savePlan]);
 
-  const acceptTask = useCallback(async (taskId: string) => {
-    if (!projectId || !active) return;
-    setBusyTaskId(taskId);
-    setError(null);
-    try {
-      const result = await missionClient.acceptTask(projectId, active.id, taskId);
-      if (result.mission) setActive(result.mission);
-      if (!result.ok && result.error) setError(result.error);
-    } catch (e) {
-      setError((e as Error).message || 'Could not write this change to disk.');
-    } finally {
-      setBusyTaskId(null);
-    }
-  }, [projectId, active]);
+  // The run a started handoff produced, as Workspace reports it.
+  // Only a run of THIS revision counts: a later edit is a new revision that has not run.
+  const latestStarted = [...(active?.handoffs ?? [])].reverse().find((h) => h.status === 'started' && h.revision === active?.revision) ?? null;
+  const runSessionId = latestStarted?.sessionId ?? null;
+  useEffect(() => {
+    if (!runSessionId) { setRun(null); return; }
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      const s = await centralAgentClient.getSession(runSessionId).catch(() => null);
+      if (!alive) return;
+      const outcome = s?.lastResult?.outcome ?? null;
+      setRun(s ? { sessionId: runSessionId, state: s.state, outcome, summary: s.lastResult?.summary ?? null } : null);
+      const settled = s && ['completed', 'failed', 'cancelled'].includes(s.state);
+      if (!settled) timer = setTimeout(poll, 3000);
+    };
+    void poll();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+  }, [runSessionId]);
 
-  const rejectTask = useCallback(async (taskId: string) => {
-    if (!projectId || !active) return;
-    setError(null);
-    try {
-      const result = await missionClient.rejectTask(projectId, active.id, taskId);
-      if (result.mission) setActive(result.mission);
-      if (!result.ok && result.error) setError(result.error);
-    } catch (e) {
-      setError((e as Error).message || 'Could not reject the task.');
-    }
-  }, [projectId, active]);
-
-  const retryTask = useCallback(async (taskId: string) => {
-    if (!projectId || !active) return;
-    setError(null);
-    try {
-      const result = await missionClient.retryTask(projectId, active.id, taskId);
-      if (result.mission) setActive(result.mission);
-      if (!result.ok && result.error) setError(result.error);
-    } catch (e) {
-      setError((e as Error).message || 'Could not retry the task.');
-    }
-  }, [projectId, active]);
-
-  const completeTask = useCallback(async (taskId: string) => {
-    if (!projectId || !active) return;
-    setError(null);
-    try {
-      const result = await missionClient.completeManualTask(projectId, active.id, taskId);
-      if (result.mission) setActive(result.mission);
-      if (!result.ok && result.error) setError(result.error);
-    } catch (e) {
-      setError((e as Error).message || 'Could not complete the task.');
-    }
-  }, [projectId, active]);
-
-  const pause = useCallback(async () => {
-    if (!projectId || !active) return;
-    setError(null);
-    try {
-      const result = await missionClient.pause(projectId, active.id);
-      if (result.mission) setActive(result.mission);
-      if (!result.ok && result.error) setError(result.error);
-    } catch (e) {
-      setError((e as Error).message || 'Could not pause execution.');
-    }
-  }, [projectId, active]);
-
-  const resume = useCallback(async () => {
-    if (!projectId || !active) return;
-    setError(null);
-    try {
-      const result = await missionClient.resume(projectId, active.id);
-      if (result.mission) setActive(result.mission);
-      if (!result.ok && result.error) setError(result.error);
-    } catch (e) {
-      setError((e as Error).message || 'Could not resume execution.');
-    }
-  }, [projectId, active]);
-
-  const cancel = useCallback(async () => {
-    if (!projectId || !active) return;
-    setError(null);
-    try {
-      const result = await missionClient.cancel(projectId, active.id);
-      if (result.mission) setActive(result.mission);
-      if (!result.ok && result.error) setError(result.error);
-    } catch (e) {
-      setError((e as Error).message || 'Could not cancel the mission.');
-    }
-  }, [projectId, active]);
-
-  const reviewCheckpoint = useCallback(async (pass: boolean, note?: string) => {
-    if (!projectId || !active) return;
-    setError(null);
-    try {
-      const result = await missionClient.review(projectId, active.id, pass, note);
-      if (result.mission) setActive(result.mission);
-      if (!result.ok && result.error) setError(result.error);
-    } catch (e) {
-      setError((e as Error).message || 'Could not record the review decision.');
-    }
-  }, [projectId, active]);
-
-  const loadReplay = useCallback(async (id?: string) => {
-    if (!projectId) return;
-    const mid = id ?? active?.id;
-    if (!mid) return;
-    try {
-      const payload = await missionClient.replay(projectId, mid);
-      if ('error' in payload) setError(payload.error);
-      else setReplay(payload);
-    } catch (e) {
-      setError((e as Error).message || 'Could not load mission replay.');
-    }
-  }, [projectId, active]);
-
-  // Rehydrate the gate whenever a mission is opened — including after a
-  // reload, which is the whole point: the pending request is on the
-  // service, so it comes back on its own with no duplicate created.
-  useEffect(() => { void refreshApprovals(); }, [active?.id, refreshApprovals]);
+  useEffect(() => () => { abortRef.current?.abort(); }, []);
 
   return {
-    missions, active, loadingList, creation, busyTaskId, batchBusy, replay, error,
-    approvals, approvalBusyId, decideApproval, refreshApprovals,
-    refreshList, selectMission, createMission, approve, rejectPlan,
-    startExecution, runBatch, runTask, acceptTask, rejectTask, retryTask, completeTask,
-    pause, resume, cancel, reviewCheckpoint, loadReplay,
-    clearActive: () => { setActive(null); setCreation(IDLE_CREATION); setReplay(null); },
+    missions, active, loadingList, creation, creating: busy, error, issues, saving, handoff, run,
+    refreshList, selectMission, createMission, replan, savePlan, sendToWorkspace,
   };
+}
+
+/**
+ * Show Workspace for the plan's project: make it the active project and
+ * step the Planner window aside so the run is what the person sees.
+ */
+function openWorkspace(projectId: string): void {
+  const app = useAppStore.getState();
+  if (app.activeProjectId !== projectId) app.setActiveProject(projectId);
+  app.setNav('workspace');
+  const layout = useLayoutStore.getState();
+  for (const w of layout.windows) if (w.kind === 'missions' || w.kind === 'mission-detail') layout.minimizeWindow(w.id);
 }

@@ -1,3 +1,4 @@
+import { DegenerateOutputError, RepetitionGuard } from './repetition';
 import {
   KeywordIntentClassifier,
   TemplatePromptEnhancer,
@@ -93,6 +94,13 @@ function normalize(e: unknown, providerLabel?: string): NormalizedError {
   if (e instanceof ProviderHttpError) {
     return translateProviderError(e.providerName, e.status, e.body);
   }
+  // The adapter's idle check: the connection went quiet for its whole budget.
+  if (e instanceof DegenerateOutputError) {
+    return { type: 'degenerate', message: `${providerLabel ?? 'The model'} began repeating itself and was stopped, so there is no finished answer. Try again, or use a larger model.`, retryable: false };
+  }
+  if (/sent nothing for \d+s/i.test(err?.message ?? '')) {
+    return { type: 'timeout', message: err.message, retryable: true };
+  }
   const message = err?.message ?? String(e);
   // Defensive fallback for any error that reaches here as a plain Error
   // instead of a ProviderHttpError (e.g. a future adapter that forgets to
@@ -122,6 +130,30 @@ function withTimeout<T>(fn: () => Promise<T>, timeoutMs: number, onTimeout: () =
     }, timeoutMs);
   });
   return Promise.race([fn(), timeout]).finally(() => clearTimeout(timer));
+}
+
+/** Joins a runtime's stream into one response, reporting the characters received so far. */
+async function collectStream(
+  runtime: { stream(request: GenerateRequest): AsyncIterable<{ delta: string; done: boolean; usage?: { promptTokens: number; completionTokens: number; totalTokens: number }; finishReason?: string }> },
+  request: GenerateRequest,
+  onProgress?: (receivedChars: number) => void,
+): Promise<{ content: string; usage: { promptTokens: number; completionTokens: number; totalTokens: number }; finishReason: string }> {
+  let content = '';
+  let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  let finishReason = 'stop';
+  const guard = new RepetitionGuard();
+  for await (const chunk of runtime.stream(request)) {
+    if (chunk.delta) {
+      content += chunk.delta;
+      onProgress?.(content.length);
+      // A model stuck in a loop is not producing an answer: stop reading it.
+      if (guard.feed(chunk.delta)) throw new DegenerateOutputError(guard.usefulText());
+    }
+    if (chunk.usage) usage = chunk.usage;
+    if (chunk.finishReason) finishReason = chunk.finishReason;
+    if (chunk.done) break;
+  }
+  return { content, usage, finishReason };
 }
 
 /** Retries only classifications marked `retryable`, with capped exponential backoff. */
@@ -460,6 +492,14 @@ export class PipelineManager {
   getSettings(): AiSettings {
     return { ...this.settings };
   }
+
+  /** "Provider · model" of the active runtime, or null when none is connected. */
+  modelLabel(): string | null {
+    if (!this.runtimeManager.runtime) return null;
+    const model = this.runtimeManager.getModel();
+    const label = this.runtimeManager.providerLabel;
+    return model ? `${label ?? 'provider'} · ${model}` : label ?? null;
+  }
   setSettings(partial: Partial<AiSettings>): AiSettings {
     this.settings = { ...this.settings, ...partial };
     return this.getSettings();
@@ -735,9 +775,24 @@ export class PipelineManager {
   }
 
   async generate(
-    input: { system?: string; user: string; json?: boolean },
+    input: {
+      system?: string; user: string; json?: boolean;
+      /**
+       * Per-request overrides for one long, single-shot call (the Planner):
+       * its own wall clock, retry count and output bound, instead of the
+       * interactive defaults. Absent means the global settings.
+       */
+      timeoutMs?: number; maxRetries?: number; maxTokens?: number;
+      /**
+       * Read the answer as a stream and join it. `timeoutMs` is then the overall
+       * ceiling and the adapter's idle timeout (silence on the wire) is the
+       * liveness check, so a slow model that is still producing text is not
+       * killed and a hung one is. `onProgress` gets the characters received.
+       */
+      stream?: boolean; onProgress?: (receivedChars: number) => void;
+    },
     signal?: AbortSignal,
-  ): Promise<{ ok: true; text: string; usage: unknown } | { ok: false; error: NormalizedError }> {
+  ): Promise<{ ok: true; text: string; usage: unknown; finishReason?: string } | { ok: false; error: NormalizedError }> {
     const runtime = this.runtimeManager.runtime;
     if (!runtime) return { ok: false, error: NO_PROVIDER };
     if (!isModelValidForProvider(this.runtimeManager.getProviderId(), this.runtimeManager.getModel())) {
@@ -754,19 +809,45 @@ export class PipelineManager {
       }
       if (input.system) messages.push({ role: 'system', content: input.system });
       messages.push({ role: 'user', content: input.user });
+      const deadlineMs = input.timeoutMs ?? this.settings.timeoutMs;
       const request: GenerateRequest = {
         messages,
         temperature: this.settings.temperature,
         maxTokens: this.settings.maxTokens,
+        // The same deadline the wrapper enforces, so the transport cannot
+        // quietly give up earlier (the Ollama adapter's own default is shorter).
+        timeoutMs: deadlineMs,
       };
       if (input.json) request.maxTokens = Math.min(request.maxTokens ?? 4096, 8096);
+      if (input.maxTokens) request.maxTokens = input.maxTokens;
       const providerLabel = this.runtimeManager.providerLabel;
-      const result = await withRetry(
-        () => withTimeout(() => runtime.generate(request), this.settings.timeoutMs, () => runtime.cancel()),
-        { maxRetries: this.settings.maxRetries, signal, providerLabel },
+      const started = Date.now();
+      const promptChars = messages.reduce((n, m) => n + m.content.length, 0);
+      const callWith = (req: GenerateRequest) => (input.stream ? () => collectStream(runtime, req, input.onProgress) : () => runtime.generate(req));
+      let result = await withRetry(
+        () => withTimeout(callWith(request), deadlineMs, () => runtime.cancel()),
+        { maxRetries: input.maxRetries ?? this.settings.maxRetries, signal, providerLabel },
       );
-      if (!result.ok) return { ok: false, error: result.error };
-      return { ok: true, text: result.value.content, usage: result.value.usage };
+      // One bounded retry after a loop, with a repetition penalty and a cooler
+      // temperature. A second loop is final: it is reported, never returned as an answer.
+      if (!result.ok && result.error.type === 'degenerate' && !signal?.aborted) {
+        result = await withRetry(
+          () => withTimeout(callWith({ ...request, frequencyPenalty: 0.6, temperature: Math.min(request.temperature ?? 0.4, 0.4) }), deadlineMs, () => runtime.cancel()),
+          { maxRetries: 0, signal, providerLabel },
+        );
+      }
+      const elapsedMs = Date.now() - started;
+      // Sizes and timings only — never prompt text, never a key.
+      console.log(`[model] ${this.runtimeManager.getProviderId()}/${this.runtimeManager.getModel()} promptChars=${promptChars} maxTokens=${request.maxTokens} deadlineMs=${deadlineMs} elapsedMs=${elapsedMs} outcome=${result.ok ? 'ok' : result.error.type}`);
+      if (!result.ok) {
+        // Say how long it ran and what the limit was: a timeout that names
+        // neither cannot be told apart from a hung server.
+        const error = result.error.type === 'timeout'
+          ? { ...result.error, message: `${result.error.message.replace(/\.$/, '')} after ${Math.round(elapsedMs / 1000)}s (limit ${Math.round(deadlineMs / 1000)}s). The model may be too slow for this request on this machine.` }
+          : result.error;
+        return { ok: false, error };
+      }
+      return { ok: true, text: result.value.content, usage: result.value.usage, finishReason: (result.value as { finishReason?: string }).finishReason };
     } catch (e) {
       return { ok: false, error: normalize(e, this.runtimeManager.providerLabel) };
     } finally {

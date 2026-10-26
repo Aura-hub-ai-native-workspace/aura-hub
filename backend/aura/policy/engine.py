@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 # ── frozen vocabularies ──────────────────────────────────────────────────────
 
-PolicyDecision = Literal["auto-execute", "ask-user", "require-approval", "deny"]
+PolicyDecision = Literal["auto-execute", "deny"]
 RiskLevel = Literal["low", "medium", "high"]
 PermissionScope = Literal[
     "project.read", "project.write", "process.execute", "network.outbound",
@@ -28,27 +28,60 @@ PermissionScope = Literal[
     "aura.read", "aura.write",
 ]
 
-DECISIONS: tuple[str, ...] = ("auto-execute", "ask-user", "require-approval", "deny")
+DECISIONS: tuple[str, ...] = ("auto-execute", "deny")
+
+#: Decisions a stored policy file written before the approval workflow was
+#: removed may still name. They are read as the decision the new rule gives:
+#: a step that would have waited for a person now runs (routine) or is refused.
+LEGACY_DECISION = {"ask-user": "auto-execute", "require-approval": "deny"}
+
+
+def _current(decision: str) -> str:
+    return LEGACY_DECISION.get(decision, decision)
 
 RANK: dict[str, int] = {
     "auto-execute": 0,
-    "ask-user": 1,
-    "require-approval": 2,
-    "deny": 3,
+    "deny": 1,
 }
 
+#: Routine project work runs directly: no risk level asks by default. What
+#: still stops is the hard floors below (account authorization, machine
+#: changes, destructive and irreversible actions) and anything the person
+#: explicitly configures to ask.
 DEFAULT_POLICY: dict[str, Any] = {
-    "byRisk": {"low": "auto-execute", "medium": "ask-user", "high": "require-approval"},
+    "byRisk": {"low": "auto-execute", "medium": "auto-execute", "high": "auto-execute"},
     "overrides": {
-        "mission.approve": "ask-user",
-        "provider.connect": "require-approval",
     },
     "nodeOverrides": {},
     "nodeAllowlists": {},
     "allowAutonomous": True,
 }
 
+#: The defaults AURA used to ship. A stored policy that is exactly these —
+#: saved verbatim, never customized — is read as today's defaults.
+LEGACY_DEFAULT_BY_RISK = {"low": "auto-execute", "medium": "ask-user", "high": "require-approval"}
+LEGACY_DEFAULT_OVERRIDES = {"mission.approve": "ask-user", "provider.connect": "require-approval"}
+
 HUMAN_ONLY_SCOPES = frozenset({"account.authorize", "resource.destroy", "system.modify"})
+
+
+def upgrade_legacy_default_policy(raw: Any) -> Any:
+    """Read a stored policy that is exactly the old shipped default as the
+    current default. Nothing the person customized is touched: any other
+    byRisk value, any other override, any node rule keeps the policy as it
+    is. Pure — the stored file is not rewritten."""
+    if not isinstance(raw, dict):
+        return raw
+    if raw.get("byRisk") != LEGACY_DEFAULT_BY_RISK:
+        return raw
+    overrides = raw.get("overrides") or {}
+    if not isinstance(overrides, dict) or any(
+            LEGACY_DEFAULT_OVERRIDES.get(k) != v for k, v in overrides.items()):
+        return raw
+    upgraded = dict(raw)
+    upgraded["byRisk"] = dict(DEFAULT_POLICY["byRisk"])
+    upgraded["overrides"] = {k: v for k, v in overrides.items() if k not in ("mission.approve", "provider.connect")}
+    return upgraded
 
 
 def _is_decision(v: Any) -> bool:
@@ -70,7 +103,7 @@ def sanitize_policy(raw: Any) -> dict[str, Any]:
     malformed allowlists become EMPTY lists (fail closed); a damaged autonomy
     setting reads cautious, never permissive. Mirrors sanitizePolicy :74-113.
     """
-    inp = raw if isinstance(raw, dict) else {}
+    inp = upgrade_legacy_default_policy(raw) if isinstance(raw, dict) else {}
 
     by_risk = dict(DEFAULT_POLICY["byRisk"])
     for level in ("low", "medium", "high"):
@@ -153,8 +186,6 @@ class PolicyInput:
 def _reason_for(decision: PolicyDecision, name: str) -> str:
     return {
         "auto-execute": f"{name} is low risk and reversible, so it runs without interrupting you.",
-        "ask-user": f"{name} changes something. One confirmation and it proceeds.",
-        "require-approval": f"{name} needs your explicit authorization, recorded against this mission.",
         "deny": f"{name} is not permitted under the current policy.",
     }[decision]
 
@@ -173,7 +204,7 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
         }
 
     # 1b. Node-grantable scope check. Human-only scopes are deliberately NOT
-    # checked here — they are satisfied by the approval the floors demand;
+    # checked here — they are a policy decision, not a person's go-ahead;
     # checking them would make authorization impossible instead of gated.
     missing = [p for p in cap.permissions if p not in HUMAN_ONLY_SCOPES and p not in inp.granted]
     if missing:
@@ -189,7 +220,7 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
     # permission resolution, and a project scope — so once those checks
     # pass the policy decision is auto-execute, not a human handover.
     # The high-risk / irreversible floors below are what would otherwise
-    # park a delegated worker behind "Approve and run": for agent.delegate
+    # hold a delegated worker behind a person's go-ahead: for agent.delegate
     # specifically they must not demand a separate human go-ahead. denial
     # paths above (no provider, missing grants, unknown/unusable node)
     # are unchanged, and this autonomous judgment is recorded.
@@ -202,33 +233,33 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
                 f"{cap.name} is a governed, audited worker action: the "
                 "worker pin, permission grants and project scope are already "
                 "established by AURA, so it runs without a separate "
-                "human approval gate."
+                "permission step."
             ),
         }
 
     # Floors are a LOWER BOUND seeded into the decision, not early returns:
     # layers below fold with _stricter() and can only escalate.
-    decision: PolicyDecision = cfg.get("byRisk", {}).get(risk, "auto-execute")
+    decision: PolicyDecision = _current(cfg.get("byRisk", {}).get(risk, "auto-execute"))
     rule = f"risk-default:{risk}"
     reason = ""
 
     def floor(name: str, why: str) -> None:
         nonlocal decision, rule, reason
-        decision = _stricter(decision, "require-approval")
+        decision = _stricter(decision, "deny")
         rule = name
         reason = why
 
     if cap.irreversible:
         floor("irreversible-floor",
-              f"{cap.name} cannot be undone from here, so it always needs your explicit go-ahead.")
+              f"{cap.name} cannot be undone from here, so AURA refuses it and never runs it unattended.")
     elif "resource.destroy" in cap.permissions:
-        floor("destructive-floor", f"{cap.name} destroys something. That is always your call.")
+        floor("destructive-floor", f"{cap.name} destroys something, so AURA refuses it.")
     elif "account.authorize" in cap.permissions:
         floor("authorization-floor",
-              f"{cap.name} acts against your account, so you authorize it yourself.")
+              f"{cap.name} acts against your account, so AURA refuses it.")
     elif "system.modify" in cap.permissions:
         floor("system-floor",
-              f"{cap.name} changes software on this machine, so it always needs your go-ahead.")
+              f"{cap.name} changes software on this machine, so AURA refuses it unless it runs by hand.")
 
     # Configurable layers — each may escalate and claim the rule when it does,
     # or when it restates the current level more specifically. A weaker
@@ -238,6 +269,7 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
         nonlocal decision, rule, reason
         if candidate is None:
             return
+        candidate = _current(candidate)
         escalates = RANK[candidate] > RANK[decision]
         confirms = RANK[candidate] == RANK[decision] and candidate == decision
         if escalates or confirms:
@@ -271,10 +303,16 @@ def evaluate_policy(inp: PolicyInput) -> dict[str, Any]:
             )
 
     if not cfg.get("allowAutonomous", True) and decision == "auto-execute":
-        decision = "ask-user"
+        # Autonomy switched off: nothing may run unattended, and nothing waits
+        # for a person either, so the action is refused.
+        decision = "deny"
         rule = "autonomy-disabled"
-        reason = ""
+        reason = "Autonomous operation is switched off in the workspace policy, so this is refused."
 
+    # No human approval gate exists in AURA Hub Alpha. Decisions that would
+    # have waited for a person are resolved here, by policy, immediately:
+    #   legacy 'ask-user' -> runs (no human gate);
+    #   legacy 'require-approval' -> refused outright (never parked).
     return {
         "decision": decision,
         "rule": rule,

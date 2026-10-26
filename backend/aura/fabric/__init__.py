@@ -1,7 +1,7 @@
 """Capability Fabric core — behavior-preserving port of fabric.ts (878 lines).
 
 THE one governed path by which anything causes a side effect:
-  resolve → policy → approval → execute → verify → recover → audit
+  resolve → policy → execute → verify → recover → audit
 
 Phase-4 scope: everything except node ROUTING (resolveNode stays absent —
 connected-environment lands in Phase 5). The manifest catalogue comes from
@@ -17,7 +17,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from ..approvals import ApprovalLedger, usable_pending
 from ..policy import grants_for
 
 MAX_ATTEMPTS = 3
@@ -165,38 +164,7 @@ class FabricHost:
     def node_available(self, capability: dict) -> bool | None:
         return True
 
-    async def request_approval(self, request: dict, context: dict) -> bool:
-        return False
-
-
 # ── the fabric ───────────────────────────────────────────────────────────────
-
-
-def _named_refusal(named: dict | None, matches_action: bool) -> str:
-    """Why a named approval could not be spent, said precisely.
-
-    The user-facing sentence is frozen by the TS oracle and collapses
-    every cause into "the action or its arguments changed". Those are
-    different problems with different fixes, and the collapse hid a real
-    one: a grant recorded on a different copy of the record read exactly
-    like a changed action. This is the honest version, kept for
-    diagnosis and for any caller that is not parity-bound.
-    """
-    if named is None:
-        return "the authorization it named no longer exists."
-    if not matches_action:
-        return ("the authorization on record is for a different action "
-                "than the one requested; the request stands.")
-    state = named.get("state")
-    if named.get("consumedAt"):
-        return ("the authorization it named was already spent; approvals "
-                "are single-use.")
-    if state == "denied":
-        return "the authorization it named was declined."
-    if state != "granted":
-        return (f"the authorization it named is still {state or 'pending'}; "
-                "it has not been decided yet.")
-    return "the authorization it named cannot be spent."
 
 
 class CapabilityFabric:
@@ -212,17 +180,17 @@ class CapabilityFabric:
         self.executors: dict[str, Any] = {}
         self.listeners: list[Callable[[dict], None]] = []
         self.audit_log: list[dict] = []
-        self.policy: dict = {"byRisk": {"low": "auto-execute", "medium": "ask-user", "high": "require-approval"},
+        from ..policy.engine import DEFAULT_POLICY as _DEFAULT_POLICY
+
+        # The one shipped default (routine work runs; floors still stop).
+        self.policy: dict = {"byRisk": dict(_DEFAULT_POLICY["byRisk"]),
                              "overrides": {}, "nodeOverrides": {}, "nodeAllowlists": {},
                              "allowAutonomous": True}
-        self._approvals_by_key: dict[str, dict] = {}
-        self._approval_store_save: Callable | None = None
         self._audit_store_append: Callable | None = None
         self._clock_ms = clock_ms
         self._clock_iso = clock_iso
         self._sleep = sleep
         self._seq = [0]
-        self._ledger = ApprovalLedger(audit_append=None, emit=None, clock=clock_iso)
 
     # wiring ------------------------------------------------------------------
 
@@ -241,52 +209,6 @@ class CapabilityFabric:
 
     def listen(self, fn: Callable[[dict], None]) -> None:
         self.listeners.append(fn)
-
-    def attach_approval_store(self, load: Callable[[], list], save: Callable[[list], None]) -> None:
-        """Only USABLE PENDING requests restore (fabric.ts:262–284)."""
-        self._approval_store_save = save
-        for raw in load():
-            r = raw if usable_pending(raw) else None
-            if not r:
-                continue
-            items = r.get("items") or []
-            if not items:
-                continue
-            cap = items[0].get("capabilityId")
-            if r.get("missionId") and r.get("taskId"):
-                key = f"{r['missionId']}:{r['taskId']}:{cap}"
-            elif r.get("runId") and r.get("workflowNodeId"):
-                key = f"{r['runId']}:{r['workflowNodeId']}:{cap}"
-            else:
-                key = f"inv:{items[0].get('invocationId')}"
-            self._approvals_by_key[key] = r
-
-    def use_ledger(self, ledger) -> None:
-        """Adopt the canonical ledger — ONE record object per approval.
-
-        The fabric and the ledger each restore approvals from the store,
-        and each `load()` parses fresh dicts. In a single process that is
-        invisible, because a request the fabric creates is handed to the
-        ledger by reference. Across a RESTART it is not: the two maps end
-        up holding different objects for the same request, so a human
-        grant recorded on the ledger's copy leaves the fabric's copy
-        pending — and the fabric is what decides whether a call is
-        authorised. The approval is then refused as if the action had
-        changed, which is both wrong and misleading.
-
-        Adopting means: the ledger's object wins wherever both know a
-        request, and anything only the fabric knows is registered into
-        the ledger. After this call there is one object, so one decision.
-        """
-        self._ledger = ledger
-        if ledger is None:
-            return
-        for key, request in list(self._approvals_by_key.items()):
-            shared = ledger.open_for_key(key)
-            if shared is not None:
-                self._approvals_by_key[key] = shared
-            else:
-                ledger.register(key, request)
 
     def attach_audit_store(self, load: Callable[[], list], append: Callable[[dict], None]) -> None:
         """EVERYTHING restores for audit — forgetting would be wrong, not cautious."""
@@ -313,11 +235,6 @@ class CapabilityFabric:
             except Exception:
                 pass
 
-    def _persist_approvals(self) -> None:
-        if self._approval_store_save:
-            self._approval_store_save([r for r in self._approvals_by_key.values()
-                                       if r.get("state") == "pending"])
-
     def _emit(self, event: dict) -> None:
         for fn in list(self.listeners):
             fn(event)
@@ -326,67 +243,6 @@ class CapabilityFabric:
 
     def set_policy(self, policy: dict) -> None:
         self.policy = policy
-
-    # approvals ---------------------------------------------------------------
-
-    @staticmethod
-    def approval_key(capability_id: str, context: dict, invocation_id_str: str) -> str:
-        if context.get("missionId") and context.get("taskId"):
-            return f"{context['missionId']}:{context['taskId']}:{capability_id}"
-        if context.get("runId") and context.get("workflowNodeId"):
-            return f"{context['runId']}:{context['workflowNodeId']}:{capability_id}"
-        return f"inv:{invocation_id_str}"
-
-    def pending_approvals(self) -> list[dict]:
-        return [r for r in self._approvals_by_key.values() if r.get("state") == "pending"]
-
-    def approval_by_id(self, aid: str) -> dict | None:
-        for r in self._approvals_by_key.values():
-            if r.get("id") == aid:
-                return r
-        return None
-
-    def decide_approval(self, aid: str, granted: bool, decided_by: str = "user",
-                        reason: str | None = None) -> dict | None:
-        request = self.approval_by_id(aid)
-        if not request or request.get("state") != "pending":
-            return None
-        ts = self._clock_iso()
-        request["state"] = "granted" if granted else "denied"
-        request["decidedAt"] = ts
-        request["decidedBy"] = decided_by
-        item = (request.get("items") or [{}])[0]
-        self._record({
-            "invocationId": item.get("invocationId") or request["id"],
-            "at": ts,
-            "capabilityId": item.get("capabilityId") or "unknown",
-            "actor": {"kind": "human", "id": decided_by},
-            "projectId": request.get("projectId"),
-            **({"missionId": request["missionId"]} if request.get("missionId") else {}),
-            **({"taskId": request["taskId"]} if request.get("taskId") else {}),
-            "risk": item.get("risk") or "low",
-            "decision": "require-approval" if request.get("rule") == "irreversible-floor" else "ask-user",
-            "decisionRule": request.get("rule") or "approval",
-            "approvalId": request["id"],
-            "outcome": "awaiting-approval" if granted else "denied",
-            "verified": None,
-            "durationMs": 0,
-            "inputSummary": f"decision reason: {reason}" if reason else (item.get("detail") or ""),
-            "approvalDecision": "granted" if granted else "denied",
-            "decidedBy": decided_by,
-        })
-        self._emit({"type": "approval.granted" if granted else "approval.denied",
-                    "at": ts, "requestId": request["id"]})
-        self._persist_approvals()
-        return request
-
-    def consume_approval(self, aid: str) -> dict | None:
-        request = self.approval_by_id(aid)
-        if not request or request.get("state") != "granted" or request.get("consumedAt"):
-            return None
-        request["consumedAt"] = self._clock_iso()
-        self._persist_approvals()
-        return request
 
     # pre-flight ----------------------------------------------------------------
 
@@ -510,124 +366,12 @@ class CapabilityFabric:
             return self._settle(invocation, capability, "denied", evaluation["reason"],
                                 dict(NO_VERIFICATION), evaluation, started, started_at, 0)
 
-        # 4. approval
-        spent_named_approval = False
+        # 4. no approval gate. The policy decision is final: anything that is not
+        # auto-execute was refused in step 3 (require-approval is refused there,
+        # never parked). This branch only guards against a future decision value.
         if evaluation["decision"] != "auto-execute":
-            key = self.approval_key(capability_id, context, invocation["id"])
-            fingerprint = self._fingerprint(capability_id, input, context)
-            open_request = self._approvals_by_key.get(key)
-
-            if context.get("approvalId"):
-                named = self.approval_by_id(context["approvalId"])
-                matches_action = bool(named) and any(
-                    i.get("capabilityId") == capability_id
-                    and i.get("fingerprint") == fingerprint
-                    for i in (named or {}).get("items") or [])
-                usable = bool(
-                    named
-                    and named.get("state") == "granted"
-                    and not named.get("consumedAt")
-                    and matches_action
-                )
-                if usable and self.consume_approval(named["id"]):
-                    self._emit({"type": "approval.granted", "at": self._clock_iso(),
-                                "requestId": named["id"]})
-                    spent_named_approval = True
-                else:
-                    self._emit({
-                        "type": "invocation.denied",
-                        "at": self._clock_iso(),
-                        "invocationId": invocation["id"],
-                        # Wording is pinned by the frozen TS oracle
-                        # (tests/fabric/test_fabric_diff.py), so it stays
-                        # verbatim even though it collapses "never
-                        # granted", "already spent" and "arguments
-                        # changed" into one sentence. `_named_refusal`
-                        # keeps the distinction those three deserve;
-                        # surfacing it would change the contract, which
-                        # is not a Phase K decision to make.
-                        "reason": ("The approval named for this call does not authorize it — the action or its arguments changed since it was granted."
-                                   if named else
-                                   "The approval named for this call no longer exists."),
-                    })
-                    return self._settle(
-                        invocation, capability, "awaiting-approval",
-                        (f"{capability['name']} was not run: the authorization on record is for a different action than the one requested. Nothing has run, and the request stands."
-                         if named else
-                         f"{capability['name']} was not run: the authorization it named no longer exists. Nothing has run."),
-                        dict(NO_VERIFICATION), evaluation, started, started_at, 0,
-                        named.get("id") if named else None,
-                    )
-
-            pre_granted = spent_named_approval or (
-                (open_request or {}).get("state") == "granted"
-                and not open_request.get("consumedAt")
-                and bool(self.consume_approval(open_request["id"]))
-            )
-
-            if not pre_granted:
-                request = open_request if (open_request or {}).get("state") == "pending" else {
-                    "id": f"apr-{invocation['id']}",
-                    "state": "pending",
-                    "requestedAt": self._clock_iso(),
-                    "summary": evaluation["reason"],
-                    "rule": evaluation["rule"],
-                    **({"projectId": context["projectId"]} if context.get("projectId") is not None else {}),
-                    **({"missionId": context["missionId"]} if context.get("missionId") else {}),
-                    **({"taskId": context["taskId"]} if context.get("taskId") else {}),
-                    # The unified approvals inbox routes agent decisions to
-                    # /agent/sessions/{sid}/approve, which needs the owning
-                    # session. The context already carries it (execution sets
-                    # sessionId); the parked record just never copied it, so
-                    # the inbox had nothing to route with. Mirrors the audit
-                    # record below, which already carries sessionId.
-                    **({"sessionId": context["sessionId"]} if context.get("sessionId") else {}),
-                    **({"workflowId": context["workflowId"]} if context.get("workflowId") else {}),
-                    **({"runId": context["runId"]} if context.get("runId") else {}),
-                    **({"workflowNodeId": context["workflowNodeId"]} if context.get("workflowNodeId") else {}),
-                    **({"target": t} if (t := describe_target(capability, input)) is not None else {}),
-                    "onAccept": f"{capability['name']} runs now{', and the Fabric checks it actually worked' if capability.get('verify') else ''}. {capability['output']}.",
-                    "onDecline": ("Nothing runs. The task stays where it is with the decline recorded against it, and the rest of the mission is untouched."
-                                  if context.get("taskId") else
-                                  "Nothing runs, and the request is recorded as declined."),
-                    "items": [{
-                        "invocationId": invocation["id"],
-                        "capabilityId": capability_id,
-                        "title": capability["name"],
-                        "detail": summarize_input(capability, input),
-                        "risk": capability["risk"],
-                        "irreversible": bool(capability.get("irreversible")),
-                        "fingerprint": fingerprint,
-                    }],
-                }
-
-                if (open_request or {}).get("state") != "pending":
-                    self._approvals_by_key[key] = request
-                    # Sync to the canonical ledger if attached (single ledger rule)
-                    if getattr(self, "_ledger", None) is not None:
-                        self._ledger.register(key, request)
-                    self._emit({"type": "approval.required", "at": request["requestedAt"],
-                                "request": request})
-                    self._persist_approvals()
-
-                try:
-                    granted = await self.host.request_approval(request, context)
-                except Exception:
-                    granted = False
-                if not granted:
-                    return self._settle(
-                        invocation, capability, "awaiting-approval",
-                        f"{capability['name']} is ready and waiting on your go-ahead. Nothing has run.",
-                        dict(NO_VERIFICATION), evaluation, started, started_at, 0,
-                        request["id"])
-                if request.get("state") == "pending":
-                    ts = self._clock_iso()
-                    request["state"] = "granted"
-                    request["decidedAt"] = ts
-                    request["decidedBy"] = context["actor"]["id"]
-                    request["consumedAt"] = ts
-                    self._emit({"type": "approval.granted", "at": ts, "requestId": request["id"]})
-                    self._persist_approvals()
+            return self._settle(invocation, capability, "denied", evaluation["reason"],
+                                dict(NO_VERIFICATION), evaluation, started, started_at, 0)
 
         # 5. execute with bounded recovery
         executor = self.executors.get(capability_id)
@@ -663,7 +407,7 @@ class CapabilityFabric:
                 invocation, capability, "failed",
                 f"{capability['name']} did not succeed{tried}. {last.get('detail', '')}",
                 dict(NO_VERIFICATION), evaluation, started, started_at, attempts,
-                None, last.get("output"))
+                last.get("output"))
 
         # 6. verify
         verification = dict(NO_VERIFICATION)
@@ -687,7 +431,7 @@ class CapabilityFabric:
                   f"{capability['name']} completed. {last.get('detail', '')}")
 
         return self._settle(invocation, capability, outcome, detail, verification,
-                            evaluation, started, started_at, attempts, None, last.get("output"))
+                            evaluation, started, started_at, attempts, last.get("output"))
 
     # audit assembly --------------------------------------------------------------
 
@@ -715,13 +459,8 @@ class CapabilityFabric:
             invocation.get("node", {}).get("id") if attempts > 0 and invocation.get("node") else None
         )
 
-    def _fingerprint(self, capability_id: str, input: dict, context: dict) -> str:
-        from ..canonical import fingerprint_invocation
-
-        return fingerprint_invocation(capability_id, input, context)
-
     def _settle(self, invocation, capability, outcome, detail, verification, policy_eval,
-                started: int, started_at: str, attempts: int, approval_id: str | None = None,
+                started: int, started_at: str, attempts: int,
                 output: Any = None) -> dict:
         ended_at = self._clock_iso()
         duration_ms = self._clock_ms() - started
@@ -743,8 +482,6 @@ class CapabilityFabric:
         }
         if output is not None:
             result["output"] = output
-        if approval_id is not None:
-            result["approvalId"] = approval_id
 
         executed_node = self._executed_node_id(invocation, capability, attempts, output)
         record: dict[str, Any] = {
@@ -770,8 +507,6 @@ class CapabilityFabric:
         }
         if invocation["context"].get("nodeId") is not None:
             record["requestedNodeId"] = invocation["context"]["nodeId"]
-        if approval_id is not None:
-            record["approvalId"] = approval_id
         if executed_node is not None:
             record["nodeId"] = executed_node
             record["executedNodeId"] = executed_node
@@ -792,7 +527,7 @@ class CapabilityFabric:
 # Thin views over THIS canonical fabric so the already-implemented
 # `aura.central_agent` service (which predates the CapabilityFabric port)
 # runs unmodified on the ONE governed execution path. Every function here
-# delegates; none re-implements policy, approval, execution or audit.
+# delegates; none re-implements policy, execution or audit.
 
 
 class FabricConfig:
@@ -817,9 +552,10 @@ class FabricConfig:
     def sanitized_policy(self) -> dict:
         import copy
 
+        from ..policy.engine import DEFAULT_POLICY as _DEFAULT_POLICY
+
         base = self.fabric.policy if self.fabric is not None else {
-            "byRisk": {"low": "auto-execute", "medium": "ask-user",
-                       "high": "require-approval"},
+            "byRisk": dict(_DEFAULT_POLICY["byRisk"]),
             "overrides": {}, "nodeOverrides": {}, "nodeAllowlists": {},
             "allowAutonomous": True,
         }

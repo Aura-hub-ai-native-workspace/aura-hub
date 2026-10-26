@@ -160,20 +160,6 @@ function summarizeInput(capability: CapabilityDescriptor, input: Record<string, 
   return parts.join(' ') || '(no arguments)';
 }
 
-/**
- * The thing an action acts on, for the approval prompt. Picks the first
- * argument that reads like a target so the user sees "src/app.ts" rather
- * than having to infer it from a capability id.
- */
-function describeTarget(capability: CapabilityDescriptor, input: Record<string, unknown>): string | undefined {
-  for (const key of ['path', 'url', 'command', 'name', 'branch', 'message', 'projectId']) {
-    const value = input[key];
-    if (typeof value === 'string' && value.trim()) {
-      return value.length > 80 ? `${value.slice(0, 77)}…` : value;
-    }
-  }
-  return capability.surface === 'aura-internal' ? 'AURA Hub' : undefined;
-}
 
 /** Reject arguments that do not satisfy the declared contract. */
 function validate(capability: CapabilityDescriptor, input: Record<string, unknown>): string | null {
@@ -335,25 +321,6 @@ export class CapabilityFabric {
 
   /* ── approvals ────────────────────────────────────────────────── */
 
-  /**
-   * Identity of an authorization request.
-   *
-   * Keyed by what is being authorized — the mission task and capability —
-   * rather than by the invocation, because a user pressing Run three times
-   * on a gated task is asking the same question three times, not asking
-   * three questions. Without a mission task to anchor to, the invocation
-   * is the best available identity and each call stands alone.
-   */
-  private static approvalKey(capabilityId: string, context: InvocationContext, invocationId: string): string {
-    if (context.missionId && context.taskId) return `${context.missionId}:${context.taskId}:${capabilityId}`;
-    // A workflow run has the same shape of identity as a mission task: the
-    // same node of the same run asking for the same capability is ONE
-    // question, however many times the run is resumed. Without this a
-    // resumed run would mint a fresh request and the answer the user
-    // already gave would be stranded against the old one.
-    if (context.runId && context.workflowNodeId) return `${context.runId}:${context.workflowNodeId}:${capabilityId}`;
-    return `inv:${invocationId}`;
-  }
 
   /** Requests still waiting on a human. */
   pendingApprovals(): ApprovalRequest[] {
@@ -544,129 +511,13 @@ export class CapabilityFabric {
       subject: this.subjectFor(invocation, resolution.node),
     });
 
-    if (evaluation.decision === 'deny') {
+
+    /* 4. decision — only auto-execute runs. Anything else (deny, or any
+       value this build does not recognise) is refused here, before any
+       effect. Nothing waits for a person. */
+    if (evaluation.decision !== 'auto-execute') {
       this.emit({ type: 'invocation.denied', at: new Date().toISOString(), invocationId: invocation.id, reason: evaluation.reason });
       return this.settle(invocation, capability, 'denied', evaluation.reason, NO_VERIFICATION, evaluation, started, startedAt, 0);
-    }
-
-    /* 4. approval */
-    let spentNamedApproval = false;
-    if (evaluation.decision !== 'auto-execute') {
-      // Identity of the QUESTION, not of the attempt. Pressing Run three
-      // times on a gated task asks one question three times, and must not
-      // produce three notifications and three buttons.
-      const key = CapabilityFabric.approvalKey(capabilityId, context, invocation.id);
-      const fingerprint = fingerprintInvocation(capabilityId, input, context);
-      const open = this.approvals.get(key);
-
-      /* A caller spending a NAMED approval.
-         
-         This is the argument-bound path. The request is looked up in the
-         Fabric's own store — never taken from the caller — and three things
-         must all hold: it was granted, it has not been spent, and the
-         fingerprint recorded when the human saw it matches the call being
-         made now. Any mismatch falls through to asking again rather than
-         executing, because the safe reading of "this is not the action that
-         was approved" is that nothing has been approved. */
-      if (context.approvalId) {
-        const named = this.approvalById(context.approvalId);
-        const usable = named
-          && named.state === 'granted'
-          && !named.consumedAt
-          && named.items.some((i) => i.capabilityId === capabilityId && i.fingerprint === fingerprint);
-        if (usable && this.consumeApproval(named.id)) {
-          this.emit({
-            type: 'approval.granted',
-            at: new Date().toISOString(),
-            requestId: named.id,
-          });
-          // Authorized for exactly this call. Fall through to execution —
-          // every later step (executor, verification, recovery, audit) is
-          // the unchanged one.
-          spentNamedApproval = true;
-        } else {
-        // Not usable. Deliberately NOT an error: the request may simply be
-        // stale, and the correct behaviour is to refuse THIS call while
-        // leaving the standing question alone.
-        this.emit({
-          type: 'invocation.denied',
-          at: new Date().toISOString(),
-          invocationId: invocation.id,
-          reason: named
-            ? 'The approval named for this call does not authorize it — the action or its arguments changed since it was granted.'
-            : 'The approval named for this call no longer exists.',
-        });
-        return this.settle(invocation, capability, 'awaiting-approval',
-          named
-            ? `${capability.name} was not run: the authorization on record is for a different action than the one requested. Nothing has run, and the request stands.`
-            : `${capability.name} was not run: the authorization it named no longer exists. Nothing has run.`,
-          NO_VERIFICATION, evaluation, started, startedAt, 0, named?.id);
-        }
-      }
-
-      // Already answered "yes" out of band (the approval UI). Spend it —
-      // once — and fall through to execution.
-      const preGranted = spentNamedApproval
-        || (open?.state === 'granted' && !open.consumedAt && Boolean(this.consumeApproval(open.id)));
-
-      if (!preGranted) {
-        // Reuse the open question rather than minting a duplicate.
-        const request: ApprovalRequest = open?.state === 'pending' ? open : {
-          id: `apr-${invocation.id}`,
-          state: 'pending',
-          requestedAt: new Date().toISOString(),
-          summary: evaluation.reason,
-          rule: evaluation.rule,
-          projectId: context.projectId ?? undefined,
-          missionId: context.missionId,
-          taskId: context.taskId,
-          workflowId: context.workflowId,
-          runId: context.runId,
-          workflowNodeId: context.workflowNodeId,
-          target: describeTarget(capability, input),
-          // Both consequences are stated, because an approval prompt that
-          // only says what happens if you say yes is not a real choice.
-          onAccept: `${capability.name} runs now${capability.verify ? ', and the Fabric checks it actually worked' : ''}. ${capability.output}.`,
-          onDecline: context.taskId
-            ? 'Nothing runs. The task stays where it is with the decline recorded against it, and the rest of the mission is untouched.'
-            : 'Nothing runs, and the request is recorded as declined.',
-          items: [{
-            invocationId: invocation.id,
-            capabilityId,
-            title: capability.name,
-            detail: summarizeInput(capability, input),
-            risk: capability.risk,
-            irreversible: Boolean(capability.irreversible),
-            fingerprint,
-          }],
-        };
-
-        if (open?.state !== 'pending') {
-          this.approvals.set(key, request);
-          this.emit({ type: 'approval.required', at: request.requestedAt, request });
-          // Durable the moment it is asked, so a crash between asking and
-          // answering does not lose the question.
-          this.persistApprovals();
-        }
-
-        // The host may still grant inline (a caller that carried an explicit
-        // per-invocation authorization). Otherwise the request stays open and
-        // the invocation is parked, not failed.
-        const granted = await this.host.requestApproval(request, context).catch(() => false);
-        if (!granted) {
-          return this.settle(invocation, capability, 'awaiting-approval',
-            `${capability.name} is ready and waiting on your go-ahead. Nothing has run.`,
-            NO_VERIFICATION, evaluation, started, startedAt, 0, request.id);
-        }
-        if (request.state === 'pending') {
-          request.state = 'granted';
-          request.decidedAt = new Date().toISOString();
-          request.decidedBy = context.actor.id;
-          request.consumedAt = request.decidedAt;
-          this.emit({ type: 'approval.granted', at: request.decidedAt, requestId: request.id });
-          this.persistApprovals();
-        }
-      }
     }
 
     /* 5. execute — with bounded recovery */

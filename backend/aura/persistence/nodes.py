@@ -9,13 +9,25 @@ subsystem rather than a program on this machine.
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
+import threading
+from datetime import UTC, datetime
 from typing import Any
 
 from ..config import aura_path
 from ..jsonutil import read_json_file, write_json_atomic
 
 _ID_OK = re.compile(r"[^a-zA-Z0-9._-]")
+
+#: One lock for every store instance in this process. Each instance used to
+#: have its own lock, so two instances could interleave load → append → save
+#: and silently drop one registration.
+_REGISTRY_LOCK = threading.RLock()
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> str:
@@ -25,29 +37,74 @@ def _now() -> str:
 
 
 class ConnectedNodeStore:
+    """One file, many readers and writers.
+
+    The API builds several instances over the same ``connected-nodes.json``
+    (the policy host, the environment connect route, the worker handshake).
+    Each used to cache the file once at construction, so a node connected
+    through one instance was invisible to the policy host until restart,
+    and a stale instance could write its old list back over a newer one.
+    Every read and mutation therefore re-reads the file first, under a lock,
+    so each operation sees the latest committed registry.
+    """
+
     def __init__(self, clock=_now) -> None:
         self._file = aura_path("connected-nodes.json")
         self._items: list[dict[str, Any]] = []
+        self._lock = _REGISTRY_LOCK
+        self._blocked = False  # set when an unreadable registry could not be moved aside
         self.clock = clock
         self.load()
 
     # ── persistence ──────────────────────────────────────────────────────
 
     def load(self) -> None:
-        data = read_json_file(self._file, {"nodes": []})
-        self._items = [n for n in (data.get("nodes") or [])
-                       if isinstance(n, dict) and n.get("id")]
+        with self._lock:
+            if self._file.exists():
+                try:
+                    raw = json.loads(self._file.read_text(encoding="utf-8"))
+                    if not isinstance(raw, dict) or not isinstance(raw.get("nodes", []), list):
+                        raise ValueError("not a registry object")
+                except (OSError, ValueError) as exc:
+                    self._quarantine(exc)
+                    raw = {"nodes": []}
+            else:
+                raw = {"nodes": []}
+            self._items = [n for n in (raw.get("nodes") or [])
+                           if isinstance(n, dict) and n.get("id")]
+
+    def _quarantine(self, cause: Exception) -> None:
+        """A registry that cannot be parsed is moved aside, never overwritten.
+        Saving an empty list over it would destroy the connections it held."""
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        aside = self._file.with_name(f"{self._file.name}.corrupt-{stamp}")
+        try:
+            os.replace(self._file, aside)
+            logger.error("connected-nodes registry is unreadable (%s); moved aside to %s",
+                         cause, aside)
+        except OSError as move_error:
+            self._blocked = True
+            logger.error("connected-nodes registry is unreadable (%s) and could not be moved aside (%s); "
+                         "writes are refused so it is not overwritten", cause, move_error)
 
     def save(self) -> None:
-        write_json_atomic(self._file, {"nodes": self._items})
+        with self._lock:
+            if self._blocked:
+                raise OSError("connected-nodes registry is unreadable and was not moved aside; "
+                              "refusing to overwrite it")
+            write_json_atomic(self._file, {"nodes": self._items})
 
     # ── queries ──────────────────────────────────────────────────────────
 
     def list_nodes(self) -> list[dict]:
-        return list(self._items)
+        with self._lock:
+            self.load()
+            return list(self._items)
 
     def get(self, node_id: str) -> dict | None:
-        return next((n for n in self._items if n["id"] == node_id), None)
+        with self._lock:
+            self.load()
+            return next((n for n in self._items if n["id"] == node_id), None)
 
     # ── mutations (connector seam substitute; local configuration only) ──
 
@@ -57,21 +114,23 @@ class ConnectedNodeStore:
         if not nid:
             raise ValueError("node id is required")
         caps = sorted({str(c).strip() for c in capabilities or [] if str(c).strip()})
-        existing = self.get(nid)
-        record = {
-            "id": nid,
-            "name": (name or nid)[:80],
-            "capabilities": caps,
-            "internal": bool(internal),
-            "version": str(version or ""),
-            "registeredAt": (existing or {}).get("registeredAt") or self.clock(),
-        }
-        if existing:
-            self._items[self._items.index(existing)] = record
-        else:
-            self._items.append(record)
-        self.save()
-        return record
+        with self._lock:
+            self.load()
+            existing = next((n for n in self._items if n["id"] == nid), None)
+            record = {
+                "id": nid,
+                "name": (name or nid)[:80],
+                "capabilities": caps,
+                "internal": bool(internal),
+                "version": str(version or ""),
+                "registeredAt": (existing or {}).get("registeredAt") or self.clock(),
+            }
+            if existing:
+                self._items[self._items.index(existing)] = record
+            else:
+                self._items.append(record)
+            self.save()
+            return record
 
     def register_worker(self, node_id: str, name: str,
                         capabilities: list[str], *, binary: str,
@@ -90,33 +149,40 @@ class ConnectedNodeStore:
         registry then carries the honest reason a worker is not
         connected, instead of silently forgetting the attempt.
         """
-        record = self.register(node_id, name, capabilities,
-                               internal=False, version=version)
-        nid = record["id"]
         bin_name = str(binary or "").strip()
         if bin_name and ("/" in bin_name or "\\" in bin_name
                          or ".." in bin_name):
             raise ValueError("a worker binary must be named, not a path")
-        proved = bool((readiness or {}).get("proved"))
-        record = {
-            **record,
-            "worker": True,
-            # The runtime binding is what makes dispatch possible at
-            # all, so it is recorded ONLY alongside a successful proof.
-            **({"binary": bin_name} if (bin_name and proved) else {}),
-            **({"readiness": dict(readiness)} if readiness else {}),
-        }
-        self._items[self._items.index(self.get(nid))] = record
-        self.save()
-        return record
+        with self._lock:
+            record = self.register(node_id, name, capabilities,
+                                   internal=False, version=version)
+            nid = record["id"]
+            proved = bool((readiness or {}).get("proved"))
+            record = {
+                **record,
+                "worker": True,
+                # The runtime binding is what makes dispatch possible at
+                # all, so it is recorded ONLY alongside a successful proof.
+                **({"binary": bin_name} if (bin_name and proved) else {}),
+                **({"readiness": dict(readiness)} if readiness else {}),
+            }
+            self.load()
+            self._items[self._items.index(
+                next(n for n in self._items if n["id"] == nid))] = record
+            self.save()
+            return record
 
     def workers(self) -> list[dict]:
-        return [n for n in self._items if n.get("worker") is True]
+        with self._lock:
+            self.load()
+            return [n for n in self._items if n.get("worker") is True]
 
     def remove(self, node_id: str) -> bool:
-        node = self.get(node_id)
-        if not node:
-            return False
-        self._items.remove(node)
-        self.save()
-        return True
+        with self._lock:
+            self.load()
+            node = next((n for n in self._items if n["id"] == node_id), None)
+            if not node:
+                return False
+            self._items.remove(node)
+            self.save()
+            return True

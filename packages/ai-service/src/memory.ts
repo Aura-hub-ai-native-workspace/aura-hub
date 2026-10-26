@@ -21,7 +21,20 @@ export type MemoryKind =
   | 'correction'
   | 'pinned'
   | 'learning'
-  | 'diagnosis';
+  | 'diagnosis'
+  // Added with the Python Shared Context (backend/aura/central_agent/
+  // shared_context.py), which reads and writes this same file.
+  | 'goal'
+  | 'requirement'
+  | 'constraint'
+  | 'convention'
+  | 'architecture'
+  | 'research'
+  | 'plan'
+  | 'execution'
+  | 'environment'
+  | 'error'
+  | 'origin';
 
 export interface MemoryItem {
   id: string;
@@ -30,6 +43,12 @@ export interface MemoryItem {
   body: string;
   pinned: boolean;
   at: string;
+  /** Optional fields the Python Shared Context writes; preserved untouched. */
+  key?: string;
+  taskId?: string;
+  planId?: string;
+  source?: string;
+  refs?: { title: string; url: string; retrievedAt?: string; excerpt?: string }[];
 }
 
 const FILE = (projectId: string) => homePath('memory', `${projectId}.json`);
@@ -52,7 +71,17 @@ export class ProjectMemory {
     writeJsonFile(FILE(this.projectId), this.items);
   }
 
+  /**
+   * Another process (the Python agent) writes this file too. Re-read it
+   * before every change so a record it added since this instance loaded is
+   * never overwritten by a stale copy.
+   */
+  private reload(): void {
+    this.items = readJsonFile<MemoryItem[]>(FILE(this.projectId), []);
+  }
+
   list(): MemoryItem[] {
+    this.reload();
     // Pinned first, then most recent.
     return [...this.items].sort((a, b) => {
       if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
@@ -70,6 +99,7 @@ export class ProjectMemory {
   }
 
   add(input: { kind: MemoryKind; title: string; body: string; pinned?: boolean }): MemoryItem {
+    this.reload();
     const item: MemoryItem = {
       id: `mem_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
       kind: input.kind,
@@ -84,6 +114,7 @@ export class ProjectMemory {
   }
 
   setPinned(id: string, pinned: boolean): MemoryItem | undefined {
+    this.reload();
     const item = this.items.find((i) => i.id === id);
     if (!item) return undefined;
     item.pinned = pinned;
@@ -92,6 +123,7 @@ export class ProjectMemory {
   }
 
   remove(id: string): boolean {
+    this.reload();
     const before = this.items.length;
     this.items = this.items.filter((i) => i.id !== id);
     if (this.items.length !== before) {
@@ -108,6 +140,7 @@ export class ProjectMemory {
    * store is empty.
    */
   recall(query: string, limit = 4): MemoryItem[] {
+    this.reload();
     if (!this.items.length) return [];
     const q = keywords(query);
     const scored = this.items.map((item) => {

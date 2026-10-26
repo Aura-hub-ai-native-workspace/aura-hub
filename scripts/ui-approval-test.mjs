@@ -38,7 +38,6 @@ const post = (path, body) => api(path, {
 /** Reset the task and open a fresh gate, via the service (test fixture only). */
 async function armGate() {
   await post('/fabric/policy', { allowAutonomous: false });
-  await post(`/projects/${PROJECT}/missions/${MISSION}/approve`);
   await post(`/projects/${PROJECT}/missions/${MISSION}/start`);
   await post(`/projects/${PROJECT}/missions/${MISSION}/tasks/${TASK}/retry`);
   await post(`/projects/${PROJECT}/missions/${MISSION}/tasks/${TASK}/run`);

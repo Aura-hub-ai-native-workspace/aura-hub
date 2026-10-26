@@ -22,6 +22,7 @@ Config mechanism (verified by machine inspection 2026-09-23):
 
 from __future__ import annotations
 
+from ..tmpname import unique_sibling
 import json
 import os
 import shutil
@@ -51,7 +52,7 @@ def _read_json(path: Path) -> dict:
 
 def _write_json(path: Path, data: dict) -> None:
     text = json.dumps(data, indent=2, ensure_ascii=False)
-    tmp = path.with_suffix(".tmp")
+    tmp = unique_sibling(path)
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 
@@ -172,7 +173,7 @@ class QwenCodeAdapter(AgentConfigurationAdapter):
 
     def restore(self, backup_bytes: bytes) -> ConfigurationChange:
         old_cs = checksum(_SETTINGS_PATH.read_bytes()) if _SETTINGS_PATH.exists() else None
-        tmp = _SETTINGS_PATH.with_suffix(".tmp")
+        tmp = unique_sibling(_SETTINGS_PATH)
         tmp.write_bytes(backup_bytes)
         tmp.replace(_SETTINGS_PATH)
         return ConfigurationChange(

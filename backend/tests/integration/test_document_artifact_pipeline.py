@@ -23,7 +23,6 @@ from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.central_agent.planner import TaskPlanner
@@ -48,8 +47,6 @@ class _AutoHost(FabricHost):
     def node_available(self, _cap):
         return True
 
-    async def request_approval(self, _req, _ctx):
-        return False
 
 
 def _docx_available() -> bool:
@@ -73,13 +70,11 @@ def multimodal_env(tmp_path, monkeypatch):
     from aura.knowledge.store import KnowledgeBase
 
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
     kb = KnowledgeBase(store_dir=home / "knowledge")
 
     fabric = CapabilityFabric(_AutoHost())
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     # Phase 7 policy defaults: multimodal ops auto-execute
     fabric.policy = {
         "overrides": {
@@ -102,7 +97,7 @@ def multimodal_env(tmp_path, monkeypatch):
     cfg = FabricConfig(
         fabric=fabric, policy_config=fabric.policy,
         permissions={"read": True, "write": True},
-        executors=execs, audit_store=audit, ledger=ledger,
+        executors=execs, audit_store=audit,
     )
     ws, vs, rs = make_stores()
     engine = WorkflowEngine(cfg, ws, vs, rs, EngineConfig())
