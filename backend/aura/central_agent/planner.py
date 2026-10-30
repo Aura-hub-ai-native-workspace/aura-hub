@@ -381,9 +381,32 @@ _WANTS_RESEARCH_RE = re.compile(
 WEB_RESEARCH_CAPABILITY = "web.research"
 
 
-def wants_web_research(user_message: str) -> bool:
-    """Does this request actually ask for external information?"""
-    return _WANTS_RESEARCH_RE.search(user_message or "") is not None
+def wants_web_research(user_message: str, *, would_only_chat: bool = False) -> bool:
+    """Does this request actually ask for external information?
+
+    A request with the shapes above always does. A turn AURA would merely
+    CHAT about is broader: with the toggle on, a real question (not small
+    talk) is researched, exactly as Let's Chat researches it, instead of
+    being answered from the model's memory while the toggle says ON. The
+    broad reading applies ONLY to such turns; a request that has a plan of
+    its own ("fix the login bug") is never turned into a search by it.
+    """
+    msg = (user_message or "").strip()
+    if _WANTS_RESEARCH_RE.search(msg) is not None:
+        return True
+    if not would_only_chat or len(msg.split()) < 3:
+        return False
+    from .intent import is_conversational
+
+    return not is_conversational(msg)
+
+
+def _would_only_chat(intent: AgentIntent) -> bool:
+    """AURA has nothing to DO for this turn: it would chat, or ask what was meant."""
+    if bool(getattr(intent, "conversational", False)):
+        return True
+    return (bool(getattr(intent, "needsClarification", False))
+            and not list(getattr(intent, "requiredCapabilities", None) or []))
 
 
 def apply_web_research_preference(intent: AgentIntent, web_research: bool,
@@ -416,7 +439,7 @@ def apply_web_research_preference(intent: AgentIntent, web_research: bool,
     intent.webResearch = bool(web_research)
     if not intent.webResearch:
         return intent
-    if not wants_web_research(user_message):
+    if not wants_web_research(user_message, would_only_chat=_would_only_chat(intent)):
         return intent
     # The user's question is the research query. A model-compiled goal
     # is advisory and may collapse to a generic word like "information";
@@ -638,8 +661,14 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
     parallel_two = _plan_parallel_two_worker(intent, session_id, now)
     if parallel_two is not None:
         return parallel_two
+    sequential = _plan_sequential_workers(intent, session_id, now)
+    if sequential is not None:
+        return sequential
     wants_review = bool(getattr(intent, "delegateReview", False))
-    wants_remediation = bool(getattr(intent, "delegateRemediate", False))
+    # Autonomous by default: work that is independently reviewed goes BACK to a worker when the
+    # review reports problems, without anyone asking for it. The remediation task already skips
+    # itself when the review is clean (runWhen), so a clean review costs nothing extra.
+    wants_remediation = bool(getattr(intent, "delegateRemediate", False)) or wants_review
     prove = bool(getattr(intent, "delegateProve", False))
     if bool(getattr(intent, "delegateReadOnly", False)):
         # Read-only investigation ("Do not modify source files", "Review
@@ -988,6 +1017,61 @@ def _plan_parallel_two_worker(intent: AgentIntent, session_id: str,
         tasks=tasks,
         acceptance=_per_task_acceptance(
             tasks, "reported findings and made no modification."),
+        createdAt=now)
+
+
+_SEQUENCE_SIGNAL = re.compile(
+    r"\b(then|after\s+that|afterwards?|next|once\s+(?:it|that|this)\b[^.]{0,30}"
+    r"(?:done|complete[d]?|finished))\b", re.I)
+
+
+def _plan_sequential_workers(intent: AgentIntent, session_id: str,
+                             now: str) -> TaskPlan | None:
+    """Chain explicitly named workers: each stage starts when the one before
+    it is verified, and receives that stage's verified output.
+
+    "opencode builds the backend, then kilo code builds the UI" is a hand-off,
+    not a fan-out. Every stage is pinned to the runtime the person named, so
+    no worker can be substituted, and a stage that fails verification stops
+    the chain — a later worker never builds on unproven work.
+    """
+    text = _delegate_text(intent)
+    if (bool(getattr(intent, "delegateReadOnly", False))
+            or _PARALLEL_TWO_SIGNAL.search(text)
+            or not _SEQUENCE_SIGNAL.search(text)):
+        return None
+    workers = _named_multi_workers(text)
+    if not workers:
+        return None
+    clauses = _two_worker_clauses(text, workers)
+    if any(len((clause or "").split()) < 2 for _, clause in clauses):
+        return None
+    scope = _validated_scope(intent)
+    tasks: list[TaskSpecification] = []
+    for index, (node, clause) in enumerate(clauses):
+        stage = f"stage-{index + 1}-{node}"
+        tasks.append(TaskSpecification(
+            id=stage,
+            description=clause,
+            capabilityId="agent.delegate",
+            nodeId=node,
+            input=_delegate_input(
+                clause, scope,
+                expect_change=expects_change("code", "always"),
+                worker_role="code"),
+            workerRole="code",
+            inputFrom="upstream-output" if index else "literal",
+            dependsOn=[tasks[-1].id] if index else [],
+            risk="high", reversible=False,
+            verification=VerificationRequirement(
+                kind="exit-code",
+                description=("The worker exits 0 and every file it changed "
+                             "lies inside the declared scope."))))
+    return TaskPlan(
+        planId=_plan_id(), sessionId=session_id, intent=intent,
+        tasks=tasks,
+        acceptance=_per_task_acceptance(
+            tasks, "was carried out by the named worker and verified."),
         createdAt=now)
 
 

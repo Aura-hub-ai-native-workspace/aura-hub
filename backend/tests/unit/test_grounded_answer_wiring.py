@@ -47,12 +47,12 @@ def test_knowledge_search_run_emits_stdout_with_sources(tmp_path):
         path=str(doc_path),
         text="Phase 15 test — magic phrase TAILSCALE_OK.",
         status=ExtractionStatus.OK,
-    ))
+    ), project_id="proj-test")
 
     adapter = next(a for a in multimodal_executors(kb)
                    if a.capabilityId == "knowledge.search")
     result = asyncio.run(adapter.run(
-        {"input": {"query": "magic phrase", "top_k": 3}}))
+        {"input": {"query": "magic phrase", "top_k": 3}, "context": {"projectId": "proj-test"}}))
 
     assert result["ok"] is True
     output = result.get("output") or {}
@@ -72,7 +72,7 @@ def test_knowledge_search_run_stdout_empty_when_no_results(tmp_path):
     adapter = next(a for a in multimodal_executors(kb)
                    if a.capabilityId == "knowledge.search")
     result = asyncio.run(adapter.run(
-        {"input": {"query": "anything", "top_k": 3}}))
+        {"input": {"query": "anything", "top_k": 3}, "context": {"projectId": "proj-test"}}))
     assert result["ok"] is True
     output = result.get("output") or {}
     assert output.get("stdout") == "(no results)"
@@ -155,11 +155,11 @@ def test_stdout_wrapping_preserves_fence():
         doc_path.write_text(malicious, encoding="utf-8")
         kb.add_document(doc_path, ExtractionResult(
             path=str(doc_path), text=malicious, status=ExtractionStatus.OK,
-        ))
+        ), project_id="proj-test")
         adapter = next(a for a in multimodal_executors(kb)
                        if a.capabilityId == "knowledge.search")
         result = asyncio.run(adapter.run(
-            {"input": {"query": "malice", "top_k": 3}}))
+            {"input": {"query": "malice", "top_k": 3}, "context": {"projectId": "proj-test"}}))
         stdout = (result.get("output") or {}).get("stdout", "")
         assert malicious.split(".")[0] in stdout, \
             "chunk content must reach stdout (else no evidence for model)"

@@ -8,6 +8,7 @@ not rewritten, and valid coding requests still pass.
 
 from __future__ import annotations
 
+import os
 import stat
 
 import pytest
@@ -254,8 +255,9 @@ class TestParseDiagnostics:
                                  port=_failing_port(raw))
         assert record.rawCapturePath and record.rawCapturePath.endswith(".raw.txt")
         path = store.root / record.rawCapturePath
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
-        assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+        if os.name != "nt":   # POSIX permission bits; Windows reports 0o666/0o777 whatever the ACL says
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+            assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
         text = path.read_text()
         assert "abcdefghijklmnop1234567890" not in text
         assert '"bad" "pair"' in text

@@ -1,0 +1,20 @@
+gate:     packaged-shutdown-check
+command:  python3 -I docs/audit/evidence/loop7/packaged_shutdown_check.py <extracted-resources> <artifact sha256-16>
+note:     the script writes the record itself, so run_gate's output section repeats it verbatim below
+----- output -----
+packaged check of POST /shutdown (artifact sha256 5365e71d4848a275), 2026-10-28T23:14:25+0530
+interpreter: Python 3.12.14 (bundled), backend: bundled, token: random per run, never printed
+no headers at all                401
+header only (no token)           401
+wrong token + header             401
+token, no shutdown header        403
+still running after refusals     yes
+authorized                       200 {"ok":true,"shuttingDown":true,"alreadyRequested":false}
+repeat request while stopping    200 {"ok":true,"shuttingDown":true,"alreadyRequested":true}
+exited after: 217 ms
+exit status:                   0
+port free:                     yes
+token present in this record or the backend logs: 0
+----- end -----
+finished: 2026-10-28T23:14:26+05:30
+exit:     0

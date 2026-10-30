@@ -96,11 +96,14 @@ def _opted_in() -> bool:
 
 
 def _is_live_path(path: Path) -> bool:
-    """True when path resolves to the developer's live Claude settings file."""
+    """True when path resolves to the developer's live Claude settings file.
+
+    This guards against writing to the live file, so a path that cannot be
+    resolved is treated as live: refusing a write is the safe answer."""
     try:
         return os.path.realpath(path) == os.path.realpath(_REAL_SETTINGS_PATH)
     except Exception:
-        return False
+        return True
 
 
 class ClaudeCodeAdapter(AgentConfigurationAdapter):

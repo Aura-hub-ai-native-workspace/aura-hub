@@ -28,7 +28,7 @@ import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate, validateRule } fro
 import type { AutomationEvent, AutomationRule } from '@aura/automation';
 import { automationEvent } from './automation';
 import type { DiagnosisEvent, DiagnosisRequest } from './diagnosis/types';
-import { configuredToken, CORS_ALLOW_HEADERS, decide } from './instanceGuard';
+import { configuredToken, CORS_ALLOW_HEADERS, decide, shutdownRefusal } from './instanceGuard';
 import type { MissionEvent } from './mission/types';
 import type { ExecutionEvent } from './mission/execution/types';
 import {
@@ -279,9 +279,8 @@ export async function startService(opts: PipelineOptions & { port?: number; open
        * processes than a signal is on Unix.
        */
       if (method === 'POST' && seg[0] === 'shutdown') {
-        if (req.headers['x-aura-shutdown'] !== '1') {
-          return json(res, 403, { error: 'shutdown requires the x-aura-shutdown header' });
-        }
+        const refusal = shutdownRefusal(req.headers, instanceToken);
+        if (refusal) return json(res, 403, { error: refusal });
         json(res, 200, { ok: true, shuttingDown: true });
         opts.onShutdownRequest?.();
         return;
@@ -1385,7 +1384,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             if (!runId && method === 'GET') return json(res, 200, { runs: auto.store.listRuns(ruleId) });
             if (runId && seg[5] === 'cancel' && method === 'POST') {
               const run = auto.engine.cancelRun(ruleId, runId);
-              return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
+              if (run) return json(res, 200, run);
+              // Nothing was cancelled: the run does not exist, or it had already
+              // finished. Say which, so a Stop pressed just too late is reported
+              // as that and not as a missing run.
+              const existing = auto.store.getRun(ruleId, runId);
+              return existing
+                ? json(res, 409, { error: `that run already ${existing.status} — there is nothing to cancel` })
+                : json(res, 404, { error: 'no such run' });
             }
             if (runId && method === 'GET') {
               const run = auto.store.getRun(ruleId, runId);

@@ -11,16 +11,34 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import type { Invocation } from '@aura/capability-fabric';
 
 const spawned: { bin: string; args: string[] }[] = [];
 
+// The subprocess runner starts children with `spawn` (it needs `detached` so a
+// Stop can end the whole tree; `execFile` drops that option). A spy on `execFile`
+// alone would see nothing and the "never spawns" assertions below would pass
+// vacuously, so both entry points record, and the positive test proves the spy
+// catches a real spawn.
+const fakeChild = () => {
+  const ee = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  const stream = () => Object.assign(new EventEmitter(), { setEncoding() { return this; } });
+  ee.stdout = stream(); ee.stderr = stream(); ee.stdin = { end() {} };
+  ee.pid = undefined; ee.kill = () => true;
+  setImmediate(() => ee.emit('close', 0, null));
+  return ee;
+};
 vi.mock('node:child_process', async (orig) => ({
   ...(await orig() as object),
   execFile: (bin: string, args: string[], _opts: unknown, cb: (e: null, out: string, err: string) => void) => {
     spawned.push({ bin, args });
     cb(null, '', '');
     return { kill: () => true };
+  },
+  spawn: (bin: string, args: string[]) => {
+    spawned.push({ bin, args });
+    return fakeChild();
   },
 }));
 

@@ -1,0 +1,3 @@
+Acceptance B, FINAL artifact (sha256 fca9a7af2f65b642ddffb8f61ce256caba710a247d429100ded5abfb612c2772), 2026-10-28.
+Foreign servers (healthy-looking, wrong identity proof) on 4319 and 4320; app launched in a fresh isolated home with no window manager.
+Result: PASS. App log: 'Port 4319/4320 is already in use ... only attaches to a backend it started itself'. UI banner 'Backend identity mismatch - connection refused'; Verify and Continue disabled. Foreign servers received 0 requests.

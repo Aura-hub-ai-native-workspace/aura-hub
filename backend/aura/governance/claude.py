@@ -58,6 +58,23 @@ SETTINGS_NAME = "aura-claude-settings.json"
 SCOPE_NAME = "scope.json"
 
 
+def hook_command(hook_path: str, scope_path: str) -> str:
+    """The shell command that runs the hook.
+
+    Claude treats only exit code 2 as a block; any other failure (python3
+    missing, the script unreadable, an interpreter crash: 126, 127, 1) is a
+    non-blocking error, i.e. an allow. On POSIX the command therefore maps
+    every exit code other than 0 and 2 to 2, so a hook that cannot run
+    cannot authorize the write. (Windows runs the plain command: a missing
+    interpreter there is not covered by this wrapper.)"""
+    import shlex
+
+    plain = f"python3 {shlex.quote(hook_path)} {shlex.quote(scope_path)}"
+    if os.name == "nt":
+        return plain
+    return f"{plain}; rc=$?; if [ $rc -ne 0 ] && [ $rc -ne 2 ]; then exit 2; fi; exit $rc"
+
+
 def compile_settings(hook_path: str, scope_path: str) -> dict:
     """Settings JSON wiring the PreToolUse hook for Edit|Write."""
     return {
@@ -67,7 +84,7 @@ def compile_settings(hook_path: str, scope_path: str) -> dict:
                     "matcher": "Edit|Write",
                     "hooks": [{
                         "type": "command",
-                        "command": f"python3 {hook_path} {scope_path}",
+                        "command": hook_command(hook_path, scope_path),
                     }],
                 }
             ]

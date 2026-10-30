@@ -156,7 +156,12 @@ class WorkflowEngine:
                     self.versions.remove_all(created["id"])
                     self.runs.remove_all(created["id"])
                 except Exception:
-                    pass
+                    # A temporary workflow that could not be removed stays in
+                    # the user's list; say which one.
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "could not remove temporary workflow %s after a node run",
+                        created["id"], exc_info=True)
         return out["run"], node_type
 
     def listen(self, fn) -> None:
@@ -169,7 +174,9 @@ class WorkflowEngine:
             try:
                 fn(event)
             except Exception:
-                pass
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "workflow listener %r failed", fn, exc_info=True)
 
     def _resolve(self, ref: str) -> dict | None:
         getter = getattr(self.workflows, "get", None)

@@ -11,7 +11,9 @@ Claude (integrator) touches this module, not Docling internals::
 Routing: archives are rejected outright; native text formats stay on the
 dependency-free NativeTextEngine; everything else goes to DoclingEngine,
 which reports SUPPORTED_DEPENDENCY_MISSING instead of crashing when the
-package, a system binary, or the model cache is absent.
+package, a system binary, or the model cache is absent. When Docling is
+missing, PDF, DOCX and XLSX fall back to LightOfficeEngine (pypdf, python-docx,
+openpyxl: no OCR, no layout), and the result says it was read that way.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from .doctypes import (
     IsolationMode,
     OcrEngine,
 )
+from .light import LIGHT_SUFFIXES, LightOfficeEngine
 from .native import NATIVE_SUFFIXES, NativeTextEngine
 from .process_supervisor import max_workers_for_machine
 from .secure import PathSecurityError, resolve_secure
@@ -109,6 +112,7 @@ class DocumentEngine:
     def __init__(self, config: Optional[EngineConfig] = None) -> None:
         self.config = config or EngineConfig.from_env()
         self.native = NativeTextEngine(max_chars=self.config.max_chars)
+        self.light = LightOfficeEngine(max_chars=self.config.max_chars)
         self.docling = DoclingEngine(model_cache=self.config.model_cache,
                                      default_timeout_s=self.config.timeout_s)
         self._batch_sem = threading.Semaphore(max(1, self.config.max_workers))
@@ -119,6 +123,12 @@ class DocumentEngine:
             ocr_requested=self.config.ocr_engine.value)
         for suffix in sorted(NATIVE_SUFFIXES):
             caps.formats.setdefault(suffix, "native:text")
+        if not caps.docling_installed:
+            # Docling is the layout-aware engine; without it, only a format
+            # whose small library really imports is advertised as readable.
+            for suffix in sorted(LIGHT_SUFFIXES):
+                if self.light.library_available(suffix):
+                    caps.formats[suffix] = "light:text"
         return caps
 
     def health(self) -> DocumentEngineHealth:
@@ -159,7 +169,33 @@ class DocumentEngine:
                 == DocumentStatus.SUPPORTED_DEPENDENCY_MISSING
                 and self.native.claims(suffix)):
             return self.native.convert(req)
+        if (result.document_status
+                == DocumentStatus.SUPPORTED_DEPENDENCY_MISSING
+                and self.light.claims(suffix)):
+            return self._light_fallback(req, result)
         return result
+
+    def _light_fallback(self, req: DocumentConversionRequest,
+                        docling_result: DocumentConversionResult
+                        ) -> DocumentConversionResult:
+        """Read a PDF/DOCX/XLSX with the small libraries because Docling is
+        missing, and say so. If those libraries are missing too, the typed
+        dependency-missing answer from the lightweight engine (which names the
+        extra to install) is returned, never an empty success."""
+        light = self.light.convert(req)
+        if light.document_status in (DocumentStatus.SUCCESS, DocumentStatus.PARTIAL):
+            reason = (docling_result.note or "Docling is unavailable").rstrip(".")
+            light.note = (f"{light.note}; " if light.note else "") + \
+                f"read with the lightweight reader, not Docling ({reason})"
+            light.docling_status = docling_result.document_status.value
+            return light
+        if light.document_status == DocumentStatus.SUPPORTED_DEPENDENCY_MISSING:
+            # Neither engine can run: report both gaps, in Docling's result so
+            # the answer is still the typed dependency-missing one.
+            docling_result.note = (f"{(docling_result.note or '').rstrip('.')}; "
+                                   f"the lightweight reader is also unavailable: {light.note}")
+            return docling_result
+        return light
 
     def convert_batch(self, paths: list[str | Path],
                       request: Optional[DocumentConversionRequest] = None

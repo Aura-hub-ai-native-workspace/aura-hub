@@ -696,9 +696,11 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
     if delegating:
         wants_review = _REVIEW_RE.search(user_message) is not None
         # Remediation only means something when someone reviewed first;
-        # otherwise "fix the issues" IS the work, not a follow-up to it.
-        wants_remediation = (wants_review
-                             and _REMEDIATE_RE.search(user_message) is not None)
+        # otherwise "fix the issues" IS the work, not a follow-up to it. The
+        # central agent decides, so a review of changing work always goes back
+        # to a worker; the remediation task skips itself when the review is
+        # clean, and a read-only investigation has nothing to remediate.
+        wants_remediation = wants_review and not read_only
         wants_proof = _PROVE_RE.search(user_message) is not None
         scope = _delegate_scope(user_message)
         if (multi_worker

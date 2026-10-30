@@ -27,7 +27,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from .instance_guard import InstanceGuard
+from .instance_guard import InstanceGuard, configured_token
+from .shutdown import ShutdownCoordinator
 
 # python-multipart is required for Starlette's request.form() used by
 # POST /documents/ingest. Starlette raises an AssertionError deep inside a
@@ -270,8 +271,9 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     try:
         from ..sovereign.policy import load_sovereign_policy as _load_sp
         _sovereign_policy = _load_sp()
-    except Exception:
-        _sovereign_policy = None
+    except Exception as _sp_exc:  # noqa: BLE001
+        from ..sovereign.policy import fail_closed_policy as _closed
+        _sovereign_policy = _closed(_sp_exc)
 
     # GAP-S4: warn when a cloud provider key is present without sovereign mode
     import os as _os, logging as _log
@@ -330,7 +332,10 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     try:
         agent.recover_interrupted_sessions()
     except Exception:  # noqa: BLE001 — recovery must never stop the service starting
-        pass
+        import logging as _log
+        _log.getLogger(__name__).exception(
+            "could not recover interrupted agent sessions; sessions that were "
+            "running when the previous process died may still look active")
 
     # ── automation engine + scheduler on the same runner ────────────
     from ..automation import AutomationEngine, make_workflow_action
@@ -677,7 +682,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             try:
                 bus.publish(enriched)
             except Exception:
-                pass
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "could not publish a frame to the event bus", exc_info=True)
             queue.put_nowait(enriched)
 
         async def driver():
@@ -878,6 +885,8 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         try:
             return sessions.load(sid)
         except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception("could not load agent session %s", sid)
             return None
 
     async def agent_route(request: Request):
@@ -1421,6 +1430,18 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             "total": len(workers),
         })
 
+    async def workers_authorize(request: Request):
+        """The owner accepts the cost of one worker. Called by the app's own Allow button only."""
+        from ..workers.billing import authorize
+
+        body = await _json_body(request)
+        worker_id = str(body.get("id") or "").strip()
+        try:
+            decision = authorize(worker_id, str(S["home"]))
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        return JSONResponse({"authorized": decision.allowed, "decision": decision.to_dict()})
+
     async def workers_connect(request: Request):
         from ..workers import connect_worker
 
@@ -1729,6 +1750,13 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             lambda: S["auto_engine"].cancel_run(request.path_params["rid"],
                                                 request.path_params["runid"]))
         if run is None:
+            # None means "nothing was cancelled": the run does not exist, or it
+            # had already finished. Say which, so a Stop pressed just too late
+            # is reported as that and not as a missing run.
+            existing = S["auto_store"].get_run(request.path_params["rid"],
+                                               request.path_params["runid"])
+            if existing:
+                return _err(f"that run already {existing.get('status')} — there is nothing to cancel", 409)
             return _err("not found", 404)
         return JSONResponse(run)
 
@@ -1920,9 +1948,33 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         return JSONResponse({"drift": [d.to_dict() for d in drifts]})
 
     # ------------------------------------------------------------------ Phase 3
+    def _knowledge_project(raw) -> tuple[str | None, Response | None]:
+        """The registered project a knowledge request is for, or an error.
+
+        Knowledge is scoped to one project. A missing id is a 400, never a
+        global scope, and an id that is not a registered project is a 404:
+        there is no cross-project authorization, so one request reaches one
+        project's documents."""
+        pid = raw.strip() if isinstance(raw, str) else ""
+        if not pid:
+            return None, _err("projectId is required: knowledge is scoped to one project", 400)
+        try:
+            known = S["registry"].get(pid)
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception("project registry unavailable for a knowledge request")
+            return None, _err("the project registry is unavailable", 503)
+        if not known:
+            return None, _err("no such project", 404)
+        return pid, None
+
     async def documents_ingest(request: Request) -> Response:
         kb = S["kb"]
         form = await request.form()
+        project_id, bad = _knowledge_project(
+            form.get("projectId") or request.query_params.get("projectId"))
+        if bad is not None:
+            return bad
         upload = form.get("file")
         if upload is None:
             return _err("file field required", 400)
@@ -1976,7 +2028,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             # Record the document under its original filename in the isolated
             # documents directory so the KB path never resolves to CWD.
             doc_path = upload_dir / original_name
-            doc_record = kb.add_document(doc_path, extraction)
+            doc_record = kb.add_document(doc_path, extraction, project_id=project_id)
             warnings = [e.message for e in result.errors] if result.errors else []
             return JSONResponse({
                 "ok": True,
@@ -2015,6 +2067,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
     async def knowledge_search(request: Request) -> Response:
         kb = S["kb"]
+        project_id, bad = _knowledge_project(request.query_params.get("projectId"))
+        if bad is not None:
+            return bad
         q = request.query_params.get("q", "").strip()
         if not q:
             return _err("q parameter required", 400)
@@ -2022,7 +2077,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             top_k = int(request.query_params.get("top_k", "5"))
         except ValueError:
             top_k = 5
-        results = kb.search_with_context(q, top_k=top_k)
+        results = kb.search_with_context(q, top_k=top_k, project_id=project_id)
         items = []
         for r in results:
             chunk = getattr(r, "chunk", r)
@@ -2036,20 +2091,12 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
     async def documents_list(request: Request) -> Response:
         kb = S["kb"]
+        project_id, bad = _knowledge_project(request.query_params.get("projectId"))
+        if bad is not None:
+            return bad
         try:
-            snap = kb.snapshot()
-            docs = snap.get("docs", [])
-            result = []
-            for d in docs:
-                if isinstance(d, dict):
-                    result.append(d)
-                else:
-                    result.append({
-                        "path": getattr(d, "path", str(d)),
-                        "chunkCount": getattr(d, "chunk_count", 0),
-                        "status": getattr(d, "extraction_status", "unknown"),
-                    })
-            return JSONResponse({"ok": True, "documents": result})
+            return JSONResponse({"ok": True, "documents": kb.documents(project_id=project_id),
+                                 "unscopedDocuments": kb.unscoped_count()})
         except Exception as exc:
             return _err(str(exc), 500)
 
@@ -2159,8 +2206,20 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
         return validate_rule(rule)
 
+    shutdown_coordinator = ShutdownCoordinator()
+
+    async def shutdown_route(request: Request):
+        """Graceful stop for platforms without SIGTERM. See api/shutdown.py."""
+        if not configured_token():
+            return JSONResponse({"error": "shutdown needs an instance token; this backend has none"}, status_code=403)
+        if request.headers.get("x-aura-shutdown") != "1":
+            return JSONResponse({"error": "shutdown requires the x-aura-shutdown header"}, status_code=403)
+        status, body = shutdown_coordinator.request()
+        return JSONResponse(body, status_code=status)
+
     routes = [
         Route("/health", health, methods=["GET"]),
+        Route("/shutdown", shutdown_route, methods=["POST"]),
         Route("/workflows", workflow_list, methods=["GET"]),
         Route("/workflows", workflow_create, methods=["POST"]),
         Route("/workflows/import", workflow_import, methods=["POST"]),
@@ -2221,6 +2280,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/fabric/nodes", fabric_nodes_register, methods=["POST"]),
         Route("/fabric/nodes/{nid}", fabric_nodes_remove, methods=["DELETE"]),
         Route("/workers", workers_list, methods=["GET"]),
+        Route("/workers/authorize", workers_authorize, methods=["POST"]),
         Route("/workers/connect", workers_connect, methods=["POST"]),
         Route("/workers/{wid}", workers_disconnect, methods=["DELETE"]),
         Route("/fabric/audit", fabric_audit, methods=["GET"]),
@@ -2262,6 +2322,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/environment/scan", environment_scan, methods=["POST"]),
         Route("/environment/inventory", environment_inventory, methods=["POST"]),
         Route("/environment/search", environment_search, methods=["POST"]),
+        Route("/environment/recommended", environment_recommended, methods=["POST"]),
         Route("/environment/probe", environment_probe, methods=["POST"]),
         Route("/environment/install", environment_install, methods=["POST"]),
         Route("/environment/uninstall", environment_uninstall, methods=["POST"]),
@@ -2304,6 +2365,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     app.state.run_store = run_store
     app.state.secrets = secrets_store
     app.state.agent = agent
+    app.state.shutdown = shutdown_coordinator
     app.state.bus = bus
     return app
 
@@ -2514,11 +2576,27 @@ async def environment_probe(request: Request):
     return JSONResponse({"result": probe_result_to_dict(result)})
 
 
+async def environment_recommended(request: Request):
+    """The curated Recommended list, joined with what is installed here.
+
+    POST /environment/recommended
+    Returns: { items: [{ id, name, group, why, installed, installable, command?, privilege? ... }] }
+    """
+    import anyio.to_thread
+
+    from ..environment.recommended import recommended_items
+
+    items = await anyio.to_thread.run_sync(recommended_items)
+    return JSONResponse({"items": items})
+
+
 async def environment_install(request: Request):
     """Direct human installation, initiated by the person in the UI.
 
     POST /environment/install
-    Body: { id: string }
+    Body: { id: string, preview?: boolean }
+    With `preview: true` nothing runs: the exact command that would run is
+    returned so the person can confirm it first.
     Returns: InstallResult-like payload with installOutcome, privilege,
              requiresUserAction, command, why, probe, detail, exitCode.
 
@@ -2570,6 +2648,17 @@ async def environment_install(request: Request):
             "why": resolved.reason,
             "detail": f"{entry.name} could not be installed: {resolved.reason}",
         }, status_code=400)
+
+    if body.get("preview") is True:
+        return JSONResponse({
+            "installOutcome": "preview",
+            "nodeId": node_id,
+            "privilege": "user",
+            "requiresUserAction": False,
+            "command": plan.command,
+            "why": plan.why,
+            "detail": f"This would run: {plan.command}",
+        })
 
     # Execution is delegated to the one hardened install runner, which the
     # Fabric capability uses too. This route previously spawned the installer

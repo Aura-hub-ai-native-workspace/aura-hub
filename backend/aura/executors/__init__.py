@@ -22,6 +22,8 @@ import urllib.request
 from collections.abc import Callable
 from typing import Any
 
+from aura.executors import http_policy
+
 from ..exec_ import (
     git as run_git,
 )
@@ -120,6 +122,40 @@ def cwd_of(inv: dict) -> str:
     return cwd
 
 
+def knowledge_scope(inv: dict) -> tuple[str | None, str | None]:
+    """(project id, None) for the invocation's own project, or (None, reason).
+
+    Knowledge is scoped to one project. The id comes from the invocation
+    context, which whoever invoked the capability sets (the controller, for
+    the agent), never from the input. A missing id is a refusal, not a global
+    scope, and naming a different project in the input is refused: no
+    cross-project authorization exists, so none is granted."""
+    pid = (inv.get("context") or {}).get("projectId")
+    if not isinstance(pid, str) or not pid.strip():
+        return None, ("No project is set for this invocation, so its knowledge is "
+                      "not available. Open a project first.")
+    asked = ((inv.get("input") or inv.get("params")) or {}).get("projectId")
+    if asked is not None and asked != pid:
+        return None, ("Knowledge is scoped to this invocation's own project; "
+                      "reading another project's knowledge is not permitted.")
+    return pid, None
+
+
+def confine_to_project(inv: dict, raw: str) -> tuple[str | None, str | None]:
+    """(absolute path, None) for a path inside the invocation's project root, or
+    (None, reason). The root is set by whoever invoked the capability (the
+    controller, for the agent), never by the input, and a missing root fails
+    closed like the filesystem executors. Relative paths resolve against the
+    root; absolute paths, `..`, `~` and symlinks that leave it are refused."""
+    root = (inv.get("context") or {}).get("cwd")
+    if not root:
+        return None, "No project directory is set for this invocation. Open a project first."
+    try:
+        return inside(root, str(raw)), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
 def _ok(detail: str, output: Any = None) -> dict:
     r = {"ok": True, "detail": detail}
     if output is not None:
@@ -211,8 +247,32 @@ async def terminal_execute(inv: dict) -> dict:
     parsed = parse_command(command)
     if not parsed.ok:
         return _no(parsed.reason)
-    res = await safe_shell_with_code(
-        command, cwd, _timeout_ms(inv.get("context"), 30_000))
+    # The run's stop signal, when it has one. Like the worker path: a token
+    # already cancelled means the command is never launched, and a stop that
+    # arrives while it runs terminates its whole process group. Without this
+    # a command already running went on to its own timeout after STOP.
+    cancel_token = inv["context"].get("cancelToken")
+    if cancel_token is not None and getattr(cancel_token, "cancelled", False):
+        return {"ok": False,
+                "detail": "The command was not started: the run was cancelled before it could be dispatched.",
+                "output": {"stdout": "", "exitCode": None, "cancelled": True}}
+    cancel_event: asyncio.Event | None = None
+    bridge = None
+    if cancel_token is not None:
+        cancel_event = asyncio.Event()
+        bridge = asyncio.ensure_future(_bridge_cancel(cancel_token, cancel_event))
+    try:
+        res = await safe_shell_with_code(
+            command, cwd, _timeout_ms(inv.get("context"), 30_000), cancel_event)
+    finally:
+        if bridge is not None:
+            bridge.cancel()
+    # Decided from the TOKEN, never from the exit code (as for workers): a
+    # command that exited 0 as the signal arrived was still stopped.
+    if cancel_token is not None and cancel_token.cancelled:
+        return {"ok": False,
+                "detail": "The command was stopped: the run was cancelled while it was working.",
+                "output": {"stdout": res.out, "exitCode": res.code, "cancelled": True}}
     out_trimmed = res.out[:400]
     if res.code == 0:
         return _ok("Exit code 0.", {"stdout": res.out, "exitCode": 0})
@@ -297,11 +357,13 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
                       task: str, scope_paths: list[str]) -> dict:
     """Compile per-invocation runtime enforcement from the task contract.
 
-    Returns {"args" | None, "env", "logPath", "supports", "worker"}.
-    Anything unsupported or any staging failure yields an empty
-    governance bundle — the run proceeds under the pre-existing
-    boundaries (allow-lists, policy, post-hoc delta verification),
-    and the output says so honestly instead of claiming supervision.
+    Returns {"args" | None, "env", "logPath", "supports", "worker"}, plus
+    "failed" (a reason) when a scoped task's governance could not be
+    staged. Something unsupported by design yields an empty bundle and the
+    run proceeds under the pre-existing boundaries (allow-lists, policy,
+    post-hoc delta verification), said honestly in the output. A staging
+    FAILURE is different: a scope contract was given and its enforcement
+    could not be built, so the caller must refuse to start the worker.
     """
     bundle: dict = {"args": None, "env": {}, "logPath": "",
                     "supports": {}, "worker": bin_name}
@@ -322,8 +384,8 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
     try:
         from ..config import aura_home
         from ..governance import staging
-    except Exception:
-        return bundle
+    except Exception as exc:
+        return {**bundle, "failed": f"the governance components could not be loaded ({exc})"}
     try:
         context = inv.get("context") or {}
         invocation_id = str(inv.get("id") or context.get("taskId")
@@ -361,14 +423,12 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
                 extra += ["--settings", staged["settingsPath"]]
             bundle["extraArgs"] = extra
     except Exception as exc:
-        # A crashed staging is not "unsupported by design": mark it so the
-        # run record distinguishes the two instead of silently proceeding
-        # under legacy boundaries.
+        # A crashed staging is not "unsupported by design": the caller
+        # refuses the run instead of proceeding ungoverned.
         return {"args": None, "env": {}, "logPath": "",
-                "supports": {"NOTE": "governance staging failed "
-                             f"({exc}); proceeding under pre-existing "
-                             "boundaries only"},
-                "worker": bin_name}
+                "supports": {"NOTE": f"governance staging failed ({exc})"},
+                "worker": bin_name,
+                "failed": f"its governance could not be staged ({exc})"}
     return bundle
 
 
@@ -658,6 +718,22 @@ async def agent_delegate_run(inv: dict) -> dict:
     # before the action executes — never reconstructed from stdout.
     governance = _stage_governance(
         inv, bin_name, cwd, task, scope_paths)
+    if governance.get("failed"):
+        # A scope contract was given and its enforcement could not be built.
+        # Starting the worker anyway would let a governance failure authorize
+        # the work, so nothing is started.
+        net.close()
+        return {
+            "ok": False,
+            "refused": True,
+            "detail": (f"{node['name']} was not run: {governance['failed']}. "
+                       "The task's scope could not be enforced while it runs, so "
+                       "nothing has run."),
+            "output": {"nodeId": node["id"], "agent": node["name"],
+                       "exitCode": None, "stdout": "",
+                       "blocked": "governance-staging-failed",
+                       **({"role": role} if role else {})},
+        }
     if governance.get("args") is not None:
         args = governance["args"]
     action_events: list[dict] = []
@@ -1025,8 +1101,14 @@ async def git_branch(inv: dict) -> dict:
         return git_not_a_repo()
     name = _s(inv["input"].get("name")).strip()
     if not name:
+        # Read-only inspection: report the current branch from the real
+        # command result. A non-zero exit is a failure, not a branch.
         res = await run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
-        return _ok(f"On branch {res.out}.", res.out)
+        if res.code != 0:
+            return {"ok": False, "detail": res.out or "Could not determine the current branch.",
+                    "output": {"stdout": res.out or "", "exitCode": res.code}}
+        return _ok(f"On branch {res.out}.", {"stdout": res.out or "",
+                                            "exitCode": res.code})
     refused = _flag_value_error(name, "branch name")
     if refused:
         return _no(refused)
@@ -1034,8 +1116,11 @@ async def git_branch(inv: dict) -> dict:
     args = ["checkout", name] if existing.code == 0 else ["checkout", "-b", name]
     res = await run_git(args, cwd)
     if res.code != 0:
-        return _no(res.out or "Branch operation failed.")
-    return _ok(("Switched to " if existing.code == 0 else "Created and switched to ") + name + ".", name)
+        return {"ok": False, "detail": res.out or "Branch operation failed.",
+                "output": {"stdout": res.out or "", "exitCode": res.code}}
+    verb = "Switched to " if existing.code == 0 else "Created and switched to "
+    return _ok(verb + name + ".", {"stdout": (res.out or verb + name + "."),
+                                    "branch": name, "exitCode": 0})
 
 
 async def git_branch_verify(inv: dict, _last: dict) -> dict:
@@ -1108,7 +1193,9 @@ _ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"})
 
 #: Hosts that serve cloud instance metadata. Never legitimate agent
 #: targets; a model-proposed URL naming one is refused outright.
-#: Loopback stays allowed — local model servers are a supported setup.
+#: Loopback stays readable by an agent (GET/HEAD) — local model servers are a
+#: supported setup — but only a user-initiated request may change it; see
+#: http_policy, which also judges resolved addresses and every redirect hop.
 _BLOCKED_HOSTS = frozenset({
     "169.254.169.254", "100.100.100.200", "fd00:ec2::254",
     "[fd00:ec2::254]",
@@ -1131,6 +1218,8 @@ async def http_request(inv: dict) -> dict:
         return _no("HTTP body must be text.")
     data = body.encode() if isinstance(body, str) else body
     req = urllib.request.Request(url, data=data, method=method)
+    autonomous = http_policy.is_autonomous((inv.get("context") or {}).get("actor"))
+    opener = http_policy.build_opener(autonomous)
 
     class _BoundedReader:
         """Read up to MAX_HTTP_BYTES, mirroring Buffer.slice semantics."""
@@ -1145,7 +1234,7 @@ async def http_request(inv: dict) -> dict:
         import asyncio
 
         def do():
-            with urllib.request.urlopen(req, timeout=timeout_ms / 1000) as resp:
+            with opener.open(req, timeout=timeout_ms / 1000) as resp:
                 raw = resp.read(MAX_HTTP_BYTES)
                 return resp.status, raw
 
@@ -1159,7 +1248,11 @@ async def http_request(inv: dict) -> dict:
         raw = e.read(MAX_HTTP_BYTES) if hasattr(e, "read") else b""
         text = raw.decode("utf-8", errors="replace")
         return _ok(f"{e.code} {e.reason}", {"status": e.code, "text": text})
+    except http_policy.DestinationRefused as e:
+        return _no(str(e))
     except urllib.error.URLError as e:
+        if isinstance(e.reason, http_policy.DestinationRefused):
+            return _no(str(e.reason))
         reason = getattr(getattr(e, "reason", None), "code", None) or getattr(e, "reason", e)
         import socket
 
@@ -1397,7 +1490,10 @@ def multimodal_executors(kb, artifacts_dir=None) -> "list[ExecutorAdapter]":
         top_k = int(params.get("top_k") or 5)
         if not query:
             return {"ok": False, "detail": "query is required"}
-        results = kb.search_with_context(query, top_k=top_k)
+        project_id, refused = knowledge_scope(inv)
+        if refused:
+            return {"ok": False, "detail": refused}
+        results = kb.search_with_context(query, top_k=top_k, project_id=project_id)
         # Emit stdout so the Central Agent's answer-synthesizer can feed
         # retrieved chunks to the model. Each excerpt is fenced with its
         # source path so the synthesizer's prompt can treat it as untrusted
@@ -1436,6 +1532,15 @@ def multimodal_executors(kb, artifacts_dir=None) -> "list[ExecutorAdapter]":
         path = params.get("path", "")
         if not path:
             return {"ok": False, "detail": "path is required"}
+        project_id, refused = knowledge_scope(inv)
+        if refused:
+            return {"ok": False, "detail": refused}
+        # Only files inside the project: this capability used to ingest any
+        # file the process could read (credentials included) into the
+        # knowledge base, from where knowledge.search returns it.
+        path, refused = confine_to_project(inv, path)
+        if refused:
+            return {"ok": False, "detail": refused}
         from ..multimodal.document_engine import DocumentEngine, EngineConfig
         from ..multimodal.doctypes import DocumentStatus
         engine = DocumentEngine(EngineConfig.from_env())
@@ -1454,7 +1559,7 @@ def multimodal_executors(kb, artifacts_dir=None) -> "list[ExecutorAdapter]":
                 "engine": result.engine,
             }
         extraction = result.to_extraction_result()
-        record = kb.add_document(path, extraction)
+        record = kb.add_document(path, extraction, project_id=project_id)
         warnings = [e.message for e in result.errors] if result.errors else []
         # CRITICAL: document text is NOT included — only structural metadata
         return _ok(
@@ -1507,7 +1612,22 @@ def multimodal_executors(kb, artifacts_dir=None) -> "list[ExecutorAdapter]":
             )
         except Exception as exc:
             return {"ok": False, "detail": f"invalid spec: {exc}"}
+        # An image named in a section is read from disk and embedded in the
+        # document, so it is a file read like any other: only images inside
+        # the project, or the whole request is refused.
+        for section in spec.sections:
+            if isinstance(section, dict) and section.get("image_path"):
+                image, refused = confine_to_project(inv, section["image_path"])
+                if refused:
+                    return {"ok": False, "detail": f"A section's image was refused: {refused}"}
+                section["image_path"] = image
         output_path = params.get("output_path")
+        if output_path:
+            # A chosen location must be inside the project: it used to write
+            # generated bytes over any file the process could write.
+            output_path, refused = confine_to_project(inv, output_path)
+            if refused:
+                return {"ok": False, "detail": refused}
         if not output_path:
             import time as _time
             safe_title = spec.title[:40].replace(" ", "_").replace("/", "_")
@@ -1539,29 +1659,48 @@ def multimodal_executors(kb, artifacts_dir=None) -> "list[ExecutorAdapter]":
 
     # ── sandbox.execute ─────────────────────────────────────────────────
     async def sandbox_execute_run(inv):
-        import shlex
         params = (inv.get("input") or inv.get("params")) or {}
         command = params.get("command", "")
         if not command:
             return {"ok": False, "detail": "command is required"}
-        cwd = params.get("cwd") or str(_Path.cwd())
+        # The same single-command rule as terminal.execute: allow-listed
+        # binaries, plain arguments, no shell operators, no installs. This
+        # capability used to run any program from any directory.
+        parsed = parse_command(command)
+        if not parsed.ok:
+            return {"ok": False, "detail": parsed.reason}
+        # The manifest promises a subprocess "inside the project root". The
+        # root is set by whoever invoked the capability (the controller, for
+        # the agent); the input may only name a directory within it, so a plan
+        # cannot move the command elsewhere. No root: refuse, as the
+        # filesystem executors do.
+        requested = params.get("cwd") or "."
+        cwd_resolved, refused = confine_to_project(inv, requested)
+        if refused:
+            return {"ok": False, "detail": refused}
+        if not os.path.isdir(cwd_resolved):
+            return {"ok": False, "detail": f"invalid cwd: {requested}"}
         timeout_ms = int(params.get("timeout_ms") or 10_000)
         # Cap at 30 s; run_file enforces its own process-group cleanup
         timeout_ms = min(timeout_ms, 30_000)
+        # The run's stop signal, as for terminal.execute and the workers.
+        cancel_token = (inv.get("context") or {}).get("cancelToken")
+        if cancel_token is not None and getattr(cancel_token, "cancelled", False):
+            return {"ok": False,
+                    "detail": "The command was not started: the run was cancelled before it could be dispatched.",
+                    "output": {"exitCode": None, "stdout": "", "timedOut": False, "cancelled": True}}
+        cancel_event = None
+        bridge = None
+        if cancel_token is not None:
+            cancel_event = asyncio.Event()
+            bridge = asyncio.ensure_future(_bridge_cancel(cancel_token, cancel_event))
         try:
-            cwd_resolved = str(_Path(cwd).resolve())
-        except Exception:
-            return {"ok": False, "detail": f"invalid cwd: {cwd}"}
-        try:
-            argv = shlex.split(command)
-        except ValueError as exc:
-            return {"ok": False, "detail": f"invalid command: {exc}"}
-        if not argv:
-            return {"ok": False, "detail": "command is empty after parsing"}
-        try:
-            proc_out = await _run_file(argv, cwd_resolved, timeout_ms)
+            proc_out = await _run_file([parsed.bin, *parsed.args], cwd_resolved, timeout_ms, cancel_event)
         except Exception as exc:
             return {"ok": False, "detail": f"subprocess error: {exc}"}
+        finally:
+            if bridge is not None:
+                bridge.cancel()
         timed_out = bool(proc_out.timedOut)
         exit_code = proc_out.code
         out_data = {
@@ -1569,6 +1708,10 @@ def multimodal_executors(kb, artifacts_dir=None) -> "list[ExecutorAdapter]":
             "stdout": proc_out.out[:8_000],
             "timedOut": timed_out,
         }
+        if cancel_token is not None and cancel_token.cancelled:
+            return {"ok": False,
+                    "detail": "The command was stopped: the run was cancelled while it was working.",
+                    "output": {**out_data, "cancelled": True}}
         if not timed_out and exit_code == 0:
             return _ok(f"exit={exit_code}", out_data)
         return {"ok": False,

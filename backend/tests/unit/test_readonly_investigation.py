@@ -105,7 +105,7 @@ class TestReadOnlyPlan:
             compile_heuristic(
                 "Review this project for security problems and fix the login bug"),
             "ses", "now")
-        assert [t.id for t in plan.tasks] == ["implement", "review"]
+        assert [t.id for t in plan.tasks] == ["implement", "review", "remediate"]
         assert plan.tasks[0].input.get("expectChange") is True
 
     def test_research_never_requires_an_artifact(self) -> None:

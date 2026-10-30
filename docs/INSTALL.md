@@ -6,25 +6,61 @@ cross-compiled.
 
 ---
 
-## Requirement: Node.js 18 or newer
+## Runtimes: what is bundled and what is not
 
-**Node is required on every platform, and AURA Hub does not bundle it.**
+**The installers ship their own Node.js and CPython with the Python packages the backend needs**, so a
+machine with neither installed can run AURA Hub. The versions are pinned in `scripts/build-service-bundle.mjs`
+(`NODE_RUNTIME_VERSION = v22.23.2`, `PY_RUNTIME_VERSION = 3.12.14` at 0.1.20; python-build-standalone) and
+each CI runner stages the packages for its own platform, so the Windows and macOS installers carry their
+own native wheels. The backend needs Python 3.12, which is why the interpreter is shipped: Ubuntu 22.04
+ships 3.10 and Debian 12 ships 3.11. At launch the shell picks Node in this
+order: `AURA_NODE` (explicit path; an invalid path is an error) → the bundled Node → a Node found on the
+machine. A development checkout stages no runtime and uses the machine's Node (18 or newer).
 
-That is a deliberate architectural choice, not an omission. AURA treats Node
-as an external execution node — it appears in the Connected Environment
-catalogue and in `SAFE_BINARIES` like any other tool — so the application
-runs on *the same* Node it reports detecting. Bundling a private copy would
-mean the Hub executes on one runtime while telling you about another.
+Node also appears in the Connected Environment catalogue as an external tool, like git. The bundled copy
+is what runs AURA's own service; it does not hide or replace the Node you use for your projects.
 
-If Node is missing, the application says so plainly at launch instead of
-failing obscurely. Set `AURA_NODE` to an explicit interpreter path to
-override discovery.
+The Debian package still declares `nodejs` as a dependency (see its `Depends`); the bundled runtime means
+the application does not need it to start, but the declaration is kept.
 
-| Platform | Discovery order |
+| Platform | Node discovery when the bundled runtime is absent (development) |
 |---|---|
 | Linux | `AURA_NODE` → PATH → `/usr/local/bin`, `/usr/bin` → `~/.local/bin`, `~/.bun/bin` → `~/.nvm/versions/node/*/bin/node` |
 | macOS | `AURA_NODE` → PATH → `/opt/homebrew/bin` (Apple Silicon), `/usr/local/bin` (Intel) → `~/.nvm/versions/node/*/bin/node` |
 | Windows | `AURA_NODE` → PATH (`node.exe`) → `C:\Program Files\nodejs` → Scoop → `%APPDATA%\nvm\*` |
+
+---
+
+## System requirements
+
+Each statement is marked **measured** (checked against the actual build output), **declared** (stated
+by the package metadata), or **inferred** (reasoned, not tested on that system). Only an Arch Linux
+x86_64 machine has been used to run the application; **no other distribution, Windows or macOS has been
+executed**, so none of them is claimed as supported — see `docs/audit/CROSS_PLATFORM_MATRIX.md`.
+
+### Linux x86_64
+
+| Requirement | Value | Basis |
+|---|---|---|
+| glibc | **2.34 or newer** | measured on the Linux build of 0.1.20 by `node scripts/glibc-floor-verify.mjs`: the shell binary's highest hard requirement is 2.34 (two 2.39 references, `pidfd_spawnp`/`pidfd_getpid`, are weak and do not raise it); bundled Node needs 2.28; bundled Python extension modules need at most 2.34. Re-run the script on any new build: the floor follows the build machine. |
+| WebKitGTK | `libwebkit2gtk-4.1` and `libjavascriptcoregtk-4.1` (the 4.1 API, libsoup 3) | measured (`readelf -d`), declared by the `.deb` (`libwebkit2gtk-4.1-0`) |
+| GTK and friends | `libgtk-3`, `libgdk-3`, `libgdk_pixbuf-2.0`, `libcairo`, `libglib-2.0`, `libgobject-2.0`, `libgio-2.0`, `libdbus-1`, `libsoup-3.0` | measured; `.deb` declares `libgtk-3-0` and pulls the rest through WebKitGTK |
+| Display | an X11 or Wayland session (the app is a GTK window) | inferred; a virtual X display (Xvfb) was used for testing |
+| AppImage | FUSE 2 (`libfuse2`) to mount it, or run it with `--appimage-extract-and-run` | inferred from how AppImages work; not tested without FUSE |
+| Optional | `update-desktop-database`, `gtk-update-icon-cache` (used only by "Install AURA Hub", failures ignored) | measured in source |
+| Tools AURA drives | git, a coding-agent CLI, etc. are detected, not installed by AURA; a capability whose tool is missing is reported unavailable | design, see the Connected Environment |
+
+Consequences of the glibc floor (inferred from the distributions' published glibc versions, **not tested**):
+Ubuntu 22.04 (glibc 2.35) and Debian 12 (2.36) and newer meet it; Ubuntu 20.04 (2.31) and Debian 11
+(2.31) do not and are not supported. Whether the 4.1 WebKitGTK packages are installable on a given
+release has not been checked here. Verified to run: Arch Linux (glibc 2.44) only.
+
+### Windows x64 and macOS (arm64, x64)
+
+The installers are built and smoke-run by CI on native runners (`.github/workflows/ci.yml`), but **no
+requirement below that has been verified by running AURA Hub on those systems from this repository's
+audits**. Windows needs the WebView2 runtime that the installer expects (inferred from Tauri's
+requirements); macOS has no system requirement measured. Treat both as unverified.
 
 ---
 
@@ -65,8 +101,9 @@ sudo apt install ./AURA-Hub-<version>-linux-x64.deb
 aura-hub
 ```
 
-The `.deb` declares a dependency on `nodejs`, so apt will pull it in if it is
-missing. The AppImage cannot declare dependencies — install Node yourself.
+The `.deb` declares `nodejs`, `libwebkit2gtk-4.1-0` and `libgtk-3-0`, so apt pulls them in. The AppImage
+declares nothing: it needs the system libraries listed under System requirements, and carries its own
+Node and Python.
 
 ## macOS
 

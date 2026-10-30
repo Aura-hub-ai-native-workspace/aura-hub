@@ -1,0 +1,4 @@
+ruff: modified files compared with HEAD; new files checked alone. date 2026-10-28T20:34:27+05:30
+NEW-FILE-FINDINGS backend/tests/unit/test_git_branch_result.py 1
+NEW-FILE-FINDINGS backend/tests/unit/test_governance_windows_paths.py 3
+files worse than committed: 0

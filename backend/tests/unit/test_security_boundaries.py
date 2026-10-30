@@ -218,7 +218,10 @@ class TestPathAndInputSafety:
         home, proj, audit, ledger, cfg = env
         outside = home / "target.txt"
         link = proj / "link.txt"
-        link.symlink_to(outside)
+        try:
+            link.symlink_to(outside)
+        except (OSError, NotImplementedError) as exc:   # a privilege, not a platform: Windows needs Developer Mode or admin
+            pytest.skip(f"this account cannot create symlinks ({exc})")
         payload = {"path": "link.txt", "content": "pwned"}
         ctx = {"actor": {"kind": "agent", "id": "t"}, "cwd": str(proj)}
         r1 = invoke_fabric("filesystem.write", payload, ctx, cfg)

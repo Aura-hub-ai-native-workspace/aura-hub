@@ -82,7 +82,10 @@ def test_observer_does_not_follow_symlinks_out_of_the_project(tmp_path):
     (outside / "secret.txt").write_text("s")
     root = tmp_path / "proj"
     root.mkdir()
-    (root / "link").symlink_to(outside)
+    try:
+        (root / "link").symlink_to(outside)
+    except (OSError, NotImplementedError) as exc:   # a privilege, not a platform: Windows needs Developer Mode or admin
+        pytest.skip(f"this account cannot create symlinks ({exc})")
     assert "link/secret.txt" not in snapshot(root).files and snapshot(root).files == {}
 
 

@@ -115,7 +115,11 @@ class Provisioner:
         try:
             self._connect(node_id, version)
         except Exception:  # noqa: BLE001
-            pass
+            # The run carries on, but a later "not connected" denial needs a
+            # visible cause.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "could not record %s %s as connected", node_id, version, exc_info=True)
 
     def _ensure_one(self, need: Need, session_id: str, request_id: str | None,
                     project_id: str | None, should_stop: Callable[[], bool]) -> dict:

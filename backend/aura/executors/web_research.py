@@ -43,6 +43,7 @@ command, a path, or a policy decision.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -50,6 +51,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+
+from . import http_policy
 
 #: Hosts that serve cloud instance metadata. Never legitimate research
 #: targets, in the search gateway's own answers or on a fetched page.
@@ -293,7 +296,10 @@ def http_get(url: str, timeout_ms: int, accept: str = "*/*") -> tuple[int, str]:
     req = urllib.request.Request(url, method="GET")
     req.add_header("Accept", accept)
     req.add_header("User-Agent", "AURA-Hub/web.research (governed local agent)")
-    with urllib.request.urlopen(req, timeout=timeout_ms / 1000) as resp:
+    # Autonomous GET: local services stay readable (the search gateway is often
+    # local), but the metadata block applies to the address connected to and to
+    # every redirect hop, not just the URL text. Environment proxies still work.
+    with http_policy.build_opener(True, proxies=True).open(req, timeout=timeout_ms / 1000) as resp:
         raw = resp.read(MAX_HTTP_BYTES)
         return int(getattr(resp, "status", 0) or 0), raw.decode("utf-8", errors="replace")
 
@@ -418,6 +424,124 @@ def render_stdout(results: list[dict], fetch_pages: int, timeout_ms: int,
     return "\n\n".join(lines), fetched
 
 
+# ── built-in provider (no configuration) ────────────────────────────────────
+#
+# Search has to work the first time someone turns it on, the way it does in a chat
+# assistant. When no gateway is configured the executor asks keyless public engines in turn
+# (Bing, then DuckDuckGo's HTML endpoint) and uses the first that answers with readable
+# results; DuckDuckGo currently answers this machine with a bot check, so one engine
+# refusing must not end the search. A configured gateway always wins;
+# `"searchProvider": "off"` in web.json (or AURA_SEARCH_PROVIDER=off) restores the old
+# "nothing configured" refusal.
+
+BUILTIN_SEARCH_URL = "https://html.duckduckgo.com/html/"
+_DDG_RESULT = re.compile(
+    r'(?is)<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>'
+    r'(?:.*?<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>(?P<snippet>.*?)</a>)?')
+
+
+def builtin_search_enabled(cfg: dict) -> bool:
+    off = str(os.environ.get("AURA_SEARCH_PROVIDER") or cfg.get("searchProvider") or "").strip().lower()
+    return off not in ("off", "none", "disabled", "false")
+
+
+def _ddg_target(href: str) -> str | None:
+    """DuckDuckGo wraps every result in a redirect (`//duckduckgo.com/l/?uddg=<url>`); unwrap it."""
+    href = (href or "").replace("&amp;", "&").strip()
+    if href.startswith("//"):
+        href = "https:" + href
+    parts = urllib.parse.urlsplit(href)
+    if parts.netloc.endswith("duckduckgo.com") and parts.path.startswith("/l/"):
+        target = urllib.parse.parse_qs(parts.query).get("uddg", [""])[0]
+        return _safe_url(urllib.parse.unquote(target))
+    if parts.netloc.endswith("duckduckgo.com"):
+        return None                       # an ad or an internal link, not a source
+    return _safe_url(href)
+
+
+def parse_builtin_results(html: str) -> list[dict]:
+    """Result records from DuckDuckGo's HTML answer. An unrecognised page yields none (an honest empty)."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for m in _DDG_RESULT.finditer(html or ""):
+        url = _ddg_target(m.group("href"))
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append({"title": _clip(html_to_text(m.group("title") or "", 200), 200),
+                    "url": url,
+                    "snippet": _clip(html_to_text(m.group("snippet") or "", PER_RESULT_CHARS), PER_RESULT_CHARS)})
+    return out
+
+
+_BING_BLOCK = re.compile(r'(?is)<li[^>]+class="[^"]*\bb_algo\b[^"]*"[^>]*>(?P<block>.*?)</li>')
+_BING_LINK = re.compile(r'(?is)<h2[^>]*>\s*<a[^>]+href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>')
+_BING_SNIPPET = re.compile(r'(?is)<p[^>]*>(?P<snippet>.*?)</p>')
+_INLINE_MARKUP = re.compile(r"(?is)</?(?:strong|b|em|i|span)\b[^>]*>")   # highlighting, not a word break
+
+
+def _bing_target(href: str) -> str | None:
+    """Bing wraps results in `bing.com/ck/a?...&u=a1<base64url of the real address>`; unwrap it."""
+    href = (href or "").replace("&amp;", "&").strip()
+    parts = urllib.parse.urlsplit(href)
+    if not parts.netloc.endswith("bing.com"):
+        return _safe_url(href)
+    if not parts.path.startswith("/ck/"):
+        return None                       # an internal link, not a source
+    encoded = urllib.parse.parse_qs(parts.query).get("u", [""])[0]
+    if not encoded.startswith("a1"):
+        return None
+    body = encoded[2:]
+    try:
+        return _safe_url(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def parse_bing_results(html: str) -> list[dict]:
+    """Result records from Bing's HTML answer. An unrecognised page yields none (an honest empty)."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for blk in _BING_BLOCK.finditer(html or ""):
+        link = _BING_LINK.search(blk.group("block"))
+        url = _bing_target(link.group("href")) if link else None
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        snip = _BING_SNIPPET.search(blk.group("block"))
+        title = _INLINE_MARKUP.sub("", link.group("title") or "")
+        snippet = _INLINE_MARKUP.sub("", snip.group("snippet") if snip else "")
+        out.append({"title": _clip(html_to_text(title, 200), 200),
+                    "url": url,
+                    "snippet": _clip(html_to_text(snippet, PER_RESULT_CHARS), PER_RESULT_CHARS)})
+    return out
+
+
+#: Engines tried in order: (name, search address, parser). The first readable answer wins.
+_BUILTIN_PROVIDERS = (
+    ("Bing", "https://www.bing.com/search", parse_bing_results),
+    ("DuckDuckGo", BUILTIN_SEARCH_URL, parse_builtin_results),
+)
+
+
+def _builtin_search(query: str, timeout_ms: int, max_results: int, fetch_fn) -> tuple[list[dict], str]:
+    """Ask each keyless engine in turn. Returns (results, "") or ([], why nothing could be read)."""
+    tried: list[str] = []
+    for name, base, parse in _BUILTIN_PROVIDERS:
+        try:
+            status, payload = fetch_fn(f"{base}?q={urllib.parse.quote(query)}", timeout_ms, accept="text/html")
+        except Exception as exc:  # noqa: BLE001 — any transport failure moves on to the next engine
+            tried.append(f"{name}: {getattr(exc, 'reason', exc)}")
+            continue
+        results = parse(payload)[:max_results] if 200 <= status < 300 else []
+        if results:
+            return results, ""
+        tried.append(f"{name}: no readable results (status {status})")
+    return [], ("The built-in search could not get results AURA could read from any engine ("
+                + "; ".join(tried) + "). It may be rate-limited or blocked on this network. Try again shortly, "
+                "or point AURA at a SearXNG-compatible gateway in ~/.aura/web.json (searchEndpoint).")
+
+
 # ── the executor ─────────────────────────────────────────────────────────────
 
 
@@ -444,7 +568,11 @@ async def web_research_run(inv: dict, *, fetch_fn=http_get) -> dict:
 
     cfg = load_web_config()
     endpoint = _endpoint(cfg)
-    if endpoint is None:
+    configured = bool(str(cfg.get("searchEndpoint") or "").strip())
+    if endpoint is None and configured:
+        return _no(_NOT_CONFIGURED)       # a bad explicit address is refused, never quietly rerouted
+    builtin = endpoint is None
+    if builtin and not builtin_search_enabled(cfg):
         return _no(_NOT_CONFIGURED)
 
     ctx = inv.get("context")
@@ -460,38 +588,41 @@ async def web_research_run(inv: dict, *, fetch_fn=http_get) -> dict:
                        MAX_RESULTS_CAP)
     fetch_pages = _int(cfg, "fetchPages", MAX_FETCH_PAGES, MAX_FETCH_PAGES)
 
-    joiner = "&" if urllib.parse.urlsplit(endpoint).query else "?"
-    url = (f"{endpoint}{joiner}q={urllib.parse.quote(query)}"
-           f"&format=json")
+    if builtin:
+        results, failure = _builtin_search(query, timeout_ms, max_results, fetch_fn)
+        if failure:
+            return _no(failure)
+    else:
+        joiner = "&" if urllib.parse.urlsplit(endpoint).query else "?"
+        url = (f"{endpoint}{joiner}q={urllib.parse.quote(query)}&format=json")
+        try:
+            status, payload = fetch_fn(url, timeout_ms, accept="application/json")
+        except urllib.error.HTTPError as exc:
+            code = getattr(exc, "code", 0) or 0
+            if code in (401, 403):
+                return _no(f"The search gateway refused the request ({code}). "
+                           "A SearXNG instance answers 403 when its JSON format is not enabled "
+                           "(add `json` to `search.formats` in its settings.yml); otherwise its "
+                           "credentials are not usable from this machine.")
+            return _no(f"The search gateway answered {code}.")
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", exc)
+            return _no(f"The search gateway did not answer: {reason}.")
+        except TimeoutError:
+            return _no("The search gateway did not answer in time.")
+        except Exception as exc:  # noqa: BLE001 — any transport failure is honest failure
+            return _no(f"The search request did not complete: {exc}")
 
-    try:
-        status, payload = fetch_fn(url, timeout_ms, accept="application/json")
-    except urllib.error.HTTPError as exc:
-        code = getattr(exc, "code", 0) or 0
-        if code in (401, 403):
-            return _no(f"The search gateway refused the request ({code}). "
-                       "A SearXNG instance answers 403 when its JSON format is not enabled "
-                       "(add `json` to `search.formats` in its settings.yml); otherwise its "
-                       "credentials are not usable from this machine.")
-        return _no(f"The search gateway answered {code}.")
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        return _no(f"The search gateway did not answer: {reason}.")
-    except TimeoutError:
-        return _no("The search gateway did not answer in time.")
-    except Exception as exc:  # noqa: BLE001 — any transport failure is honest failure
-        return _no(f"The search request did not complete: {exc}")
+        if not (200 <= status < 300):
+            return _no(f"The search gateway answered {status}.")
 
-    if not (200 <= status < 300):
-        return _no(f"The search gateway answered {status}.")
-
-    if not gateway_answer_is_wellformed(payload):
-        # An answer this cannot read is a gateway problem, not "no results":
-        # calling it empty would hide a misconfigured endpoint.
-        return _no("The search gateway answered, but not in the expected format "
-                   "(a JSON object with a \"results\" list). Check that the address is a "
-                   "SearXNG-compatible search endpoint.")
-    results = parse_results(payload)[:max_results]
+        if not gateway_answer_is_wellformed(payload):
+            # An answer this cannot read is a gateway problem, not "no results":
+            # calling it empty would hide a misconfigured endpoint.
+            return _no("The search gateway answered, but not in the expected format "
+                       "(a JSON object with a \"results\" list). Check that the address is a "
+                       "SearXNG-compatible search endpoint.")
+        results = parse_results(payload)[:max_results]
     if not results:
         return _ok(
             f"No results for {query!r} (the gateway answered, with nothing "

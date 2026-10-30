@@ -1,0 +1,178 @@
+gate:     backend-full
+command:  python -m pytest backend/tests -q -p no:cacheprovider -rs
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-28T22:04:53+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 1.50
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 69
+----- output -----
+.....s.................................................................. [  2%]
+........................................................................ [  4%]
+..................ss.................................s...............s.. [  6%]
+s.......ss.......ssssssssssssssssssssssssssssssss...........ssssssssssss [  8%]
+sssssssssssssssss....................................................... [ 10%]
+........................................................................ [ 12%]
+........................................................................ [ 14%]
+........................................................................ [ 16%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 22%]
+........................................................................ [ 24%]
+........................................................................ [ 26%]
+........................................................................ [ 28%]
+........................................................................ [ 30%]
+........................................................................ [ 32%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+.................................................ss..................... [ 38%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+........................................................................ [ 44%]
+........................................................................ [ 46%]
+........................................................................ [ 48%]
+........................................................................ [ 50%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 56%]
+........................................................................ [ 58%]
+........................................................................ [ 60%]
+........................................................................ [ 62%]
+........................................................................ [ 64%]
+........................................................................ [ 66%]
+........................................................................ [ 68%]
+........................................................................ [ 70%]
+........................................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 76%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 94%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+......................................................................s  [100%]
+=============================== warnings summary ===============================
+../../../home/Groot/.pyenv/versions/3.12.7/lib/python3.12/site-packages/starlette/formparsers.py:12
+  /home/Groot/.pyenv/versions/3.12.7/lib/python3.12/site-packages/starlette/formparsers.py:12: PendingDeprecationWarning: Please use `import python_multipart` instead.
+    import multipart
+
+tests/acceptance/test_acceptance_gate.py::TestA01toA05_MissionPlanning::test_a02_a03_todo_stages_not_in_data_model
+  /mnt/storage/aura-hub/backend/tests/acceptance/test_acceptance_gate.py:115: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    createdAt=datetime.datetime.utcnow().isoformat(),
+
+tests/acceptance/test_acceptance_gate.py::TestA11toA15_DocumentAndArtifact::test_a15_artifact_path_enters_evidence_bundle
+  /mnt/storage/aura-hub/backend/tests/acceptance/test_acceptance_gate.py:310: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now=datetime.datetime.utcnow().isoformat(),
+
+tests/acceptance/test_acceptance_gate.py::TestA25_EvidenceBundle::test_a25_evidence_bundle_schema_complete
+  /mnt/storage/aura-hub/backend/tests/acceptance/test_acceptance_gate.py:522: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    createdAt=datetime.datetime.utcnow().isoformat(),
+
+tests/acceptance/test_acceptance_gate.py::TestA25_EvidenceBundle::test_a25_evidence_collector_wires_artifact_paths
+  /mnt/storage/aura-hub/backend/tests/acceptance/test_acceptance_gate.py:542: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now=datetime.datetime.utcnow().isoformat(),
+
+tests/unit/test_security_boundaries.py::TestPromptInjection::test_injected_capabilities_stripped
+  /home/Groot/.pyenv/versions/3.12.7/lib/python3.12/site-packages/_pytest/unraisableexception.py:67: PytestUnraisableExceptionWarning: Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7f14e6b0fec0>
+  
+  Traceback (most recent call last):
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+      self.close()
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+      proto.pipe.close()
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/unix_events.py", line 568, in close
+      self._close(None)
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+      self._loop.call_soon(self._call_connection_lost, exc)
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/base_events.py", line 795, in call_soon
+      self._check_closed()
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/base_events.py", line 541, in _check_closed
+      raise RuntimeError('Event loop is closed')
+  RuntimeError: Event loop is closed
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] backend/tests/differential/test_stores_diff.py:27: retired: the TypeScript oracle still answers listAwaitingApproval and approval-linked audit fields, which the Python stores no longer have
+SKIPPED [1] backend/tests/fabric/test_fabric_diff.py:26: retired: oracle encodes the removed approval contract
+SKIPPED [1] backend/tests/fabric/test_phase5_diff.py:24: retired: oracle encodes the removed approval contract
+SKIPPED [1] backend/tests/acceptance/test_acceptance_gate.py:136: SKIP-INFRA: Ollama IS running; use test_a07_model_registry_populated_with_ollama instead
+SKIPPED [1] backend/tests/automation/test_dryrun_diff.py:164: SKIP-INFRA: TypeScript dryrun reference not built (/tmp/opencode/tsref/dryrun.mjs missing)
+SKIPPED [1] backend/tests/automation/test_phase9_diff.py:159: SKIP-INFRA: TypeScript agent runner reference not built (/tmp/opencode/tsref/agentrunner.mjs missing)
+SKIPPED [1] backend/tests/differential/test_differential_policy.py:145: retired: compares against the TypeScript oracle, which still encodes the removed approval vocabulary; the Python policy returns the refusal label deny
+SKIPPED [1] backend/tests/e2e/test_inspection_to_approval_note.py:369: Ollama model call failed (service unavailable or overloaded): model routing failed: model routing failed (ollama-qwen3: HTTP Error 404: Not Found)
+SKIPPED [2] backend/tests/golden/test_golden_fixtures.py:50: retired: the golden fixture encodes the removed approval vocabulary (ask-user / require-approval / approvalId)
+SKIPPED [1] backend/tests/golden/test_golden_fixtures.py:84: retired: the golden fixture encodes the removed approval vocabulary (ask-user / require-approval / approvalId)
+SKIPPED [1] backend/tests/golden/test_golden_fixtures.py:93: retired: the golden fixture encodes the removed approval vocabulary (ask-user / require-approval / approvalId)
+SKIPPED [1] backend/tests/golden/test_golden_fixtures.py:105: retired: the golden fixture encodes the removed approval vocabulary (ask-user / require-approval / approvalId)
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:297: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:309: needs local OCR (installed=False, cached=False, ocr=[])
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:318: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:327: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:335: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [3] backend/tests/integration/test_docling_engine.py:342: needs local OCR (installed=False, cached=False, ocr=[])
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:351: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:358: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:368: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:375: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:382: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:392: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:402: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:409: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:416: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:431: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:438: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:445: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:465: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:473: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:483: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:496: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:510: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:520: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:528: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:544: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:554: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_docling_engine.py:567: needs docling+models (installed=False, cached=False) — run provision-docling-models.py
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:50: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:79: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:85: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:101: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:111: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:124: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:135: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:151: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:160: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:166: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:183: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:197: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:224: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:252: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:271: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:289: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:297: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:306: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:314: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:321: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:341: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:352: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:362: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:371: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_environment_real_machine.py:383: set AURA_ENV_REAL_MACHINE=1 to measure the host machine
+SKIPPED [1] backend/tests/integration/test_live_correction_service.py:90: requires live agent workers — set AURA_LIVE_WORKERS=1 to enable
+SKIPPED [1] backend/tests/integration/test_live_handoff.py:80: requires live agent workers — set AURA_LIVE_WORKERS=1 to enable
+SKIPPED [1] backend/tests/integration/test_live_handoff.py:136: requires live agent workers — set AURA_LIVE_WORKERS=1 to enable
+SKIPPED [1] backend/tests/integration/test_live_supervisor_correction.py:58: requires live agent workers — set AURA_LIVE_WORKERS=1 to enable
+SKIPPED [1] backend/tests/unit/test_environment_windows_safety.py:542: executes a real .cmd shim: Windows-only by nature
+SKIPPED [1] backend/tests/unit/test_environment_windows_safety.py:562: executes a real .cmd shim: Windows-only by nature
+SKIPPED [1] backend/tests/workflow/test_intelligence_diff.py:52: TS oracle bundles missing; run rebuild-oracle-bundles.mjs
+3527 passed, 75 skipped, 6 warnings in 853.27s (0:14:13)
+----- end -----
+finished: 2026-10-28T22:19:09+05:30
+exit:     0

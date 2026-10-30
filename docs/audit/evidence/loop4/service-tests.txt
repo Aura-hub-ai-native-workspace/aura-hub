@@ -1,0 +1,93 @@
+gate:     service-tests
+command:  npm run test:service
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-28T19:28:36+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 7.80
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 43
+----- output -----
+
+> aura-hub@0.1.20 test:service
+> vitest run --pool=threads --dir packages/ai-service/src
+
+
+ RUN  v3.2.7 /mnt/storage/aura-hub
+
+ ✓ packages/ai-service/src/provider/timeoutContract.test.ts (3 tests) 438ms
+ ✓ packages/ai-service/src/provider/providerArchitecture.test.ts (11 tests) 383ms
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > hands the caller deadline to the runtime request
+[model] ollama/m promptChars=2 maxTokens=4096 deadlineMs=123000 elapsedMs=1 outcome=ok
+
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > streams, joins the text and reports characters received as they arrive
+[model] ollama/m promptChars=4 maxTokens=4096 deadlineMs=60000 elapsedMs=10 outcome=ok
+
+ ✓ packages/ai-service/src/automationLifecycle.test.ts (14 tests) 581ms
+ ✓ packages/ai-service/src/mission/planner.test.ts (16 tests) 84ms
+ ✓ packages/ai-service/src/provider/agentView.test.ts (4 tests) 172ms
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > copies the artifacts into the AURA home and removes the graphify-out it created
+[GRAPHIFY] Running: /tmp/aura-fake-graphify-WwMnKh/graphify update "/tmp/aura-graphify-project-p3yKC1"
+
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > copies the artifacts into the AURA home and removes the graphify-out it created
+[GRAPHIFY] Done — copied 3 artifact(s) to /tmp/aura-graphify-test-bg3USm/index/proj-clean/graphify
+
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > removes its own partial output when graphify fails
+[GRAPHIFY] Running: /tmp/aura-fake-graphify-pKwfkk/graphify update "/tmp/aura-graphify-project-DwH8Fo"
+
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > removes its own partial output when graphify fails
+[GRAPHIFY] Failed: Command failed: /tmp/aura-fake-graphify-pKwfkk/graphify update /tmp/aura-graphify-project-DwH8Fo
+
+
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > never removes a graphify-out that existed before the run
+[GRAPHIFY] Running: /tmp/aura-fake-graphify-CRbQDD/graphify update "/tmp/aura-graphify-project-cn6rG0"
+
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > never removes a graphify-out that existed before the run
+[GRAPHIFY] Done — copied 3 artifact(s) to /tmp/aura-graphify-test-bg3USm/index/proj-owned/graphify
+
+ ✓ packages/ai-service/src/graphify.test.ts (3 tests) 133ms
+ ✓ packages/ai-service/src/fabric/httpPolicy.test.ts (47 tests) 94ms
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > a stream that goes silent is a timeout that says so, not a generic failure
+[model] ollama/m promptChars=4 maxTokens=4096 deadlineMs=60000 elapsedMs=1507 outcome=timeout
+
+ ✓ packages/ai-service/src/provider/redirectGuard.test.ts (12 tests) 125ms
+ ✓ packages/ai-service/src/conversations.test.ts (11 tests) 38ms
+ ✓ packages/ai-service/src/executionSafety.test.ts (7 tests) 67ms
+ ✓ packages/ai-service/src/provider/adapters/ollama.test.ts (18 tests) 15ms
+stderr | packages/ai-service/src/projectScoping.test.ts > inspect follows the requested project, not the mount > falls back to the mount when no project is requested (legacy path)
+[GRAPHIFY] Running: /home/Groot/.pyenv/versions/3.12.7/bin/graphify update "/tmp/aura-scope-a-27w4UW"
+
+ ✓ packages/ai-service/src/projectLifecycle.test.ts (18 tests) 181ms
+ ✓ packages/ai-service/src/projectScoping.test.ts (5 tests) 321ms
+ ✓ packages/ai-service/src/handoffs.test.ts (7 tests) 49ms
+ ✓ packages/ai-service/src/mission/plannerLifecycle.test.ts (4 tests) 483ms
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > when the overall ceiling is hit, the message names the elapsed time and the limit
+[model] ollama/m promptChars=2 maxTokens=4096 deadlineMs=50 elapsedMs=1667 outcome=timeout
+
+ ✓ packages/ai-service/src/fabric/terminalInstallGuard.test.ts (5 tests) 22ms
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > a looping stream is stopped, retried ONCE with a repetition penalty, and a second loop is final (never an answer)
+[model] ollama/m promptChars=4 maxTokens=4096 deadlineMs=60000 elapsedMs=13 outcome=degenerate
+
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > recovers when the penalised retry produces a real answer
+[model] ollama/m promptChars=4 maxTokens=4096 deadlineMs=60000 elapsedMs=0 outcome=ok
+
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > a long legitimate stream is returned whole and costs no retry
+[model] ollama/m promptChars=1 maxTokens=4096 deadlineMs=60000 elapsedMs=4 outcome=ok
+
+ ✓ packages/ai-service/src/pipelineGenerate.test.ts (8 tests) 4381ms
+   ✓ generate > a stream that goes silent is a timeout that says so, not a generic failure  1512ms
+   ✓ generate > when the overall ceiling is hit, the message names the elapsed time and the limit  1684ms
+   ✓ generate > cancellation reaches the runtime and is not reported as a timeout  406ms
+ ✓ packages/ai-service/src/exec/process.test.ts (13 tests) 30ms
+ ✓ packages/ai-service/src/instanceGuard.test.ts (10 tests) 41ms
+ ✓ packages/ai-service/src/repetition.test.ts (4 tests) 9ms
+ ✓ packages/ai-service/src/provider/verifySave.test.ts (4 tests) 4887ms
+   ✓ verifySelfHosted probe budget > a reasoning model that answers only after thinking still verifies  3418ms
+   ✓ verifySelfHosted probe budget > the probe asks for at least the reasoning budget  730ms
+   ✓ verifySelfHosted save stage > verifies, saves, and persists the exact verified URL and model  584ms
+
+ Test Files  21 passed (21)
+      Tests  224 passed (224)
+   Start at  19:28:37
+   Duration  5.75s (transform 3.94s, setup 0ms, collect 12.45s, tests 12.54s, environment 16ms, prepare 3.52s)
+
+----- end -----
+finished: 2026-10-28T19:28:43+05:30
+exit:     0

@@ -1,0 +1,42 @@
+gate: lint-changed-files
+command: python -m ruff check <file> (per modified file, compared with the same file at df2cc92); new files linted alone
+started: 2026-10-28T19:28:53+05:30
+ruff: ruff 0.16.4
+----- modified python files: findings now vs committed -----
+ok      aura/agent_runtime/adapters/claude_code.py now=2 committed=2
+ok      aura/api/server.py now=9 committed=9
+ok      aura/automation/engine.py now=0 committed=0
+ok      aura/capabilities/tools.py now=0 committed=0
+ok      aura/central_agent/events.py now=0 committed=0
+ok      aura/central_agent/execution.py now=1 committed=1
+ok      aura/central_agent/provisioner.py now=0 committed=0
+ok      aura/central_agent/service.py now=10 committed=10
+ok      aura/executors/__init__.py now=3 committed=3
+ok      aura/executors/web_research.py now=0 committed=0
+ok      aura/governance/actions.py now=0 committed=0
+ok      aura/governance/claude.py now=0 committed=0
+ok      aura/governance/claude_hook.py now=0 committed=0
+ok      aura/governance/opencode.py now=0 committed=0
+ok      aura/knowledge/store.py now=3 committed=3
+ok      aura/multimodal/document_engine.py now=0 committed=0
+ok      aura/sovereign/policy.py now=1 committed=1
+ok      aura/workflow/__init__.py now=0 committed=0
+ok      tests/acceptance/test_acceptance_gate.py now=14 committed=14
+ok      tests/acceptance/test_document_engine_acceptance.py now=5 committed=5
+ok      tests/automation/test_automation_engine_diff.py now=0 committed=0
+ok      tests/e2e/test_inspection_to_approval_note.py now=4 committed=4
+ok      tests/integration/test_document_artifact_pipeline.py now=5 committed=5
+ok      tests/unit/test_document_engine.py now=0 committed=0
+ok      tests/unit/test_grounded_answer_wiring.py now=2 committed=2
+ok      tests/unit/test_new_executors.py now=3 committed=3
+ok      tests/unit/test_sovereign_subsystems.py now=8 committed=8
+----- new python files -----
+tests/unit/test_git_branch_result.py:14:8: F401 [*] `pytest` imported but unused
+tests/unit/test_governance_windows_paths.py:16:8: F401 [*] `json` imported but unused
+tests/unit/test_governance_windows_paths.py:20:8: F401 [*] `sys` imported but unused
+tests/unit/test_governance_windows_paths.py:25:5: F401 [*] `aura.governance.actions.ActionVerdict` imported but unused
+Found 4 errors.
+[*] 4 fixable with the `--fix` option.
+----- end -----
+finished: 2026-10-28T19:29:01+05:30
+any file worse than committed: no

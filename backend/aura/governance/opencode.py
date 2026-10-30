@@ -125,7 +125,8 @@ export const AuraGovernance = async (ctx) => {
     const cwdBase = norm(POLICY.cwd || "").replace(/\/$/, "");
     let t = norm(target).trim();
     if (!t || t.startsWith("~")) return false;
-    if (t.startsWith("/")) {
+    const isAbs = (x) => x.startsWith("/") || /^[A-Za-z]:\//.test(x);
+    if (isAbs(t)) {
       if (!cwdBase || !(t === cwdBase || t.startsWith(cwdBase + "/"))) return false;
       t = t.slice(cwdBase.length).replace(/^\//, "");
       if (!t) return true;

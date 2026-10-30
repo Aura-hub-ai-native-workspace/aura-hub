@@ -1,0 +1,6 @@
+Acceptance C (takeover; my reconstruction of an earlier one-line record), package 3 (sha cbb445ec...).
+Setup: app launched cleanly in an isolated home, both own services healthy; its own Node service child (pid verified by lineage, resolved exe 'node', parent aura-hub) stopped; a foreign server started on 4319 (wrong identity proof).
+Observed: over 45 s idle and after a UI action ('Skip for now') the foreign server received 0 requests (its log file was never created): no token, no body, no data request, not even an identity-proof challenge.
+UI: status bar 'Backend identity mismatch - connection refused'; home shows 'Backend offline'; the genuine Python backend still 'Environment: connected' (c2-after-skip.png).
+Note: loop 2's run (package 2, a verification pending in the UI) saw 66 requests, all identity-proof challenges (no secret) and nothing else. Both outcomes satisfy the invariant: nothing but a random challenge, and in this run not even that, reached the foreign service.
+Earlier first attempt in this session was INVALID (the Node child ignored my guarded kill, the foreign server never bound the port) and is not counted.

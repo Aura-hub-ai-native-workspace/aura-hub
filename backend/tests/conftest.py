@@ -95,3 +95,12 @@ def _every_test_gets_its_own_aura_home(tmp_path_factory, monkeypatch):
     """No test may read or write the person's real ~/.aura. A test that wants a
     specific home sets AURA_HOME itself (that overrides this)."""
     monkeypatch.setenv("AURA_HOME", str(tmp_path_factory.mktemp("aura-home")))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_search_engine_in_tests(monkeypatch):
+    """The product falls back to a built-in keyless search provider when no gateway is
+    configured. No test may reach a real search engine, so the suite runs with that
+    fallback off (the old "nothing configured" state); tests of the fallback itself
+    set AURA_SEARCH_PROVIDER back and inject their own fetch."""
+    monkeypatch.setenv("AURA_SEARCH_PROVIDER", "off")

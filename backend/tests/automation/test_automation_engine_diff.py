@@ -4,8 +4,10 @@ Deterministic clock/rand; identical rule/event scripts; compares returned
 values, event stream, retry sleeps, and the persisted AURA_HOME tree.
 Scenario set covers trigger match/mismatch/partial/wrong-type, condition
 true/false/unknown-op, retry+backoff, exhaustion, continueOnError, produced
-linkage, disabled rule. Pause/resume/cancel/schedule/duplicate-fire remain
-listed in KNOWN_UNCOVERED (follow-up vectors).
+linkage, disabled rule, cancel of a queued run, and (F-29) a Stop on a run that
+already failed or completed. Pause/resume, a Stop racing a live run (see
+test_automation_lifecycle.py and packages/ai-service/src/automationLifecycle.test.ts),
+schedule and duplicate-fire remain listed in KNOWN_UNCOVERED (follow-up vectors).
 """
 from __future__ import annotations
 
@@ -223,11 +225,17 @@ def _ensure_bundles() -> None:
 
     tsref_dir = Path(tempfile.gettempdir()) / "aura-tsref-automation"
     needed = [tsref_dir / "autoengine.mjs", tsref_dir / "autostore.mjs"]
-    if all(f.exists() for f in needed):
-        return
     # _ROOT is backend/tests (it is the sys.path anchor below); the
     # repository root is two levels above it.
     repo = _ROOT.parents[1]
+    # A bundle is reused only while it is NEWER than the TypeScript it was
+    # built from. It used to be reused whenever it existed, so after any edit to
+    # the engine the differential quietly compared Python against an outdated
+    # build of it (found while fixing F-29: the oracle still had the old bug).
+    sources = list((repo / "packages" / "automation" / "src").glob("*.ts"))
+    newest_source = max((f.stat().st_mtime for f in sources), default=0.0)
+    if all(f.exists() and f.stat().st_mtime >= newest_source for f in needed):
+        return
     esbuild = repo / "node_modules" / ".bin" / (
         "esbuild.cmd" if sys.platform == "win32" else "esbuild")
     if not esbuild.exists():
@@ -307,6 +315,33 @@ SCENARIOS.append(("cancel-queued",
                   [{"op": "createRule", "args": [RULE]},
                    {"op": "handleEvent", "args": [_ev(a=1)]},
                    {"op": "handleEvent", "args": [_ev(b=2)]},
+                   {"op": "cancel", "args": ["$r1.ruleId", "$r2.id"]},
+                   {"op": "listRuns"}]))
+
+# F-29: a run that already finished is never rewritten by a later Stop. Before the
+# fix BOTH engines turned a failed run into "cancelled" here, so these scenarios
+# could not have encoded the old behaviour as parity; they hold both engines to
+# the corrected contract (and to each other: events, persisted tree, results).
+SCENARIOS.append(("cancel-failed-run-is-not-rewritten",
+                  {"actions": {"echo": {"ok": False, "error": "ETIMEDOUT"}}},
+                  [{"op": "createRule", "args": [RULE]},
+                   {"op": "handleEvent", "args": [_ev(a=1)]},
+                   {"op": "cancel", "args": ["$r1.ruleId", "$r1.id"]},
+                   {"op": "listRuns"}]))
+
+SCENARIOS.append(("cancel-completed-run-is-not-rewritten",
+                  {"actions": {"echo": {"ok": True}}},
+                  [{"op": "createRule", "args": [RULE]},
+                   {"op": "handleEvent", "args": [_ev(a=1)]},
+                   {"op": "cancel", "args": ["$r1.ruleId", "$r1.id"]},
+                   {"op": "listRuns"}]))
+
+SCENARIOS.append(("cancel-queued-twice-cancels-once",
+                  {"actions": {"echo": {"ok": True}}},
+                  [{"op": "createRule", "args": [RULE]},
+                   {"op": "handleEvent", "args": [_ev(a=1)]},
+                   {"op": "handleEvent", "args": [_ev(b=2)]},
+                   {"op": "cancel", "args": ["$r1.ruleId", "$r2.id"]},
                    {"op": "cancel", "args": ["$r1.ruleId", "$r2.id"]},
                    {"op": "listRuns"}]))
 

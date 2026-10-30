@@ -72,6 +72,39 @@ def load_policy(home: str | Path | None = None) -> tuple[frozenset[str], frozens
     return _ids(raw.get("verifiedFree")), _ids(raw.get("authorized"))
 
 
+def authorize(worker_id: str, home: str | Path | None = None) -> WorkerDecision:
+    """Record the owner's decision to accept the cost of ONE known worker.
+
+    This is only ever called from the owner's own click in the desktop app
+    (``POST /workers/authorize``); it is not a capability and no plan, model
+    or chat message reaches it. Only a worker AURA has an adapter for can be
+    authorized, other keys in the file are preserved, and the write is atomic.
+    """
+    from .adapters import adapter_for_id
+
+    wid = str(worker_id or "").strip()
+    if adapter_for_id(wid) is None:
+        raise ValueError(f"'{wid}' is not a worker AURA knows.")
+    if home is None:
+        from ..config import aura_home
+
+        home = aura_home()
+    path = Path(home) / POLICY_FILE
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raw = {}
+    except (OSError, ValueError):
+        raw = {}
+    authorized = sorted(_ids(raw.get("authorized")) | {wid})
+    raw["authorized"] = authorized
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return decide(wid, home)
+
+
 def owner_setting(name: str, default: object = False, home: str | Path | None = None) -> object:
     """One scalar setting from the owner's policy file (never from a model or a plan)."""
     if home is None:

@@ -224,6 +224,7 @@ DEVELOPMENT: list[CatalogEntry] = [
         summary="Agentic coding in the terminal.",
         homepage="https://claude.com/claude-code",
         probe=ProbeSpec("claude", ["--version"]),
+        install=InstallSpec("npm-global", "@anthropic-ai/claude-code", "user"),
     ),
     CatalogEntry(
         id="codex-cli",
@@ -238,6 +239,7 @@ DEVELOPMENT: list[CatalogEntry] = [
         summary="Terminal coding agent.",
         homepage="https://github.com/openai/codex",
         probe=ProbeSpec("codex", ["--version"]),
+        install=InstallSpec("npm-global", "@openai/codex", "user"),
     ),
     CatalogEntry(
         id="gemini-cli",

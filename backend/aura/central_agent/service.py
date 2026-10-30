@@ -34,6 +34,8 @@ from ..fabric.manifest import all_capabilities
 from ..persistence.runs import WorkflowRunStore
 from ..persistence.workflows import WorkflowStore
 from .authority import AuthorityChecker
+from .autonomy import decide_instead_of_asking
+from .research import extract_citations, source_list_text
 from .context import ContextAssembler
 from .discovery import CapabilityDiscovery
 from .events import EventBus
@@ -156,8 +158,9 @@ class CentralAgent:
             try:
                 from ..sovereign.policy import load_sovereign_policy
                 sovereign_policy = load_sovereign_policy()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                from ..sovereign.policy import fail_closed_policy
+                sovereign_policy = fail_closed_policy(exc)
         self.sovereign_policy = sovereign_policy
         self.agent_runtime = agent_runtime
         self._model_registry = model_registry
@@ -779,6 +782,9 @@ class CentralAgent:
         # there is no gate for a conversational claim to slip past.
         if getattr(intent, "conversational", False):
             return self._converse(session, user_message, intent, bundle)
+        if decide_instead_of_asking(intent, user_message=user_message,
+                                    has_project=bool(getattr(session, "projectId", None))):
+            self._emit("intent.decided", session.sessionId, goal=intent.goal)
         if intent.needsClarification:
             question = intent.clarificationQuestion or "Could you clarify the outcome?"
             session.pendingQuestion = question  # persisted with the session
@@ -893,7 +899,13 @@ class CentralAgent:
                         failureReason="orchestration-crashed"))
                     self.sessions.save(session)
             except Exception:  # noqa: BLE001
-                pass
+                # The last resort failed too: the session may stay "running"
+                # with no recorded outcome. Say so, with the traceback.
+                import logging as _logging
+                _logging.getLogger(__name__).error(
+                    "could not record the crash of orchestration for session %s; "
+                    "it may remain 'running' with no outcome", session_id,
+                    exc_info=True)
             self._emit("agent.failed", session_id, reason=reason)
 
     def _dispatch_plan(self, session: AgentSession, plan: TaskPlan,
@@ -1031,7 +1043,10 @@ class CentralAgent:
             session.currentTaskId = None
             self.sessions.save(session)
         except Exception:  # noqa: BLE001 — bookkeeping must not kill a run
-            pass
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "could not record progress for session %s task %s; its saved "
+                "queue may be stale", session.sessionId, task_id, exc_info=True)
 
     def _execute_plan_leg(self, session: AgentSession,
                           plan: TaskPlan,
@@ -2624,8 +2639,18 @@ class CentralAgent:
             "Keep it concise unless the person asked for more; a short "
             "natural answer is the default."
         )
+        sources = self._answer_sources(plan, outcome)
+        if sources:
+            system += (
+                "\n\nThe records include numbered SOURCES from a web search. Support claims "
+                "taken from them with their number in square brackets, like [1], placed right "
+                "after the claim. Cite only numbers that appear in SOURCES; never invent one, "
+                "and do not write a source list yourself."
+            )
         user = (f"USER REQUEST:\n{self._answer_goal(session)}\n\n"
                 f"VERIFIED RUN RECORDS:\n{evidence}")
+        if sources:
+            user += "\n\nSOURCES:\n" + source_list_text(sources)
         self._emit("answer.started", sid)
 
         def on_token(piece: str) -> None:
@@ -2656,6 +2681,12 @@ class CentralAgent:
             # text), kept as a fail-closed belt.
             self._emit("answer.failed", sid, reason="empty synthesis")
             return None
+        if sources:
+            cited, _dangling = extract_citations(text, sources)
+            if cited:
+                footer = "\n\nSources:\n" + source_list_text(cited)
+                self._emit("answer.token", sid, text=footer)
+                text = text.rstrip() + footer
         self._emit("answer.completed", sid, chars=len(text),
                    provider=result.provider, model=result.model,
                    latencyMs=result.latencyMs)
@@ -2684,6 +2715,27 @@ class CentralAgent:
                     content = content[:2_000] + "…[truncated]"
                 return content
         return "(no recorded request)"
+
+    _SOURCE_MARK = re.compile(r'\[source=(\S+?)(?: title="([^"]*)")?\]')
+
+    def _answer_sources(self, plan: TaskPlan, outcome: ExecutionOutcome) -> list[dict]:
+        """Numbered sources the verified web research actually returned, in order.
+
+        Read from the research task's own output, so the list can only name
+        pages that were really retrieved; the model never supplies it.
+        """
+        verified = getattr(outcome, "verified_outputs", None) or {}
+        sources: list[dict] = []
+        for task in plan.tasks:
+            if task.capabilityId != "web.research":
+                continue
+            stdout = str((verified.get(task.id) or {}).get("stdout") or "")
+            for m in self._SOURCE_MARK.finditer(stdout):
+                url = m.group(1)
+                if any(x["url"] == url for x in sources):
+                    continue
+                sources.append({"id": len(sources) + 1, "title": (m.group(2) or url)[:120], "url": url})
+        return sources
 
     def _answer_evidence(self, plan: TaskPlan,
                          outcome: ExecutionOutcome) -> str | None:

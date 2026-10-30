@@ -1,0 +1,11 @@
+gate:     glibc-floor
+command:  bash -c node scripts/glibc-floor-verify.mjs apps/desktop/src-tauri/target/release/aura-hub apps/desktop/src-tauri/resources/runtime apps/desktop/src-tauri/resources/python
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-28T20:34:18+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 8.82
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 49
+----- output -----
+PASS  46 ELF files checked, 0 above glibc 2.34 (static analysis only)
+----- end -----
+finished: 2026-10-28T20:34:19+05:30
+exit:     0

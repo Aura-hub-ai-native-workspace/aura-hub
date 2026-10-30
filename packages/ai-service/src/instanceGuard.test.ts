@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CORS_ALLOW_HEADERS, decide, proofFor, TOKEN_HEADER } from './instanceGuard';
+import { CORS_ALLOW_HEADERS, decide, proofFor, shutdownRefusal, TOKEN_HEADER } from './instanceGuard';
 
 const TOKEN = 't'.repeat(32);
 const C = 'c'.repeat(24);
@@ -51,5 +51,22 @@ describe('instance ownership (Node service)', () => {
 
   it('allows the token header in the CORS preflight, or the webview can never send it', () => {
     expect(CORS_ALLOW_HEADERS.split(',').map((h) => h.trim())).toContain(TOKEN_HEADER);
+  });
+
+  // The Windows shell has no SIGTERM, so it asks the service to stop over loopback.
+  // That request used to carry only `x-aura-shutdown`; the guard (which runs before
+  // the route) answered 401 and every quit became a hard kill after a 5 s wait.
+  // The Rust request builder (`post_request`, service.rs) is pinned by its own tests.
+  it('refuses a shutdown request without the launch token, accepts the one the shell now sends', () => {
+    const headerOnly = { 'x-aura-shutdown': '1' };
+    expect(decide('POST', '/shutdown', headerOnly, TOKEN, null)).toMatchObject({ kind: 'refused', status: 401 });
+    expect(decide('POST', '/shutdown', { ...headerOnly, [TOKEN_HEADER]: TOKEN }, TOKEN, null)).toEqual({ kind: 'open' });
+    expect(decide('POST', '/shutdown', { ...headerOnly, [TOKEN_HEADER]: 'x'.repeat(32) }, TOKEN, null)).toMatchObject({ kind: 'refused' });
+  });
+
+  it('a stop request needs a configured token and the shutdown header', () => {
+    expect(shutdownRefusal({ 'x-aura-shutdown': '1' }, '')).toMatch(/instance token/);   // inert guard must not mean open
+    expect(shutdownRefusal({}, TOKEN)).toMatch(/x-aura-shutdown/);
+    expect(shutdownRefusal({ 'x-aura-shutdown': '1' }, TOKEN)).toBeNull();
   });
 });

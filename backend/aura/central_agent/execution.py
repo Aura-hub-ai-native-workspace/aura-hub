@@ -44,6 +44,23 @@ def _result_text(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
 
 
+def _progress(callback: Any, label: str, *args: Any) -> None:
+    """Tell the owner of the run that a task started or finished.
+
+    A failing notification must not kill the run (it is bookkeeping), but it
+    must not vanish either: that bookkeeping is the queue state recovery and
+    resume read, so a failure is logged with its traceback."""
+    try:
+        callback(*args)
+    except Exception:  # noqa: BLE001 — the run continues; the failure is recorded
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "%s callback failed for task %s; the run continues, but its "
+            "recorded progress may be stale", label, args[0] if args else "?",
+            exc_info=True)
+
+
 def _recorded_output(capability: Any, output: Any) -> dict:
     """The executor output as the mapping the record reads, with a read-only
     tool's result carried as `stdout`."""
@@ -116,6 +133,25 @@ def state_for_invocation(outcome: str, output: Any) -> str:
     if output.get("timedOut"):
         return "timed-out"
     return state
+
+
+def _fill_session_inputs(capability_id: str, payload: dict, project_id: str | None) -> None:
+    """Supply the one input a plan can never know better than the session: which project.
+
+    A planner (or a local model) names a capability and often leaves out a required
+    `projectId` the Workspace already holds, which used to fail the task at the
+    contract check with "projectId is required" for a project that was open the
+    whole time. Only a missing or empty value is filled; an explicit one is kept.
+    """
+    if not project_id or str(payload.get("projectId") or "").strip():
+        return
+    from ..fabric import describe_capability
+
+    cap = describe_capability(capability_id) or {}
+    for spec in cap.get("input") or []:
+        if spec.get("name") == "projectId" and spec.get("required"):
+            payload["projectId"] = project_id
+            return
 
 
 @dataclass
@@ -618,10 +654,7 @@ class ExecutionController:
                                    )
             else:
                 if on_task_start is not None:
-                    try:
-                        on_task_start(task.id)
-                    except Exception:  # noqa: BLE001
-                        pass
+                    _progress(on_task_start, "on_task_start", task.id)
                 self._run_task(task, project_id, compiled_workflow, result,
                                     project_cwd=project_cwd,
                                     cancel_token=cancel_token,
@@ -630,10 +663,7 @@ class ExecutionController:
 
             last = result.outcomes[-1] if result.outcomes else None
             if on_task_complete is not None and last is not None:
-                try:
-                    on_task_complete(task.id, last)
-                except Exception:  # noqa: BLE001 — bookkeeping must not kill a run
-                    pass
+                _progress(on_task_complete, "on_task_complete", task.id, last)
             if last is None:
                 break
             if last.state in ("denied",):
@@ -876,10 +906,7 @@ class ExecutionController:
             per.verified_outputs.update(result.verified_outputs)
             per.deviation_evidence.update(result.deviation_evidence)
             if on_task_start is not None:
-                try:
-                    on_task_start(task.id)
-                except Exception:  # noqa: BLE001
-                    pass
+                _progress(on_task_start, "on_task_start", task.id)
             self._run_task(task, project_id, compiled_workflow, per,
                                 project_cwd=project_cwd,
                                 cancel_token=cancel_token,
@@ -888,10 +915,7 @@ class ExecutionController:
             if on_task_complete is not None:
                 last = per.outcomes[-1] if per.outcomes else None
                 if last is not None:
-                    try:
-                        on_task_complete(task.id, last)
-                    except Exception:  # noqa: BLE001
-                        pass
+                    _progress(on_task_complete, "on_task_complete", task.id, last)
             return per
 
         with ThreadPoolExecutor(max_workers=max(2, len(batch))) as pool:
@@ -1248,6 +1272,8 @@ class ExecutionController:
                 "nodes": compiled_workflow["nodes"],
                 "edges": compiled_workflow["edges"],
             })
+
+        _fill_session_inputs(task.capabilityId, payload, project_id)
 
         context = {
             "actor": {"kind": "agent", "id": "central-agent"},

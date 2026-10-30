@@ -1,0 +1,11 @@
+gate:     workflow-yaml
+command:  bash -c python3 -c "import yaml;yaml.safe_load(open('.github/workflows/ci.yml'));print('ci.yml parses')"
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-28T22:59:42+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 2.23
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 69
+----- output -----
+ci.yml parses
+----- end -----
+finished: 2026-10-28T22:59:43+05:30
+exit:     0

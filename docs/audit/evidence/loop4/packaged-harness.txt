@@ -1,0 +1,81 @@
+gate:     packaged-harness
+command:  python3 -I docs/audit/evidence/loop4/packaged_runtime_harness.py /tmp/claude-1000/-mnt-storage-aura-hub/e0b84bdf-fabf-483d-bd9c-45c29a04b81e/scratchpad/phase4/pkg4
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-28T19:35:35+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 4.24
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 43
+----- output -----
+child pid 105229
+== packaged interpreter and libraries ==
+PASS packaged interpreter imports all six document libraries | imports ok
+PASS libraries genuinely unloadable: each format reports dependency-missing naming both gaps | host.pdf supported_dependency_missing | docling package not installed (pip install aura-backend[docling]); the lightweight reader is also unavailable: pypdf not installed (pip inst || host.docx supported_dependency_missi
+== boundary ==
+PASS unauthenticated request refused | status 401
+== F-28: DOCX, XLSX, PDF generation and ingestion ==
+PASS generate DOCX inside the project | succeeded | Generate artifact completed. Generated DOCX: gen.docx (36,86
+PASS generate XLSX inside the project | succeeded | Generate artifact completed. Generated XLSX: gen.xlsx (5,087
+PASS generate PDF inside the project | succeeded | Generate artifact completed. Generated PDF: gen.pdf (1,947 b
+PASS ingest gen.docx (packaged-generated) | succeeded engine=light chunks=1
+PASS ingest gen.xlsx (packaged-generated) | succeeded engine=light chunks=1
+PASS ingest gen.pdf (packaged-generated) | succeeded engine=light chunks=1
+PASS ingest host.docx (produced by the host libraries) | succeeded engine=light chunks=1
+PASS ingest host.xlsx (produced by the host libraries) | succeeded engine=light chunks=1
+PASS ingest host.pdf (produced by the host libraries) | succeeded engine=light chunks=1
+PASS search retrieves generated document text
+PASS search retrieves host DOCX text
+PASS search retrieves host XLSX cell
+PASS search retrieves host XLSX second sheet
+PASS search retrieves host PDF text
+== F-28 error behaviour (no false success) ==
+PASS scan.pdf is refused | failed | Ingest document did not succeed. the PDF has no text layer (a scan); OCR is not 
+PASS locked.pdf is refused | failed | Ingest document did not succeed. the PDF is password-protected
+PASS broken.docx is refused | failed | Ingest document did not succeed. not a valid Office file (the container is unrea
+PASS broken.pdf is refused | failed | Ingest document did not succeed. pypdf could not read this file: PdfStreamError:
+== F-26: knowledge is project-scoped ==
+PASS another project's tool search does not see it
+PASS no project identity: refused, nothing returned | failed | Search uploaded documents / knowledge base did not succeed. No project
+PASS naming another project in the input is refused | failed | Search uploaded documents / knowledge base did not succeed. Knowledge 
+PASS two projects registered | {'alpha': 'proj-alpha-1', 'beta': 'proj-beta-2'}
+PASS REST ingest without a project is refused (400)
+PASS REST ingest into an unregistered project is refused (404)
+PASS REST ingest of a DOCX into a registered project works | status 200 {'ok': True, 'path': 'a.docx', 'chunkCount': 1, 'charCount': 65, 'status': 'ok', 'document
+PASS REST search: the owning project sees it, the other does not
+PASS REST search without a project is refused (400)
+== confinement (loops 1-2 retested on this build) ==
+PASS setup: http-client node connected
+PASS sandbox: cwd outside refused | Execute in sandbox did not succeed. That path leaves the project direc
+PASS sandbox: same command inside works | Execute in sandbox completed. exit=0
+PASS sandbox: off-allow-list program refused
+PASS ingest: file outside the project refused | Ingest document did not succeed. That path leaves the project director
+PASS artifact: output outside the project refused, nothing written | Generate artifact did not succeed. That path leaves the project direct
+PASS artifact: output INSIDE the project works (previously blocked) | succeeded | Generate artifact completed. Generated DOCX: inside.docx (36
+PASS artifact docx: an image outside the project is refused, nothing written | Generate artifact did not succeed. A section's image was refused: That
+PASS artifact docx: an image inside the project is embedded | Generate artifact completed. Generated DOCX: img-in.docx (37
+PASS artifact pdf: an image outside the project is refused, nothing written | Generate artifact did not succeed. A section's image was refused: That
+PASS artifact pdf: an image inside the project is embedded | Generate artifact completed. Generated PDF: img-in.pdf (1,94
+PASS http: agent GET to a local service works
+PASS http: agent POST/PUT/PATCH/DELETE to local refused and never sent
+PASS http: a user's PUT is allowed
+PASS http: metadata refused for the agent
+PASS http: metadata refused for the user
+PASS http: redirect to metadata refused
+== F-24 backend: Stop on an already-finished automation run ==
+PASS finished run: cancel answers 409 'already completed' | 409 {'error': 'that run already completed — there is nothing to cancel'}
+PASS unknown run: cancel answers 404
+== audit ==
+PASS audit records the actor kind for http.request
+== F-23: the PACKAGED governance hook, run by the packaged interpreter ==
+PASS hook: valid scope allows inside
+PASS hook: valid scope denies outside
+PASS hook: genuinely missing scope file is allowed and recorded UNSCOPED
+PASS hook: truncated scope file denies, recorded DENY
+PASS hook: empty scope file denies, recorded DENY
+PASS hook: array scope file denies, recorded DENY
+PASS hook: invalid field type denies
+PASS hook: garbage stdin denies
+PASS hook: a directory in place of the scope file denies
+PASS hook launch: a missing interpreter becomes a deny (exit 2, not 127) | exit 2
+RESULT 60/60 passed
+----- end -----
+finished: 2026-10-28T19:35:42+05:30
+exit:     0

@@ -55,7 +55,7 @@ TOOL_SPECS: dict[str, dict] = {
             _ro("diff", "Uncommitted changes.", ["{exe}", "diff", "--no-color"]),
             _ro("log", "Recent history.", ["{exe}", "log", "--oneline", "-20"]),
             _ro("branch-list", "Local branches.", ["{exe}", "branch", "--list"]),
-            _low("branch-create", "Create a branch (name supplied by the governed caller)."),
+            _mod("branch-create", "Create a branch (name supplied by the governed caller)."),
             _mod("stage", "Stage paths (supplied by the governed caller)."),
             _mod("commit", "Record a commit (message supplied by the governed caller)."),
             _mod("push", "Publish commits elsewhere; leaves this machine."),

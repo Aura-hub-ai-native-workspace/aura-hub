@@ -115,16 +115,42 @@ class ActionVerdict:
     # the action (the runtime self-terminates on these)
 
 
+#: A Windows drive letter followed by a separator. Drive-relative forms
+#: (``C:foo``) are NOT absolute and must not be treated as such; only
+#: ``C:\\...`` / ``C:/...`` is. Case is preserved (Windows paths are
+#: case-insensitive in reality, but treating differing cases as
+#: distinct only ever DENIES, never allows, so no bypass is introduced).
+_WIN_DRIVE_RE = _re.compile(r"^[A-Za-z]:/")
+
+
+def _abs_marker(norm: str) -> bool:
+    """True when the (slash-normalized) path is absolute on any platform.
+
+    A POSIX absolute path starts with ``/``. A Windows absolute path
+    starts with a drive letter followed by a separator (``C:/...``).
+    Drive-relative (``C:foo``), UNC (``//host/share``) and bare
+    relative paths are handled by their existing branches: UNC begins
+    with ``/`` after normalization and resolves against cwd; a
+    drive-relative form is treated as relative, which only ever denies
+    an in-scope match, never allows one.
+    """
+    if norm.startswith("/"):
+        return True
+    return bool(_WIN_DRIVE_RE.match(norm))
+
+
 def _inside_scope(target: str, scope_paths: list[str],
                   cwd: str = "") -> bool:
     norm = target.replace("\\", "/").strip()
     if not norm or norm.startswith("~"):
         return False
-    if norm.startswith("/"):
+    if _abs_marker(norm):
         # Absolute paths resolve against the task cwd: inside-cwd
         # targets judge by their repo-relative form, outside-cwd
         # targets never qualify. Runtimes routinely pass absolute
-        # paths for benign in-repo reads.
+        # paths for benign in-repo reads — including Windows
+        # drive-letter paths (``C:/repo/work/f.txt``) which are
+        # absolute but do not start with a slash.
         base = cwd.replace("\\", "/").rstrip("/")
         if not base or not (norm == base or norm.startswith(base + "/")):
             return False

@@ -153,7 +153,7 @@ class TestMultimodalCapabilityRegistration:
 class TestDocumentIngest:
     def test_ingest_auto_executes_no_approval(self, multimodal_env, tmp_path):
         home, proj, audit, ledger, cfg, kb, agent = multimodal_env
-        doc = tmp_path / "report.txt"
+        doc = proj / "report.txt"
         doc.write_text(
             "Site Inspection Report — Building A\n"
             "Finding 1: Electrical panel requires upgrade.\n"
@@ -164,7 +164,7 @@ class TestDocumentIngest:
         result = invoke_fabric(
             "document.ingest",
             {"path": str(doc)},
-            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         assert result["outcome"] == "succeeded", result.get("detail")
@@ -181,15 +181,16 @@ class TestDocumentIngest:
     def test_ingest_document_text_not_in_audit(self, multimodal_env, tmp_path):
         home, proj, audit, ledger, cfg, kb, agent = multimodal_env
         secret = "CONFIDENTIAL_PASS_abc123xyz"
-        doc = tmp_path / "secret.txt"
+        doc = proj / "secret.txt"
         doc.write_text(f"This contains {secret}.")
         from aura.fabric import invoke_fabric
-        invoke_fabric(
+        ingested = invoke_fabric(
             "document.ingest",
             {"path": str(doc)},
-            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
+        assert ingested["outcome"] == "succeeded", ingested.get("detail")  # it really ran
         # Audit trail must NOT contain document text
         trail_text = json.dumps(audit.load())
         assert secret not in trail_text, (
@@ -209,7 +210,7 @@ class TestKnowledgeSearch:
         from aura.fabric import invoke_fabric
 
         # Ingest first
-        doc = tmp_path / "inspection.txt"
+        doc = proj / "inspection.txt"
         doc.write_text(
             "Sovereign AI governance policy: all model calls must be logged.\n"
             "Approval required for any cloud-provider inference request.\n"
@@ -218,7 +219,7 @@ class TestKnowledgeSearch:
         r_ingest = invoke_fabric(
             "document.ingest",
             {"path": str(doc)},
-            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         assert r_ingest["outcome"] == "succeeded"
@@ -227,7 +228,7 @@ class TestKnowledgeSearch:
         r_search = invoke_fabric(
             "knowledge.search",
             {"query": "sovereign governance policy"},
-            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         assert r_search["outcome"] == "succeeded"
@@ -242,7 +243,7 @@ class TestKnowledgeSearch:
         r = invoke_fabric(
             "knowledge.search",
             {"query": "anything"},
-            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         assert r["outcome"] == "succeeded"
@@ -261,7 +262,7 @@ class TestArtifactGenerate:
         home, proj, audit, ledger, cfg, kb, agent = multimodal_env
         from aura.fabric import invoke_fabric
 
-        out_path = str(tmp_path / "approval_note.docx")
+        out_path = str(proj / "approval_note.docx")
         spec = {
             "artifact_type": "docx",
             "title": "Approval Note — Inspection Findings",
@@ -283,7 +284,7 @@ class TestArtifactGenerate:
         r = invoke_fabric(
             "artifact.generate",
             {"spec": spec, "output_path": out_path},
-            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         assert r["outcome"] in ("succeeded", "unverified"), r.get("detail")
@@ -307,7 +308,7 @@ class TestArtifactGenerate:
         r = invoke_fabric(
             "artifact.generate",
             {},
-            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         assert r["outcome"] == "failed"
@@ -330,7 +331,7 @@ class TestFullDocumentArtifactPipeline:
         from aura.fabric import invoke_fabric
 
         # Step 1: ingest source document
-        source = tmp_path / "findings.txt"
+        source = proj / "findings.txt"
         source.write_text(
             "Project Inspection — AURA Hub — 2026-09-24\n"
             "Finding A: Evidence collection pipeline fully wired.\n"
@@ -341,7 +342,7 @@ class TestFullDocumentArtifactPipeline:
         r_ingest = invoke_fabric(
             "document.ingest",
             {"path": str(source)},
-            {"actor": {"kind": "agent", "id": "pipeline-test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "pipeline-test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         assert r_ingest["outcome"] == "succeeded", r_ingest.get("detail")
@@ -352,7 +353,7 @@ class TestFullDocumentArtifactPipeline:
         r_search = invoke_fabric(
             "knowledge.search",
             {"query": "inspection findings approval"},
-            {"actor": {"kind": "agent", "id": "pipeline-test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "pipeline-test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         assert r_search["outcome"] == "succeeded"
@@ -360,7 +361,7 @@ class TestFullDocumentArtifactPipeline:
         assert len(results) > 0
 
         # Step 3: generate approval note DOCX
-        out_path = str(tmp_path / "approval.docx")
+        out_path = str(proj / "approval.docx")
         finding_texts = [r.get("text", "") for r in results[:3]]
         spec = {
             "artifact_type": "docx",
@@ -379,7 +380,7 @@ class TestFullDocumentArtifactPipeline:
         r_generate = invoke_fabric(
             "artifact.generate",
             {"spec": spec, "output_path": out_path},
-            {"actor": {"kind": "agent", "id": "pipeline-test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "pipeline-test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         assert r_generate["outcome"] in ("succeeded", "unverified"), r_generate.get("detail")
@@ -411,18 +412,18 @@ class TestFullDocumentArtifactPipeline:
         home, proj, audit, ledger, cfg, kb, agent = multimodal_env
         from aura.fabric import invoke_fabric
 
-        doc = tmp_path / "doc.txt"
+        doc = proj / "doc.txt"
         doc.write_text("Test document for audit integrity verification.")
         invoke_fabric(
             "document.ingest",
             {"path": str(doc)},
-            {"actor": {"kind": "agent", "id": "audit-test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "audit-test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         invoke_fabric(
             "knowledge.search",
             {"query": "test document"},
-            {"actor": {"kind": "agent", "id": "audit-test"}, "cwd": str(proj)},
+            {"actor": {"kind": "agent", "id": "audit-test"}, "cwd": str(proj), "projectId": "proj-test"},
             cfg,
         )
         records = audit.load()

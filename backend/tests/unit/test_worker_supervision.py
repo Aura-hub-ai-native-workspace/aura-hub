@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import sys
+import tempfile
 import time
 
 import pytest
@@ -508,7 +510,7 @@ class TestWorkerLifecycle:
             task = asyncio.ensure_future(fire())
             started = time.monotonic()
             out = await run_file(
-                ["sleep", "30"], "/tmp", 20_000, cancel)
+                [sys.executable, "-c", "import time; time.sleep(30)"], tempfile.gettempdir(), 20_000, cancel)
             elapsed = time.monotonic() - started
             await task
             return out, elapsed
@@ -524,7 +526,7 @@ class TestWorkerLifecycle:
 
         async def main():
             started = time.monotonic()
-            out = await run_file(["sleep", "30"], "/tmp", 800)
+            out = await run_file([sys.executable, "-c", "import time; time.sleep(30)"], tempfile.gettempdir(), 800)
             return out, time.monotonic() - started
 
         out, elapsed = asyncio.run(main())

@@ -68,3 +68,16 @@ export function decide(
     },
   };
 }
+
+/**
+ * May this request stop the service? The guard is inert without a token, so on
+ * its own it would leave `/shutdown` open to anything that can reach the port;
+ * a stop request therefore also needs a configured token (the guard has by then
+ * checked the request carries it) and the `x-aura-shutdown` header a web page
+ * cannot send cross-origin. SIGTERM remains the way to stop a hand-run service.
+ */
+export function shutdownRefusal(headers: Record<string, string | string[] | undefined>, token: string): string | null {
+  if (!token) return 'shutdown needs an instance token; this service has none';
+  if (headers['x-aura-shutdown'] !== '1') return 'shutdown requires the x-aura-shutdown header';
+  return null;
+}

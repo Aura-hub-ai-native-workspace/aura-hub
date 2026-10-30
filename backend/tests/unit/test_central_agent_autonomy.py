@@ -71,7 +71,10 @@ class TestTaskGraph:
     def test_review_adds_a_second_distinct_worker(self):
         plan = _plan("Add a multiply function in src and have another AI "
                      "review it")
-        assert [t.id for t in plan.tasks] == ["implement", "review"]
+        # Autonomous by default: a reviewed change goes back to a worker if the review finds
+        # problems, with nobody having to ask. The third task skips itself on a clean review.
+        assert [t.id for t in plan.tasks] == ["implement", "review", "remediate"]
+        assert plan.tasks[2].runWhen == "upstream-reports-findings"
         review = plan.tasks[1]
         assert review.workerRole == "review"
         assert review.dependsOn == ["implement"]
@@ -326,6 +329,10 @@ class TestObjectiveAcceptance:
                         detail="Already verified in a prior leg."),
             TaskOutcome(taskId="review", state="done", performed=True,
                         verified=True),
+            # Review is followed by a conditional remediation by default; with a clean
+            # review it is recorded as skipped-and-verified, which still satisfies acceptance.
+            TaskOutcome(taskId="remediate", state="skipped", performed=False,
+                        verified=True, detail="Not needed: the review reported nothing."),
         ]
         report = VerificationEngine().verify(plan, rows)
         assert report.objectiveAccepted is True, report.unmetAcceptance
