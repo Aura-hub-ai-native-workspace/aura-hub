@@ -61,7 +61,7 @@ export interface SignalsView {
 export interface TaskView {
   id: string;
   title: string;
-  kind: 'file-operation' | 'git-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
+  kind: 'file-operation' | 'git-operation' | 'manual-operation' | 'review' | 'documentation' | 'research';
   targetFile: string | null;
   mode: 'diff' | 'new-file' | null;
   risk: RiskLevel;
@@ -170,11 +170,6 @@ function requirementsFor(task: TaskView): { requires: string[]; rationale: strin
         rationale: 'Carried out by running a command.',
       };
 
-    case 'approval':
-      return {
-        requires: [],
-        rationale: 'A human gate. Mission Control owns it; the Fabric performs nothing.',
-      };
   }
 }
 
@@ -271,11 +266,6 @@ export function planTaskInvocation(task: TaskView, projectId: string | null): Ta
         reason: 'Writing this document needs its content, which the plan does not contain. Draft it on the proposal path or complete it manually.',
       };
 
-    case 'approval':
-      return {
-        kind: 'unbound',
-        reason: 'This is a human decision point. Mission Control owns it, and the Fabric deliberately performs nothing here.',
-      };
   }
 }
 

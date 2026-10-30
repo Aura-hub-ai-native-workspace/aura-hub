@@ -77,7 +77,7 @@ export function UniversalSearch() {
               key={s}
               onClick={() => setScope(s)}
               className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium transition-colors ${
-                scope === s ? 'bg-accent text-white' : 'bg-surface-active text-text-muted hover:bg-surface-hover hover:text-text'
+                scope === s ? 'bg-accent text-on-accent' : 'bg-surface-active text-text-muted hover:bg-surface-hover hover:text-text'
               }`}
             >
               <Icon name={SEARCH_SCOPE_META[s].icon as IconName} size={11} />

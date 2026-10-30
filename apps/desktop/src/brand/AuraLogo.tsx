@@ -28,7 +28,8 @@ export function AuraLogo({ size = 28, className }: AuraLogoProps) {
       height={size}
       draggable={false}
       className={cn('select-none object-contain', className)}
-      style={{ width: size, height: size }}
+      // Black-and-white presentation only: the asset is untouched, the theme sets the filter (see --logo-filter).
+      style={{ width: size, height: size, filter: 'var(--logo-filter)' }}
     />
   );
 }

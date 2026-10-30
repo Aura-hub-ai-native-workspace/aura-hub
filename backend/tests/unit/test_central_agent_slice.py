@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.fabric import FabricConfig
@@ -27,17 +26,13 @@ def env(monkeypatch):
             return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
         def node_available(self, _cap):
             return True
-        async def request_approval(self, _req, _ctx):
-            return False
     home = Path(tempfile.mkdtemp(prefix="agent-slice-"))
     monkeypatch.setenv("AURA_HOME", str(home))
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
     host = _H()
     fabric = CapabilityFabric(host)
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     from aura.executors import all_executors
     execs = {e.capabilityId: e for e in all_executors(home)}
     for exe in execs.values():
@@ -51,7 +46,6 @@ def env(monkeypatch):
         permissions={"read": True, "write": True},
         executors=execs,
         audit_store=audit,
-        ledger=ledger,
     )
     return home, audit, ledger, cfg, CentralAgent(
         fabric_cfg=cfg, session_store=AgentSessionStore(home))
@@ -107,20 +101,6 @@ class TestVerticalSlice:
         # preflight caught it: no invocation was attempted
         invocations = [r for r in audit.load() if r.get("capabilityId")]
         assert invocations == []
-
-    def test_approval_park_surfaces_request_and_waits(self, monkeypatch, env):
-        home, audit, ledger, cfg, _ = env
-        cfg.policy_config = {"byRisk": {"low": "require-approval",
-                                        "medium": "ask-user", "high": "require-approval"}}
-        cfg.fabric.set_policy(cfg.sanitized_policy())
-        agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
-        result = agent.submit("list my workflows")
-        assert result.outcome == "awaiting-approval"
-        apr_id = result.evidence.approvalIds[0]
-        pending = ledger.pending()
-        assert [p["id"] for p in pending] == [apr_id]
-        assert list((home / "workflows").glob("*")) == [] or "workflow.list" in \
-            [p["items"][0]["capabilityId"] for p in pending]
 
     def test_events_cover_every_boundary(self, env):
         _, _, _, _, agent = env

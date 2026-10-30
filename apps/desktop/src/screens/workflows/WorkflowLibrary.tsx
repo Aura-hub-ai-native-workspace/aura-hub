@@ -90,9 +90,9 @@ export function WorkflowLibrary() {
 
       <div className="mb-5 flex flex-wrap items-center gap-2">
         <Input icon="search" placeholder="Search workflows…" value={q} onChange={(e) => setQ(e.target.value)} className="w-72" />
-        <button onClick={() => setCat(null)} className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors ${cat === null ? 'bg-accent text-white' : 'bg-surface-active text-text-muted hover:text-text'}`}>All</button>
+        <button onClick={() => setCat(null)} className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors ${cat === null ? 'bg-accent text-on-accent' : 'bg-surface-active text-text-muted hover:text-text'}`}>All</button>
         {categories.map((c) => (
-          <button key={c} onClick={() => setCat(cat === c ? null : c)} className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors ${cat === c ? 'bg-accent text-white' : 'bg-surface-active text-text-muted hover:text-text'}`}>{c}</button>
+          <button key={c} onClick={() => setCat(cat === c ? null : c)} className={`rounded-full px-3 py-1.5 text-[12px] font-medium transition-colors ${cat === c ? 'bg-accent text-on-accent' : 'bg-surface-active text-text-muted hover:text-text'}`}>{c}</button>
         ))}
       </div>
 

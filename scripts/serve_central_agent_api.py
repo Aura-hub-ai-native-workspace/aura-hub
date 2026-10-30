@@ -92,7 +92,15 @@ def main() -> int:
     # here — visibly, before anything claims to be ready — rather than
     # leaving a supervisor waiting on a port that will never open.
     print(f"AURA_PYTHON_API_READY {port}", flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+    from aura.api.shutdown import GRACEFUL_TIMEOUT_S
+
+    server = uvicorn.Server(uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning",
+        timeout_graceful_shutdown=GRACEFUL_TIMEOUT_S))
+    # POST /shutdown (token-guarded, see aura/api/shutdown.py) flips the same
+    # flag SIGTERM does, so both end in uvicorn's graceful exit.
+    app.state.shutdown.bind(lambda: setattr(server, "should_exit", True))
+    server.run()
     return 0
 
 

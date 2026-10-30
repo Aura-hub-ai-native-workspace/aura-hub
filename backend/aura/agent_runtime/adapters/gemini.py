@@ -20,6 +20,7 @@ Config mechanism (verified by machine inspection 2026-09-23):
 
 from __future__ import annotations
 
+from ..tmpname import unique_sibling
 import json
 import shutil
 from pathlib import Path
@@ -150,7 +151,7 @@ class GeminiCliAdapter(AgentConfigurationAdapter):
     def restore(self, backup_bytes: bytes) -> ConfigurationChange:
         old_cs = checksum(_SETTINGS_PATH.read_bytes()) if _SETTINGS_PATH.exists() else None
         if backup_bytes:
-            tmp = _SETTINGS_PATH.with_suffix(".tmp")
+            tmp = unique_sibling(_SETTINGS_PATH)
             tmp.write_bytes(backup_bytes)
             tmp.replace(_SETTINGS_PATH)
         return ConfigurationChange(

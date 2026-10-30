@@ -114,9 +114,14 @@ class DocumentRecord:
     metadata: dict = field(default_factory=dict)
     extraction_status: str = "ok"
     extraction_note: str = ""
+    #: The project this document belongs to. None means a record written
+    #: before projects were tracked ("unscoped"): it is never returned by a
+    #: project-scoped search and is not adopted by any project automatically.
+    project_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
+            "projectId": self.project_id,
             "docId": self.doc_id, "path": self.path,
             "mimeType": self.mime_type, "chunkCount": self.chunk_count,
             "charCount": self.char_count,
@@ -136,6 +141,10 @@ class DocumentRecord:
             metadata=d.get("metadata", {}),
             extraction_status=d.get("extractionStatus", "ok"),
             extraction_note=d.get("extractionNote", ""),
+            # Anything that is not a non-empty string is "unscoped", never a
+            # project: a damaged value must not widen visibility.
+            project_id=(d.get("projectId") if isinstance(d.get("projectId"), str)
+                        and d.get("projectId") else None),
         )
 
 
@@ -246,9 +255,24 @@ class BM25Index:
 # Knowledge Base
 # ---------------------------------------------------------------------------
 
-def _doc_id(path: str) -> str:
-    """Stable document ID from path (mtime-independent for manual inserts)."""
-    return hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+def _doc_id(path: str, project_id: str | None = None) -> str:
+    """Stable document ID (mtime-independent for manual inserts).
+
+    A scoped id includes the project, so the same file ingested into two
+    projects is two documents, and one cannot overwrite the other. Without a
+    project it is the legacy path-only id, used for records written before
+    projects were tracked."""
+    key = f"{project_id}\0{path}" if project_id else path
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def _require_project(project_id: object) -> str:
+    """The project id, or ValueError. There is deliberately no default and no
+    'all projects' value: a missing project identity is a refusal, never a
+    global scope."""
+    if not isinstance(project_id, str) or not project_id.strip():
+        raise ValueError("a project id is required: knowledge is scoped to one project")
+    return project_id
 
 
 class KnowledgeBase:
@@ -270,13 +294,21 @@ class KnowledgeBase:
 
         self._records: dict[str, DocumentRecord] = {}
         self._chunks: dict[str, Chunk] = {}     # chunk_id → Chunk
-        self._index = BM25Index()
+        # One index per project (None = unscoped legacy records), so a search
+        # never touches, or even ranks against, another project's text.
+        self._indexes: dict[str | None, BM25Index] = {}
 
         self._load()
 
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
+
+    def _index_for(self, project_id: str | None) -> BM25Index:
+        index = self._indexes.get(project_id)
+        if index is None:
+            index = self._indexes[project_id] = BM25Index()
+        return index
 
     def _index_path(self) -> Path:
         return self._dir / "index.json"
@@ -294,7 +326,8 @@ class KnowledgeBase:
         except (OSError, json.JSONDecodeError, KeyError):
             return
 
-        for doc_id in self._records:
+        for doc_id, rec in self._records.items():
+            index = self._index_for(rec.project_id)
             cp = self._chunks_path(doc_id)
             if not cp.exists():
                 continue
@@ -305,7 +338,7 @@ class KnowledgeBase:
                 try:
                     chunk = Chunk.from_dict(json.loads(line))
                     self._chunks[chunk.id] = chunk
-                    self._index.add(chunk)
+                    index.add(chunk)
                 except (json.JSONDecodeError, KeyError):
                     continue
 
@@ -321,21 +354,23 @@ class KnowledgeBase:
     # Ingestion
     # ------------------------------------------------------------------
 
-    def add_document(self, path: str | Path,
-                     extraction_result) -> DocumentRecord:
-        """Add an extracted document to the knowledge base.
+    def add_document(self, path: str | Path, extraction_result, *,
+                     project_id: str) -> DocumentRecord:
+        """Add an extracted document to one project's knowledge.
 
         Args:
             path: original file path (used as stable identifier)
             extraction_result: ExtractionResult from DocumentIngestor.
                 The .text field is chunked and indexed.
+            project_id: the project the document belongs to (required).
 
         Returns the DocumentRecord (existing record if already indexed).
         """
         from aura.multimodal.ingestor import ExtractionStatus
 
+        project_id = _require_project(project_id)
         path_str = str(Path(path).resolve())
-        doc_id = _doc_id(path_str)
+        doc_id = _doc_id(path_str, project_id)
 
         chunks = _chunk_text(extraction_result.text or "", doc_id)
 
@@ -349,6 +384,7 @@ class KnowledgeBase:
             extraction_status=getattr(extraction_result, "status",
                                        ExtractionStatus.OK).value,
             extraction_note=getattr(extraction_result, "note", "") or "",
+            project_id=project_id,
         )
 
         # Write chunks to disk
@@ -357,17 +393,19 @@ class KnowledgeBase:
             for chunk in chunks:
                 fh.write(json.dumps(chunk.to_dict()) + "\n")
                 self._chunks[chunk.id] = chunk
-                self._index.add(chunk)
+                self._index_for(project_id).add(chunk)
 
         self._records[doc_id] = record
         self._save_index()
         return record
 
-    def remove_document(self, path: str | Path) -> bool:
-        """Remove a document and its chunks. Returns True if found."""
+    def remove_document(self, path: str | Path, *, project_id: str) -> bool:
+        """Remove one project's document and its chunks. Returns True if found.
+        A document of another project, or an unscoped one, is never touched."""
+        project_id = _require_project(project_id)
         path_str = str(Path(path).resolve())
-        doc_id = _doc_id(path_str)
-        if doc_id not in self._records:
+        doc_id = _doc_id(path_str, project_id)
+        if doc_id not in self._records or self._records[doc_id].project_id != project_id:
             return False
         # Remove from in-memory structures (BM25 does not support deletion;
         # restart rebuilds cleanly from the chunk files)
@@ -385,20 +423,28 @@ class KnowledgeBase:
     # Retrieval
     # ------------------------------------------------------------------
 
-    def search(self, query: str, top_k: int = 5) -> list[SearchResult]:
-        """BM25 keyword search over all indexed chunks.
+    def search(self, query: str, top_k: int = 5, *,
+               project_id: str) -> list[SearchResult]:
+        """BM25 keyword search over ONE project's chunks.
 
-        Returns up to top_k results sorted by relevance score.
-        Each result includes the chunk text and source document path.
+        Returns up to top_k results sorted by relevance score. Each result
+        includes the chunk text and source document path. Other projects'
+        documents and unscoped legacy records are not searched.
         """
-        hits = self._index.search(query, top_k=top_k)
+        project_id = _require_project(project_id)
+        index = self._indexes.get(project_id)
+        if index is None:
+            return []
+        hits = index.search(query, top_k=top_k)
         results: list[SearchResult] = []
         for chunk_id, score in hits:
             chunk = self._chunks.get(chunk_id)
             if chunk is None:
                 continue
             record = self._records.get(chunk.doc_id)
-            if record is None:
+            # Belt and braces: the per-project index already isolates, and a
+            # record that does not carry this project is dropped regardless.
+            if record is None or record.project_id != project_id:
                 continue
             results.append(SearchResult(
                 chunk=chunk, doc_record=record,
@@ -406,13 +452,14 @@ class KnowledgeBase:
         return results
 
     def search_with_context(self, query: str, top_k: int = 5,
-                            context_chunks: int = 1) -> list[SearchResult]:
+                            context_chunks: int = 1, *,
+                            project_id: str) -> list[SearchResult]:
         """BM25 search with adjacent-chunk context expansion.
 
         For each hit, neighbouring chunks (context_chunks on each side) are
         appended to the text so the agent sees more context around the match.
         """
-        hits = self.search(query, top_k=top_k)
+        hits = self.search(query, top_k=top_k, project_id=project_id)
         expanded: list[SearchResult] = []
         for hit in hits:
             raw_ids = [
@@ -447,11 +494,23 @@ class KnowledgeBase:
             ))
         return expanded
 
+    def documents(self, *, project_id: str) -> list[dict]:
+        """One project's document records."""
+        project_id = _require_project(project_id)
+        return [r.to_dict() for r in self._records.values() if r.project_id == project_id]
+
+    def unscoped_count(self) -> int:
+        """Records written before projects were tracked. They are kept, never
+        searched and never adopted automatically; ingest the file again inside
+        its project to bring it under that project."""
+        return sum(1 for r in self._records.values() if r.project_id is None)
+
     def snapshot(self) -> dict:
-        """Secret-free status snapshot for monitoring UI."""
+        """Secret-free status snapshot for monitoring UI: counts only, no
+        document list (a list is per project, see `documents`)."""
         return {
             "documents": len(self._records),
             "chunks": len(self._chunks),
             "storeDir": str(self._dir),
-            "docs": [r.to_dict() for r in self._records.values()],
+            "unscopedDocuments": self.unscoped_count(),
         }

@@ -88,7 +88,7 @@ export function StatTile({
   return (
     <Card padding="md">
       <div className="flex items-start gap-3">
-        <span className={cn('grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-surface-active', toneText[tone])}>
+        <span className={cn('grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-surface-active', tone === 'critical' ? toneText.critical : 'text-text-muted')}>
           <Icon name={icon} size={18} />
         </span>
         <div className="min-w-0">

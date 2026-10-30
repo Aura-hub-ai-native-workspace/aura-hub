@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { motion } from 'framer-motion';
 import { Icon } from '@aura/ui';
 import { aiClient, type ProviderInfo } from '../ai/aiClient';
+import { serviceStartup } from '../backend/backendSession';
+import { pollForService } from './servicePoll';
 import { detectConnection } from './detectConnection';
 import { canVerify, type SetupPhase } from './gateRules';
 
@@ -45,6 +47,8 @@ type StageId = typeof STEPS[number]['id'] | 'timeout';
 export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () => void; onOffline: () => void }) {
   const [provider, setProvider] = useState<ProviderInfo | null>(null);
   const [serviceError, setServiceError] = useState<string | null>(null);
+  /** Final for this launch: the shell could not start or prove its service. */
+  const [serviceFailed, setServiceFailed] = useState<string | null>(null);
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
   const [phase, setPhase] = useState<Phase>('idle');
@@ -60,47 +64,36 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
    */
   const [hadSaved, setHadSaved] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    let attempt = 0;
-    let timer: ReturnType<typeof setTimeout>;
-
-    const ask = async () => {
-      if (!alive) return;
-      try {
-        const r = await aiClient.getProviders();
-        if (!alive) return;
-        const served = (r.providers ?? []).find((x) => x.selfHosted) ?? null;
-        if (served) {
-          setProvider(served);
-          setServiceError(null);
-          // A self-hosted entry is fingerprinted by its address, so a
-          // saved address reads back out of the connected list. Prefer
-          // it over the default — returning to this screen must show
-          // what was configured, not a blank form — but only ever into
-          // an untouched field, never over the user's typing.
-          const saved = (r.connected ?? []).find((c) => c.id === served.id) ?? null;
-          const savedAddr = saved?.fingerprint || '';
-          const savedModel = (r.activeModel && r.activeModel !== 'none' ? r.activeModel : '')
-            || (saved?.activeModel && saved.activeModel !== 'none' ? saved.activeModel : '');
-          if (savedAddr || savedModel) setHadSaved(true);
-          setBaseUrl((current) => current || savedAddr || served.defaultBaseUrl || '');
-          if (savedModel) setModel((current) => current || savedModel);
-          return;
-        }
-        throw new Error('no self-hosted provider offered');
-      } catch {
-        if (!alive) return;
-        attempt += 1;
-        setServiceError('Waiting for AURA’s local service to finish starting…');
-        // Backs off, but never stops: the service arriving late is the
-        // normal case, not an error state to give up in.
-        timer = setTimeout(ask, Math.min(500 * attempt, 3000));
-      }
-    };
-    void ask();
-    return () => { alive = false; clearTimeout(timer); };
-  }, []);
+  useEffect(() => pollForService({
+    // Resolves only with a self-hosted provider; anything else is "not yet".
+    request: async () => {
+      const r = await aiClient.getProviders();
+      const served = (r.providers ?? []).find((x) => x.selfHosted) ?? null;
+      if (!served) throw new Error('no self-hosted provider offered');
+      return { r, served };
+    },
+    startup: () => serviceStartup('ai'),
+    onReady: ({ r, served }) => {
+      setProvider(served);
+      setServiceError(null);
+      // A self-hosted entry is fingerprinted by its address, so a
+      // saved address reads back out of the connected list. Prefer
+      // it over the default — returning to this screen must show
+      // what was configured, not a blank form — but only ever into
+      // an untouched field, never over the user's typing.
+      const saved = (r.connected ?? []).find((c) => c.id === served.id) ?? null;
+      const savedAddr = saved?.fingerprint || '';
+      const savedModel = (r.activeModel && r.activeModel !== 'none' ? r.activeModel : '')
+        || (saved?.activeModel && saved.activeModel !== 'none' ? saved.activeModel : '');
+      if (savedAddr || savedModel) setHadSaved(true);
+      setBaseUrl((current) => current || savedAddr || served.defaultBaseUrl || '');
+      if (savedModel) setModel((current) => current || savedModel);
+    },
+    onWaiting: (message) => setServiceError(message),
+    // The shell could not start or prove the service: final for this launch.
+    onFailed: (message) => { setServiceFailed(message); setServiceError(null); },
+    schedule: (next, ms) => { const t = setTimeout(next, ms); return () => clearTimeout(t); },
+  }), []);
 
   // Recomputed as the address is typed; no network, no commitment.
   const detected = useMemo(() => detectConnection(baseUrl), [baseUrl]);
@@ -169,7 +162,7 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
     return 'active';
   };
 
-  const readyToVerify = canVerify({ baseUrl, model, detectedKind: detected.kind, phase });
+  const readyToVerify = !serviceFailed && canVerify({ baseUrl, model, detectedKind: detected.kind, phase });
 
   return (
     <motion.div
@@ -190,6 +183,12 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
       {serviceError && (
         <div className="mt-6 rounded-xl border border-amber-400/25 bg-amber-400/10 px-4 py-3 text-[13px] text-amber-200/90">
           {serviceError}
+        </div>
+      )}
+
+      {serviceFailed && (
+        <div role="alert" className="mt-6 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-[13px] leading-relaxed text-rose-200/90">
+          {serviceFailed}
         </div>
       )}
 
@@ -223,7 +222,7 @@ export function ModelServerSetup({ onActivated, onOffline }: { onActivated: () =
             onChange={(e) => { setModel(e.target.value); setPhase('idle'); }}
             spellCheck={false}
             list="aura-server-models"
-            placeholder="qwen3:4b"
+            placeholder="qwen3.5:2b"
             className="mt-2 w-full rounded-xl border border-white/12 bg-white/[0.04] px-4 py-3 font-mono text-[13.5px] text-white outline-none transition focus:border-white/30"
           />
           <datalist id="aura-server-models">

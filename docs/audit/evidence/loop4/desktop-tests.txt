@@ -1,0 +1,71 @@
+gate:     desktop-tests
+command:  npm run test:front
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-28T19:28:27+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 6.76
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 43
+----- output -----
+
+> aura-hub@0.1.20 test:front
+> vitest run --pool=threads --config apps/desktop/vite.config.ts --exclude '**/.claude/**' apps/desktop/src
+
+
+ RUN  v3.2.7 /mnt/storage/aura-hub
+
+ ✓ apps/desktop/src/backend/backendSession.test.ts (18 tests) 240ms
+ ✓ apps/desktop/src/workspace/workerSlots.test.ts (33 tests) 234ms
+ ✓ apps/desktop/src/ai/conversationScopes.test.ts (7 tests) 61ms
+ ✓ apps/desktop/src/ai/buildPlanProgress.test.ts (4 tests) 169ms
+ ✓ apps/desktop/src/workspace/toolSlots.test.ts (26 tests) 88ms
+ ✓ apps/desktop/src/ai/missionStatus.test.ts (19 tests) 24ms
+ ✓ apps/desktop/src/ops/agentStore.autonomous.test.ts (3 tests) 142ms
+ ✓ apps/desktop/src/data/stopRunStates.test.ts (24 tests) 134ms
+ ✓ apps/desktop/src/screens/workspace/neon/OrchestrationGraph.test.tsx (36 tests) 241ms
+ ✓ apps/desktop/src/ai/generalChatStop.test.ts (11 tests) 122ms
+ ✓ apps/desktop/src/screens/workspace/neon/LeftControlPanel.test.tsx (13 tests) 234ms
+ ✓ apps/desktop/src/ai/chatScope.test.ts (16 tests) 76ms
+ ✓ apps/desktop/src/screens/missions/PlanView.test.tsx (6 tests) 99ms
+ ✓ apps/desktop/src/ai/knowledgeScope.test.ts (7 tests) 51ms
+ ✓ apps/desktop/src/screens/workspace/neon/ConversationPane.test.tsx (23 tests) 204ms
+ ✓ apps/desktop/src/data/useWorkspace.intro.test.ts (4 tests) 12ms
+ ✓ apps/desktop/src/ai/agentEventStream.test.ts (12 tests) 46ms
+ ✓ apps/desktop/src/ai/cancellation.test.ts (24 tests) 28ms
+ ✓ apps/desktop/src/ai/backgroundRun.test.ts (10 tests) 34ms
+ ✓ apps/desktop/src/components/ChatEvidence.test.tsx (6 tests) 46ms
+ ✓ apps/desktop/src/screens/workspace/neon/RunObserverPanel.test.tsx (2 tests) 23ms
+ ✓ apps/desktop/src/screens/workspace/neon/chatScope.ui.test.tsx (9 tests) 77ms
+ ✓ apps/desktop/src/ai/planProgress.test.ts (4 tests) 71ms
+ ✓ apps/desktop/src/ai/agentActivity.test.ts (6 tests) 25ms
+ ✓ apps/desktop/src/screens/workspace/neon/AuraComposer.test.tsx (23 tests) 80ms
+ ✓ apps/desktop/src/screens/workspace/addToolFlow.test.ts (7 tests) 9ms
+ ✓ apps/desktop/src/onboarding/servicePoll.test.ts (5 tests) 16ms
+ ✓ apps/desktop/src/updater/updateService.test.ts (4 tests) 40ms
+ ✓ apps/desktop/src/ai/workspaceProject.test.ts (4 tests) 6ms
+ ✓ apps/desktop/src/ai/planFromChat.test.ts (3 tests) 30ms
+ ✓ apps/desktop/src/shell/environmentStatus.test.ts (5 tests) 6ms
+ ✓ apps/desktop/src/ai/askAuraRouting.test.ts (6 tests) 8ms
+ ✓ apps/desktop/src/components/ModelNotice.test.tsx (4 tests) 54ms
+ ✓ apps/desktop/src/onboarding/OnboardingFlow.test.tsx (2 tests) 93ms
+ ✓ apps/desktop/src/onboarding/gateRules.test.ts (10 tests) 15ms
+ ✓ apps/desktop/src/data/addedProject.test.ts (4 tests) 20ms
+ ✓ apps/desktop/src/ai/failureReason.test.ts (10 tests) 18ms
+ ✓ apps/desktop/src/ai/runObserver.test.ts (11 tests) 23ms
+ ✓ apps/desktop/src/onboarding/detectConnection.test.ts (17 tests) 37ms
+ ✓ apps/desktop/src/ai/chatEvents.test.ts (6 tests) 20ms
+ ✓ apps/desktop/src/onboarding/providerCheck.test.ts (3 tests) 21ms
+ ✓ apps/desktop/src/shell/statusBarIndex.test.ts (3 tests) 18ms
+ ✓ apps/desktop/src/data/resolveActiveProject.test.ts (5 tests) 10ms
+ ✓ apps/desktop/src/ai/agentNarration.test.ts (3 tests) 8ms
+ ✓ apps/desktop/src/environment/environmentStore.test.ts (3 tests) 12ms
+ ✓ apps/desktop/src/environment/EnvironmentStatusTable.test.tsx (10 tests) 13ms
+ ✓ apps/desktop/src/components/NewProjectDialog.test.ts (4 tests) 4ms
+ ✓ apps/desktop/src/screens/ai/providerGroups.test.ts (3 tests) 4ms
+
+ Test Files  48 passed (48)
+      Tests  478 passed (478)
+   Start at  19:28:27
+   Duration  8.21s (transform 5.20s, setup 0ms, collect 20.32s, tests 3.05s, environment 24ms, prepare 8.77s)
+
+----- end -----
+finished: 2026-10-28T19:28:36+05:30
+exit:     0

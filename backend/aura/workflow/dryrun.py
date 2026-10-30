@@ -2,7 +2,7 @@
 
 Port of workflow/dryrun.ts. Static graph walk + Fabric.evaluate only.
 Never calls a node runner, never invokes a capability, never resolves a
-secret value, never touches approvals or audit.
+secret value, never touches the audit trail.
 """
 from __future__ import annotations
 
@@ -118,7 +118,6 @@ def dry_run_workflow(input_: dict) -> dict:
 
     planners = bindings()
     plan: list[dict] = []
-    approvals: list[dict] = []
     denials: list[dict] = []
     policy_evaluations = 0
 
@@ -177,14 +176,10 @@ def dry_run_workflow(input_: dict) -> dict:
                 policy_evaluations += 1
                 if evaluation:
                     step["policy"] = evaluation
-                    step["wouldAskHuman"] = evaluation["decision"] in ("ask-user", "require-approval")
                     step["wouldBeDenied"] = evaluation["decision"] == "deny"
                     if step["wouldBeDenied"]:
                         denials.append({"nodeId": node["id"], "capabilityId": cap_id,
                                         "reason": evaluation["reason"], "rule": evaluation["rule"]})
-                    elif step["wouldAskHuman"]:
-                        approvals.append({"nodeId": node["id"], "capabilityId": cap_id,
-                                          "reason": evaluation["reason"], "rule": evaluation["rule"]})
         plan.append(step)
 
     valid = not any(f["level"] == "error" for f in validation.get("findings", []))
@@ -192,8 +187,8 @@ def dry_run_workflow(input_: dict) -> dict:
         "workflowId": input_["workflowId"], "workflowName": input_["workflowName"],
         "projectId": input_["projectId"], "at": _iso(),
         "validation": validation, "envelope": envelope, "plan": plan,
-        "approvalsRequired": approvals, "denials": denials,
-        "wouldRunUnattended": valid and not denials and not approvals,
+        "denials": denials,
+        "wouldRunUnattended": valid and not denials,
         "offlineCapable": envelope.get("offlineCapable", True),
         "secretsRequired": validation.get("secretsReferenced") or [],
         "secretsMissing": validation.get("secretsMissing") or [],

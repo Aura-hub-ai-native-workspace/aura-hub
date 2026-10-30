@@ -17,6 +17,8 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import sys
+import tempfile
 import time
 
 import pytest
@@ -299,6 +301,39 @@ class TestCheckWorkerScope:
         assert check.allowed is True
         assert check.outside == []
 
+    def test_the_workers_own_build_artifacts_are_not_a_deviation(self, git_repo):
+        """A worker that imports its own module leaves a bytecode cache
+        behind. That is a side effect of working, not work: the Workspace
+        change report already skips these directories, so the scope check
+        must not park the run over them."""
+        cache = os.path.join(git_repo, "__pycache__")
+        os.makedirs(cache, exist_ok=True)
+        with open(os.path.join(cache, "backend.cpython-312.pyc"), "wb") as fh:
+            fh.write(b"\x00compiled bytecode")
+        check = asyncio.run(check_worker_scope(git_repo, ["backend.py"]))
+        assert check.supported is True
+        assert check.allowed is True
+        assert check.outside == []
+
+    def test_a_real_file_outside_scope_still_parks(self, git_repo):
+        """Ignoring build artifacts must not widen the scope: a genuine
+        file outside the declared scope still parks the run."""
+        with open(os.path.join(git_repo, "notes.py"), "w") as fh:
+            fh.write("x = 1\n")
+        check = asyncio.run(check_worker_scope(git_repo, ["backend.py"]))
+        assert check.allowed is False
+        assert check.outside == ["notes.py"]
+
+    def test_a_file_named_like_a_build_dir_is_still_judged(self, git_repo):
+        """The ignore list names DIRECTORIES. A file that happens to be
+        called `build` is a file the worker wrote, and the Workspace
+        change report reports it — so the scope check judges it too."""
+        with open(os.path.join(git_repo, "build"), "w") as fh:
+            fh.write("x = 1\n")
+        check = asyncio.run(check_worker_scope(git_repo, ["backend.py"]))
+        assert check.allowed is False
+        assert check.outside == ["build"]
+
 
 # ── executor wiring ───────────────────────────────────────────────────
 
@@ -475,7 +510,7 @@ class TestWorkerLifecycle:
             task = asyncio.ensure_future(fire())
             started = time.monotonic()
             out = await run_file(
-                ["sleep", "30"], "/tmp", 20_000, cancel)
+                [sys.executable, "-c", "import time; time.sleep(30)"], tempfile.gettempdir(), 20_000, cancel)
             elapsed = time.monotonic() - started
             await task
             return out, elapsed
@@ -491,7 +526,7 @@ class TestWorkerLifecycle:
 
         async def main():
             started = time.monotonic()
-            out = await run_file(["sleep", "30"], "/tmp", 800)
+            out = await run_file([sys.executable, "-c", "import time; time.sleep(30)"], tempfile.gettempdir(), 800)
             return out, time.monotonic() - started
 
         out, elapsed = asyncio.run(main())

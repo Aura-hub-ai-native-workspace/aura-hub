@@ -40,8 +40,23 @@ function load(): PersistedStore {
   return { ...DEFAULT_STORE, ...readJsonFile<Partial<PersistedStore>>(STORE_PATH, DEFAULT_STORE) };
 }
 
+const listeners: Array<() => void> = [];
+
+/**
+ * Called after every successful write to the store. The agent view
+ * (agentView.ts) uses it to publish the secret-free projection of this store
+ * that the Python Central Agent reads, so a change made in Settings reaches it
+ * without a restart. A listener that throws never fails the save.
+ */
+export function onStoreChanged(listener: () => void): void {
+  listeners.push(listener);
+}
+
 function save(store: PersistedStore): void {
   writeJsonFile(STORE_PATH, store);
+  for (const l of listeners) {
+    try { l(); } catch { /* publishing the view must never fail a save */ }
+  }
 }
 
 /**

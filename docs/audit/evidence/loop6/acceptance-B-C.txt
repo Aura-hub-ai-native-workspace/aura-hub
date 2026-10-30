@@ -1,0 +1,15 @@
+== acceptance B: foreign servers on both ports
+Port 4319 is already in use, so AURA cannot start its local service on it.
+Port 4320 is already in use, so AURA cannot start the environment backend on it.
+RESULT PASS: both foreign servers received 0 requests
+ports held after: 0; my procs left: 0
+
+== acceptance C: takeover of the Node service port
+healthy (own services)
+aura-hub=356991  its node child=357059 (parent verified = aura-hub)
+4319 free after killing own node child: 0 listeners
+foreign server up: 1 listener
+RESULT PASS: foreign server received 0 requests in 45 s idle (its log was never created)
+python backend still ours and alive: yes
+graceful quit: tree exited
+ports held after: 0

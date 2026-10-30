@@ -20,6 +20,7 @@ written (the user configures it; noted in the change record).
 
 from __future__ import annotations
 
+from ..tmpname import unique_sibling
 import re
 import shutil
 from pathlib import Path
@@ -165,7 +166,7 @@ class ContinueCliAdapter(AgentConfigurationAdapter):
         old_cs = checksum(old_text.encode()) if old_text else None
         new_text = _upsert_aura_entry(old_text, runtime)
         _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _CONFIG_PATH.with_suffix(".tmp")
+        tmp = unique_sibling(_CONFIG_PATH)
         tmp.write_text(new_text, encoding="utf-8")
         tmp.replace(_CONFIG_PATH)
         note = None
@@ -199,7 +200,7 @@ class ContinueCliAdapter(AgentConfigurationAdapter):
 
     def restore(self, backup_bytes: bytes) -> ConfigurationChange:
         old_cs = checksum(_CONFIG_PATH.read_bytes()) if _CONFIG_PATH.exists() else None
-        tmp = _CONFIG_PATH.with_suffix(".tmp")
+        tmp = unique_sibling(_CONFIG_PATH)
         tmp.write_bytes(backup_bytes)
         tmp.replace(_CONFIG_PATH)
         return ConfigurationChange(

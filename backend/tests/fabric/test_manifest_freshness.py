@@ -12,7 +12,13 @@ the snapshot; this test fails loudly if the two ever drift.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+
+#: A fixed PATH keeps the Node oracle reproducible on POSIX. Windows has no /usr/bin and needs its own
+#: system directory variables for node to start, so there the real PATH is used.
+_NODE_PATH = os.environ.get("PATH", "") if os.name == "nt" else "/usr/bin:/bin:/usr/local/bin"
+_WIN_ENV = {k: os.environ[k] for k in ("SYSTEMROOT", "TEMP", "TMP") if k in os.environ} if os.name == "nt" else {}
 import sys
 from pathlib import Path
 
@@ -33,7 +39,7 @@ def test_manifest_snapshot_matches_typescript(tsref):  # noqa: F811
         ["node", "--input-type=module", "-e", script],
         capture_output=True, text=True, check=True,
         env={"TSREF_FABRIC_INDEX": str(tsref["index"]),
-             "PATH": "/usr/bin:/bin:/usr/local/bin"},
+             "PATH": _NODE_PATH, **_WIN_ENV},
     )
     live = json.loads(proc.stdout)
     committed = json.loads((BACKEND / "aura" / "fabric" / "manifest.json").read_text(encoding="utf-8"))

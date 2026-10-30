@@ -94,7 +94,6 @@ class TestRoleContracts:
         assert "CHANGED FILES" in prompt
         assert "focused checks" in prompt
         assert "Do not modify files outside the declared scope" in prompt
-        assert "Do not bypass or argue with approval gates" in prompt
         assert "Do not report validation you did not run" in prompt
 
     def test_testing_prompt_requires_reproducibility_and_reporting(self):
@@ -115,9 +114,8 @@ class TestRoleContracts:
         prompt = compose_role_prompt("review", "review the change")
         assert "independently inspect" in prompt
         assert "severity" in prompt
-        assert "Do not approve based on the implementing worker's own " \
-            "claims" in prompt
-        assert "does not approve or bypass anything by itself" in prompt
+        assert "do not judge from the worker's claims alone" in prompt
+        assert "does not grant or bypass anything by itself." in prompt
 
     def test_unknown_role_fails_closed(self):
         with pytest.raises(KeyError):
@@ -243,7 +241,6 @@ class _UsableExec:
 
 
 def _controller(tmp_path, monkeypatch, nodes):
-    from aura.approvals import ApprovalLedger
     from aura.audit import AuditStore
     from aura.central_agent.execution import ExecutionController
     from aura.fabric import CapabilityFabric, FabricConfig
@@ -251,7 +248,7 @@ def _controller(tmp_path, monkeypatch, nodes):
 
     monkeypatch.setenv("AURA_HOME", str(tmp_path))
     audit = AuditStore(tmp_path / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
 
     class _Nodes:
         def list_nodes(self):
@@ -268,8 +265,7 @@ def _controller(tmp_path, monkeypatch, nodes):
 
     fabric = CapabilityFabric(WiringHost(_Nodes()))
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.use_ledger(ledger)
-    cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
+    cfg = FabricConfig(fabric=fabric, audit_store=audit,
                        permissions={"read": True, "write": True},
                        executors={"agent.delegate": _UsableExec()})
     controller = ExecutionController(cfg)
@@ -517,7 +513,6 @@ def test_correction_preserves_the_role_key():
 def _agent(tmp_path, monkeypatch):
     """CentralAgent with deterministic planning and real executors
     registered but invoke_fabric faked — mirrors the autonomy harness."""
-    from aura.approvals import ApprovalLedger
     from aura.audit import AuditStore
     from aura.central_agent import AgentSessionStore, CentralAgent
     from aura.executors import all_executors
@@ -526,7 +521,7 @@ def _agent(tmp_path, monkeypatch):
 
     monkeypatch.setenv("AURA_HOME", str(tmp_path))
     audit = AuditStore(tmp_path / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
 
     class _Nodes:
         def list_nodes(self):
@@ -539,8 +534,7 @@ def _agent(tmp_path, monkeypatch):
 
     fabric = CapabilityFabric(WiringHost(_Nodes()))
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.use_ledger(ledger)
-    cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
+    cfg = FabricConfig(fabric=fabric, audit_store=audit,
                        permissions={"read": True, "write": True},
                        executors={e.capabilityId: e
                                   for e in all_executors(None)})
@@ -587,108 +581,9 @@ class TestRoleInEvents:
 # ── 17. the approval gate stays authoritative over roles ─────────────
 
 
-class TestRoleApprovalGate:
-    def _stack(self, tmp_path, monkeypatch):
-        from aura.approvals import ApprovalLedger
-        from aura.audit import AuditStore
-        from aura.fabric import CapabilityFabric, FabricConfig
-        from aura.fabric import invoke_fabric
-        from aura.fabric.host import WiringHost
-
-        monkeypatch.setenv("AURA_HOME", str(tmp_path))
-        home = tmp_path / "home"
-        ap_file = home / "agent" / "approvals.json"
-        ap_file.parent.mkdir(parents=True, exist_ok=True)
-        from aura.jsonutil import read_json_file, write_json_atomic
-
-        def load():
-            return read_json_file(ap_file, [])
-
-        def save(reqs):
-            write_json_atomic(ap_file, reqs)
-
-        audit = AuditStore(home / "audit" / "trail.jsonl")
-        ledger = ApprovalLedger(audit_append=audit.append)
-        ledger.attach_store(load, save)
-
-        class _Nodes:
-            def list_nodes(self):
-                return [{"id": "opencode", "name": "OpenCode",
-                         "binary": "opencode",
-                         "capabilities": ["coding-agent", "terminal"]}]
-
-        fabric = CapabilityFabric(WiringHost(_Nodes()))
-        fabric.attach_approval_store(load, save)
-        fabric.attach_audit_store(audit.load, audit.append)
-        fabric.use_ledger(ledger)
-
-        ran: list[dict] = []
-
-        class _Exec:
-            capabilityId = "agent.delegate"
-
-            def supportsNode(self, _node):
-                return True
-
-            async def run(self, invocation):
-                ran.append(dict(invocation.get("input") or {}))
-                return {"ok": True, "detail": "done",
-                        "output": {"stdout": "ok", "exitCode": 0,
-                                   "role": (invocation.get("input") or {})
-                                   .get("role")}}
-
-            async def verify(self, _inv, _res):
-                return {"passed": True, "kind": "exit-code", "detail": "0"}
-
-        fabric.executors["agent.delegate"] = _Exec()
-        cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
-                           permissions={"read": True, "write": True})
-        return invoke_fabric, cfg, ledger, ran
-
-    def test_a_role_task_runs_autonomously_with_role_preserved(
-            self, tmp_path, monkeypatch):
-        invoke_fabric, cfg, ledger, ran = self._stack(tmp_path, monkeypatch)
-        payload = {"task": "fix the bug", "role": "code",
-                   "scopePaths": ["src"]}
-        context = {"actor": {"kind": "agent", "id": "central-agent"},
-                   "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
-        result = invoke_fabric("agent.delegate", payload, dict(context), cfg)
-        assert result["outcome"] == "succeeded", result["detail"]
-        assert result["policy"]["rule"] == "autonomous-delegation"
-        assert "approvalId" not in result
-        assert ran[0]["role"] == "code"
-
-    def test_a_role_changed_is_a_new_autonomous_run(
-            self, tmp_path, monkeypatch):
-        invoke_fabric, cfg, ledger, ran = self._stack(tmp_path, monkeypatch)
-        payload = {"task": "fix the bug", "role": "code"}
-        context = {"actor": {"kind": "agent", "id": "central-agent"},
-                   "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
-        first = invoke_fabric("agent.delegate", payload, dict(context), cfg)
-        assert first["outcome"] == "succeeded", first["detail"]
-        assert first["policy"]["rule"] == "autonomous-delegation"
-        assert "approvalId" not in first
-        # A changed role is a new governed delegation, not a previously
-        # decided human approval to compare against.
-        second = invoke_fabric(
-            "agent.delegate", {**payload, "role": "review"},
-            dict(context), cfg)
-        assert second["outcome"] == "succeeded", second["detail"]
-        assert second["policy"]["rule"] == "autonomous-delegation"
-        assert "approvalId" not in second
-        assert ran[1]["role"] == "review"
-
-
-# ── 19 + 20. roles narrow routing only; provider routing untouched ───
 
 
 class TestNoProviderRegression:
-    def test_roles_map_only_to_node_capabilities(self):
-        from aura.central_agent.worker_match import ROLE_NODE_CAPABILITY
-
-        for role in _roles():
-            assert ROLE_NODE_CAPABILITY[role] in {"coding-agent", "terminal"}
-
     def test_no_provider_means_deterministic_planning_not_a_model_swap(
             self, tmp_path, monkeypatch):
         from aura.central_agent.model_routing import default_model_port
@@ -707,3 +602,9 @@ class TestNoProviderRegression:
         assert "baseUrl" not in source
         assert "apiKey" not in source
         assert "providers.json" not in source
+
+    def test_roles_map_only_to_node_capabilities(self):
+        from aura.central_agent.worker_match import ROLE_NODE_CAPABILITY
+
+        for role in _roles():
+            assert ROLE_NODE_CAPABILITY[role] in {"coding-agent", "terminal"}

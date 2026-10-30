@@ -1,3 +1,4 @@
+import { backendFetch } from '../backend/backendSession';
 /**
  * missionClient — fetch wrappers for Mission Control v2, matching
  * `diagnosisClient.ts`'s style and split out of `aiClient.ts` the same
@@ -72,7 +73,7 @@ export type GoalPriority = 'high' | 'medium' | 'low';
 export interface MissionGoal { id: string; focusAreaId: string; title: string; rationale: string; relatedEvidence: string[]; priority: GoalPriority }
 
 export type AutomationLevel = 'automatic' | 'assisted' | 'manual';
-export type TaskKind = 'file-operation' | 'git-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
+export type TaskKind = 'file-operation' | 'git-operation' | 'manual-operation' | 'review' | 'documentation' | 'research';
 export type TaskPriority = 'critical' | 'high' | 'medium' | 'low';
 export type TaskRisk = 'low' | 'medium' | 'high';
 export type TaskMode = 'diff' | 'new-file';
@@ -98,6 +99,14 @@ export interface MissionTask {
   owner: 'ai' | 'human';
   automationLevel: AutomationLevel;
   status: TaskStatus;
+  /** Planner: other project files the task works with. */
+  files?: string[];
+  /** Planner: 'aura' (AURA writes targetFile) or a coding agent's node id. */
+  worker?: string;
+  expectedOutput?: string;
+  verification?: string;
+  /** Planner: catalogue ids of tools the task needs (e.g. "pnpm"). */
+  requires?: string[];
 }
 
 export interface GoalGraph { goals: MissionGoal[]; tasks: MissionTask[] }
@@ -161,7 +170,6 @@ export interface QualityScore {
 }
 
 /* ── Approval + the mission record ────────────────────────────────── */
-export interface MissionApproval { status: 'pending' | 'approved' | 'rejected'; at?: string }
 
 /* ── Mission Control v3 — execution domain ───────────────────────── */
 export type ExecutionTaskStatus =
@@ -206,7 +214,9 @@ export interface ReplayFrame {
 export interface MissionMetrics {
   tasksTotal: number; tasksQueued: number; tasksWaiting: number; tasksBlocked: number;
   tasksRunning: number; tasksReview: number; tasksCompleted: number; tasksRejected: number;
-  tasksFailed: number; tasksCancelled: number; completion: number;
+  tasksFailed: number; tasksCancelled: number;
+  /** Percent, 0..100 (the service already scales it). */
+  completion: number;
   criticalPathLength: number; criticalPathDone: number; criticalPathTotal: number;
   parallelBatches: number; currentBatch: number; estimatedRemainingMinutes: number;
   elapsedMinutes: number; throughput: number;
@@ -235,15 +245,57 @@ export interface MissionRecord {
   risk: RiskAnalysis | null;
   review: MissionReviewVerdict | null;
   quality: QualityScore | null;
-  approval: MissionApproval;
   taskRuns: MissionTaskRun[];
   execution?: MissionExecution;
   error?: string;
+  /** Planner: bumped on every saved edit; a handoff names the revision it sends. */
+  revision?: number;
+  planIssues?: PlanIssue[];
+  planning?: { path: 'deterministic' | 'model'; startedAt: string; finishedAt?: string; durationMs?: number; model?: string | null };
+  handoffs?: PlanHandoff[];
+  acceptance?: string[];
+  context?: { text: string; scope: string; records: number; sources: { title: string; url: string }[] };
+  history?: PlanRevision[];
 }
+
+export interface PlanRevision {
+  revision: number; at: string; acceptance: string[];
+  tasks: { id: string; title: string; description: string; targetFile: string | null; files: string[]; dependencies: string[]; worker?: string }[];
+}
+
+/* ── Planner ──────────────────────────────────────────────────────── */
+
+export interface PlanIssue { message: string; taskId?: string; blocksHandoff: boolean }
+
+export interface PlanHandoff {
+  id: string; revision: number; sessionId: string;
+  status: 'reserved' | 'started' | 'failed'; at: string; error?: string;
+}
+
+/** What a person may change on one task (see ai-service mission/planner.ts). */
+export interface PlanTaskEdit {
+  id?: string; title: string; description?: string; targetFile?: string | null;
+  files?: string[]; dependencies?: string[]; worker?: string | null;
+  expectedOutput?: string; verification?: string; requires?: string[];
+}
+
+/** The Planner → Workspace contract (backend plan_handoff.py validates it). */
+export interface WorkspacePlan {
+  source: 'planner'; planId: string; revision: number; goal: string;
+  acceptance: string[];
+  context: { text: string; scope: string; sources: { title: string; url: string }[] } | null;
+  tasks: { id: string; title: string; description: string; targetFile: string | null; files: string[]; dependsOn: string[]; worker: string | null; expectedOutput: string; verification: string; requires: string[] }[];
+}
+
+export interface HandoffReservation {
+  ok: boolean; status: number; error?: string; issues?: PlanIssue[];
+  handoff?: PlanHandoff; duplicate?: boolean; plan?: WorkspacePlan; projectId?: string; projectPath?: string;
+}
+
 export interface MissionSummary {
   id: string; projectId: string; text: string; createdAt: string;
   category: MissionCategory; goalCount: number; taskCount: number;
-  approval: MissionApproval; qualityOverall: number | null;
+  qualityOverall: number | null;
   execution: MissionExecution | null;
 }
 
@@ -273,7 +325,7 @@ export interface MissionReplayPayload {
 
 export interface MissionDashboard {
   totals: {
-    projects: number; missions: number; planned: number; approved: number;
+    projects: number; missions: number; planned: number;
     active: number; reviewing: number; completed: number; cancelled: number; failed: number;
   };
   tasks: { total: number; completed: number; review: number; failed: number; blocked: number; running: number; completion: number };
@@ -300,6 +352,7 @@ export interface ExecutionNodeStatus { nodes: ExecutionNode[]; resolvedAt: strin
 
 export type MissionEvent =
   | { type: 'stage'; stage: string; status: 'start' | 'done'; at: string }
+  | { type: 'progress'; stage: string; elapsedMs: number; deadlineMs: number; receivedChars: number }
   | { type: 'classification'; classification: IntentClassification }
   | { type: 'intent'; intent: ExtractedIntent }
   | { type: 'signals'; signals: MissionSignals }
@@ -334,73 +387,109 @@ async function readJson<T>(res: Response, what = 'Mission request'): Promise<T> 
   return body as T;
 }
 
+/** POST, then read `data:` lines of mission events until the stream ends. */
+async function streamMissionEvents(url: string, payload: unknown, onEvent: (e: MissionEvent) => void, signal?: AbortSignal): Promise<void> {
+  let res: Response;
+  try {
+    res = await backendFetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload), signal,
+    });
+  } catch (e) {
+    onEvent({ type: 'error', message: (e as Error).message || 'Service unreachable' });
+    return;
+  }
+  if (!res.ok) {
+    let message = `Planning stream failed (${res.status})`;
+    try {
+      const body = (await res.json()) as { error?: unknown };
+      if (body && typeof body.error === 'string' && body.error) message = body.error;
+    } catch { /* unreadable error body; keep the status */ }
+    onEvent({ type: 'error', message });
+    return;
+  }
+  if (!res.body) { onEvent({ type: 'error', message: 'No stream body' }); return; }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const d = line.slice(5).trim();
+        if (d === '[DONE]') return;
+        let ev: MissionEvent;
+        try {
+          ev = JSON.parse(d) as MissionEvent;
+        } catch {
+          onEvent({ type: 'error', message: 'Received malformed data from the server.' });
+          continue;
+        }
+        onEvent(ev);
+      }
+    }
+  } catch (e) {
+    if ((e as Error).name !== 'AbortError') onEvent({ type: 'error', message: (e as Error).message });
+  } finally {
+    try { reader.releaseLock(); } catch { /* noop */ }
+  }
+}
+
 export const missionClient = {
   list: (projectId: string): Promise<{ missions: MissionSummary[] }> =>
-    fetch(`${BASE}/projects/${projectId}/missions`).then(async (r) => {
+    backendFetch(`${BASE}/projects/${projectId}/missions`).then(async (r) => {
       if (!r.ok) throw new Error(`Mission list failed (${r.status})`);
       return r.json();
     }),
 
   get: (projectId: string, mid: string): Promise<MissionRecord | { error: string }> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}`).then((r) => readJson(r)),
-
-  approve: (projectId: string, mid: string): Promise<MissionRecord> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/approve`, { method: 'POST' }).then((r) => readJson(r)),
-
-  reject: (projectId: string, mid: string, reason?: string): Promise<MissionRecord> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/reject`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) }).then((r) => readJson(r)),
+    backendFetch(`${BASE}/projects/${projectId}/missions/${mid}`).then((r) => readJson(r)),
 
   start: (projectId: string, mid: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/start`, { method: 'POST' }).then((r) => readJson(r)),
+    backendFetch(`${BASE}/projects/${projectId}/missions/${mid}/start`, { method: 'POST' }).then((r) => readJson(r)),
 
   pause: (projectId: string, mid: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/pause`, { method: 'POST' }).then((r) => readJson(r)),
+    backendFetch(`${BASE}/projects/${projectId}/missions/${mid}/pause`, { method: 'POST' }).then((r) => readJson(r)),
 
   resume: (projectId: string, mid: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/resume`, { method: 'POST' }).then((r) => readJson(r)),
+    backendFetch(`${BASE}/projects/${projectId}/missions/${mid}/resume`, { method: 'POST' }).then((r) => readJson(r)),
 
   cancel: (projectId: string, mid: string, reason?: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/cancel`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) }).then((r) => readJson(r)),
-
-  review: (projectId: string, mid: string, pass: boolean, note?: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/review`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pass, note }) }).then((r) => readJson(r)),
+    backendFetch(`${BASE}/projects/${projectId}/missions/${mid}/cancel`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ reason }) }).then((r) => readJson(r)),
 
   replay: (projectId: string, mid: string): Promise<MissionReplayPayload | { error: string }> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/replay`).then((r) => readJson(r)),
+    backendFetch(`${BASE}/projects/${projectId}/missions/${mid}/replay`).then((r) => readJson(r)),
 
   dashboard: (): Promise<MissionDashboard> =>
-    fetch(`${BASE}/missions/dashboard`).then(async (r) => {
+    backendFetch(`${BASE}/missions/dashboard`).then(async (r) => {
       if (!r.ok) throw new Error(`Mission dashboard failed (${r.status})`);
       return r.json();
     }),
 
   /** Real execution-node detection from the Capability Fabric (server-side PATH probe). */
   nodes: (projectId: string): Promise<ExecutionNodeStatus> =>
-    fetch(`${BASE}/projects/${projectId}/nodes`).then(async (r) => {
+    backendFetch(`${BASE}/projects/${projectId}/nodes`).then(async (r) => {
       if (!r.ok) throw new Error(`Execution node status failed (${r.status})`);
       return r.json();
     }),
 
-  runTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/run`, { method: 'POST' }).then((r) => readJson(r)),
 
-  acceptTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/accept`, { method: 'POST' }).then((r) => readJson(r)),
 
-  rejectTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/reject`, { method: 'POST' }).then((r) => readJson(r)),
 
   completeManualTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/complete`, { method: 'POST' }).then((r) => readJson(r)),
+    backendFetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/complete`, { method: 'POST' }).then((r) => readJson(r)),
 
-  retryTask: (projectId: string, mid: string, taskId: string): Promise<MissionTaskActionResult> =>
-    fetch(`${BASE}/projects/${projectId}/missions/${mid}/tasks/${taskId}/retry`, { method: 'POST' }).then((r) => readJson(r)),
 
   /** Stream the current ready wave (SSE) — emits ExecutionEvents as the engine advances. */
   async execute(projectId: string, mid: string, onEvent: (e: ExecutionEvent) => void, opts: { maxParallel?: number; signal?: AbortSignal } = {}): Promise<void> {
     let res: Response;
     try {
-      res = await fetch(`${BASE}/projects/${projectId}/missions/${mid}/execute`, {
+      res = await backendFetch(`${BASE}/projects/${projectId}/missions/${mid}/execute`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ maxParallel: opts.maxParallel ?? 2 }),
         signal: opts.signal,
@@ -451,55 +540,32 @@ export const missionClient = {
     }
   },
 
-  async create(projectId: string, text: string, onEvent: (e: MissionEvent) => void, signal?: AbortSignal): Promise<void> {
-    let res: Response;
-    try {
-      res = await fetch(`${BASE}/projects/${projectId}/missions`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), signal,
-      });
-    } catch (e) {
-      onEvent({ type: 'error', message: (e as Error).message || 'Service unreachable' });
-      return;
-    }
-    if (!res.ok) {
-      let message = `Mission stream failed (${res.status})`;
-      try {
-        const body = (await res.json()) as { error?: unknown };
-        if (body && typeof body.error === 'string' && body.error) message = body.error;
-      } catch { /* unreadable error body; keep the status */ }
-      onEvent({ type: 'error', message });
-      return;
-    }
-    if (!res.body) { onEvent({ type: 'error', message: 'No stream body' }); return; }
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          if (!line.startsWith('data:')) continue;
-          const d = line.slice(5).trim();
-          if (d === '[DONE]') return;
-          let ev: MissionEvent;
-          try {
-            ev = JSON.parse(d) as MissionEvent;
-          } catch {
-            onEvent({ type: 'error', message: 'Received malformed data from the server.' });
-            continue;
-          }
-          onEvent(ev);
-        }
-      }
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') onEvent({ type: 'error', message: (e as Error).message });
-    } finally {
-      try { reader.releaseLock(); } catch { /* noop */ }
-    }
+  create(projectId: string, text: string, onEvent: (e: MissionEvent) => void, signal?: AbortSignal,
+    /** Shared project context the plan must honour (decisions, requirements, research). */
+    context?: { text: string; scope: string; records: number; sources: { title: string; url: string }[] }): Promise<void> {
+    return streamMissionEvents(`${BASE}/projects/${projectId}/missions`, { text, ...(context ? { context } : {}) }, onEvent, signal);
   },
+
+  /** Retry planning for an existing plan, in place (Planner). */
+  replan(projectId: string, mid: string, onEvent: (e: MissionEvent) => void, signal?: AbortSignal): Promise<void> {
+    return streamMissionEvents(`${BASE}/projects/${projectId}/missions/${mid}/replan`, {}, onEvent, signal);
+  },
+
+  /** Save edited tasks; `revision` is the revision the editor started from. */
+  savePlan: (projectId: string, mid: string, revision: number, tasks: PlanTaskEdit[], acceptance?: string[]): Promise<{ ok: boolean; error?: string; mission?: MissionRecord }> =>
+    backendFetch(`${BASE}/projects/${projectId}/missions/${mid}/plan`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision, tasks, acceptance }),
+    }).then((r) => r.json()),
+
+  /** Reserve the handoff of one revision (idempotent per revision). */
+  reserveHandoff: (projectId: string, mid: string, revision: number): Promise<HandoffReservation> =>
+    backendFetch(`${BASE}/projects/${projectId}/missions/${mid}/handoff`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ revision }),
+    }).then((r) => r.json()),
+
+  /** Record what Workspace said about a reserved handoff. */
+  settleHandoff: (projectId: string, mid: string, hid: string, status: 'started' | 'failed', error?: string): Promise<{ ok: boolean; mission?: MissionRecord }> =>
+    backendFetch(`${BASE}/projects/${projectId}/missions/${mid}/handoff/${hid}`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status, error }),
+    }).then((r) => r.json()),
 };

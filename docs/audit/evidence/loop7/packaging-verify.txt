@@ -1,0 +1,102 @@
+gate:     packaging-verify
+command:  env -u I3SOCK DISPLAY=:98 node scripts/packaging-verify.mjs
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-28T23:22:47+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 1.06
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 69
+----- output -----
+=== 0. PACKAGED ARTIFACT ===
+PASS  0a. an AppImage was produced — /mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/bundle/appimage/AURA Hub_0.1.20_amd64.AppImage
+PASS  0b. a .deb was produced — /mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/bundle/deb/AURA Hub_0.1.0_amd64.deb
+      AppImage size: 181.5 MB
+
+=== 1. PACKAGED RESOURCES ===
+PASS  1a. the AppImage extracts
+PASS  1b. the AI service is packaged inside the artifact — …/usr/lib/AURA Hub/resources/ai-service.mjs
+PASS  1c. no secrets or user state were bundled — no .env / keys / policy in the bundle
+PASS  1d. no development tree was packaged — only the staged runtime dependency (1 node_modules)
+PASS  1e. only the declared runtime dependency is staged — typescript
+PASS  1f. the Python environment backend is packaged inside the artifact — …/usr/lib/AURA Hub/resources/python/scripts/serve_central_agent_api.py + aura package
+PASS  1g. the packaged resource directory outranks the development fallback — resource lookup precedes the CARGO_MANIFEST_DIR fallback
+PASS  1h. the backend's third-party dependencies are packaged with it — site-packages + 3 ABI build(s) of pydantic_core
+PASS  1l. a Node runtime is packaged inside the artifact — Node v22.23.2, packaged and executable
+PASS  1j. a Python interpreter is packaged inside the artifact — CPython 3.12.14, packaged and executable
+PASS  1k. the packaged interpreter alone can import the packaged backend — the shipped interpreter imports the shipped backend
+PASS  1m. the document libraries (python-docx, openpyxl, reportlab, pypdf, Pillow, lxml) are packaged — docx, openpyxl, reportlab, pypdf, PIL, lxml
+PASS  1n. the packaged interpreter alone writes and reads DOCX, XLSX and PDF — DOCX, XLSX and PDF written and read back; python-docx=1.2.0 openpyxl=3.1.5 reportlab=5.1.0 pypdf=6.21.4 pillow=13.0.0 lxml=6.1.3
+PASS  1i. the packaged backend imports on an interpreter with no packages installed — imports on /home/Groot/.pyenv/shims/python3 with nothing installed
+
+=== 2. LAUNCH OUTSIDE THE REPOSITORY ===
+      cwd     : /tmp/aura-run-iaeSW8 (outside the repository)
+      PATH    : /usr/bin:/bin:/home/Groot/.pyenv/shims (deliberately minimal)
+      python  : /home/Groot/.pyenv/shims
+      AURA_HOME: /tmp/aura-home-SfB6jb
+
+=== 3. SERVICE LIFECYCLE ===
+PASS  3a. the packaged application started its own AI service — healthy on 4319
+PASS  3b. the service is a child of the packaged app, not a leftover — pid 471633
+PASS  3f. the backend was resolved from the packaged resources, not a source tree — /tmp/.mount_AURA HAibAKj/usr/lib/AURA Hub/resources/python/scripts/serve_central_agent_api.py
+PASS  3g. the packaged backend serves its own health endpoint — backend=python on 4320
+PASS  3i. the service ran on the Node AURA ships, not one from the machine — /tmp/.mount_AURA HAibAKj/usr/lib/AURA Hub/resources/runtime/node/bin/node
+PASS  3h. the backend ran on the interpreter AURA ships, not one from the machine — /tmp/.mount_AURA HAibAKj/usr/lib/AURA Hub/resources/python/runtime/bin/python3
+PASS  3j. the suite proved it owns each service it tests (launch token read from its own process tree, verified by the service's challenge) — Node service proven, Python backend proven
+PASS  3d. the launched process maps a real application window — pid=471567 title="AURA Hub"
+PASS  3e. the window is titled as AURA Hub — AURA Hub
+PASS  3c. health reports a real provider/index state — index=empty provider=(no provider)
+
+=== 4. GOVERNED STACK ===
+PASS  4a. the Capability Fabric answers — 35 capabilities
+PASS  4b. the policy engine is present with its risk defaults — byRisk.high=auto-execute allowAutonomous=true
+PASS  4c. the environment scan runs in the packaged app — 62 catalogue entries probed
+PASS  4d. real installed tools were detected — 29 present, e.g. aura-mission-control, aura-knowledge, aura-memory, aura-diagnosis, aura-governance, git, github-cli, cursor
+PASS  4e. a tool outside the launcher PATH is still detected (PATH seeding works) — opencode present=true 1.18.35 — Found OpenCode 1.18.35 on this machine.
+PASS  4f. detection reports real parsed versions, not placeholders — git=2.56.0
+PASS  4g. a genuinely absent tool is reported absent, not faked — 33 reported absent
+
+=== 5. GOVERNED EXECUTION ===
+PASS  5a. the packaged app can register a real project — packaged-project → /tmp/aura-run-iaeSW8/packaged-project
+PASS  5a2. a low-risk capability really executes in the packaged app — outcome=succeeded detail=Git status completed. Working tree has changes.
+PASS  5b. execution is attributed to the real node that performed it — executedNodeId=git requested=none rule=risk-default:low
+PASS  5c. an irreversible high-risk capability is stopped before it runs — outcome=denied rule=irreversible-floor attempts=0
+PASS  5d. the stop is the non-configurable floor, not a risk default — rule=irreversible-floor
+PASS  5e. the denial is audited and nothing was queued for approval (a floor denies; it does not hold) — 0 pending, audit outcome=denied rule=irreversible-floor
+PASS  5f. the audit log records the packaged app's invocations — 2 record(s)
+PASS  5g. a Stop on an already-finished automation run says so (409) and leaves the run as it finished — run completed, stop → 409 that run already completed — there is nothing to cancel, run after: completed
+
+=== 6. USER STATE LOCATION ===
+PASS  6a. state is written under AURA_HOME, not the app directory — 28 file(s) under /tmp/aura-home-SfB6jb
+PASS  6b. nothing was written into the extracted application tree — installation tree untouched
+PASS  6c. the service log lives under AURA_HOME — 0.3 KB
+
+=== 7. RENDERER CONFINEMENT ===
+      commands exposed to the renderer: environment_ping, ui_token, update_install_kind, code_read_dir, code_read_file, code_write_file, code_create_file, service_status, environment_backend_status, backend_verify, backend_session
+PASS  7a. no shell/exec command is exposed to the renderer — environment_ping, ui_token, update_install_kind, code_read_dir, code_read_file, code_write_file, code_create_file, service_status, environment_backend_status, backend_verify, backend_session
+PASS  7b. no renderer-invokable command can spawn a process — 12 commands, none spawn
+PASS  7b2. every process the shell starts is a resolved interpreter — 3 spawn site(s), all resolved: &node, python, &python
+PASS  7b3. the shell never spawns a shell — no sh/bash/cmd/powershell spawn
+PASS  7b4. any -c payload is a fixed literal, never composed at runtime — no -c payload at all; the shell only runs resolved script paths
+PASS  7c. every filesystem command is root-confined — 4 fs command(s), 0 unguarded
+PASS  7d. the capability ACL grants exactly the approved, justified set — ["core:default","updater:default","process:allow-restart"]
+PASS  7d2. no permission grants arbitrary execution — no shell/exec/spawn/exit grant
+PASS  7e. the window is not shown before the service is ready — visible=false
+
+=== 8. PORT CONFLICT ===
+PASS  8a. a second instance reuses the running service instead of starting another — owners before=[471633] after=[471633]
+      second instance said: Gtk-Message: 23:23:08.868: Failed to load module "colorreload-gtk-module" Gtk-Message: 23:23:08.868: Failed to load module "window-decorations-gtk-module" MESA-
+PASS  8b. closing the second instance leaves the first service running — service still healthy
+
+=== 9. SHUTDOWN ===
+PASS  9a. quitting the app shuts its service down — port released
+PASS  9b. no orphaned service process is left behind — none
+PASS  9c. the service is genuinely gone, not just unreferenced — status=0
+
+=== 8c. FOREIGN PROCESS ON THE PORT ===
+PASS  8c1. the impostor holds the port — pid 472394 on 4319
+PASS  8c2. AURA did NOT kill the process that owned the port — pid 472394 still running
+PASS  8c3. AURA did not attach to the unidentified service — port owners: [472394]
+PASS  8c4. AURA reported the conflict in plain language — AURA Hub: Port 4319 is already in use, so AURA cannot start its local service on it. AURA only attaches to a backend it started itself, because only that backen
+
+RESULT: ALL CHECKS PASSED
+----- end -----
+finished: 2026-10-28T23:23:58+05:30
+exit:     0

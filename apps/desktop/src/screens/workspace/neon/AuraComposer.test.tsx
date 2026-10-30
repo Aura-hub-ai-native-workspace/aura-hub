@@ -196,18 +196,19 @@ describe('AuraComposer — file upload is real and singular', () => {
 
 /* ── it is the request that carries the choice ───────────────────────────── */
 
-describe('the web-research choice is request-scoped', () => {
+describe('the web-research choice is on by default and still travels with each request', () => {
   const SCREEN = readFileSync(
     new URL('../../WorkspaceScreen.tsx', import.meta.url), 'utf8');
 
-  it('starts off, and no request inherits the last one', () => {
-    expect(SCREEN).toMatch(/const \[webResearch, setWebResearch\] = useState\(false\);/);
-    expect(SCREEN).toContain('setWebResearch(false)');
+  it('starts on and stays as the person left it (no reset after a send)', () => {
+    // Like a chat assistant: the agent searches when a question needs the web (the backend
+    // decides per request). Switching it off is the person's choice and is not undone.
+    expect(SCREEN).toMatch(/const \[webResearch, setWebResearch\] = useState\(true\);/);
+    expect(SCREEN).not.toContain('setWebResearch(false)');
   });
 
-  it('captures the value as it stands and sends it with that request', () => {
-    expect(SCREEN).toContain('const choice = webResearch;');
-    expect(SCREEN).toContain('conv.send(text, { webResearch: choice })');
+  it('sends the current value explicitly with each request', () => {
+    expect(SCREEN).toContain('conv.send(text, { webResearch })');
   });
 
   it('carries it on both a new session and a follow-up leg', () => {

@@ -62,6 +62,9 @@ interface Stub {
   tagsHits: number;
 }
 
+/** Budget a reasoning model needs before its visible answer appears. */
+const REASONING_BUDGET = 512;
+
 function startStub(tagsHitsAllowed: number): Promise<Stub> {
   return new Promise((resolve) => {
     const stub = { tagsHitsAllowed, tagsHits: 0 } as Stub;
@@ -80,12 +83,23 @@ function startStub(tagsHitsAllowed: number): Promise<Stub> {
         return;
       }
       if (req.method === 'POST' && req.url === '/v1/chat/completions') {
-        // A real streamed generation: one token chunk, then done.
         // Only this exact path is served — posting anywhere else 404s,
         // which is what pins the endpoint-format handling.
-        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-        res.write(`data: {"choices":[{"delta":{"content":"AURA_CONNECTION_OK"}}]}\n\n`);
-        res.end('data: [DONE]\n\n');
+        // Like a reasoning model, it spends the token budget on reasoning
+        // first: with a small budget it returns reasoning and no answer.
+        let raw = '';
+        req.on('data', (c) => { raw += c; });
+        req.on('end', () => {
+          const body = JSON.parse(raw || '{}') as { max_tokens?: number };
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+          if ((body.max_tokens ?? 0) < REASONING_BUDGET) {
+            res.write(`data: {"choices":[{"delta":{"reasoning":"Thinking about the request"}}]}\n\n`);
+            res.end('data: [DONE]\n\n');
+            return;
+          }
+          res.write(`data: {"choices":[{"delta":{"content":"AURA_CONNECTION_OK"}}]}\n\n`);
+          res.end('data: [DONE]\n\n');
+        });
         return;
       }
       res.writeHead(404, { 'content-type': 'application/json' });
@@ -105,6 +119,25 @@ function startStub(tagsHitsAllowed: number): Promise<Stub> {
 // provider module graph per test, which can exceed the default 10s hook
 // timeout on cold CI runners — give this hook an explicit bounded timeout.
 beforeEach(freshModules, 30_000);
+
+describe('verifySelfHosted probe budget', () => {
+  it('a reasoning model that answers only after thinking still verifies', async () => {
+    const stub = await startStub(Infinity);
+    try {
+      const manager = new WorkspaceManager({});
+      const r = await manager.verifySelfHosted('ollama', stub.base, MODEL);
+      expect(r.ok).toBe(true);
+      expect(r.chunks).toBeGreaterThan(0);
+    } finally {
+      stub.server.close();
+    }
+  });
+
+  it('the probe asks for at least the reasoning budget', async () => {
+    const { VERIFY_PROBE_TOKENS } = await import('../workspace');
+    expect(VERIFY_PROBE_TOKENS).toBeGreaterThanOrEqual(REASONING_BUDGET);
+  });
+});
 
 describe('verifySelfHosted save stage', () => {
   it('verifies, saves, and persists the exact verified URL and model', async () => {

@@ -1,8 +1,8 @@
 /**
  * agentEngine — the Autonomous Engineering Agent's brain.
  * ==================================================================
- * A deterministic (no ML), always human-gated improvement loop that
- * sits on top of Engineering Memory + the Learning Engine. Every tick:
+ * A deterministic (no ML) improvement loop that runs without human approval.
+ * Every tick:
  *
  *   1. OBSERVE  — re-analyze real memory records and read the Learning
  *                 Engine's derived patterns/predictions/health.
@@ -11,14 +11,10 @@
  *                 hotspot, a high-risk prediction, a regression risk).
  *   3. PLAN     — write the rationale, expected outcome and verify
  *                 target for each candidate.
- *   4. PROPOSE  — enqueue a campaign and request human approval
- *                 (notification + approval queue in the UI).
- *   5. EXECUTE  — ONLY after explicit human approval does the agent act,
- *                 and its only action is creating a REAL improvement
- *                 mission through Mission Control, then auto-approving
- *                 the mission's own plan (the campaign approval already
- *                 is that approval) and starting execution. Mission
- *                 task proposals still require per-task human accept.
+ *   4. QUEUE    — record the campaign and queue it to run under policy.
+ *   5. EXECUTE  — create a real improvement mission through Mission
+ *                 Control and start it. Every task in that mission is
+ *                 governed by the same policy checks as any other mission.
  *   6. VERIFY   — poll the mission execution; on completion, re-measure
  *                 the verify target (mission completed / no new
  *                 diagnoses for the target file).
@@ -27,10 +23,8 @@
  *                 agent's real results as real records.
  *
  * Hard safety rules:
- *   • The agent NEVER edits code directly. It only proposes and creates
- *     missions; the mission engine's plan-approval + per-task-accept
- *     gates remain intact.
- *   • Nothing runs before an explicit human approval.
+ *   • The agent never edits code directly. Its only action is creating and
+ *     starting a mission; refused operations stop there, before any effect.
  *   • Every campaign carries a reasoning trace and a timeline entry for
  *     each transition — fully explainable, traceable, auditable.
  *   • A signal key is never re-proposed while its campaign exists.
@@ -39,7 +33,6 @@ import { missionClient, type MissionEvent } from '../ai/missionClient';
 import { useWorkspace } from '../data/useWorkspace';
 import { analyzeMemories, type LearningPattern, type LearningPrediction } from './learningEngine';
 import { useMemoryStore, type MemoryInput } from './memoryStore';
-import { useNotificationsStore } from './notificationsStore';
 import { useAgentStore, type AgentCampaign, type AgentCampaignInput, type AgentSeverity } from './agentStore';
 
 const TICK_MS = 30000;
@@ -58,10 +51,6 @@ function nameOf(file?: string): string {
 
 function recordMemory(c: AgentCampaign, input: Omit<MemoryInput, 'projectId'>): void {
   useMemoryStore.getState().record({ ...input, projectId: c.projectId ?? null });
-}
-
-function notify(key: string, kind: 'approval-required' | 'mission-completed' | 'architecture-warning', title: string, detail: string, projectId: string | null, missionId?: string): void {
-  useNotificationsStore.getState().notify({ key, kind, title, detail, projectId: projectId ?? undefined, missionId });
 }
 
 /* ── 1/2/3. observe → reason → plan → propose ─────────────────────── */
@@ -271,11 +260,11 @@ function predictionCampaign(p: LearningPrediction, projectId: string | null): Ag
 function openCampaignCount(): number {
   const { campaigns } = useAgentStore.getState();
   return campaigns.filter((c) =>
-    c.status === 'awaiting-approval' || c.status === 'approved' || c.status === 'executing' || c.status === 'verifying',
+    c.status === 'approved' || c.status === 'executing' || c.status === 'verifying',
   ).length;
 }
 
-/** Observe real memory → derive candidate campaigns → enqueue for approval. */
+/** Observe real memory → derive candidate campaigns → queue them to run under policy. */
 export function runAgentObservation(): void {
   const { enabled } = useAgentStore.getState();
   if (!enabled) return;
@@ -314,17 +303,10 @@ export function runAgentObservation(): void {
       dedupe: `agent:${campaign.id}:proposed`,
     });
 
-    notify(
-      `agent:propose:${campaign.signalKey}`,
-      'approval-required',
-      'Agent improvement proposal',
-      campaign.signalLabel,
-      campaign.projectId,
-    );
   }
 }
 
-/* ── 5. execute — create a real improvement mission (approved only) ── */
+/* ── 5. execute — create a real improvement mission (queued campaigns; policy governs the run) ── */
 
 async function createMission(c: AgentCampaign): Promise<void> {
   const { log, setPipelineBusy, setStatus } = useAgentStore.getState();
@@ -357,29 +339,15 @@ async function createMission(c: AgentCampaign): Promise<void> {
   }
 
   setStatus(c.id, 'executing', { missionId });
-  log(c.id, 'execute', 'Improvement mission created', `Mission ${missionId} is registered in Mission Control.`, 'agent');
-
-  try {
-    // approve() resolves (doesn't throw) even on a non-2xx response — the
-    // server returns `{error}` as valid JSON on failure (e.g. race losing
-    // the mission), so a resolved promise is not itself proof of success.
-    const approveResult = await missionClient.approve(projectId, missionId);
-    const approveError = (approveResult as { error?: string } | null)?.error;
-    if (approveError) {
-      log(c.id, 'execute', 'Mission approval failed', approveError, 'agent');
-    } else {
-      log(c.id, 'execute', 'Mission plan auto-approved', 'The campaign was already approved by the user, so the mission plan is approved to run.', 'agent');
-    }
-  } catch {
-    log(c.id, 'execute', 'Mission approval failed', 'The mission plan could not be auto-approved — approve it manually in Mission Control.', 'agent');
-  }
+  log(c.id, 'execute', 'Improvement mission created', `Mission ${missionId} is saved in the Planner.`, 'agent');
 
   try {
     const result = await missionClient.start(projectId, missionId);
-    if (result.ok) log(c.id, 'execute', 'Execution started', 'Mission execution waves will generate proposals that still need per-task human acceptance.', 'agent');
-    else log(c.id, 'execute', 'Execution pending', result.error ?? 'Mission is approved but not yet started.', 'agent');
+    // The mission's plan was accepted with its goal; starting it runs it.
+    if (result.ok) log(c.id, 'execute', 'Execution started', 'Mission execution waves now write their changes as each task runs.', 'agent');
+    else log(c.id, 'execute', 'Execution pending', result.error ?? 'Mission was created but not yet started.', 'agent');
   } catch {
-    log(c.id, 'execute', 'Execution pending', 'Could not start execution — start it from Mission Control.', 'agent');
+    log(c.id, 'execute', 'Execution pending', 'Could not start execution — start it from the Planner.', 'agent');
   }
 
   working.delete(c.id);
@@ -435,15 +403,6 @@ function recordOutcome(c: AgentCampaign): void {
     files: c.verify?.file ? [c.verify.file] : undefined,
     dedupe: `agent:${c.id}:${pass ? 'verified' : 'failed'}`,
   });
-
-  notify(
-    `agent:${c.id}:${pass ? 'verified' : 'failed'}`,
-    pass ? 'mission-completed' : 'architecture-warning',
-    pass ? 'Agent improvement verified' : 'Agent improvement failed',
-    pass ? `${c.target} — ${c.note ?? 'mission completed.'}` : `${c.target} — ${c.note ?? 'the signal remains.'}`,
-    c.projectId,
-    c.missionId ?? undefined,
-  );
 }
 
 /* ── the reconcile loop ────────────────────────────────────────────── */

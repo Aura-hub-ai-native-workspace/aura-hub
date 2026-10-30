@@ -2,13 +2,14 @@ import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { motion } from 'framer-motion';
 import { cn, spring, useAppStore } from '@aura/core';
 import { Badge, Button, Icon, IconButton, Input, Menu, type IconName } from '@aura/ui';
-import { centralAgentClient, type EditorContext } from '../../ai/centralAgentClient';
+import type { EditorContext } from '../../ai/centralAgentClient';
 import { useAgentConversations, type AgentChatMessage } from '../../ai/useAgentConversations';
 import { useWorkspace } from '../../data/useWorkspace';
 import { AiMarkdown } from '../../ai/AiMarkdown';
 import { EmptyState as EmptyScreen } from '../../components/EmptyState';
-import { AgentPhaseStrip, phaseForResult, phaseFromEvents } from '../../components/agent/AgentPhaseStrip';
-import { ApprovalGate } from '../missions/ApprovalGate';
+import { planProgressText } from '../../ai/planProgress';
+import { RecordedNotes, ResearchNotice, SourceList, StepTrace } from '../../components/ChatEvidence';
+import { linkCitations } from '../../ai/chatEvents';
 import { useEditorStore } from '../../editor/editorStore';
 import { extractSelection, surroundingLines } from '../../editor/useAiAction';
 
@@ -16,21 +17,21 @@ import { extractSelection, surroundingLines } from '../../editor/useAiAction';
  * AI Workspace — every project's own Central Agent conversation surface.
  * There is NO global chat: the workspace is scoped to the currently open
  * project, shows THAT project's threads, and works through the Central
- * Agent (intent → plan → approval → Fabric execution → verification →
+ * Agent (intent → plan → Fabric execution → verification →
  * evidence). Token-level answers stream as `answer.token` frames;
- * governed work parks on approval and executes server-side.
+ * governed work runs server-side under policy.
  *
  * Thread persistence stays in the existing per-project conversation
  * store; each thread's agent session id rides in message metadata.
  * This surface contains ZERO references to the legacy `/stream` chat
- * pipeline (Home quick-chat keeps that path; see AskAuraChatbox).
+ * pipeline.
  */
 
 const SUGGESTIONS = [
   'Explain the architecture of this project.',
   'Find why the login system is failing.',
   'Review this project for security problems.',
-  'Create tests for the payment module and run them.',
+  'What should we tackle first, and why?',
 ];
 
 function relTime(iso: string): string {
@@ -89,7 +90,7 @@ export function AiWorkspace() {
         <EmptyScreen
           icon="spark"
           title="Open a project to talk to its brain"
-          description="AURA has no global chat. Each project has its own conversations. Open a project, then choose Ask AURA."
+          description="AURA has no global chat. Each project has its own conversations. Open a project, then choose Let's Chat."
           action={<Button icon="home" onClick={() => setNav('home')}>Go to Home</Button>}
         />
       </div>
@@ -101,7 +102,7 @@ export function AiWorkspace() {
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between gap-4 border-b border-line bg-surface/40 px-8 py-4 backdrop-blur-sm">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl text-white" style={{ background: project.color }}><Icon name={(project.icon as 'folder') || 'folder'} size={17} /></span>
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-surface-active text-text"><Icon name={(project.icon as 'folder') || 'folder'} size={17} /></span>
           <div className="min-w-0">
             <div className="flex items-center gap-2.5">
               <h1 className="truncate text-[18px] font-semibold tracking-[-0.01em] text-text">{project.name}</h1>
@@ -116,7 +117,7 @@ export function AiWorkspace() {
                 Project discussion
               </span>
             </div>
-            <p className="mt-0.5 truncate text-[12px] text-text-muted">Ask AURA · plans, decisions and understanding for this project</p>
+            <p className="mt-0.5 truncate text-[12px] text-text-muted">Let's Chat · talk through this project — nothing here runs or changes it</p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -157,9 +158,11 @@ export function AiWorkspace() {
                       canRegenerate={!streaming}
                       onRegenerate={() => void conv.regenerate()}
                       onAnswer={(t) => void conv.answer(t)}
-                      onDecide={(granted) => void conv.decide(m.id, granted)}
                       canHandoff={m.role === 'assistant' && m.status === 'done' && !m.agent?.needsInput && !!conv.activeId}
                       onHandoff={() => { setHandoffError(null); setHandoffDraft(m); }}
+                      onBuildPlan={() => void conv.buildPlan(m.id)}
+                      onCancelPlan={() => conv.cancelPlan(m.id)}
+                      onSendToPlanner={() => conv.sendToPlanner(m.id)}
                     />
                   ))}
                 </div>
@@ -246,8 +249,8 @@ function EmptyState({ onPick, disabled, project }: { onPick: (t: string) => void
         <div className="mx-auto mb-5 grid h-16 w-16 place-items-center rounded-3xl border border-line bg-surface text-accent shadow-sm">
           <Icon name="spark" size={28} strokeWidth={1.5} />
         </div>
-        <h2 className="text-[20px] font-semibold text-text">Ask AURA to work on {project}</h2>
-        <p className="mx-auto mt-2 max-w-md text-[13.5px] text-text-muted">The Central Agent understands the project, plans the work, and performs governed changes with verification and evidence.</p>
+        <h2 className="text-[20px] font-semibold text-text">Let's Chat about {project}</h2>
+        <p className="mx-auto mt-2 max-w-md text-[13.5px] text-text-muted">Ask questions, weigh options and think through the project. Let's Chat only talks — to have AURA carry out work, assign it in Workspace.</p>
         <div className="mt-6 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {SUGGESTIONS.map((s) => (
             <button key={s} disabled={disabled} onClick={() => onPick(s)} className="rounded-xl border border-line bg-surface px-3.5 py-3 text-left text-[12.5px] text-text-muted transition-all hover:border-line-strong hover:text-text disabled:opacity-50">
@@ -261,24 +264,25 @@ function EmptyState({ onPick, disabled, project }: { onPick: (t: string) => void
 }
 
 /* ── Message ─────────────────────────────────────────────────────── */
-function MessageView({ message, isLast, working, canRegenerate, onRegenerate, onAnswer, onDecide, canHandoff, onHandoff }: {
+function MessageView({ message, isLast, working, canRegenerate, onRegenerate, onAnswer, canHandoff, onHandoff, onBuildPlan, onCancelPlan, onSendToPlanner }: {
   message: AgentChatMessage;
   isLast: boolean;
   working: boolean;
   canRegenerate: boolean;
   onRegenerate: () => void;
   onAnswer: (text: string) => void;
-  onDecide: (granted: boolean) => void;
   canHandoff: boolean;
   onHandoff: () => void;
+  onBuildPlan: () => void;
+  onCancelPlan?: () => void;
+  onSendToPlanner: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [answerText, setAnswerText] = useState('');
-  const [deciding, setDeciding] = useState(false);
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-accent px-4 py-2.5 text-[13.5px] leading-relaxed text-white shadow-sm">{message.content}</div>
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-accent px-4 py-2.5 text-[13.5px] leading-relaxed text-on-accent shadow-sm">{message.content}</div>
       </div>
     );
   }
@@ -286,19 +290,15 @@ function MessageView({ message, isLast, working, canRegenerate, onRegenerate, on
   const agent = message.agent;
   const thinking = message.status === 'streaming' && message.content.length === 0;
   const copy = async () => { try { await navigator.clipboard.writeText(message.content); setCopied(true); setTimeout(() => setCopied(false), 1400); } catch { /* noop */ } };
-  const lifecycle = agent?.outcome
-    ? phaseForResult(agent.outcome)
-    : agent && agent.events.length > 0
-      ? phaseFromEvents(agent.events)
-      : message.status === 'streaming' ? ('intent' as const) : ('idle' as const);
 
   return (
     <div className="flex gap-3">
       <div className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-accent-50 text-accent dark:bg-accent/15"><Icon name="spark" size={16} /></div>
       <div className="min-w-0 flex-1">
-        {(message.status === 'streaming' || agent) && (
-          <div className="mb-2"><AgentPhaseStrip current={lifecycle} outcome={agent?.outcome ?? undefined} /></div>
-        )}
+        {/* No work-phase strip here: Let's Chat never plans, asks
+            permission, executes or verifies — showing those phases on a
+            chat reply would claim work that cannot happen. */}
+        <div className="mb-2"><StepTrace steps={agent?.chatSteps ?? []} working={message.status === 'streaming'} /></div>
         {thinking ? (
           <ThinkingState label={agent?.progress[agent.progress.length - 1] ?? 'Working'} />
         ) : message.status === 'cancelled' ? (
@@ -315,11 +315,49 @@ function MessageView({ message, isLast, working, canRegenerate, onRegenerate, on
         ) : (
           <>
             {agent?.outcome && agent.outcome !== 'completed' && (
-              <div className="mb-1.5"><Badge tone={agent.outcome === 'awaiting-approval' || agent.outcome === 'needs-clarification' ? 'attention' : agent.outcome === 'failed' || agent.outcome === 'denied' || agent.outcome === 'timeout' ? 'critical' : 'neutral'}>{agent.outcome}</Badge></div>
+              <div className="mb-1.5"><Badge tone={agent.outcome === 'needs-clarification' ? 'attention' : agent.outcome === 'failed' || agent.outcome === 'denied' || agent.outcome === 'timeout' ? 'critical' : 'neutral'}>{agent.outcome}</Badge></div>
             )}
-            <AiMarkdown source={message.content} />
+            <AiMarkdown source={linkCitations(message.content, agent?.sources ?? [])} />
             {message.status === 'streaming' && <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse bg-accent align-middle" />}
           </>
+        )}
+
+        {message.status === 'done' && (
+          <div className="mt-2.5 space-y-2.5">
+            <ResearchNotice research={agent?.research} />
+            <SourceList cited={agent?.sources ?? []} consulted={agent?.research?.allSources} />
+            <RecordedNotes recorded={agent?.recorded} />
+            {agent?.modelUsed?.model && <div className="text-[10.5px] text-text-subtle">Answered by {agent.modelUsed.model}</div>}
+          </div>
+        )}
+
+        {message.status === 'done' && isLast && agent?.nextActions?.includes('create-plan') && !working && (
+          <div className="mt-3 rounded-2xl border border-accent/30 bg-accent/5 px-4 py-3" data-testid="plan-offer">
+            {agent.planDraft?.status === 'ready' ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="text-[12.5px] text-text-muted">
+                  A plan with {agent.planDraft.taskCount} task{agent.planDraft.taskCount === 1 ? '' : 's'} was built from what this project has settled.
+                </span>
+                <Button size="sm" variant="primary" icon="arrow-right" data-testid="send-to-planner" onClick={onSendToPlanner}>Send to Planner</Button>
+              </div>
+            ) : agent.planDraft?.status === 'failed' ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="text-[12.5px] text-danger">The plan could not be built: {agent.planDraft.error}</span>
+                <Button size="sm" variant="secondary" icon="refresh" onClick={onBuildPlan}>Try again</Button>
+              </div>
+            ) : agent.planDraft?.status === 'building' ? (
+              <div className="flex flex-wrap items-center justify-between gap-3" data-testid="plan-building" aria-live="polite">
+                {/* Stop sits at the left, away from where "Create plan" was, so a double click cannot stop what it just started. */}
+                {onCancelPlan && <Button size="sm" variant="secondary" data-testid="cancel-plan" onClick={onCancelPlan}>Stop</Button>}
+                <span className="min-w-[15rem] flex-1 text-[12.5px] text-text-muted">{planProgressText({ ...agent.planDraft, status: 'building' })}</span>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="text-[12.5px] text-text-muted">The idea has taken shape. Want an implementation plan you can review and edit?</span>
+                <Button size="sm" variant="primary" icon="clipboard" data-testid="create-plan" onClick={onBuildPlan}>Create plan</Button>
+              </div>
+            )}
+          </div>
         )}
 
         {message.status === 'done' && agent?.needsInput && (
@@ -351,14 +389,6 @@ function MessageView({ message, isLast, working, canRegenerate, onRegenerate, on
               </li>
             ))}
           </ol>
-        )}
-
-        {message.status === 'done' && agent?.approvalId && (
-          <AgentApprovalGate
-            approvalId={agent.approvalId}
-            busy={deciding}
-            onDecide={(granted) => { setDeciding(true); onDecide(granted); }}
-          />
         )}
 
         {message.status === 'done' && (agent?.performed.length || agent?.verified.length || agent?.evidenceSummary) ? (
@@ -474,35 +504,6 @@ function HandoffDialog({ message, error, onCancel, onSubmit }: {
   );
 }
 
-/** The EXISTING ApprovalGate fed the agent ledger's real request. */
-function AgentApprovalGate({ approvalId, busy, onDecide }: { approvalId: string; busy: boolean; onDecide: (granted: boolean) => void }) {
-  type GateRequest = Parameters<typeof ApprovalGate>[0]['request'];
-  const [request, setRequest] = useState<GateRequest | null | undefined>(undefined);
-  useEffect(() => {
-    let alive = true;
-    centralAgentClient.pendingApprovals()
-      .then((list) => {
-        if (!alive) return;
-        setRequest((list.approvals.find((a) => a.id === approvalId) as unknown as GateRequest) ?? null);
-      })
-      .catch(() => { if (alive) setRequest(null); });
-    return () => { alive = false; };
-  }, [approvalId]);
-  if (request) return <ApprovalGate request={request} busy={busy} onDecide={(_id, granted) => onDecide(granted)} />;
-  if (request === null) {
-    return (
-      <p role="status" className="mt-3 text-[12.5px] text-text-subtle">
-        Loading authorization details… If this persists, the approval list could not be read.
-      </p>
-    );
-  }
-  return (
-    <p role="alert" className="mt-3 text-[12.5px] text-attention">
-      The parked approval was not found in the pending list — it may already be decided elsewhere. Start a new request to continue.
-    </p>
-  );
-}
-
 function ThinkingState({ label }: { label: string }) {
   return (
     <div className="inline-flex flex-col gap-1.5">
@@ -530,7 +531,7 @@ function Composer({ streaming, onSend, onStop }: { streaming: boolean; onSend: (
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKey}
             rows={1}
-            placeholder="Tell AURA what to do with this project…"
+            placeholder="Ask about this project or talk an idea through…"
             className="max-h-40 min-h-[24px] flex-1 resize-none bg-transparent px-2 py-1.5 text-[13.5px] text-text outline-none placeholder:text-text-subtle"
           />
           {streaming ? (
@@ -539,7 +540,7 @@ function Composer({ streaming, onSend, onStop }: { streaming: boolean; onSend: (
             <Button size="sm" icon="arrow-right" disabled={!text.trim()} onClick={submit}>Send</Button>
           )}
         </div>
-        <div className="mt-1.5 px-1 text-[10.5px] text-text-subtle">Enter to send · Shift+Enter for a new line · governed work asks for approval first</div>
+        <div className="mt-1.5 px-1 text-[10.5px] text-text-subtle">Enter to send · Shift+Enter for a new line · Let&apos;s Chat only talks — assign work in Workspace</div>
       </div>
     </div>
   );
@@ -587,7 +588,6 @@ function SidePanel({ message, dev }: { message?: AgentChatMessage; dev: boolean 
               <Kv k="session" v={agent.sessionId ?? '—'} />
               <Kv k="request" v={agent.requestId ?? '—'} />
               <Kv k="outcome" v={agent.outcome ?? '—'} />
-              <Kv k="approval" v={agent.approvalId ?? '—'} />
               <Kv k="run" v={agent.runId ?? '—'} />
               {agent.events.length > 0 && (
                 <><Label>lifecycle</Label>

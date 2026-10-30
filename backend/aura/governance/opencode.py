@@ -15,7 +15,7 @@ machinery (no fakes):
   possible rule surface, logs every bounded action event as JSONL, and
   self-terminates (exit 42, after a synchronous log flush) on hard
   violations — a stopped worker the executor reports as failed, which
-  enters the existing park/correction path.
+  enters the existing correction path.
 - `external_directory: deny` in config + an absolute/outside-cwd check
   in the plugin stop the worker editing AURA's own policy/plugin files
   (they live outside the repo cwd). Post-hoc snapshot/delta
@@ -93,7 +93,7 @@ def compile_plugin(policy: dict) -> str:
 // Enforces the task contract inside the worker runtime BEFORE tool
 // execution. Deny = throw (tool call refused). Hard violation =
 // synchronous log flush + process.exit(42): the worker stops and the
-// executor reports failure, which enters park/correction.
+// executor reports failure, which enters the correction path.
 export const AuraGovernance = async (ctx) => {
   const POLICY = __POLICY_JSON__;
   const fs = await import("node:fs");
@@ -125,7 +125,8 @@ export const AuraGovernance = async (ctx) => {
     const cwdBase = norm(POLICY.cwd || "").replace(/\/$/, "");
     let t = norm(target).trim();
     if (!t || t.startsWith("~")) return false;
-    if (t.startsWith("/")) {
+    const isAbs = (x) => x.startsWith("/") || /^[A-Za-z]:\//.test(x);
+    if (isAbs(t)) {
       if (!cwdBase || !(t === cwdBase || t.startsWith(cwdBase + "/"))) return false;
       t = t.slice(cwdBase.length).replace(/^\//, "");
       if (!t) return true;
@@ -135,11 +136,33 @@ export const AuraGovernance = async (ctx) => {
     if (scopes.length === 0) return true;
     return scopes.some((s) => t === s || t.startsWith(s + "/"));
   };
-  const SENSITIVE = [".env", ".git/", ".ssh/", ".aws/", "secrets", ".gnupg", ".pki", "id_rsa", "id_ed25519", ".pem", ".key", "credentials"];
+  // Segment-aware, mirroring actions._sensitive: a secret directory as a
+  // whole path segment, or a secret file name, .env file or key material
+  // as the basename. `config.keys.ts` and `credentials_helper.ts` are not.
+  const SENSITIVE_DIRS = [".git", ".ssh", ".aws", ".gnupg", ".pki", "secrets"];
+  const SENSITIVE_NAMES = ["id_rsa", "id_ed25519", "credentials", "credentials.json", "secrets", "secrets.json"];
   const sensitive = (target) => {
-    const t = norm(target).toLowerCase();
-    return SENSITIVE.find((seg) => t.includes(seg)) || null;
+    const parts = norm(target).toLowerCase().split("/").filter((p) => p);
+    if (parts.length === 0) return null;
+    for (const seg of parts.slice(0, -1)) if (SENSITIVE_DIRS.includes(seg)) return seg;
+    const base = parts[parts.length - 1];
+    if (base === ".env" || base.startsWith(".env.")) return ".env";
+    if (SENSITIVE_NAMES.includes(base) || base.startsWith("id_rsa") || base.startsWith("id_ed25519")) return base;
+    if (base.endsWith(".pem") || base.endsWith(".key")) return base.split(".").pop();
+    return null;
   };
+  const sensitiveCommand = (command) => {
+    for (const token of String(command).split(/\s+/)) {
+      const seg = sensitive(token.replace(/^['"]|['"]$/g, ""));
+      if (seg) return seg;
+    }
+    return null;
+  };
+  // Each chained part is checked on its own, as in actions._command_parts.
+  const commandParts = (command) => [
+    command,
+    ...String(command).split(/;|&&|\|\||\||\n/).map((p) => p.trim()).filter((p) => p),
+  ];
   // [pattern, destructive]: stacking/substitution refusal is
   // non-destructive (runtimes emit such commands in benign recon);
   // self-termination is reserved for boundary-probing and exfiltration.
@@ -152,7 +175,6 @@ export const AuraGovernance = async (ctx) => {
     [/(curl|wget)\b.*\|\s*(sh|bash)\b/i, true],
     [/(^|\s)(nc|ncat|netcat|ssh|scp)\b/i, true],
     [/(^|\s)(nohup|setsid|daemon)\b/i, false],
-    [/;/, false],
     [/`/, false],
     [/\$\(/, false],
   ];
@@ -196,10 +218,11 @@ export const AuraGovernance = async (ctx) => {
       if (tool === "bash") {
         const command = String(args.command || "");
         if (!command.trim()) return deny(tool, "COMMAND", "", "", "empty command", false);
-        const seg = sensitive(command);
+        const seg = sensitiveCommand(command);
         if (seg) return deny(tool, "COMMAND", "", command, "sensitive material '" + seg + "'", true);
+        const parts = commandParts(command);
         for (const [re, destructive] of DENY_PATTERNS) {
-          if (re.test(command)) {
+          if (parts.some((part) => re.test(part))) {
             return deny(tool, "COMMAND", "", command, "denied command pattern", destructive);
           }
         }

@@ -1,3 +1,4 @@
+import { backendFetch } from '../backend/backendSession';
 /**
  * automationClient — the Automation Engine's surface.
  * ==================================================================
@@ -258,6 +259,8 @@ export interface AutomationRun {
   nextRunId?: string;
   /** Everything this run produced, rolled up from its actions. */
   produced?: ProducedRef[];
+  /** What a Stop achieved: `winding-down` while an action that was running is still returning. */
+  cancellation?: { phase: 'winding-down' | 'complete'; actionId?: string; label?: string };
 }
 
 export interface AutomationRunSummary {
@@ -338,9 +341,9 @@ export function producedWorkflowRun(action: ActionRunState): { workflowId: strin
 
 /* ── transport ─────────────────────────────────────────────────────── */
 
-const jget = <T>(p: string): Promise<T> => fetch(BASE + p).then((r) => r.json() as Promise<T>);
+const jget = <T>(p: string): Promise<T> => backendFetch(BASE + p).then((r) => r.json() as Promise<T>);
 const jsend = <T>(method: string, p: string, body?: unknown): Promise<T> =>
-  fetch(BASE + p, {
+  backendFetch(BASE + p, {
     method,
     headers: { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),

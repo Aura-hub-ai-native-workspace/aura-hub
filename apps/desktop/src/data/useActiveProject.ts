@@ -96,12 +96,24 @@ export function useActiveProjectSync(): void {
 /**
  * Read the active project. Safe to call from anywhere; performs no syncing.
  */
+/**
+ * The project the authority names, looked up in what the app knows. A stale
+ * or unknown id resolves to null — never to another project — so nothing can
+ * display, or send work to, a folder the app does not actually have open.
+ */
+export function resolveActiveProject<T extends { id: string }>(
+  id: string | null,
+  projects: readonly T[],
+  localProjects: readonly T[],
+): { id: string | null; record: T | null; resolving: boolean } {
+  if (!id) return { id: null, record: null, resolving: false };
+  const record = projects.find((p) => p.id === id) ?? localProjects.find((p) => p.id === id) ?? null;
+  return { id, record, resolving: record === null };
+}
+
 export function useActiveProject(): ActiveProject {
   const id = useAppStore((s) => s.activeProjectId);
   const projects = useWorkspace((s) => s.projects);
   const localProjects = useWorkspace((s) => s.localProjects);
-
-  if (!id) return { id: null, record: null, resolving: false };
-  const record = projects.find((p) => p.id === id) ?? localProjects.find((p) => p.id === id) ?? null;
-  return { id, record, resolving: record === null };
+  return resolveActiveProject(id, projects, localProjects);
 }

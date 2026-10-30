@@ -1,54 +1,36 @@
 import { useCallback, useEffect, useState } from 'react';
-import { CommandPalette, useHotkey, useMediaQuery } from '@aura/ui';
+import { useHotkey, useMediaQuery } from '@aura/ui';
 import { useAppStore } from '@aura/core';
 import { AppShell } from './shell/AppShell';
 import { BootSequence } from './shell/BootSequence';
-import { useCommands } from './shell/useCommands';
 import { OnboardingFlow } from './onboarding/OnboardingFlow';
 import { useProviderGate } from './onboarding/useProviderGate';
 import { useWorkspace } from './data/useWorkspace';
 import { useEditorStore } from './editor/editorStore';
 import { useLayoutStore } from './ops/layoutStore';
 import { WindowSwitcher } from './ops/WindowSwitcher';
-import { useNotificationsFeed } from './ops/useNotificationsFeed';
 import { AppImageInstallPrompt } from './components/AppImageInstallPrompt';
 import { restoreSession, saveSession } from './ops/session';
 import { startMemoryRecorder } from './ops/memoryRecorder';
 import { startAgentEngine } from './ops/agentEngine';
-import { useUpdateNotifications } from './updater/useUpdateNotifications';
 
 /**
- * App root. Owns global keyboard shortcuts, the command palette,
+ * App root. Owns global keyboard shortcuts,
  * responsive collapse of the chrome, the notification feed poll, and
  * workspace session persistence (restore on launch, save on change).
  * All *screen* rendering is delegated to <AppShell>. Intelligence is
  * intentionally absent — this is the environment only.
  */
 export function App() {
-  const commands = useCommands();
-  const paletteOpen = useAppStore((s) => s.paletteOpen);
-  const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
-  const toggleRightPanel = useAppStore((s) => s.toggleRightPanel);
   const theme = useAppStore((s) => s.theme);
   const booted = useAppStore((s) => s.booted);
   const setBooted = useAppStore((s) => s.setBooted);
   const onboarded = useAppStore((s) => s.onboarded);
   const { gate: providerGate, markReady: markProviderReady } = useProviderGate(onboarded);
   const completeOnboarding = useAppStore((s) => s.completeOnboarding);
-  const recentCommandIds = useAppStore((s) => s.recentCommandIds);
-  const pushRecentCommand = useAppStore((s) => s.pushRecentCommand);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const completeBoot = useCallback(() => setBooted(true), [setBooted]);
-
-  // The notification feed: polls real engine state, derives persisted,
-  // deduplicated notifications (Part 2).
-  useNotificationsFeed();
-
-  // Application updates: one background check per session, raised as a
-  // notification only when a real, applicable update exists. Startup does
-  // not wait for it — see useUpdater.startBackgroundUpdateCheck.
-  useUpdateNotifications();
 
   // Engineering Memory recorder: ingests real events (editor saves, AI
   // actions, missions, diagnoses, conversations, memory items, providers)
@@ -66,9 +48,7 @@ export function App() {
   }, [theme]);
 
   // Global shortcuts — the environment's muscle memory.
-  useHotkey('k', () => setPaletteOpen(!paletteOpen), { meta: true, allowInInput: true });
   useHotkey('b', () => toggleSidebar(), { meta: true });
-  useHotkey('.', () => toggleRightPanel(), { meta: true });
   // ⌘⇧K — the Window Switcher: only currently-open windows, distinct from
   // ⌘K's full "every tool whether open or not" command palette.
   useHotkey('k', () => setSwitcherOpen((v) => !v), { meta: true, shift: true, allowInInput: true });
@@ -77,7 +57,7 @@ export function App() {
   const isNarrow = useMediaQuery('(max-width: 1024px)');
   const setChrome = useAppStore.setState;
   useEffect(() => {
-    if (isNarrow) setChrome({ sidebarExpanded: false, rightPanelOpen: false });
+    if (isNarrow) setChrome({ sidebarExpanded: false });
   }, [isNarrow, setChrome]);
 
   // Boot: refresh the project library, then restore the last session
@@ -114,13 +94,6 @@ export function App() {
       {/* The environment is always mounted underneath, so the boot
           sequence dissolves *into* Home rather than cutting to it. */}
       <AppShell />
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => setPaletteOpen(false)}
-        commands={commands}
-        recentIds={recentCommandIds}
-        onRun={(cmd) => pushRecentCommand(cmd.id)}
-      />
       <WindowSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
       {/* Renders only for a portable AppImage that is not already installed. */}
       <AppImageInstallPrompt />
@@ -134,6 +107,9 @@ export function App() {
       */}
       {!onboarded || providerGate === 'needs-setup' ? (
         <OnboardingFlow
+          // A person who already finished onboarding and now lacks a usable
+          // provider is asked only for the provider, not the welcome again.
+          initialStep={onboarded ? 'activate' : 'welcome'}
           onComplete={() => {
             // Tell the gate directly. Completing onboarding does not always
             // change `onboarded` — a user sent back through setup already

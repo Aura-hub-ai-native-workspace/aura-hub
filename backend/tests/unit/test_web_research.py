@@ -508,7 +508,6 @@ def test_the_registered_executor_is_the_gated_one():
 
 def _fabric_cfg(tmp_path, monkeypatch, executors=None):
     """The production fabric: policy, approval ledger, audit store."""
-    from aura.approvals import ApprovalLedger
     from aura.audit import AuditStore
     from aura.executors import (
         all_executors,
@@ -524,15 +523,11 @@ def _fabric_cfg(tmp_path, monkeypatch, executors=None):
         def node_available(self, _cap):
             return None
 
-        async def request_approval(self, _req, _ctx):
-            return False
 
     audit = AuditStore(tmp_path / "audit.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
     fabric = CapabilityFabric(_H())
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     exec_map = executors if executors is not None else {
         e.capabilityId: e for e in all_executors(tmp_path)}
     for cap_id, exe in exec_map.items():
@@ -543,7 +538,7 @@ def _fabric_cfg(tmp_path, monkeypatch, executors=None):
     register_canonical_internal_capabilities(fabric)
     return FabricConfig(fabric=fabric, policy_config={},
                         permissions={"read": True, "write": True},
-                        executors=exec_map, audit_store=audit, ledger=ledger)
+                        executors=exec_map, audit_store=audit)
 
 
 class TestGovernedPipeline:

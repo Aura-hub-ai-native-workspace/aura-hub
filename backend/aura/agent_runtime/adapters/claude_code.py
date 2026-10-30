@@ -34,6 +34,7 @@ WRITE GUARD (root-cause fix, 2026-09-23):
 
 from __future__ import annotations
 
+from ..tmpname import unique_sibling
 import json
 import os
 import re
@@ -95,11 +96,14 @@ def _opted_in() -> bool:
 
 
 def _is_live_path(path: Path) -> bool:
-    """True when path resolves to the developer's live Claude settings file."""
+    """True when path resolves to the developer's live Claude settings file.
+
+    This guards against writing to the live file, so a path that cannot be
+    resolved is treated as live: refusing a write is the safe answer."""
     try:
         return os.path.realpath(path) == os.path.realpath(_REAL_SETTINGS_PATH)
     except Exception:
-        return False
+        return True
 
 
 class ClaudeCodeAdapter(AgentConfigurationAdapter):
@@ -303,6 +307,6 @@ class ClaudeCodeAdapter(AgentConfigurationAdapter):
 
 
 def _write_atomic(path: Path, text: str) -> None:
-    tmp = path.with_suffix(".tmp")
+    tmp = unique_sibling(path)
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)

@@ -326,7 +326,7 @@ function NewWindowMenu({ onLaunch }: { onLaunch: (kind: PanelKind) => void }) {
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex h-7 items-center gap-1.5 rounded-lg bg-accent px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-accent-600"
+        className="flex h-7 items-center gap-1.5 rounded-lg bg-accent px-2.5 text-[11px] font-medium text-on-accent transition-colors hover:bg-accent-600"
       >
         <Icon name="plus" size={13} />
         New Window

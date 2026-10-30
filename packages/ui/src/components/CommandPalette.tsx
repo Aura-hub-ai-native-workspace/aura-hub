@@ -198,7 +198,7 @@ export function CommandPalette({
                           <span
                             className={cn(
                               'grid h-8 w-8 place-items-center rounded-lg transition-colors',
-                              isActive ? 'bg-accent text-white' : 'bg-surface-active text-text-muted',
+                              isActive ? 'bg-accent text-on-accent' : 'bg-surface-active text-text-muted',
                             )}
                           >
                             <Icon name={cmd.icon as IconName} size={16} />

@@ -52,15 +52,32 @@ jobs:
   # environment scanner, process boundary, evidence/audit) lives in this
   # suite rather than in the TypeScript one.
   #
-  # Linux-only for now, deliberately. The suite is platform-independent
-  # Python and this is the gate that must exist before anything ships;
-  # extending it to the Windows and macOS runners needs a real first run to
-  # shake out whatever genuinely differs on those kernels, and adding
-  # platform legs that have never been observed to go green would trade a
-  # known gap for a noisy one.
+  # Runs on all three hosted OS families. It was Linux-only until the Windows
+  # and macOS defects found by the cross-platform audit (process-tree cleanup,
+  # the shutdown request) showed what a Linux-only gate cannot see: they live
+  # in code paths that only execute on those kernels. Nothing is allowed to
+  # hide a platform difference here — no continue-on-error, no blanket skips:
+  # a test that cannot apply to a platform must say so itself (pytest skipif
+  # with a reason, printed by -ra below), and a failure fails the job.
+  #
+  # One Apple Silicon runner stands for macOS: the Intel leg of
+  # `desktop-build` already covers the x64 packaging path, and this suite is
+  # architecture-independent Python. The first run on Windows and macOS is the
+  # first observation of this suite there; expect it to surface real findings.
   backend:
-    name: Backend tests (Python)
-    runs-on: ubuntu-latest
+    name: Backend tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    # Every existing step was written for bash; Windows runners default to PowerShell.
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, label: linux-x64 }
+          - { os: windows-latest, label: windows-x64 }
+          - { os: macos-latest, label: macos-arm64 }
     steps:
       - uses: actions/checkout@v4
 
@@ -111,8 +128,45 @@ jobs:
       - name: Verify the backend is importable
         run: python -c "import sys; sys.path.insert(0, 'backend'); import aura.executors, aura.central_agent, aura.fabric"
 
+      # Recorded so a result can be read against what produced it.
+      - name: Record the platform and toolchain
+        shell: bash
+        run: |
+          {
+            echo "### Backend tests: ${{ matrix.label }}"
+            echo "- runner: ${{ runner.os }} ${{ runner.arch }} (${{ matrix.os }})"
+            echo "- python: $(python --version 2>&1)"
+            echo "- node: $(node --version)"
+            echo "- rust: $(rustc --version 2>/dev/null || echo 'not installed on this job')"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # -ra lists every skip with its reason, so an incompatible test is visible
+      # rather than silently absent. The junit file is kept even on failure.
       - name: Backend tests
-        run: python -m pytest backend/tests
+        shell: bash
+        run: python -m pytest backend/tests -ra -p no:cacheprovider --junitxml="pytest-${{ matrix.label }}.xml"
+
+      - name: Summarise the result
+        if: always()
+        shell: bash
+        run: |
+          python - "pytest-${{ matrix.label }}.xml" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          try:
+              r = ET.parse(sys.argv[1]).getroot()
+              r = r if r.tag == "testsuite" else r.find("testsuite")
+              print(f"- result: {r.get('tests')} tests, {r.get('failures')} failed, {r.get('errors')} errors, {r.get('skipped')} skipped")
+          except Exception as exc:
+              print(f"- result: no junit report ({type(exc).__name__})")
+          PY
+
+      - name: Keep the junit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-${{ matrix.label }}
+          path: pytest-${{ matrix.label }}.xml
+          if-no-files-found: ignore
 
   # Native release packaging. Each OS builds its REAL Tauri artifact on its
   # own runner: AppImage + deb on Linux, NSIS on Windows, .app + .dmg on
@@ -173,6 +227,15 @@ jobs:
           python-version: '3.12'
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Record the platform and toolchain
+        shell: bash
+        run: |
+          {
+            echo "### Desktop packaging: ${{ matrix.label }}"
+            echo "- runner: ${{ runner.os }} ${{ runner.arch }} (${{ matrix.os }})"
+            echo "- node: $(node --version)  python: $(python --version 2>&1)  rust: $(rustc --version)  cargo: $(cargo --version)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # Linux apt has stalled for up to 6 hours in CI (observed 21s … 85m39s
       # across 18 runs, plus a 360m job timeout in PR #11 that occurred
@@ -261,6 +324,35 @@ jobs:
       # final bytes — which it can only do with a key in the environment.
       # Without these two lines it deletes the signature and fails the
       # build, which is correct but is not a release.
+      # The Rust shell's unit tests, natively on each OS. After the build on purpose:
+      # compiling the shell needs the built frontend and the staged service bundle,
+      # which a fresh checkout does not have. This is where the Windows-only shutdown
+      # request (service.rs, cfg(windows)) is first compiled and its request builder
+      # tested on a real Windows toolchain. A failure fails the job; the full log is
+      # kept as an artifact either way.
+      - name: Rust unit tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib 2>&1 | tee "rust-tests-${{ matrix.label }}.log"
+
+      - name: Summarise the Rust tests
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Rust unit tests: ${{ matrix.label }}"
+            grep -E "^test result:" "rust-tests-${{ matrix.label }}.log" | sed 's/^/- /' || echo "- no test result line (see the log artifact)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the Rust test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-tests-${{ matrix.label }}
+          path: rust-tests-${{ matrix.label }}.log
+          if-no-files-found: ignore
+
       - name: Patch the AppImage (Linux only)
         if: runner.os == 'Linux'
         env:

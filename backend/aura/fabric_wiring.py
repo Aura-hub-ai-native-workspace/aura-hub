@@ -8,12 +8,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .approvals import ApprovalLedger
 from .audit import AuditStore
 from .fabric import FabricConfig, builtin_executors
 
 
-def default_fabric_config(audit: AuditStore, ledger: ApprovalLedger,
+def default_fabric_config(audit: AuditStore,
                           home: Path | None = None,
                           policy_config: dict | None = None) -> FabricConfig:
     from .config import aura_home
@@ -23,5 +22,4 @@ def default_fabric_config(audit: AuditStore, ledger: ApprovalLedger,
         permissions={"read": True, "write": True},
         executors=builtin_executors(home or aura_home()),
         audit_store=audit,
-        ledger=ledger,
     )

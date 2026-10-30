@@ -74,9 +74,8 @@ def test_zero_side_effects_measured(tmp_path, monkeypatch):
     assert report["sideEffects"]["policyEvaluations"] == len(
         [s for s in report["plan"] if s.get("capabilityId")])
     assert _tree_hash(proj) == before_hash                  # filesystem untouched
-    # approvals + denials counted from policy answers
-    ids = {a["nodeId"] for a in report["approvalsRequired"]}
-    assert "w" in ids                                       # shell = ask-user
+    # denials counted from policy answers; a routine step is not held for anyone
+    assert "approvalsRequired" not in report
     assert report["denials"] == []
     assert report["secretsRequired"] == ["CI_TOKEN"]
     assert report["grants"]["execute"] is True

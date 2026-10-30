@@ -80,6 +80,8 @@ export function workerSlotCaption(slot: WorkerSlot): string {
   if (slot.worker.connected) return 'Connected';
   if (!slot.worker.installed) return 'Not installed';
   if (slot.state === 'UNAVAILABLE') return 'Unavailable';
+  // The backend's own reason: AURA will not run a worker whose cost the owner has not accepted.
+  if (slot.worker.reason === 'BILLING_POLICY') return 'Needs approval';
   return 'Not connected';
 }
 

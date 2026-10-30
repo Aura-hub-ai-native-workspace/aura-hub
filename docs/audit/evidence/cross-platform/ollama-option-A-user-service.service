@@ -1,0 +1,23 @@
+# PROPOSED, NOT INSTALLED. Option A (recommended): run Ollama as the user who owns the models.
+# Install as ~/.config/systemd/user/ollama.service, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now ollama
+# Needs no root for the service itself. Least privilege: it runs as you, sees only what you can see,
+# and binds loopback only.
+[Unit]
+Description=Ollama (user service, loopback only)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/ollama serve
+Environment=OLLAMA_HOST=127.0.0.1:11434
+Environment=OLLAMA_MODELS=/mnt/storage/.ollama/models
+Restart=on-failure
+RestartSec=3
+# Do not respin forever on a configuration error (the current unit has restarted 2064 times).
+StartLimitIntervalSec=60
+StartLimitBurst=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

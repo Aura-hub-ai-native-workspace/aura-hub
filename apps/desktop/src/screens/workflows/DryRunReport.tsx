@@ -53,15 +53,11 @@ const CLASS_LABEL: Record<NodeClass, string> = {
 
 const DECISION_TONE: Record<string, StatusTone> = {
   'auto-execute': 'positive',
-  'ask-user': 'attention',
-  'require-approval': 'critical',
   deny: 'critical',
 };
 
 const DECISION_WORD: Record<string, string> = {
   'auto-execute': 'runs without asking',
-  'ask-user': 'asks you first',
-  'require-approval': 'needs your approval',
   deny: 'refused',
 };
 
@@ -139,31 +135,6 @@ export function DryRunReportView({ report, onFocusNode, onRefresh, busy }: DryRu
           </ul>
           <p className="mt-1.5 text-[10.5px] leading-relaxed text-text-subtle">
             A refused step stops the run there. This is your policy working, not the workflow being broken.
-          </p>
-        </section>
-      )}
-
-      {report.approvalsRequired.length > 0 && (
-        <section className="rounded-xl border border-attention/40 bg-attention/[0.06] p-3">
-          <div className="mb-1.5 flex items-center gap-2">
-            <Icon name="shield" size={13} className="text-attention" />
-            <h3 className="text-[12.5px] font-semibold text-text">
-              {report.approvalsRequired.length === 1
-                ? 'One step would stop and ask you'
-                : `${report.approvalsRequired.length} steps would stop and ask you`}
-            </h3>
-          </div>
-          <ul className="space-y-1.5">
-            {report.approvalsRequired.map((a) => (
-              <li key={a.nodeId} className="text-[11.5px]">
-                <code className="rounded bg-surface-active px-1.5 py-0.5 text-[10.5px] text-text">{a.capabilityId}</code>
-                <span className="ml-1.5 text-text-muted">{a.reason}</span>
-                <span className="ml-1.5 text-[10px] text-text-subtle">rule {a.rule}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-1.5 text-[10.5px] leading-relaxed text-text-subtle">
-            No approval request has been created. These are the questions a real run would raise.
           </p>
         </section>
       )}
@@ -295,28 +266,22 @@ export function DryRunReportView({ report, onFocusNode, onRefresh, busy }: DryRu
 
 function Verdict({ report }: { report: Report }) {
   const blocked = !report.validation.valid || report.denials.length > 0;
-  const gated = report.approvalsRequired.length > 0;
 
-  const tone = blocked ? 'danger' : gated ? 'attention' : 'positive';
+  const tone = blocked ? 'danger' : 'positive';
   const cls =
     tone === 'danger' ? 'border-danger/40 bg-danger/[0.06]'
-      : tone === 'attention' ? 'border-attention/40 bg-attention/[0.06]'
       : 'border-positive/40 bg-positive/[0.06]';
 
   return (
     <section className={`rounded-xl border p-3 ${cls}`}>
       <div className="flex items-center gap-2">
         <Icon
-          name={blocked ? 'close' : gated ? 'shield' : 'check'}
+          name={blocked ? 'close' : 'check'}
           size={14}
-          className={tone === 'danger' ? 'text-danger' : tone === 'attention' ? 'text-attention' : 'text-positive'}
+          className={tone === 'danger' ? 'text-danger' : 'text-positive'}
         />
         <h3 className="text-[13px] font-semibold text-text">
-          {blocked
-            ? 'This would not finish'
-            : gated
-              ? 'This would stop and wait for you'
-              : 'This would run unattended'}
+          {blocked ? 'This would not finish' : 'This would run unattended'}
         </h3>
       </div>
       <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
@@ -324,9 +289,7 @@ function Verdict({ report }: { report: Report }) {
           ? report.denials.length
             ? 'Your policy would refuse at least one action, so the run stops there.'
             : 'The graph has an error that prevents it running at all.'
-          : gated
-            ? `${report.approvalsRequired.length} step${report.approvalsRequired.length === 1 ? '' : 's'} would pause for a decision. Started by an automation, the run would park until answered.`
-            : 'Nothing would be refused and nothing would need a person, so this could run with nobody watching.'}
+          : 'Nothing would be refused and nothing would need a person, so this could run with nobody watching.'}
       </p>
       <div className="mt-2 flex flex-wrap gap-1.5">
         <Badge tone={report.wouldRunUnattended ? 'positive' : 'attention'}>

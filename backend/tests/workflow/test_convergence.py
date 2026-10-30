@@ -2,6 +2,8 @@
 pass through the ONE canonical WorkflowRunner.start_workflow_run."""
 from __future__ import annotations
 
+import json
+
 import asyncio
 
 import pytest
@@ -94,58 +96,22 @@ def test_manual_scheduler_automation_converge(tmp_path, monkeypatch):
     assert s["run"]["trigger"]["runId"] == "ar-1"
 
 
-def test_scheduler_cannot_auto_approve(tmp_path, monkeypatch):
-    """A scheduled run hitting ask-user PARKS; the seam has no grant path."""
-    r = _runner(tmp_path, monkeypatch)
-    calls = []
-
-    class RecordingFabric(NullFabric):
-        async def invoke(self, capability_id, inp, ctx):
-            calls.append(capability_id)
-            from aura.fabric import NO_VERIFICATION
-            return {"invocationId": "inv-x", "capabilityId": capability_id,
-                    "outcome": "awaiting-approval", "detail": "waiting",
-                    "verification": dict(NO_VERIFICATION),
-                    "policy": {"decision": "ask-user", "rule": "risk-default:medium",
-                               "risk": "medium", "reason": "changes something"},
-                    "startedAt": "t", "endedAt": "t", "durationMs": 1, "attempts": 1}
-
-    r.fabric = RecordingFabric()
-    wf = {"id": "wf-g", "name": "G", "description": "",
-          "nodes": [{"id": "w", "type": "shell-command", "x": 0, "y": 0,
-                     "config": {"command": "echo hi"}}], "edges": []}
-
-    async def drive():
-        return await fire_scheduled_workflow(r, workflow=wf, project_id="p",
-                                             project_path=str(tmp_path),
-                                             rule_id="rule-9",
-                                             automation_run_id="ar-9", cron="* * * * *")
-
-    res = asyncio.run(drive())
-    assert calls == ["terminal.execute"]           # fabric WAS consulted (policy ran)
-    assert res["result"]["runState"] == "awaiting-approval"
-    assert res["result"]["nodes"]["w"]["status"] == "awaiting-approval"
-    # nothing executed: no executor ever ran (fabric returned park before any effect)
-
-
 def test_resume_chain_semantics(tmp_path, monkeypatch):
+    """A step the policy refuses ends the run as refused. It never parks, so
+    there is no paused run to resume: a resume with no completed checkpoint
+    is refused honestly."""
     r = _runner(tmp_path, monkeypatch)
-    wf = _wf()
 
-    class ParkFabric:
+    class RefuseFabric:
         async def invoke(self, cap, inp, ctx):
             from aura.fabric import NO_VERIFICATION
-            return {"invocationId": f"inv-{len(calls)}", "capabilityId": cap,
-                    "outcome": "awaiting-approval", "detail": "wait",
+            return {"invocationId": "inv-refused", "capabilityId": cap,
+                    "outcome": "denied", "detail": "refused by policy",
                     "verification": dict(NO_VERIFICATION),
-                    "policy": {"decision": "require-approval",
-                               "rule": "risk-default:high", "risk": "high",
-                               "reason": "needs you"},
-                    "startedAt": "t", "endedAt": "t", "durationMs": 1, "attempts": 1,
-                    "approvalId": f"apr-inv-{len(calls)}"}
-    calls: list = []
-    ParkFabric.invoke.__defaults__ = None
-    r.fabric = ParkFabric()
+                    "policy": {"decision": "deny", "rule": "risk-default:high",
+                               "risk": "high", "reason": "not permitted"},
+                    "startedAt": "t", "endedAt": "t", "durationMs": 1, "attempts": 1}
+    r.fabric = RefuseFabric()
     wf_gov = {"id": "wf-r", "name": "R", "description": "",
               "nodes": [{"id": "s", "type": "shell-command", "x": 0, "y": 0,
                          "config": {"command": "echo hi"}}], "edges": []}
@@ -154,14 +120,10 @@ def test_resume_chain_semantics(tmp_path, monkeypatch):
         first = await r.start_workflow_run(wf_gov, project_id="p",
                                            project_path=str(tmp_path),
                                            trigger={"kind": "manual", "by": "user"})
-        assert first["result"]["runState"] == "awaiting-approval"
         resumed = await r.resume(wf_gov, first["run"]["id"], lambda e: None)
         return first, resumed
 
     first, resumed = asyncio.run(drive())
-    if isinstance(resumed, dict) and "error" in resumed:
-        # nothing completed + not awaiting → refuses honestly (TS parity)
-        assert "no checkpoint to resume from" in resumed["error"]
-    else:
-        assert resumed["run"]["trigger"]["kind"] == "resume"
-        assert resumed["run"]["trigger"]["of"] == first["run"]["id"]
+    assert first["result"]["runState"] in ("failed", "denied"), first["result"]
+    assert "awaiting" not in json.dumps(first["result"]).lower()
+    assert "no checkpoint to resume from" in resumed["error"]

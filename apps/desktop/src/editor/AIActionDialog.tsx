@@ -12,12 +12,10 @@ export interface AiActionControls {
   reset: () => void;
   cancel: () => void;
   followUp: (text: string) => Promise<void>;
-  decide: (granted: boolean, reason?: string) => Promise<void>;
 }
 
 const OUTCOME_TONE: Record<string, 'positive' | 'attention' | 'critical' | 'info' | 'neutral'> = {
   completed: 'positive',
-  'awaiting-approval': 'attention',
   'needs-clarification': 'info',
   failed: 'critical',
   denied: 'critical',
@@ -36,21 +34,19 @@ const OUTCOME_TONE: Record<string, 'positive' | 'attention' | 'critical' | 'info
  * user has unsaved edits, so nothing is silently discarded).
  */
 export function AIActionDialog({ aiAction }: { aiAction: AiActionControls }) {
-  const { state, reset, cancel, followUp, decide } = aiAction;
+  const { state, reset, cancel, followUp } = aiAction;
   void useAppStore((s) => s.theme);
   const openFiles = useEditorStore((s) => s.openFiles);
   const reloadFile = useEditorStore((s) => s.reloadFile);
 
   const [followUpText, setFollowUpText] = useState('');
   const [sendingFollowUp, setSendingFollowUp] = useState(false);
-  const [deciding, setDeciding] = useState(false);
   const [refreshNote, setRefreshNote] = useState<string | null>(null);
 
   useEffect(() => {
     if (state.phase === 'idle') {
       setFollowUpText('');
       setSendingFollowUp(false);
-      setDeciding(false);
       setRefreshNote(null);
     }
   }, [state.phase]);
@@ -69,12 +65,6 @@ export function AIActionDialog({ aiAction }: { aiAction: AiActionControls }) {
     setSendingFollowUp(true);
     setFollowUpText('');
     void followUp(text).finally(() => setSendingFollowUp(false));
-  };
-
-  const handleDecide = (granted: boolean) => {
-    if (deciding) return;
-    setDeciding(true);
-    void decide(granted).finally(() => setDeciding(false));
   };
 
   const handleRefresh = async () => {
@@ -109,15 +99,6 @@ export function AIActionDialog({ aiAction }: { aiAction: AiActionControls }) {
           <div className="flex w-full items-center justify-between">
             <span className="text-[12px] text-text-muted">The agent is working — cancellation stops the run server-side.</span>
             <Button variant="secondary" size="sm" onClick={cancel}>Cancel</Button>
-          </div>
-        ) : state.phase === 'awaiting-approval' ? (
-          <div className="flex w-full items-center justify-between gap-3">
-            <span className="text-[12px] text-text-muted">Approval is decided in the agent ledger — the same ledger the Fabric spends from.</span>
-            <div className="flex gap-2">
-              <Button variant="secondary" size="sm" onClick={reset}>Close</Button>
-              <Button variant="secondary" size="sm" loading={deciding} onClick={() => handleDecide(false)}>Deny</Button>
-              <Button variant="primary" size="sm" loading={deciding} onClick={() => handleDecide(true)}>Approve & Apply</Button>
-            </div>
           </div>
         ) : state.phase === 'done' ? (
           <div className="flex w-full items-center justify-between gap-3">
@@ -179,31 +160,6 @@ export function AIActionDialog({ aiAction }: { aiAction: AiActionControls }) {
                 ))}
               </div>
             )}
-          </div>
-        )}
-
-        {state.phase === 'awaiting-approval' && state.result && (
-          <div className="space-y-3 pb-2">
-            <div className="flex items-center gap-2">
-              <Badge tone="attention">Waiting for approval</Badge>
-              {state.stale && <Badge tone="neutral">File changed since request</Badge>}
-            </div>
-            <p className="text-[12.5px] leading-relaxed text-text">{state.result.summary}</p>
-            {state.planReview && state.planReview.steps.length > 0 && (
-              <div className="space-y-2">
-                {state.planReview.steps.map((step) => (
-                  <div key={step.id} className="rounded-xl border border-line bg-canvas px-3.5 py-2.5 text-[12.5px]">
-                    <div className="font-medium text-text">{step.action}</div>
-                    <div className="mt-0.5 text-text-muted">
-                      {step.capability ? `Capability: ${step.capability} · ` : ''}Risk: {step.risk} · {step.reversible ? 'Reversible' : 'Irreversible'} · Verify: {step.verification}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            <p className="text-[12px] text-text-muted">
-              Approving applies the change through the Capability Fabric with verification and evidence — never as a direct editor write.
-            </p>
           </div>
         )}
 

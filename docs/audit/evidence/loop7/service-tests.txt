@@ -1,0 +1,98 @@
+gate:     service-tests
+command:  bash -c npm run test:service
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-28T23:03:07+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 0.73
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 69
+----- output -----
+
+> aura-hub@0.1.20 test:service
+> vitest run --pool=threads --dir packages/ai-service/src
+
+
+ RUN  v3.2.7 /mnt/storage/aura-hub
+
+ ✓ packages/ai-service/src/exec/processTree.test.ts (5 tests) 831ms
+   ✓ process-tree termination (POSIX) > a timeout ends the agent AND the processes it started  712ms
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > hands the caller deadline to the runtime request
+[model] ollama/m promptChars=2 maxTokens=4096 deadlineMs=123000 elapsedMs=1 outcome=ok
+
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > streams, joins the text and reports characters received as they arrive
+[model] ollama/m promptChars=4 maxTokens=4096 deadlineMs=60000 elapsedMs=1 outcome=ok
+
+ ✓ packages/ai-service/src/automationLifecycle.test.ts (19 tests) 783ms
+ ✓ packages/ai-service/src/provider/providerArchitecture.test.ts (11 tests) 743ms
+ ✓ packages/ai-service/src/provider/agentView.test.ts (4 tests) 167ms
+ ✓ packages/ai-service/src/provider/timeoutContract.test.ts (3 tests) 474ms
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > a stream that goes silent is a timeout that says so, not a generic failure
+[model] ollama/m promptChars=4 maxTokens=4096 deadlineMs=60000 elapsedMs=1511 outcome=timeout
+
+ ✓ packages/ai-service/src/fabric/httpPolicy.test.ts (47 tests) 171ms
+stderr | packages/ai-service/src/projectScoping.test.ts > inspect follows the requested project, not the mount > falls back to the mount when no project is requested (legacy path)
+[GRAPHIFY] Running: /home/Groot/.pyenv/versions/3.12.7/bin/graphify update "/tmp/aura-scope-a-YKMNLS"
+
+ ✓ packages/ai-service/src/automationActions.test.ts (11 tests) 1530ms
+   ✓ governance reports > an audit cancelled at its FINAL check (just before the snapshot write) writes nothing  427ms
+ ✓ packages/ai-service/src/projectScoping.test.ts (5 tests) 413ms
+ ✓ packages/ai-service/src/mission/plannerLifecycle.test.ts (4 tests) 538ms
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > copies the artifacts into the AURA home and removes the graphify-out it created
+[GRAPHIFY] Running: /tmp/aura-fake-graphify-MBz7Pq/graphify update "/tmp/aura-graphify-project-cC5CZT"
+
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > copies the artifacts into the AURA home and removes the graphify-out it created
+[GRAPHIFY] Done — copied 3 artifact(s) to /tmp/aura-graphify-test-CbJOGv/index/proj-clean/graphify
+
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > removes its own partial output when graphify fails
+[GRAPHIFY] Running: /tmp/aura-fake-graphify-OjathO/graphify update "/tmp/aura-graphify-project-nA0Evf"
+
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > removes its own partial output when graphify fails
+[GRAPHIFY] Failed: Command failed: /tmp/aura-fake-graphify-OjathO/graphify update /tmp/aura-graphify-project-nA0Evf
+
+
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > never removes a graphify-out that existed before the run
+[GRAPHIFY] Running: /tmp/aura-fake-graphify-9kdvJV/graphify update "/tmp/aura-graphify-project-IRHtnN"
+
+stderr | packages/ai-service/src/graphify.test.ts > runGraphify — the project root is left as it was > never removes a graphify-out that existed before the run
+[GRAPHIFY] Done — copied 3 artifact(s) to /tmp/aura-graphify-test-CbJOGv/index/proj-owned/graphify
+
+ ✓ packages/ai-service/src/graphify.test.ts (3 tests) 198ms
+ ✓ packages/ai-service/src/projectLifecycle.test.ts (18 tests) 183ms
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > when the overall ceiling is hit, the message names the elapsed time and the limit
+[model] ollama/m promptChars=2 maxTokens=4096 deadlineMs=50 elapsedMs=1662 outcome=timeout
+
+ ✓ packages/ai-service/src/provider/redirectGuard.test.ts (12 tests) 203ms
+ ✓ packages/ai-service/src/instanceGuard.test.ts (12 tests) 23ms
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > a looping stream is stopped, retried ONCE with a repetition penalty, and a second loop is final (never an answer)
+[model] ollama/m promptChars=4 maxTokens=4096 deadlineMs=60000 elapsedMs=2 outcome=degenerate
+
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > recovers when the penalised retry produces a real answer
+[model] ollama/m promptChars=4 maxTokens=4096 deadlineMs=60000 elapsedMs=10 outcome=ok
+
+stdout | packages/ai-service/src/pipelineGenerate.test.ts > generate > a long legitimate stream is returned whole and costs no retry
+[model] ollama/m promptChars=1 maxTokens=4096 deadlineMs=60000 elapsedMs=19 outcome=ok
+
+ ✓ packages/ai-service/src/pipelineGenerate.test.ts (8 tests) 4672ms
+   ✓ generate > a stream that goes silent is a timeout that says so, not a generic failure  1514ms
+   ✓ generate > when the overall ceiling is hit, the message names the elapsed time and the limit  1664ms
+   ✓ generate > cancellation reaches the runtime and is not reported as a timeout  408ms
+ ✓ packages/ai-service/src/exec/process.test.ts (13 tests) 10ms
+ ✓ packages/ai-service/src/mission/planner.test.ts (16 tests) 214ms
+ ✓ packages/ai-service/src/conversations.test.ts (11 tests) 40ms
+ ✓ packages/ai-service/src/handoffs.test.ts (7 tests) 79ms
+ ✓ packages/ai-service/src/provider/verifySave.test.ts (4 tests) 5194ms
+   ✓ verifySelfHosted probe budget > a reasoning model that answers only after thinking still verifies  3425ms
+   ✓ verifySelfHosted probe budget > the probe asks for at least the reasoning budget  637ms
+   ✓ verifySelfHosted save stage > verifies, saves, and persists the exact verified URL and model  569ms
+   ✓ verifySelfHosted save stage > saves successfully when the server goes dark after the generation  561ms
+ ✓ packages/ai-service/src/fabric/terminalInstallGuard.test.ts (5 tests) 27ms
+ ✓ packages/ai-service/src/provider/adapters/ollama.test.ts (18 tests) 23ms
+ ✓ packages/ai-service/src/executionSafety.test.ts (7 tests) 42ms
+ ✓ packages/ai-service/src/repetition.test.ts (4 tests) 17ms
+
+ Test Files  23 passed (23)
+      Tests  247 passed (247)
+   Start at  23:03:08
+   Duration  6.42s (transform 5.46s, setup 0ms, collect 13.14s, tests 16.58s, environment 13ms, prepare 3.95s)
+
+----- end -----
+finished: 2026-10-28T23:03:15+05:30
+exit:     0

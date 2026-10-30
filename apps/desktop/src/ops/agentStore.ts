@@ -33,7 +33,6 @@ export type AgentSignalKind =
 export type AgentCampaignStatus =
   | 'observed'
   | 'planned'
-  | 'awaiting-approval'
   | 'approved'
   | 'executing'
   | 'verifying'
@@ -121,8 +120,12 @@ function load(): { campaigns: AgentCampaign[]; timeline: AgentTimelineEntry[]; e
     const raw = localStorage.getItem(KEY);
     if (!raw) return { campaigns: [], timeline: [], enabled: true };
     const parsed = JSON.parse(raw) as { campaigns?: AgentCampaign[]; timeline?: AgentTimelineEntry[]; enabled?: boolean };
+    // Campaigns saved while the human approval queue existed run under policy now.
+    const campaigns = Array.isArray(parsed.campaigns)
+      ? parsed.campaigns.map((c) => (c.status === 'awaiting-approval' as string ? { ...c, status: 'approved' as const } : c))
+      : [];
     return {
-      campaigns: Array.isArray(parsed.campaigns) ? parsed.campaigns : [],
+      campaigns,
       timeline: Array.isArray(parsed.timeline) ? parsed.timeline : [],
       enabled: parsed.enabled !== false,
     };
@@ -151,7 +154,6 @@ interface AgentState {
   setPipelineBusy: (busy: boolean) => void;
   propose: (input: AgentCampaignInput) => AgentCampaign | null;
   setStatus: (id: string, status: AgentCampaignStatus, opts?: { note?: string; missionId?: string; memoryId?: string }) => void;
-  approve: (id: string) => void;
   dismiss: (id: string) => void;
   setVerification: (id: string, pass: boolean, note: string, after?: number) => void;
   log: (campaignId: string, stage: string, label: string, detail: string, actor?: 'agent' | 'human' | 'system') => void;
@@ -193,13 +195,16 @@ export const useAgentStore = create<AgentState>((set, get) => {
         detail: input.signalLabel,
         actor: 'agent' as const,
       }];
-      const next = { ...campaign, status: 'awaiting-approval' as const, updatedAt: new Date().toISOString() };
+      // Autonomous: the campaign is queued to run under the normal policy.
+      // No human approval step exists.
+      const now2 = new Date().toISOString();
+      const next = { ...campaign, status: 'approved' as const, approvedAt: now2, updatedAt: now2 };
       tl.push({
         id: nid('tl-'),
         campaignId: next.id,
-        at: new Date().toISOString(),
-        stage: 'awaiting-approval',
-        label: 'Approval requested',
+        at: now2,
+        stage: 'approved',
+        label: 'Queued to run under policy',
         detail: input.plan,
         actor: 'agent' as const,
       });
@@ -228,31 +233,11 @@ export const useAgentStore = create<AgentState>((set, get) => {
       set({ ...commit(updated, timeline, enabled) });
     },
 
-    approve: (id) => {
-      const { campaigns, timeline, enabled } = get();
-      const now = new Date().toISOString();
-      const updated = campaigns.map((c) =>
-        c.id === id && c.status === 'awaiting-approval'
-          ? { ...c, status: 'approved' as const, approvedAt: now, updatedAt: now }
-          : c,
-      );
-      const tl = [...timeline, {
-        id: nid('tl-'),
-        campaignId: id,
-        at: now,
-        stage: 'approved',
-        label: 'Approved by human',
-        detail: 'The improvement plan was approved — the agent may create the improvement mission.',
-        actor: 'human' as const,
-      }];
-      set({ ...commit(updated, tl, enabled) });
-    },
-
     dismiss: (id) => {
       const { campaigns, timeline, enabled } = get();
       const now = new Date().toISOString();
       const updated = campaigns.map((c) =>
-        c.id === id && (c.status === 'awaiting-approval' || c.status === 'planned')
+        c.id === id && (c.status === 'approved' || c.status === 'planned')
           ? { ...c, status: 'dismissed' as const, updatedAt: now, note: 'Dismissed by the user' }
           : c,
       );
@@ -310,10 +295,6 @@ export const useAgentStore = create<AgentState>((set, get) => {
 
 /* ── derived queue helpers (pure, used by the UI) ──────────────────── */
 
-export function approvalQueue(campaigns: AgentCampaign[]): AgentCampaign[] {
-  return campaigns.filter((c) => c.status === 'awaiting-approval');
-}
-
 export function actionQueue(campaigns: AgentCampaign[]): AgentCampaign[] {
   return campaigns.filter((c) => c.status === 'approved' || c.status === 'executing');
 }
@@ -323,16 +304,14 @@ export function verificationQueue(campaigns: AgentCampaign[]): AgentCampaign[] {
 }
 
 export function agentStatusSummary(campaigns: AgentCampaign[]): {
-  waiting: number;
   active: number;
   verifying: number;
   verified: number;
   failed: number;
 } {
-  const s = { waiting: 0, active: 0, verifying: 0, verified: 0, failed: 0 };
+  const s = { active: 0, verifying: 0, verified: 0, failed: 0 };
   for (const c of campaigns) {
-    if (c.status === 'awaiting-approval') s.waiting += 1;
-    else if (c.status === 'approved' || c.status === 'executing') s.active += 1;
+    if (c.status === 'approved' || c.status === 'executing') s.active += 1;
     else if (c.status === 'verifying') s.verifying += 1;
     else if (c.status === 'verified') s.verified += 1;
     else if (c.status === 'failed') s.failed += 1;

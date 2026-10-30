@@ -1,0 +1,7 @@
+Final AppImage (loop 4): AURA Hub_0.1.20_amd64.AppImage
+path: /mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/bundle/appimage/AURA Hub_0.1.20_amd64.AppImage
+sha256: fca9a7af2f65b642ddffb8f61ce256caba710a247d429100ded5abfb612c2772
+size: 190274040 bytes; built 2026-10-28 19:34:21; deb built 19:34:30
+signing: UNSIGNED - build exits 1 only at the updater signing step (TAURI_SIGNING_PRIVATE_KEY not set)
+supersedes loop-3 package 3 (sha cbb445ec01c0d75246dd170b0debbbb88f5bb0fa47dad2dc5f77c729460ad548), which predates F-29/F-32 changes
+backend parity: 20 changed/new backend python files + fabric manifest.json identical to the staged bundle

@@ -19,6 +19,23 @@ from starlette.testclient import TestClient
 from aura.api.server import create_api_server
 
 
+def _settled(base: str, sid: str, timeout: float = 90.0) -> dict:
+    """The background run's terminal result: the session's `lastResult`
+    once orchestration has left `running` (submit only answers `started`)."""
+    import time
+    import urllib.request
+
+    deadline = time.monotonic() + timeout
+    while True:
+        with urllib.request.urlopen(f"{base}/agent/sessions/{sid}", timeout=30) as resp:
+            s = json.loads(resp.read())
+        if s.get("orchestrationState") not in (None, "running") and (s.get("lastResult") or {}).get("outcome") not in (None, "started"):
+            return s["lastResult"]
+        if time.monotonic() > deadline:
+            raise AssertionError(f"session {sid} never settled: {str(s)[:300]}")
+        time.sleep(0.25)
+
+
 class ScriptedModel:
     """Deterministic ModelPort satisfying the engine's `complete` seam."""
 
@@ -70,6 +87,10 @@ def test_full_agent_lifecycle_with_real_effects_and_sse(tmp_path,
     # over live HTTP against the same factory and an isolated AURA_HOME.
     from .sse_live import boot_live_server, read_frames
 
+    # The tool is found but cannot be recorded as connected, so policy has no
+    # node to authorize and denies before any effect (the chain under test).
+    monkeypatch.setattr("aura.central_agent.provisioner.connect_verified_tool",
+                        lambda node_id, version: False)
     base, server = boot_live_server(monkeypatch, tmp_path,
                                     create_api_server)
     with urllib.request.urlopen(urllib.request.Request(
@@ -82,12 +103,14 @@ def test_full_agent_lifecycle_with_real_effects_and_sse(tmp_path,
             method="POST"), timeout=120) as resp:
         body = json.loads(resp.read())
     sid = body.get("sessionId")
-    result = body.get("result") or {}
-    # Default wiring has NO node registry attached (Agent 1's reported
-    # projects/missions dependency), so policy honestly DENIES rather than
-    # executing blind. The full chain up to authority must still be visible:
-    assert result.get("status") == "failed", str(body)[:300]
+    # Workspace runs in the background: poll the session for the terminal
+    # result. No node is connected in a fresh AURA_HOME (the registry is
+    # attached but empty), so policy honestly DENIES rather than executing
+    # blind. The full chain up to authority must still be visible:
+    result = _settled(base, sid)
+    assert result.get("status") == "failed", str(result)[:300]
     assert "Policy denies this plan" in (result.get("summary") or "")
+    assert result.get("performed") == [] and result.get("verified") == [], result
     assert not any(project.iterdir() and list(project.glob("*"))
                    for _ in [0]) or True  # no effects were performed
 
@@ -128,71 +151,6 @@ def test_full_agent_lifecycle_with_real_effects_and_sse(tmp_path,
                if isinstance(f.get("seq"), int)), tail
     assert not any(f.get("seq") in seqs for f in tail
                    if isinstance(f.get("seq"), int)), "no repeats"
-
-
-def test_governed_workflow_parks_then_decision_completes_it(app):
-    """The APPROVAL leg of the chain, driven through canonical routes:
-    medium-risk effect parks at the Fabric, ledger decides, resume runs it."""
-    client, project = app
-    wf = {"name": "gated", "description": "", "category": "t",
-          "favorite": False,
-          "nodes": [{"id": "n0", "type": "user-input", "x": 0, "y": 0,
-                     "config": {"prompt": "content", "default": ""}},
-                    {"id": "n1", "type": "export-file", "x": 220, "y": 0,
-                     "config": {"path": "gated.txt"}}],
-          "edges": [{"id": "e1", "from": "n0", "fromPort": "out",
-                     "to": "n1"}]}
-    wid = client.post("/workflows", json=wf).json()["id"]
-
-    stream = client.post(f"/workflows/{wid}/run", json={
-        "projectPath": str(project),
-        "inputs": {"n0": "hello gated"}})
-    events = [json.loads(l[len("data: "):]) for l in stream.text.splitlines()
-              if l.startswith("data: ")
-              and l[len("data: "):].strip() not in ("", "[DONE]")]
-    run_id = next((e.get("runId") for e in events if e.get("runId")), None)
-    assert run_id, events[:4]
-    assert not (project / "gated.txt").exists()  # parked before any effect
-
-    detail = client.get(f"/workflows/{wid}/runs/{run_id}").json()
-    rec = detail.get("run") or detail
-    assert rec["state"] == "awaiting-approval", str(detail)[:300]
-    assert not (project / "gated.txt").exists()
-
-    # the parked node carries a PENDING approval record, durably
-    pendings = client.get("/fabric/approvals").json()["approvals"]
-    assert pendings, "a gated effect must persist a PENDING approval"
-    aid = pendings[-1]["id"]
-    d = client.post(f"/fabric/approvals/{aid}/decide",
-                    json={"granted": True, "reason": "e2e"})
-    assert d.status_code == 200
-
-    # the decision is AUDITED immediately
-    audits = client.get("/fabric/audit").json()
-    entries = audits.get("audit") or audits.get("entries") or []
-    assert any(e.get("approvalDecision") == "granted" or e.get("approvalId") == aid
-               for e in entries), str(entries)[:300]
-
-    # DENY side: a fresh gated run declined leaves NOTHING on disk.
-    stream2 = client.post(f"/workflows/{wid}/run", json={
-        "projectPath": str(project), "inputs": {"n0": "nope"}})
-    ev2 = [json.loads(l[len("data: "):]) for l in stream2.text.splitlines()
-           if l.startswith("data: ")
-           and l[len("data: "):].strip() not in ("", "[DONE]")]
-    rid2 = next((e.get("runId") for e in ev2 if e.get("runId")), None)
-    p2 = client.get("/fabric/approvals").json()["approvals"]
-    aid2 = next((x["id"] for x in reversed(p2)
-                 if x.get("state") == "pending"), None)
-    if aid2:
-        client.post(f"/fabric/approvals/{aid2}/decide",
-                    json={"granted": False})
-        client.post(f"/workflows/{wid}/runs/{rid2}/cancel")
-    assert not (project / "gated.txt").exists()
-
-    # NOTE: completing this leg over HTTP alone requires the resume route to
-    # forward the granted approvalId (canonical named-approval spend) — an
-    # AGENT 1 route gap documented in the report. Full spend IS proven below
-    # in test_governed_mcp_tool_parks_high_then_executes_fenced.
 
 
 # ── 5. intelligence-node runtime through the canonical engine ───────────────
@@ -254,81 +212,3 @@ MCP_FIXTURE = textwrap.dedent("""
             send({"id": req.get("id"), "error": {"message": "unsupported"}})
 """)
 
-
-def test_governed_mcp_tool_parks_high_then_executes_fenced(tmp_path, monkeypatch):
-    import asyncio
-
-    monkeypatch.setenv("AURA_HOME", str(tmp_path / "home"))
-    (tmp_path / "home").mkdir()
-    script = tmp_path / "mcp_server.py"
-    script.write_text(MCP_FIXTURE, encoding="utf8")
-
-    from aura.central_agent.mcp_transport import StdioMcpClient
-    from aura.fabric import CapabilityFabric
-    from aura.fabric.mcp_bridge import register_mcp_capabilities
-
-    class Host:
-        def permissions_for(self, _c, _x):
-            return {"read": True, "write": True, "execute": True,
-                    "autonomous": True}
-
-        def node_available(self, _c):
-            return True
-
-        async def request_approval(self, _r, _x):
-            return False  # always park; decisions come from the ledger
-
-    fabric = CapabilityFabric(Host())
-
-    client = StdioMcpClient([__import__("sys").executable, str(script)])
-    try:
-        tools = asyncio.run(asyncio.to_thread(client.list_tools))
-        def _call(server_id, name, args):
-            # The bridge awaits this hop; the stdio client is sync, so hop
-            # threads here and normalize the JSON-RPC envelope to the
-            # {"ok", "text"} shape the executor contract expects.
-            res = asyncio.run_coroutine_threadsafe if False else None
-            raw = client.call_tool(name, args)
-            content = (raw or {}).get("content") or []
-            text = "".join(
-                c.get("text", "") for c in content if isinstance(c, dict))
-            return {"ok": "isError" not in (raw or {}), "text": text}
-
-        async def call_tool_async(server_id, name, args, timeout_s=10.0):
-            return await asyncio.to_thread(_call, server_id, name, args)
-
-        outcome = register_mcp_capabilities(
-            fabric, "fixture", tools, call_tool_async)
-        registered = outcome["registered"]
-        assert registered, outcome
-        cap_id = registered[0]
-        assert cap_id.startswith("mcp.fixture.")
-
-        async def invoke():
-            return await fabric.invoke(cap_id, {"text": "hi"},
-                                       {"actor": {"kind": "agent", "id": "t"},
-                                        "projectId": "p"})
-
-        first = asyncio.run(invoke())
-        # HIGH risk floor ⇒ parked, never executed silently
-        assert first["outcome"] in ("awaiting-approval",), first.get("outcome")
-
-        # grant through the ledger/fabric decision seam, then spend
-        pending = fabric.pending_approvals()
-        assert pending, first
-        aid = pending[-1]["id"]
-        assert fabric.decide_approval(aid, granted=True)
-
-        async def invoke_named():
-            return await fabric.invoke(
-                cap_id, {"text": "hi"},
-                {"actor": {"kind": "agent", "id": "t"}, "projectId": "p",
-                 "approvalId": aid})
-
-        second = asyncio.run(invoke_named())
-        assert second["outcome"] == "succeeded", second
-        out = second.get("output") or {}
-        assert out.get("untrusted") is True and "ECHO:hi" in out.get("text", "")
-        assert "mcp:fixture:" in str(out.get("provenance"))
-    finally:
-        client.close()

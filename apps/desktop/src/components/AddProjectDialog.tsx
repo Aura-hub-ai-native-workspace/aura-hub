@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { Button, Dialog, Icon, Input, useToast } from '@aura/ui';
+import { findAddedProject } from '../data/addedProject';
+import { useAppStore } from '@aura/core';
 import { useWorkspace } from '../data/useWorkspace';
 
 /**
@@ -30,9 +32,14 @@ export function AddProjectDialog({ open, onClose }: { open: boolean; onClose: ()
     setBusy(false);
     if (!res.ok) { setError(res.error ?? 'Could not add project'); return; }
     push({ title: 'Project added', description: 'Indexing started automatically.', tone: 'positive' });
-    // Open the most recent (just-added) project.
-    const latest = useWorkspace.getState().projects[0];
-    if (latest) void open_(latest.id);
+    // The folder just added becomes the active project: that is the
+    // authority every workspace reads. Opening its service mount alone left
+    // the active project unset, so the next mission had no folder to run in.
+    const added = findAddedProject(useWorkspace.getState().projects, path);
+    if (added) {
+      useAppStore.getState().setActiveProject(added.id);
+      void open_(added.id);
+    }
     close();
   };
 

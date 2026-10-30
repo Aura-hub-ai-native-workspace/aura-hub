@@ -27,7 +27,6 @@ import type { RunState as LiveRunState } from '../../data/useWorkflows';
 export const RUN_STATE_LABEL: Record<RunState, string> = {
   queued: 'Queued',
   running: 'Running',
-  'awaiting-approval': 'Waiting for you',
   succeeded: 'Succeeded',
   failed: 'Failed',
   cancelled: 'Cancelled',
@@ -37,7 +36,6 @@ export const RUN_STATE_LABEL: Record<RunState, string> = {
 export const RUN_STATE_TONE: Record<RunState, 'positive' | 'critical' | 'attention' | 'info' | 'neutral'> = {
   queued: 'neutral',
   running: 'info',
-  'awaiting-approval': 'attention',
   succeeded: 'positive',
   failed: 'critical',
   cancelled: 'attention',
@@ -50,35 +48,28 @@ export const RUN_STATE_TONE: Record<RunState, 'positive' | 'critical' | 'attenti
    the audit trail. So one logical execution is one or more records.
 
    The consequence the UI has to get right is that a superseded run KEEPS
-   its `awaiting-approval` state — that is still the honest description of
+   its earlier stop state — that is still the honest description of
    how that leg ended, and rewriting it would lose the reason the chain
    exists. What changes is that it is no longer *actionable*. Anything
    asking "is someone waiting on me?" must therefore ask this, not the
    state. See `docs/AGENT_RESUME_SEMANTICS.md`. */
 
-/** True when this run is genuinely parked on a person, right now. */
-export const isPending = (r: { state: RunState; supersededBy?: string }): boolean =>
-  r.state === 'awaiting-approval' && !r.supersededBy;
-
 /**
- * How a run's state should read, given the chain it sits in.
- *
- * A superseded leg says what became of it rather than repeating a question
- * that has already been answered.
+ * How a run's state should read. A superseded leg is labelled as continued,
+ * because its question was answered and the work picked up by another run.
  */
 export const runStateLabel = (r: { state: RunState; supersededBy?: string }): string =>
-  r.supersededBy && r.state === 'awaiting-approval' ? 'Continued' : RUN_STATE_LABEL[r.state];
+  r.supersededBy ? 'Continued' : RUN_STATE_LABEL[r.state];
 
 export const runStateTone = (
   r: { state: RunState; supersededBy?: string },
 ): 'positive' | 'critical' | 'attention' | 'info' | 'neutral' =>
-  r.supersededBy && r.state === 'awaiting-approval' ? 'neutral' : RUN_STATE_TONE[r.state];
+  r.supersededBy ? 'neutral' : RUN_STATE_TONE[r.state];
 
 export const NODE_STATE_LABEL: Record<NodeState, string> = {
 
   queued: 'queued',
   running: 'running',
-  'awaiting-approval': 'waiting for you',
   succeeded: 'succeeded',
   failed: 'failed',
   denied: 'denied by policy',
@@ -90,7 +81,6 @@ export const NODE_STATE_LABEL: Record<NodeState, string> = {
 export const NODE_STATE_TONE: Record<NodeState, 'positive' | 'critical' | 'attention' | 'info' | 'neutral'> = {
   queued: 'neutral',
   running: 'info',
-  'awaiting-approval': 'attention',
   succeeded: 'positive',
   failed: 'critical',
   // Denial is the policy engine working, not the workflow breaking. It is
@@ -112,7 +102,6 @@ const NODE_STATE_FROM_EVENT: Record<NodeRunState, NodeState> = {
   completed: 'succeeded',
   failed: 'failed',
   skipped: 'skipped',
-  'awaiting-approval': 'awaiting-approval',
   denied: 'denied',
   cancelled: 'cancelled',
   'timed-out': 'timed-out',
@@ -161,7 +150,6 @@ export interface RunProgress {
   denied: number;
   skipped: number;
   running: number;
-  awaiting: number;
   /** The node the run is on right now, if any. */
   current: { nodeId: string; type: string; state: NodeState } | null;
 }
@@ -170,8 +158,7 @@ export function progressOf(run: WorkflowRun): RunProgress {
   const nodes = Object.values(run.nodes);
   const by = (s: NodeState) => nodes.filter((n) => n.state === s);
   const running = by('running');
-  const awaiting = by('awaiting-approval');
-  const head = running[0] ?? awaiting[0] ?? null;
+  const head = running[0] ?? null;
   return {
     total: nodes.length,
     succeeded: by('succeeded').length,
@@ -179,7 +166,6 @@ export function progressOf(run: WorkflowRun): RunProgress {
     denied: by('denied').length,
     skipped: by('skipped').length,
     running: running.length,
-    awaiting: awaiting.length,
     current: head ? { nodeId: head.nodeId, type: head.type, state: head.state } : null,
   };
 }
@@ -241,9 +227,7 @@ export function liveRun(
 
 
   const state: RunState = live.active
-    ? Object.values(nodes).some((n) => n.state === 'awaiting-approval')
-      ? 'awaiting-approval'
-      : 'running'
+    ? 'running'
     : live.status === 'completed'
       ? 'succeeded'
       : live.error === 'cancelled'

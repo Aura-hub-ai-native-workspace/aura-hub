@@ -1,0 +1,4 @@
+Acceptance C (takeover; my reconstruction of an earlier one-line record), FINAL artifact (sha256 fca9a7af2f65b642ddffb8f61ce256caba710a247d429100ded5abfb612c2772), 2026-10-28.
+Setup: clean launch in an isolated home, both own services healthy; its own Node child (lineage: parent aura-hub, resolved executable 'node') stopped; foreign server (wrong identity proof) started on 4319.
+Result: PASS. Over 45 s idle and after a UI action ('Skip for now') the foreign server received 0 requests (its log file was never created): no token, no body, no data request, not even an identity-proof challenge.
+UI: status bar 'Backend identity mismatch - connection refused'; home 'Backend offline'; the genuine Python backend stayed 'Environment: connected'.

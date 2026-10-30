@@ -19,7 +19,18 @@
  *
  * Nothing here is simulated. If the artifact is missing, this fails —
  * it never falls back to testing the dev tree and calling it packaging.
+ *
+ * Authorization: every backend the app starts refuses all but /health and
+ * /instance/proof without its own per-launch token. The suite obtains each
+ * token from the backend process it launched and proves ownership with the
+ * service's challenge before using it (see "launch tokens"); it never bypasses
+ * the guard and never prints a token.
+ *
+ * Exit codes: 0 every check passed; 1 at least one check failed; 2 nothing
+ * failed but at least one check was BLOCKED by the environment (for example no
+ * window manager on the display), so the run is not a clean pass.
  */
+import { createHmac, randomBytes } from 'node:crypto';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -37,12 +48,80 @@ const PORT = Number(process.env.AURA_VERIFY_PORT ?? 4319);
 const BUNDLE_DIR = `${REPO}/apps/desktop/src-tauri/target/release/bundle`;
 
 let failed = false;
+let blockedCount = 0;
 const check = (n, ok, extra = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${n}${extra ? ` — ${extra}` : ''}`);
   if (!ok) failed = true;
 };
+/**
+ * A check the ENVIRONMENT cannot support (not the product failing it): it is
+ * neither a pass nor a failure, and the run is then not reported as clean.
+ * Exit codes: 0 every check passed; 1 at least one failed; 2 none failed but
+ * at least one was blocked.
+ */
+const environmentBlocked = (n, why) => {
+  console.log(`BLOCKED  ${n} — ${why}`);
+  blockedCount += 1;
+};
 const info = (m) => console.log(`      ${m}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/* ── launch tokens ────────────────────────────────────────────────────
+ *
+ * Every backend the app starts is given its own fresh random token, in that
+ * child's environment only (never a command line, a log or a file), and refuses
+ * every route except /health and /instance/proof without it. This suite used
+ * to send no token, so every capability check was refused, correctly.
+ *
+ * It learns each token the only legitimate way available to a harness: from
+ * the environment of the backend process IT launched, found through the app's
+ * own process tree, and then PROVES the token belongs to the listener by
+ * answering the service's own ownership challenge before using it. Nothing is
+ * bypassed, no validation is disabled, no token is invented. A token is sent
+ * only to the port of the process it was read from, is never printed, and is
+ * redacted from all output as a second line of defence.
+ */
+const launchTokens = new Map();
+const redactions = new Set();
+const redact = (s) => { let out = String(s); for (const t of redactions) out = out.split(t).join('<launch-token>'); return out; };
+for (const method of ['log', 'error', 'warn']) {
+  const original = console[method].bind(console);
+  console[method] = (...a) => original(...a.map((x) => (typeof x === 'string' ? redact(x) : x)));
+}
+const launchHeaders = (port) => (launchTokens.has(port) ? { 'x-aura-instance-token': launchTokens.get(port) } : {});
+const parentOf = (pid) => {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+  } catch { return 0; }
+};
+const descendsFrom = (pid, root) => {
+  let p = pid;
+  for (let i = 0; i < 40 && p > 1; i += 1) { if (p === root) return true; p = parentOf(p); }
+  return false;
+};
+const listenersOn = (port) => [...(spawnSync('ss', ['-ltnp', `sport = :${port}`], { encoding: 'utf8' }).stdout ?? '')
+  .matchAll(/pid=(\d+)/g)].map((m) => Number(m[1]));
+/** Learn and PROVE the launch token of the service listening on `port`; true when proven. */
+const learnLaunchToken = async (port, appPid) => {
+  for (const pid of listenersOn(port)) {
+    if (!descendsFrom(pid, appPid)) continue;           // only processes of the instance this suite launched
+    let token = '';
+    try {
+      token = (readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')
+        .find((e) => e.startsWith('AURA_INSTANCE_TOKEN=')) ?? '').slice('AURA_INSTANCE_TOKEN='.length);
+    } catch { continue; }
+    if (!token) continue;
+    const challenge = randomBytes(16).toString('hex');
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/instance/proof?challenge=${challenge}`);
+      const body = await r.json();
+      const expected = createHmac('sha256', token).update(`aura-instance-proof:${challenge}`).digest('hex');
+      if (body?.proof === expected) { launchTokens.set(port, token); redactions.add(token); return true; }
+    } catch { /* the proof did not come back: not proven */ }
+  }
+  return false;
+};
 
 /**
  * The Python environment backend's port, kept separate from the Node
@@ -54,7 +133,7 @@ const pyApi = async (p, ms = 4000) => {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), ms);
   try {
-    const r = await fetch(`http://127.0.0.1:${PYTHON_PORT}${p}`, { signal: ac.signal });
+    const r = await fetch(`http://127.0.0.1:${PYTHON_PORT}${p}`, { headers: launchHeaders(PYTHON_PORT), signal: ac.signal });
     return { status: r.status, body: await r.json().catch(() => null) };
   } catch (e) {
     return { status: 0, body: null, error: e.message };
@@ -67,7 +146,7 @@ const api = async (p, ms = 4000) => {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), ms);
   try {
-    const r = await fetch(`http://127.0.0.1:${PORT}${p}`, { signal: ac.signal });
+    const r = await fetch(`http://127.0.0.1:${PORT}${p}`, { headers: launchHeaders(PORT), signal: ac.signal });
     return { status: r.status, body: await r.json().catch(() => null) };
   } catch (e) {
     return { status: 0, body: null, error: e.message };
@@ -80,7 +159,7 @@ const post = async (p, body, ms = 240000) => {
   const t = setTimeout(() => ac.abort(), ms);
   try {
     const r = await fetch(`http://127.0.0.1:${PORT}${p}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json', ...launchHeaders(PORT) },
       body: JSON.stringify(body ?? {}), signal: ac.signal,
     });
     return { status: r.status, body: await r.json().catch(() => null) };
@@ -358,6 +437,65 @@ check('1k. the packaged interpreter alone can import the packaged backend',
   selfContained, selfContainedDetail);
 
 /*
+ * 1m / 1n. The document libraries ship, and work, on the packaged interpreter.
+ *
+ * Word, Excel and PDF are product features (document.ingest and
+ * artifact.generate), and their libraries are optional extras of the backend,
+ * which a plain dependency install leaves out: the packaged app answered every
+ * DOCX/XLSX/PDF request with "python-docx not installed". 1m checks the
+ * packages are in the artifact; 1n executes them, with the machine's Python
+ * environment stripped out and only the artifact's own site-packages on the
+ * path, by writing each format and reading it back, so an importable but
+ * broken compiled part (lxml, Pillow) is caught.
+ */
+const DOCUMENT_PACKAGES = ['docx', 'openpyxl', 'reportlab', 'pypdf', 'PIL', 'lxml'];
+const documentMissing = DOCUMENT_PACKAGES
+  .filter((pkg) => pyRes(`site-packages/${pkg}/__init__.py`).length === 0);
+check('1m. the document libraries (python-docx, openpyxl, reportlab, pypdf, Pillow, lxml) are packaged',
+  documentMissing.length === 0,
+  documentMissing.length
+    ? `missing from resources/python/site-packages: ${documentMissing.join(', ')}`
+    : DOCUMENT_PACKAGES.join(', '));
+
+let documentsWork = false;
+let documentsDetail = 'no packaged interpreter to test';
+if (packagedRuntime.length && packagedPyEntry.length) {
+  const pythonRoot = path.dirname(path.dirname(packagedPyEntry[0]));
+  const roundTrip = [
+    'import io, os, sys, tempfile',
+    `root = ${JSON.stringify(pythonRoot)}`,
+    'sys.path.insert(0, os.path.join(root, "site-packages"))',
+    'import importlib.metadata as md',
+    'out = []',
+    // DOCX: write with python-docx, read back
+    'import docx',
+    'd = docx.Document(); d.add_paragraph("DOCX-ROUNDTRIP-OK"); b = io.BytesIO(); d.save(b); b.seek(0)',
+    'assert "DOCX-ROUNDTRIP-OK" in [p.text for p in docx.Document(b).paragraphs]',
+    // XLSX: write with openpyxl, read back
+    'import openpyxl',
+    'w = openpyxl.Workbook(); w.active["A1"] = "XLSX-ROUNDTRIP-OK"; b = io.BytesIO(); w.save(b); b.seek(0)',
+    'assert openpyxl.load_workbook(b).active["A1"].value == "XLSX-ROUNDTRIP-OK"',
+    // PDF: write with reportlab (uses Pillow), read back with pypdf
+    'from reportlab.pdfgen import canvas',
+    'b = io.BytesIO(); c = canvas.Canvas(b); c.drawString(72, 720, "PDF-ROUNDTRIP-OK"); c.save(); b.seek(0)',
+    'import pypdf',
+    'assert "PDF-ROUNDTRIP-OK" in pypdf.PdfReader(b).pages[0].extract_text()',
+    'from PIL import Image',
+    'Image.new("RGB", (4, 4)).tobytes()',
+    'import lxml.etree',
+    'print(" ".join(f"{n}=" + md.version(n) for n in ("python-docx", "openpyxl", "reportlab", "pypdf", "pillow", "lxml")))',
+  ].join('\n');
+  const probe = spawnSync(packagedRuntime[0], ['-c', roundTrip],
+    { encoding: 'utf8', timeout: 120000, env: PROBE_ENV });
+  documentsWork = probe.status === 0;
+  documentsDetail = documentsWork
+    ? `DOCX, XLSX and PDF written and read back; ${probe.stdout.trim()}`
+    : (probe.stderr ?? '').trim().split('\n').filter(Boolean).pop() ?? 'no output';
+}
+check('1n. the packaged interpreter alone writes and reads DOCX, XLSX and PDF',
+  documentsWork, documentsDetail);
+
+/*
  * A base interpreter for 1i: new enough for the backend (3.12+, per
  * `backend/pyproject.toml`) and otherwise unremarkable. What it has
  * installed does not matter, because the virtualenv built from it keeps
@@ -594,6 +732,20 @@ check('3h. the backend ran on the interpreter AURA ships, not one from the machi
   pythonLine !== '' && usesBundled,
   pythonLine || 'the app never reported which interpreter it used');
 
+/*
+ * 3j. Own what is being tested.
+ *
+ * From here on the suite talks to the services through their ownership guard,
+ * so it first establishes that each token it holds really belongs to the
+ * listener on that port (the service's own challenge, answered with the token).
+ * A suite that could not prove this would be testing whatever answered.
+ */
+const nodeProven = await learnLaunchToken(PORT, app.pid);
+const pythonProven = await learnLaunchToken(PYTHON_PORT, app.pid);
+check('3j. the suite proved it owns each service it tests (launch token read from its own process tree, verified by the service\'s challenge)',
+  nodeProven && pythonProven,
+  `Node service ${nodeProven ? 'proven' : 'NOT proven'}, Python backend ${pythonProven ? 'proven' : 'NOT proven'}`);
+
 /**
  * The window is configured hidden and shown only after the health gate,
  * so a real mapped window is evidence that the gate opened AND that the
@@ -618,17 +770,31 @@ const windowsOf = (pid) =>
     .filter((f) => Number(f[2]) === pid);
 
 let auraWindow = null;
-const winDeadline = Date.now() + 30000;
-while (Date.now() < winDeadline) {
-  const own = windowsOf(app.pid);
-  if (own.length) { auraWindow = own[0]; break; }
-  await sleep(1000);
+/*
+ * `wmctrl -lp` asks the WINDOW MANAGER for its client list, so on a bare X
+ * server (a virtual display with no window manager) it lists nothing whether
+ * or not the application mapped a window. That is the environment failing the
+ * question, not the product: it is reported as BLOCKED, never as a pass and
+ * never as a product failure.
+ */
+const windowManager = spawnSync('wmctrl', ['-m'], { encoding: 'utf8' });
+if (windowManager.status === 0) {
+  const winDeadline = Date.now() + 30000;
+  while (Date.now() < winDeadline) {
+    const own = windowsOf(app.pid);
+    if (own.length) { auraWindow = own[0]; break; }
+    await sleep(1000);
+  }
+  check('3d. the launched process maps a real application window', !!auraWindow,
+    auraWindow ? `pid=${app.pid} title="${auraWindow.slice(4).join(' ')}"` : `no window owned by pid ${app.pid}`);
+  check('3e. the window is titled as AURA Hub',
+    !!auraWindow && auraWindow.slice(4).join(' ').includes('AURA Hub'),
+    auraWindow ? auraWindow.slice(4).join(' ') : 'n/a');
+} else {
+  const why = 'no window manager answers on this display (wmctrl -m failed), so windows cannot be listed by owner; run under a desktop session or start a window manager on the display';
+  environmentBlocked('3d. the launched process maps a real application window', why);
+  environmentBlocked('3e. the window is titled as AURA Hub', why);
 }
-check('3d. the launched process maps a real application window', !!auraWindow,
-  auraWindow ? `pid=${app.pid} title="${auraWindow.slice(4).join(' ')}"` : `no window owned by pid ${app.pid}`);
-check('3e. the window is titled as AURA Hub',
-  !!auraWindow && auraWindow.slice(4).join(' ').includes('AURA Hub'),
-  auraWindow ? auraWindow.slice(4).join(' ') : 'n/a');
 
 const health = await api('/health');
 check('3c. health reports a real provider/index state', !!health.body?.index,
@@ -717,27 +883,75 @@ check('5b. execution is attributed to the real node that performed it',
   invAudit?.executedNodeId === 'git',
   `executedNodeId=${invAudit?.executedNodeId ?? 'none'} requested=${invAudit?.requestedNodeId ?? 'none'} rule=${inv.body?.policy?.rule}`);
 
-const gated = await post('/fabric/invoke', {
-  capabilityId: 'agent.delegate',
-  input: { task: 'packaging verification — must be gated, never executed' },
-  context: { actor: { kind: 'human', id: 'packaging-verify' }, projectId, nodeId: 'opencode' },
+/*
+ * 5c-5e. The irreversible floor, under the CURRENT product contract.
+ *
+ * These checks used to invoke `agent.delegate` and expect it to be HELD for
+ * approval (`awaiting-approval`, never executed). Two things changed on
+ * purpose, and the evidence is in the product, not in a test run:
+ *   - delegation is autonomous now (rule `autonomous-delegation`; the old
+ *     check therefore started a real worker), and
+ *   - approvals were removed: `policy.ts` applies the irreversible floor as
+ *     `stricter(decision, 'deny')`, so an irreversible action is DENIED, and
+ *     nothing is queued for a person to approve.
+ * What the checks protect has not changed: an irreversible, high-risk action
+ * is stopped by a floor no policy setting can lower, before anything runs. So
+ * they now invoke `git.push` (high risk, irreversible) and assert exactly that.
+ * It never reaches a network: the decision is made before execution.
+ */
+const stopped = await post('/fabric/invoke', {
+  capabilityId: 'git.push',
+  input: {},
+  context: { actor: { kind: 'human', id: 'packaging-verify' }, projectId },
 });
-check('5c. a high-risk capability is still gated by approval in the packaged app',
-  gated.body?.outcome === 'awaiting-approval' && gated.body?.attempts === 0,
-  `outcome=${gated.body?.outcome} rule=${gated.body?.policy?.rule} attempts=${gated.body?.attempts}`);
-check('5d. the gate is the non-configurable floor, not a risk default',
-  gated.body?.policy?.rule === 'irreversible-floor', `rule=${gated.body?.policy?.rule}`);
+check('5c. an irreversible high-risk capability is stopped before it runs',
+  stopped.body?.outcome === 'denied' && stopped.body?.attempts === 0,
+  `outcome=${stopped.body?.outcome} rule=${stopped.body?.policy?.rule} attempts=${stopped.body?.attempts}`);
+check('5d. the stop is the non-configurable floor, not a risk default',
+  stopped.body?.policy?.rule === 'irreversible-floor', `rule=${stopped.body?.policy?.rule}`);
 
 const approvals = await api('/fabric/approvals');
-check('5e. the approval request was recorded',
-  (approvals.body?.approvals ?? []).some((a) => a.state === 'pending'),
-  `${(approvals.body?.approvals ?? []).length} request(s)`);
+const stoppedAudit = ((await api('/fabric/audit')).body?.audit ?? [])
+  .find((r) => r.invocationId === stopped.body?.invocationId);
+check('5e. the denial is audited and nothing was queued for approval (a floor denies; it does not hold)',
+  (approvals.body?.approvals ?? []).filter((a) => a.state === 'pending').length === 0
+    && stoppedAudit?.outcome === 'denied',
+  `${(approvals.body?.approvals ?? []).filter((a) => a.state === 'pending').length} pending, audit outcome=${stoppedAudit?.outcome ?? 'none'} rule=${stoppedAudit?.decisionRule ?? 'n/a'}`);
 
 const audit = await api('/fabric/audit');
 const auditRows = audit.body?.audit ?? [];
 check('5f. the audit log records the packaged app\'s invocations',
   auditRows.some((r) => r.capabilityId === 'git.status'),
   `${auditRows.length} record(s)`);
+
+/*
+ * 5g. A Stop on an automation run that has already finished (F-29).
+ *
+ * The desktop app talks to the Node service for automation, so that is the
+ * route checked here: it must say the run already finished (409), not "no such
+ * run" (404), and must leave the finished run exactly as it was. A workflow with
+ * one trivial node is run through a manual rule, so a real run exists.
+ */
+const wfMade = await post('/workflows', { name: 'verify-stop', nodes: [{ id: 'd', type: 'delay', x: 0, y: 0, config: { ms: 1 } }], edges: [] });
+const wfId = wfMade.body?.id ?? wfMade.body?.workflow?.id;
+const ruleMade = wfId ? await post('/automation/rules', {
+  name: 'verify-stop', enabled: true, trigger: { type: 'manual' }, conditions: [],
+  chain: [{ id: 'a1', action: 'run-workflow', label: 'go', config: { workflowId: wfId }, continueOnError: false }],
+}) : null;
+const ruleId = ruleMade?.body?.id;
+const runMade = ruleId ? await post(`/automation/rules/${ruleId}/run`, { projectId }) : null;
+const finishedRunId = runMade?.body?.id ?? runMade?.body?.run?.id;
+let finishedStatus = null;
+for (let i = 0; i < 60 && finishedRunId; i += 1) {
+  finishedStatus = (await api(`/automation/rules/${ruleId}/runs/${finishedRunId}`)).body?.status ?? null;
+  if (finishedStatus === 'completed' || finishedStatus === 'failed') break;
+  await sleep(500);
+}
+const lateStop = finishedRunId ? await post(`/automation/rules/${ruleId}/runs/${finishedRunId}/cancel`, {}) : null;
+const afterStop = finishedRunId ? (await api(`/automation/rules/${ruleId}/runs/${finishedRunId}`)).body?.status : null;
+check('5g. a Stop on an already-finished automation run says so (409) and leaves the run as it finished',
+  !!finishedStatus && lateStop?.status === 409 && /already (completed|failed)/.test(lateStop?.body?.error ?? '') && afterStop === finishedStatus,
+  `run ${finishedStatus ?? 'never finished'}, stop → ${lateStop?.status ?? 'n/a'} ${(lateStop?.body?.error ?? '').slice(0, 60)}, run after: ${afterStop ?? 'n/a'}`);
 
 /* ── 6. user state stays outside the installation ─────────────────── */
 
@@ -992,7 +1206,7 @@ check('8c3. AURA did not attach to the unidentified service',
   `port owners: [${pidsOnPort().join(',')}]`);
 
 check('8c4. AURA reported the conflict in plain language',
-  /in use by another program/i.test(blockedOut),
+  /already in use/i.test(blockedOut) && /only attaches to a backend it started itself/i.test(blockedOut),
   blockedOut.replace(/\n/g, ' ').match(/AURA Hub: .{0,150}/)?.[0] ?? (blockedOut.slice(0, 150) || '(no output)'));
 
 try { process.kill(blocked.pid, 'SIGTERM'); } catch { /* gone */ }
@@ -1005,5 +1219,7 @@ try { rmSync(extractDir, { recursive: true, force: true }); } catch { /* best ef
 try { rmSync(runDir, { recursive: true, force: true }); } catch { /* best effort */ }
 try { rmSync(auraHome, { recursive: true, force: true }); } catch { /* best effort */ }
 
-console.log(`\nRESULT: ${failed ? 'FAILED' : 'ALL CHECKS PASSED'}`);
-process.exit(failed ? 1 : 0);
+console.log(`\nRESULT: ${failed ? 'FAILED'
+  : blockedCount ? `INCOMPLETE — ${blockedCount} check(s) BLOCKED by the environment, none failed`
+    : 'ALL CHECKS PASSED'}`);
+process.exit(failed ? 1 : blockedCount ? 2 : 0);

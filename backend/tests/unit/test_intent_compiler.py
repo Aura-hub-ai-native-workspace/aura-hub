@@ -48,7 +48,6 @@ class TestHeuristic:
         itself only records that approval is possible."""
         intent = heuristic_interpret("fix my tests")
         assert intent.requiredCapabilities == ["agent.delegate"]
-        assert intent.approvalLikely is True
         assert intent.needsClarification is False
 
 

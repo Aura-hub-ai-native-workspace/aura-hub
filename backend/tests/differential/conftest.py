@@ -12,7 +12,13 @@ they never silently pass.
 
 from __future__ import annotations
 
+import os
 import subprocess
+
+#: A fixed PATH keeps the Node oracle reproducible on POSIX. Windows has no /usr/bin and needs its own
+#: system directory variables for node to start, so there the real PATH is used.
+_NODE_PATH = os.environ.get("PATH", "") if os.name == "nt" else "/usr/bin:/bin:/usr/local/bin"
+_WIN_ENV = {k: os.environ[k] for k in ("SYSTEMROOT", "TEMP", "TMP") if k in os.environ} if os.name == "nt" else {}
 from pathlib import Path
 
 import pytest
@@ -143,7 +149,7 @@ def run_ts_batch(tsref_paths: dict[str, Path], func: str, cases: list[dict]) -> 
     env_driver = {
         "TSREF_FABRIC": str(tsref_paths["fabric"]),
         "TSREF_VERSIONS": str(tsref_paths["versions"]),
-        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "PATH": _NODE_PATH, **_WIN_ENV,
     }
     import json
     proc = subprocess.run(

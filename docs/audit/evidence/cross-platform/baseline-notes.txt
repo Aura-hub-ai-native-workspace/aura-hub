@@ -1,0 +1,4 @@
+baseline recorded 2026-10-28T20:09:26+05:30
+branch feat/laya-shadow-planner HEAD df2cc92a79f4eecb79a43dce3abf7f5a565ff5a1
+artifact sha256 fca9a7af2f65b642ddffb8f61ce256caba710a247d429100ded5abfb612c2772
+user i3 pid 1220 alive: yes

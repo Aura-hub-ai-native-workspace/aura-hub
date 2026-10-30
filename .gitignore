@@ -68,3 +68,4 @@ scripts/.hub-*.png
 # Build output — reproducible from a tagged commit, ~100 MB per platform, and
 # distributed through CI artifacts and GitHub Releases rather than through git.
 dist-release/
+.aider*

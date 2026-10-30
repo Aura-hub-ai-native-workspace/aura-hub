@@ -24,7 +24,6 @@ import {
 } from '../../ai/automationClient';
 import { aiClient, type NodeSpecInfo, type WorkflowRun } from '../../ai/aiClient';
 import { useAutomation } from '../../data/useAutomation';
-import { useFabric, pendingApprovals } from '../../data/useFabric';
 import { useWorkflows } from '../../data/useWorkflows';
 import { EmptyState } from '../../components/EmptyState';
 import { RunView } from '../workflows/RunView';
@@ -63,6 +62,17 @@ export function AutomationRunView({ ruleId, onBack }: AutomationRunViewProps) {
   const [run, setRun] = useState<AutomationRun | null>(null);
   const [links, setLinks] = useState<VerifiedLink[]>([]);
   const [showWorkflowRun, setShowWorkflowRun] = useState<VerifiedLink | null>(null);
+  // What the last Stop on a run actually did (requested / confirmed / already
+  // finished / failed), shown beside that run. One request at a time per run.
+  const [cancelNote, setCancelNote] = useState<{ runId: string; kind: string; message: string } | null>(null);
+  const [cancelling, setCancelling] = useState<string | null>(null);
+  const stopRun = (runId: string) => {
+    if (cancelling === runId) return;
+    setCancelling(runId);
+    void auto.cancelRun(ruleId, runId)
+      .then((r) => setCancelNote({ runId, kind: r.kind, message: r.message }))
+      .finally(() => setCancelling(null));
+  };
 
   const specOf = useMemo(() => new Map(specs.map((s) => [s.type, s])), [specs]);
 
@@ -138,12 +148,27 @@ export function AutomationRunView({ ruleId, onBack }: AutomationRunViewProps) {
           {/* run detail */}
           <div className="min-h-0 flex-1 overflow-y-auto">
             {run ? (
-              <RunDetail
-                run={run}
-                links={links}
-                onOpenWorkflowRun={setShowWorkflowRun}
-                onCancel={() => void auto.cancelRun(ruleId, run.id)}
-              />
+              <>
+                {cancelNote?.runId === run.id && (
+                  <div
+                    role="status"
+                    data-testid="cancel-note"
+                    data-kind={cancelNote.kind}
+                    className={`mx-4 mt-3 rounded-lg border px-3 py-2 text-[12px] ${cancelNote.kind === 'failed' ? 'border-critical/30 bg-critical/5 text-critical' : 'border-line bg-surface-hover/60 text-text-muted'}`}
+                  >
+                    {/* A Stop that said "winding down" is superseded by the run's own record once the action returns. */}
+                    {cancelNote.kind === 'requested' && run.cancellation?.phase === 'complete'
+                      ? 'Cancelled, and the action that was running has now returned. Nothing of this run is still executing.'
+                      : cancelNote.message}
+                  </div>
+                )}
+                <RunDetail
+                  run={run}
+                  links={links}
+                  onOpenWorkflowRun={setShowWorkflowRun}
+                  onCancel={() => stopRun(run.id)}
+                />
+              </>
             ) : (
               <p className="px-6 py-8 text-center text-[12px] text-text-muted">Select a run.</p>
             )}
@@ -242,9 +267,17 @@ function RunDetail({
           </p>
         </Notice>
       )}
-      {run.status === 'cancelled' && (
+      {run.status === 'cancelled' && run.cancellation?.phase === 'winding-down' && (
+        <Notice tone="attention" icon="bell" title="Cancelled — an action is still winding down.">
+          <p className="mt-0.5 text-[11.5px] text-text-muted">
+            Nothing further will start. {run.cancellation.label ? `"${run.cancellation.label}"` : 'An action'} was already running and has not
+            returned yet; it may still finish its work, and the engine does not undo it. This notice updates when it returns.
+          </p>
+        </Notice>
+      )}
+      {run.status === 'cancelled' && run.cancellation?.phase !== 'winding-down' && (
         <Notice tone="attention" icon="bell" title="This run was cancelled.">
-          <p className="mt-0.5 text-[11.5px] text-text-muted">{run.error ?? 'Stopped before it finished.'}</p>
+          <p className="mt-0.5 text-[11.5px] text-text-muted">{run.error ?? 'Stopped before it finished.'}{run.cancellation?.phase === 'complete' ? ' Nothing of it is still running.' : ''}</p>
         </Notice>
       )}
       {run.status === 'paused' && (
@@ -332,7 +365,7 @@ function ChainStrip({ run, links }: { run: AutomationRun; links: VerifiedLink[] 
     {
       label: 'Workflow run',
       detail: links.length ? links.map((l) => l.run.state).join(', ') : 'none started',
-      tone: links.length ? (links.some((l) => l.run.state === 'awaiting-approval') ? 'warn' : 'ok') : 'muted',
+      tone: links.length ? 'ok' : 'muted',
     },
     { label: 'Evidence', detail: evidence ? `${evidence} governed` : 'none', tone: evidence ? 'ok' : 'muted' },
   ];
@@ -367,9 +400,6 @@ function ActionStep({
   onOpenWorkflowRun: (l: VerifiedLink) => void;
 }) {
   const meta = ACTIONS[action.action];
-  // A workflow parked on an approval is the automation working correctly:
-  // it fired without a person present and the policy engine stopped it.
-  const parked = link?.run.state === 'awaiting-approval';
 
   return (
     <li className="px-3 py-2.5">
@@ -388,11 +418,11 @@ function ActionStep({
       {action.summary && !link && <p className="ml-7 mt-0.5 text-[11.5px] text-text-muted">{action.summary}</p>}
 
       {link && (
-        <div className={`ml-7 mt-1.5 rounded-lg border px-2.5 py-2 ${parked ? 'border-attention/40 bg-attention/[0.06]' : 'border-line bg-surface'}`}>
+        <div className={`ml-7 mt-1.5 rounded-lg border px-2.5 py-2 border-line bg-surface`}>
           <div className="flex flex-wrap items-center gap-2">
-            <Icon name="workflows" size={12} className={parked ? 'text-attention' : 'text-text-subtle'} />
+            <Icon name="workflows" size={12} className="text-text-subtle" />
             <span className="text-[11.5px] text-text">{link.run.workflowName}</span>
-            <Badge tone={parked ? 'attention' : link.run.state === 'succeeded' ? 'positive' : link.run.state === 'failed' || link.run.state === 'timed-out' ? 'critical' : 'neutral'}>
+            <Badge tone={link.run.state === 'succeeded' ? 'positive' : link.run.state === 'failed' || link.run.state === 'timed-out' ? 'critical' : 'neutral'}>
               {link.run.state}
             </Badge>
             {link.run.evidence.length > 0 && (
@@ -404,12 +434,6 @@ function ActionStep({
               Open run
             </Button>
           </div>
-          {parked && (
-            <p className="mt-1 text-[10.5px] leading-relaxed text-text-muted">
-              The automation did its job and the workflow is waiting on a person. An automation authorizes nothing, so a
-              governed step above auto-execute parks here until you answer it.
-            </p>
-          )}
         </div>
       )}
     </li>
@@ -430,13 +454,6 @@ function WorkflowRunPane({
   onReload: () => void;
 }) {
   const [run, setRun] = useState<WorkflowRun>(link.run);
-  const approvals = useFabric((s) => s.approvals);
-  const deciding = useFabric((s) => s.deciding);
-  const decide = useFabric((s) => s.decide);
-  const watch = useFabric((s) => s.watchApprovals);
-
-  useEffect(() => watch(), [watch]);
-
   const reload = useCallback(async () => {
     const fresh = await aiClient.workflowRun(link.workflowId, link.workflowRunId).catch(() => null);
     if (fresh && 'id' in fresh) setRun(fresh);
@@ -453,17 +470,11 @@ function WorkflowRunPane({
       </div>
       <div className="min-h-0 flex-1">
         {/* The single implementation of run detail. Nothing is re-rendered
-            here — approvals, evidence, steps and states all come from it. */}
+            here — evidence, steps and states all come from it. */}
         <RunView
           run={run}
           specs={specOf}
           graphOrder={Object.keys(run.nodes)}
-          approvals={pendingApprovals(approvals)}
-          onDecideApproval={async (id, granted, reason) => {
-            await decide(id, granted, reason);
-            await reload();
-          }}
-          decidingId={deciding}
         />
       </div>
     </div>

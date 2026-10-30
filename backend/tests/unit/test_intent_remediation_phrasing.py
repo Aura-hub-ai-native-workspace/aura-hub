@@ -40,9 +40,11 @@ class TestRemediationPhrasing:
         findings that nobody was asked to produce."""
         assert _tasks("Fix the login bug.") == ["implement"]
 
-    def test_review_alone_plans_no_remediation(self):
+    def test_a_review_is_followed_by_conditional_remediation_by_default(self):
+        # Autonomous: what the review finds goes back to a worker without being asked; the
+        # remediation task skips itself when the review is clean.
         assert _tasks("Add a parser and have another AI review it.") \
-            == ["implement", "review"]
+            == ["implement", "review", "remediate"]
 
     def test_a_question_delegates_nothing(self):
         assert _tasks("What does this repo do?") == []

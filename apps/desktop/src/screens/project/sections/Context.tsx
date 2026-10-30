@@ -261,7 +261,7 @@ export function Context({ projectId }: { projectId: string }) {
         </Block>
 
         <Block className="col-span-12 lg:col-span-6">
-          <Panel title="Missions" icon="deploy">
+          <Panel title="Plans" icon="deploy">
             {view.missions.value && view.missions.value.length > 0 ? (
               <div className="space-y-2">
                 {view.missions.value.map((m) => (

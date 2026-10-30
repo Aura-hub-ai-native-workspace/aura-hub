@@ -9,12 +9,9 @@ ConfigurationDrift  — AURA-expected vs actual comparison result.
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from pathlib import Path
-from typing import Any
 
 
 class AuthType(str, Enum):
@@ -46,6 +43,11 @@ class RuntimeConfig:
     network_class: str = "local"   # local | private | cloud | unknown
     health_path: str = "/health"
     api_key_env: str = ""           # env var name — never the value itself
+    # Authoritative model metadata. None means unknown: adapters must write
+    # nothing for an unknown field rather than a guessed value.
+    context_length: int | None = None
+    tool_calling: bool | None = None
+    max_output_tokens: int | None = None
 
     def to_dict(self) -> dict:
         """Safe for logs — never includes key material."""
@@ -102,6 +104,9 @@ class ConfigurationChange:
     new_checksum: str | None
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     note: str = ""
+    #: Set on apply: applied_verified | backup_failed | apply_failed | verify_failed,
+    #: each with the rollback result appended where one was attempted. Empty otherwise.
+    outcome: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -113,6 +118,7 @@ class ConfigurationChange:
             "newChecksum": self.new_checksum,
             "timestamp": self.timestamp,
             "note": self.note,
+            "outcome": self.outcome,
         }
 
 

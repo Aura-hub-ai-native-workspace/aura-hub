@@ -36,12 +36,15 @@ import {
   type ComposeOptions, type ContextResult, type EnvironmentSnapshot,
 } from './context';
 import { runMissionCreation } from './mission/orchestrator';
+import { applyPlanEdit, decideHandoff, toWorkspacePlan, validatePlan, type PlanIssue, type TaskEdit, type WorkspacePlan } from './mission/planner';
 import { generateTaskProposal } from './mission/taskGen';
 import { planTaskInvocation, type CapabilityFabric } from '@aura/capability-fabric';
 import { MissionExecutionEngine } from './mission/execution/engine';
 import type { RunReadyOptions, RunTaskResult } from './mission/execution/engine';
 import type { ExecutionEvent } from './mission/execution/types';
-import type { MissionEvent, MissionRecord, MissionSummary, MissionTask } from './mission/types';
+import type { MissionEvent, MissionRecord, MissionSummary, MissionTask, PlanContext, PlanHandoff, PlanRevision } from './mission/types';
+import { genId } from './workflow/types';
+import { randomBytes } from 'node:crypto';
 import { getAdapter, getAllAdapters, ENV_VAR_BY_PROVIDER } from './provider/registry';
 import { storeKey, removeKey, getKey, getActive, getAllProviderStores, storeModels, storeHealth } from './provider/credentialStore';
 import { normaliseOllamaUrl } from './provider/adapters/ollama';
@@ -52,7 +55,17 @@ export interface OpenResult {
   project: ProjectRecord;
   profile: ProjectProfile;
   status: IndexStatus;
+  /** Whether this open is the project's first (for the opening animation). */
+  intro: { firstOpen: boolean; kind: 'new' | 'existing' };
 }
+
+/**
+ * The token budget for the verification prompt. Reasoning models (Qwen3.5 is
+ * one) spend part of the budget thinking before any visible answer, so a
+ * small budget ends the reply with no content and the check fails although
+ * the model works. 1024 leaves room for the reasoning and the one-line answer.
+ */
+export const VERIFY_PROBE_TOKENS = 1024;
 
 /** Which step of `verifySelfHosted` a failure belongs to. */
 export type VerifyStage = 'url' | 'reach' | 'models' | 'model' | 'generate' | 'timeout' | 'save';
@@ -77,6 +90,31 @@ export interface ConnectedProvider {
   active: boolean;
 }
 
+/**
+ * Where a new project will go — the ONE answer, used by the create-project
+ * dialog's preview, by creation itself and by what is shown afterwards.
+ * AURA_PROJECTS_DIR moves it (a sandboxed run, a data drive); with nothing set,
+ * projects live in ~/AuraProjects. The folder name is derived from the project
+ * name, never taken from it, so no name can place a folder outside `parent`, and
+ * an existing folder is never reused: the next free name (-2, -3 …) is used.
+ */
+export function planNewProject(rawName: string, parentPath?: string): { parent: string; dirName: string; target: string; overridden: boolean; renamed: boolean } {
+  const name = rawName.trim().slice(0, 80);
+  if (!name) throw new Error('Project name is required');
+  if (/[/\\]|^\.\.?$/.test(name)) throw new Error('Project name cannot contain path separators');
+  const fromEnv = process.env.AURA_PROJECTS_DIR?.trim();
+  const parent = path.resolve(parentPath?.trim() || fromEnv || path.join(os.homedir(), 'AuraProjects'));
+  const base = slug(name);
+  let dirName = base;
+  for (let n = 2; fs.existsSync(path.resolve(parent, dirName)); n += 1) {
+    if (n > 99) throw new Error(`Too many folders named like "${base}" in ${parent}`);
+    dirName = `${base}-${n}`;
+  }
+  const target = path.resolve(parent, dirName);
+  if (path.dirname(target) !== parent) throw new Error('Project name does not resolve to a folder inside the chosen location');
+  return { parent, dirName, target, overridden: Boolean(!parentPath?.trim() && fromEnv), renamed: dirName !== base };
+}
+
 export class WorkspaceManager {
   readonly pipeline: PipelineManager;
   readonly registry = new ProjectRegistry();
@@ -92,7 +130,7 @@ export class WorkspaceManager {
     return this.registry.list();
   }
 
-  addProject(input: { name?: string; path: string; icon?: string }): { project: ProjectRecord; profile: ProjectProfile } {
+  addProject(input: { name?: string; path: string; icon?: string; origin?: 'created' | 'added' }): { project: ProjectRecord; profile: ProjectProfile } {
     const record = this.registry.add(input);
     const profile = getOrBuildProfile(record.id, record.path, true);
     const project = this.registry.update(record.id, {
@@ -134,16 +172,21 @@ export class WorkspaceManager {
     if (!name) throw new Error('Project name is required');
     if (/[/\\]|^\.\.?$/.test(name)) throw new Error('Project name cannot contain path separators');
 
-    const parent = input.parentPath?.trim() || path.join(os.homedir(), 'AuraProjects');
-    const dirName = slug(name);
-    const target = path.resolve(parent, dirName);
-
-    if (fs.existsSync(target)) throw new Error(`A folder already exists at ${target}`);
+    const { target } = planNewProject(name, input.parentPath);
 
     fs.mkdirSync(target, { recursive: true });
-    fs.writeFileSync(path.join(target, 'README.md'), `# ${name}\n`);
-
-    return this.addProject({ name, path: target });
+    try {
+      fs.writeFileSync(path.join(target, 'README.md'), `# ${name}\n`);
+      return this.addProject({ name, path: target, origin: 'created' });
+    } catch (e) {
+      // Never leave an orphaned folder behind a failed creation: it is ours
+      // (we just made it, and it holds only the README we wrote).
+      try { fs.rmSync(target, { recursive: true, force: true }); } catch { /* best effort */ }
+      // ...and no registry entry pointing at the folder that is now gone.
+      const stale = this.registry.list().find((p) => path.resolve(p.path) === target);
+      if (stale) this.registry.remove(stale.id);
+      throw e;
+    }
   }
 
   renameProject(id: string, name: string): ProjectRecord {
@@ -162,10 +205,12 @@ export class WorkspaceManager {
   open(id: string): OpenResult {
     const project = this.registry.get(id);
     if (!project) throw new Error(`no such project: ${id}`);
+    // Decided BEFORE touch(): "never opened" is what makes this the first open.
+    const intro = this.registry.consumeIntro(id);
     this.registry.touch(id);
     const profile = getOrBuildProfile(project.id, project.path);
     this.pipeline.mount({ id: project.id, path: project.path, name: project.name });
-    return { project, profile, status: this.pipeline.indexStatus() };
+    return { project, profile, status: this.pipeline.indexStatus(), intro };
   }
 
   currentProject(): ProjectRecord | null {
@@ -1085,27 +1130,153 @@ export class WorkspaceManager {
           return { ok: false, error: plan.kind === 'unbound' ? plan.reason : 'This task has no single target file — complete it manually instead of running it.' };
         }
         const result = await generateTaskProposal(this.pipeline, project.path, task, goal, record.text, signal);
-        return {
-          ok: result.ok,
-          error: result.ok ? undefined : result.proposal.error?.message,
-          proposal: result.proposal,
-          mode: result.isNewFile ? 'new-file' : 'diff',
-        };
+        const mode = result.isNewFile ? 'new-file' as const : 'diff' as const;
+        if (!result.ok || !result.proposal.newCode) {
+          return {
+            ok: result.ok,
+            error: result.ok ? undefined : result.proposal.error?.message,
+            proposal: result.proposal,
+            mode,
+          };
+        }
+        // The task's change is written now, through the Fabric (policy,
+        // read-back verification, audit) — no per-file Accept. Only a write
+        // the person's own policy made wait is kept as a proposal.
+        const written = await this.writeMissionFile(id, record, task, result.proposal.newCode, project.path, {
+          actor: { kind: 'agent', id: `mission:${record.id}` },
+        });
+        if (written.parked) {
+          return { ok: true, proposal: result.proposal, mode };
+        }
+        return written.ok
+          ? { ok: true, status: 'done', proposal: result.proposal, mode, detail: written.detail }
+          : { ok: false, status: 'error', proposal: result.proposal, mode, error: written.detail, detail: written.detail };
       },
       persist: (rec) => { this.missions.save(id, rec); },
       emit,
     });
   }
 
-  async runMissionCreation(id: string, text: string, emit: (e: MissionEvent) => void, signal?: AbortSignal): Promise<MissionRecord> {
+  async runMissionCreation(id: string, text: string, emit: (e: MissionEvent) => void, signal?: AbortSignal, context?: PlanContext): Promise<MissionRecord> {
     const project = this.registry.get(id);
     if (!project) throw new Error(`no such project: ${id}`);
     await this.pipeline.whenIndexed();
-    const result = await runMissionCreation(this, this.missions, id, project.path, text, emit, signal);
+    // The plan is accepted with the goal that produced it: a mission whose
+    // planning succeeded is ready to run before the client ever sees it, so
+    // the final `done` event already carries the accepted record.
+    let accepted: MissionRecord | null = null;
+    const accept = (record: MissionRecord): MissionRecord => {
+      if (accepted?.id === record.id) return accepted;
+      if (!record.goalGraph || record.approval?.status !== 'pending' || record.error) return record;
+      accepted = this.missionEngine(id).approve(record, true);
+      return accepted;
+    };
+    const relay = (e: MissionEvent): void => {
+      emit(e.type === 'done' ? { ...e, mission: accept(e.mission) } : e);
+    };
+    const result = accept(await runMissionCreation(this, this.missions, id, project.path, text, relay, signal, undefined, context));
 
     this.recordMissionMemory(id, result, 'created');
 
     return result;
+  }
+
+  /* ── Planner: edit, re-plan, hand off to Workspace ──────────────── */
+
+  /**
+   * Save a person's edited plan. `revision` must be the revision the
+   * editor started from: a plan changed underneath it (another window, a
+   * re-plan) is refused rather than silently overwritten.
+   */
+  savePlan(id: string, mid: string, revision: number, tasks: TaskEdit[], acceptance?: string[]): { ok: boolean; status: number; error?: string; mission?: MissionRecord } {
+    const mission = this.missions.get(id, mid);
+    if (!mission) return { ok: false, status: 404, error: 'no such plan' };
+    const current = mission.revision ?? 1;
+    if (revision !== current) {
+      return { ok: false, status: 409, error: `This plan changed since you opened it (now revision ${current}). Reload it, then edit again.`, mission };
+    }
+    let goalGraph;
+    try {
+      goalGraph = applyPlanEdit(mission.goalGraph, tasks);
+    } catch (e) {
+      return { ok: false, status: 400, error: (e as Error).message, mission };
+    }
+    // The plan keeps its identity and its history: the revision being replaced
+    // is snapshotted (bounded) before the edit lands, so nothing is lost.
+    const snapshot: PlanRevision = {
+      revision: current,
+      at: new Date().toISOString(),
+      tasks: (mission.goalGraph?.tasks ?? []).map((t) => ({
+        id: t.id, title: t.title, description: t.description, targetFile: t.targetFile,
+        files: t.files ?? [], dependencies: t.dependencies, worker: t.worker,
+      })),
+      acceptance: mission.acceptance ?? [],
+    };
+    const cleanAcceptance = Array.isArray(acceptance)
+      ? acceptance.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).map((a) => a.trim().slice(0, 400)).slice(0, 12)
+      : (mission.acceptance ?? []);
+    const saved = this.missions.patch(id, mid, {
+      goalGraph,
+      acceptance: cleanAcceptance,
+      history: [...(mission.history ?? []), snapshot].slice(-20),
+      planIssues: validatePlan(goalGraph, mission.text),
+      revision: current + 1,
+      // Tasks written by hand make a plan out of a failed planning run.
+      error: goalGraph.tasks.length ? undefined : mission.error,
+    });
+    return saved ? { ok: true, status: 200, mission: saved } : { ok: false, status: 404, error: 'no such plan' };
+  }
+
+  /** Retry planning for an existing plan, in place (same id, next revision). */
+  async replanMission(id: string, mid: string, emit: (e: MissionEvent) => void, signal?: AbortSignal): Promise<MissionRecord | null> {
+    const project = this.registry.get(id);
+    const mission = this.missions.get(id, mid);
+    if (!project || !mission) return null;
+    this.missions.patch(id, mid, { revision: (mission.revision ?? 1) + 1 });
+    await this.pipeline.whenIndexed();
+    return runMissionCreation(this, this.missions, id, project.path, mission.text, emit, signal, mid);
+  }
+
+  /**
+   * Reserve the handoff of one plan revision to Workspace and return what
+   * to send. Idempotent per revision: asking again for a revision already
+   * sent returns that same handoff (`duplicate`), so a repeated click or a
+   * retry can never start the plan twice. A handoff that failed to start
+   * is reused with its session id, so retrying it is safe too.
+   */
+  reserveHandoff(id: string, mid: string, revision: number): {
+    ok: boolean; status: number; error?: string; issues?: PlanIssue[];
+    handoff?: PlanHandoff; duplicate?: boolean; plan?: WorkspacePlan; projectId?: string; projectPath?: string;
+  } {
+    const project = this.registry.get(id);
+    const mission = this.missions.get(id, mid);
+    if (!project) return { ok: false, status: 404, error: 'no such project' };
+    if (!mission) return { ok: false, status: 404, error: 'no such plan' };
+    const decided = decideHandoff(mission, revision,
+      () => ({ id: genId('handoff'), sessionId: `agt-${randomBytes(6).toString('hex')}` }),
+      new Date().toISOString());
+    if (!decided.ok) return decided;
+    if (!decided.duplicate) this.missions.patch(id, mid, { handoffs: decided.handoffs, planIssues: decided.issues });
+    return {
+      ok: true, status: 200, handoff: decided.handoff, duplicate: decided.duplicate,
+      plan: toWorkspacePlan(mission), projectId: id, projectPath: project.path,
+    };
+  }
+
+  /** Record what Workspace said about a reserved handoff. */
+  settleHandoff(id: string, mid: string, hid: string, status: 'started' | 'failed', error?: string): { ok: boolean; status: number; error?: string; mission?: MissionRecord } {
+    const mission = this.missions.get(id, mid);
+    if (!mission) return { ok: false, status: 404, error: 'no such plan' };
+    const handoffs = mission.handoffs ?? [];
+    const target = handoffs.find((h) => h.id === hid);
+    if (!target) return { ok: false, status: 404, error: 'no such handoff' };
+    // A started handoff stays started: a late failure report cannot unsay it.
+    if (target.status === 'started' && status === 'failed') return { ok: true, status: 200, mission };
+    const updated = handoffs.map((h) => (h.id === hid
+      ? { ...h, status, at: new Date().toISOString(), ...(error ? { error: error.slice(0, 500) } : { error: undefined }) }
+      : h));
+    const saved = this.missions.patch(id, mid, { handoffs: updated });
+    return saved ? { ok: true, status: 200, mission: saved } : { ok: false, status: 404, error: 'no such plan' };
   }
 
   listMissions(id: string): MissionSummary[] {
@@ -1113,16 +1284,19 @@ export class WorkspaceManager {
   }
 
   getMission(id: string, mid: string): MissionRecord | null {
-    return this.missions.get(id, mid);
+    const mission = this.missions.get(id, mid);
+    // A mission saved while a sign-off step still existed may be parked in
+    // 'reviewing' with every task resolved: it completes now.
+    return mission?.execution?.status === 'reviewing' ? this.missionEngine(id).settle(mission) : mission;
   }
 
+  /** The `mission.approve` capability: accept a (legacy) pending plan. */
   approveMission(id: string, mid: string): MissionRecord | null {
     const mission = this.missions.get(id, mid);
     if (!mission) return null;
+    if (mission.approval.status === 'approved') return mission;
     const result = this.missionEngine(id).approve(mission);
-    if (result) {
-      this.recordMissionMemory(id, result, 'approved');
-    }
+    this.recordMissionMemory(id, result, 'approved');
     return result;
   }
 
@@ -1184,36 +1358,14 @@ export class WorkspaceManager {
     const project = this.registry.get(id);
     if (!project) return { ok: false, error: 'no such project' };
 
-    if (this.fabric) {
-      const result = await this.fabric.invoke(
-        'filesystem.write',
-        { path: task.targetFile as string, content: run.proposal.newCode },
-        {
-          actor: { kind: 'human', id: 'user' },
-          projectId: id,
-          cwd: project.path,
-          missionId: mission.id,
-          taskId,
-          approvedCapabilities,
-        },
-      );
-      if (result.outcome !== 'succeeded') {
-        // Nothing was written, or it was written and failed its read-back.
-        // Either way the task must not be marked accepted. `result.detail`
-        // already carries the verification reason — appending it again
-        // would print the same sentence twice to the operator.
-        return { ok: false, error: result.detail, mission };
-      }
-    } else {
-      // No Fabric attached (library use without a host) — the original
-      // direct write, kept so the manager is never left unable to accept.
-      let abs: string;
-      try {
-        abs = resolveInsideProject(project.path, task.targetFile as string);
-      } catch (e) {
-        return { ok: false, error: (e as Error).message };
-      }
-      fs.writeFileSync(abs, run.proposal.newCode);
+    const written = await this.writeMissionFile(id, mission, task, run.proposal.newCode, project.path, {
+      actor: { kind: 'human', id: 'user' }, approvedCapabilities,
+    });
+    if (!written.ok) {
+      // Nothing was written, or it was written and failed its read-back.
+      // Either way the task must not be marked accepted. The detail already
+      // carries the verification reason.
+      return { ok: false, error: written.detail, mission };
     }
 
     const updated = this.missionEngine(id).acceptTask(mission, taskId);
@@ -1242,6 +1394,51 @@ export class WorkspaceManager {
       });
     }
     return { ok: true, mission: updated };
+  }
+
+  /**
+   * The one mission file write. Always through the Fabric when one is
+   * attached — policy, read-back verification and audit apply whether the
+   * task wrote it (the normal path) or a person Accepted a proposal their
+   * own policy had parked. `parked` means the Fabric is waiting for the
+   * person; nothing was written.
+   */
+  private async writeMissionFile(
+    id: string,
+    mission: MissionRecord,
+    task: MissionTask,
+    content: string,
+    projectPath: string,
+    auth: { actor: { kind: 'human' | 'agent'; id: string }; approvedCapabilities?: string[] },
+  ): Promise<{ ok: boolean; parked?: boolean; detail: string }> {
+    if (this.fabric) {
+      const result = await this.fabric.invoke(
+        'filesystem.write',
+        { path: task.targetFile as string, content },
+        {
+          actor: auth.actor,
+          projectId: id,
+          cwd: projectPath,
+          missionId: mission.id,
+          taskId: task.id,
+          ...(auth.approvedCapabilities ? { approvedCapabilities: auth.approvedCapabilities } : {}),
+        },
+      );
+      if (result.outcome === 'awaiting-approval') return { ok: false, parked: true, detail: result.detail };
+      if (result.outcome !== 'succeeded') return { ok: false, detail: result.detail };
+      if (this.pipeline.currentProjectId === id) void this.pipeline.reindex();
+      return { ok: true, detail: result.detail };
+    }
+    // No Fabric attached (library use without a host) — the original direct
+    // write, kept so the manager is never left unable to write.
+    let abs: string;
+    try {
+      abs = resolveInsideProject(projectPath, task.targetFile as string);
+    } catch (e) {
+      return { ok: false, detail: (e as Error).message };
+    }
+    fs.writeFileSync(abs, content);
+    return { ok: true, detail: `Wrote ${task.targetFile}.` };
   }
 
   rejectMissionTask(id: string, mid: string, taskId: string, reason?: string): { ok: boolean; error?: string; mission?: MissionRecord } {
@@ -1286,14 +1483,17 @@ export class WorkspaceManager {
   startMissionExecution(id: string, mid: string): { ok: boolean; error?: string; mission?: MissionRecord } {
     const mission = this.missions.get(id, mid);
     if (!mission) return { ok: false, error: 'no such mission' };
-    if (mission.approval.status !== 'approved') return { ok: false, error: 'This mission plan has not been approved yet — approve it before starting execution.' };
-    return { ok: true, mission: this.missionEngine(id).startExecution(mission) };
+    const ready = this.acceptLegacyPlan(id, mission);
+    if (!ready) return { ok: false, error: 'This mission plan was rejected — create a new mission for this goal.' };
+    return { ok: true, mission: this.missionEngine(id).startExecution(ready) };
   }
 
   /** Run the current ready wave (deps satisfied). Streams ExecutionEvents over SSE when `emit` is given. */
   async runMissionBatch(id: string, mid: string, opts: RunReadyOptions = {}, emit?: (e: ExecutionEvent) => void): Promise<{ ok: boolean; error?: string; mission?: MissionRecord }> {
-    const mission = this.missions.get(id, mid);
-    if (!mission) return { ok: false, error: 'no such mission' };
+    const found = this.missions.get(id, mid);
+    if (!found) return { ok: false, error: 'no such mission' };
+    const mission = this.acceptLegacyPlan(id, found);
+    if (!mission) return { ok: false, error: 'This mission plan was rejected — create a new mission for this goal.' };
     const engine = this.missionEngine(id, undefined, emit);
     if (!mission.execution || mission.execution.status === 'approved') {
       const started = engine.startExecution(mission);
@@ -1343,10 +1543,17 @@ export class WorkspaceManager {
     return { ok: true, mission: this.missionEngine(id).retryTask(mission, taskId) };
   }
 
-  reviewMissionCheckpoint(id: string, mid: string, pass: boolean, note?: string): { ok: boolean; error?: string; mission?: MissionRecord } {
-    const mission = this.missions.get(id, mid);
-    if (!mission) return { ok: false, error: 'no such mission' };
-    return { ok: true, mission: this.missionEngine(id).reviewCheckpoint(mission, pass, note) };
+  /**
+   * A mission saved before plans were accepted with their goal may still be
+   * pending: assigning it work (start / run) accepts its plan. A plan the
+   * person rejected stays rejected (null).
+   */
+  private acceptLegacyPlan(id: string, mission: MissionRecord): MissionRecord | null {
+    if (mission.approval.status === 'rejected') return null;
+    if (mission.approval.status === 'approved') return mission;
+    const accepted = this.missionEngine(id).approve(mission, true);
+    this.recordMissionMemory(id, accepted, 'approved');
+    return accepted;
   }
 
   getMissionReplay(id: string, mid: string) {
@@ -1683,7 +1890,7 @@ export class WorkspaceManager {
       for await (const chunk of runtime.stream({
         messages: [{ role: 'user', content: 'Respond with exactly: AURA_CONNECTION_OK' }],
         model,
-        maxTokens: 64,
+        maxTokens: VERIFY_PROBE_TOKENS,
       })) {
         if (chunk.delta) { text += chunk.delta; chunks += 1; }
         if (chunk.done) break;

@@ -232,7 +232,7 @@ class TestHandshake:
         assert "CORRELATED" in proof.stages
         # It went through the REAL adapter shape and the REAL governance
         # bundle, not a side channel.
-        assert seen["argv"][:2] == ["run", "--dir"]
+        assert seen["argv"][:2] == ["run", "--auto"]
         assert "OPENCODE_CONFIG" in seen["env"]
 
     def test_a_stale_nonce_cannot_satisfy_a_later_probe(
@@ -323,19 +323,19 @@ class TestDelegationPlanning:
             "review it")
         plan = TaskPlanner().plan(intent, "agt-1", "2026-09-08T00:00:00Z")
 
-        assert [t.id for t in plan.tasks] == ["implement", "review"]
-        assert [t.workerRole for t in plan.tasks] == ["code", "review"]
+        assert [t.id for t in plan.tasks] == ["implement", "review", "remediate"]
+        assert [t.workerRole for t in plan.tasks] == ["code", "review", "code"]
         # The reviewer consumes AURA's verified evidence, not the other
         # worker's context, and cannot start before it exists.
         review = plan.tasks[1]
         assert review.inputFrom == "upstream-output"
         assert review.dependsOn == ["implement"]
-        # Both tasks carry the same task contract.
+        # Every task carries the same task contract.
         assert plan.tasks[0].input["scopePaths"] == ["src/auth"]
         assert review.input["scopePaths"] == ["src/auth"]
         # Objective acceptance covers BOTH, so "implemented" alone is
         # never success.
-        assert plan.acceptance[0].expect["tasks"] == ["implement", "review"]
+        assert plan.acceptance[0].expect["tasks"] == ["implement", "review", "remediate"]
 
     def test_a_single_implementation_plans_one_worker(self):
         from aura.central_agent.intent import heuristic_interpret
@@ -427,7 +427,6 @@ class TestAuthority:
 def _agent_with_two_workers(tmp_path):
     """The production shape: two proved workers, real ledger, real audit,
     heuristic intent (no model provider), single-invocation route."""
-    from aura.approvals import ApprovalLedger
     from aura.audit import AuditStore
     from aura.central_agent import AgentSessionStore, CentralAgent
     from aura.executors import all_executors
@@ -435,7 +434,7 @@ def _agent_with_two_workers(tmp_path):
     from aura.fabric.host import WiringHost
 
     audit = AuditStore(tmp_path / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
 
     class _Nodes:
         def list_nodes(self):
@@ -448,12 +447,10 @@ def _agent_with_two_workers(tmp_path):
 
     fabric = CapabilityFabric(WiringHost(_Nodes()))
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda _r: None)
-    fabric._ledger = ledger
     execs = {e.capabilityId: e for e in all_executors(None)}
     cfg = FabricConfig(fabric=fabric, policy_config={},
                        permissions={"read": True, "write": True},
-                       executors=execs, audit_store=audit, ledger=ledger)
+                       executors=execs, audit_store=audit)
     agent = CentralAgent(fabric_cfg=cfg,
                          session_store=AgentSessionStore(tmp_path))
     agent.controller.engine = None
@@ -498,174 +495,6 @@ def _done(inv, node, stdout, deviation=None):
             "policy": {"decision": "require-approval", "rule": "risk",
                        "risk": "high", "reason": ""},
             "at": "2026-09-08T00:00:00.000Z", "output": output}
-
-
-class TestApprovalGatedMultiWorkerRun:
-    """These tests exercise the multi-leg resume machinery with a fake
-    invoke_fabric that parks every first leg. agent.delegate itself no
-    longer parks by default (the autonomous-delegation rule in
-    aura/policy/engine.py auto-executes a governed delegation), so in
-    production this shape now arises for capabilities that genuinely gate
-    — and for agent.delegate whenever allowAutonomous is False. Everything
-    the first leg does for a multi-task plan still has to happen on the
-    resumed leg, or a two-worker run cannot get past its second approval."""
-
-    def test_two_tasks_two_approvals_reach_completion(self, tmp_path,
-                                                      monkeypatch):
-        agent, ledger = _agent_with_two_workers(tmp_path)
-        seen: list[dict] = []
-
-        def fake_invoke(cap, payload, context, cfg):
-            seen.append({"task": context.get("taskId"),
-                         "node": context.get("nodeId"),
-                         "approval": context.get("approvalId"),
-                         "text": payload.get("task", "")})
-            if not context.get("approvalId"):
-                return _park(ledger, f"apr-{context['taskId']}-{len(seen)}")
-            node = context.get("nodeId") or "opencode"
-            return _done(f"inv-{context['taskId']}", node,
-                         f"{context['taskId']} complete")
-
-        monkeypatch.setattr(
-            "aura.central_agent.execution.invoke_fabric", fake_invoke)
-
-        result = agent.submit(
-            "Implement a multiply function in src/util.py under src and "
-            "have another AI review it",
-            project_id="p", project_path=str(tmp_path))
-        sid = agent.sessions.last_session_id
-
-        rounds = 0
-        while result.outcome == "awaiting-approval" and rounds < 6:
-            rounds += 1
-            apr = result.evidence.approvalIds[0]
-            assert ledger.decide(apr, True, "user", "ok") is not None, \
-                f"approval {apr} was already decided — the grant was " \
-                "spent on the wrong task"
-            result = agent.resume(sid)
-
-        assert result.outcome == "completed", result.summary
-        # Both tasks ran, each after its OWN human decision.
-        dispatched = [s for s in seen if s["approval"]]
-        assert [s["task"] for s in dispatched] == ["implement", "review"]
-        # …and by two DIFFERENT workers, which is what "another AI" means.
-        assert dispatched[0]["node"] != dispatched[1]["node"]
-        # The reviewer received AURA's verified evidence, not a paste.
-        assert "AURA-VERIFIED-RESULT" in dispatched[1]["text"]
-        assert "implement complete" in dispatched[1]["text"]
-
-    def test_verified_work_is_never_re_executed_across_legs(
-            self, tmp_path, monkeypatch):
-        agent, ledger = _agent_with_two_workers(tmp_path)
-        dispatches: list[str] = []
-
-        def fake_invoke(cap, payload, context, cfg):
-            if not context.get("approvalId"):
-                return _park(ledger,
-                             f"apr-{context['taskId']}-{len(dispatches)}")
-            dispatches.append(context["taskId"])
-            return _done(f"inv-{context['taskId']}",
-                         context.get("nodeId") or "opencode", "ok")
-
-        monkeypatch.setattr(
-            "aura.central_agent.execution.invoke_fabric", fake_invoke)
-        result = agent.submit(
-            "Implement a divide function in src/util.py under src and "
-            "have another AI review it",
-            project_id="p", project_path=str(tmp_path))
-        sid = agent.sessions.last_session_id
-        for _ in range(6):
-            if result.outcome != "awaiting-approval":
-                break
-            ledger.decide(result.evidence.approvalIds[0], True, "user", "ok")
-            result = agent.resume(sid)
-
-        assert result.outcome == "completed", result.summary
-        # Exactly one real dispatch per task: the settled side effects of
-        # the first worker are never repeated by a later leg.
-        assert dispatches == ["implement", "review"]
-
-    def test_a_deviation_on_a_resumed_leg_enters_the_correction_loop(
-            self, tmp_path, monkeypatch):
-        """The deviation ALWAYS lands on a resumed leg in production.
-        Ending the run as 'failed' there made the correction loop
-        unreachable outside tests that skip the approval gate."""
-        agent, ledger = _agent_with_two_workers(tmp_path)
-        attempts: list[str] = []
-
-        def fake_invoke(cap, payload, context, cfg):
-            text = payload.get("task", "")
-            if not context.get("approvalId"):
-                return _park(ledger,
-                             f"apr-{context['taskId']}-{len(attempts)}")
-            attempts.append(context["taskId"])
-            if text.startswith("CORRECTION"):
-                return _done("inv-corrected", "opencode", "corrected")
-            return _done("inv-deviated", "opencode", "wrote too much",
-                         deviation=["rogue.txt"])
-
-        monkeypatch.setattr(
-            "aura.central_agent.execution.invoke_fabric", fake_invoke)
-        result = agent.submit(
-            "Implement a modulo function in src/util.py under src",
-            project_id="p", project_path=str(tmp_path))
-        sid = agent.sessions.last_session_id
-        ledger.decide(result.evidence.approvalIds[0], True, "user", "ok")
-        result = agent.resume(sid)
-
-        session = agent.sessions.load(sid)
-        assert session.correctionChain, (
-            "a governed deviation on a resumed leg must produce a "
-            "correction record, not a bare failure")
-        # The correction is a NEW question for the human: a granted
-        # approval for the original attempt never authorises the retry.
-        assert result.outcome == "awaiting-approval"
-        assert any(a.startswith("implement-correction") or a == "implement"
-                   for a in attempts)
-
-    def test_a_correction_does_not_strand_the_rest_of_the_plan(
-            self, tmp_path, monkeypatch):
-        """After a correction verifies, the tasks that depend on the
-        corrected one must still run. Rebuilding the remainder without
-        the already-verified predecessor made the dependant name a task
-        the plan no longer contained, which reads as a deadlock — a run
-        that had corrected itself successfully then stranded."""
-        agent, ledger = _agent_with_two_workers(tmp_path)
-        dispatched: list[str] = []
-
-        def fake_invoke(cap, payload, context, cfg):
-            if not context.get("approvalId"):
-                return _park(ledger,
-                             f"apr-{context['taskId']}-{len(dispatched)}")
-            tid = context["taskId"]
-            dispatched.append(tid)
-            text = payload.get("task", "")
-            node = context.get("nodeId") or "opencode"
-            if text.startswith("CORRECTION"):
-                return _done("inv-corrected", node, "corrected in scope")
-            if tid == "implement":
-                return _done("inv-deviated", node, "wrote too much",
-                             deviation=["rogue.txt"])
-            return _done(f"inv-{tid}", node, f"{tid} complete")
-
-        monkeypatch.setattr(
-            "aura.central_agent.execution.invoke_fabric", fake_invoke)
-        result = agent.submit(
-            "Implement a power function in src/util.py under src and have "
-            "another AI review it",
-            project_id="p", project_path=str(tmp_path))
-        sid = agent.sessions.last_session_id
-        for _ in range(8):
-            if result.outcome != "awaiting-approval":
-                break
-            ledger.decide(result.evidence.approvalIds[0], True, "user", "ok")
-            result = agent.resume(sid)
-
-        assert result.outcome == "completed", result.summary
-        assert "review" in dispatched, (
-            "the reviewing worker never ran after the correction")
-        session = agent.sessions.load(sid)
-        assert session.correctionChain, "no correction was recorded"
 
 
 # ── Phase K security surfaces ────────────────────────────────────────
@@ -774,133 +603,3 @@ class TestGovernanceMatrixIsHonest:
 
 
 # ── N. persistence / recovery across a restart ───────────────────────
-
-class TestApprovalSurvivesARestart:
-    """A human decision taken after AURA restarts has to authorise the
-    call it was taken for. The fabric and the ledger both restore
-    approvals from the same file but parse their own dicts, so before
-    this was fixed the grant landed on one copy while the other — the
-    one that actually gates execution — stayed pending, and the call was
-    refused as if the action had changed."""
-
-    @staticmethod
-    def _stack(home, capability_id="agent.delegate"):
-        from aura.approvals import ApprovalLedger, usable_pending
-        from aura.audit import AuditStore
-        from aura.fabric import CapabilityFabric, FabricConfig
-        from aura.fabric.host import WiringHost
-        from aura.jsonutil import read_json_file, write_json_atomic
-
-        ap_file = home / "fabric-approvals.json"
-
-        def load():
-            return [r for r in read_json_file(ap_file, [])
-                    if usable_pending(r)]
-
-        def save(reqs):
-            write_json_atomic(ap_file, reqs)
-
-        audit = AuditStore(home / "audit" / "trail.jsonl")
-        ledger = ApprovalLedger(audit_append=audit.append)
-        ledger.attach_store(load, save)
-
-        class _Nodes:
-            def list_nodes(self):
-                return [{"id": "opencode", "name": "OpenCode",
-                         "binary": "opencode",
-                         "capabilities": ["coding-agent", "terminal"]}]
-
-        fabric = CapabilityFabric(WiringHost(_Nodes()))
-        fabric.attach_approval_store(load, save)
-        fabric.attach_audit_store(audit.load, audit.append)
-        fabric.use_ledger(ledger)
-
-        ran: list[dict] = []
-
-        class _Exec:
-            capabilityId = capability_id
-
-            def supportsNode(self, _node):
-                return True
-
-            async def run(self, invocation):
-                ran.append(dict(invocation.get("context") or {}))
-                return {"ok": True, "detail": "done",
-                        "output": {"stdout": "ok", "exitCode": 0}}
-
-            async def verify(self, _inv, _res):
-                return {"passed": True, "kind": "exit-code", "detail": "0"}
-
-        fabric.executors[capability_id] = _Exec()
-        cfg = FabricConfig(fabric=fabric, audit_store=audit, ledger=ledger,
-                           permissions={"read": True, "write": True})
-        return cfg, ledger, ran
-
-    def test_a_grant_taken_after_a_restart_authorises_the_call(
-            self, tmp_path, monkeypatch):
-        from aura.fabric import invoke_fabric
-
-        monkeypatch.setenv("AURA_HOME", str(tmp_path))
-        payload = {"nodeId": "pnpm"}
-        context = {"actor": {"kind": "agent", "id": "central-agent"},
-                   "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
-
-        cfg, _ledger, _ran = self._stack(tmp_path, capability_id="system.uninstall")
-        parked = invoke_fabric("system.uninstall", payload, dict(context), cfg)
-        assert parked["outcome"] == "awaiting-approval"
-        approval_id = parked["approvalId"]
-
-        # RESTART: everything is rebuilt from the files on disk.
-        cfg2, ledger2, ran2 = self._stack(tmp_path, capability_id="system.uninstall")
-        assert ledger2.decide(approval_id, True, "user", "ok") is not None
-
-        spent = invoke_fabric(
-            "system.uninstall", payload,
-            {**context, "approvalId": approval_id}, cfg2)
-        assert spent["outcome"] == "succeeded", spent["detail"]
-        assert len(ran2) == 1
-
-    def test_the_refusal_reason_distinguishes_the_three_causes(self):
-        """The user-facing sentence is frozen by the TS oracle and says
-        "the action or its arguments changed" for every cause. That
-        collapse is what hid the restart bug: a grant recorded on a
-        different copy of the record read exactly like a changed action.
-        The diagnostic reason keeps the three apart, so the next such
-        failure is legible even though the wire text cannot change."""
-        from aura.fabric import _named_refusal
-
-        assert "no longer exists" in _named_refusal(None, False)
-        assert "different action" in _named_refusal(
-            {"state": "granted"}, False)
-        assert "not been decided" in _named_refusal(
-            {"state": "pending"}, True)
-        assert "already spent" in _named_refusal(
-            {"state": "granted", "consumedAt": "now"}, True)
-        assert "declined" in _named_refusal({"state": "denied"}, True)
-
-    def test_a_replay_is_still_refused_after_a_restart(self, tmp_path,
-                                                            monkeypatch):
-            """Single-use survives the restart too: adopting the ledger must
-            share the record, not resurrect a spent grant."""
-            from aura.fabric import invoke_fabric
-    
-            monkeypatch.setenv("AURA_HOME", str(tmp_path))
-            payload = {"nodeId": "pnpm"}
-            context = {"actor": {"kind": "agent", "id": "central-agent"},
-                       "projectId": "p", "taskId": "t1", "cwd": str(tmp_path)}
-            cfg, ledger, _ = self._stack(tmp_path, capability_id="system.uninstall")
-            approval_id = invoke_fabric(
-                "system.uninstall", payload, dict(context), cfg)["approvalId"]
-    
-            cfg2, ledger2, ran2 = self._stack(tmp_path, capability_id="system.uninstall")
-            ledger2.decide(approval_id, True, "user", "ok")
-            assert invoke_fabric(
-                "system.uninstall", payload,
-                {**context, "approvalId": approval_id},
-                cfg2)["outcome"] == "succeeded"
-    
-            cfg3, _l3, ran3 = self._stack(tmp_path, capability_id="system.uninstall")
-            replay = invoke_fabric("system.uninstall", payload,
-                                    {**context, "approvalId": approval_id}, cfg3)
-            assert replay["outcome"] == "awaiting-approval"
-            assert ran3 == [], "a spent grant must not run anything again"

@@ -41,7 +41,14 @@ def _terminate_tree(proc: "asyncio.subprocess.Process") -> None:
     """Stop the installer and everything it spawned."""
     if proc.returncode is not None:
         return
-    if is_windows():  # pragma: no cover - exercised via simulate()
+    if is_windows():
+        # proc.kill() ends one process; taskkill /T reaches npm -> node ->
+        # postinstall children (mirrors procexec._terminate_tree).
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=5, check=False)
+        except Exception:
+            pass
         try:
             proc.kill()
         except Exception:

@@ -60,7 +60,6 @@ export function capabilityForTask(kind: TaskKind): NodeCapability | 'manual' {
     case 'documentation': return 'documentation';
     case 'research': return 'research';
     case 'manual-operation':
-    case 'approval':
       return 'manual';
   }
 }
@@ -76,8 +75,8 @@ export function capabilityForTask(kind: TaskKind): NodeCapability | 'manual' {
  *                   execFile/allow-list safety pattern as `workflow/nodes.ts`.
  *   • `opencode`  — DETECTED ONLY. The opencode CLI exists on this machine,
  *                   but AURA has no governed executor for it: running the
- *                   CLI would let it write files autonomously and bypass the
- *                   two human gates (plan approval, per-task Accept). It is
+ *                   CLI would let it write files autonomously, outside the
+ *                   approved plan's grant and the Fabric's audit. It is
  *                   therefore never routed to.
  *   • `claude-code` — DETECTED ONLY. No Claude Code integration exists in
  *                   this environment, so it is never routed to.

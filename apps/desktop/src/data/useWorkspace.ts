@@ -49,8 +49,14 @@ interface WorkspaceState {
   refresh: () => Promise<void>;
   addProject: (path: string, name?: string) => Promise<{ ok: boolean; error?: string }>;
   /** Frontend-only: prepend a project to the local session list (no backend). */
-  createLocalProject: (name: string, path: string) => void;
   open: (id: string) => Promise<void>;
+  /**
+   * Set when the project that was just opened was opened for the FIRST time
+   * (decided by the service, persisted there). The project view shows the
+   * opening animation for it once, then calls `clearIntro`.
+   */
+  pendingIntro: { projectId: string; kind: 'new' | 'existing' } | null;
+  clearIntro: () => void;
   rename: (id: string, name: string) => Promise<void>;
   favorite: (id: string, fav: boolean) => Promise<void>;
   remove: (id: string) => Promise<void>;
@@ -107,21 +113,8 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  createLocalProject(name, path) {
-    const record: ProjectRecord = {
-      id: `local-${Date.now().toString(36)}`,
-      name: name.trim(),
-      path: path.trim(),
-      type: 'Application',
-      language: '—',
-      icon: 'folder',
-      color: '#00b3ff',
-      favorite: false,
-      createdAt: new Date().toISOString(),
-      lastOpenedAt: null,
-    };
-    set((s) => ({ localProjects: [record, ...s.localProjects] }));
-  },
+  pendingIntro: null,
+  clearIntro() { set({ pendingIntro: null }); },
 
   async open(id) {
     set({ openId: id, profile: null, status: null, graph: null, kg: null, memory: [] });
@@ -145,6 +138,13 @@ export const useWorkspace = create<WorkspaceState>((set, get) => ({
 
     try {
       const res = await aiClient.openProject(id);
+      // The service has now spent this project's one first-open. Record the
+      // request before the superseded check: another open can overtake this
+      // response, but it is keyed by project id, so it still plays when this
+      // project is the one on screen — dropping it would lose it for good.
+      if (!('error' in res) && res.intro?.firstOpen) {
+        set({ pendingIntro: { projectId: id, kind: res.intro.kind } });
+      }
       if (superseded()) return;
       if ('error' in res) { set({ reachable: false }); return; }
       set({ profile: res.profile, status: res.status, reachable: true });

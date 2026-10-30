@@ -1,0 +1,14 @@
+gate:     typecheck
+command:  bash -c npm run typecheck
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-28T21:34:58+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 3.61
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 55
+----- output -----
+
+> aura-hub@0.1.20 typecheck
+> tsc -p packages/ai-service/tsconfig.json --noEmit && tsc -p packages/workflow/tsconfig.json --noEmit && tsc -b apps/desktop/tsconfig.json
+
+----- end -----
+finished: 2026-10-28T21:35:09+05:30
+exit:     0

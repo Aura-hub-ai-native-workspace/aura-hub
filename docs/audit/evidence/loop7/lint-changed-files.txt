@@ -1,0 +1,43 @@
+gate:     lint-changed-files
+started:  2026-10-28T23:01:33+05:30
+method:   for each modified .py file, compare ruff findings (config backend/pyproject.toml) against 'git show HEAD:<file>'; report only files with MORE findings now
+----- output -----
+ok backend/aura/agent_runtime/adapters/claude_code.py base=2 now=2
+ok backend/aura/api/server.py base=9 now=9
+ok backend/aura/automation/engine.py base=0 now=0
+ok backend/aura/capabilities/tools.py base=0 now=0
+ok backend/aura/central_agent/events.py base=0 now=0
+ok backend/aura/central_agent/execution.py base=1 now=1
+ok backend/aura/central_agent/mcp_transport.py base=0 now=0
+ok backend/aura/central_agent/provisioner.py base=0 now=0
+ok backend/aura/central_agent/service.py base=10 now=10
+ok backend/aura/environment/executor.py base=0 now=0
+ok backend/aura/executors/__init__.py base=3 now=3
+ok backend/aura/executors/web_research.py base=0 now=0
+ok backend/aura/governance/actions.py base=0 now=0
+ok backend/aura/governance/claude.py base=0 now=0
+ok backend/aura/governance/claude_hook.py base=0 now=0
+ok backend/aura/governance/opencode.py base=0 now=0
+ok backend/aura/knowledge/store.py base=3 now=3
+ok backend/aura/multimodal/document_engine.py base=0 now=0
+ok backend/aura/sovereign/policy.py base=1 now=1
+ok backend/aura/workflow/__init__.py base=0 now=0
+ok backend/tests/acceptance/test_acceptance_gate.py base=14 now=14
+ok backend/tests/acceptance/test_document_engine_acceptance.py base=5 now=5
+ok backend/tests/automation/test_automation_engine_diff.py base=0 now=0
+ok backend/tests/differential/_tsrun.py base=0 now=0
+ok backend/tests/differential/conftest.py base=0 now=0
+ok backend/tests/e2e/test_inspection_to_approval_note.py base=3 now=3
+ok backend/tests/fabric/test_manifest_freshness.py base=0 now=0
+ok backend/tests/integration/test_document_artifact_pipeline.py base=5 now=5
+ok backend/tests/unit/test_document_engine.py base=0 now=0
+ok backend/tests/unit/test_grounded_answer_wiring.py base=2 now=2
+ok backend/tests/unit/test_new_executors.py base=3 now=3
+ok backend/tests/unit/test_security_boundaries.py base=2 now=2
+ok backend/tests/unit/test_shadow_read_only.py base=1 now=1
+ok backend/tests/unit/test_sovereign_subsystems.py base=8 now=8
+ok backend/tests/unit/test_worker_supervision.py base=1 now=1
+ok backend/tests/unit/test_workspace_observability.py base=1 now=1
+ok scripts/serve_central_agent_api.py base=0 now=0
+----- end -----
+finished: 2026-10-28T23:01:45+05:30

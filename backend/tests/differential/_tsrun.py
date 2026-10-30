@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+
+#: A fixed PATH keeps the Node oracle reproducible on POSIX. Windows has no /usr/bin and needs its own
+#: system directory variables for node to start, so there the real PATH is used.
+_NODE_PATH = os.environ.get("PATH", "") if os.name == "nt" else "/usr/bin:/bin:/usr/local/bin"
+_WIN_ENV = {k: os.environ[k] for k in ("SYSTEMROOT", "TEMP", "TMP") if k in os.environ} if os.name == "nt" else {}
 from pathlib import Path
 
 
@@ -26,7 +32,7 @@ def run_store_ops(tsref_paths: dict[str, Path], ops: list[dict], home: str, star
             "TSREF_FABRICWIRING": str(tsref_paths["fabricwiring"]),
             "TSREF_WFENGINE": str(tsref_paths["wfengine"]),
             "TSREF_AUTOENGINE": str(tsref_paths["autoengine"]),
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "PATH": _NODE_PATH, **_WIN_ENV,
         },
         check=False,
     )
@@ -47,7 +53,7 @@ def run_ts_batch(tsref_paths: dict[str, Path], func: str, cases: list[dict]) -> 
             "TSREF_FABRIC": str(tsref_paths["fabric"]),
             "TSREF_FABRIC_INDEX": str(tsref_paths["index"]),
             "TSREF_VERSIONS": str(tsref_paths["versions"]),
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "PATH": _NODE_PATH, **_WIN_ENV,
         },
         check=True,
     )
@@ -74,7 +80,7 @@ def run_fabric_ops(tsref_paths: dict[str, Path], config: dict, ops: list[dict], 
             "TSREF_WFSTORE": str(tsref_paths["wfstore"]),
             "TSREF_RUNSTORE": str(tsref_paths["runstore"]),
             "TSREF_AUTOSTORE": str(tsref_paths["autostore"]),
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "PATH": _NODE_PATH, **_WIN_ENV,
         },
         check=False,
     )
@@ -96,7 +102,7 @@ def run_wf_ops(tsref_paths: dict[str, Path], workflow: dict, proj_path: str,
         capture_output=True, text=True,
         env={"TSREF_WFENGINE": str(tsref_paths["wfengine"]),
             "TSREF_AUTOENGINE": str(tsref_paths["autoengine"]), "TSREF_RUNSTORE": str(tsref_paths["runstore"]),
-             "PATH": "/usr/bin:/bin:/usr/local/bin"},
+             "PATH": _NODE_PATH, **_WIN_ENV},
         check=False)
     if proc.returncode != 0:
         raise AssertionError(f"driver failed rc={proc.returncode}: {proc.stderr[-500:]}")

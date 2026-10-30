@@ -255,7 +255,7 @@ class TestA11toA15_DocumentAndArtifact:
         from aura.knowledge.store import KnowledgeBase
         kb = KnowledgeBase(store_dir=tmp_path / "knowledge")
         result = DocumentIngestor().ingest(str(INSPECTION_REPORT))
-        doc_record = kb.add_document(str(INSPECTION_REPORT), result)
+        doc_record = kb.add_document(str(INSPECTION_REPORT), result, project_id="proj-test")
         assert doc_record.chunk_count > 0
         assert doc_record.extraction_status in ("ok", "partial")
 
@@ -265,8 +265,8 @@ class TestA11toA15_DocumentAndArtifact:
         from aura.knowledge.store import KnowledgeBase
         kb = KnowledgeBase(store_dir=tmp_path / "knowledge")
         ingest = DocumentIngestor().ingest(str(INSPECTION_REPORT))
-        kb.add_document(str(INSPECTION_REPORT), ingest)
-        results = kb.search_with_context("inspection findings approval")
+        kb.add_document(str(INSPECTION_REPORT), ingest, project_id="proj-test")
+        results = kb.search_with_context("inspection findings approval", project_id="proj-test")
         assert len(results) > 0
         combined = " ".join(r.chunk.text for r in results).lower()
         assert any(kw in combined for kw in ["inspection", "finding", "approval"])
@@ -333,11 +333,12 @@ class TestA16toA17_SandboxAndVerification:
             "invocationId": "test-sandbox-001",
             "capabilityId": "sandbox.execute",
             "input": {
-                "command": "echo 'acceptance-gate-proof'",
-                "cwd": str(tmp_path),
+                # An allow-listed command (the terminal rule) that prints the proof.
+                "command": "python3 -c print('acceptance-gate-proof')",
                 "timeout_ms": 5000,
             },
-            "context": {},
+            # The project root the command runs in; sandbox.execute stays inside it.
+            "context": {"cwd": str(tmp_path), "projectId": "proj-test"},
         }
         result = await sandbox_adapter.run(inv)
         assert result["output"]["exitCode"] == 0

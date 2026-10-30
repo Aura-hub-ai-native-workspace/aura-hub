@@ -1,0 +1,163 @@
+ M apps/desktop/src/ai/centralAgentClient.ts
+ M apps/desktop/src/ai/useGeneralChat.ts
+ M apps/desktop/src/components/GeneralChat.tsx
+ M apps/desktop/src/data/useAutomation.ts
+ M apps/desktop/src/data/useWorkflows.ts
+ M apps/desktop/src/ops/panels/DocumentsPanel.tsx
+ M apps/desktop/src/screens/automation/AutomationRunView.tsx
+ M apps/desktop/src/screens/workflows/WorkflowEditor.tsx
+ M apps/desktop/src/screens/workspace/neon/AuraComposer.tsx
+ M backend/aura/agent_runtime/adapters/claude_code.py
+ M backend/aura/api/server.py
+ M backend/aura/automation/engine.py
+ M backend/aura/capabilities/tools.py
+ M backend/aura/central_agent/events.py
+ M backend/aura/central_agent/execution.py
+ M backend/aura/central_agent/provisioner.py
+ M backend/aura/central_agent/service.py
+ M backend/aura/executors/__init__.py
+ M backend/aura/executors/web_research.py
+ M backend/aura/governance/actions.py
+ M backend/aura/governance/claude.py
+ M backend/aura/governance/claude_hook.py
+ M backend/aura/governance/opencode.py
+ M backend/aura/knowledge/store.py
+ M backend/aura/multimodal/document_engine.py
+ M backend/aura/sovereign/policy.py
+ M backend/aura/workflow/__init__.py
+ M backend/tests/acceptance/test_acceptance_gate.py
+ M backend/tests/acceptance/test_document_engine_acceptance.py
+ M backend/tests/automation/test_automation_engine_diff.py
+ M backend/tests/e2e/test_inspection_to_approval_note.py
+ M backend/tests/integration/test_document_artifact_pipeline.py
+ M backend/tests/unit/test_document_engine.py
+ M backend/tests/unit/test_grounded_answer_wiring.py
+ M backend/tests/unit/test_new_executors.py
+ M backend/tests/unit/test_sovereign_subsystems.py
+ M docs/audit/PRIORITIZED_FINDINGS.md
+ M docs/audit/VALIDATION_REPORT.md
+ M graphify-out/.graphify_labels.json
+ M graphify-out/.graphify_root
+ M graphify-out/GRAPH_REPORT.md
+ M graphify-out/graph.json
+ M packages/ai-service/src/fabric/executors.ts
+ M packages/ai-service/src/server.ts
+ M packages/automation/src/engine.ts
+ M scripts/build-service-bundle.mjs
+ M scripts/packaging-verify.mjs
+?? .agents/
+?? .commandcode/
+?? .kilo/
+?? .tmp-promo/
+?? .verify-claude/
+?? AURA_Hub_Detailed_Project_Report.docx
+?? AURA_Hub_Detailed_Project_Report.pdf
+?? agentrun_usage.txt
+?? ai_service.txt
+?? api_structure.txt
+?? apps/desktop/src/ai/cancellation.test.ts
+?? apps/desktop/src/ai/cancellation.ts
+?? apps/desktop/src/ai/generalChatStop.test.ts
+?? apps/desktop/src/ai/knowledgeScope.test.ts
+?? apps/desktop/src/common-context.json
+?? apps/desktop/src/data/stopRunStates.test.ts
+?? backend/aura/executors/http_policy.py
+?? backend/aura/multimodal/light.py
+?? backend/common-context.json
+?? backend/inside.txt
+?? backend/tests/automation/test_automation_lifecycle.py
+?? backend/tests/unit/test_automation_cancel_states.py
+?? backend/tests/unit/test_bundled_document_extras.py
+?? backend/tests/unit/test_executor_path_confinement.py
+?? backend/tests/unit/test_git_branch_result.py
+?? backend/tests/unit/test_git_risk_grading.py
+?? backend/tests/unit/test_governance_hook_unavailable.py
+?? backend/tests/unit/test_governance_windows_paths.py
+?? backend/tests/unit/test_http_destination_policy.py
+?? backend/tests/unit/test_http_request_status.py
+?? backend/tests/unit/test_knowledge_project_scope.py
+?? backend/tests/unit/test_light_office_engine.py
+?? backend/tests/unit/test_observer_failures_logged.py
+?? backend/tests/unit/test_progress_callback_failures.py
+?? backend/tests/unit/test_sandbox_confinement.py
+?? backend/tests/unit/test_server_swallowed_errors.py
+?? backend/tests/unit/test_sovereign_policy_failclosed.py
+?? backend/tests/unit/test_terminal_cancellation.py
+?? backend/tests/unit/test_web_research_destination.py
+?? backend/work/
+?? backend_check_started.txt
+?? clear_done.txt
+?? commit_result.txt
+?? common-context.json
+?? docs/PROMO_VIDEO.md
+?? docs/audit/FEATURE_TOOL_MATRIX.md
+?? docs/audit/evidence/
+?? docs/promo/
+?? exec_tests.txt
+?? frontend_structure.txt
+?? full_backend_tests.txt
+?? full_test_results.txt
+?? full_test_results2.txt
+?? gcheck.txt
+?? git_branch.txt
+?? git_diff_stat.txt
+?? git_log.txt
+?? git_tags.txt
+?? gq_cac.txt
+?? gq_composer.txt
+?? gq_conv.txt
+?? gq_conv2.txt
+?? gq_dead_code.txt
+?? gq_engineering.txt
+?? gq_exec.txt
+?? gq_glowbutton.txt
+?? gq_hubphase.txt
+?? gq_leftpanel.txt
+?? gq_missions.txt
+?? gq_neon_live.txt
+?? gq_new_files.txt
+?? gq_orchgraph.txt
+?? gq_outcome.txt
+?? gq_run.txt
+?? gq_sse.txt
+?? gq_unit_fail.txt
+?? gq_unit_files.txt
+?? gq_workers.txt
+?? gq_workspace.txt
+?? gq_ws.txt
+?? mc_check.txt
+?? missions_server.txt
+?? neon_files.txt
+?? new_tests.txt
+?? orphan_match_detail.txt
+?? orphan_refs.txt
+?? packages/ai-service/src/automationLifecycle.test.ts
+?? packages/ai-service/src/fabric/httpPolicy.test.ts
+?? packages/ai-service/src/fabric/httpPolicy.ts
+?? packages_list.txt
+?? quick_backend_check.txt
+?? remaining_tests.txt
+?? scripts/extract_toc_pages.py
+?? scripts/generate_dpr_docx.py
+?? scripts/section_titles.json
+?? scripts/toc_pages.json
+?? skills-lock.json
+?? targeted2.txt
+?? targeted_tests.txt
+?? tauri_files.txt
+?? tauri_rs.txt
+?? tc_usage.txt
+?? test_files.txt
+?? test_progress.txt
+?? test_results.txt
+?? ts_check.txt
+?? ts_errors.txt
+?? unit_fail_x.txt
+?? unit_fail_x2.txt
+?? unit_test_files.txt
+?? unit_test_results.txt
+?? video/
+?? wc_check.txt
+?? worker_routes.txt
+?? workspace_screens.txt
+?? workspace_tsx.txt

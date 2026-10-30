@@ -17,14 +17,14 @@
 export const AURA_BLUE = {
   50: '#eef4ff',
   100: '#dbe6ff',
-  200: '#bfd2ff',
-  300: '#93b4ff',
-  400: '#608cff',
-  500: '#3b6bff', // ← primary accent
-  600: '#2451f5',
-  700: '#1c3ee0',
-  800: '#1d34b5',
-  900: '#1d328f',
+  200: '#d1d1d1',
+  300: '#b2b2b2',
+  400: '#8b8b8b',
+  500: '#6d6d6d', // ← primary accent
+  600: '#565656',
+  700: '#464646',
+  800: '#3b3b3b',
+  900: '#363636',
 } as const;
 
 /** Neutral "soft gray" surface ramp — cool, low-chroma, calm. */
@@ -37,12 +37,12 @@ export const GRAY = {
   200: '#dce0e8',
   300: '#c3c9d5',
   400: '#9aa2b2',
-  500: '#6b7385',
-  600: '#4c5364',
-  700: '#363c49',
-  800: '#22262f',
-  900: '#14171d',
-  950: '#0b0d11',
+  500: '#737373',
+  600: '#535353',
+  700: '#3c3c3c',
+  800: '#262626',
+  900: '#171717',
+  950: '#0d0d0d',
 } as const;
 
 /** Semantic status hues (used sparingly — never as decoration). */
@@ -59,22 +59,22 @@ export const STATUS = {
  * must never replace blue on primary buttons. Cyan marks live execution.
  */
 export const AURA_VIOLET = {
-  300: '#b7a6ff',
-  400: '#9785ff',
-  500: '#7a5cff',
-  600: '#6547f0',
+  300: '#b5b5b5',
+  400: '#989898',
+  500: '#777777',
+  600: '#636363',
 } as const;
 
 export const NEON = {
-  blue: '#4d7cff',
-  violet: '#7a5cff',
-  cyan: '#20d3ff',
+  blue: '#7c7c7c',
+  violet: '#777777',
+  cyan: '#a2a2a2',
   success: '#1fd38a',
   warning: '#ffb547',
   danger: '#ff5d7a',
-  base: '#070b14',
-  elev1: '#0b1120',
-  elev2: '#10182b',
+  base: '#0b0b0b',
+  elev1: '#111111',
+  elev2: '#181818',
 } as const;
 
 /** Spacing scale (px). Generous by design — whitespace is a feature. */
@@ -107,11 +107,11 @@ export const RADIUS = {
 /** Elevation — soft, diffuse, low-contrast shadows only. */
 export const SHADOW = {
   none: 'none',
-  xs: '0 1px 2px rgba(20, 23, 29, 0.04)',
-  sm: '0 2px 8px rgba(20, 23, 29, 0.05), 0 1px 2px rgba(20, 23, 29, 0.04)',
-  md: '0 8px 24px rgba(20, 23, 29, 0.07), 0 2px 6px rgba(20, 23, 29, 0.04)',
-  lg: '0 18px 48px rgba(20, 23, 29, 0.10), 0 4px 12px rgba(20, 23, 29, 0.05)',
-  glow: '0 0 0 4px rgba(59, 107, 255, 0.14)',
+  xs: '0 1px 2px rgba(23, 23, 23, 0.04)',
+  sm: '0 2px 8px rgba(23, 23, 23, 0.05), 0 1px 2px rgba(23, 23, 23, 0.04)',
+  md: '0 8px 24px rgba(23, 23, 23, 0.07), 0 2px 6px rgba(23, 23, 23, 0.04)',
+  lg: '0 18px 48px rgba(23, 23, 23, 0.10), 0 4px 12px rgba(23, 23, 23, 0.05)',
+  glow: '0 0 0 4px rgba(109, 109, 109, 0.14)',
 } as const;
 
 /** Type scale — one humanist sans, tight tracking on large sizes. */

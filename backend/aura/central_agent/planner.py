@@ -23,7 +23,7 @@ from .findings import verdict_instruction
 MAX_TASKS = 8
 
 #: agent.delegate input fields the model may populate. Everything else —
-#: node binaries, commands, approvals, policy, secrets — is rejected.
+#: node binaries, commands, policy, secrets — is rejected.
 _DELEGATE_INPUT_KEYS = {"task", "model", "context", "scopePaths"}
 
 #: Per-task proposal keys. "risk" is accepted but advisory only: authority
@@ -32,12 +32,16 @@ _DELEGATE_INPUT_KEYS = {"task", "model", "context", "scopePaths"}
 _MODEL_TASK_KEYS = {
     "id", "description", "capabilityId", "nodeId", "dependsOn",
     "inputFrom", "input", "scopePaths", "verificationKind",
-    "verification", "risk", "workerRole",
+    "verification", "risk", "workerRole", "workerChoice",
     # A model may say "this review must not be done by the worker that
     # wrote the code" and "this remediation only runs if the review found
     # something". Both NARROW what happens; neither can widen authority,
     # and both are resolved against the proposal's own task labels.
     "distinctWorkerFrom", "runWhen",
+    # Catalogue ids of tools this task needs on the machine; the coordinator
+    # makes sure they exist before the task runs (provisioner.py). A name is
+    # data: the provisioning guard decides whether anything is installed.
+    "requiresTools",
 }
 
 #: runWhen values a model may propose. Closed on purpose: an unknown
@@ -69,6 +73,21 @@ _TASK_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
 _MAX_SCOPE_PATHS = 16
 _MAX_SCOPE_LEN = 256
 _MAX_TASK_TEXT = 8000
+
+
+_TOOL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+MAX_REQUIRED_TOOLS = 6
+
+
+def _required_tools(raw: object, label: str) -> list[str]:
+    """A task's declared tool needs, validated as plain catalogue ids."""
+    if raw is None:
+        return []
+    if (not isinstance(raw, list) or len(raw) > MAX_REQUIRED_TOOLS
+            or not all(isinstance(t, str) and _TOOL_ID.fullmatch(t) for t in raw)):
+        raise PlanningError(
+            f"task {label} requiresTools must be a short list of tool ids")
+    return list(dict.fromkeys(raw))
 
 
 class PlanningError(Exception):
@@ -152,9 +171,41 @@ def _accept(kind: str, description: str,
     )
 
 
+def _cover_every_task(criteria: list[VerificationRequirement],
+                      task_ids: list[str]) -> list[VerificationRequirement]:
+    """Model-written criteria cannot make a task optional by leaving it out.
+
+    The verifier treats a task no criterion names as optional, so its
+    failure does not fail the run. That is AURA's decision to make, not the
+    model's: when scoped criteria leave a task uncovered, one unscoped
+    criterion is added, which makes every task required again."""
+    if not criteria:
+        return criteria
+    named: set[str] = set()
+    for criterion in criteria:
+        wanted = (criterion.expect or {}).get("tasks")
+        if wanted is None:
+            return criteria
+        named.update(wanted)
+    if set(task_ids) <= named:
+        return criteria
+    return [*criteria, _accept("audit-only",
+                               "Every planned step finished and was verified.")]
+
+
 def _task(tid: str, description: str, capability_id: str | None = None,
           input: dict | None = None, input_from: str = "literal",
           verification: VerificationRequirement | None = None) -> TaskSpecification:
+    extra: dict = {}
+    # A capability that needs a local program declares it here, so the
+    # coordinator checks the machine (and records the tool) before the task
+    # runs. Without this, the tool was never checked and policy denied the
+    # task with no connection ever attempted.
+    from ..capabilities.tools import CAPABILITY_MACHINE_NEEDS
+
+    needs = CAPABILITY_MACHINE_NEEDS.get(capability_id or "", [])
+    if needs:
+        extra["requiresTools"] = list(needs)
     return TaskSpecification(
         id=tid,
         description=description,
@@ -162,6 +213,7 @@ def _task(tid: str, description: str, capability_id: str | None = None,
         input=input or {},
         inputFrom=input_from,  # type: ignore[arg-value]
         verification=verification or VerificationRequirement(),
+        **extra,
     )
 
 
@@ -215,6 +267,44 @@ def plan_status(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
             tasks=["t1"])],
         createdAt=now,
     )
+
+
+#: Plain read-only requests and the task each one runs.
+_READ_ONLY_TASKS = {
+    "git.diff": "Read the working-tree diff with real git",
+    "filesystem.list": "List files",
+    "filesystem.read": "Read a file",
+}
+
+
+def plan_read_only(intent: AgentIntent, session_id: str, now: str,
+                   capability: str) -> TaskPlan:
+    """One read-only invocation whose real output is the answer. A file or
+    directory comes from the intent's path entity; the executor confines it
+    to the project."""
+    from .requested import READ_ONLY_LABELS
+
+    path = next((e.value for e in intent.entities if e.type == "path" and e.value), None)
+    task_input: dict = {}
+    description = _READ_ONLY_TASKS[capability]
+    if capability == "filesystem.list":
+        task_input = {"path": path or "."}
+        description += f" in {task_input['path']}"
+    elif capability == "filesystem.read":
+        if not path:
+            raise PlanningError("reading a file needs the file's path")
+        task_input = {"path": path}
+        description += f": {path}"
+    return TaskPlan(
+        planId=_plan_id(), sessionId=session_id, intent=intent,
+        tasks=[_task("t1", description, capability_id=capability, input=task_input,
+                     verification=VerificationRequirement(
+                         kind="audit-only",
+                         description="Invocation recorded in the audit trail."))],
+        acceptance=[_accept("audit-only",
+                            f"{READ_ONLY_LABELS[capability].capitalize()} shown from the real tool.",
+                            tasks=["t1"])],
+        createdAt=now)
 
 
 def plan_project_list(intent: AgentIntent, session_id: str, now: str) -> TaskPlan:
@@ -291,9 +381,32 @@ _WANTS_RESEARCH_RE = re.compile(
 WEB_RESEARCH_CAPABILITY = "web.research"
 
 
-def wants_web_research(user_message: str) -> bool:
-    """Does this request actually ask for external information?"""
-    return _WANTS_RESEARCH_RE.search(user_message or "") is not None
+def wants_web_research(user_message: str, *, would_only_chat: bool = False) -> bool:
+    """Does this request actually ask for external information?
+
+    A request with the shapes above always does. A turn AURA would merely
+    CHAT about is broader: with the toggle on, a real question (not small
+    talk) is researched, exactly as Let's Chat researches it, instead of
+    being answered from the model's memory while the toggle says ON. The
+    broad reading applies ONLY to such turns; a request that has a plan of
+    its own ("fix the login bug") is never turned into a search by it.
+    """
+    msg = (user_message or "").strip()
+    if _WANTS_RESEARCH_RE.search(msg) is not None:
+        return True
+    if not would_only_chat or len(msg.split()) < 3:
+        return False
+    from .intent import is_conversational
+
+    return not is_conversational(msg)
+
+
+def _would_only_chat(intent: AgentIntent) -> bool:
+    """AURA has nothing to DO for this turn: it would chat, or ask what was meant."""
+    if bool(getattr(intent, "conversational", False)):
+        return True
+    return (bool(getattr(intent, "needsClarification", False))
+            and not list(getattr(intent, "requiredCapabilities", None) or []))
 
 
 def apply_web_research_preference(intent: AgentIntent, web_research: bool,
@@ -326,7 +439,7 @@ def apply_web_research_preference(intent: AgentIntent, web_research: bool,
     intent.webResearch = bool(web_research)
     if not intent.webResearch:
         return intent
-    if not wants_web_research(user_message):
+    if not wants_web_research(user_message, would_only_chat=_would_only_chat(intent)):
         return intent
     # The user's question is the research query. A model-compiled goal
     # is advisory and may collapse to a generic word like "information";
@@ -469,10 +582,34 @@ def expects_change(worker_role: str | None, run_when: str | None) -> bool:
     return worker_role == "code" and (run_when or "always") == "always"
 
 
+_ARTIFACT_RE = re.compile(r"(?<![\w/.-])((?:[\w.-]+/)*[\w.-]+\.[A-Za-z]{2,8})(?![\w/])")
+
+
+def _named_artifacts(clause: str) -> list[str]:
+    """Project file paths a clause names (e.g. "alpha/a.txt"), in order.
+
+    Only path-like tokens with a file extension qualify, so ordinary prose
+    ("e.g.", "v1.2") does not. Each returned path must still be a real file
+    inside the project at verification time, so a wrong guess fails closed.
+    """
+    seen: list[str] = []
+    for m in _ARTIFACT_RE.finditer(clause or ""):
+        tok = m.group(1).strip(".")
+        if "." in tok and not tok.startswith(".") and tok not in seen:
+            seen.append(tok)
+    return seen
+
+
 def _delegate_input(task_text: str, scope: list[str],
                     expect_change: bool = False,
-                    worker_role: str | None = None) -> dict:
+                    worker_role: str | None = None,
+                    required_evidence: list[str] | None = None) -> dict:
     payload: dict = {"task": task_text[:MAX_DELEGATE_CHARS]}
+    if required_evidence:
+        # AURA-OWNED (not in _DELEGATE_INPUT_KEYS): the project files whose
+        # content the worker's output must show it read. Verification reads
+        # them itself; a model cannot add or remove them.
+        payload["requiredEvidence"] = list(required_evidence)
     if scope:
         payload["scopePaths"] = list(scope)
     if worker_role:
@@ -524,8 +661,14 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
     parallel_two = _plan_parallel_two_worker(intent, session_id, now)
     if parallel_two is not None:
         return parallel_two
+    sequential = _plan_sequential_workers(intent, session_id, now)
+    if sequential is not None:
+        return sequential
     wants_review = bool(getattr(intent, "delegateReview", False))
-    wants_remediation = bool(getattr(intent, "delegateRemediate", False))
+    # Autonomous by default: work that is independently reviewed goes BACK to a worker when the
+    # review reports problems, without anyone asking for it. The remediation task already skips
+    # itself when the review is clean (runWhen), so a clean review costs nothing extra.
+    wants_remediation = bool(getattr(intent, "delegateRemediate", False)) or wants_review
     prove = bool(getattr(intent, "delegateProve", False))
     if bool(getattr(intent, "delegateReadOnly", False)):
         # Read-only investigation ("Do not modify source files", "Review
@@ -569,19 +712,37 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
                    "is the worker's account, not a check AURA performed."
                    if prove else "")
 
-    tasks: list[TaskSpecification] = [TaskSpecification(
-        id="implement",
-        description="Carry out the requested change",
-        capabilityId="agent.delegate",
-        input=_delegate_input(text + build_note, scope,
-                              expect_change=expects_change("code", "always"),
-                              worker_role="code"),
-        workerRole="code",
-        risk="high", reversible=False,
-        verification=VerificationRequirement(
-            kind="exit-code",
-            description=("The worker exits 0 and every file it changed "
-                         "lies inside the declared scope." + build_check)))]
+    read_only_files = _read_only_evidence(text)
+    if read_only_files:
+        # Read-only inspection of named files: the worker must show it read
+        # each one. The process exit alone proves nothing about the reading.
+        impl_task = TaskSpecification(
+            id="implement",
+            description="Inspect the requested files and report their contents",
+            capabilityId="agent.delegate",
+            input=_delegate_input(text, scope, worker_role="research",
+                                  required_evidence=read_only_files),
+            workerRole="research",
+            risk="high", reversible=True,
+            verification=VerificationRequirement(
+                kind="evidence-present",
+                description=("The worker's output shows it read each named file: "
+                             + ", ".join(read_only_files) + ".")))
+    else:
+        impl_task = TaskSpecification(
+            id="implement",
+            description="Carry out the requested change",
+            capabilityId="agent.delegate",
+            input=_delegate_input(text + build_note, scope,
+                                  expect_change=expects_change("code", "always"),
+                                  worker_role="code"),
+            workerRole="code",
+            risk="high", reversible=False,
+            verification=VerificationRequirement(
+                kind="exit-code",
+                description=("The worker exits 0 and every file it changed "
+                             "lies inside the declared scope." + build_check)))
+    tasks: list[TaskSpecification] = [impl_task]
     covered = ["implement"]
 
     if wants_review:
@@ -637,7 +798,8 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
     plan = TaskPlan(
         planId=_plan_id(), sessionId=session_id, intent=intent,
         tasks=tasks,
-        acceptance=[_accept("exit-code", accepted + ".", tasks=covered)],
+        acceptance=[_accept(impl_task.verification.kind, accepted + ".",
+                            tasks=covered)],
         createdAt=now)
     # Web research, only because this request asked for it. With the flag
     # off — every request that did not press the toggle — the plan is
@@ -645,6 +807,22 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
     if getattr(intent, "webResearch", False):
         plan = prepend_web_research(plan)
     return plan
+
+
+_WRITE_VERB = re.compile(
+    r"\b(fix|change|modify|edit|add|create|write|implement|refactor|update|"
+    r"rename|delete|remove|replace|patch|rewrite|generate|build)\b", re.I)
+
+
+def _read_only_evidence(text: str) -> list[str]:
+    """Files a read-only inspection must show it read, or [] when the request
+    is not one. Conservative on purpose: a request is read-only only when it
+    carries a read-only signal, names files, and contains no write verb. A
+    misread write would skip the change check, so anything unclear stays on
+    the existing path."""
+    if not _READONLY_SIGNAL.search(text or "") or _WRITE_VERB.search(text or ""):
+        return []
+    return _named_artifacts(text)
 
 
 def _delegate_text(intent: AgentIntent) -> str:
@@ -704,9 +882,78 @@ def _named_multi_workers(text: str) -> list[tuple[int, re.Pattern, str]] | None:
     return found if 2 <= len(found) <= 4 else None
 
 
+def _sentence_worker_clauses(text: str, workers):
+    """Attribute each worker's instruction from the sentence that names it.
+
+    A header such as "Claude Code and Kilo Code: work in parallel, do not
+    modify anything." names both workers at once; cutting the text between
+    those two names leaves Claude with the word "and". Here each worker's
+    clause is taken from a sentence that names ONLY that worker ("Claude
+    Code, inspect alpha/a.txt"), and a header's text after its colon is a
+    constraint shared by both. Returns None when any worker has no usable
+    own sentence, so the older splitter still decides those cases.
+    """
+    nodes = [node for _, _, node in workers]
+    patterns = {node: pat for _, pat, node in workers}
+    sentences = [x.strip() for x in re.split(r"(?<=[.;!?])\s+|\n+", text) if x.strip()]
+    shared: list[str] = []
+    own: dict[str, str] = {}
+    for sent in sentences:
+        named = [n for n in nodes if patterns[n].search(sent)]
+        if len(named) >= 2:
+            head, colon, rest = sent.partition(":")
+            if colon and rest.strip():
+                shared.append(rest.strip(" .,;"))
+            continue
+        if len(named) == 1 and named[0] not in own:
+            m = patterns[named[0]].search(sent)
+            clause = sent[m.end():].lstrip(" ,:-\t").strip(" .,;:\"'")
+            if len(clause.split()) >= 2:
+                own[named[0]] = clause
+    if any(n not in own for n in nodes):
+        return None
+    suffix = ("; " + " ".join(shared)) if shared else ""
+    return [(n, own[n] + suffix) for n in nodes]
+
+
+def _bind_evidence(tasks: list[TaskSpecification]) -> None:
+    """Tie each task to the project files its own clause names.
+
+    A task that names a file must show, in its output, that it read that
+    file: its verification becomes evidence-present and the file travels as
+    AURA-owned requiredEvidence. A task that names none keeps the exit-code
+    verdict, whose detail says it checked process execution only.
+    """
+    for t in tasks:
+        arts = _named_artifacts(t.description)
+        if not arts:
+            continue
+        t.input = {**(t.input or {}), "requiredEvidence": list(arts)}
+        t.verification = VerificationRequirement(
+            kind="evidence-present",
+            description=("The worker's output shows it read each named file: "
+                         + ", ".join(arts) + "."))
+
+
+def _per_task_acceptance(tasks: list[TaskSpecification],
+                         description: str) -> list:
+    """One criterion per task, each requiring that task's own kind.
+
+    A single criterion over several tasks passes when ANY covered task has
+    the matching kind, so an evidence-verified worker could hide an
+    exit-code-only one. One criterion per task removes that gap.
+    """
+    return [_accept(t.verification.kind,
+                    f"{t.id}: {description}", tasks=[t.id])
+            for t in tasks]
+
+
 def _two_worker_clauses(text: str, workers: list[tuple[int, re.Pattern, str]]):
     """Cut the text around each named worker so each clause reads as that
-    worker's half of the job."""
+    worker's half of the job. Own-sentence attribution is tried first."""
+    by_sentence = _sentence_worker_clauses(text, workers)
+    if by_sentence is not None:
+        return by_sentence
     pieces = []
     for i, (_, pattern, node) in enumerate(workers):
         m = pattern.search(text)
@@ -764,14 +1011,67 @@ def _plan_parallel_two_worker(intent: AgentIntent, session_id: str,
                 description=("The worker exits 0 having stayed inside the "
                              "declared scope and reported its findings "
                              "with evidence."))))
+    _bind_evidence(tasks)
     return TaskPlan(
         planId=_plan_id(), sessionId=session_id, intent=intent,
         tasks=tasks,
-        acceptance=[_accept(
-            "exit-code",
-            "Both workers reported independent verified findings: no "
-            "modification of any file occurred.",
-            tasks=[t.id for t in tasks])],
+        acceptance=_per_task_acceptance(
+            tasks, "reported findings and made no modification."),
+        createdAt=now)
+
+
+_SEQUENCE_SIGNAL = re.compile(
+    r"\b(then|after\s+that|afterwards?|next|once\s+(?:it|that|this)\b[^.]{0,30}"
+    r"(?:done|complete[d]?|finished))\b", re.I)
+
+
+def _plan_sequential_workers(intent: AgentIntent, session_id: str,
+                             now: str) -> TaskPlan | None:
+    """Chain explicitly named workers: each stage starts when the one before
+    it is verified, and receives that stage's verified output.
+
+    "opencode builds the backend, then kilo code builds the UI" is a hand-off,
+    not a fan-out. Every stage is pinned to the runtime the person named, so
+    no worker can be substituted, and a stage that fails verification stops
+    the chain — a later worker never builds on unproven work.
+    """
+    text = _delegate_text(intent)
+    if (bool(getattr(intent, "delegateReadOnly", False))
+            or _PARALLEL_TWO_SIGNAL.search(text)
+            or not _SEQUENCE_SIGNAL.search(text)):
+        return None
+    workers = _named_multi_workers(text)
+    if not workers:
+        return None
+    clauses = _two_worker_clauses(text, workers)
+    if any(len((clause or "").split()) < 2 for _, clause in clauses):
+        return None
+    scope = _validated_scope(intent)
+    tasks: list[TaskSpecification] = []
+    for index, (node, clause) in enumerate(clauses):
+        stage = f"stage-{index + 1}-{node}"
+        tasks.append(TaskSpecification(
+            id=stage,
+            description=clause,
+            capabilityId="agent.delegate",
+            nodeId=node,
+            input=_delegate_input(
+                clause, scope,
+                expect_change=expects_change("code", "always"),
+                worker_role="code"),
+            workerRole="code",
+            inputFrom="upstream-output" if index else "literal",
+            dependsOn=[tasks[-1].id] if index else [],
+            risk="high", reversible=False,
+            verification=VerificationRequirement(
+                kind="exit-code",
+                description=("The worker exits 0 and every file it changed "
+                             "lies inside the declared scope."))))
+    return TaskPlan(
+        planId=_plan_id(), sessionId=session_id, intent=intent,
+        tasks=tasks,
+        acceptance=_per_task_acceptance(
+            tasks, "was carried out by the named worker and verified."),
         createdAt=now)
 
 
@@ -795,17 +1095,10 @@ def _plan_parallel_multi_worker(intent: AgentIntent, session_id: str,
     scope = _validated_scope(intent)
 
     tasks: list[TaskSpecification] = []
-    for i, (_, pattern, node) in enumerate(workers):
-        m = pattern.search(text)
-        head = text[m.end():]
-        if i + 1 < len(workers):
-            nxt = workers[i + 1][1].search(head)
-            seg = head[:nxt.start()] if nxt else head
-        else:
-            stop = re.search(r"\.", head)
-            seg = head[:stop.end()] if stop else head
-        seg = seg.strip(" .,;:\"'\n")
-        seg = re.sub(r"\s+(?:and|&|,)$", "", seg, flags=re.I)
+    # One clause splitter for every fan-out path (see _two_worker_clauses).
+    # Two divergent copies of this logic caused the same request to hand a
+    # worker the word "and" whenever the multi-worker path ran first.
+    for i, (node, seg) in enumerate(_two_worker_clauses(text, workers)):
         # Unique task id: worker short name + index guard
         short = node.split("-")[0]
         task_id = f"delegate-{short}" if not any(t.id == f"delegate-{short}" for t in tasks) \
@@ -824,15 +1117,12 @@ def _plan_parallel_multi_worker(intent: AgentIntent, session_id: str,
                 description=("The worker exits 0 having stayed inside the "
                              "declared scope and reported its findings "
                              "with evidence."))))
-    n = len(tasks)
+    _bind_evidence(tasks)
     return TaskPlan(
         planId=_plan_id(), sessionId=session_id, intent=intent,
         tasks=tasks,
-        acceptance=[_accept(
-            "exit-code",
-            f"All {n} workers reported independent verified findings: no "
-            "modification of any file occurred.",
-            tasks=[t.id for t in tasks])],
+        acceptance=_per_task_acceptance(
+            tasks, "reported findings and made no modification."),
         createdAt=now)
 
 
@@ -957,6 +1247,55 @@ class TaskPlanner:
                     if not isinstance(cap, str) or cap not in known:
                         raise PlanningError(
                             f"model proposed unknown capability '{cap}'")
+                    # Deterministic correction: a task that names files to
+                    # create or change is coding work. If the model picked a
+                    # non-delegate capability for it (artifact.generate,
+                    # filesystem.write, terminal.execute, ...), that capability
+                    # cannot be carried out as proposed — artifact.generate needs
+                    # a spec, terminal.execute needs a command, and none of them
+                    # have a worker. Route the work to an agent instead. A
+                    # capability with no files attached is left alone: it may be
+                    # a legitimate non-coding step.
+                    scope_paths = rt.get("scopePaths") or []
+                    raw_input = rt.get("input") or {}
+                    input_files = []
+                    if isinstance(raw_input, dict):
+                        input_files = [raw_input.get("path")] if raw_input.get("path") else []
+                    has_files = (isinstance(scope_paths, list) and scope_paths) or input_files
+                    # File capabilities stay direct: their file comes from
+                    # scopePaths (bound in _bind_filesystem_input) and a
+                    # missing or invalid path/content fails the plan closed.
+                    # Rerouting them to a worker would bypass that contract.
+                    _DIRECT_FILE_CAPS = {"filesystem.read", "filesystem.write", "filesystem.list", "agent.delegate"}
+                    # Also correct any capability that has a targetFile or
+                    # description mentioning a file but is not executable.
+                    _has_file_hint = False
+                    if cap not in _DIRECT_FILE_CAPS:
+                        desc = str(rt.get("description") or rt.get("title") or "")
+                        if re.search(r"\.(py|md|txt|js|html|css|json|ts)\b", desc):
+                            _has_file_hint = True
+                    if (cap not in _DIRECT_FILE_CAPS and has_files) or _has_file_hint:
+                        cap = "agent.delegate"
+                        rt["capabilityId"] = cap
+                        # Make sure the task carries a usable brief: the
+                        # delegate contract requires task text.
+                        raw_input = rt.get("input") or {}
+                        if not isinstance(raw_input, dict):
+                            raw_input = {}
+                        if not str(raw_input.get("task") or "").strip():
+                            title = str(rt.get("title") or rt.get("description") or "implement the task")
+                            raw_input = {**raw_input, "task": title}
+                        # Drop placeholder scopePaths the model copied from the
+                        # prompt; they are not real paths and would make the
+                        # governance plugin deny every write.
+                        sp = raw_input.get("scopePaths")
+                        if isinstance(sp, list) and any("repo-relative" in str(p) or "same or narrower" in str(p) for p in sp):
+                            raw_input = {k: v for k, v in raw_input.items() if k != "scopePaths"}
+                        rt["input"] = raw_input
+                        # Also clear top-level scopePaths if placeholder.
+                        tsp = rt.get("scopePaths")
+                        if isinstance(tsp, list) and any("repo-relative" in str(p) or "same or narrower" in str(p) for p in tsp):
+                            rt["scopePaths"] = None
                     if (cap == WEB_RESEARCH_CAPABILITY
                             and not getattr(intent, "webResearch", False)):
                         # Same rule as the deterministic dispatch, and for
@@ -978,6 +1317,13 @@ class TaskPlanner:
                 node = rt.get("nodeId")
                 if node is not None:
                     self._check_node(node, label)
+                    # Billing policy: a worker the owner has not authorized
+                    # cannot be pinned, even by the model. Drop the pin so
+                    # routing selects an allowed worker instead of failing.
+                    from ..workers.billing import decide
+                    if not decide(str(node)).allowed:
+                        node = None
+                        rt["nodeId"] = None
                 role = rt.get("workerRole")
                 if role is not None and role not in _MODEL_WORKER_ROLES:
                     raise PlanningError(
@@ -1117,8 +1463,14 @@ class TaskPlanner:
                                                for d in s.get("distinct")
                                                or []}),
                     runWhen=rt.get("runWhen") or "always",
+                    requiresTools=_required_tools(rt.get("requiresTools"), s["label"]),
+                    # The proposer's own id for this task. AURA re-issues
+                    # canonical ids (t1, t2 …); keeping the source id lets a
+                    # plan made elsewhere (the Planner) be matched to the run.
+                    sourceId=str(s["label"])[:64],
                     nodeId=rt.get("nodeId"),
                     workerRole=rt.get("workerRole"),
+                    workerChoice=(rt.get("workerChoice") if rt.get("workerChoice") in ("named", "selected") else None),
                     risk=risk,  # type: ignore[arg-value]
                     verification=VerificationRequirement(
                         kind=ver_kind,  # type: ignore[arg-value]
@@ -1130,8 +1482,9 @@ class TaskPlanner:
             label_map = {canon[pos]: canon[pos] for pos in order}
             label_map.update(
                 {staged[pos]["label"]: canon[pos] for pos in order})
-            acceptance = self._model_acceptance(
-                proposal.get("acceptance"), label_map)
+            acceptance = _cover_every_task(
+                self._model_acceptance(proposal.get("acceptance"), label_map),
+                [t.id for t in tasks])
             plan = TaskPlan(planId=_plan_id(), sessionId=session_id,
                             intent=intent, tasks=tasks, createdAt=now,
                             acceptance=acceptance)
@@ -1210,7 +1563,7 @@ class TaskPlanner:
         legacy passthrough (executor + policy stay the backstop, as proven
         by test_model_plan_cannot_widen_executor_scope). agent.delegate —
         the new Phase F surface — is allow-listed: task text, model hint,
-        context, scope. Binaries, commands, approvals, policy, secrets can
+        context, scope. Binaries, commands, policy, secrets can
         never arrive through a model plan."""
         raw_input = rt.get("input") or {}
         if not isinstance(raw_input, dict):
@@ -1309,7 +1662,7 @@ class TaskPlanner:
         because it received upstream output: when a task and ALL its
         dependencies declare scope, the task scope must be a subset of
         the union. Unscoped legs stay comparable-free (supervision +
-        approval still bind them)."""
+        policy still binds them)."""
         by_id = {t.id: t for t in tasks}
         for t in tasks:
             scope = (t.input.get("scopePaths")
@@ -1377,6 +1730,8 @@ class TaskPlanner:
                     "Accurate repository status reported from real git.",
                     tasks=["t1"])],
                 createdAt=now)
+        elif len(caps) == 1 and next(iter(caps)) in _READ_ONLY_TASKS:
+            plan = plan_read_only(intent, session_id, now, next(iter(caps)))
         elif caps == {"filesystem.write"}:
             write_input = _write_inputs(intent)
             plan = TaskPlan(

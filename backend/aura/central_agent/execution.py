@@ -6,9 +6,8 @@ Two routes, both governed:
                       definition and drives nodes through the same Fabric.
 
 The controller performs no side effects itself. Failure policy (deliberate,
-documented): NO automatic retries of side-effectful steps. awaiting-approval
-parks the whole run — the controller surfaces the approval id and exits
-without deciding it.
+documented): NO automatic retries of side-effectful steps. Nothing parks
+for a human: a step the policy refuses is refused at once, and the run ends.
 """
 
 from __future__ import annotations
@@ -23,6 +22,53 @@ from ..fabric import FabricConfig, invoke_fabric
 from ..workflow import EngineConfig, WorkflowEngine
 from .planner import topo_order
 
+#: Read-only tools whose real result is the answer. Their executors return the
+#: result itself (text, a list of names, records), not a worker's
+#: {"stdout": ...}, and the record kept only `stdout`, so the result was
+#: dropped and the answer said "1 task(s) executed". It is recorded as text.
+_TEXT_RESULT_CAPS = frozenset({"git.diff", "filesystem.list",
+                               "filesystem.read", "project.list", "workflow.list"})
+
+
+def _result_text(value: Any) -> str:
+    """A read-only tool's result as plain text, without inventing anything."""
+    import json
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and len(value) == 1 and isinstance(next(iter(value.values())), list):
+        value = next(iter(value.values()))  # {"workflows": [...]} -> the list
+    if isinstance(value, list):
+        return "\n".join(v if isinstance(v, str) else json.dumps(v, sort_keys=True, default=str)
+                         for v in value)
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _progress(callback: Any, label: str, *args: Any) -> None:
+    """Tell the owner of the run that a task started or finished.
+
+    A failing notification must not kill the run (it is bookkeeping), but it
+    must not vanish either: that bookkeeping is the queue state recovery and
+    resume read, so a failure is logged with its traceback."""
+    try:
+        callback(*args)
+    except Exception:  # noqa: BLE001 — the run continues; the failure is recorded
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "%s callback failed for task %s; the run continues, but its "
+            "recorded progress may be stale", label, args[0] if args else "?",
+            exc_info=True)
+
+
+def _recorded_output(capability: Any, output: Any) -> dict:
+    """The executor output as the mapping the record reads, with a read-only
+    tool's result carried as `stdout`."""
+    if capability in _TEXT_RESULT_CAPS and output is not None and not (
+            isinstance(output, dict) and "stdout" in output):
+        return {"stdout": _result_text(output)}
+    return output if isinstance(output, dict) else {}
+
 #: Fabric outcome → leg state. Unknown outcomes fail closed as "failed":
 #: a new outcome string must never crash the leg with KeyError (the
 #: engine path already defaults this way).
@@ -30,14 +76,82 @@ _OUTCOME_STATES = {
     "succeeded": "done",
     "unverified": "done",       # ran; verification reported separately
     "denied": "denied",
-    "awaiting-approval": "awaiting-approval",
     "failed": "failed",
     "unsupported": "blocked",
 }
 
 
+#: Capabilities that change a project's files or repository, or run code in
+#: it. The product rule: at most ONE of these is in flight for a project at a
+#: time — a coding worker never edits files while another worker (or an AURA
+#: write, a commit, a command) is changing them. Read-only capabilities
+#: (status, search, inspection) may still run side by side.
+MUTATING_CAPABILITIES = frozenset({
+    "agent.delegate", "filesystem.write", "git.commit", "git.branch",
+    "git.push", "terminal.execute", "sandbox.execute", "workflow.run",
+})
+
+
+def mutates_project(task: Any) -> bool:
+    return getattr(task, "capabilityId", None) in MUTATING_CAPABILITIES
+
+
+def task_state(o: TaskOutcome) -> str:
+    """The Workspace checklist state of one settled task. A worker finishing
+    is not the task being complete: only a passed check is `verified`."""
+    if o.state in ("done", "skipped"):
+        if o.state == "skipped" or o.verified is True:
+            return "verified"
+        return "failed" if o.verified is False else "unverified"
+    return {"failed": "failed", "timed-out": "timeout", "timeout": "timeout",
+            "blocked": "blocked", "denied": "denied", "cancelled": "cancelled"}.get(o.state, "failed")
+
+
 def _outcome_state(outcome: str) -> str:
     return _OUTCOME_STATES.get(outcome, "failed")
+
+
+def state_for_invocation(outcome: str, output: Any) -> str:
+    """The task state one settled invocation means.
+
+    The Fabric has no timed-out outcome of its own: a worker that ran
+    out of its execution budget is a FAILED invocation from the Fabric's
+    point of view, because that is what a terminated process looks like
+    there. The difference travels in the executor's output, and the run is
+    the only layer that can say what actually happened — so a worker that
+    was still working when its deadline arrived reads as "timed-out",
+    not as a worker that failed.
+
+    Output is Any by contract (file text, stdout, structured results);
+    only a dict can carry the flag, so a text output must not reach .get.
+    """
+    state = _outcome_state(outcome)
+    if not isinstance(output, dict):
+        return state
+    if output.get("cancelled"):
+        return "cancelled"
+    if output.get("timedOut"):
+        return "timed-out"
+    return state
+
+
+def _fill_session_inputs(capability_id: str, payload: dict, project_id: str | None) -> None:
+    """Supply the one input a plan can never know better than the session: which project.
+
+    A planner (or a local model) names a capability and often leaves out a required
+    `projectId` the Workspace already holds, which used to fail the task at the
+    contract check with "projectId is required" for a project that was open the
+    whole time. Only a missing or empty value is filled; an explicit one is kept.
+    """
+    if not project_id or str(payload.get("projectId") or "").strip():
+        return
+    from ..fabric import describe_capability
+
+    cap = describe_capability(capability_id) or {}
+    for spec in cap.get("input") or []:
+        if spec.get("name") == "projectId" and spec.get("required"):
+            payload["projectId"] = project_id
+            return
 
 
 @dataclass
@@ -45,7 +159,6 @@ class ExecutionOutcome:
     outcomes: list[TaskOutcome] = field(default_factory=list)
     stopped: bool = False
     stop_reason: str = ""
-    approval_id: str | None = None
     cancelled: bool = False
     timed_out: bool = False
     denied: bool = False
@@ -54,11 +167,9 @@ class ExecutionOutcome:
     #: central_agent.correlation). Observability only — the outcome's
     #: authority comes from verification, never from this field.
     request_id: str = ""
-    resumed_run_id: str | None = None
-    parked_runs: dict[str, str] = field(default_factory=dict)  # taskId → rid
     # Verified upstream evidence, keyed by task id, for inputFrom ==
     # "upstream-output" resolution. Populated ONLY from done outcomes
-    # whose verification passed; never from failed/parked/unverified work.
+    # whose verification passed; never from failed/unverified work.
     verified_outputs: dict[str, dict] = field(default_factory=dict)
     # Deviation evidence, keyed by task id, for the supervisor correction
     # loop. Filed whenever an outcome carries scopeDeviation in its
@@ -91,16 +202,34 @@ class ExecutionOutcome:
     # the same file path. Recorded for evidence; the service layer surfaces
     # them through the verification report and worker lifecycle events.
     write_conflicts: list[dict] = field(default_factory=list)
+    # Coordinator recovery history: one record per task retried by the
+    # completion check (round, task, worker before/after, how it ended).
+    recovery: list[dict] = field(default_factory=list)
+    # Files that changed on disk while each project-mutating task ran,
+    # MEASURED (central_agent/change_observer.py), keyed by task id:
+    # {"changes": [{path, op}], "complete": bool, "worker": str}.
+    file_changes: dict[str, dict] = field(default_factory=dict)
+    # The plan this leg is executing, so each worker's brief can carry the
+    # shared run board (run_board.render_board). Never serialized.
+    plan: Any = field(default=None, repr=False, compare=False)
+    # Outcomes settled before a concurrent wave started, for the run board
+    # of that wave's workers only. Never merged into `outcomes`.
+    board_outcomes: list = field(default_factory=list, repr=False, compare=False)
+
+#: Worker task attempts in one run, the first included. Bounded on purpose:
+#: a task that fails twice on two workers needs a person, not a third try.
+MAX_TASK_ATTEMPTS = 2
+#: Extra legs the completion check may run after the first.
+MAX_RECOVERY_ROUNDS = 2
 
 
 #: Task state → worker lifecycle. Deliberately a restatement of the
 #: existing TaskOutcome vocabulary rather than a second state machine:
-#: a worker is ACTIVE because its task is running and PARKED because its
-#: task parked, so the two can never disagree.
+#: a worker is ACTIVE while its task runs and COMPLETED or TERMINATED once it
+#: settles, so the two can never disagree.
 _WORKER_LIFECYCLE = {
     "done": "COMPLETED",
     "skipped": "COMPLETED",
-    "awaiting-approval": "PARKED",
     "blocked": "WAITING",
     "denied": "TERMINATED",
     "timed-out": "TERMINATED",
@@ -113,6 +242,12 @@ _WORKER_LIFECYCLE = {
 
 
 class ExecutionController:
+    # Optional hooks default at class level so a controller that is built
+    # without __init__ (tests do this) still runs: they are telemetry and
+    # advice, never required for execution.
+    emit: Any | None = None
+    error_lookup: Any | None = None
+
     def __init__(self, fabric_cfg: FabricConfig, engine: WorkflowEngine | None = None,
                  capability_registry=None, model_registry=None) -> None:
         self._cfg = fabric_cfg
@@ -128,6 +263,12 @@ class ExecutionController:
         #: must not read as "no workers connected" — the refusal reason
         #: below names it instead.
         self._nodes_error: str | None = None
+        #: Optional event sink, `emit(type, session_id, **payload)`. The
+        #: CentralAgent wires its own bus here; absent in unit tests.
+        self.emit: Any | None = None
+        #: Optional `lookup(project_root, query) -> str`: relevant earlier
+        #: errors for a worker's brief (see error_knowledge.py).
+        self.error_lookup: Any | None = None
         self.engine = engine or WorkflowEngine(
             fabric_cfg,
             *(_default_stores()),
@@ -141,26 +282,235 @@ class ExecutionController:
         compiled_workflow: dict | None = None,
         cancel_check: Any | None = None,
         cancel_token: Any | None = None,
-        resume_grants: dict[str, str] | None = None,
         project_cwd: str | None = None,
         prior_verified: dict[str, dict] | None = None,
         correlation: dict[str, str] | None = None,
+        on_task_complete: Any | None = None,
+        on_task_start: Any | None = None,
+    ) -> ExecutionOutcome:
+        """Run the plan to completion, then check write conflicts across
+        the WHOLE run: every task that recorded changed paths, whatever wave
+        or sequential step it ran in.
+
+        Completion check: after a leg, anything still unverified is
+        compared against the plan. When every open failure is a worker task
+        that failed, timed out or did not verify, the work is scheduled
+        again — on another eligible worker when the person did not name
+        one — with verified work seeded so it is never repeated, and the
+        tasks that were waiting on it run in the same leg. Bounded by
+        MAX_TASK_ATTEMPTS and MAX_RECOVERY_ROUNDS; a cancellation, a policy
+        denial, a scope deviation (the supervisor's) or
+        a non-worker failure ends it honestly instead."""
+        legs = dict(compiled_workflow=compiled_workflow,
+                    cancel_check=cancel_check, cancel_token=cancel_token,
+                    project_cwd=project_cwd,
+                    correlation=correlation,
+                    on_task_complete=on_task_complete,
+                    on_task_start=on_task_start,
+                    )
+        result = self._execute_plan(plan, project_id,
+                                    prior_verified=prior_verified, **legs)
+        attempts: dict[str, int] = {}
+        for round_no in range(1, MAX_RECOVERY_ROUNDS + 1):
+            retry = self._recoverable(plan, result, attempts, cancel_token)
+            if not retry:
+                break
+            leg_plan, notes = self._recovery_plan(plan, result, retry)
+            for tid in retry:
+                attempts[tid] = attempts.get(tid, 1) + 1
+            leg = self._execute_plan(leg_plan, project_id,
+                                     prior_verified=dict(result.verified_outputs),
+                                     **legs)
+            self._merge_leg(result, leg, round_no, notes)
+        result.plan = plan
+        result.write_conflicts = self._detect_write_conflicts(
+            plan, result.verified_outputs)
+        return result
+
+    # ── coordinator: completion check and recovery ─────────────────────
+    @staticmethod
+    def _unmet_dependency(task: Any, result: ExecutionOutcome) -> str | None:
+        """Why a task cannot run because something it depends on did not
+        succeed — only meaningful once the run keeps going past a blocker."""
+        bad = {"blocked", "failed", "denied", "cancelled", "timed-out"}
+        latest = {o.taskId: o for o in result.outcomes}
+        for dep in list(getattr(task, "dependsOn", []) or []):
+            o = latest.get(dep)
+            if o is None:
+                continue
+            if o.state in bad:
+                return f"depends on {dep}, which did not complete ({o.state})"
+            if o.state == "done" and o.verified is False:
+                # The upstream RAN but its check did not confirm it: the
+                # work happened, the proof did not. The Workspace already
+                # reports that as failed (task_state maps done+unverified
+                # to "failed"), so releasing a dependent on it would let
+                # later work build on results nobody confirmed.
+                #
+                # verified=None is NOT this case: it means the capability
+                # declares no mechanical check (a read-only listing), and
+                # such a task genuinely succeeded.
+                #
+                # A task that consumes upstream OUTPUT has a stricter
+                # gate of its own (_gate_handoff: the upstream must be in
+                # verified_outputs) which also stops the run. That gate
+                # speaks for those tasks; this one covers plain ordering
+                # dependencies.
+                if getattr(task, "inputFrom", "literal") != "upstream-output":
+                    return (f"depends on {dep}, which did not complete "
+                            f"(not verified)")
+        return None
+
+    @staticmethod
+    def _unverified_failure(o: TaskOutcome) -> bool:
+        return (o.state in ("failed", "timed-out")
+                or (o.state == "done" and o.verified is not True))
+
+    def _recoverable(self, plan: TaskPlan, result: ExecutionOutcome,
+                     attempts: dict[str, int],
+                     cancel_token: Any | None) -> dict[str, TaskOutcome]:
+        """Tasks the completion check may schedule again, or {} when the
+        run must end as it is."""
+        if (result.cancelled or result.denied
+                or (cancel_token is not None and getattr(cancel_token, "cancelled", False))):
+            return {}
+        if result.deviation_evidence:
+            return {}  # the supervisor's correction loop owns deviations
+        by_id = {t.id: t for t in plan.tasks}
+        latest: dict[str, TaskOutcome] = {}
+        for o in result.outcomes:
+            latest[o.taskId] = o
+        retry: dict[str, TaskOutcome] = {}
+        for tid, o in latest.items():
+            if tid in result.verified_outputs or o.state in ("skipped", "blocked", "pending"):
+                continue
+            if o.state in ("denied", "cancelled"):
+                return {}
+            if not self._unverified_failure(o):
+                continue
+            task = by_id.get(tid)
+            if task is None or task.capabilityId != "agent.delegate":
+                # No automatic re-run of a side-effectful non-worker step.
+                return {}
+            if attempts.get(tid, 1) >= MAX_TASK_ATTEMPTS:
+                return {}
+            retry[tid] = o
+        return retry
+
+    def _recovery_plan(self, plan: TaskPlan, result: ExecutionOutcome,
+                       retry: dict[str, TaskOutcome]) -> tuple[TaskPlan, dict]:
+        """A copy of the plan for the recovery leg: each retried task
+        reassigned to another eligible worker unless the person named one,
+        and told what the previous attempt hit. Returns (plan, notes)."""
+        from .quota import classify_failure, is_quota_exhaustion
+        leg_plan = plan.model_copy(deep=True)
+        notes: dict[str, dict] = {}
+        for task in leg_plan.tasks:
+            if task.id not in retry:
+                continue
+            failed = retry[task.id]
+            before = str((result.worker_assignments.get(task.id) or {}).get("nodeId") or "")
+            quota = is_quota_exhaustion(failed.detail,
+                                       timed_out=(failed.state == "timed-out"))
+            # A retry always avoids the worker that just failed (that is
+            # what makes it a recovery rather than a repeat); quota
+            # exhaustion is the case that forces a different worker even
+            # when the task was pinned to the failing one.
+            exclude = {before} if before else set()
+            after = before
+            # On quota, the pin is overridden so the work can move to a
+            # genuinely available worker.
+            # An agent Laya selected (the person did not name it) is not a
+            # commitment: after any failed attempt the retry goes to another
+            # allowed agent when there is one.
+            selected = getattr(task, "workerChoice", None) == "selected"
+            pinned = None if (quota or selected) else getattr(task, "nodeId", None)
+            if quota or selected or not getattr(task, "nodeId", None):
+                alt = self._match_role(task, getattr(task, "workerRole", None) or "code",
+                                       pinned, exclude)
+                if alt:
+                    task.nodeId = alt
+                    after = alt
+            brief = dict(task.input or {})
+            reason = ("quota exhausted" if quota
+                      else classify_failure(failed.detail,
+                                           timed_out=(failed.state == "timed-out"),
+                                           exit_code=1 if failed.state in ("failed", "timed-out") else None))
+            prior = (f"A previous attempt{' by ' + before if before else ''} "
+                     f"did not complete ({failed.state}, {reason}): "
+                     f"{failed.detail[:300]}. "
+                     "Continue from the project as it is now; keep work other "
+                     "tasks have verified.")
+            brief["task"] = f"{brief.get('task') or task.description}\n\n{prior}"
+            task.input = brief
+            notes[task.id] = {"fromNode": before, "toNode": after,
+                              "previousState": failed.state, "reason": reason,
+                              "handoff": quota and before != after}
+        return leg_plan, notes
+
+    @staticmethod
+    def _merge_leg(result: ExecutionOutcome, leg: ExecutionOutcome,
+                   round_no: int, notes: dict) -> None:
+        """Fold a recovery leg into the run. The leg's rows replace the
+        open rows they settled; verified evidence, assignments and actions
+        accumulate; the run's stop state is the leg's, since the leg is the
+        latest word on every task it touched."""
+        rerun = {o.taskId: o for o in leg.outcomes if o.state != "skipped"}
+        result.outcomes = [rerun.pop(o.taskId) if o.taskId in rerun else o
+                           for o in result.outcomes] + list(rerun.values())
+        result.verified_outputs.update(leg.verified_outputs)
+        result.worker_assignments.update(
+            {k: v for k, v in leg.worker_assignments.items()
+             if (v or {}).get("state") != "skipped"})
+        result.governed_actions.extend(leg.governed_actions)
+        result.file_changes.update(leg.file_changes)
+        result.deviation_evidence.update(leg.deviation_evidence)
+        result.artifact_paths.extend(p for p in leg.artifact_paths
+                                     if p not in result.artifact_paths)
+        result.scope_conflicts.extend(leg.scope_conflicts)
+        result.cancelled_before = list(leg.cancelled_before)
+        for flag in ("stopped", "stop_reason", "cancelled",
+                     "timed_out", "denied"):
+            setattr(result, flag, getattr(leg, flag))
+        if leg.run_id:
+            result.run_id = leg.run_id
+        settled = {o.taskId: o for o in leg.outcomes}
+        for tid, note in notes.items():
+            o = settled.get(tid)
+            result.recovery.append({
+                "round": round_no, "taskId": tid, **note,
+                "state": o.state if o else "not-dispatched",
+                "verified": bool(o and o.verified is True),
+            })
+
+    def _execute_plan(
+        self,
+        plan: TaskPlan,
+        project_id: str | None,
+        compiled_workflow: dict | None = None,
+        cancel_check: Any | None = None,
+        cancel_token: Any | None = None,
+        project_cwd: str | None = None,
+        prior_verified: dict[str, dict] | None = None,
+        correlation: dict[str, str] | None = None,
+        on_task_complete: Any | None = None,
+        on_task_start: Any | None = None,
     ) -> ExecutionOutcome:
         """Run one plan leg. `prior_verified` seeds handoff evidence from an
         earlier leg of the same workflow (verified task_id → evidence
         record, as filed by _note_task_closed): a resumed leg must not
-        re-prove what a previous leg already verified, and a parked
+        re-prove what a previous leg already verified, and an unverified
         upstream must never silently become verified by re-running.
         `correlation` carries {"session_id", "request_id"} into every
         invocation context, worker assignment, and the outcome itself —
         observability only, never authority."""
         result = ExecutionOutcome()
+        result.plan = plan
         correlation = {k: v for k, v in (correlation or {}).items() if v}
         if correlation.get("request_id"):
             result.request_id = correlation["request_id"]
         if prior_verified:
             result.verified_outputs.update(prior_verified)
-        resume_grants = resume_grants or {}
         # A run cancelled before a task starts never dispatches it. The
         # token is authoritative; cancel_check stays for callers that
         # pass only a predicate.
@@ -179,10 +529,16 @@ class ExecutionController:
             self._dispatch_parallel(plan, project_id, compiled_workflow,
                                     result, project_cwd=project_cwd,
                                     cancel_token=cancel_token,
-                                    correlation=correlation)
+                                    correlation=correlation,
+                                    on_task_complete=on_task_complete,
+                                    )
             return result
 
+        # Tasks already launched as a concurrent wave (see _ready_wave).
+        dispatched: set[str] = set()
         for task in topo_order(plan.tasks):
+            if task.id in dispatched:
+                continue
             if _stop_requested():
                 result.cancelled = True
                 result.stopped = True
@@ -191,6 +547,31 @@ class ExecutionController:
                     "dispatched for it")
                 result.cancelled_before.append(task.id)
                 break
+
+            # Independent work runs concurrently even when the plan also has
+            # dependency-gated tasks: every ready, eligible task goes out as
+            # one wave, then the sequential loop resumes for the rest. A wave
+            # of one is just the normal sequential path below.
+            wave = self._ready_wave(plan, result, dispatched)
+            if len(wave) >= 2 and any(t.id == task.id for t in wave):
+                self._dispatch_parallel(
+                    plan, project_id, compiled_workflow, result,
+                    project_cwd=project_cwd, cancel_token=cancel_token,
+                    correlation=correlation, tasks=wave,
+                    on_task_complete=on_task_complete,
+                    )
+                dispatched.update(t.id for t in wave)
+                # Same stop rules the sequential loop applies per task: a
+                # wave member that failed, was denied, timed out, was
+                # cancelled halts the run before
+                # any dependent task starts. In-flight siblings finish.
+                wave_ids = {t.id for t in wave}
+                for o in result.outcomes:
+                    if o.taskId in wave_ids:
+                        self._stop_for_outcome(result, o)
+                if result.stopped:
+                    return result
+                continue
 
             # Resume without re-execution: a task whose verification is
             # already seeded (prior leg of the same workflow) is recorded
@@ -219,10 +600,21 @@ class ExecutionController:
                     taskId=task.id, state="skipped", performed=False,
                     verified=True,
                     invocationIds=list(seed.get("invocation_ids") or []),
-                    approvalId=(seed.get("approval_ids") or [None])[0],
                     detail=("Already verified in a prior leg; not "
                             "re-executed."),
                 ))
+                continue
+
+            # A task whose required tool could not be provided never runs, and
+            # neither does anything that depends on it — but independent work
+            # carries on. The blocker is reported with its exact reason.
+            blocker = getattr(task, "toolBlocked", None) or self._unmet_dependency(task, result)
+            if blocker:
+                blocked = TaskOutcome(taskId=task.id, state="blocked", performed=False,
+                                      detail=str(blocker))
+                result.outcomes.append(blocked)
+                self._notify("task.state", correlation, taskId=task.id, state="blocked",
+                             detail=str(blocker)[:300])
                 continue
 
             # Conditional work: a task planned as remediation runs only
@@ -257,30 +649,22 @@ class ExecutionController:
                     break
 
             if task.route == "workflow-run":
-                grant_for_task = resume_grants.get(task.id)
-                if grant_for_task:
-                    _, parked_rid = grant_for_task
-                    self._resume_workflow(task, parked_rid, result)
-                else:
-                    self._run_workflow(task, plan, project_id, result,
-                                       project_cwd=project_cwd)
+                self._run_workflow(task, plan, project_id, result,
+                                   project_cwd=project_cwd,
+                                   )
             else:
-                grant_for_task = resume_grants.get(task.id)
-                self._invoke_single(task, project_id, compiled_workflow, result,
-                                    approval_id=grant_for_task[0] if grant_for_task else None,
+                if on_task_start is not None:
+                    _progress(on_task_start, "on_task_start", task.id)
+                self._run_task(task, project_id, compiled_workflow, result,
                                     project_cwd=project_cwd,
                                     cancel_token=cancel_token,
-                                    correlation=correlation)
+                                    correlation=correlation,
+                                    )
 
             last = result.outcomes[-1] if result.outcomes else None
+            if on_task_complete is not None and last is not None:
+                _progress(on_task_complete, "on_task_complete", task.id, last)
             if last is None:
-                break
-            if last.state == "awaiting-approval":
-                result.approval_id = last.approvalId
-                result.stopped = True
-                result.stop_reason = "awaiting human approval"
-                if result.run_id:
-                    result.parked_runs[task.id] = result.run_id
                 break
             if last.state in ("denied",):
                 result.denied = True
@@ -310,6 +694,59 @@ class ExecutionController:
                 break
         return result
 
+    @staticmethod
+    def _outcome_detail(invocation: dict, fabric_verified: bool | None) -> str:
+        """The detail a task outcome carries to the mission summary.
+
+        A failed check's own detail is the reason a person can act on
+        ("Required evidence not found: …"). The invocation's combined text
+        ("<capability> ran, but the check did not confirm it. …") is for the
+        audit record, so it is not what the person reads.
+        """
+        verdict = invocation.get("verification") or {}
+        check_detail = str(verdict.get("detail") or "").strip()
+        if fabric_verified is False and check_detail:
+            return check_detail
+        return invocation.get("detail") or ""
+
+    def _run_task(self, task: Any, project_id: str | None, compiled_workflow: dict | None,
+                  result: ExecutionOutcome, *,
+                  project_cwd: str | None = None, cancel_token: Any | None = None,
+                  correlation: dict[str, str] | None = None) -> None:
+        """Dispatch one task and report its real lifecycle: it started, what
+        it changed on disk (measured, not claimed), and how it settled."""
+        from . import change_observer
+
+        before_len = len(result.outcomes)
+        watch = bool(project_cwd) and mutates_project(task)
+        before = change_observer.snapshot(project_cwd) if watch else None
+        self._notify("task.state", correlation, taskId=task.id, state="running",
+                     capability=task.capabilityId)
+        try:
+            self._invoke_single(task, project_id, compiled_workflow, result,
+                                project_cwd=project_cwd,
+                                cancel_token=cancel_token, correlation=correlation)
+        finally:
+            worker = str((result.worker_assignments.get(task.id) or {}).get("nodeId") or "")
+            if watch:
+                changes, complete = change_observer.diff(before, change_observer.snapshot(project_cwd))
+                if changes or not complete:
+                    result.file_changes[task.id] = {"changes": changes, "complete": complete,
+                                                    "worker": worker}
+                self._notify("files.changed", correlation, taskId=task.id, worker=worker,
+                             changes=changes[:200], total=len(changes), complete=complete)
+            for o in result.outcomes[before_len:]:
+                self._notify("task.state", correlation, taskId=o.taskId, state=task_state(o),
+                             worker=worker, verified=o.verified, detail=(o.detail or "")[:300])
+
+    def _notify(self, event_type: str, correlation: dict | None, **payload: Any) -> None:
+        sid = (correlation or {}).get("session_id")
+        if self.emit is not None and sid:
+            try:
+                self.emit(event_type, sid, **payload)
+            except Exception:  # noqa: BLE001 — telemetry must never break execution
+                pass
+
     def _all_parallel_runnable(self, plan: TaskPlan,
                                seeded: Any) -> bool:
         """True when every task in the plan can run concurrently: no
@@ -321,46 +758,168 @@ class ExecutionController:
         """
         if len(plan.tasks) < 2:
             return False
+        if any(getattr(t, "toolBlocked", None) for t in plan.tasks):
+            return False
+        # One project-mutating task at a time: two workers (or a worker and
+        # a file write) never run side by side, whatever their scopes say.
+        if sum(1 for t in plan.tasks if mutates_project(t)) > 1:
+            return False
+        scopes = [s for t in plan.tasks for s in [self._write_scope(t)] if s]
+        if any(self._paths_overlap(p, q)
+               for i, a in enumerate(scopes) for b in scopes[i + 1:]
+               for p in a for q in b):
+            # Overlapping write scopes: the wave scheduler serializes them.
+            return False
         seeded_ids = set(getattr(seeded, "verified_outputs", {}) or {})
         for task in plan.tasks:
-            if (task.id in seeded_ids
-                    or task.route == "workflow-run"
-                    or task.inputFrom == "upstream-output"
-                    or getattr(task, "runWhen", "always") != "always"
-                    or list(getattr(task, "dependsOn", []) or [])
-                    or not task.capabilityId):
+            if (not self._task_parallel_eligible(task, seeded_ids)
+                    or list(getattr(task, "dependsOn", []) or [])):
                 return False
         return True
+
+    @staticmethod
+    def _task_parallel_eligible(task: Any, seeded_ids: set[str]) -> bool:
+        """Per-task rule for concurrent dispatch: no upstream-output
+        handoff, no conditional gate, not a workflow-run route, a bound
+        capability, and not already settled by a prior leg. Dependency
+        edges are a separate, ordering concern handled by the wave
+        scheduler in execute()."""
+        return not (
+            task.id in seeded_ids
+            or task.route == "workflow-run"
+            or task.inputFrom == "upstream-output"
+            or getattr(task, "runWhen", "always") != "always"
+            or getattr(task, "toolBlocked", None)
+            or not task.capabilityId
+        )
+
+    def _ready_wave(self, plan: TaskPlan, result: ExecutionOutcome,
+                    dispatched: set[str]) -> list[Any]:
+        """Every task that may start now concurrently: parallel-eligible,
+        not yet started, and with all dependsOn already settled in this
+        run. Settled is read from the recorded outcomes, never inferred
+        from intent.
+
+        Settled means the upstream actually succeeded: done with its
+        check confirming it (or declaring no check, verified=None), or
+        skipped (verified in an earlier leg). A task that ran and whose
+        check did NOT confirm it has not succeeded, so it does not
+        release the tasks that depend on it.
+        """
+        seeded_ids = set(result.verified_outputs or {})
+        started = {o.taskId for o in result.outcomes} | dispatched
+        settled = {o.taskId for o in result.outcomes
+                   if o.state == "skipped"
+                   or (o.state == "done" and o.verified is not False)}
+        ready = [
+            t for t in plan.tasks
+            if t.id not in started
+            and self._task_parallel_eligible(t, seeded_ids)
+            and set(t.dependsOn or []) <= settled
+        ]
+        # File ownership: two write tasks whose scopes overlap never run in
+        # the same wave. The later one waits and runs once the first has
+        # settled, working on its result instead of racing it.
+        wave: list[Any] = []
+        claimed: list[str] = []
+        mutating_taken = False
+        for t in ready:
+            if mutates_project(t):
+                if mutating_taken:
+                    continue  # one project-mutating task per wave, ever
+                mutating_taken = True
+            scope = self._write_scope(t)
+            if scope and any(self._paths_overlap(p, c) for p in scope for c in claimed):
+                continue
+            wave.append(t)
+            claimed.extend(scope)
+        return wave
+
+    @staticmethod
+    def _write_scope(task: Any) -> list[str]:
+        inp = task.input if isinstance(getattr(task, "input", None), dict) else {}
+        if inp.get("expectChange") is True:
+            return [str(p).strip().rstrip("/") for p in (inp.get("scopePaths") or [])
+                    if str(p).strip()]
+        return []
+
+    @staticmethod
+    def _paths_overlap(a: str, b: str) -> bool:
+        """Whole-segment containment either way: `src` overlaps `src/a.py`,
+        `src` does not overlap `srcx`."""
+        a, b = a.strip("/"), b.strip("/")
+        return a == b or a.startswith(b + "/") or b.startswith(a + "/") or "" in (a, b)
+
+    @staticmethod
+    def _stop_for_outcome(result: ExecutionOutcome, o: TaskOutcome) -> None:
+        """Apply the sequential loop's stop rules to one settled outcome.
+        Flags are always applied, so a timeout or denial is never lost
+        because a sibling already stopped the run. The first stop reason
+        recorded for the run is kept."""
+        if o.state == "denied":
+            result.denied = True
+            reason = o.detail
+        elif o.state == "timed-out":
+            result.timed_out = True
+            reason = o.detail
+        elif o.state == "cancelled":
+            result.cancelled = True
+            reason = f"{o.taskId}: {o.detail}"
+        elif o.state in ("failed", "blocked"):
+            reason = f"{o.taskId}: {o.detail}"
+        else:
+            return
+        if not result.stopped or not result.stop_reason:
+            result.stop_reason = reason
+        result.stopped = True
 
     def _dispatch_parallel(self, plan: TaskPlan, project_id: str | None,
                            compiled_workflow: dict | None,
                            result: ExecutionOutcome,
                            *, project_cwd: str | None,
                            cancel_token: Any | None,
-                           correlation: dict[str, str] | None) -> None:
-        """Run all independent tasks concurrently through the SAME
-        _invoke_single path, each into its own ExecutionOutcome, then
-        merge deterministically in task-plan order. Each task keeps its
-        own invocation context, node assignment, exit code, stdout and
-        audit record — there is no shared mutable run state.
+                           correlation: dict[str, str] | None,
+                           tasks: list[Any] | None = None,
+                           on_task_complete: Any | None = None,
+                           on_task_start: Any | None = None,
+                           ) -> None:
+        """Run the given tasks (default: all of the plan's tasks)
+        concurrently through the SAME _invoke_single path, each into its
+        own ExecutionOutcome, then merge deterministically in task-plan
+        order. Each task keeps its own invocation context, node
+        assignment, exit code, stdout and audit record — there is no
+        shared mutable run state.
         """
         correlation = dict(correlation or {})
+        batch = list(tasks) if tasks is not None else list(plan.tasks)
 
         # Pre-dispatch: flag concurrent write tasks with overlapping scopes.
-        result.scope_conflicts = self._detect_scope_conflicts(plan)
+        # Accumulated across waves so an earlier wave's conflicts persist.
+        result.scope_conflicts.extend(self._detect_scope_conflicts(batch))
 
         def _invoke(task) -> ExecutionOutcome:
             per = ExecutionOutcome()
+            per.plan = result.plan or plan
+            # Concurrent workers see the run as it stood when the wave
+            # started (board only — these rows are never merged back).
+            per.board_outcomes = list(result.outcomes)
             per.verified_outputs.update(result.verified_outputs)
             per.deviation_evidence.update(result.deviation_evidence)
-            self._invoke_single(task, project_id, compiled_workflow, per,
-                                approval_id=None, project_cwd=project_cwd,
+            if on_task_start is not None:
+                _progress(on_task_start, "on_task_start", task.id)
+            self._run_task(task, project_id, compiled_workflow, per,
+                                project_cwd=project_cwd,
                                 cancel_token=cancel_token,
-                                correlation=correlation)
+                                correlation=correlation,
+                                )
+            if on_task_complete is not None:
+                last = per.outcomes[-1] if per.outcomes else None
+                if last is not None:
+                    _progress(on_task_complete, "on_task_complete", task.id, last)
             return per
 
-        with ThreadPoolExecutor(max_workers=max(2, len(plan.tasks))) as pool:
-            futures = {pool.submit(_invoke, task): task for task in plan.tasks}
+        with ThreadPoolExecutor(max_workers=max(2, len(batch))) as pool:
+            futures = {pool.submit(_invoke, task): task for task in batch}
             per_task: dict[str, ExecutionOutcome] = {}
             for fut in as_completed(futures):
                 per = fut.result()
@@ -375,11 +934,9 @@ class ExecutionController:
             result.verified_outputs.update(per.verified_outputs)
             result.worker_assignments.update(per.worker_assignments)
             result.governed_actions.extend(per.governed_actions)
+            result.file_changes.update(per.file_changes)
             result.deviation_evidence.update(per.deviation_evidence)
-            result.parked_runs.update(per.parked_runs)
             result.cancelled_before.extend(per.cancelled_before)
-            if per.approval_id and result.approval_id is None:
-                result.approval_id = per.approval_id
             if per.run_id and result.run_id is None:
                 result.run_id = per.run_id
             if per.stopped and merged_stop is None:
@@ -389,17 +946,26 @@ class ExecutionController:
             reason, cancelled, timed_out, denied = merged_stop
             result.stopped = True
             result.stop_reason = reason
-            result.cancelled = cancelled
-            result.timed_out = timed_out
-            result.denied = denied
+            result.cancelled = result.cancelled or cancelled
+            result.timed_out = result.timed_out or timed_out
+            result.denied = result.denied or denied
+        # The run's stop state follows each merged outcome's own state, as
+        # the sequential loop does. Per-task flags alone can miss a denial
+        # or timeout, so a denied worker could be lost at run level.
+        for task in batch:
+            per = per_task.get(task.id)
+            if per is None:
+                continue
+            for o in per.outcomes:
+                self._stop_for_outcome(result, o)
         result.request_id = correlation.get("request_id") or result.request_id
 
         # Post-dispatch: detect actual file conflicts from verified changed_paths.
-        result.write_conflicts = self._detect_write_conflicts(plan, per_task)
+
 
     # ── Concurrent-worker conflict detection ─────────────────────────
     @staticmethod
-    def _detect_scope_conflicts(plan: TaskPlan) -> list[dict]:
+    def _detect_scope_conflicts(tasks: list[Any]) -> list[dict]:
         """Pre-dispatch: return conflicts where two concurrent write tasks
         declare overlapping scopePaths.  Non-blocking — the run proceeds —
         but the conflicts are recorded in ExecutionOutcome and surface
@@ -407,7 +973,7 @@ class ExecutionController:
         overwrites another worker's files."""
         write_tasks = [
             (t.id, set(t.input.get("scopePaths") or []))
-            for t in plan.tasks
+            for t in tasks
             if (t.input or {}).get("expectChange") is True
             and (t.input or {}).get("scopePaths")
         ]
@@ -425,20 +991,22 @@ class ExecutionController:
 
     @staticmethod
     def _detect_write_conflicts(
-        plan: TaskPlan, per_task: dict[str, "ExecutionOutcome"]
+        plan: TaskPlan, verified_outputs: dict[str, dict]
     ) -> list[dict]:
-        """Post-dispatch: find paths two or more workers actually modified.
-        Reads changed_paths from every task's verified evidence.  Returns
-        one record per conflicting path so the service layer can emit
-        worker.lifecycle events and the UI can highlight them."""
+        """Post-dispatch: find paths two or more tasks actually modified.
+        Ownership is read from each task's OWN verified evidence record
+        (verified_outputs[task.id]), never from a copy of other tasks'
+        records, so a path is attributed only to the task that wrote it,
+        across every execution wave of the run. Returns one record per
+        conflicting path so the service layer can emit worker.lifecycle
+        events and the UI can highlight them."""
         path_owners: dict[str, list[str]] = {}
         for task in plan.tasks:
-            per = per_task.get(task.id)
-            if per is None:
-                continue
-            for evidence in per.verified_outputs.values():
-                for path in (evidence.get("changed_paths") or []):
-                    path_owners.setdefault(str(path), []).append(task.id)
+            evidence = verified_outputs.get(task.id) or {}
+            for path in (evidence.get("changed_paths") or []):
+                owners = path_owners.setdefault(str(path), [])
+                if task.id not in owners:
+                    owners.append(task.id)
         return [
             {"path": path, "tasks": task_ids,
              "risk": "post-execution-write-conflict"}
@@ -453,7 +1021,18 @@ class ExecutionController:
             present = getattr(host, "present_nodes", None)
             nodes = present() if callable(present) else []
             self._nodes_error = None
-            return [n for n in nodes if isinstance(n, dict)]
+            # Billing policy: only authorized/verified-free workers may run.
+            # Filter denied workers here so selection never picks one that
+            # dispatch would refuse (honest failure, but useless).
+            from ..workers.billing import decide
+            out = []
+            for n in nodes:
+                if not isinstance(n, dict):
+                    continue
+                if not decide(str(n.get("id") or "")).allowed:
+                    continue
+                out.append(n)
+            return out
         except Exception as exc:
             self._nodes_error = str(exc)[:200]
             return []
@@ -510,6 +1089,10 @@ class ExecutionController:
                 return None
             if pinned_id in barred:
                 return None  # a pin never overrides an exclusion
+            # Billing policy: a pinned worker that is denied cannot run.
+            from ..workers.billing import decide
+            if not decide(pinned_id).allowed:
+                return None
             return pinned_id
         usable = self._role_usable(task.capabilityId)
         node = match_worker(role, nodes, usable, exclude=barred)
@@ -526,8 +1109,7 @@ class ExecutionController:
             other = str(other)
             # Three sources, in order of directness. The evidence records
             # matter because the upstream task usually ran on an EARLIER
-            # leg: an approval-gated plan parks between tasks, so by the
-            # time the reviewer is dispatched the implementer is restored
+            # leg, so by the time the reviewer is dispatched the implementer is restored
             # verified evidence, not a live assignment. Reading only the
             # live assignments let the same worker review its own work.
             candidates = (
@@ -620,8 +1202,6 @@ class ExecutionController:
             "scope_paths": list(output.get("scopePaths") or []),
             "changed_paths": list(scope_check.get("changed") or []),
             "invocation_ids": list(outcome.invocationIds),
-            "approval_ids": ([outcome.approvalId] if outcome.approvalId
-                             else []),
         }
 
     # ── single-invocation route ──────────────────────────────────────────
@@ -631,7 +1211,6 @@ class ExecutionController:
         project_id: str | None,
         compiled_workflow: dict | None,
         result: ExecutionOutcome,
-        approval_id: str | None = None,
         project_cwd: str | None = None,
         cancel_token: Any | None = None,
         correlation: dict[str, str] | None = None,
@@ -671,8 +1250,7 @@ class ExecutionController:
                     stdout=str(ev.get("stdout") or ""),
                     scope_paths=list(ev.get("scope_paths") or []),
                     changed_paths=list(ev.get("changed_paths") or []),
-                    invocation_ids=list(ev.get("invocation_ids") or []),
-                    approval_ids=list(ev.get("approval_ids") or [])))
+                    invocation_ids=list(ev.get("invocation_ids") or [])))
             try:
                 envelope = build_envelope(sources)
                 payload = resolve_task_input(payload, envelope["text"])
@@ -695,6 +1273,8 @@ class ExecutionController:
                 "edges": compiled_workflow["edges"],
             })
 
+        _fill_session_inputs(task.capabilityId, payload, project_id)
+
         context = {
             "actor": {"kind": "agent", "id": "central-agent"},
             "projectId": project_id,
@@ -712,6 +1292,14 @@ class ExecutionController:
         # the requested node is never substituted, only denied.
         node_id = getattr(task, "nodeId", None)
         if node_id:
+            # Billing policy: a pinned node that is denied cannot run,
+            # even when no role matching is requested.
+            from ..workers.billing import decide
+            if not decide(str(node_id)).allowed:
+                result.outcomes.append(TaskOutcome(
+                    taskId=task.id, state="failed", performed=False,
+                    detail=f"Policy denied this request: {decide(str(node_id)).reason}"))
+                return
             context["nodeId"] = node_id
         # Phase G requirement matching: "a worker suitable for this
         # task". A stated role resolves to an eligible node BEFORE
@@ -748,8 +1336,6 @@ class ExecutionController:
             context["nodeId"] = matched
         if project_cwd:
             context["cwd"] = project_cwd
-        if approval_id:
-            context["approvalId"] = approval_id
         if cancel_token is not None:
             # The worker's own stop signal. It reaches run_file, which
             # signals the worker's process GROUP — so STOP terminates
@@ -766,6 +1352,26 @@ class ExecutionController:
         _routing_record = None
         _routing_reason: str | None = None
         if task.capabilityId == "agent.delegate":
+            # The shared run board: every worker on this goal works from the
+            # same picture — goal, acceptance, tasks, file ownership, what
+            # verified tasks found, what failed. Appended to the AURA
+            # context the brief already carries; data, never authority.
+            from .run_board import render_board
+
+            board = render_board(getattr(result, "plan", None), result, task.id)
+            if self.error_lookup is not None and project_cwd:
+                try:
+                    known = self.error_lookup(project_cwd, str(task.description or "")
+                                              + " " + str((task.input or {}).get("task") or ""))
+                except Exception:  # noqa: BLE001 — lessons are help, never a gate
+                    known = ""
+                if known:
+                    board = f"{board}\n\n{known}" if board else known
+            if board:
+                existing = payload.get("context")
+                payload["context"] = (f"{existing}\n\n{board}"
+                                      if isinstance(existing, str) and existing
+                                      else board)
             _task_desc = (getattr(task, "description", None) or
                           (task.input or {}).get("task") or "")
             try:
@@ -778,8 +1384,14 @@ class ExecutionController:
                         _task_desc or "", task_type=_task_type)
                     _routing_record = _decision.record
                     _routing_reason = _decision.reason
-                    if _routing_record is not None:
-                        payload["model"] = _routing_record.model_name
+                    # The worker has its own configured model. AURA's model router
+                    # selects a model for AURA's own planning, not for the
+                    # worker's --model flag, which expects "provider/model"
+                    # syntax that sovereign model names do not use. Passing
+                    # an unparseable name makes the worker fail before it
+                    # starts. Leave the worker's model choice to its own
+                    # configuration.
+                    pass
             except Exception:
                 pass
 
@@ -806,18 +1418,15 @@ class ExecutionController:
         # SAME interpreter as workflows (one runner); everything else keeps
         # the direct governed invoke (policy/audit identical).
         engine = getattr(self, "engine", None)
-        if engine is not None and not approval_id and not project_cwd:
-            pass  # fall through to direct invoke below (no cwd context)
         if engine is not None and task.capabilityId in engine.NODE_TO_CAPABILITY.values():
             run, _nt = engine.run_ad_hoc(
                 task.capabilityId, payload, project_cwd, project_id,
-                approval_id=approval_id, task_label=task.description[:60])
+                task_label=task.description[:60],
+                )
             invocations = [e["invocationId"] for e in (run.get("evidence") or [])]
-            state_map = {"succeeded": "done", "awaiting-approval": "awaiting-approval",
+            state_map = {"succeeded": "done",
                          "denied": "denied", "timed-out": "timed-out"}
             outcome_state = state_map.get(run["state"], "failed")
-            parked = [n for n in run["nodes"].values()
-                      if n["state"] == "awaiting-approval"]
             result.outcomes.append(TaskOutcome(
                 taskId=task.id, state=outcome_state,  # type: ignore[arg-type]
                 performed=run["state"] in ("succeeded",),
@@ -825,33 +1434,63 @@ class ExecutionController:
                              for n in run["nodes"].values())
                 if run["state"] == "succeeded" else None,
                 invocationIds=invocations,
-                approvalId=(parked[0].get("approval") or {}).get("requestId")
-                if parked else None,
                 detail=f"Run {run['id']} ended {run['state']}: "
                        f"{next(iter(run['nodes'].values()), {}).get('summary', '')}",
             ))
             if result.run_id is None:
                 result.run_id = run["id"]
-            if outcome_state == "awaiting-approval" and result.run_id:
-                result.parked_runs[task.id] = result.run_id
-            self._note_task_closed(task, result, None, handoff_consumed)
+            # The node's output is the executor's real result (for git.status,
+            # git's own text). Passing None here dropped it, so the verified
+            # record and the answer had nothing to report.
+            node_out = next(iter(run["nodes"].values()), {}).get("output")
+            text = node_out.get("text") if isinstance(node_out, dict) else None
+            self._note_task_closed(
+                task, result,
+                {"stdout": text} if isinstance(text, str) else None,
+                handoff_consumed)
             return
-        invocation = invoke_fabric(
-            task.capabilityId, payload, context, self._cfg,
-        )
+        lease = None
+        lease_key = project_cwd or project_id
+        if task.capabilityId == "agent.delegate" and lease_key:
+            from .worker_lease import LEASES, LeaseCancelled
+
+            def _waiting(holder: Any) -> None:
+                self._notify("worker.queued", correlation, taskId=task.id,
+                             waitingFor={"taskId": holder.task_id, "sessionId": holder.session_id,
+                                         "worker": holder.worker},
+                             reason="another worker is editing this project; one at a time")
+
+            try:
+                lease = LEASES.acquire(
+                    str(lease_key), session_id=str(correlation.get("session_id") or ""),
+                    task_id=task.id, worker=str(context.get("nodeId") or ""),
+                    cancelled=lambda: bool(cancel_token is not None and cancel_token.cancelled),
+                    on_wait=_waiting)
+            except LeaseCancelled as exc:
+                result.outcomes.append(TaskOutcome(
+                    taskId=task.id, state="cancelled", performed=False,
+                    detail=f"{exc}; no worker was started for this task"))
+                return
+            except TimeoutError as exc:
+                result.outcomes.append(TaskOutcome(
+                    taskId=task.id, state="timeout", performed=False, detail=str(exc)))
+                return
+        try:
+            invocation = invoke_fabric(
+                task.capabilityId, payload, context, self._cfg,
+            )
+        finally:
+            if lease is not None:
+                LEASES.release(lease)
         outcome = invocation["outcome"]
         performed = outcome in ("succeeded", "unverified")
-        state = _outcome_state(outcome)
         # The executor reports a stopped worker as a failed invocation,
         # because from its side that is what a terminated process looks
         # like. Only the run knows the difference, and it records the
         # difference: a cancelled task is never corrected or retried.
-        # Output is Any by contract (file text, stdout, structured
-        # results) — only a dict can carry the flag, so a text output
-        # must not reach .get (it crashed every direct-path read here).
         _output = invocation.get("output")
-        if isinstance(_output, dict) and _output.get("cancelled"):
-            state = "cancelled"
+        state = state_for_invocation(outcome, _output)
+        if state in ("cancelled", "timed-out"):
             performed = False
         # Audit-only tasks (knowledge.search, memory.search, ...) have no
         # fabric-level read-back check — the invocation record IS the
@@ -866,14 +1505,17 @@ class ExecutionController:
         if fabric_verified is None and state == "done" and \
                 performed and task_verify_kind == "audit-only":
             fabric_verified = True
+        # A failed check's own detail is the reason a person can act on
+        # ("Required evidence not found: …"). The invocation's combined text
+        # ("<capability> ran, but the check did not confirm it. …") stays in
+        # the audit record for diagnostics.
         result.outcomes.append(TaskOutcome(
             taskId=task.id,
             state=state,  # type: ignore[arg-type]
             performed=performed,
             verified=fabric_verified,
             invocationIds=[invocation["invocationId"]],
-            approvalId=invocation.get("approvalId"),
-            detail=invocation["detail"],
+            detail=self._outcome_detail(invocation, fabric_verified),
         ))
         self._note_task_closed(
             task, result, invocation.get("output"), handoff_consumed)
@@ -898,7 +1540,7 @@ class ExecutionController:
         # structured results). The metadata reads below assume a mapping;
         # text carries none, so normalize once here instead of at every
         # .get — a second instance of the crash fixed above.
-        output = output if isinstance(output, dict) else {}
+        output = _recorded_output(getattr(task, "capabilityId", None), output)
         assignment = result.worker_assignments.get(task.id)
         if assignment is not None:
             if output.get("nodeId"):
@@ -942,8 +1584,6 @@ class ExecutionController:
                 "changed_paths": list(scope_check.get("changed") or []),
                 "outside": list(scope_check.get("outside") or []),
                 "invocation_ids": list(outcome.invocationIds),
-                "approval_ids": ([outcome.approvalId] if outcome.approvalId
-                                 else []),
             }
         # Evidence is filed only for done tasks the run actually verified.
         # Audit-only tasks whose invocation record IS the verification are
@@ -971,8 +1611,6 @@ class ExecutionController:
             "scope_paths": list(output.get("scopePaths") or []),
             "changed_paths": list(scope.get("changed") or []),
             "invocation_ids": list(outcome.invocationIds),
-            "approval_ids": ([outcome.approvalId] if outcome.approvalId
-                             else []),
         }
 
     # ── workflow-run route ───────────────────────────────────────────────
@@ -994,35 +1632,12 @@ class ExecutionController:
         result.run_id = run["id"]
         self._record_run_outcome(task, run, result)
 
-    def _resume_workflow(self, task: Any, parked_rid: str,
-                         result: ExecutionOutcome) -> None:
-        # The parked leg already carries its project path; the engine
-        # reuses it for the resumed leg.
-        leg = self.engine.resume_run(parked_rid)
-        result.resumed_run_id = leg["id"]
-        result.run_id = leg["id"]
-        self._record_run_outcome(task, leg, result,
-                                 detail_prefix=f"Resumed as {leg['id']}")
-
     def _record_run_outcome(self, task: Any, run: dict,
                             result: ExecutionOutcome,
                             detail_prefix: str = "Run") -> None:
         node_states = [n["state"] for n in run["nodes"].values()]
         # Every governed node action links back to its audit record.
         invocations = [e["invocationId"] for e in (run.get("evidence") or [])]
-        if run["state"] == "awaiting-approval":
-            parked = [n for n in run["nodes"].values()
-                      if n["state"] == "awaiting-approval"]
-            apr = (parked[0].get("approval") or {}).get("requestId") if parked else None
-            result.outcomes.append(TaskOutcome(
-                taskId=task.id, state="awaiting-approval",
-                performed=True,
-                invocationIds=invocations,
-                approvalId=apr,
-                detail=f"{detail_prefix} {run['id']} parked at node "
-                       f"{parked[0]['nodeId'] if parked else '?'}",
-            ))
-            return
         if run["state"] == "succeeded":
             result.outcomes.append(TaskOutcome(
                 taskId=task.id, state="done", performed=True,
@@ -1051,7 +1666,7 @@ def _default_stores() -> tuple:
 def state_of(run: dict) -> str:
     """Honest run-state → task-state mapping (never collapses distinct states)."""
     return {
-        "succeeded": "done", "awaiting-approval": "awaiting-approval",
+        "succeeded": "done",
         "denied": "denied", "timed-out": "timed-out",
         "cancelled": "cancelled",
     }.get(run["state"], "failed")

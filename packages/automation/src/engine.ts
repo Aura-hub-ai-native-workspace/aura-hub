@@ -47,6 +47,9 @@ export interface AutomationEngineOptions {
 
 const sleepDefault = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** A run in one of these states is finished for good: the first terminal state wins. */
+const TERMINAL_STATES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
+
 function getPath(payload: Record<string, unknown>, path: string): unknown {
   if (!path) return payload;
   let cur: unknown = payload;
@@ -165,7 +168,7 @@ export class AutomationEngine {
    * `cancelRun` must mutate *this* object — a separately-loaded copy would
    * be silently overwritten by `execute()`'s next `saveRun()` call.
    */
-  private readonly liveRuns = new Map<string, { run: AutomationRun; controller: AbortController }>();
+  private readonly liveRuns = new Map<string, { run: AutomationRun; controller: AbortController; inFlight?: { actionId: string; label: string } }>();
 
   constructor(opts: AutomationEngineOptions) {
     this.store = opts.store;
@@ -286,7 +289,16 @@ export class AutomationEngine {
         const state = run.actions.find((a) => a.actionId === action.id);
         if (!state) continue;
         const ok = await this.runActionWithRetries(run, state, action, rule, controller.signal);
+        if (ok === null) {
+          // The run was cancelled while this action was pending. The
+          // cancellation stands and already emitted the run's `done`; the
+          // action's own outcome is on its state and timeline.
+          return;
+        }
         if (!ok && !action.continueOnError) {
+          // Only a run that is still active can fail: one that was cancelled
+          // in the meantime stays cancelled (first terminal state wins).
+          if (TERMINAL_STATES.has(run.status)) return;
           run.status = 'failed';
           run.error = state.error ?? `action "${action.label}" failed`;
           run.finishedAt = new Date().toISOString();
@@ -303,6 +315,7 @@ export class AutomationEngine {
       // status was already finalized and persisted where it was set; don't
       // fall through and stamp it 'completed'.
       if (after === 'paused' || after === 'cancelled') return;
+      if (TERMINAL_STATES.has(run.status)) return;
 
       run.status = 'completed';
       run.finishedAt = new Date().toISOString();
@@ -321,23 +334,34 @@ export class AutomationEngine {
     action: AutomationRule['chain'][number],
     rule: AutomationRule,
     signal: AbortSignal,
-  ): Promise<boolean> {
+  ): Promise<boolean | null> {
     let attempt = 0;
     const policy = rule.retry;
     const label = action.label;
     while (attempt < policy.maxAttempts) {
+      if (TERMINAL_STATES.has(run.status)) {
+        // Cancelled during the previous attempt or the retry wait: no further
+        // attempt, and the run's status is not touched. (This used to set the
+        // status back to "retrying" and carry on, so a Stop during a retry
+        // wait was silently undone.)
+        return null;
+      }
       attempt += 1;
       state.attempts = attempt;
       state.status = attempt === 1 ? 'running' : 'retrying';
       state.startedAt = new Date().toISOString();
       state.error = undefined;
-      run.status = attempt === 1 ? 'running' : 'retrying';
+      if (run.status === 'queued' || run.status === 'running' || run.status === 'retrying') {
+        run.status = attempt === 1 ? 'running' : 'retrying';   // never over a paused or finished run
+      }
       this.appendTimeline(run, state.status === 'retrying' ? 'action-retried' : 'action-started', `Attempt ${attempt}: ${label}`, 'info', state.actionId);
       this.store.saveRun(run);
       this.emit?.({ type: 'run', run });
 
       const t = Date.now();
       let result: ActionResult;
+      const live = this.liveRuns.get(run.id);
+      if (live) live.inFlight = { actionId: state.actionId, label };
       try {
         const handler = this.actions[state.action];
         if (!handler) throw new Error(`no action handler registered for "${state.action}"`);
@@ -355,6 +379,13 @@ export class AutomationEngine {
         );
       } catch (e) {
         result = { ok: false, error: (e as Error).message };
+      }
+      if (live) live.inFlight = undefined;
+      // A Stop that arrived while this action was running said "winding-down";
+      // the action has now returned, so nothing of this run is executing.
+      if (run.cancellation?.phase === 'winding-down') {
+        run.cancellation = { ...run.cancellation, phase: 'complete' };
+        this.appendTimeline(run, 'log', `"${label}" returned after the stop was requested (${result.ok ? 'completed' : 'failed'}); nothing of this run is still executing`, 'info', state.actionId);
       }
 
       state.ms = Date.now() - t;
@@ -381,13 +412,16 @@ export class AutomationEngine {
       }
 
       state.error = result.error ?? 'action failed';
-      if (attempt >= policy.maxAttempts) {
+      const cancelled = run.status === 'cancelled';
+      if (cancelled || attempt >= policy.maxAttempts) {
         state.status = 'failed';
         state.finishedAt = new Date().toISOString();
         this.appendTimeline(run, 'action-failed', `${label} failed: ${state.error}`, 'error', state.actionId);
         this.store.saveRun(run);
         this.emit?.({ type: 'run', run });
-        return false;
+        // null: the run was cancelled, so this failure is not the run's outcome
+        // (the cancellation stands); false: retries exhausted.
+        return cancelled ? null : false;
       }
 
       const wait = retryDelay(policy, attempt);
@@ -402,7 +436,7 @@ export class AutomationEngine {
   /* ── control ────────────────────────────────────────────────────── */
 
   /** The live (currently-executing) copy of a run, if `execute()` holds one. */
-  private liveRun(ruleId: string, runId?: string): { run: AutomationRun; controller: AbortController } | null {
+  private liveRun(ruleId: string, runId?: string): { run: AutomationRun; controller: AbortController; inFlight?: { actionId: string; label: string } } | null {
     for (const entry of this.liveRuns.values()) {
       if (entry.run.ruleId !== ruleId) continue;
       if (runId && entry.run.id !== runId) continue;
@@ -450,10 +484,13 @@ export class AutomationEngine {
   cancelRun(ruleId: string, runId: string): AutomationRun | null {
     const live = this.liveRun(ruleId, runId);
     const run = live?.run ?? this.store.getRun(ruleId, runId);
-    if (!run || run.status === 'completed' || run.status === 'cancelled') return null;
+    // Unknown, or already finished: a failed run is not "cancelled" after the fact.
+    if (!run || TERMINAL_STATES.has(run.status)) return null;
     run.status = 'cancelled';
     run.finishedAt = new Date().toISOString();
-    this.appendTimeline(run, 'cancelled', 'Run cancelled');
+    const inFlight = live?.inFlight;
+    run.cancellation = inFlight ? { phase: 'winding-down', actionId: inFlight.actionId, label: inFlight.label } : { phase: 'complete' };
+    this.appendTimeline(run, 'cancelled', inFlight ? `Run cancelled; "${inFlight.label}" was running and is winding down` : 'Run cancelled');
     this.store.saveRun(run);
     this.emit?.({ type: 'run', run });
     this.emit?.({ type: 'done', runId: run.id, status: 'cancelled', ms: run.ms ?? 0 });

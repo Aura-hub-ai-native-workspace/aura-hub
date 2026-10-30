@@ -13,12 +13,12 @@ from pydantic import Field
 from ._base import ContractModel
 
 RunState = Literal[
-    "queued", "running", "awaiting-approval", "succeeded", "failed", "cancelled", "timed-out"
+    "queued", "running", "succeeded", "failed", "cancelled", "timed-out"
 ]
 TERMINAL_RUN_STATES = ("succeeded", "failed", "cancelled", "timed-out")
 
 NodeState = Literal[
-    "queued", "running", "awaiting-approval", "succeeded", "failed",
+    "queued", "running", "succeeded", "failed",
     "denied", "skipped", "cancelled", "timed-out",
 ]
 
@@ -42,7 +42,6 @@ class EvidenceRef(ContractModel):
     verified: bool | None
     at: str
     durationMs: float
-    approvalId: str | None = None
     nodeId: str | None = None
 
 
@@ -78,13 +77,12 @@ class AgentBeat(ContractModel):
 
 StopReason = Literal[
     "completed", "max-iterations", "timeout", "token-budget",
-    "consecutive-failures", "awaiting-approval", "denied", "cancelled", "failed",
+    "consecutive-failures", "denied", "cancelled", "failed",
 ]
 AgentPort = Literal["done", "needs-human", "failed"]
 
 PORT_FOR_STOP: dict[StopReason, AgentPort] = {
     "completed": "done",
-    "awaiting-approval": "needs-human",
     "denied": "needs-human",
     "max-iterations": "failed",
     "timeout": "failed",
@@ -94,15 +92,6 @@ PORT_FOR_STOP: dict[StopReason, AgentPort] = {
     "failed": "failed",
 }
 
-
-class AgentResume(ContractModel):
-    """Present ONLY when stopReason === 'awaiting-approval'."""
-
-    transcript: list[dict]  # {role: 'user'|'assistant', text} — max 40 entries
-    pendingCall: dict  # {capabilityId, input}
-    iteration: int
-    tokensUsed: int
-    elapsedMs: float
 
 
 class AgentTrace(ContractModel):
@@ -115,7 +104,6 @@ class AgentTrace(ContractModel):
     output: str | None = None
     evidence: list[EvidenceRef] | None = None
     refusedTools: list[dict] | None = None  # {capabilityId, reason}
-    approval: dict | None = None  # {requestId, capabilityId}
     effectiveBounds: AgentBounds | None = None
     tokenSource: Literal["provider", "estimated", "mixed"] | None = None
     partial: bool | None = None  # snapshot flag: True → carries ONLY beats
@@ -136,7 +124,6 @@ class NodeRunRecord(ContractModel):
     summary: str | None = None
     error: str | None = None
     output: dict | None = None  # bounded checkpoint payload (MAX_CHECKPOINT_TEXT=64KiB)
-    approval: dict | None = None  # {requestId, capabilityId, requestedAt, summary}
     agentTrace: AgentTrace | None = None
 
 

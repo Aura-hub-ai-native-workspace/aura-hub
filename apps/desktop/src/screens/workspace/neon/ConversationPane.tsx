@@ -10,8 +10,6 @@ import {
 } from '../../../ai/agentNarration';
 import type { AgentActivity, AgentChatMessage } from '../../../ai/useAgentConversations';
 import type { Handoff } from '../../../ai/aiClient';
-import { ApprovalGate } from '../../missions/ApprovalGate';
-import type { ApprovalRequest } from '../../../ai/fabricClient';
 
 /**
  * ConversationPane — the workspace IS the conversation.
@@ -58,19 +56,19 @@ function HandoffInbox({ handoffs, onAccept }: { handoffs: Handoff[]; onAccept: (
           className="rounded-xl border border-[rgba(255,181,71,0.4)] bg-[rgba(255,181,71,0.07)] px-4 py-3"
         >
           <p className="text-[11px] font-semibold uppercase tracking-wider text-neon-warning">
-            Task received from Project Ask AURA
+            Task received from Let's Chat
           </p>
           <p className="mt-1 text-[13.5px] leading-relaxed text-text">{h.title}</p>
           {h.notes && <p className="mt-1 whitespace-pre-wrap text-[12.5px] text-text-muted">{h.notes}</p>}
           <div className="mt-2.5 flex items-center justify-between gap-3">
             <span className="text-[11px] text-text-subtle">
-              Source: Ask AURA · {h.sourceMessageIds.length} message(s)
+              Source: Let's Chat · {h.sourceMessageIds.length} message(s)
             </span>
             <button
               type="button"
               data-testid="handoff-accept"
               onClick={() => onAccept(h)}
-              className="neon-focus rounded-lg bg-gradient-to-br from-neon-blue to-neon-violet px-3 py-1.5 text-[12px] font-medium text-white shadow-glow-blue transition-opacity hover:opacity-90"
+              className="neon-focus rounded-lg bg-gradient-to-br from-neon-blue to-neon-violet px-3 py-1.5 text-[12px] font-medium text-on-accent shadow-glow-blue transition-opacity hover:opacity-90"
             >
               Start execution
             </button>
@@ -82,7 +80,7 @@ function HandoffInbox({ handoffs, onAccept }: { handoffs: Handoff[]; onAccept: (
 }
 
 const TONE_CLASS: Record<OutcomeTone, string> = {
-  neutral: 'border-[rgba(125,146,255,0.3)] bg-[rgba(13,19,38,0.7)] text-text-muted',
+  neutral: 'border-[rgba(152, 152, 152,0.3)] bg-[rgba(19, 19, 19,0.7)] text-text-muted',
   attention: 'border-[rgba(255,181,71,0.4)] bg-[rgba(255,181,71,0.09)] text-neon-warning',
   danger: 'border-[rgba(255,93,122,0.42)] bg-[rgba(255,93,122,0.09)] text-neon-danger',
 };
@@ -116,7 +114,7 @@ function ActivityLine({ activity }: { activity: AgentActivity }) {
         aria-hidden
         className={cn(
           'h-1.5 w-1.5 shrink-0 rounded-full',
-          activity.awaitingApproval ? 'bg-neon-warning' : 'bg-neon-cyan aura-breathe',
+          'bg-neon-cyan aura-breathe',
         )}
       />
       <span className="min-w-0 truncate">
@@ -143,7 +141,7 @@ function ToolTrace({ tools }: { tools: string[] }) {
         Used {joinNames(tools)}
       </button>
       {open && (
-        <ul className="mt-1 space-y-0.5 border-l border-[rgba(125,146,255,0.22)] pl-3">
+        <ul className="mt-1 space-y-0.5 border-l border-[rgba(152, 152, 152,0.22)] pl-3">
           {tools.map((t) => (
             <li key={t} className="text-[11px] text-text-muted">
               {t}
@@ -157,19 +155,13 @@ function ToolTrace({ tools }: { tools: string[] }) {
 
 function MessageRow({
   message,
-  approval,
-  onDecide,
-  deciding,
 }: {
   message: AgentChatMessage;
-  approval: ApprovalRequest | null | undefined;
-  onDecide: (granted: boolean, reason?: string) => void;
-  deciding: boolean;
 }) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end" data-testid="chat-message" data-role="user">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-[rgba(122,92,255,0.4)] bg-[rgba(122,92,255,0.16)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-[rgba(119, 119, 119,0.4)] bg-[rgba(119, 119, 119,0.16)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text">
           {message.content}
         </div>
       </div>
@@ -182,7 +174,7 @@ function MessageRow({
 
   return (
     <div className="flex gap-3" data-testid="chat-message" data-role="assistant">
-      <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-[#c9bcff]">
+      <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-[rgba(119, 119, 119,0.45)] bg-[rgba(119, 119, 119,0.14)] text-[#c7c7c7]">
         <Icon name="spark" size={14} />
       </span>
       <div className="min-w-0 flex-1">
@@ -215,20 +207,6 @@ function MessageRow({
               </p>
             )}
 
-            {/* The existing gate, against the existing ledger. */}
-            {message.agent?.approvalId && approval && (
-              <ApprovalGate
-                request={approval}
-                busy={deciding}
-                onDecide={(_id, granted, reason) => onDecide(granted, reason)}
-              />
-            )}
-            {message.agent?.approvalId && approval === null && (
-              <p className="mt-2 text-[12px] text-text-subtle">
-                Loading the authorization details…
-              </p>
-            )}
-
             {!streaming && <ToolTrace tools={tools} />}
           </>
         )}
@@ -242,12 +220,9 @@ export function ConversationPane({
   activity,
   busy,
   agentUp,
-  approvals,
-  deciding,
   onSend,
   onStop,
   onRegenerate,
-  onDecide,
   handoffs,
   onAcceptHandoff,
   projectName,
@@ -257,13 +232,9 @@ export function ConversationPane({
   busy: boolean;
   /** Liveness of the agent service itself. Null while unknown. */
   agentUp: boolean | null;
-  /** approvalId → the pending request, null while still loading. */
-  approvals: Record<string, ApprovalRequest | null>;
-  deciding: boolean;
   onSend: (text: string) => void;
   onStop: () => void;
   onRegenerate: () => void;
-  onDecide: (messageId: string, granted: boolean, reason?: string) => void;
   /** Handoffs offered to this workspace by the project's Ask AURA. */
   handoffs: Handoff[];
   onAcceptHandoff: (h: Handoff) => void;
@@ -297,7 +268,7 @@ export function ConversationPane({
 
   return (
     <section aria-label="Workspace execution chat" className="flex min-h-0 flex-1 flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-[rgba(125,146,255,0.22)] px-6 py-3.5">
+      <header className="flex shrink-0 items-center gap-3 border-b border-[rgba(152, 152, 152,0.22)] px-6 py-3.5">
         <span className="min-w-0 flex-1">
           <h2 className="truncate text-[15px] font-semibold tracking-[-0.01em] text-text" data-testid="workspace-chat-title">Execution Chat</h2>
           <p className="truncate text-[11.5px] text-text-subtle">
@@ -318,13 +289,13 @@ export function ConversationPane({
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
         {empty && (!handoffs.some((h) => h.status === 'created')) ? (
           <div className="flex h-full flex-col items-center justify-center gap-5 text-center">
-            <span className="grid h-14 w-14 place-items-center rounded-2xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-[#c9bcff]">
+            <span className="grid h-14 w-14 place-items-center rounded-2xl border border-[rgba(119, 119, 119,0.45)] bg-[rgba(119, 119, 119,0.14)] text-[#c7c7c7]">
               <Icon name="spark" size={26} />
             </span>
             <div>
               <p className="text-[16px] font-semibold text-text">Ready to execute.</p>
               <p className="mt-1 text-[12.5px] text-text-muted">
-                This workspace does the work — plans and discussions live in the project's Ask AURA.
+                This workspace does the work — plans and discussions live in the project's Let's Chat.
               </p>
             </div>
             <div className="flex flex-wrap justify-center gap-2">
@@ -334,7 +305,7 @@ export function ConversationPane({
                   type="button"
                   onClick={() => onSend(s)}
                   data-testid="chat-suggestion"
-                  className="neon-focus rounded-xl border border-[rgba(125,146,255,0.28)] bg-[rgba(13,19,38,0.7)] px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:border-[rgba(32,211,255,0.45)] hover:text-text"
+                  className="neon-focus rounded-xl border border-[rgba(152, 152, 152,0.28)] bg-[rgba(19, 19, 19,0.7)] px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:border-[rgba(162, 162, 162,0.45)] hover:text-text"
                 >
                   {s}
                 </button>
@@ -348,23 +319,20 @@ export function ConversationPane({
               <MessageRow
                 key={m.id}
                 message={m}
-                approval={m.agent?.approvalId ? approvals[m.agent.approvalId] ?? null : undefined}
-                deciding={deciding}
-                onDecide={(granted, reason) => onDecide(m.id, granted, reason)}
               />
             ))}
           </>
         )}
       </div>
 
-      <div className="shrink-0 space-y-2 border-t border-[rgba(125,146,255,0.22)] px-6 py-3.5">
+      <div className="shrink-0 space-y-2 border-t border-[rgba(152, 152, 152,0.22)] px-6 py-3.5">
         <ActivityLine activity={activity} />
         <div
           className={cn(
-            'relative rounded-2xl border bg-[rgba(13,19,38,0.85)] p-3 transition-colors',
+            'relative rounded-2xl border bg-[rgba(19, 19, 19,0.85)] p-3 transition-colors',
             busy
-              ? 'border-[rgba(32,211,255,0.35)]'
-              : 'border-[rgba(125,146,255,0.32)] focus-within:border-[rgba(125,146,255,0.6)]',
+              ? 'border-[rgba(162, 162, 162,0.35)]'
+              : 'border-[rgba(152, 152, 152,0.32)] focus-within:border-[rgba(152, 152, 152,0.6)]',
           )}
         >
           <label htmlFor="aura-composer" className="sr-only">
@@ -386,7 +354,7 @@ export function ConversationPane({
               onClick={onStop}
               data-testid="agent-stop"
               aria-label="Stop"
-              className="neon-focus absolute bottom-3 right-3 grid h-9 w-9 place-items-center rounded-xl border border-[rgba(125,146,255,0.4)] text-text-muted transition-colors hover:text-text"
+              className="neon-focus absolute bottom-3 right-3 grid h-9 w-9 place-items-center rounded-xl border border-[rgba(152, 152, 152,0.4)] text-text-muted transition-colors hover:text-text"
             >
               <Icon name="minimize" size={15} />
             </button>
@@ -397,7 +365,7 @@ export function ConversationPane({
               disabled={!text.trim()}
               data-testid="agent-submit"
               aria-label="Send to AURA"
-              className="neon-focus absolute bottom-3 right-3 grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-white shadow-glow-blue transition-opacity disabled:opacity-40"
+              className="neon-focus absolute bottom-3 right-3 grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-on-accent shadow-glow-blue transition-opacity disabled:opacity-40"
             >
               <Icon name="arrow-right" size={16} />
             </button>

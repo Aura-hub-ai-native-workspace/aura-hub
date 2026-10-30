@@ -20,7 +20,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from providers.harness import routed_port
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.fabric import FabricConfig, builtin_executors
@@ -86,8 +85,6 @@ def model_env(tmp_path, monkeypatch):
             return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
         def node_available(self, _cap):
             return True
-        async def request_approval(self, _req, _ctx):
-            return False
 
     home = tmp_path / "home"
     proj = tmp_path / "project"
@@ -97,12 +94,10 @@ def model_env(tmp_path, monkeypatch):
     subprocess.run(["git", "add", "."], cwd=proj, check=True)
     monkeypatch.setenv("AURA_HOME", str(home))
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
     host = _H()
     fabric = CapabilityFabric(host)
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     execs = builtin_executors(home)
     for exe in execs.values():
         try:
@@ -112,7 +107,7 @@ def model_env(tmp_path, monkeypatch):
     cfg = FabricConfig(fabric=fabric, policy_config={},
                        permissions={"read": True, "write": True},
                        executors=execs,
-                       audit_store=audit, ledger=ledger)
+                       audit_store=audit)
     return home, proj, audit, ledger, cfg
 
 
@@ -133,21 +128,17 @@ class TestRealProviderPath:
         finally:
             harness.stop()
 
-    def test_t2_write_parks_approves_resumes(self, model_env):
+    def test_t2_model_planned_write_runs_immediately(self, model_env):
         home, proj, audit, ledger, cfg = model_env
         port, harness = routed_port([{"match": "report.md", "content": WRITE_REPLY}])
         try:
             from aura.central_agent.intent import IntentCompiler
             agent = make_agent(home, cfg)
             agent.intents = IntentCompiler(mode="model", model_port=port)
-            first = agent.submit("create a file called report.md containing hello",
-                                 project_path=str(proj))
-            assert first.outcome == "awaiting-approval"
-            assert not (proj / "report.md").exists()
-            sid = agent.sessions.last_session_id
-            ledger.decide(first.evidence.approvalIds[0], True, "user")
-            second = agent.resume(sid)
-            assert second.outcome == "completed"
+            result = agent.submit("create a file called report.md containing hello",
+                                  project_path=str(proj))
+            # Workspace runs the goal at once: no plan or per-write approval.
+            assert result.outcome == "completed", result.summary
             assert (proj / "report.md").read_text() == "hello"
             writes = [r for r in audit.load()
                       if r["capabilityId"] == "filesystem.write"
@@ -259,7 +250,13 @@ class TestProviderFailures:
                 mode="model", model_port=port)
             # fixture returns HTTP 429 once (times counts down), then 200.
             i = compiler.compile("show my git status please")
-            assert i.goal == "show repository status"
+            # Proof the retried model reply was used: these fields come only
+            # from GIT_STATUS_REPLY. The heuristic fallback gives confidence
+            # 1.0 and no requestedOutcome. The goal no longer distinguishes
+            # the two: a read-only git status request keeps the user's words.
+            assert i.confidence == 0.94
+            assert i.requestedOutcome == "branch and changed files listed"
+            assert i.goal == "show my git status please"
         finally:
             harness.stop()
 
