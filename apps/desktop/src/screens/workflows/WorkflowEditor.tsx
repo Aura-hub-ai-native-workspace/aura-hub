@@ -48,7 +48,7 @@ type Gesture =
   | { kind: 'marquee'; sx: number; sy: number; cx: number; cy: number };
 
 const STATUS_RING: Record<string, string> = {
-  running: 'ring-2 ring-accent shadow-[0_0_18px_rgba(59,107,255,0.45)]',
+  running: 'ring-2 ring-accent shadow-[0_0_18px_rgba(109, 109, 109,0.45)]',
   waiting: 'ring-2 ring-attention shadow-[0_0_18px_rgba(245,165,36,0.4)]',
   completed: 'ring-2 ring-positive/70',
   failed: 'ring-2 ring-danger shadow-[0_0_18px_rgba(229,72,77,0.4)]',
@@ -451,7 +451,12 @@ export function WorkflowEditor() {
             Dry run
           </Button>
           {run?.active ? (
-            <Button variant="danger" size="sm" icon="close" onClick={() => wf.stopRun()}>Stop</Button>
+            <>
+              <Button variant="danger" size="sm" icon="close" onClick={() => wf.stopRun()}>{run.stopping ? 'Stopping…' : 'Stop'}</Button>
+              {run.stopNote && (
+                <span role="status" data-testid="stop-note" className="max-w-[260px] text-[11.5px] leading-tight text-text-muted">{run.stopNote}</span>
+              )}
+            </>
           ) : (
             <Button
               size="sm"
@@ -493,7 +498,7 @@ export function WorkflowEditor() {
           <button
             onClick={() => { setAgentOpen(false); setBuilderOpen((o) => !o); }}
             className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11.5px] font-medium transition-colors ${
-              builderOpen ? 'bg-accent text-white' : 'text-text-muted hover:text-text'
+              builderOpen ? 'bg-accent text-on-accent' : 'text-text-muted hover:text-text'
             }`}
           >
             <Icon name="spark" size={12} /> AI Builder
@@ -501,7 +506,7 @@ export function WorkflowEditor() {
           <button
             onClick={() => { setBuilderOpen(false); setAgentOpen((o) => !o); }}
             className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11.5px] font-medium transition-colors ${
-              agentOpen ? 'bg-accent text-white' : 'text-text-muted hover:text-text'
+              agentOpen ? 'bg-accent text-on-accent' : 'text-text-muted hover:text-text'
             }`}
           >
             <Icon name="cpu" size={12} /> Agent node
@@ -625,7 +630,7 @@ export function WorkflowEditor() {
                 const st = nodeRun(e.from)?.status;
                 const live = run && st === 'completed';
                 const cat = specOf.get(from.type)?.category ?? 'source';
-                const color = e.id === selEdge ? 'var(--color-accent, #3b6bff)' : live ? CATEGORY[cat].color : 'color-mix(in srgb, currentColor 26%, transparent)';
+                const color = e.id === selEdge ? 'var(--color-accent, #6d6d6d)' : live ? CATEGORY[cat].color : 'color-mix(in srgb, currentColor 26%, transparent)';
                 return (
                   <g key={e.id}>
                     <path data-edge={e.id} d={edgePath(from, e.fromPort, to)} fill="none" stroke="transparent" strokeWidth={14} className="pointer-events-auto cursor-pointer" onPointerDown={(ev) => { ev.stopPropagation(); setSelEdge(e.id); setSelection([]); }} />
@@ -638,10 +643,10 @@ export function WorkflowEditor() {
                 if (!from) return null;
                 const x1 = from.x + NODE_W;
                 const y1 = outPortY(specOf.get(from.type), gesture.fromPort, from.y);
-                return <path d={`M ${x1} ${y1} C ${x1 + 60} ${y1}, ${gesture.cx - 60} ${gesture.cy}, ${gesture.cx} ${gesture.cy}`} fill="none" stroke="var(--color-accent, #3b6bff)" strokeWidth={2} strokeDasharray="6 5" />;
+                return <path d={`M ${x1} ${y1} C ${x1 + 60} ${y1}, ${gesture.cx - 60} ${gesture.cy}, ${gesture.cx} ${gesture.cy}`} fill="none" stroke="var(--color-accent, #6d6d6d)" strokeWidth={2} strokeDasharray="6 5" />;
               })()}
               {gesture.kind === 'marquee' && (
-                <rect x={Math.min(gesture.sx, gesture.cx)} y={Math.min(gesture.sy, gesture.cy)} width={Math.abs(gesture.cx - gesture.sx)} height={Math.abs(gesture.cy - gesture.sy)} fill="rgba(59,107,255,0.08)" stroke="rgba(59,107,255,0.5)" strokeWidth={1} />
+                <rect x={Math.min(gesture.sx, gesture.cx)} y={Math.min(gesture.sy, gesture.cy)} width={Math.abs(gesture.cx - gesture.sx)} height={Math.abs(gesture.cy - gesture.sy)} fill="rgba(109, 109, 109,0.08)" stroke="rgba(109, 109, 109,0.5)" strokeWidth={1} />
               )}
             </svg>
 

@@ -89,7 +89,7 @@ export function ReadyScreen({ onComplete }: { onComplete: () => void }) {
       >
         <div className="h-[3px] w-full overflow-hidden rounded-full bg-white/10">
           <motion.div
-            className="h-full rounded-full bg-gradient-to-r from-[#5c86ff] via-[#01c0f7] to-emerald-400"
+            className="h-full rounded-full bg-gradient-to-r from-[#878787] via-[#8d8d8d] to-emerald-400"
             initial={{ width: '0%' }}
             animate={{ width: '100%' }}
             transition={{ duration: reduce ? 0.4 : 1.9, ease: [0.16, 1, 0.3, 1], delay: 1.35 }}

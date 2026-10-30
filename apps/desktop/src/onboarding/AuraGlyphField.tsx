@@ -2,9 +2,9 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { Icon, type IconName } from '@aura/ui';
 
 const NODES: { icon: IconName; label: string; angle: number; color: string; delay: number }[] = [
-  { icon: 'code', label: 'Code', angle: -90, color: '#5c86ff', delay: 0 },
-  { icon: 'spark', label: 'AI', angle: 30, color: '#01c0f7', delay: 0.5 },
-  { icon: 'knowledge', label: 'Knowledge', angle: 150, color: '#a78bfa', delay: 1 },
+  { icon: 'code', label: 'Code', angle: -90, color: '#878787', delay: 0 },
+  { icon: 'spark', label: 'AI', angle: 30, color: '#8d8d8d', delay: 0.5 },
+  { icon: 'knowledge', label: 'Knowledge', angle: 150, color: '#a0a0a0', delay: 1 },
 ];
 
 const RADIUS = 108;
@@ -46,7 +46,7 @@ export function AuraGlyphField() {
       {/* Glowing core. */}
       <motion.div
         className="absolute left-1/2 top-1/2 h-14 w-14 -translate-x-1/2 -translate-y-1/2 rounded-full"
-        style={{ background: 'radial-gradient(circle, rgba(92,134,255,0.9) 0%, rgba(92,134,255,0.15) 65%, transparent 75%)' }}
+        style={{ background: 'radial-gradient(circle, rgba(135, 135, 135,0.9) 0%, rgba(135, 135, 135,0.15) 65%, transparent 75%)' }}
         animate={reduce ? {} : { scale: [1, 1.12, 1], opacity: [0.85, 1, 0.85] }}
         transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
       />

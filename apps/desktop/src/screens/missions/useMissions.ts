@@ -246,7 +246,7 @@ export function useMissions(projectId: string | null) {
 function openWorkspace(projectId: string): void {
   const app = useAppStore.getState();
   if (app.activeProjectId !== projectId) app.setActiveProject(projectId);
-  app.setNav('workspace');
+  app.openWorkspace(projectId);
   const layout = useLayoutStore.getState();
   for (const w of layout.windows) if (w.kind === 'missions' || w.kind === 'mission-detail') layout.minimizeWindow(w.id);
 }

@@ -33,7 +33,6 @@ import { missionClient, type MissionEvent } from '../ai/missionClient';
 import { useWorkspace } from '../data/useWorkspace';
 import { analyzeMemories, type LearningPattern, type LearningPrediction } from './learningEngine';
 import { useMemoryStore, type MemoryInput } from './memoryStore';
-import { useNotificationsStore } from './notificationsStore';
 import { useAgentStore, type AgentCampaign, type AgentCampaignInput, type AgentSeverity } from './agentStore';
 
 const TICK_MS = 30000;
@@ -52,10 +51,6 @@ function nameOf(file?: string): string {
 
 function recordMemory(c: AgentCampaign, input: Omit<MemoryInput, 'projectId'>): void {
   useMemoryStore.getState().record({ ...input, projectId: c.projectId ?? null });
-}
-
-function notify(key: string, kind: 'mission-completed' | 'architecture-warning', title: string, detail: string, projectId: string | null, missionId?: string): void {
-  useNotificationsStore.getState().notify({ key, kind, title, detail, projectId: projectId ?? undefined, missionId });
 }
 
 /* ── 1/2/3. observe → reason → plan → propose ─────────────────────── */
@@ -408,15 +403,6 @@ function recordOutcome(c: AgentCampaign): void {
     files: c.verify?.file ? [c.verify.file] : undefined,
     dedupe: `agent:${c.id}:${pass ? 'verified' : 'failed'}`,
   });
-
-  notify(
-    `agent:${c.id}:${pass ? 'verified' : 'failed'}`,
-    pass ? 'mission-completed' : 'architecture-warning',
-    pass ? 'Agent improvement verified' : 'Agent improvement failed',
-    pass ? `${c.target} — ${c.note ?? 'mission completed.'}` : `${c.target} — ${c.note ?? 'the signal remains.'}`,
-    c.projectId,
-    c.missionId ?? undefined,
-  );
 }
 
 /* ── the reconcile loop ────────────────────────────────────────────── */

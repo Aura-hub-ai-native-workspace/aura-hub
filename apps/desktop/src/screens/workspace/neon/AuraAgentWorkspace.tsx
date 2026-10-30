@@ -13,10 +13,9 @@ import type { Handoff } from '../../../ai/aiClient';
 import { MissionStatusPanel } from './MissionStatusPanel';
 import { RunObserverPanel } from './RunObserverPanel';
 import { missionView } from '../../../ai/missionStatus';
-import type { ProjectRecord } from '../../../ai/aiClient';
 
 const TONE_CLASS: Record<OutcomeTone, string> = {
-  neutral: 'border-[rgba(125,146,255,0.3)] bg-[rgba(13,19,38,0.7)] text-text-muted',
+  neutral: 'border-[rgba(152, 152, 152,0.3)] bg-[rgba(19, 19, 19,0.7)] text-text-muted',
   attention: 'border-[rgba(255,181,71,0.4)] bg-[rgba(255,181,71,0.09)] text-neon-warning',
   danger: 'border-[rgba(255,93,122,0.42)] bg-[rgba(255,93,122,0.09)] text-neon-danger',
 };
@@ -44,7 +43,7 @@ function ToolTrace({ tools }: { tools: string[] }) {
         Used {joinNames(tools)}
       </button>
       {open && (
-        <ul className="mt-1 space-y-0.5 border-l border-[rgba(125,146,255,0.22)] pl-3">
+        <ul className="mt-1 space-y-0.5 border-l border-[rgba(152, 152, 152,0.22)] pl-3">
           {tools.map((t) => (
             <li key={t} className="text-[11px] text-text-muted">
               {t}
@@ -88,7 +87,7 @@ function HandoffInbox({
               type="button"
               data-testid="handoff-accept"
               onClick={() => onAccept(h)}
-              className="neon-focus rounded-lg bg-gradient-to-br from-neon-blue to-neon-violet px-3 py-1.5 text-[12px] font-medium text-white shadow-glow-blue transition-opacity hover:opacity-90"
+              className="neon-focus rounded-lg bg-gradient-to-br from-neon-blue to-neon-violet px-3 py-1.5 text-[12px] font-medium text-on-accent shadow-glow-blue transition-opacity hover:opacity-90"
             >
               Start execution
             </button>
@@ -107,7 +106,7 @@ function StageCard({
   if (message.role === 'user') {
     return (
       <div className="flex justify-end" data-testid="chat-message" data-role="user">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-[rgba(122,92,255,0.4)] bg-[rgba(122,92,255,0.16)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-[rgba(119, 119, 119,0.4)] bg-[rgba(119, 119, 119,0.16)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text">
           {message.content}
         </div>
       </div>
@@ -125,7 +124,7 @@ function StageCard({
   return (
     <div className="flex gap-3" data-testid="chat-message" data-role="assistant">
       <div className="flex shrink-0 flex-col items-center">
-        <span className="mt-0.5 grid h-7 w-7 place-items-center rounded-lg border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-[#c9bcff]">
+        <span className="mt-0.5 grid h-7 w-7 place-items-center rounded-lg border border-[rgba(119, 119, 119,0.45)] bg-[rgba(119, 119, 119,0.14)] text-[#c7c7c7]">
           <Icon name="spark" size={14} />
         </span>
       </div>
@@ -151,11 +150,11 @@ function StageCard({
         ) : (
           <>
             {message.content ? (
-              <div className="rounded-xl border border-[rgba(125,146,255,0.2)] bg-[var(--ws-card)] px-4 py-3 text-[13.5px] leading-relaxed text-text">
+              <div className="rounded-xl border border-[rgba(152, 152, 152,0.2)] bg-[var(--ws-card)] px-4 py-3 text-[13.5px] leading-relaxed text-text">
                 <AiMarkdown source={message.content} />
               </div>
             ) : streaming ? (
-              <div className="rounded-xl border border-[rgba(32,211,255,0.28)] bg-[var(--ws-card)] px-4 py-3">
+              <div className="rounded-xl border border-[rgba(162, 162, 162,0.28)] bg-[var(--ws-card)] px-4 py-3">
                 <span className="inline-block h-4 w-2 animate-pulse rounded-sm bg-neon-cyan align-middle" />
               </div>
             ) : null}
@@ -187,7 +186,7 @@ function ActiveStageCard({ activity }: { activity: AgentActivity }) {
 
   return (
     <div className="flex gap-3" data-testid="agent-activity" role="status">
-      <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-[rgba(32,211,255,0.45)] bg-[rgba(32,211,255,0.1)] text-neon-cyan">
+      <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-[rgba(162, 162, 162,0.45)] bg-[rgba(162, 162, 162,0.1)] text-neon-cyan">
         <span
           aria-hidden
           className={cn(
@@ -215,9 +214,6 @@ export function AuraAgentWorkspace({
   onRegenerate,
   handoffs,
   onAcceptHandoff,
-  projects,
-  projectId,
-  onSelectProject,
 }: {
   messages: AgentChatMessage[];
   activity: AgentActivity;
@@ -228,9 +224,6 @@ export function AuraAgentWorkspace({
   onRegenerate: () => void;
   handoffs: Handoff[];
   onAcceptHandoff: (h: Handoff) => void;
-  projects: ProjectRecord[];
-  projectId: string | null;
-  onSelectProject: (id: string | null) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const empty = messages.length === 0 && !handoffs.some((h) => h.status === 'created');
@@ -245,7 +238,7 @@ export function AuraAgentWorkspace({
   return (
     <section aria-label="AURA Agent Workspace" className="flex min-h-0 flex-1 flex-col">
       {/* Header */}
-      <header className="flex shrink-0 items-center gap-3 border-b border-[rgba(125,146,255,0.22)] px-6 py-3.5">
+      <header className="flex shrink-0 items-center gap-3 border-b border-[rgba(152, 152, 152,0.22)] px-6 py-3.5">
         <span className="min-w-0 flex-1">
           <h2
             className="truncate text-[15px] font-semibold tracking-[-0.01em] text-text"
@@ -257,25 +250,6 @@ export function AuraAgentWorkspace({
             Thinking. Collaborating. Building.
           </p>
         </span>
-
-        {projects.length > 0 && (
-          <label className="flex shrink-0 items-center gap-1.5 text-[11.5px] text-text-subtle">
-            <Icon name="folder" size={12} />
-            <select
-              value={projectId ?? ''}
-              onChange={(e) => onSelectProject(e.target.value || null)}
-              data-testid="hub-project"
-              className="neon-focus rounded-md border border-[rgba(125,146,255,0.3)] bg-transparent px-2 py-1 text-[11.5px] text-text outline-none"
-            >
-              <option value="">No project</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
 
         {agentUp === false && (
           <span
@@ -292,7 +266,7 @@ export function AuraAgentWorkspace({
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
         {empty ? (
           <div className="flex h-full flex-col items-center justify-center gap-5 text-center">
-            <span className="grid h-16 w-16 place-items-center rounded-2xl border border-[rgba(122,92,255,0.45)] bg-[rgba(122,92,255,0.14)] text-[#c9bcff]">
+            <span className="grid h-16 w-16 place-items-center rounded-2xl border border-[rgba(119, 119, 119,0.45)] bg-[rgba(119, 119, 119,0.14)] text-[#c7c7c7]">
               <Icon name="spark" size={30} />
             </span>
             <div>
@@ -308,7 +282,7 @@ export function AuraAgentWorkspace({
                   type="button"
                   onClick={() => onSend(s)}
                   data-testid="chat-suggestion"
-                  className="neon-focus rounded-xl border border-[rgba(125,146,255,0.28)] bg-[rgba(13,19,38,0.7)] px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:border-[rgba(32,211,255,0.45)] hover:text-text"
+                  className="neon-focus rounded-xl border border-[rgba(152, 152, 152,0.28)] bg-[rgba(19, 19, 19,0.7)] px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:border-[rgba(162, 162, 162,0.45)] hover:text-text"
                 >
                   {s}
                 </button>
@@ -324,7 +298,7 @@ export function AuraAgentWorkspace({
               {messages.length > 1 && (
                 <div
                   aria-hidden
-                  className="pointer-events-none absolute bottom-0 left-3.5 top-8 w-px bg-[rgba(125,146,255,0.15)]"
+                  className="pointer-events-none absolute bottom-0 left-3.5 top-8 w-px bg-[rgba(152, 152, 152,0.15)]"
                 />
               )}
               <div className="space-y-5">
@@ -342,7 +316,7 @@ export function AuraAgentWorkspace({
       </div>
 
       {canRegenerate && (
-        <div className="shrink-0 border-t border-[rgba(125,146,255,0.22)] px-6 py-2">
+        <div className="shrink-0 border-t border-[rgba(152, 152, 152,0.22)] px-6 py-2">
           <button
             type="button"
             onClick={onRegenerate}

@@ -1079,7 +1079,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
       const draft = get().messages.find((m) => m.id === messageId)?.agent?.planDraft;
       if (!draft?.missionId) return;
       useAppStore.getState().setAskAuraOpen(false);
-      useAppStore.getState().setNav('workspace');
+      useAppStore.getState().openWorkspace();
       const layout = useLayoutStore.getState();
       layout.setFocused({ missionId: draft.missionId });
       layout.openPanel('missions');

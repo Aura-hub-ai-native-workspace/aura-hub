@@ -24,6 +24,8 @@ interface WorkerState {
   proofs: Record<string, WorkerReadinessProof | null>;
   refresh: () => Promise<void>;
   connect: (id: string) => Promise<void>;
+  /** The owner's Allow click for a worker that needs approval, then connect it. */
+  allowAndConnect: (id: string) => Promise<void>;
   disconnect: (id: string) => Promise<void>;
 }
 
@@ -45,6 +47,15 @@ export const useWorkerStore = create<WorkerState>((set, get) => ({
       // which one they are looking at.
       error: res.error ?? null,
     });
+  },
+
+  allowAndConnect: async (id) => {
+    const res = await workerClient.authorize(id);
+    if (!res.ok) {
+      set({ error: res.error ?? 'could not save your approval' });
+      return;
+    }
+    await get().connect(id);
   },
 
   connect: async (id) => {

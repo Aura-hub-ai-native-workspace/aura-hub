@@ -282,7 +282,7 @@ export const ACTOR_LABEL: Record<AgentBeat['actor'], string> = {
 
 /** The agent family hue — indigo. Adjacent to intelligence violet
  *  (it reasons) and distinct from it (it acts). */
-export const AGENT_COLOR = '#6366f1';
+export const AGENT_COLOR = '#747474';
 
 /** What the UI edits at author time: the bounds plus the task. */
 export interface AgentConfig {

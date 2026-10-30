@@ -181,7 +181,7 @@ export function RunHistory({ specs, workflowId, graphOrder = [], onRerun, onOpen
               key={f}
               onClick={() => setFilter(f)}
               className={`rounded-full px-3 py-1 text-[11.5px] font-medium transition-colors ${
-                filter === f ? 'bg-accent text-white' : 'bg-surface-active text-text-muted hover:text-text'
+                filter === f ? 'bg-accent text-on-accent' : 'bg-surface-active text-text-muted hover:text-text'
               }`}
             >
               {f === 'all' ? 'All' : RUN_STATE_LABEL[f as RunState]}

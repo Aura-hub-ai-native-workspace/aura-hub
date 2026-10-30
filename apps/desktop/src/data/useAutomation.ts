@@ -14,6 +14,7 @@
  */
 
 import { create } from 'zustand';
+import { cancelTransportFailure, classifyAutomationCancel, reconcileAutomationCancel, type CancelResult } from '../ai/cancellation';
 import {
   automationClient,
   type AutomationRule,
@@ -55,7 +56,8 @@ interface AutomationState {
   runNow: (id: string, projectId: string, payload?: Record<string, unknown>) => Promise<{ ok: boolean; run: AutomationRun | null; message: string }>;
   pause: (id: string) => Promise<string | null>;
   resume: (id: string) => Promise<string | null>;
-  cancelRun: (ruleId: string, runId: string) => Promise<void>;
+  /** Ask the engine to stop a run; resolves to what actually happened. */
+  cancelRun: (ruleId: string, runId: string) => Promise<CancelResult>;
 
   /** Subscribe to the engine's stream; returns the matching stop function. */
   watch: () => () => void;
@@ -224,8 +226,25 @@ export const useAutomation = create<AutomationState>((set, get) => ({
   },
 
   async cancelRun(ruleId, runId) {
-    await automationClient.cancelRun(ruleId, runId).catch(() => null);
+    // What the engine answered decides what the person is told: a failed or
+    // unanswered stop is not "cancelled", and a run that had already finished
+    // keeps its real outcome.
+    let result: CancelResult;
+    let transportFailure = false;
+    try {
+      result = classifyAutomationCancel(await automationClient.cancelRun(ruleId, runId));
+    } catch (e) {
+      result = cancelTransportFailure(e);
+      transportFailure = true;
+    }
+    if (result.kind === 'failed' && !transportFailure) {
+      // The engine refused. Before saying the run may still be running, ask it
+      // what state the run is really in (a Stop pressed just too late).
+      const record = await automationClient.getRun(ruleId, runId).catch(() => null);
+      result = reconcileAutomationCancel(result, record);
+    }
     await get().loadRuns(ruleId);
+    return result;
   },
 
   watch() {

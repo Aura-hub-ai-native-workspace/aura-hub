@@ -102,7 +102,7 @@ export function AiWorkspace() {
       {/* Header */}
       <div className="flex shrink-0 items-center justify-between gap-4 border-b border-line bg-surface/40 px-8 py-4 backdrop-blur-sm">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl text-white" style={{ background: project.color }}><Icon name={(project.icon as 'folder') || 'folder'} size={17} /></span>
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-surface-active text-text"><Icon name={(project.icon as 'folder') || 'folder'} size={17} /></span>
           <div className="min-w-0">
             <div className="flex items-center gap-2.5">
               <h1 className="truncate text-[18px] font-semibold tracking-[-0.01em] text-text">{project.name}</h1>
@@ -282,7 +282,7 @@ function MessageView({ message, isLast, working, canRegenerate, onRegenerate, on
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-accent px-4 py-2.5 text-[13.5px] leading-relaxed text-white shadow-sm">{message.content}</div>
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-accent px-4 py-2.5 text-[13.5px] leading-relaxed text-on-accent shadow-sm">{message.content}</div>
       </div>
     );
   }

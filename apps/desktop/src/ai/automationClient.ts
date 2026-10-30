@@ -259,6 +259,8 @@ export interface AutomationRun {
   nextRunId?: string;
   /** Everything this run produced, rolled up from its actions. */
   produced?: ProducedRef[];
+  /** What a Stop achieved: `winding-down` while an action that was running is still returning. */
+  cancellation?: { phase: 'winding-down' | 'complete'; actionId?: string; label?: string };
 }
 
 export interface AutomationRunSummary {

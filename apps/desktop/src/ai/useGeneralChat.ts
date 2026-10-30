@@ -16,12 +16,19 @@ import {
   type AgentEventFrame, type ChatResearch, type ChatSource, type ModelStatus,
 } from './centralAgentClient';
 import { EMPTY_TURN, foldChatEvent, type LiveTurn } from './chatEvents';
+import { describeTransportFailure } from './cancellation';
 
 export interface GeneralTurn {
   id: string;
   question: string;
   answer: string;
-  status: 'streaming' | 'done' | 'error' | 'cancelled';
+  /**
+   * 'stopping' means a stop was asked for and nothing has confirmed it: the
+   * answer is still being made until the agent says 'cancelled' (or finishes).
+   */
+  status: 'streaming' | 'stopping' | 'done' | 'error' | 'cancelled';
+  /** What the last Stop actually did: a failed or unconfirmed request, or a run that finished first. */
+  stopNote?: string;
   /** What happened while this answer was being made (real events). */
   live: LiveTurn;
   /** Sources the answer actually cites. */
@@ -47,13 +54,18 @@ interface GeneralChatState {
   open: (sessionId: string) => Promise<void>;
   newChat: () => void;
   send: (text: string) => Promise<void>;
-  stop: () => void;
+  /** Ask the agent to stop the answer. Resolves once the request has landed or failed. */
+  stop: () => Promise<void>;
+  /** A stop request is in flight (the button waits). */
+  stopRequesting: boolean;
   refreshModelStatus: () => Promise<void>;
 }
 
 let seq = 0;
 const tid = () => `gt${Date.now().toString(36)}${seq++}`;
 let inflight: { controller: AbortController; sessionId: string; turnId: string; unsubscribe: (() => void) | null } | null = null;
+/** A stop request in flight: a repeated press joins it instead of sending another. */
+let stopRequest: Promise<void> | null = null;
 
 function errorText(e: unknown): string {
   const msg = (e as Error)?.message ?? String(e);
@@ -87,8 +99,22 @@ export const useGeneralChat = create<GeneralChatState>((set, get) => {
     try { set({ recent: (await centralAgentClient.chats()).chats }); } catch { /* the list is a convenience */ }
   };
 
+  /**
+   * Leave this conversation while an answer is still being made. The turn is
+   * no longer on screen, so there is nothing to confirm; the stop is still
+   * sent, and a failure is logged instead of discarded.
+   */
+  const abandon = () => {
+    const f = inflight;
+    if (!f) return;
+    void centralAgentClient.cancel(f.sessionId, 'conversation closed').catch((e) => {
+      console.warn(`could not stop the answer for ${f.sessionId} after leaving it:`, e);
+    });
+    f.controller.abort();
+  };
+
   return {
-    sessionId: null, turns: [], phase: 'idle', recent: [], agentUp: null, modelStatus: null,
+    sessionId: null, turns: [], phase: 'idle', recent: [], agentUp: null, modelStatus: null, stopRequesting: false,
 
     async load() {
       centralAgentClient.health().then(() => set({ agentUp: true })).catch(() => set({ agentUp: false }));
@@ -100,7 +126,7 @@ export const useGeneralChat = create<GeneralChatState>((set, get) => {
     },
 
     async open(sessionId) {
-      if (inflight) get().stop();
+      abandon();
       try {
         const session = await centralAgentClient.getSession(sessionId) as unknown as { chatTurns?: unknown[] };
         set({ sessionId, turns: restoreTurns(session), phase: 'idle' });
@@ -110,7 +136,7 @@ export const useGeneralChat = create<GeneralChatState>((set, get) => {
     },
 
     newChat() {
-      if (inflight) get().stop();
+      abandon();
       set({ sessionId: null, turns: [], phase: 'idle' });
     },
 
@@ -145,6 +171,10 @@ export const useGeneralChat = create<GeneralChatState>((set, get) => {
         // are the ones the answer really used.
         patchTurn(id, (t) => ({
           ...t,
+          // The agent's own outcome decides: 'cancelled' confirms a stop; an
+          // answer that arrived while a stop was pending finished first.
+          stopNote: t.status === 'stopping' && r.outcome !== 'cancelled'
+            ? 'The answer finished before the stop took effect.' : undefined,
           answer: r.summary, status: r.outcome === 'cancelled' ? 'cancelled' : 'done',
           sources: r.sources ?? [], research: r.research ?? t.research,
           nextActions: r.nextActions ?? [], recorded: r.recorded ?? [], model: r.model ?? null,
@@ -164,11 +194,34 @@ export const useGeneralChat = create<GeneralChatState>((set, get) => {
       }
     },
 
-    stop() {
+    async stop() {
       const f = inflight;
       if (!f) return;
-      void centralAgentClient.cancel(f.sessionId, 'stopped from Start Building').catch(() => undefined);
-      f.controller.abort();
+      if (stopRequest) return stopRequest;
+      patchTurn(f.turnId, (t) => ({ ...t, status: 'stopping', stopNote: undefined }));
+      set({ stopRequesting: true });
+      stopRequest = (async () => {
+        try {
+          await centralAgentClient.cancel(f.sessionId, 'stopped from Start Building');
+        } catch (e) {
+          // The request did not land: the answer is still being made, and
+          // the person is told so instead of seeing "Stopped".
+          if (inflight?.turnId === f.turnId) {
+            patchTurn(f.turnId, (t) => ({
+              ...t, status: 'streaming',
+              stopNote: `Could not stop the answer: ${describeTransportFailure(e)} It is still being made.`,
+            }));
+          }
+          return;
+        }
+        // Landed. Not stopped yet: the pending reply says whether the agent
+        // cancelled or finished first, and nothing here may say "Stopped" early.
+        if (inflight?.turnId === f.turnId) {
+          patchTurn(f.turnId, (t) => t.status === 'stopping'
+            ? { ...t, stopNote: 'Stop requested. Waiting for the agent to confirm.' } : t);
+        }
+      })().finally(() => { stopRequest = null; set({ stopRequesting: false }); });
+      return stopRequest;
     },
   };
 });

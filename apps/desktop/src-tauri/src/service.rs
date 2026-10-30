@@ -180,7 +180,7 @@ impl ServiceHandle {
             // not allow), which keeps the endpoint no more exposed to other
             // local processes than the SIGTERM any local user can send on
             // Unix.
-            let _ = request_graceful_shutdown(self.port);
+            let _ = request_graceful_shutdown(self.port, &self.token);
         }
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -375,21 +375,36 @@ fn http_get(port: u16, path: &str, timeout: Duration) -> Result<(u16, String), S
     Ok((status, body))
 }
 
+/// The bytes of the shell's loopback POST, with no body.
+///
+/// Two headers are required, and the second was missing: the service demands
+/// `x-aura-shutdown` before it will stop itself, and — since every route except
+/// `/health` and `/instance/proof` is guarded — this launch's token too. Without
+/// the token the guard answers 401 before the shutdown route runs, so every
+/// Windows quit fell through to the 5-second wait and a hard `TerminateProcess`.
+///
+/// Platform-independent on purpose: only the socket code around it is Windows
+/// only, so the exact request can be pinned by tests on any host.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn post_request(port: u16, path: &str, token: &str) -> String {
+    let token_header = if token.is_empty() { String::new() } else { format!("x-aura-instance-token: {token}\r\n") };
+    format!(
+        "POST {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-aura-shutdown: 1\r\n{token_header}Accept: application/json\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    )
+}
+
 /// One HTTP/1.0 POST against loopback, with no body.
 ///
 /// The same dependency-free reasoning as `http_get`: this only ever talks
-/// to AURA's own service on 127.0.0.1. The `x-aura-shutdown` header is
-/// part of the request the service requires before it will stop itself.
+/// to AURA's own service on 127.0.0.1.
 #[cfg(windows)]
-fn http_post(port: u16, path: &str, timeout: Duration) -> Result<(u16, String), String> {
+fn http_post(port: u16, path: &str, token: &str, timeout: Duration) -> Result<(u16, String), String> {
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| e.to_string())?;
     stream.set_read_timeout(Some(READ_TIMEOUT)).ok();
     stream.set_write_timeout(Some(READ_TIMEOUT)).ok();
 
-    let req = format!(
-        "POST {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nx-aura-shutdown: 1\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
-    );
+    let req = post_request(port, path, token);
     stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
 
     let mut raw = Vec::new();
@@ -411,8 +426,8 @@ fn http_post(port: u16, path: &str, timeout: Duration) -> Result<(u16, String), 
 /// SIGTERM. Only ever called for a child this process spawned (the handle
 /// is only populated by `adopt`), so this never reaches an unknown process.
 #[cfg(windows)]
-fn request_graceful_shutdown(port: u16) -> bool {
-    matches!(http_post(port, "/shutdown", CONNECT_TIMEOUT), Ok((200, _)))
+fn request_graceful_shutdown(port: u16, token: &str) -> bool {
+    matches!(http_post(port, "/shutdown", token, CONNECT_TIMEOUT), Ok((200, _)))
 }
 
 /// Refuse to start on a port that already has a listener.
@@ -1382,5 +1397,45 @@ mod never_launched_tests {
             }
             Ownership::Owned => panic!("an unstarted backend must never be owned"),
         }
+    }
+}
+
+#[cfg(test)]
+mod shutdown_request_tests {
+    //! The graceful-shutdown request the Windows shell sends. The socket code
+    //! is Windows only; the bytes are not, so they are pinned here.
+    use super::post_request;
+
+    #[test]
+    fn carries_the_launch_token_and_the_shutdown_header() {
+        let req = post_request(4319, "/shutdown", "tok123");
+        assert!(req.starts_with("POST /shutdown HTTP/1.0\r\n"));
+        assert!(req.contains("\r\nx-aura-shutdown: 1\r\n"));
+        assert!(req.contains("\r\nx-aura-instance-token: tok123\r\n"), "the guard refuses a request without the launch token");
+        assert!(req.ends_with("\r\n\r\n"));
+    }
+
+    // The request is only correct if its header NAMES are the ones the services
+    // enforce. Pin them to the guards' own source, so renaming a header on either
+    // side fails here instead of silently bringing the Windows shutdown refusal back.
+    #[test]
+    fn header_names_match_what_both_backends_enforce() {
+        let node_guard = include_str!("../../../../packages/ai-service/src/instanceGuard.ts");
+        let py_guard = include_str!("../../../../backend/aura/api/instance_guard.py");
+        let py_shutdown = include_str!("../../../../backend/aura/api/shutdown.py");
+        let node_server = include_str!("../../../../packages/ai-service/src/instanceGuard.ts");
+        assert!(node_guard.contains("'x-aura-instance-token'"));
+        assert!(py_guard.contains("b\"x-aura-instance-token\""));
+        assert!(py_shutdown.contains("b\"x-aura-shutdown\""));
+        assert!(node_server.contains("'x-aura-shutdown'"));
+        let req = post_request(1, "/shutdown", "t");
+        assert!(req.contains("x-aura-instance-token: t\r\n") && req.contains("x-aura-shutdown: 1\r\n"));
+    }
+
+    #[test]
+    fn without_a_token_it_sends_no_empty_header() {
+        let req = post_request(4320, "/shutdown", "");
+        assert!(!req.contains("x-aura-instance-token"));
+        assert!(req.contains("x-aura-shutdown: 1"));
     }
 }

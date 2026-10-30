@@ -144,14 +144,14 @@ function FilledWorkerSlot({
         className={cn(
           'neon-focus relative grid h-[54px] w-[54px] place-items-center rounded-xl border transition-all duration-150 disabled:cursor-not-allowed',
           on
-            ? 'border-[rgba(122,92,255,0.55)] bg-[rgba(122,92,255,0.12)] shadow-glow-violet hover:border-[rgba(122,92,255,0.8)]'
-            : 'border-[rgba(125,146,255,0.18)] bg-[var(--ws-worker-off)] hover:border-[rgba(125,146,255,0.38)]',
+            ? 'border-[rgba(119, 119, 119,0.55)] bg-[rgba(119, 119, 119,0.12)] shadow-glow-violet hover:border-[rgba(119, 119, 119,0.8)]'
+            : 'border-[rgba(152, 152, 152,0.18)] bg-[var(--ws-worker-off)] hover:border-[rgba(152, 152, 152,0.38)]',
         )}
       >
         <span
           className={cn(
             'text-[15px] font-medium tracking-tight',
-            on ? 'text-[#c9bcff]' : 'text-text-subtle',
+            on ? 'text-[#c7c7c7]' : 'text-text-subtle',
           )}
         >
           {monogram(name)}
@@ -186,7 +186,7 @@ function FilledWorkerSlot({
         data-worker-id={slot.workerId ?? undefined}
         aria-label={`Replace ${name} in this workspace`}
         title={`Replace ${name} in worker slot ${slot.index + 1}. Nothing is uninstalled.`}
-        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(122,92,255,0.4)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-[#c9bcff] focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(119, 119, 119,0.4)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-[#c7c7c7] focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="refresh" size={10} />
       </button>
@@ -202,7 +202,7 @@ function FilledWorkerSlot({
         data-worker-id={slot.workerId ?? undefined}
         aria-label={`Remove ${name} from workspace`}
         title={`Remove ${name} from this workspace. Nothing is uninstalled or disconnected.`}
-        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(125,146,255,0.32)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(152, 152, 152,0.32)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="close" size={10} />
       </button>
@@ -232,7 +232,7 @@ function EmptyWorkerSlot({ index, onAddWorker }: { index: number; onAddWorker: (
         title="Add an AI worker to this workspace"
         className="neon-focus flex min-w-0 flex-col items-center text-center"
       >
-        <span className="grid h-[54px] w-[54px] place-items-center rounded-xl border border-dashed border-[rgba(125,146,255,0.2)] bg-[var(--ws-worker-empty)] text-text-subtle opacity-50 transition-colors duration-150 hover:border-[rgba(122,92,255,0.5)] hover:opacity-80 hover:text-[#c9bcff]">
+        <span className="grid h-[54px] w-[54px] place-items-center rounded-xl border border-dashed border-[rgba(152, 152, 152,0.2)] bg-[var(--ws-worker-empty)] text-text-subtle opacity-50 transition-colors duration-150 hover:border-[rgba(119, 119, 119,0.5)] hover:opacity-80 hover:text-[#c7c7c7]">
           <Icon name="plus" size={14} />
         </span>
         <span className="mt-1.5 w-full truncate text-[11px] font-medium text-text-subtle opacity-50">
@@ -249,8 +249,8 @@ function EmptyWorkerSlot({ index, onAddWorker }: { index: number; onAddWorker: (
  * or readiness, and `SELECTED` deliberately makes no claim at all.
  */
 const SLOT_RING: Record<Exclude<ToolSlot['state'], 'EMPTY'>, string> = {
-  ACTIVE: 'border-[rgba(32,211,255,0.55)] bg-[var(--ws-slot-active)] text-neon-cyan shadow-glow-cyan',
-  SELECTED: 'border-[rgba(32,211,255,0.28)] bg-[var(--ws-slot-selected)] text-neon-cyan',
+  ACTIVE: 'border-[rgba(162, 162, 162,0.55)] bg-[var(--ws-slot-active)] text-neon-cyan shadow-glow-cyan',
+  SELECTED: 'border-[rgba(162, 162, 162,0.28)] bg-[var(--ws-slot-selected)] text-neon-cyan',
   UNAVAILABLE: 'border-[rgba(255,181,71,0.34)] bg-[var(--ws-slot-unavail)] text-neon-warning',
 };
 
@@ -302,7 +302,7 @@ function FilledSlot({
       >
         <span
           className={cn(
-            'grid h-[56px] w-[56px] place-items-center rounded-2xl border transition-colors duration-150 hover:border-[rgba(32,211,255,0.55)]',
+            'grid h-[56px] w-[56px] place-items-center rounded-2xl border transition-colors duration-150 hover:border-[rgba(162, 162, 162,0.55)]',
             SLOT_RING[state],
           )}
         >
@@ -329,7 +329,7 @@ function FilledSlot({
         data-node-id={slot.nodeId ?? undefined}
         aria-label={`Replace ${name} in this workspace`}
         title={`Replace ${name} in slot ${slot.index + 1}. Nothing is installed or uninstalled.`}
-        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(32,211,255,0.34)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-neon-cyan focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -left-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(162, 162, 162,0.34)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-neon-cyan focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="refresh" size={10} />
       </button>
@@ -344,7 +344,7 @@ function FilledSlot({
         data-node-id={slot.nodeId ?? undefined}
         aria-label={`Remove ${name} from workspace`}
         title={`Remove ${name} from this workspace. Nothing is uninstalled.`}
-        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(125,146,255,0.32)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+        className="neon-focus absolute -right-1 -top-1 grid h-5 w-5 place-items-center rounded-full border border-[rgba(152, 152, 152,0.32)] bg-[var(--ws-control)] text-text-subtle opacity-0 transition-opacity duration-150 hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
       >
         <Icon name="close" size={10} />
       </button>
@@ -374,7 +374,7 @@ function EmptySlot({ index, onAddTool }: { index: number; onAddTool: () => void 
         title="Add a tool to this workspace"
         className="neon-focus flex min-w-0 flex-col items-center gap-1.5 text-center"
       >
-        <span className="grid h-[56px] w-[56px] place-items-center rounded-2xl border border-dashed border-[rgba(125,146,255,0.28)] bg-[var(--ws-slot-empty)] text-text-subtle transition-colors duration-150 hover:border-[rgba(32,211,255,0.45)] hover:text-neon-cyan">
+        <span className="grid h-[56px] w-[56px] place-items-center rounded-2xl border border-dashed border-[rgba(152, 152, 152,0.28)] bg-[var(--ws-slot-empty)] text-text-subtle transition-colors duration-150 hover:border-[rgba(162, 162, 162,0.45)] hover:text-neon-cyan">
           <Icon name="plus" size={18} />
         </span>
         <span className="w-full truncate text-[11.5px] font-medium text-text-subtle">
@@ -490,15 +490,15 @@ export function OrchestrationGraph({
       <div className="flex flex-col items-center" data-testid="hub-aura-node">
         <span
           className={cn(
-            'relative grid h-[104px] w-[104px] place-items-center rounded-full border-2 border-[rgba(122,92,255,0.6)] shadow-glow-violet',
+            'relative grid h-[104px] w-[104px] place-items-center rounded-full border-2 border-[rgba(119, 119, 119,0.6)] shadow-glow-violet',
           )}
-          style={{ background: 'radial-gradient(circle at 50% 35%, rgba(122,92,255,0.35), var(--ws-aura-center) 70%)' }}
+          style={{ background: 'radial-gradient(circle at 50% 35%, rgba(119, 119, 119,0.35), var(--ws-aura-center) 70%)' }}
         >
           <AuraLogo size={52} />
           {busy && (
             <span
               aria-hidden
-              className="aura-breathe absolute inset-0 rounded-full border-2 border-[rgba(122,92,255,0.5)]"
+              className="aura-breathe absolute inset-0 rounded-full border-2 border-[rgba(119, 119, 119,0.5)]"
             />
           )}
         </span>

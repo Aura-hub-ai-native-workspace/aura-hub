@@ -519,7 +519,7 @@ function StepRow({
             aria-expanded={openTrace}
             className="flex w-full items-center gap-2 px-4 py-1.5 text-left transition-colors hover:bg-surface-hover"
           >
-            <Icon name="spark" size={11} style={{ color: '#6366f1' }} />
+            <Icon name="spark" size={11} style={{ color: '#747474' }} />
             <span className="text-[11.5px] font-medium text-text">Agent reasoning</span>
             {/* A snapshot has no verdict, so it does not get a verdict-shaped
                 badge. "thinking" is a state, not an outcome. */}

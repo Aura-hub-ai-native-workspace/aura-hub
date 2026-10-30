@@ -702,15 +702,21 @@ export const centralAgentClient = {
 
   /* ── Documents / Knowledge ──────────────────────────────────────── */
 
-  /** Upload a file for ingestion into the knowledge base. */
-  ingestDocument: async (file: File): Promise<{
+  /**
+   * Upload a file for ingestion into ONE project's knowledge. Knowledge is
+   * scoped to a project: the backend refuses a request without a registered
+   * project id, so this refuses first with a message a person can act on.
+   */
+  ingestDocument: async (file: File, projectId: string | null | undefined): Promise<{
     ok: boolean; path: string; chunkCount: number; charCount: number;
     status: string; documentStatus: string; engine: string;
     ocrUsed: string | null; pageCount: number; mimeType: string | null;
     note: string | null; warnings: string[]; timingsMs: Record<string, number>;
   }> => {
+    if (!projectId) throw new Error('Open a project first: documents are added to a project.');
     const form = new FormData();
     form.append('file', file);
+    form.append('projectId', projectId);
     const res = await backendFetch(`${BASE}/documents/ingest`, { method: 'POST', body: form });
     if (!res.ok) {
       let msg = `request failed (${res.status})`;
@@ -723,15 +729,15 @@ export const centralAgentClient = {
     return res.json();
   },
 
-  /** Search the knowledge base. */
-  searchKnowledge: (query: string, topK = 5) =>
+  /** Search one project's knowledge. */
+  searchKnowledge: (query: string, projectId: string, topK = 5) =>
     jget<{ results: Array<{ text: string; score: number; source: string | null }> }>(
-      `/knowledge/search?q=${encodeURIComponent(query)}&top_k=${topK}`),
+      `/knowledge/search?q=${encodeURIComponent(query)}&top_k=${topK}&projectId=${encodeURIComponent(projectId)}`),
 
-  /** List documents in the knowledge base. */
-  listDocuments: () =>
+  /** List the documents in one project's knowledge. */
+  listDocuments: (projectId: string) =>
     jget<{ documents: Array<{ path: string; chunk_count: number; extraction_status: string; ingested_at: string; engine?: string; documentStatus?: string; ocrUsed?: string | null }> }>(
-      '/documents/list'),
+      `/documents/list?projectId=${encodeURIComponent(projectId)}`),
 
   /** Query document-engine health and capabilities. */
   getDocumentEngines: () =>

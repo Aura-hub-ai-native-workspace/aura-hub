@@ -2,6 +2,7 @@ import { useRef, useState, type KeyboardEvent } from 'react';
 import { cn } from '@aura/core';
 import { Icon } from '@aura/ui';
 import { centralAgentClient } from '../../../ai/centralAgentClient';
+import { useWorkspace } from '../../../data/useWorkspace';
 
 /**
  * AuraComposer — the one place a person talks to AURA.
@@ -53,6 +54,7 @@ export function AuraComposer({
      Local to the composer — ingestion sends the file to the knowledge
      base; the agent's retrieval picks it up from there. No need to
      thread attachment state through WorkspaceScreen. */
+  const openProjectId = useWorkspace((s) => s.openId);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachState, setAttachState] = useState<'idle' | 'uploading' | 'done' | 'error'>('idle');
   const [attachName, setAttachName] = useState<string | null>(null);
@@ -65,7 +67,7 @@ export function AuraComposer({
     setAttachError(null);
     setAttachState('uploading');
     try {
-      await centralAgentClient.ingestDocument(file);
+      await centralAgentClient.ingestDocument(file, openProjectId);
       setAttachState('done');
     } catch (err) {
       setAttachState('error');
@@ -96,14 +98,14 @@ export function AuraComposer({
   };
 
   return (
-    <div className="shrink-0 border-t border-[rgba(125,146,255,0.22)] p-4 pt-3">
+    <div className="shrink-0 border-t border-[rgba(152, 152, 152,0.22)] p-4 pt-3">
       <div
         data-testid="composer-container"
         className={cn(
           'rounded-2xl border bg-[var(--ws-surface)] p-3 transition-colors',
           busy
-            ? 'border-[rgba(32,211,255,0.35)]'
-            : 'border-[rgba(125,146,255,0.32)] focus-within:border-[rgba(125,146,255,0.6)]',
+            ? 'border-[rgba(162, 162, 162,0.35)]'
+            : 'border-[rgba(152, 152, 152,0.32)] focus-within:border-[rgba(152, 152, 152,0.6)]',
         )}
       >
         <label htmlFor="aura-composer" className="sr-only">
@@ -128,7 +130,7 @@ export function AuraComposer({
               attachState === 'error'
                 ? 'border border-[rgba(255,93,122,0.4)] bg-[rgba(255,93,122,0.08)] text-neon-danger'
                 : attachState === 'uploading'
-                  ? 'border border-[rgba(125,146,255,0.3)] bg-[rgba(125,146,255,0.08)] text-text-muted'
+                  ? 'border border-[rgba(152, 152, 152,0.3)] bg-[rgba(152, 152, 152,0.08)] text-text-muted'
                   : 'border border-[rgba(31,211,138,0.3)] bg-[rgba(31,211,138,0.07)] text-neon-success',
             )}
           >
@@ -168,7 +170,7 @@ export function AuraComposer({
               data-testid="composer-attach"
               aria-label="Attach a document to the knowledge base"
               title="Attach a document"
-              className="neon-focus inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-[11px] text-text-subtle transition-colors hover:bg-[rgba(125,146,255,0.1)] hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+              className="neon-focus inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-[11px] text-text-subtle transition-colors hover:bg-[rgba(152, 152, 152,0.1)] hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Icon name="doc" size={13} />
               <span>Attach</span>
@@ -201,7 +203,7 @@ export function AuraComposer({
                 'neon-focus inline-flex h-7 items-center gap-1.5 rounded-lg border px-2 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40',
                 webResearch
                   // Theme-aware accent, NOT --neon-cyan: that token is the
-                  // same #20d3ff in both themes, which is ~1.7:1 on the light
+                  // same #a2a2a2 in both themes, which is ~1.7:1 on the light
                   // surface and would make "ON" unreadable in light mode.
                   // --accent-700 flips with the theme and stays legible in both.
                   ? 'border-accent-200 bg-accent-50 text-accent-700'
@@ -220,7 +222,7 @@ export function AuraComposer({
               onClick={onStop}
               data-testid="agent-stop"
               aria-label="Stop"
-              className="neon-focus grid h-8 w-8 place-items-center rounded-xl border border-[rgba(125,146,255,0.4)] text-text-muted transition-colors hover:text-text"
+              className="neon-focus grid h-8 w-8 place-items-center rounded-xl border border-[rgba(152, 152, 152,0.4)] text-text-muted transition-colors hover:text-text"
             >
               <Icon name="minimize" size={14} />
             </button>
@@ -231,7 +233,7 @@ export function AuraComposer({
               disabled={!text.trim()}
               data-testid="agent-submit"
               aria-label="Send to AURA"
-              className="neon-focus grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-white shadow-glow-blue transition-opacity disabled:opacity-40"
+              className="neon-focus grid h-8 w-8 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-on-accent shadow-glow-blue transition-opacity disabled:opacity-40"
             >
               <Icon name="arrow-right" size={15} />
             </button>

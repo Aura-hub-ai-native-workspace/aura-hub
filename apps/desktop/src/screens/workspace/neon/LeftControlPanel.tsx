@@ -106,7 +106,7 @@ export function LeftControlPanel({
         <div className="flex flex-col gap-4">
           {/* Brand */}
           <div className="flex items-center gap-2.5">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-white shadow-glow-blue">
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-neon-blue to-neon-violet text-on-accent shadow-glow-blue">
               <Icon name="spark" size={20} />
             </span>
             <span className="min-w-0 flex-1">
@@ -172,7 +172,7 @@ export function LeftControlPanel({
             type="button"
             onClick={() => onAddWorker(null)}
             data-testid="add-worker-open"
-            className="neon-focus inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-xl border border-[rgba(125,146,255,0.22)] bg-transparent text-[11.5px] font-medium text-text-subtle transition-colors hover:border-[rgba(122,92,255,0.4)] hover:text-[#c9bcff]"
+            className="neon-focus inline-flex h-9 w-full items-center justify-center gap-1.5 rounded-xl border border-[rgba(152, 152, 152,0.22)] bg-transparent text-[11.5px] font-medium text-text-subtle transition-colors hover:border-[rgba(119, 119, 119,0.4)] hover:text-[#c7c7c7]"
           >
             <Icon name="plus" size={13} />
             Add Worker

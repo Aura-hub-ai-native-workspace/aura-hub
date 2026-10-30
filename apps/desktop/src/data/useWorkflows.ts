@@ -8,6 +8,7 @@
  */
 
 import { create } from 'zustand';
+import { cancelTransportFailure, classifyWorkflowCancel, finishedState, type CancelResult } from '../ai/cancellation';
 import {
   aiClient,
   type AuthorityEnvelope,
@@ -78,6 +79,10 @@ export interface RunState {
   status: 'running' | 'completed' | 'failed' | 'cancelled' | null;
   ms: number;
   error?: string;
+  /** A stop has been asked for and the engine has not yet said what happened. */
+  stopping?: boolean;
+  /** What the last Stop actually did, in words: a failed or unconfirmed stop, or a run that finished first. */
+  stopNote?: string;
   /**
    * Agent beats as they arrive, keyed by node.
    *
@@ -180,6 +185,11 @@ interface WorkflowsState {
 }
 
 let abortRun: AbortController | null = null;
+/** A stop request in flight: a repeated press joins it instead of sending another. */
+let stopRequest: Promise<void> | null = null;
+/** How long a landed stop waits for the run's own record to confirm it. */
+const STOP_CONFIRM_POLLS = 8;
+const STOP_CONFIRM_INTERVAL_MS = 400;
 
 type Setter = (partial: Partial<WorkflowsState>) => void;
 type Getter = () => WorkflowsState;
@@ -191,7 +201,8 @@ type Getter = () => WorkflowsState;
  * run at the same time from the same events, and `settleRun` replaces this
  * with that record the moment the stream ends.
  */
-const applyRunEvent = (set: Setter, get: Getter) => (e: WfRunEvent) => {
+/** The run stream's event reducer (exported so its settling rules can be tested). */
+export const applyRunEvent = (set: Setter, get: Getter) => (e: WfRunEvent) => {
   const run = get().run;
   if (!run) return;
   if (e.type === 'start') {
@@ -206,8 +217,18 @@ const applyRunEvent = (set: Setter, get: Getter) => (e: WfRunEvent) => {
     set({ run: { ...run, beats: { ...run.beats, [e.nodeId]: foldBeat(run.beats[e.nodeId], e.beat) } } });
   } else if (e.type === 'done') {
 
+    // The engine's own verdict ends a pending stop. `runState` is its real
+    // state (the stream's `status` folds cancelled into failed/completed):
+    // "cancelled" confirms the stop, any other state means the run finished
+    // before the stop took effect, and no `runState` claims neither.
+    const stopped = run.stopping && e.runState === 'cancelled';
+    const finishedFirst = run.stopping && !!e.runState && e.runState !== 'cancelled';
     set({
-      run: { ...run, active: false, status: e.status, ms: e.ms, error: e.error },
+      run: {
+        ...run, active: false, status: stopped ? 'cancelled' : e.status, ms: e.ms,
+        error: stopped ? undefined : e.error, stopping: false,
+        stopNote: finishedFirst ? 'The run finished before the stop took effect.' : undefined,
+      },
       runId: e.runId ?? get().runId,
     });
   }
@@ -497,22 +518,73 @@ export const useWorkflows = create<WorkflowsState>((set, get) => ({
    * Cancel through the service, not by hanging up.
    *
    * Aborting the stream only stops this window watching; the run keeps
-   * going. Cancelling means telling the engine, and only then dropping the
-   * stream — otherwise the UI would say "cancelled" about a run that is
-   * still executing.
+   * going. Cancelling means telling the engine, and the run is shown as
+   * cancelled only when the engine says so. A request that fails leaves the
+   * run running, with the reason on screen; one that lands is "stopping"
+   * until the run's own record confirms it; a run that finished first keeps
+   * its real outcome. A second press while a request is in flight joins it.
    */
   async stopRun() {
-    const { def, runId } = get();
-    if (def && runId) await aiClient.cancelWorkflowRun(def.id, runId).catch(() => null);
-    abortRun?.abort();
-    const run = get().run;
-    // Cancelled is terminal but not failed: failure counts and danger
-    // styling must keep meaning "something went wrong".
-    if (run) set({ run: { ...run, active: false, status: 'cancelled', error: undefined } });
-    if (def && runId) {
-      const rec = await aiClient.workflowRun(def.id, runId).catch(() => null);
-      if (rec && 'id' in rec) set({ serverRun: rec });
+    if (stopRequest) return stopRequest;
+    const { def, runId, run } = get();
+    if (!run?.active) return;
+    if (!def || !runId) {
+      set({ run: { ...run, stopNote: 'This run has not reported its id yet, so it cannot be stopped yet. Try again in a moment.' } });
+      return;
     }
+    stopRequest = (async () => {
+      set({ run: { ...(get().run ?? run), stopping: true, stopNote: undefined } });
+      let result: CancelResult;
+      try {
+        result = classifyWorkflowCancel(await aiClient.cancelWorkflowRun(def.id, runId));
+      } catch (e) {
+        result = cancelTransportFailure(e);
+      }
+      // The engine may have answered "no" because the run had just finished:
+      // the persisted record is the authority, so read it before concluding.
+      let rec = result.kind === 'requested' ? null : await aiClient.workflowRun(def.id, runId).catch(() => null);
+      if (result.kind === 'failed' && finishedState(rec)) {
+        const state = finishedState(rec) as string;
+        result = { kind: state === 'cancelled' ? 'requested' : 'already-finished', state, message: `The run had already ${state} before the stop took effect.` } as CancelResult;
+      }
+
+      if (result.kind === 'failed') {
+        // Nothing changed: the run is still running.
+        set({ run: { ...(get().run ?? run), stopping: false, stopNote: result.message } });
+        return;
+      }
+      if (result.kind === 'requested') {
+        // Wait, bounded, for the run's own record to say it stopped.
+        for (let i = 0; i < STOP_CONFIRM_POLLS && get().run?.active; i++) {
+          rec = await aiClient.workflowRun(def.id, runId).catch(() => null);
+          if (finishedState(rec)) break;
+          await new Promise((r) => setTimeout(r, STOP_CONFIRM_INTERVAL_MS));
+        }
+        // The stream's `done` event may have settled it meanwhile.
+        if (!get().run?.active) { if (rec && 'id' in (rec as object)) set({ serverRun: rec as never }); return; }
+        const state = finishedState(rec);
+        if (!state) {
+          set({ run: { ...(get().run ?? run), stopping: true, stopNote: 'Stop requested. The engine has not confirmed it yet; the run may still be stopping.' } });
+          return;
+        }
+        result = state === 'cancelled'
+          ? { kind: 'confirmed', message: 'The engine confirmed the run is cancelled.' }
+          : { kind: 'already-finished', state, message: `The run had already ${state} before the stop took effect.` };
+      }
+
+      // Confirmed or already finished: only now is the stream dropped, and the
+      // state shown is the one the engine reports.
+      abortRun?.abort();
+      const current = get().run ?? run;
+      const state = result.kind === 'already-finished' ? result.state : 'cancelled';
+      const status: NonNullable<RunState['status']> =
+        state === 'cancelled' ? 'cancelled' : state === 'succeeded' || state === 'completed' ? 'completed' : 'failed';
+      set({ run: { ...current, active: false, status, stopping: false, error: undefined,
+        stopNote: result.kind === 'already-finished' ? result.message : undefined } });
+      const fresh = rec && finishedState(rec) ? rec : await aiClient.workflowRun(def.id, runId).catch(() => null);
+      if (fresh && 'id' in (fresh as object)) set({ serverRun: fresh as never });
+    })().finally(() => { stopRequest = null; });
+    return stopRequest;
   },
 
   clearRun() {

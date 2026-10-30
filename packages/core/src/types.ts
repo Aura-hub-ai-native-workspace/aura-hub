@@ -7,32 +7,21 @@
  */
 
 /** Top-level navigation destinations (permanent left rail). */
-export type NavKey =
-  | 'home'
-  | 'workflows'
-  | 'workspace'
-  | 'environment'
-  | 'ai-runtime'
-  | 'settings';
+export type NavKey = 'home' | 'workflows' | 'settings';
 
-/** Tabs inside a project workspace (the project's own environment). */
+/** The two modes of an open project: its overview pages, or its workspace. */
+export type ProjectMode = 'overview' | 'workspace';
+
+/** Pages inside a project's Overview (shown in the Overview left sub-nav). */
 export type ProjectTab =
   | 'overview'
   /** What AURA currently knows about this project — the Context Fabric view. */
   | 'context'
   | 'architecture'
-  | 'code'
-  | 'frontend'
-  | 'backend'
-  | 'database'
-  | 'research'
-  | 'documentation'
-  | 'knowledge'
-  | 'intelligence'
-  | 'memory'
-  | 'tasks'
-  | 'deployment'
-  | 'settings';
+  | 'code';
+
+/** Tabs inside Settings. */
+export type SettingsTab = 'connections' | 'tools' | 'runtime' | 'updates';
 
 export type StatusTone = 'positive' | 'attention' | 'critical' | 'info' | 'neutral';
 

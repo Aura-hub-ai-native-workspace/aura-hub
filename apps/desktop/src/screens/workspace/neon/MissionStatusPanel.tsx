@@ -32,7 +32,7 @@ export function MissionStatusPanel({ view }: { view: MissionView | null }) {
     <section
       data-testid="mission-status"
       aria-label="Mission status"
-      className="mt-2.5 rounded-xl border border-[rgba(125,146,255,0.2)] bg-[var(--ws-card)] px-3.5 py-2.5 text-[12.5px]"
+      className="mt-2.5 rounded-xl border border-[rgba(152, 152, 152,0.2)] bg-[var(--ws-card)] px-3.5 py-2.5 text-[12.5px]"
     >
       {view.understanding && (
         <p className="text-text-muted" data-testid="mission-understanding">
@@ -63,7 +63,7 @@ export function MissionStatusPanel({ view }: { view: MissionView | null }) {
 
       {view.verdict && (
         <p
-          className={cn('mt-2.5 border-t border-[rgba(125,146,255,0.15)] pt-2 font-semibold', TONE_TEXT[view.verdict.tone])}
+          className={cn('mt-2.5 border-t border-[rgba(152, 152, 152,0.15)] pt-2 font-semibold', TONE_TEXT[view.verdict.tone])}
           data-testid="mission-verdict"
           data-tone={view.verdict.tone}
         >

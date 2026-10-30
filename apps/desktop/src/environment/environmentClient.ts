@@ -266,7 +266,7 @@ export type InventoryOutcome =
   | { ok: true; response: InventoryResponse }
   | { ok: false; reason: string };
 
-export type InstallOutcome = 'installed' | 'guided' | 'failed' | 'unverified' | 'unavailable';
+export type InstallOutcome = 'installed' | 'guided' | 'failed' | 'unverified' | 'unavailable' | 'preview';
 
 export interface InstallResponse {
   installOutcome: InstallOutcome;
@@ -383,6 +383,52 @@ async function readBody<T>(res: Response, what: string): Promise<T> {
   } catch {
     throw new Error(`${what} failed: the backend answered ${res.status} with no readable body.`);
   }
+}
+
+/** One entry of the curated Recommended list, joined with this machine's state. */
+export interface RecommendedItem {
+  id: string;
+  name: string;
+  group: 'agent' | 'dev';
+  why: string;
+  summary: string;
+  homepage: string;
+  installed: boolean;
+  version?: string | null;
+  installable: boolean;
+  /** Present only when installable: the exact command that would run. */
+  command?: string;
+  privilege?: 'user' | 'root';
+  /** Present only when not installable. */
+  reason?: string;
+}
+
+async function recommended(): Promise<{ ok: true; items: RecommendedItem[] } | { ok: false; reason: string }> {
+  try {
+    const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/recommended`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) return { ok: false, reason: `The Python environment backend answered ${res.status}` };
+    return { ok: true, items: ((await res.json()) as { items: RecommendedItem[] }).items };
+  } catch {
+    return { ok: false, reason: UNREACHABLE_DETAIL };
+  }
+}
+
+/** Ask what an install WOULD run. Nothing is installed by this call. */
+async function installPreview(id: string): Promise<InstallResponse> {
+  const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/install`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, preview: true }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const body = await readBody<InstallResponse & { error?: string }>(res, 'Install preview');
+  if (!res.ok && !body.installOutcome) throw new Error(body.error || body.detail || `Install preview failed (${res.status})`);
+  return body;
 }
 
 async function install(id: string): Promise<InstallResponse> {
@@ -563,4 +609,4 @@ async function search(
   }
 }
 
-export const environmentClient = { scan, probe, install, uninstall, connectDirect, inventory, search };
+export const environmentClient = { scan, probe, install, installPreview, uninstall, connectDirect, inventory, search, recommended };

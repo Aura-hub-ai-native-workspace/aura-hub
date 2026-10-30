@@ -23,7 +23,7 @@ export function RunObserverView({ view }: { view: RunView }) {
   const done = completionLine(view);
   const current = view.checklist.find((c) => c.taskId === view.currentTask);
   return (
-    <section data-testid="run-observer" aria-label="Run progress" className="mt-2.5 space-y-3 rounded-xl border border-[rgba(125,146,255,0.2)] bg-[var(--ws-card)] px-3.5 py-3 text-[12.5px]">
+    <section data-testid="run-observer" aria-label="Run progress" className="mt-2.5 space-y-3 rounded-xl border border-[rgba(152, 152, 152,0.2)] bg-[var(--ws-card)] px-3.5 py-3 text-[12.5px]">
       {!view.finished && (view.phase || view.waitingFor) && (
         <p data-testid="run-current" className="text-text-muted">
           <span className="font-semibold text-text">{view.waitingFor ? `Waiting for ${view.waitingFor}` : view.phase}</span>

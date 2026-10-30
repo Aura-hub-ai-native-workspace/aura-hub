@@ -28,6 +28,7 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { cn, spring, useAppStore } from '@aura/core';
 import { Icon } from '@aura/ui';
+import { useAutoProvision } from '../workspace/useAutoProvision';
 import { useEnvironmentStore } from '../environment/environmentStore';
 import { useWorkspace } from '../data/useWorkspace';
 
@@ -81,12 +82,13 @@ export function WorkspaceScreen() {
      active project rather than remembering its own, so the two can
      never disagree about what AURA is pointed at. A project is needed
      for work on files; it is NOT needed to talk. */
-  const projects = useWorkspace((s) => s.projects);
   const refreshProjects = useWorkspace((s) => s.refresh);
   const projectId = useAppStore((s) => s.activeProjectId);
-  const setActiveProject = useAppStore((s) => s.setActiveProject);
 
   useEffect(() => { void refreshProjects(); }, [refreshProjects]);
+
+  // Connect what the machine already has; nobody wires up their own tools by hand.
+  useAutoProvision();
 
   // Measure the machine once on arrival. Without this the canvas would
   // show every node as "Not scanned", which is honest but useless.
@@ -98,14 +100,6 @@ export function WorkspaceScreen() {
      now — it is the single place that reconciles the active project with the
      registry, and doing it here as well would be a second authority for the
      same decision. */
-
-  /**
-   * Selects the active project for mission planning.
-   * @param id Project ID or null to deselect
-   */
-  const selectProject = useCallback((id: string | null) => {
-    setActiveProject(id || null);
-  }, [setActiveProject]);
 
   /* The three active workspace tool slots. Resolved against the live
      environment for status, but WHICH tools occupy them comes only from
@@ -127,6 +121,12 @@ export function WorkspaceScreen() {
   const workersError = useWorkerStore((s) => s.error);
   const refreshWorkers = useWorkerStore((s) => s.refresh);
   const connectWorker = useWorkerStore((s) => s.connect);
+  const allowAndConnectWorker = useWorkerStore((s) => s.allowAndConnect);
+  // A click on a worker that needs approval is the owner's Allow; any other click just connects.
+  const connectOrAllow = useCallback((id: string) => {
+    const w = useWorkerStore.getState().workers.find((x) => x.id === id);
+    void (w?.reason === 'BILLING_POLICY' ? allowAndConnectWorker(id) : connectWorker(id));
+  }, [allowAndConnectWorker, connectWorker]);
   const disconnectWorker = useWorkerStore((s) => s.disconnect);
   useEffect(() => { void refreshWorkers(); }, [refreshWorkers]);
 
@@ -160,7 +160,9 @@ export function WorkspaceScreen() {
      reset the moment a request goes out — so the next message cannot
      inherit a choice made for the last one, and a forgotten toggle never
      quietly sends the machine's questions to a search engine. */
-  const [webResearch, setWebResearch] = useState(false);
+  // On by default and it stays on: like a chat assistant, the agent searches when a question needs
+  // the web (the backend decides per request); switching it off is the person's choice, not a reset.
+  const [webResearch, setWebResearch] = useState(true);
 
   /* Which slot the open tool surface is replacing, if any. This is the
      whole of the replace flow's state: a slot index, held only while the
@@ -220,14 +222,11 @@ export function WorkspaceScreen() {
      One engine, two scopes — and the transcripts never mix. */
   const conv = useAgentConversations();
 
-  /* Sending captures the toggle as it stands, then resets it. The value
-     that travels belongs to this request alone — the next message starts
-     from OFF unless the person asks again. */
+  /* Sending carries the toggle as it stands; it is not reset. Turning it
+     off is the person's choice and sticks until they turn it on again. */
   const sendWithPreference = useCallback((text: string) => {
     setComposerText('');
-    const choice = webResearch;
-    setWebResearch(false);
-    void conv.send(text, { webResearch: choice });
+    void conv.send(text, { webResearch });
   }, [conv, webResearch]);
   useEffect(() => {
     if (workspaceId) void conv.loadForWorkspace(workspaceId);
@@ -273,7 +272,7 @@ export function WorkspaceScreen() {
             workersError={workersError}
             workerActivity={workerActivity}
             onRefreshWorkers={() => void refreshWorkers()}
-            onConnectWorker={(id) => void connectWorker(id)}
+            onConnectWorker={connectOrAllow}
             onDisconnectWorker={(id) => void disconnectWorker(id)}
             phase={agentPhase}
             agentBusy={conv.phase === 'working'}
@@ -296,29 +295,26 @@ export function WorkspaceScreen() {
             onRegenerate={() => void conv.regenerate()}
             handoffs={conv.handoffs}
             onAcceptHandoff={(h) => void conv.acceptHandoff(h)}
-            projects={projects}
-            projectId={projectId}
-            onSelectProject={selectProject}
           />
         }
       />
       {/* Catalogue dialog mounts alongside so placing a node never unmounts the shell. */}
       {surface !== 'none' && (
         <div
-          className="absolute inset-0 z-30 flex items-stretch justify-end bg-[rgba(4,7,14,0.72)] p-4 backdrop-blur-sm"
+          className="absolute inset-0 z-30 flex items-stretch justify-end bg-[rgba(7, 7, 7,0.72)] p-4 backdrop-blur-sm"
           role="dialog"
           aria-modal="true"
           aria-label={surface === 'worker' ? 'Add AI Worker' : 'AURA Everything'}
           onClick={(e) => { if (e.target === e.currentTarget) closeSurface(); }}
         >
-          <div className="flex w-full max-w-[560px] min-h-0 flex-col rounded-2xl border border-[rgba(125,146,255,0.3)] bg-[rgba(9,13,26,0.97)] p-4 shadow-card">
+          <div className="flex w-full max-w-[560px] min-h-0 flex-col rounded-2xl border border-[rgba(152, 152, 152,0.3)] bg-[rgba(13, 13, 13,0.97)] p-4 shadow-card">
             <div className="mb-3 flex items-start justify-end">
               <button
                 type="button"
                 onClick={closeSurface}
                 aria-label="Close"
                 data-testid="surface-close"
-                className="neon-focus grid h-8 w-8 place-items-center rounded-lg border border-[rgba(125,146,255,0.3)] text-text-muted transition-colors hover:text-text"
+                className="neon-focus grid h-8 w-8 place-items-center rounded-lg border border-[rgba(152, 152, 152,0.3)] text-text-muted transition-colors hover:text-text"
               >
                 <Icon name="close" size={15} />
               </button>
@@ -331,7 +327,7 @@ export function WorkspaceScreen() {
                 slot={workerSlotContext}
                 inWorkspace={workerIds.filter((id): id is string => !!id)}
                 hasFreeSlot={firstFreeWorkerSlot() !== null}
-                onConnect={(id) => void connectWorker(id)}
+                onConnect={connectOrAllow}
                 onDisconnect={(id) => void disconnectWorker(id)}
                 onPlace={(workerId) => {
                   // Layout only. The chosen id is the backend's own worker

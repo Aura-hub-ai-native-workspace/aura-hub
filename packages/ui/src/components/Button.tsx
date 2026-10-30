@@ -8,7 +8,7 @@ export type ButtonSize = 'sm' | 'md' | 'lg';
 
 const VARIANTS: Record<ButtonVariant, string> = {
   primary:
-    'bg-accent text-white shadow-sm hover:bg-accent-600 active:bg-accent-700 focus-visible:ring-accent/40',
+    'bg-accent text-on-accent shadow-sm hover:bg-accent-600 active:bg-accent-700 focus-visible:ring-accent/40',
   secondary:
     'bg-surface text-text border border-line hover:bg-surface-hover active:bg-surface-active focus-visible:ring-accent/30',
   ghost:

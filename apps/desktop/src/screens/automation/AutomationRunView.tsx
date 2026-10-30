@@ -62,6 +62,17 @@ export function AutomationRunView({ ruleId, onBack }: AutomationRunViewProps) {
   const [run, setRun] = useState<AutomationRun | null>(null);
   const [links, setLinks] = useState<VerifiedLink[]>([]);
   const [showWorkflowRun, setShowWorkflowRun] = useState<VerifiedLink | null>(null);
+  // What the last Stop on a run actually did (requested / confirmed / already
+  // finished / failed), shown beside that run. One request at a time per run.
+  const [cancelNote, setCancelNote] = useState<{ runId: string; kind: string; message: string } | null>(null);
+  const [cancelling, setCancelling] = useState<string | null>(null);
+  const stopRun = (runId: string) => {
+    if (cancelling === runId) return;
+    setCancelling(runId);
+    void auto.cancelRun(ruleId, runId)
+      .then((r) => setCancelNote({ runId, kind: r.kind, message: r.message }))
+      .finally(() => setCancelling(null));
+  };
 
   const specOf = useMemo(() => new Map(specs.map((s) => [s.type, s])), [specs]);
 
@@ -137,12 +148,27 @@ export function AutomationRunView({ ruleId, onBack }: AutomationRunViewProps) {
           {/* run detail */}
           <div className="min-h-0 flex-1 overflow-y-auto">
             {run ? (
-              <RunDetail
-                run={run}
-                links={links}
-                onOpenWorkflowRun={setShowWorkflowRun}
-                onCancel={() => void auto.cancelRun(ruleId, run.id)}
-              />
+              <>
+                {cancelNote?.runId === run.id && (
+                  <div
+                    role="status"
+                    data-testid="cancel-note"
+                    data-kind={cancelNote.kind}
+                    className={`mx-4 mt-3 rounded-lg border px-3 py-2 text-[12px] ${cancelNote.kind === 'failed' ? 'border-critical/30 bg-critical/5 text-critical' : 'border-line bg-surface-hover/60 text-text-muted'}`}
+                  >
+                    {/* A Stop that said "winding down" is superseded by the run's own record once the action returns. */}
+                    {cancelNote.kind === 'requested' && run.cancellation?.phase === 'complete'
+                      ? 'Cancelled, and the action that was running has now returned. Nothing of this run is still executing.'
+                      : cancelNote.message}
+                  </div>
+                )}
+                <RunDetail
+                  run={run}
+                  links={links}
+                  onOpenWorkflowRun={setShowWorkflowRun}
+                  onCancel={() => stopRun(run.id)}
+                />
+              </>
             ) : (
               <p className="px-6 py-8 text-center text-[12px] text-text-muted">Select a run.</p>
             )}
@@ -241,9 +267,17 @@ function RunDetail({
           </p>
         </Notice>
       )}
-      {run.status === 'cancelled' && (
+      {run.status === 'cancelled' && run.cancellation?.phase === 'winding-down' && (
+        <Notice tone="attention" icon="bell" title="Cancelled — an action is still winding down.">
+          <p className="mt-0.5 text-[11.5px] text-text-muted">
+            Nothing further will start. {run.cancellation.label ? `"${run.cancellation.label}"` : 'An action'} was already running and has not
+            returned yet; it may still finish its work, and the engine does not undo it. This notice updates when it returns.
+          </p>
+        </Notice>
+      )}
+      {run.status === 'cancelled' && run.cancellation?.phase !== 'winding-down' && (
         <Notice tone="attention" icon="bell" title="This run was cancelled.">
-          <p className="mt-0.5 text-[11.5px] text-text-muted">{run.error ?? 'Stopped before it finished.'}</p>
+          <p className="mt-0.5 text-[11.5px] text-text-muted">{run.error ?? 'Stopped before it finished.'}{run.cancellation?.phase === 'complete' ? ' Nothing of it is still running.' : ''}</p>
         </Notice>
       )}
       {run.status === 'paused' && (

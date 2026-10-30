@@ -5,15 +5,9 @@ import { pageVariants, enterSpaceVariants, useAppStore } from '@aura/core';
 import { Skeleton } from '@aura/ui';
 import { Home } from './Home';
 import { ProjectWorkspace } from './project/ProjectWorkspace';
-import { ErrorBoundary } from './ErrorBoundary';
 
-const AiSettings = lazy(() => import('./ai/AiSettings').then((m) => ({ default: m.AiSettings })));
-const AiRuntime = lazy(() => import('./ai/AiRuntime').then((m) => ({ default: m.AiRuntime })));
+const SettingsScreen = lazy(() => import('./settings/SettingsScreen').then((m) => ({ default: m.SettingsScreen })));
 const Workflows = lazy(() => import('./workflows/Workflows').then((m) => ({ default: m.Workflows })));
-const WorkspaceScreen = lazy(() => import('./WorkspaceScreen').then((m) => ({ default: m.WorkspaceScreen })));
-const ConnectedEnvironment = lazy(() =>
-  import('../environment/EnvironmentStatusTable').then((m) => ({ default: m.ConnectedEnvironment })),
-);
 
 /** Content-shaped placeholder — screens lazy-load on first visit. */
 function ScreenLoading() {
@@ -61,7 +55,7 @@ export function ScreenRouter() {
   const activeProjectId = useAppStore((s) => s.activeProjectId);
   const inProjectView = useAppStore((s) => s.inProjectView);
   const projectTab = useAppStore((s) => s.projectTab);
-  const askAuraOpen = useAppStore((s) => s.askAuraOpen);
+  const projectMode = useAppStore((s) => s.projectMode);
 
   /* Routing asks "is the project screen showing?", which is `inProjectView`
      — NOT "is a project active?". Those are now different questions: a
@@ -72,12 +66,12 @@ export function ScreenRouter() {
   const inProject = inProjectView && Boolean(activeProjectId);
   const key = inProject ? `project:${activeProjectId}` : nav;
 
-  // The workflow editor, the Code Workspace and Ask AURA are fixed-viewport
-  // canvases (their own internal scrolling regions); every other screen
-  // scrolls the page normally.
+  // The workflow editor, the project Workspace and the Code page are
+  // fixed-viewport canvases (their own internal scrolling regions); every
+  // other screen scrolls the page normally.
   const fixedViewport =
-    (!inProject && (nav === 'workflows' || nav === 'workspace' || nav === 'environment')) ||
-    (inProject && (projectTab === 'code' || askAuraOpen));
+    (!inProject && (nav === 'workflows' || nav === 'settings')) ||
+    (inProject && (projectMode === 'workspace' || projectTab === 'code'));
 
   return (
     <motion.div
@@ -101,26 +95,8 @@ function renderScreen(nav: string, inProject: boolean) {
       return <Home />;
     case 'workflows':
       return lazyScreen(<Workflows />);
-    case 'workspace':
-      return lazyScreen(<WorkspaceScreen />);
-    case 'environment':
-      return (
-        <ErrorBoundary title="Unable to load the Connected Environment">
-          {lazyScreen(<ConnectedEnvironment />)}
-        </ErrorBoundary>
-      );
-    case 'ai-runtime':
-      return (
-        <ErrorBoundary title="Unable to load AI Runtime">
-          {lazyScreen(<AiRuntime />)}
-        </ErrorBoundary>
-      );
     case 'settings':
-      return (
-        <ErrorBoundary title="Unable to load AI Settings">
-          {lazyScreen(<AiSettings />)}
-        </ErrorBoundary>
-      );
+      return lazyScreen(<SettingsScreen />);
     default:
       return <Home />;
   }

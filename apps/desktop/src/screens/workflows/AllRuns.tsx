@@ -145,7 +145,7 @@ export function AllRuns({
               key={f}
               onClick={() => setFilter(f)}
               className={`rounded-full px-3 py-1 text-[11.5px] font-medium transition-colors ${
-                filter === f ? 'bg-accent text-white' : 'bg-surface-active text-text-muted hover:text-text'
+                filter === f ? 'bg-accent text-on-accent' : 'bg-surface-active text-text-muted hover:text-text'
               }`}
             >
               {f === 'all' ? 'All' : RUN_STATE_LABEL[f as RunState]}
@@ -162,7 +162,7 @@ export function AllRuns({
               key={o}
               onClick={() => setOrigin(o)}
               className={`rounded-full px-3 py-1 text-[11.5px] font-medium transition-colors ${
-                origin === o ? 'bg-accent text-white' : 'bg-surface-active text-text-muted hover:text-text'
+                origin === o ? 'bg-accent text-on-accent' : 'bg-surface-active text-text-muted hover:text-text'
               }`}
             >
               {o === 'any' ? 'Any source' : o === 'automation' ? 'Started by a rule' : 'Started by you'}

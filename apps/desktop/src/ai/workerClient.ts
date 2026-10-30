@@ -31,6 +31,8 @@ export type WorkerReason =
   | 'RESPONSE_UNCORRELATED'
   | 'TIMEOUT'
   | 'GOVERNANCE_UNSUPPORTED'
+  /** The owner has not accepted this worker's cost, so AURA will not run it. */
+  | 'BILLING_POLICY'
   | '';
 
 /**
@@ -157,4 +159,20 @@ async function disconnect(id: string): Promise<{ ok: boolean; error?: string }> 
   }
 }
 
-export const workerClient = { list, connect, disconnect };
+/** The owner's Allow click: AURA may run this worker and accept its cost. Only a button calls this. */
+async function authorize(id: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await backendFetch(`${ENVIRONMENT_BASE}/workers/authorize`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (res.ok) return { ok: true };
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return { ok: false, error: body.error ?? `request failed (${res.status})` };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'the AURA service could not be reached' };
+  }
+}
+
+export const workerClient = { list, connect, disconnect, authorize };
