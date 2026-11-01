@@ -12,6 +12,8 @@ import { WindowSwitcher } from './ops/WindowSwitcher';
 import { AppImageInstallPrompt } from './components/AppImageInstallPrompt';
 import { restoreSession, saveSession } from './ops/session';
 import { startMemoryRecorder } from './ops/memoryRecorder';
+import { ACCOUNT_EVENT, ACCOUNT_KEY, ACCOUNT_LOGIN_ENABLED, clearAccount, readAccount, writeAccount, type SignedInAccount } from './onboarding/accountSession';
+import { checkSession } from './onboarding/accountClient';
 import { startAgentEngine } from './ops/agentEngine';
 
 /**
@@ -27,7 +29,35 @@ export function App() {
   const booted = useAppStore((s) => s.booted);
   const setBooted = useAppStore((s) => s.setBooted);
   const onboarded = useAppStore((s) => s.onboarded);
-  const { gate: providerGate, markReady: markProviderReady } = useProviderGate(onboarded);
+  const { markReady: markProviderReady } = useProviderGate(onboarded);
+  // The app opens only for a signed-in individual account, checked by the local service.
+  const [account, setAccount] = useState<SignedInAccount | null>(() => readAccount());
+  useEffect(() => {
+    const refresh = () => setAccount(readAccount());
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === ACCOUNT_KEY) refresh();
+    };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener(ACCOUNT_EVENT, refresh);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener(ACCOUNT_EVENT, refresh);
+    };
+  }, []);
+  // A saved session the service no longer accepts sends the person back to sign in. An expired
+  // cloud session is renewed first, and the renewed tokens are saved.
+  const sessionToken = account?.token;
+  useEffect(() => {
+    const current = readAccount();
+    if (!ACCOUNT_LOGIN_ENABLED || !current) return;
+    let cancelled = false;
+    void checkSession(current, undefined, (next) => writeAccount({ ...current, ...next })).then((state) => {
+      if (!cancelled && state === 'invalid') clearAccount();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionToken]);
   const completeOnboarding = useAppStore((s) => s.completeOnboarding);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const completeBoot = useCallback(() => setBooted(true), [setBooted]);
@@ -105,10 +135,10 @@ export function App() {
         its first question. `checking` renders neither, so the workspace is
         not flashed before the answer arrives.
       */}
-      {!onboarded || providerGate === 'needs-setup' ? (
+      {!onboarded || (ACCOUNT_LOGIN_ENABLED && !account) ? (
         <OnboardingFlow
-          // A person who already finished onboarding and now lacks a usable
-          // provider is asked only for the provider, not the welcome again.
+          // A person who already finished onboarding but is not signed in is
+          // asked only to sign in, not the welcome again.
           initialStep={onboarded ? 'activate' : 'welcome'}
           onComplete={() => {
             // Tell the gate directly. Completing onboarding does not always
@@ -119,7 +149,7 @@ export function App() {
           }}
         />
       ) : (
-        providerGate === 'ready' && !booted && <BootSequence onComplete={completeBoot} />
+        !booted && <BootSequence onComplete={completeBoot} />
       )}
     </>
   );

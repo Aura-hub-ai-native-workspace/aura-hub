@@ -69,3 +69,7 @@ scripts/.hub-*.png
 # distributed through CI artifacts and GitHub Releases rather than through git.
 dist-release/
 .aider*
+
+# The shared-context store the agents write while they work (a record, not source)
+common-context.json
+common-context.json.*

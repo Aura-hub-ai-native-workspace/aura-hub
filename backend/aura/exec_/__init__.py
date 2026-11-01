@@ -12,6 +12,9 @@ Security properties preserved exactly:
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Callable
 import os
 import re
 import shutil
@@ -184,6 +187,62 @@ def _signal_tree(proc, which: str) -> None:
         pass
 
 
+#: A per-line observer for a running worker's output, set by the caller in
+#: the same thread that starts the run. Absent, the run is exactly as before.
+_live_sink: "ContextVar[Callable[[str, str], None] | None]" = ContextVar("aura_live_output_sink", default=None)
+
+
+@contextmanager
+def live_output(sink: Callable[[str, str], None] | None):
+    """Stream a worker's stdout/stderr, line by line, to ``sink(stream, line)``."""
+    token = _live_sink.set(sink)
+    try:
+        yield
+    finally:
+        _live_sink.reset(token)
+
+
+def live_emit(stream: str, text: str) -> None:
+    """Hand one piece of text (for example the exact prompt a worker was given) to the live sink, if any."""
+    sink = _live_sink.get()
+    if sink is not None:
+        try:
+            sink(stream, text)
+        except Exception:  # noqa: BLE001 — observation is never allowed to fail a run
+            pass
+
+
+async def _collect_output(proc: asyncio.subprocess.Process,
+                          sink: Callable[[str, str], None] | None) -> tuple[bytes, bytes]:
+    """communicate(), but each complete line is also handed to ``sink`` as it arrives.
+
+    The bytes returned are exactly what communicate() would return, so every
+    caller's settle, timeout and cancel handling is unchanged. A sink that raises
+    is ignored: observing a run must never change its outcome.
+    """
+    if sink is None:
+        return await proc.communicate()
+
+    async def pump(stream: asyncio.StreamReader | None, name: str) -> bytes:
+        if stream is None:
+            return b""
+        buf = bytearray()
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            buf.extend(line)
+            try:
+                sink(name, line.decode(errors="replace").rstrip("\r\n"))
+            except Exception:  # noqa: BLE001 — observation is never allowed to fail a run
+                pass
+        return bytes(buf)
+
+    out, err = await asyncio.gather(pump(proc.stdout, "stdout"), pump(proc.stderr, "stderr"))
+    await proc.wait()
+    return out, err
+
+
 async def run_file(argv: list[str], cwd: str, timeout_ms: int,
                    cancel: asyncio.Event | None = None,
                    env: dict[str, str] | None = None) -> ProcessOutput:
@@ -245,7 +304,7 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
             # as a group rather than leaving them running after a timeout.
             **({"start_new_session": True} if os.name != "nt" else {}),
         )
-        waiter = asyncio.ensure_future(proc.communicate())
+        waiter = asyncio.ensure_future(_collect_output(proc, _live_sink.get()))
     cancel_task = asyncio.ensure_future(cancel.wait()) if cancel else None
     tasks = [waiter] + ([cancel_task] if cancel_task else [])
     # return_when is explicit: some interpreters do not default to

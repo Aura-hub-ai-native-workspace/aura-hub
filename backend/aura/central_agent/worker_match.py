@@ -40,33 +40,26 @@ def required_node_capability(role: str) -> str | None:
     return ROLE_NODE_CAPABILITY.get(role)
 
 
-def match_worker(
+def eligible_workers(
     role: str,
     nodes: list[dict],
     usable: Callable[[dict], bool] | None = None,
     exclude: set[str] | None = None,
-) -> dict | None:
-    """First node (catalogue order) providing what `role` needs and
-    passing `usable`. Returns the node dict, or None when nothing is
-    eligible — the caller fails closed, never falls back to an
-    unsuitable worker.
+) -> list[dict]:
+    """Every node providing what `role` needs and passing `usable`, in catalogue order.
 
-    `exclude` names workers this task may not use, which is how an
-    independent review stays independent: excluding the worker that
-    produced the work is the difference between a second opinion and a
-    worker marking its own homework. An exclusion that leaves nothing
-    eligible returns None, exactly like any other unsatisfiable
-    requirement.
+    `exclude` names workers this task may not use, which is how an independent review stays
+    independent: excluding the worker that produced the work is the difference between a
+    second opinion and a worker marking its own homework.
     """
     needed = ROLE_NODE_CAPABILITY.get(role)
     if needed is None:
-        return None
+        return []
     check = usable or (lambda n: True)
     barred = exclude or set()
+    out: list[dict] = []
     for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        if node.get("id") in barred:
+        if not isinstance(node, dict) or node.get("id") in barred:
             continue
         if needed not in (node.get("capabilities") or []):
             continue
@@ -75,8 +68,21 @@ def match_worker(
                 continue
         except Exception:
             continue
-        return node
-    return None
+        out.append(node)
+    return out
+
+
+def match_worker(
+    role: str,
+    nodes: list[dict],
+    usable: Callable[[dict], bool] | None = None,
+    exclude: set[str] | None = None,
+) -> dict | None:
+    """First eligible node (catalogue order), or None when nothing is eligible: the caller
+    fails closed, never falls back to an unsuitable worker. An exclusion that leaves nothing
+    eligible returns None, exactly like any other unsatisfiable requirement."""
+    found = eligible_workers(role, nodes, usable, exclude)
+    return found[0] if found else None
 
 
 def node_satisfies_role(node: dict, role: str) -> bool:

@@ -257,6 +257,9 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
                if model_port is not None
                else IntentCompiler(mode="heuristic"))
     intents.follows_provider_files = True
+    # Laya plans and selects the coding agents: start loading it now, in the background.
+    from ..central_agent.laya_advisor import laya_advisor
+    laya_advisor().warm()
 
     agent_bus = EventBus()
     agent_cfg = FabricConfig(fabric=fabric, audit_store=audit,
@@ -1442,6 +1445,15 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             return _err(str(exc), 400)
         return JSONResponse({"authorized": decision.allowed, "decision": decision.to_dict()})
 
+    async def workers_versions(request: Request):
+        """Installed and latest versions of each coding agent on this machine. Changes nothing."""
+        import anyio
+
+        from ..workers.versions import agent_versions
+
+        rows = await anyio.to_thread.run_sync(agent_versions)
+        return JSONResponse({"agents": rows})
+
     async def workers_connect(request: Request):
         from ..workers import connect_worker
 
@@ -2280,6 +2292,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/fabric/nodes", fabric_nodes_register, methods=["POST"]),
         Route("/fabric/nodes/{nid}", fabric_nodes_remove, methods=["DELETE"]),
         Route("/workers", workers_list, methods=["GET"]),
+        Route("/workers/versions", workers_versions, methods=["GET"]),
         Route("/workers/authorize", workers_authorize, methods=["POST"]),
         Route("/workers/connect", workers_connect, methods=["POST"]),
         Route("/workers/{wid}", workers_disconnect, methods=["DELETE"]),

@@ -35,6 +35,16 @@ IGNORED_CONTENT_DIRS = frozenset({
 })
 
 
+#: Files the connected agents write as part of the shared-context protocol (common-context). They
+#: record what the agents did; they are not project work, so they are never a change or a scope
+#: violation. Matched on the file name, with its lock and corrupt-copy variants.
+IGNORED_CONTENT_FILES = frozenset({"common-context.json"})
+
+
+def _is_shared_context_file(name: str) -> bool:
+    return name in IGNORED_CONTENT_FILES or any(name.startswith(f + ".") for f in IGNORED_CONTENT_FILES)
+
+
 def is_ignored_content_path(path: str) -> bool:
     """True when a repo-relative path lives inside an ignored directory.
 
@@ -50,7 +60,7 @@ def is_ignored_content_path(path: str) -> bool:
     if not path:
         return False
     parts = path.split("/")
-    return any(part in IGNORED_CONTENT_DIRS for part in parts[:-1])
+    return _is_shared_context_file(parts[-1]) or any(part in IGNORED_CONTENT_DIRS for part in parts[:-1])
 
 
 def _normalize_scope_path(raw: object) -> str | None:

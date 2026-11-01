@@ -579,9 +579,13 @@ def _run_sync(coro) -> dict:
         # Called from sync code inside a running loop (agent thread): run in
         # a private loop on a worker thread to avoid nested-loop errors.
         import concurrent.futures
+        import contextvars
 
+        # The caller's context travels with the coroutine, so a live-output sink set around
+        # the call is still seen by the worker run on this private loop.
+        ctx = contextvars.copy_context()
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            return ex.submit(lambda: asyncio.run(coro)).result()
+            return ex.submit(lambda: ctx.run(asyncio.run, coro)).result()
     return asyncio.run(coro)
 
 

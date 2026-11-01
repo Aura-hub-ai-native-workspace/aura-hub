@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import { OnboardingLayout, type OnboardingStep } from './OnboardingLayout';
 import { WelcomeScreen } from './WelcomeScreen';
-import { ModelServerSetup } from './ModelServerSetup';
+import { AccountSignInScreen } from './AccountSignInScreen';
 import { ReadyScreen } from './ReadyScreen';
 
 /**
@@ -22,7 +22,7 @@ export function OnboardingFlow({ onComplete, initialStep = 'welcome' }: {
       <AnimatePresence mode="wait">
         {step === 'welcome' && <WelcomeScreen key="welcome" onBegin={() => setStep('activate')} />}
         {step === 'activate' && (
-          <ModelServerSetup key="activate" onActivated={() => setStep('ready')} onOffline={() => setStep('ready')} />
+          <AccountSignInScreen key="activate" onSignedIn={() => setStep('ready')} />
         )}
         {step === 'ready' && <ReadyScreen key="ready" onComplete={onComplete} />}
       </AnimatePresence>

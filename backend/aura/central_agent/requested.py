@@ -67,8 +67,14 @@ READ_ONLY_BLOCKERS = re.compile(
     r"\b(fix|commit|push|merge|rebase|stage|create|write|implement|change|"
     r"edit|update|add|delete|remove|rename|move|refactor|revert|reset|stash|"
     r"switch|checkout|install|run|build|test|make|generate)\b", re.IGNORECASE)
+# "what changed" asks for the working-tree diff only on its own or about the repository, never about
+# an outside subject ("what changed in Node.js", "what changed in it").
 _DIFF_WORDS = re.compile(
-    r"\bgit\s+diff\b|\bdiff\b|\bwhat(?:'s|\s+has|\s+have)?\s+changed\b|"
+    r"\bgit\s+diff\b|\bdiff\b|"
+    r"\bwhat(?:'s|\s+has|\s+have)?\s+changed"
+    r"(?:\s+(?:in|on|under)\s+(?:the\s+|my\s+|this\s+|our\s+)?"
+    r"(?:repo|repository|project|code|codebase|working\s+tree|tree|files?|branch|folder|directory)\b"
+    r"|\s*[.?!]*$)|"
     r"\buncommitted\s+changes\b|\bshow\s+(?:me\s+)?(?:the\s+)?(?:current\s+)?changes\b",
     re.IGNORECASE)
 _BRANCH_WORDS = re.compile(

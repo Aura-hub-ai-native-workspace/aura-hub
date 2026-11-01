@@ -9,6 +9,10 @@ import json
 
 import pytest
 
+from _laya_double import ReadyLaya, use_ready_laya
+
+CHOOSE = ReadyLaya().choose_worker  # Laya is the only selector; this stand-in picks the first allowed agent
+
 from aura.central_agent import plan_handoff as ph
 from test_cancellation import _ok
 from test_stopped_mission_view import _agent
@@ -20,6 +24,11 @@ NODES = [
     {"id": "kilo-code", "name": "Kilo Code", "binary": "kilo", "capabilities": ["coding-agent"]},
     {"id": "claude-code", "name": "Claude Code", "binary": "claude", "capabilities": ["coding-agent"]},
 ]
+
+
+@pytest.fixture(autouse=True)
+def _laya_is_the_planner(monkeypatch):
+    use_ready_laya(monkeypatch)
 
 
 def task(tid, title, target=None, deps=(), worker=None, desc=""):
@@ -37,28 +46,29 @@ KC = {"id": "kilo-code", "name": "Kilo Code"}
 
 
 # ── selection (pure) ─────────────────────────────────────────────────────
-def test_frontend_work_goes_to_kilo_and_backend_work_to_opencode_with_reasons():
+def test_laya_chooses_for_each_step_and_every_selection_has_a_reason():
     h = handoff(task("a", "Audio engine and library state", "player.js", desc="queue, storage, playback logic"),
                 task("b", "Build the interface", "index.html", desc="page markup and styling"))
-    out = ph.select_workers(h, [OC, KC], [])
-    assert [t["worker"] for t in out["handoff"]["tasks"]] == ["opencode", "kilo-code"]
-    assert all(s["reason"] and s["candidates"] == ["opencode", "kilo-code"] for s in out["selections"])
+    out = ph.select_workers(h, [OC, KC], [], chooser=CHOOSE)
+    assert [t["worker"] for t in out["handoff"]["tasks"]] == ["opencode", "opencode"]
+    assert all(s["reason"].startswith("Laya chose") and s["candidates"] == ["opencode", "kilo-code"]
+               for s in out["selections"])
 
 
 def test_with_one_agent_available_the_two_agent_or_one_agent_workflow_is_used():
     h = handoff(task("a", "Engine", "player.js"), task("b", "Interface", "index.html"))
-    out = ph.select_workers(h, [OC], [])
+    out = ph.select_workers(h, [OC], [], chooser=CHOOSE)
     assert {t["worker"] for t in out["handoff"]["tasks"]} == {"opencode"}
 
 
 def test_tasks_run_one_at_a_time_in_plan_order():
-    out = ph.select_workers(handoff(task("a", "Engine", "a.py"), task("b", "UI", "b.html"), task("c", "Tests", "c.py")), [OC, KC], [])
+    out = ph.select_workers(handoff(task("a", "Engine", "a.py"), task("b", "UI", "b.html"), task("c", "Tests", "c.py")), [OC, KC], [], chooser=CHOOSE)
     deps = {t["id"]: t["dependsOn"] for t in out["handoff"]["tasks"]}
     assert deps == {"a": [], "b": ["a"], "c": ["b"]}
 
 
 def test_a_named_worker_is_respected_and_not_reassigned():
-    out = ph.select_workers(handoff(task("a", "Engine", "a.py", worker="kilo-code")), [OC, KC], [])
+    out = ph.select_workers(handoff(task("a", "Engine", "a.py", worker="kilo-code")), [OC, KC], [], chooser=CHOOSE)
     assert out["handoff"]["tasks"][0]["worker"] == "kilo-code" and out["selections"] == []
 
 
@@ -66,7 +76,7 @@ def test_no_available_agent_is_a_blocker_that_names_every_denied_agent_not_a_sil
     blocked = [{"id": "claude-code", "reason": "not allowed by the owner's worker policy (billable)"},
                {"id": "opencode", "reason": "not allowed by the owner's worker policy (unknown)"}]
     with pytest.raises(ph.HandoffError) as e:
-        ph.select_workers(handoff(task("a", "Engine", "a.py")), [], blocked)
+        ph.select_workers(handoff(task("a", "Engine", "a.py")), [], blocked, chooser=CHOOSE)
     assert e.value.code == "unavailable"
     msg = str(e.value)
     assert "claude-code" in msg and "opencode" in msg and "does not write the application itself" in msg
@@ -142,7 +152,8 @@ def test_laya_selects_allowed_agents_triggers_them_in_order_and_each_runs_only_a
     assert all(p["reason"] for p in picks)
     assert [c[0] for c in calls] == ["t1", "t2"]                # strictly ordered
     assert not any(e.type == "task.authored" for e in events)    # Laya wrote no file
-    assert list(project.iterdir()) == []                         # (the mocked agents wrote nothing either)
+    # The mocked agents wrote nothing; the only file is the shared record every run keeps (common-context).
+    assert [f.name for f in project.iterdir()] == ["common-context.json"]
 
 
 def test_claude_code_is_never_selected_without_owner_authorization(agent, project, monkeypatch, tmp_path):
@@ -155,10 +166,10 @@ def test_claude_code_is_never_selected_without_owner_authorization(agent, projec
     assert {d["id"] for d in denied} == {"kilo-code", "claude-code"}
 
 
-def test_selection_follows_the_preference_order_not_catalogue_order():
+def test_the_choice_is_laya_not_a_catalogue_or_preference_rule():
     h = handoff(task("a", "Audio engine and library state", "src/player.js"))
-    out = ph.select_workers(h, [KC, OC], [])            # kilo listed first in the catalogue
-    assert out["handoff"]["tasks"][0]["worker"] == "opencode"   # backend work prefers opencode
+    out = ph.select_workers(h, [KC, OC], [], chooser=CHOOSE)   # Laya's stand-in picks the first allowed agent
+    assert out["handoff"]["tasks"][0]["worker"] == "kilo-code"
 
 
 def test_the_kind_comes_from_the_title_and_files_not_from_the_long_brief():
@@ -170,7 +181,7 @@ def test_the_kind_comes_from_the_title_and_files_not_from_the_long_brief():
 def test_a_laya_selected_agent_is_not_a_pin_the_retry_moves_to_another_agent():
     from aura.central_agent.planner import TaskPlanner  # noqa: F401  (import check)
 
-    h = ph.select_workers(handoff(task("a", "Audio engine", "src/player.js")), [OC, KC], [])["handoff"]
+    h = ph.select_workers(handoff(task("a", "Audio engine", "src/player.js")), [OC, KC], [], chooser=CHOOSE)["handoff"]
     entry = ph.build_proposal(h, {})["tasks"][0]
     assert entry["workerChoice"] == "selected" and entry["nodeId"] == "opencode"
     named = ph.build_proposal(handoff(task("a", "Audio engine", "src/player.js", worker="kilo-code")), {})["tasks"][0]

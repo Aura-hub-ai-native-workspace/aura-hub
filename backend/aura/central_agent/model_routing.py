@@ -109,7 +109,11 @@ def default_model_port(path: str | None = None,
     sovereign_policy: optional SovereignPolicy; when supplied, providers
     whose network_class is blocked are excluded BEFORE building the port.
     """
-    specs = [s for s in load_providers(path) if s.enabled]
+    # The CEO stays on this machine: only a provider classed "local" is
+    # ever a candidate. A remote or private endpoint (e.g. a Settings choice
+    # on another host) is never a fallback. With no local provider the port
+    # is None and the CEO runs on Laya's built-in planner alone.
+    specs = [s for s in load_providers(path) if s.enabled and s.network_class == "local"]
     if sovereign_policy is not None:
         specs = [s for s in specs
                  if sovereign_policy.allows(s.network_class)]

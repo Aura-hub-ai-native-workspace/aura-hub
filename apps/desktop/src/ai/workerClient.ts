@@ -175,4 +175,32 @@ async function authorize(id: string): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
-export const workerClient = { list, connect, disconnect, authorize };
+export interface AgentVersion {
+  id: string;
+  name: string;
+  installed: string | null;
+  latest: string | null;
+  updateAvailable: boolean;
+  updateCommand: string;
+}
+
+/** Installed and latest versions of the coding agents on this machine. Empty when unreachable. */
+async function versions(): Promise<AgentVersion[]> {
+  try {
+    const res = await backendFetch(`${ENVIRONMENT_BASE}/workers/versions`);
+    if (!res.ok) return [];
+    const body = (await res.json()) as { agents?: AgentVersion[] };
+    return Array.isArray(body.agents) ? body.agents : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The runtime screen names agents differently from the worker list (`kilo` and `kilo-code`). */
+export function versionForAgent(agentId: string, all: AgentVersion[]): AgentVersion | null {
+  const alias: Record<string, string> = { codex: 'codex-cli', kilo: 'kilo-code', qwen: 'qwen-cli' };
+  const id = alias[agentId] ?? agentId;
+  return all.find((v) => v.id === id) ?? null;
+}
+
+export const workerClient = { list, connect, disconnect, authorize, versions };

@@ -632,6 +632,9 @@ async def agent_delegate_run(inv: dict) -> dict:
     brief = compose_role_prompt(role, task, scope_paths=scope_paths,
                                 policy_state="granted")
     brief = with_context(brief, _s(inv["input"].get("context")))
+    # The exact prompt the worker receives is shown in the Workspace, so the person can read it.
+    from ..exec_ import live_emit
+    live_emit("prompt", brief)
 
     node = inv.get("node")
     if not node:
@@ -684,6 +687,10 @@ async def agent_delegate_run(inv: dict) -> dict:
             f"so nothing was run. Verified today: {', '.join(AGENT_INVOCATIONS)}.")
 
     args = spec["args"](brief, cwd, model)
+    if inv["input"].get("reasoner") and node.get("id") == "opencode" \
+            and args and args[0] == "run" and "--agent" not in args:
+        # OpenCode's plan agent: its read-only reasoning mode, used when it acts as AURA's general reasoner.
+        args = [args[0], "--agent", "plan", *args[1:]]
 
     # Network governance. The task's policy is AURA-owned and validated
     # here; the boundary is established and PROVEN before anything is

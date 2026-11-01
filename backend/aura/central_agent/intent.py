@@ -565,6 +565,30 @@ _FILE_WRITE_RE = re.compile(
     r"(?:called\s+|named\s+)?['\"]?(.+?)['\"]?\s+(?:containing|with|that contains)\s+"
     r"['\"]?(.+?)['\"]?\s*$", re.IGNORECASE)
 
+
+def _file_write_match(message: str):
+    """The "create <file> containing <text>" match, only when <file> is really a file name.
+
+    The pattern alone also matches ordinary development requests ("make the header work on
+    phones and add a form with name and email"), turning a sentence into a file path. A file
+    name is one token, unless the person quoted it.
+    """
+    match = _FILE_WRITE_RE.search(message.strip())
+    if match is None:
+        return None
+    path = match.group(1).strip()
+    quoted = bool(re.search(r"['\"]" + re.escape(path) + r"['\"]", message))
+    if (" " in path or "\t" in path) and not quoted:
+        return None
+    if len(path) > 200 or path.endswith(","):
+        return None
+    # "containing" introduces the file's literal text. "with" is ambiguous ("create auth.js with a
+    # function that checks a password" describes code), so it counts only when the text is quoted.
+    after = re.search(re.escape(path) + r"['\"]?\s+(containing|with|that\s+contains)\s+(['\"]?)", message, re.IGNORECASE)
+    if after is not None and after.group(1).lower() == "with" and not after.group(2):
+        return None
+    return match
+
 #: Named AI workers that AURA can delegate to. Two or more names in the
 #: same message alongside "parallel" or "independent" is an unambiguous
 #: delegation request regardless of which verb precedes the worker names.
@@ -631,7 +655,7 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
     # The whole message is the known read-only capability and nothing
     # else, so the direct executor answers it instead of a worker.
     direct_git_status = _DIRECT_GIT_STATUS_RE.match(user_message.strip()) is not None
-    file_write = _FILE_WRITE_RE.search(user_message.strip()) is not None
+    file_write = _file_write_match(user_message) is not None
     # Two or more named workers + "parallel/independent" is an unambiguous
     # delegation signal regardless of the preceding verb — "review", "use",
     # "run", etc. all mean the same thing when two workers are named together.
@@ -644,7 +668,7 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
         constraints.append("Simple changes only")
 
     if file_write and not authoring and not running_wf:
-        match = _FILE_WRITE_RE.search(user_message.strip())
+        match = _file_write_match(user_message)
         path = match.group(1).strip().strip("'\"").rstrip(".")
         content = match.group(2).strip().strip("'\"").rstrip(".")
         return AgentIntent.model_validate({

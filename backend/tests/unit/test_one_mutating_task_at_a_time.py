@@ -19,6 +19,13 @@ import pytest
 from aura.central_agent.execution import ExecutionController, mutates_project
 from aura.central_agent.worker_lease import LEASES, LeaseCancelled, ProjectWorkerLeases
 from aura.contracts.agent import AgentIntent, TaskOutcome, TaskPlan, TaskSpecification
+from _laya_double import use_ready_laya
+
+
+@pytest.fixture(autouse=True)
+def _laya_is_the_planner(monkeypatch):
+    use_ready_laya(monkeypatch)
+
 
 WORK = 0.25
 

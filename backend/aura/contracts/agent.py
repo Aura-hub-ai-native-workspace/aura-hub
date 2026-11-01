@@ -80,6 +80,8 @@ AgentEventType = Literal[
     "error.recorded", "worker.queued", "task.state", "files.changed",
     "worker.handoff", "verification.started", "tool.provisioning",
     "workflow.considered",
+    # What a worker prints while it runs, and what the CEO says as it assigns and hands over.
+    "task.output", "ceo.say",
     # A model plan failed validation and was sent back once with the reason.
     "plan.correction-requested",
     # Laya chose a connected coding agent for a task (who, why, who was not available).
@@ -199,7 +201,10 @@ class TaskSpecification(ContractModel):
     upstream evidence as DATA: a review that reports nothing skips the
     dispatch, and anything AURA cannot read plainly runs the task, which
     fails toward doing the work rather than toward claiming success."""
-    runWhen: Literal["always", "upstream-reports-findings"] = "always"
+    runWhen: Literal["always", "upstream-reports-findings", "upstream-ran"] = "always"
+    """Workers this task should go back to when they are eligible: a fix returns to the worker that
+    built the change. A preference, never a bar: when none of them is eligible the task runs anyway."""
+    preferWorkerFrom: list[str] = Field(default_factory=list)
     risk: RiskLevel = "low"
     reversible: bool = True
     verification: VerificationRequirement = Field(default_factory=VerificationRequirement)

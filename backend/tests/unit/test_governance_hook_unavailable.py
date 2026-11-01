@@ -40,9 +40,9 @@ GOOD_PAYLOAD = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "sr
 OUT_PAYLOAD = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "billing/p.py"}})
 
 
-def _run(tmp_path, stdin, scope_arg, hook=HOOK, extra_env=None):
+def _run(tmp_path, stdin, scope_arg, hook=HOOK, extra_env=None, flags=()):
     log = tmp_path / "actions.jsonl"
-    args = [sys.executable, str(hook)] + ([scope_arg] if scope_arg is not None else [])
+    args = [sys.executable, *flags, str(hook)] + ([scope_arg] if scope_arg is not None else [])
     env = {"PATH": os.environ.get("PATH", ""), "AURA_ACTION_LOG": str(log), **(extra_env or {})}
     proc = subprocess.run(args, input=stdin, capture_output=True, text=True, timeout=60,
                           cwd=str(BACKEND), env=env)
@@ -129,7 +129,8 @@ def test_a_dangling_symlink_in_place_of_the_scope_file_denies(tmp_path):
     _assert_denied(*_run(tmp_path, GOOD_PAYLOAD, str(path)), "scope document unusable")
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root can read a mode-000 file")
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,
+                    reason="root can read a mode-000 file, and Windows has no such mode")
 def test_an_unreadable_scope_file_denies(tmp_path):
     path = tmp_path / "scope.json"
     path.write_text(json.dumps({"scopePaths": ["src"]}))
@@ -186,7 +187,9 @@ def test_a_governance_core_that_cannot_load_denies(tmp_path):
     scope_path = tmp_path / "scope.json"
     scope_path.write_text(json.dumps({"taskId": "t", "cwd": "/repo", "scopePaths": ["src"],
                                       "auraRoot": str(empty)}))
-    proc, events = _run(tmp_path, GOOD_PAYLOAD, str(scope_path), hook=staged)
+    # -S: no site-packages. Where `aura` is pip-installed (CI), the core would otherwise load from there
+    # no matter what auraRoot says, and the test would not be about an unloadable core at all.
+    proc, events = _run(tmp_path, GOOD_PAYLOAD, str(scope_path), hook=staged, flags=("-S",))
     _assert_denied(proc, events, "governance core could not be loaded")
 
 

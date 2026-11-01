@@ -1,24 +1,68 @@
-import { useEffect, useRef, useState } from 'react';
-import { cn } from '@aura/core';
+import type { ReactNode } from 'react';
 import { Icon } from '@aura/ui';
-import { AiMarkdown } from '../../../ai/AiMarkdown';
-import {
-  failureText,
-  joinNames,
-  outcomeNote,
-  type OutcomeTone,
-} from '../../../ai/agentNarration';
-import type { AgentActivity, AgentChatMessage } from '../../../ai/useAgentConversations';
+import type { AgentChatMessage } from '../../../ai/useAgentConversations';
 import type { Handoff } from '../../../ai/aiClient';
-import { MissionStatusPanel } from './MissionStatusPanel';
-import { RunObserverPanel } from './RunObserverPanel';
-import { missionView } from '../../../ai/missionStatus';
+import { buildGroupTimeline, statusLine } from '../../../ai/groupTimeline';
+import type { AgentEventFrame } from '../../../ai/centralAgentClient';
+import { GroupChat } from './GroupChat';
 
-const TONE_CLASS: Record<OutcomeTone, string> = {
-  neutral: 'border-[rgba(152, 152, 152,0.3)] bg-[rgba(19, 19, 19,0.7)] text-text-muted',
-  attention: 'border-[rgba(255,181,71,0.4)] bg-[rgba(255,181,71,0.09)] text-neon-warning',
-  danger: 'border-[rgba(255,93,122,0.42)] bg-[rgba(255,93,122,0.09)] text-neon-danger',
+/** One member of the group: an AI agent, with what it is doing right now. */
+export interface GroupMember {
+  id: string;
+  name: string;
+  /** working: running a step now. ready: connected and idle. idle: not connected. */
+  tone: 'working' | 'ready' | 'idle';
+}
+
+const TONE_DOT: Record<GroupMember['tone'], string> = {
+  working: 'bg-neon-warning animate-pulse',
+  ready: 'bg-neon-success',
+  idle: 'bg-text-subtle',
 };
+
+function GroupHeader({ title, members, railOpen, onToggleRail, agentUp }: {
+  title: string;
+  members: GroupMember[];
+  railOpen: boolean;
+  onToggleRail: () => void;
+  agentUp: boolean | null;
+}) {
+  const live = members.filter((m) => m.tone !== 'idle');
+  return (
+    <header className="flex shrink-0 items-center gap-3 border-b border-[rgba(152, 152, 152,0.22)] px-5 py-3">
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-line bg-surface text-text-muted" aria-hidden>
+        <Icon name="spark" size={18} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <h2 className="truncate text-[15px] font-semibold tracking-[-0.01em] text-text" data-testid="workspace-chat-title">
+          {title}
+        </h2>
+        <p className="truncate text-[11.5px] text-text-subtle" data-testid="group-members-line">
+          AURA (admin){live.length > 0 ? ` · ${live.map((m) => m.name).join(', ')}` : ' · no agents connected yet'}
+        </p>
+      </span>
+      <ul className="hidden items-center -space-x-1.5 sm:flex" aria-label="Members">
+        {members.slice(0, 6).map((m) => (
+          <li key={m.id} title={`${m.name} · ${m.tone === 'working' ? 'working' : m.tone === 'ready' ? 'ready' : 'not connected'}`}
+            className="relative grid h-8 w-8 place-items-center rounded-full border border-line bg-surface text-[11px] font-semibold text-text-muted">
+            {m.name.slice(0, 1).toUpperCase()}
+            <span className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border border-surface ${TONE_DOT[m.tone]}`} />
+          </li>
+        ))}
+      </ul>
+      {agentUp === false && (
+        <span role="alert" data-testid="agent-offline"
+          className="shrink-0 rounded-full border border-[rgba(255,181,71,0.42)] bg-[rgba(255,181,71,0.1)] px-2.5 py-1 text-[11px] text-neon-warning">
+          AURA offline
+        </span>
+      )}
+      <button type="button" onClick={onToggleRail} aria-pressed={railOpen} data-testid="rail-toggle"
+        className="neon-focus shrink-0 rounded-lg border border-line px-2.5 py-1.5 text-[11.5px] text-text-muted transition-colors hover:text-text">
+        {railOpen ? 'Hide members & tools' : 'Members & tools'}
+      </button>
+    </header>
+  );
+}
 
 const SUGGESTIONS = [
   'What can you do?',
@@ -26,34 +70,6 @@ const SUGGESTIONS = [
   'Show me the git status.',
   'Run the tests and tell me what fails.',
 ];
-
-function ToolTrace({ tools }: { tools: string[] }) {
-  const [open, setOpen] = useState(false);
-  if (tools.length === 0) return null;
-  return (
-    <div className="mt-1.5">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        data-testid="tool-trace-toggle"
-        className="neon-focus inline-flex items-center gap-1.5 rounded-md text-[11px] text-text-subtle transition-colors hover:text-text-muted"
-      >
-        <Icon name={open ? 'chevron-down' : 'chevron-right'} size={11} />
-        Used {joinNames(tools)}
-      </button>
-      {open && (
-        <ul className="mt-1 space-y-0.5 border-l border-[rgba(152, 152, 152,0.22)] pl-3">
-          {tools.map((t) => (
-            <li key={t} className="text-[11px] text-text-muted">
-              {t}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
 
 function HandoffInbox({
   handoffs,
@@ -98,125 +114,23 @@ function HandoffInbox({
   );
 }
 
-function StageCard({
-  message,
-}: {
-  message: AgentChatMessage;
-}) {
-  if (message.role === 'user') {
-    return (
-      <div className="flex justify-end" data-testid="chat-message" data-role="user">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md border border-[rgba(119, 119, 119,0.4)] bg-[rgba(119, 119, 119,0.16)] px-4 py-2.5 text-[13.5px] leading-relaxed text-text">
-          {message.content}
-        </div>
-      </div>
-    );
-  }
-
-  const note = outcomeNote(message.agent?.outcome);
-  const streaming = message.status === 'streaming';
-  // Work turns (a plan was made or received) get the live run account;
-  // plain answers do not.
-  const ranWork = message.role === 'assistant' && !!message.agent?.sessionId &&
-    (message.agent.events.some((e) => e === 'plan.created' || e === 'plan.received') || (message.agent.tasks?.length ?? 0) > 0);
-  const tools = message.agent?.tools ?? [];
-
-  return (
-    <div className="flex gap-3" data-testid="chat-message" data-role="assistant">
-      <div className="flex shrink-0 flex-col items-center">
-        <span className="mt-0.5 grid h-7 w-7 place-items-center rounded-lg border border-[rgba(119, 119, 119,0.45)] bg-[rgba(119, 119, 119,0.14)] text-[#c7c7c7]">
-          <Icon name="spark" size={14} />
-        </span>
-      </div>
-      <div className="min-w-0 flex-1 pb-1">
-        <p className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-text-subtle">
-          AURA
-        </p>
-        {message.status === 'error' ? (
-          <p
-            role="alert"
-            data-testid="chat-error"
-            className="rounded-xl border border-[rgba(255,93,122,0.42)] bg-[rgba(255,93,122,0.09)] px-3.5 py-2.5 text-[13px] text-neon-danger"
-          >
-            {failureText(message.error)}
-          </p>
-        ) : message.status === 'cancelled' ? (
-          <p className="text-[13px] text-text-subtle">
-            {/* The backend's settled summary once it lands; partial streamed
-                text is never shown for a stopped run. */}
-            {message.agent?.failureReason === 'cancelled-by-user' && message.content
-              ? message.content : 'Stopped.'}
-          </p>
-        ) : (
-          <>
-            {message.content ? (
-              <div className="rounded-xl border border-[rgba(152, 152, 152,0.2)] bg-[var(--ws-card)] px-4 py-3 text-[13.5px] leading-relaxed text-text">
-                <AiMarkdown source={message.content} />
-              </div>
-            ) : streaming ? (
-              <div className="rounded-xl border border-[rgba(162, 162, 162,0.28)] bg-[var(--ws-card)] px-4 py-3">
-                <span className="inline-block h-4 w-2 animate-pulse rounded-sm bg-neon-cyan align-middle" />
-              </div>
-            ) : null}
-
-            {note && (
-              <p
-                data-testid="outcome-note"
-                className={cn('mt-2 rounded-xl border px-3.5 py-2 text-[12.5px]', TONE_CLASS[note.tone])}
-              >
-                {note.text}
-              </p>
-            )}
-
-            {!streaming && <ToolTrace tools={tools} />}
-          </>
-        )}
-        <MissionStatusPanel view={missionView(message.agent)} />
-        {ranWork && <RunObserverPanel sessionId={message.agent?.sessionId} live={streaming} />}
-      </div>
-    </div>
-  );
-}
-
-function ActiveStageCard({ activity }: { activity: AgentActivity }) {
-  if (!activity.phase) return null;
-  const tools = activity.tools.length ? `using ${joinNames(activity.tools)}` : null;
-  const workers = Object.keys(activity.workers);
-  const workerLabel = workers.length > 0 ? ` · ${workers[0]}` : '';
-
-  return (
-    <div className="flex gap-3" data-testid="agent-activity" role="status">
-      <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg border border-[rgba(162, 162, 162,0.45)] bg-[rgba(162, 162, 162,0.1)] text-neon-cyan">
-        <span
-          aria-hidden
-          className={cn(
-            'h-2 w-2 rounded-full',
-            'bg-neon-cyan aura-breathe',
-          )}
-        />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="mb-1 text-[10.5px] font-semibold uppercase tracking-wider text-neon-cyan">
-          {activity.phase}{workerLabel}
-        </p>
-        {tools && <p className="text-[12px] text-text-muted">{tools}</p>}
-      </div>
-    </div>
-  );
-}
-
 export function AuraAgentWorkspace({
   messages,
-  activity,
+  frames,
   busy,
   agentUp,
   onSend,
   onRegenerate,
   handoffs,
   onAcceptHandoff,
+  groupTitle,
+  members,
+  railOpen,
+  onToggleRail,
+  composer,
 }: {
   messages: AgentChatMessage[];
-  activity: AgentActivity;
+  frames: AgentEventFrame[];
   busy: boolean;
   agentUp: boolean | null;
   /** Used by idle-state suggestion chips. */
@@ -224,47 +138,26 @@ export function AuraAgentWorkspace({
   onRegenerate: () => void;
   handoffs: Handoff[];
   onAcceptHandoff: (h: Handoff) => void;
+  groupTitle: string;
+  members: GroupMember[];
+  railOpen: boolean;
+  onToggleRail: () => void;
+  /** The message box, pinned under the conversation. */
+  composer: ReactNode;
 }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
   const empty = messages.length === 0 && !handoffs.some((h) => h.status === 'created');
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages, activity.phase]);
+  const timeline = buildGroupTimeline(messages, frames);
 
   const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
   const canRegenerate = !busy && lastAssistant && lastAssistant.status !== 'streaming';
 
   return (
     <section aria-label="AURA Agent Workspace" className="flex min-h-0 flex-1 flex-col">
-      {/* Header */}
-      <header className="flex shrink-0 items-center gap-3 border-b border-[rgba(152, 152, 152,0.22)] px-6 py-3.5">
-        <span className="min-w-0 flex-1">
-          <h2
-            className="truncate text-[15px] font-semibold tracking-[-0.01em] text-text"
-            data-testid="workspace-chat-title"
-          >
-            AURA Agent Workspace
-          </h2>
-          <p className="truncate text-[11.5px] text-text-subtle">
-            Thinking. Collaborating. Building.
-          </p>
-        </span>
-
-        {agentUp === false && (
-          <span
-            role="alert"
-            data-testid="agent-offline"
-            className="shrink-0 rounded-full border border-[rgba(255,181,71,0.42)] bg-[rgba(255,181,71,0.1)] px-2.5 py-1 text-[11px] text-neon-warning"
-          >
-            AURA offline
-          </span>
-        )}
-      </header>
+      <GroupHeader title={groupTitle} members={members} railOpen={railOpen} onToggleRail={onToggleRail} agentUp={agentUp} />
 
       {/* Execution timeline */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        {empty ? (
+      {empty ? (
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <div className="flex h-full flex-col items-center justify-center gap-5 text-center">
             <span className="grid h-16 w-16 place-items-center rounded-2xl border border-[rgba(119, 119, 119,0.45)] bg-[rgba(119, 119, 119,0.14)] text-[#c7c7c7]">
               <Icon name="spark" size={30} />
@@ -289,31 +182,13 @@ export function AuraAgentWorkspace({
               ))}
             </div>
           </div>
-        ) : (
-          <div className="space-y-4">
-            <HandoffInbox handoffs={handoffs} onAccept={onAcceptHandoff} />
-
-            {/* Timeline spine */}
-            <div className="relative">
-              {messages.length > 1 && (
-                <div
-                  aria-hidden
-                  className="pointer-events-none absolute bottom-0 left-3.5 top-8 w-px bg-[rgba(152, 152, 152,0.15)]"
-                />
-              )}
-              <div className="space-y-5">
-                {messages.map((m) => (
-                  <StageCard
-                    key={m.id}
-                    message={m}
-                  />
-                ))}
-                {busy && <ActiveStageCard activity={activity} />}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <HandoffInbox handoffs={handoffs} onAccept={onAcceptHandoff} />
+          <GroupChat items={timeline} streaming={busy} status={statusLine(timeline, busy)} />
+        </div>
+      )}
 
       {canRegenerate && (
         <div className="shrink-0 border-t border-[rgba(152, 152, 152,0.22)] px-6 py-2">
@@ -328,6 +203,7 @@ export function AuraAgentWorkspace({
           </button>
         </div>
       )}
+      <div className="shrink-0" data-testid="chat-composer">{composer}</div>
     </section>
   );
 }

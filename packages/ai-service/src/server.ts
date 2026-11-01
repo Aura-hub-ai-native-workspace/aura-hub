@@ -1,5 +1,9 @@
+import { AccountError } from './account/localAccount.js';
+import { accountProvider } from './account/accountProvider.js';
+import { ContextTools } from './commonContext/index.js';
 import http from 'node:http';
 import fs from 'node:fs';
+import path from 'node:path';
 import { WorkspaceManager, planNewProject } from './workspace';
 import type { PipelineOptions, StreamEmit } from './pipeline';
 import { DEFAULT_SETTINGS } from './settings';
@@ -285,6 +289,75 @@ export async function startService(opts: PipelineOptions & { port?: number; open
         opts.onShutdownRequest?.();
         return;
       }
+      /* ── accounts: sign-up and sign-in stay inside the hub ───── */
+      if (seg[0] === 'account') {
+        const accounts = accountProvider();
+        if (method === 'GET' && seg[1] === 'status') {
+          return json(res, 200, { hasAccounts: await accounts.hasAccounts(), provider: accounts.kind });
+        }
+        if (method === 'POST' && (seg[1] === 'signup' || seg[1] === 'signin')) {
+          const b = await readJson(req);
+          try {
+            const result = seg[1] === 'signup'
+              ? await accounts.signUp(String(b.email ?? ''), String(b.password ?? ''), typeof b.name === 'string' ? b.name : undefined)
+              : { confirmed: true as const, ...(await accounts.signIn(String(b.email ?? ''), String(b.password ?? ''))) };
+            return json(res, 200, result);
+          } catch (err) {
+            if (err instanceof AccountError) {
+              const status = err.code === 'exists' ? 409 : err.code === 'bad-credentials' ? 401
+                : err.code === 'locked' ? 429 : err.code === 'unavailable' ? 503 : 400;
+              return json(res, status, { error: err.code, message: err.message });
+            }
+            throw err;
+          }
+        }
+        if (method === 'POST' && seg[1] === 'session') {
+          const b = await readJson(req);
+          const account = await accounts.resolve(String(b.token ?? ''));
+          return account ? json(res, 200, { account }) : json(res, 401, { error: 'no-session', message: 'Sign in again.' });
+        }
+        if (method === 'POST' && seg[1] === 'refresh') {
+          const b = await readJson(req);
+          const renewed = await accounts.refresh(String(b.refreshToken ?? ''));
+          return renewed ? json(res, 200, renewed) : json(res, 401, { error: 'no-session', message: 'Sign in again.' });
+        }
+        if (method === 'POST' && seg[1] === 'signout') {
+          const b = await readJson(req);
+          await accounts.signOut(String(b.token ?? ''));
+          return json(res, 200, { ok: true });
+        }
+      }
+
+      /* ── shared context: the built-in common-context tool layer ─ */
+      if (seg[0] === 'context' && method === 'POST' && seg[1]) {
+        const b = await readJson(req);
+        const dir = typeof b.projectPath === 'string' ? path.resolve(b.projectPath) : '';
+        if (!dir || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+          return json(res, 400, { error: 'bad-project', message: 'projectPath must be an existing folder.' });
+        }
+        const tools = new ContextTools(dir, typeof b.agent === 'string' ? b.agent : 'aura');
+        const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+        try {
+          switch (seg[1]) {
+            case 'load': return json(res, 200, tools.loadContext());
+            case 'save': tools.saveContext(String(b.key ?? ''), String(b.value ?? ''), strs(b.tags)); return json(res, 200, { ok: true });
+            case 'search': return json(res, 200, { results: tools.searchContext(String(b.query ?? ''), Number(b.limit) || 8) });
+            case 'failure': tools.saveFailure(String(b.approach ?? ''), String(b.whyFailed ?? '')); return json(res, 200, { ok: true });
+            case 'claim': return json(res, 200, tools.claimArea(String(b.area ?? '')));
+            case 'release': return json(res, 200, { released: tools.releaseArea(String(b.area ?? '')) });
+            case 'summary':
+              tools.saveSummary({ title: String(b.title ?? ''), accomplished: String(b.accomplished ?? ''),
+                learned: String(b.learned ?? ''), decisions: String(b.decisions ?? ''), next_steps: String(b.nextSteps ?? '') });
+              return json(res, 200, { ok: true });
+            case 'handoff': tools.handoff(String(b.to ?? ''), String(b.note ?? '')); return json(res, 200, { ok: true });
+            case 'broadcast': tools.broadcast(String(b.message ?? '')); return json(res, 200, { ok: true });
+            case 'snapshot': return json(res, 200, tools.snapshot());
+          }
+        } catch (err) {
+          return json(res, 400, { error: 'context-error', message: err instanceof Error ? err.message : 'failed' });
+        }
+      }
+
       if (method === 'GET' && (seg.length === 0 || seg[0] === 'settings')) {
         const byoak = manager.byoakStatus();
         return json(res, 200, { settings: p.getSettings(), defaults: DEFAULT_SETTINGS, key: p.keyStatus(), connected: byoak.connected, active: byoak.active, activeModel: byoak.model });

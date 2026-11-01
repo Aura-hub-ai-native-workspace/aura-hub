@@ -19,7 +19,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from ..fabric.supervision import IGNORED_CONTENT_DIRS
+from ..fabric.supervision import IGNORED_CONTENT_DIRS, _is_shared_context_file
 
 #: Directories that hold no authored project content. The SAME list the
 #: scope check uses (fabric.supervision.IGNORED_CONTENT_DIRS), so a path
@@ -61,6 +61,8 @@ def snapshot(root: str | Path) -> Snapshot | None:
                                 continue
                             stack.append((Path(entry.path), depth + 1))
                         elif entry.is_file(follow_symlinks=False):
+                            if _is_shared_context_file(entry.name):
+                                continue  # the agents' shared-context file is not project work
                             if len(files) >= MAX_FILES:
                                 complete = False
                                 continue

@@ -127,7 +127,7 @@ class TestContractShape:
             "reviewer finds a problem, fix it and verify everything.")
         plan = plan_delegated_work(intent, "ses", "now")
         marks = {t.id: (t.input or {}).get("expectChange") for t in plan.tasks}
-        assert marks == {"implement": True, "review": None, "remediate": None}
+        assert marks == {"implement": True, "review": None, "remediate": None, "rereview": None, "remediate2": None}
 
     def test_a_model_proposal_cannot_set_the_requirement_itself(self):
         """expectChange is AURA-owned: it is not an accepted input key."""

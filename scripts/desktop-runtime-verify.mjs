@@ -481,8 +481,12 @@ try {
       info(`shell exit code: ${shellProc.exitCode}`);
     }
     if (shellUp) {
-      const sid = await get('/fabric/capabilities');
-      check('9b. the shell-started service has AURA identity', sid.status === 200 && !!sid.body?.policy);
+      // The launch token is private to the shell and its child, so a guarded route cannot be read from
+      // here by design. /health is the one open route, and its AURA-specific body (the pipeline's own
+      // health, key and index status) is what a stand-in answering 200 would not have.
+      const sid = await get('/health');
+      check('9b. the shell-started service has AURA identity',
+        sid.status === 200 && !!sid.body?.health && 'key' in sid.body && 'index' in sid.body);
       const sp = shellProc.pid;
       /**
        * Close it the way a user closes it.

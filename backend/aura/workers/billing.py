@@ -1,4 +1,4 @@
-"""Worker billing policy — nothing that might cost money runs by default.
+"""Worker billing policy. The owner's standing decision: no approval gate ("requireApproval" restores it).
 
 AURA cannot know what a worker's runtime bills. A worker being installed,
 connected, "free-tier" in a catalogue, or readiness-proven says nothing about
@@ -33,6 +33,7 @@ KNOWN_BILLABLE = frozenset({"claude-code", "codex-cli", "gemini-cli"})
 
 VERIFIED_FREE = "verified-free"
 AUTHORIZED = "owner-authorized"
+STANDING = "standing-authorization"
 BILLABLE = "billable"
 UNKNOWN = "unknown"
 
@@ -128,6 +129,16 @@ def decide(worker_id: str, home: str | Path | None = None) -> WorkerDecision:
     if wid in authorized:
         return WorkerDecision(wid, True, AUTHORIZED,
                               f"{wid} is authorized in {POLICY_FILE}: the owner accepted its cost.")
+    # The owner's standing decision: no approval gate. Any worker AURA has an adapter for may run;
+    # when a paid one reaches its limit, the run moves to the next free agent (see central_agent.quota).
+    # The owner can bring the gate back with "requireApproval": true in the policy file.
+    if wid and not owner_setting("requireApproval", False, home):
+        from .adapters import adapter_for_id
+
+        if adapter_for_id(wid) is not None:
+            return WorkerDecision(wid, True, STANDING,
+                                  f"{wid} may run: the owner's standing decision is no approval gate "
+                                  f"(set \"requireApproval\": true in {POLICY_FILE} to restore it).")
     billing = BILLABLE if wid in KNOWN_BILLABLE else UNKNOWN
     why = ("it bills a vendor account" if billing == BILLABLE
            else "its billing is unknown, and unknown is treated as potentially paid")
@@ -136,6 +147,13 @@ def decide(worker_id: str, home: str | Path | None = None) -> WorkerDecision:
         f"{wid} was not run: {why}. Being installed or connected does not show it is free. "
         f"To allow it, the owner adds it to \"verifiedFree\" or \"authorized\" in "
         f"<AURA_HOME>/{POLICY_FILE}.")
+
+
+def is_free_tier(worker_id: str, home: str | Path | None = None) -> bool:
+    """A worker that does not bill a vendor account: owner-marked verified-free, or not a known paid CLI."""
+    free, _ = load_policy(home)
+    wid = str(worker_id or "")
+    return wid in free or (bool(wid) and wid not in KNOWN_BILLABLE)
 
 
 def worker_id_of(node: dict | None) -> str:

@@ -323,8 +323,8 @@ class TestDelegationPlanning:
             "review it")
         plan = TaskPlanner().plan(intent, "agt-1", "2026-09-08T00:00:00Z")
 
-        assert [t.id for t in plan.tasks] == ["implement", "review", "remediate"]
-        assert [t.workerRole for t in plan.tasks] == ["code", "review", "code"]
+        assert [t.id for t in plan.tasks] == ["implement", "review", "remediate", "rereview", "remediate2"]
+        assert [t.workerRole for t in plan.tasks] == ["code", "review", "code", "review", "code"]
         # The reviewer consumes AURA's verified evidence, not the other
         # worker's context, and cannot start before it exists.
         review = plan.tasks[1]
@@ -335,7 +335,7 @@ class TestDelegationPlanning:
         assert review.input["scopePaths"] == ["src/auth"]
         # Objective acceptance covers BOTH, so "implemented" alone is
         # never success.
-        assert plan.acceptance[0].expect["tasks"] == ["implement", "review", "remediate"]
+        assert plan.acceptance[0].expect["tasks"] == ["implement", "review", "remediate", "rereview", "remediate2"]
 
     def test_a_single_implementation_plans_one_worker(self):
         from aura.central_agent.intent import heuristic_interpret

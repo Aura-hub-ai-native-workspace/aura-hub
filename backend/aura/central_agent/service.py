@@ -122,6 +122,15 @@ _WORKER_LABELS = {
     "opencode": "OpenCode",
 }
 
+def _gateway_configured() -> bool:
+    """True when the owner has pointed AURA at a search gateway (file or environment)."""
+    try:
+        from ..executors.web_research import load_web_config
+        return bool((load_web_config() or {}).get("searchEndpoint"))
+    except Exception:  # noqa: BLE001 — unreadable config means none
+        return False
+
+
 class CentralAgent:
     #: The ONE cancellation authority for this process, as a class
     #: default so every instance has one — including the bare instances
@@ -493,16 +502,26 @@ class CentralAgent:
         # model unless the owner opted in, and a task nobody can carry out is a
         # blocker reported now, before anything starts.
         candidates, unavailable = self._agent_candidates()
-        selected = ph.select_workers(handoff, candidates, unavailable)
-        handoff, selections = selected["handoff"], selected["selections"]
-        self._sync_model_port()
-        port = getattr(getattr(self, "intents", None), "model_port", None)
-        if any(ph.aura_authored(t) for t in handoff["tasks"]) and port is None:
+        # Laya is the only planner and worker selector. It must be loaded before a
+        # plan can be made; until then the plan is refused with the reason, not guessed.
+        from .laya_advisor import MIN_CONFIDENCE, laya_advisor
+        from .laya_plan import propose_changes
+
+        advisor = laya_advisor()
+        if advisor.state != "ready":
+            advisor.warm()
             raise ph.HandoffError(
                 "unavailable",
-                "AURA would write files for this plan itself, but no reasoning "
-                "model is configured for Workspace. Configure one, or choose a "
-                "worker for those tasks in the Planner.")
+                f"Laya is not ready yet ({advisor.state}). It plans and selects the "
+                "coding agents, so the plan can run once Laya has loaded.")
+        handoff, plan_changes = propose_changes(handoff, advisor.ask_choice, MIN_CONFIDENCE)
+        selected = ph.select_workers(handoff, candidates, unavailable, chooser=advisor.choose_worker)
+        handoff, selections = selected["handoff"], selected["selections"]
+        if any(ph.aura_authored(t) for t in handoff["tasks"]):
+            raise ph.HandoffError(
+                "invalid",
+                "AURA does not write files itself. Laya selects a coding agent for every "
+                "step, so choose an agent for those steps in the Planner.")
 
         session = self.sessions.create(project_id, session_id=session_id)
         session.projectPath = project_path
@@ -524,12 +543,14 @@ class CentralAgent:
                            "targetFile": t["targetFile"],
                            "worker": t["worker"] or ph.AURA_WORKER}
                           for t in handoff["tasks"]])
+        for change in plan_changes:
+            self._emit("ceo.say", sid, kind="plan", text=change["text"])
         for sel in selections:
             self._emit("worker.selected", sid, **sel)
 
         token = self.runs.begin(sid)
         try:
-            result = self._run_handoff(session, handoff, port)
+            result = self._run_handoff(session, handoff)
         except (PlanningError, CompilationError) as exc:
             result = self._fail(
                 session, f"The plan could not be prepared: {exc}",
@@ -572,72 +593,13 @@ class CentralAgent:
         except Exception:  # noqa: BLE001 — remembering must never block running
             pass
 
-    def _run_handoff(self, session: AgentSession, handoff: dict,
-                     port: Any) -> AgentResult:
-        """Author AURA's files, build the TaskPlan, dispatch it."""
+    def _run_handoff(self, session: AgentSession, handoff: dict) -> AgentResult:
+        """Build the TaskPlan from the handoff and dispatch it. Every step is for a coding agent:
+        a plan that asks AURA to write files itself is refused before it gets here."""
         from . import plan_handoff as ph
-        from .provider_bridge import ProviderBridge
         from ..contracts.agent import AgentIntent
 
         sid = session.sessionId
-        root = getattr(session, "projectPath", None)
-        contents: dict[str, str] = {}
-        written: dict[str, str] = {}
-        for task in handoff["tasks"]:
-            if not ph.aura_authored(task):
-                continue
-            if self.runs.is_cancelled(sid):
-                return self._cancelled_result(session, resumed=False)
-            existing = None
-            if root:
-                from pathlib import Path
-
-                target = (Path(root) / task["targetFile"]).resolve()
-                if target.is_file() and target.is_relative_to(Path(root).resolve()):
-                    try:
-                        existing = target.read_text(encoding="utf-8")
-                    except (OSError, UnicodeDecodeError):
-                        existing = None
-            if existing is not None and len(existing) > ph.MAX_EDITABLE_CHARS:
-                return self._fail(
-                    session, f"AURA did not edit {task['targetFile']}: it is {len(existing):,} characters, "
-                    f"more than the {ph.MAX_EDITABLE_CHARS:,} its writing model can be shown whole, and a "
-                    "rewrite of a partly shown file would lose the rest. Split the file, or assign this "
-                    "task to a worker.")
-            system, user = ph.authoring_prompt(handoff["goal"], task, written, existing)
-            result = ProviderBridge(port).complete_stream(
-                "plan", system, user,
-                should_stop=lambda: self.runs.is_cancelled(sid),
-                session_id=sid, request_id=getattr(session, "lastRequestId", None))
-            if not result.ok:
-                return self._fail(
-                    session, f"AURA could not write {task['targetFile']}: "
-                    f"{result.error or result.error_category}")
-            content = ph.clean_authored(result.text or "")
-            if existing is not None and content.strip() == existing.strip():
-                # One bounded correction: say exactly what was wrong, once.
-                retry = ProviderBridge(port).complete_stream(
-                    "plan", system,
-                    user + "\n\nYour previous reply was IDENTICAL to the current file, so the change was not "
-                           f"made. Reply again with the whole of {task['targetFile']} including the change "
-                           "the task describes.",
-                    should_stop=lambda: self.runs.is_cancelled(sid),
-                    session_id=sid, request_id=getattr(session, "lastRequestId", None))
-                if retry.ok:
-                    content = ph.clean_authored(retry.text or "")
-            if not content.strip():
-                return self._fail(session, f"AURA could not write {task['targetFile']}: the model returned nothing usable.")
-            if existing is not None and content.strip() == existing.strip():
-                # The task asked for a change; the model handed the file back as
-                # it was. Writing it again would read back "verified" while the
-                # requested change was never made, so this is a failure.
-                return self._fail(
-                    session, f"AURA did not change {task['targetFile']}: the model returned the file "
-                    "exactly as it already was, so the requested change was not made.")
-            contents[task["id"]] = content
-            written[task["targetFile"]] = content
-            self._emit("task.authored", sid, taskId=task["id"],
-                       path=task["targetFile"], bytes=len(content.encode("utf-8")))
 
         intent = AgentIntent(
             goal=handoff["goal"][:2000],
@@ -645,7 +607,7 @@ class CentralAgent:
                             "carried out and verified.",
             complexity="multi-step" if len(handoff["tasks"]) > 1 else "single")
         plan = self.planner.plan_from_model(intent, sid, _now(),
-                                            ph.build_proposal(handoff, contents))
+                                            ph.build_proposal(handoff, {}))
         plan.missionId = (f"planner-{handoff['planId']}-r{handoff['revision']}")[:120]
         plan.acceptanceStated = list(handoff.get("acceptance") or [])  # extra field: stated, not mechanically checked
         return self._dispatch_plan(
@@ -785,6 +747,8 @@ class CentralAgent:
         if decide_instead_of_asking(intent, user_message=user_message,
                                     has_project=bool(getattr(session, "projectId", None))):
             self._emit("intent.decided", session.sessionId, goal=intent.goal)
+        self._research_by_worker(intent, session.sessionId)
+        self._laya_review_default(intent, session.sessionId)
         if intent.needsClarification:
             question = intent.clarificationQuestion or "Could you clarify the outcome?"
             session.pendingQuestion = question  # persisted with the session
@@ -1340,6 +1304,52 @@ class CentralAgent:
     #: Bound on a conversational reply kept as the result summary.
     _CONVERSATION_CHARS = 4_000
 
+    def _research_by_worker(self, intent: Any, sid: str) -> None:
+        """With no text model, a web question goes to a coding agent that can search and reason.
+
+        The built-in search returns unreliable pages from some networks and cannot write an answer,
+        so a question that only needs web research becomes a read-only research task for a worker.
+        The worker searches the web itself, and its own report is the reply.
+        """
+        if (getattr(getattr(self, "intents", None), "model_port", None) is not None
+                or not getattr(intent, "webResearch", False)
+                or list(getattr(intent, "requiredCapabilities", []) or []) != ["web.research"]):
+            return
+        question = str(getattr(intent, "goal", "") or "").strip()
+        if not question:
+            return
+        intent.requiredCapabilities = ["agent.delegate"]
+        intent.delegateTask = (
+            "Answer this question using web search. Use current sources, say plainly what you found, "
+            "and list the source URL for every claim. Do not modify any files.\n\nQuestion: " + question)
+        intent.delegateReadOnly = True
+        intent.webResearch = False   # the worker searches; AURA does not pre-fetch pages for it
+        self._emit("ceo.say", sid, kind="plan",
+                   text="No text model is connected, so I'm handing this question to a coding agent "
+                        "that can search the web and answer it.")
+
+    def _laya_review_default(self, intent: Any, sid: str) -> None:
+        """Laya decides whether delegated work is independently reviewed, without being asked.
+
+        Applies only to delegated work that changes the project and did not already ask for a
+        review. A confident "review" (at least MIN_CONFIDENCE) adds the independent review and
+        the remediation that follows it; otherwise the plan stays as the request described it.
+        """
+        from .laya_advisor import MIN_CONFIDENCE, laya_advisor
+        from .laya_plan import REVIEW_CRITERIA, REVIEW_INSTRUCTIONS
+
+        task = getattr(intent, "delegateTask", None)
+        if (not task or getattr(intent, "delegateReadOnly", False) or getattr(intent, "delegateReview", False)
+                or getattr(intent, "needsClarification", False)):
+            return
+        pick = laya_advisor().ask_choice(str(task), REVIEW_INSTRUCTIONS, REVIEW_CRITERIA)
+        if pick and pick[0] == "review" and pick[1] >= MIN_CONFIDENCE:
+            intent.delegateReview = True
+            intent.delegateRemediate = True
+            self._emit("ceo.say", sid, kind="plan",
+                       text=f"Laya wants a second agent to review this work ({round(pick[1] * 100)}% sure), "
+                            "and anything it finds goes back for a fix.")
+
     def _converse(self, session: AgentSession, user_message: str,
                   intent: Any, bundle: Any) -> AgentResult:
         """Answer in words. No plan, no authority check, no invocation.
@@ -1543,6 +1553,12 @@ class CentralAgent:
             if is_conversational(message) and route.intent == "general-question":
                 research = {"status": "skipped", "sources": [],
                             "detail": "small talk needs no research"}
+            elif (getattr(getattr(self, "intents", None), "model_port", None) is None
+                  and not _gateway_configured()):
+                # No text model and no search gateway the owner set up: a coding agent answers, and
+                # searches the web itself when it needs to. A configured gateway is real search, so it runs.
+                research = {"status": "skipped", "sources": [],
+                            "detail": "a coding agent searches the web itself"}
             else:
                 from ..fabric import invoke_fabric
                 from .research import run_web_research
@@ -2371,6 +2387,50 @@ class CentralAgent:
                 "this is a Let's Chat conversation, which never runs work; "
                 "assign the goal in Workspace")
 
+    def _agent_text_port(self, user_message: str, sid: str) -> Any:
+        """A text source from a connected, allowed coding agent, or None (small talk needs none)."""
+        from .agent_text import AgentTextPort
+        from .intent import is_conversational
+
+        if is_conversational(user_message):
+            return None
+        try:
+            candidates, _unavailable = self._agent_candidates()
+        except Exception:  # noqa: BLE001 — no registry means no agent, never an error
+            return None
+        if not candidates:
+            return None
+        chosen = next((c for c in candidates if c["id"] == "opencode"), candidates[0])
+        return AgentTextPort(
+            lambda prompt, stop: self._agent_answer(chosen["id"], prompt, stop),
+            chosen["id"], str(chosen.get("name") or chosen["id"]))
+
+    def _agent_answer(self, worker_id: str, prompt: str, should_stop: Any) -> str | None:
+        """One governed, read-only research call to a worker, in an empty folder. The reply, or None."""
+        import shutil
+        import tempfile
+
+        from ..fabric import invoke_fabric
+        from .worker_output import clean_worker_output
+
+        class _Stop:
+            cancelled = property(lambda self_: bool(should_stop and should_stop()))
+
+        folder = tempfile.mkdtemp(prefix="aura-answer-")
+        try:
+            outcome = invoke_fabric(
+                "agent.delegate", {"task": prompt, "role": "research", "reasoner": True},
+                {"cwd": folder, "nodeId": worker_id, "taskId": "answer", "cancelToken": _Stop(),
+                 "actor": {"kind": "agent", "id": "central-agent"}}, self.fabric_cfg)
+        except Exception:  # noqa: BLE001 — a failed answer is reported by the caller, not raised
+            return None
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        if outcome.get("outcome") not in ("succeeded", "unverified"):
+            return None
+        text = clean_worker_output(str((outcome.get("output") or {}).get("stdout") or ""))
+        return text or None
+
     def _stream_conversation(self, session: AgentSession, user_message: str,
                              bundle: Any, chat_mode: bool = False,
                              shared: str = "", research: dict | None = None,
@@ -2389,7 +2449,10 @@ class CentralAgent:
         port = getattr(intents, "model_port", None)
         if (getattr(intents, "mode", "heuristic") != "model"
                 or port is None):
-            return None
+            # No text model: a connected, allowed coding agent can write the answer.
+            port = self._agent_text_port(user_message, sid)
+            if port is None:
+                return None
         system = (
             "You are AURA, a calm, capable engineering assistant talking "
             "to the person who runs you. Reply directly in plain markdown "

@@ -20,6 +20,7 @@ import pytest
 from aura.audit import AuditStore
 from aura.central_agent.runcontrol import RunControl
 from aura.fabric import CapabilityFabric, FabricConfig, FabricHost, builtin_executors, invoke_fabric
+from _process_probe import survivors
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
@@ -60,16 +61,7 @@ def env(tmp_path, monkeypatch):
 
 def _survivors(proj, script="slow.js"):
     """Live processes running `script` from this project directory."""
-    found = []
-    for pid in filter(str.isdigit, os.listdir("/proc")):
-        try:
-            argv = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
-            cwd = os.readlink(f"/proc/{pid}/cwd")
-        except OSError:
-            continue
-        if script.encode() in argv and cwd == str(proj):
-            found.append(int(pid))
-    return found
+    return survivors(proj, script)
 
 
 def _run(cfg, proj, token, command="node slow.js"):

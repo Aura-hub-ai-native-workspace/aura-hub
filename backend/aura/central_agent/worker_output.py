@@ -4,12 +4,14 @@ A coding CLI writes its terminal chrome to the same stream as its answer:
 ANSI colour codes, a one-line banner naming the model, and a trace line for
 each tool call. This module removes exactly those shapes and nothing else.
 
-Deliberately narrow. Only three shapes are recognised, each observed in real
-Kilo output: ANSI escape sequences, a banner line of the form
-"> <word> · <model>", and a tool trace line "→ <Verb> <path>" (the arrow
-followed by a single capitalised verb and one target). Any other line is kept,
-so a worker's real findings are never dropped by a broad pattern. The raw
-stdout is untouched in the execution record for diagnostics.
+Deliberately narrow. Only these shapes are recognised, each observed in real
+worker output: ANSI escape sequences, a banner line of the form
+"> <word> · <model>", a tool trace line "→ <Verb> <path>", and OpenCode's trace
+lines ("✗ <Tool> … failed", "⚙ <tool> {…}", "← <Verb> <path>", "✱ <Tool> …"). The trace
+is written after the answer, so from the first exact trace line onward the rest is
+trace and is dropped. Any other line is kept, so a worker's real findings are never
+dropped by a broad pattern (a review may list items with "✗"; only the exact shapes
+count). The raw stdout is untouched in the execution record for diagnostics.
 """
 
 from __future__ import annotations
@@ -19,6 +21,13 @@ import re
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\[[0-9;]*m")
 _BANNER = re.compile(r"^\s*>\s+[\w.-]+\s+·\s+\S+\s*$")
 _TOOL_TRACE = re.compile(r"^\s*→\s+(?:\[[0-9;]*m)*\s*[A-Z][a-z]+\s+\S+\s*$")
+#: OpenCode's own trace lines. Once one appears after the answer, the rest of the stream is trace.
+_TRACE_START = (
+    re.compile(r"^\s*✗\s+[A-Za-z_]+\s+.+\s+failed\s*$"),
+    re.compile(r"^\s*⚙\s+[A-Za-z_]+\s*\{"),
+    re.compile(r"^\s*←\s+[A-Z][a-z]+\s+\S+"),
+    re.compile(r"^\s*✱\s+[A-Z][a-z]+\s+.+"),
+)
 
 
 def clean_worker_output(text: str) -> str:
@@ -28,6 +37,10 @@ def clean_worker_output(text: str) -> str:
         return ""
     kept: list[str] = []
     for line in _ANSI.sub("", text).splitlines():
+        if any(p.match(line) for p in _TRACE_START):
+            if any(k.strip() for k in kept):
+                break          # the answer is done; what follows is the tool trace
+            continue           # a trace line before any answer is skipped on its own
         if _BANNER.match(line) or _TOOL_TRACE.match(line):
             continue
         kept.append(line.rstrip())

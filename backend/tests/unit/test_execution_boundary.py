@@ -41,6 +41,12 @@ EXECUTION_EXEMPTIONS: dict[str, str] = {
         "environment is the point; stdin is closed and the whole process "
         "group is signalled, asserted separately"
     ),
+    "aura/central_agent/laya_advisor.py": (
+        "keeps the Laya decision model loaded in one long-lived worker that speaks "
+        "a line-based JSON protocol on stdin/stdout, the same stdio case as the MCP "
+        "transport; it runs under its own interpreter with a sanitized environment, "
+        "a new session so it can be stopped as a group, and stderr to DEVNULL"
+    ),
     "aura/multimodal/process_supervisor.py": (
         "document-engine process isolation: spawns a single worker process with "
         "a hard wall-clock timeout for Docling conversion so that a hung parser "

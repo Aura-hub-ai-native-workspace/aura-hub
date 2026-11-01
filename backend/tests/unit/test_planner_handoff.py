@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import pytest
 
+from _laya_double import use_ready_laya
+
 from aura.central_agent.plan_handoff import HandoffError, validate_handoff
 from test_cancellation import _ok
 from test_stopped_mission_view import _agent
@@ -42,7 +44,7 @@ def _plan(**over):
         "tasks": [{"id": "t1", "title": "Create NOTES.md",
                    "description": "A short notes file for the project.",
                    "targetFile": "NOTES.md", "files": [], "dependsOn": [],
-                   "worker": None}],
+                   "worker": "opencode"}],
     }
     plan.update(over)
     return plan
@@ -54,6 +56,11 @@ def project(tmp_path):
     root.mkdir()
     (root / "README.md").write_text("# proj\n")
     return root
+
+
+@pytest.fixture(autouse=True)
+def _laya_is_the_planner(monkeypatch):
+    use_ready_laya(monkeypatch)
 
 
 @pytest.fixture()
@@ -69,18 +76,12 @@ def agent(tmp_path):
     return agent
 
 
-def test_an_aura_written_task_is_authored_and_really_written(agent, project):
-    result, sid = agent.execute_handoff(_plan(), project_id="p",
-                                        project_path=str(project))
-    assert result.outcome == "completed", result.summary
-    assert (project / "NOTES.md").read_text() == "# NOTES.md\nwritten for the plan\n"
-    session = agent.sessions.load(sid)
-    assert session.mode == "work"
-    assert session.origin == {"source": "planner", "planId": "mission-abc", "revision": 1}
-    types = [e.type for e in agent.bus.tail if e.sessionId == sid]
-    assert types.index("plan.received") < types.index("task.authored") \
-        < types.index("execution.started")
-    assert not any(t.startswith("plan.awaiting") or t == "approval.required" for t in types)
+def test_an_aura_written_task_is_refused_because_laya_only_plans(agent, project):
+    plan = _plan(tasks=[{"id": "w", "title": "Write notes", "targetFile": "NOTES.md", "worker": None}])
+    with pytest.raises(HandoffError) as err:
+        agent.execute_handoff(plan, project_id="p", project_path=str(project))
+    assert err.value.code == "invalid"
+    assert not (project / "NOTES.md").exists()
 
 
 def test_the_whole_plan_arrives_and_runs_in_dependency_order(agent, project, monkeypatch):
@@ -116,17 +117,17 @@ def test_the_whole_plan_arrives_and_runs_in_dependency_order(agent, project, mon
     assert workers == ["kilo-code", "claude-code"]
 
 
-def test_the_same_plan_revision_cannot_start_twice(agent, project):
+def test_the_same_plan_revision_cannot_start_twice(agent, project, monkeypatch):
+    # The duplicate guard is what is under test; the run itself is stubbed out.
+    monkeypatch.setattr(agent, "_run_handoff", lambda session, handoff: agent._fail(session, "stub"))
     agent.execute_handoff(_plan(), project_id="p", project_path=str(project))
     with pytest.raises(HandoffError) as err:
         agent.execute_handoff(_plan(), project_id="p", project_path=str(project))
     assert err.value.code == "duplicate"
     assert err.value.extra["sessionId"].startswith("agt-")
-    # An edited plan is a new revision, and may run.
-    (project / "NOTES.md").unlink()
-    result, _ = agent.execute_handoff(_plan(revision=2), project_id="p",
-                                      project_path=str(project))
-    assert result.outcome == "completed"
+    # An edited plan is a new revision: it is accepted, not refused as a duplicate.
+    result, _ = agent.execute_handoff(_plan(revision=2), project_id="p", project_path=str(project))
+    assert result.outcome == "failed"  # the run is stubbed; acceptance is what is checked
 
 
 def test_a_reused_session_id_is_refused(agent, project):
@@ -138,15 +139,16 @@ def test_a_reused_session_id_is_refused(agent, project):
     assert agent.sessions.load(sid).mode == "chat"
 
 
-def test_without_a_model_aura_cannot_author_and_nothing_starts(agent, project):
-    agent.intents.model_port = None
-    before = set((project.parent / "agent").rglob("*.json")) if (project.parent / "agent").exists() else set()
+def test_without_laya_ready_nothing_starts(agent, project, monkeypatch):
+    import aura.central_agent.laya_advisor as adv
+
+    class Loading(type(adv.laya_advisor())):
+        state = "loading"
+
+    monkeypatch.setattr(adv, "laya_advisor", lambda: Loading())
     with pytest.raises(HandoffError) as err:
         agent.execute_handoff(_plan(), project_id="p", project_path=str(project))
-    assert err.value.code == "unavailable"
-    assert not (project / "NOTES.md").exists()
-    after = set((project.parent / "agent").rglob("*.json")) if (project.parent / "agent").exists() else set()
-    assert after == before  # no session was created
+    assert err.value.code == "unavailable" and "not ready" in str(err.value)
 
 
 @pytest.mark.parametrize("tasks, message", [
@@ -296,20 +298,6 @@ class _SameFilePort(_Port):
         return "```\n" + (self.original or "") + "```"
 
 
-def test_an_edit_the_model_did_not_make_fails_instead_of_reading_back_verified(agent, project):
-    (project / "index.html").write_text("<html>\n<body>hi</body>\n</html>\n")
-    port = _SameFilePort()
-    port.original = "<html>\n<body>hi</body>\n</html>\n"
-    agent.intents.model_port = port
-    plan = _plan(goal="Add an audio element to index.html", tasks=[
-        {"id": "t1", "title": "Update index.html", "description": "Add an audio element with id audio.",
-         "targetFile": "index.html", "files": [], "dependsOn": [], "worker": None}])
-    result, sid = agent.execute_handoff(plan, project_id="p", project_path=str(project))
-    assert result.outcome != "completed"
-    assert "did not change index.html" in result.summary and "requested change was not made" in result.summary
-    assert (project / "index.html").read_text() == port.original            # untouched
-
-
 def test_the_change_observer_does_not_call_an_identical_rewrite_a_modification(tmp_path):
     import os
     import time
@@ -335,28 +323,3 @@ class _CorrectedPort(_Port):
         if "IDENTICAL to the current file" in user:
             return "```\n<html>\n<body>hi<audio id=\"audio\"></audio></body>\n</html>\n```"
         return "```\n<html>\n<body>hi</body>\n</html>\n```"
-
-
-def test_one_correction_turns_an_unchanged_reply_into_the_real_edit(agent, project):
-    (project / "index.html").write_text("<html>\n<body>hi</body>\n</html>\n")
-    port = _CorrectedPort()
-    agent.intents.model_port = port
-    plan = _plan(goal="Add an audio element to index.html", tasks=[
-        {"id": "t1", "title": "Update index.html", "description": "Add an audio element with id audio.",
-         "targetFile": "index.html", "files": [], "dependsOn": [], "worker": None}])
-    result, _ = agent.execute_handoff(plan, project_id="p", project_path=str(project))
-    assert result.outcome == "completed", result.summary
-    assert 'id="audio"' in (project / "index.html").read_text()
-    assert len(port.prompts) == 2
-
-
-def test_a_file_too_large_to_show_whole_is_not_rewritten_from_a_truncated_view(agent, project):
-    big = "line of code\n" * 600                                   # > 5,000 characters
-    (project / "big.js").write_text(big)
-    plan = _plan(goal="Fix big.js", tasks=[
-        {"id": "t1", "title": "Update big.js", "description": "Fix it.",
-         "targetFile": "big.js", "files": [], "dependsOn": [], "worker": None}])
-    result, _ = agent.execute_handoff(plan, project_id="p", project_path=str(project))
-    assert result.outcome != "completed" and "would lose the rest" in result.summary
-    assert (project / "big.js").read_text() == big
-    assert agent.intents.model_port.prompts == []                    # the model was never asked

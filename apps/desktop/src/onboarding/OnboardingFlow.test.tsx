@@ -11,6 +11,7 @@ describe('OnboardingFlow start step', () => {
   it('a returning person missing a provider opens at activation, not the welcome again', () => {
     const html = renderToStaticMarkup(<OnboardingFlow initialStep="activate" onComplete={() => undefined} />);
     expect(html).not.toContain('Welcome to AURA');
-    expect(html).toContain('Connect your Ollama server');
+    expect(html).toContain('Sign in to AURA Hub');
+    expect(html).not.toContain('Ollama');
   });
 });

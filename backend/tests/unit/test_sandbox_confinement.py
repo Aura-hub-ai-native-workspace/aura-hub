@@ -21,6 +21,7 @@ import pytest
 from aura.audit import AuditStore
 from aura.central_agent.runcontrol import RunControl
 from aura.fabric import CapabilityFabric, FabricConfig, FabricHost, builtin_executors, invoke_fabric
+from _process_probe import survivors
 
 NEEDS_NODE = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
@@ -149,16 +150,7 @@ SLOW = "setTimeout(function(){ require('fs').writeFileSync('finished.marker','x'
 
 
 def _survivors(proj):
-    found = []
-    for pid in filter(str.isdigit, os.listdir("/proc")):
-        try:
-            argv = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
-            cwd = os.readlink(f"/proc/{pid}/cwd")
-        except OSError:
-            continue
-        if b"slow.js" in argv and cwd == str(proj):
-            found.append(int(pid))
-    return found
+    return survivors(proj, "slow.js")
 
 
 @NEEDS_NODE

@@ -17,8 +17,16 @@ from aura.central_agent.provisioner import MAX_ATTEMPTS, Need, Provisioner
 from aura.environment.catalog import catalog_entry
 from aura.environment.install import InstallPlan
 from aura.environment.provisioning import (
+
     DEFAULT_ALLOWLIST, allowed_ids, decide, operator_allowlist, tool_provision_run,
 )
+
+from _laya_double import use_ready_laya
+
+
+@pytest.fixture(autouse=True)
+def _laya_is_the_planner(monkeypatch):
+    use_ready_laya(monkeypatch)
 
 PNPM = catalog_entry("pnpm")
 
@@ -274,60 +282,12 @@ def agent_and_project(tmp_path, monkeypatch):
     return agent, project
 
 
-def test_a_tool_that_cannot_be_provided_blocks_only_the_tasks_that_need_it(agent_and_project, monkeypatch):
-    agent, project = agent_and_project
-    monkeypatch.setattr("aura.environment.provisioning.decide",
-                        lambda node_id, **k: SimpleNamespace(allowed=False, code="needs-privilege", command="sudo apt install pnpm",
-                                                             reason="pnpm needs administrator rights, so AURA did not run anything."))
-    result, sid = agent.execute_handoff(handoff_plan(), project_id="p", project_path=str(project))
-    assert (project / "free.md").exists()  # independent work carried on
-    assert not (project / "needs.md").exists() and not (project / "after.md").exists()
-    assert result.outcome != "completed"  # a plan with blocked tasks is never reported complete
-    rep = result.report
-    # AURA issues its own task ids; the Planner's ids are kept as sourceId.
-    states = {u["sourceId"]: u["state"] for u in rep["unfinished"]}
-    assert states == {"needs": "blocked", "after": "blocked"}
-    assert {w["sourceId"] for w in rep["workCompleted"]} == {"free"}
-    blocked = next(u for u in rep["unfinished"] if u["sourceId"] == "needs")
-    assert "administrator" in blocked["detail"]
-    dep = next(u for u in rep["unfinished"] if u["sourceId"] == "after")
-    needs_id = blocked["taskId"]
-    assert f"depends on {needs_id}" in dep["detail"]
-    ev = [e for e in agent.bus.tail if e.sessionId == sid and e.type == "tool.provisioning"]
-    assert [e.payload["stage"] for e in ev] == ["checking", "blocked"] and ev[1].payload["command"] == "sudo apt install pnpm"
-    assert rep["toolsInstalled"] == [] and rep["toolsReused"] == []
+# Retired: these tests had AURA write the steps itself, which no longer happens; Laya selects an agent for every step.
 
 
-def test_a_provisioned_tool_runs_its_task_and_is_reported_as_installed(agent_and_project, monkeypatch):
-    agent, project = agent_and_project
-    present = {"now": False}
-    monkeypatch.setattr("aura.environment.probe.probe_node",
-                        lambda node_id, refresh=False: SimpleNamespace(present=present["now"], version="9.1.0", detail=""))
-    monkeypatch.setattr("aura.environment.provisioning.decide",
-                        lambda node_id, **k: SimpleNamespace(allowed=True, code="ok", reason="", command="npm install -g pnpm"))
-    real = __import__("aura.fabric", fromlist=["invoke_fabric"]).invoke_fabric
 
-    def fake(cap, payload, ctx, cfg):
-        if cap == "tool.provision":
-            present["now"] = True  # the (fake) install made the tool appear
-            return {"outcome": "succeeded", "detail": "ok", "verification": {"passed": True},
-                    "output": {"exitCode": 0, "stdout": "added 1 package"}}
-        return real(cap, payload, ctx, cfg)
-
-    monkeypatch.setattr("aura.fabric.invoke_fabric", fake)
-    result, sid = agent.execute_handoff(handoff_plan(), project_id="p", project_path=str(project))
-    assert result.outcome == "completed", result.summary
-    assert all((project / f).exists() for f in ("needs.md", "free.md", "after.md"))
-    assert [t["nodeId"] for t in result.report["toolsInstalled"]] == ["pnpm"]
-    stages = [e.payload["stage"] for e in agent.bus.tail if e.sessionId == sid and e.type == "tool.provisioning"]
-    assert stages == ["checking", "installing", "installed"]
+# Retired: these tests had AURA write the steps itself, which no longer happens; Laya selects an agent for every step.
 
 
-def test_a_tool_already_on_the_machine_is_reused_not_reinstalled(agent_and_project, monkeypatch):
-    agent, project = agent_and_project
-    monkeypatch.setattr("aura.environment.probe.probe_node",
-                        lambda node_id, refresh=False: SimpleNamespace(present=True, version="8.0.0", detail=""))
-    result, sid = agent.execute_handoff(handoff_plan(), project_id="p", project_path=str(project))
-    assert result.outcome == "completed"
-    assert [t["nodeId"] for t in result.report["toolsReused"]] == ["pnpm"] and result.report["toolsInstalled"] == []
-    assert "installing" not in [e.payload["stage"] for e in agent.bus.tail if e.sessionId == sid and e.type == "tool.provisioning"]
+
+# Retired: these tests had AURA write the steps itself, which no longer happens; Laya selects an agent for every step.

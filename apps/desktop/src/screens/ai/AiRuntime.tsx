@@ -9,6 +9,7 @@ import {
   type AgentRecord,
   type AgentConfigChange,
 } from '../../ai/centralAgentClient';
+import { versionForAgent, workerClient, type AgentVersion } from '../../ai/workerClient';
 
 function statusTone(s: AgentRecord['status']): 'positive' | 'attention' | 'critical' | 'neutral' {
   if (s === 'ok') return 'positive';
@@ -45,6 +46,7 @@ export function AiRuntime() {
   const [lastChanges, setLastChanges] = useState<AgentConfigChange[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [versions, setVersions] = useState<AgentVersion[]>([]);
 
   const discover = useCallback(async () => {
     setDiscovering(true);
@@ -52,6 +54,7 @@ export function AiRuntime() {
     try {
       const r = await centralAgentClient.agentRuntimeDiscover();
       setSummary(r);
+      void workerClient.versions().then(setVersions);
     } catch (e) {
       setLoadError((e as Error)?.message ?? 'Discovery failed');
     } finally {
@@ -266,6 +269,7 @@ export function AiRuntime() {
                   <AgentCard
                     key={agent.id}
                     agent={agent}
+                    version={versionForAgent(agent.id, versions)}
                     canApply={canApply}
                     applying={applyingAgent === agent.id}
                     restoring={restoringAgent === agent.id}
@@ -284,6 +288,7 @@ export function AiRuntime() {
 
 interface AgentCardProps {
   agent: AgentRecord;
+  version: AgentVersion | null;
   canApply: boolean;
   applying: boolean;
   restoring: boolean;
@@ -291,7 +296,7 @@ interface AgentCardProps {
   onRestore: () => void;
 }
 
-function AgentCard({ agent, canApply, applying, restoring, onApply, onRestore }: AgentCardProps) {
+function AgentCard({ agent, version, canApply, applying, restoring, onApply, onRestore }: AgentCardProps) {
   const cfg = agent.currentConfig;
   const currentBase = typeof cfg?.baseUrl === 'string' ? cfg.baseUrl : null;
   const currentModel = typeof cfg?.modelId === 'string' ? cfg.modelId : (typeof cfg?.model === 'string' ? cfg.model : null);
@@ -311,7 +316,9 @@ function AgentCard({ agent, canApply, applying, restoring, onApply, onRestore }:
           </span>
           <div>
             <span className="block text-[13px] font-semibold text-text">{agent.name}</span>
-            <span className="block text-[11px] text-text-subtle">{agent.id}</span>
+            <span className="block text-[11px] text-text-subtle">
+              {agent.id}{version?.installed ? ` · v${version.installed}` : ''}
+            </span>
           </div>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -320,6 +327,14 @@ function AgentCard({ agent, canApply, applying, restoring, onApply, onRestore }:
           </Badge>
           {agent.detected && (
             <Badge tone={statusTone(agent.status)}>{statusLabel(agent.status)}</Badge>
+          )}
+          {version?.updateAvailable && (
+            <span title={`Update: ${version.updateCommand}`} data-testid="agent-update">
+              <Badge tone="attention">Update to v{version.latest}</Badge>
+            </span>
+          )}
+          {version && !version.updateAvailable && version.latest && (
+            <Badge tone="neutral">Up to date</Badge>
           )}
         </div>
       </div>

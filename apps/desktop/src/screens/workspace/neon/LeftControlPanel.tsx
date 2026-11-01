@@ -2,16 +2,14 @@ import { Icon, IconButton, type IconName } from '@aura/ui';
 import type { WorkerDescriptor } from '../../../ai/workerClient';
 import type { ToolSlot } from '../../../workspace/toolSlots';
 import type { WorkerSlot } from '../../../workspace/workerSlots';
-import { AuraComposer } from './AuraComposer';
 import { OrchestrationGraph } from './OrchestrationGraph';
 
 /**
- * LeftControlPanel — capability graph and the one composer.
+ * LeftControlPanel — the members and tools rail.
  *
  * The panel shows who AURA can call on (workers above, tools below the
- * central AURA Agent node), then pins the composer at the bottom so the
- * interaction model reads as: compose → AURA → capabilities. The graph
- * scrolls independently; the composer is always reachable without scrolling.
+ * central AURA Agent node). It opens from the chat's header; the message box
+ * lives under the conversation, not here.
  *
  * The panel itself holds no state: the graph is a pure view over the
  * workspace's slots, and the composer owns everything it needs (its text
@@ -50,13 +48,6 @@ export function LeftControlPanel({
   onConnectWorker,
   onDisconnectWorker,
   agentBusy,
-  text,
-  setText,
-  onSend,
-  onStop,
-  busy,
-  webResearch,
-  onWebResearchChange,
 }: {
   /** The workspace's three active tool slots, filled or empty. */
   toolSlots: ToolSlot[];
@@ -82,16 +73,6 @@ export function LeftControlPanel({
   onDisconnectWorker: (id: string) => void;
   /** True while AURA is working, so the graph can breathe. */
   agentBusy: boolean;
-  /** Composer text value — lifted to WorkspaceScreen so suggestion chips work. */
-  text: string;
-  setText: (text: string) => void;
-  onSend: (text: string) => void;
-  onStop: () => void;
-  /** True while AURA is executing — switches send → stop. */
-  busy: boolean;
-  /** Whether this request may reach the web. Held by the screen, passed through. */
-  webResearch: boolean;
-  onWebResearchChange: (next: boolean) => void;
 }) {
   const connected = workers.filter((w) => w.connected).length;
 
@@ -180,18 +161,6 @@ export function LeftControlPanel({
         </div>
       </div>
 
-      {/* Composer — always visible at the bottom of the rail. The composer
-          owns its controls (message box, attachment, send/stop); the rail
-          above stays a pure view over workspace state. */}
-      <AuraComposer
-        text={text}
-        onTextChange={setText}
-        onSend={onSend}
-        onStop={onStop}
-        busy={busy}
-        webResearch={webResearch}
-        onWebResearchChange={onWebResearchChange}
-      />
     </aside>
   );
 }

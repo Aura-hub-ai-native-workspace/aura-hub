@@ -24,15 +24,15 @@ class TestRemediationPhrasing:
             "Build a small authentication feature for this project. Have "
             "another AI review the implementation. If the reviewer finds "
             "a problem, fix it and verify everything."
-        ) == ["implement", "review", "remediate"]
+        ) == ["implement", "review", "remediate", "rereview", "remediate2"]
 
     def test_reviewer_as_a_noun_still_means_a_review(self):
         assert _tasks("Refactor this and fix anything the reviewer finds.") \
-            == ["implement", "review", "remediate"]
+            == ["implement", "review", "remediate", "rereview", "remediate2"]
 
     def test_address_that_is_remediation(self):
         assert _tasks("Add a parser, have it reviewed, and address that.") \
-            == ["implement", "review", "remediate"]
+            == ["implement", "review", "remediate", "rereview", "remediate2"]
 
     def test_remediation_without_a_review_is_just_the_work(self):
         """No review means "fix it" IS the task, not a follow-up to one —
@@ -44,7 +44,7 @@ class TestRemediationPhrasing:
         # Autonomous: what the review finds goes back to a worker without being asked; the
         # remediation task skips itself when the review is clean.
         assert _tasks("Add a parser and have another AI review it.") \
-            == ["implement", "review", "remediate"]
+            == ["implement", "review", "remediate", "rereview", "remediate2"]
 
     def test_a_question_delegates_nothing(self):
         assert _tasks("What does this repo do?") == []

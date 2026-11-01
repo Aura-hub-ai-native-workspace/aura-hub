@@ -73,7 +73,7 @@ class TestTaskGraph:
                      "review it")
         # Autonomous by default: a reviewed change goes back to a worker if the review finds
         # problems, with nobody having to ask. The third task skips itself on a clean review.
-        assert [t.id for t in plan.tasks] == ["implement", "review", "remediate"]
+        assert [t.id for t in plan.tasks] == ["implement", "review", "remediate", "rereview", "remediate2"]
         assert plan.tasks[2].runWhen == "upstream-reports-findings"
         review = plan.tasks[1]
         assert review.workerRole == "review"
@@ -86,16 +86,23 @@ class TestTaskGraph:
     def test_remediation_becomes_a_third_conditional_task(self):
         plan = _plan("Implement auth in src/auth, have another AI review it "
                      "and fix anything the reviewer finds")
-        assert [t.id for t in plan.tasks] == ["implement", "review",
-                                              "remediate"]
+        assert [t.id for t in plan.tasks] == ["implement", "review", "remediate",
+                                              "rereview", "remediate2"]
         fix = plan.tasks[2]
         assert fix.dependsOn == ["review"]
         assert fix.runWhen == "upstream-reports-findings"
         assert fix.workerRole == "code"
+        assert fix.preferWorkerFrom == ["implement"]   # the fix goes back to the builder
+        # The second round: a different worker checks the fix, and anything left goes back once more.
+        again, fix2 = plan.tasks[3], plan.tasks[4]
+        assert again.dependsOn == ["remediate"] and again.runWhen == "upstream-ran"
+        assert again.distinctWorkerFrom == ["remediate"] and again.workerRole == "review"
+        assert fix2.dependsOn == ["rereview"] and fix2.runWhen == "upstream-reports-findings"
+        assert fix2.preferWorkerFrom == ["implement"]
         # Objective acceptance covers the WHOLE graph: finishing the
         # implementation is never on its own the objective.
         assert plan.acceptance[0].expect["tasks"] == [
-            "implement", "review", "remediate"]
+            "implement", "review", "remediate", "rereview", "remediate2"]
 
     def test_the_stated_scope_travels_to_every_task(self):
         plan = _plan("Implement auth in src/auth and have another AI "
@@ -199,7 +206,9 @@ class TestConditionalRemediation:
         plan, result, dispatched = self._run(
             monkeypatch, "nothing to fix\nAURA-REVIEW: PASS")
         assert dispatched == ["implement", "review"]
-        remediate = result.outcomes[-1]
+        by_id = {o.taskId: o for o in result.outcomes}
+        assert [by_id[t].state for t in ("remediate", "rereview", "remediate2")] == ["skipped"] * 3
+        remediate = by_id["remediate"]
         assert remediate.taskId == "remediate"
         assert remediate.state == "skipped"
         assert remediate.performed is False
@@ -218,13 +227,13 @@ class TestConditionalRemediation:
     def test_findings_dispatch_the_remediation(self, monkeypatch):
         _plan_, _result, dispatched = self._run(
             monkeypatch, "1. missing check\nAURA-REVIEW: CHANGES-REQUIRED")
-        assert dispatched == ["implement", "review", "remediate"]
+        assert dispatched == ["implement", "review", "remediate", "rereview", "remediate2"]
 
     def test_an_unreadable_review_dispatches_the_remediation(
             self, monkeypatch):
         _plan_, _result, dispatched = self._run(
             monkeypatch, "I think it's fine, honestly")
-        assert dispatched == ["implement", "review", "remediate"]
+        assert dispatched == ["implement", "review", "remediate", "rereview", "remediate2"]
 
     def test_the_reviewer_is_never_the_implementer(self, monkeypatch):
         seen: dict[str, str] = {}
@@ -265,7 +274,7 @@ class TestWorkerOutputIsData:
         plan = _plan("Implement auth in src, have another AI review it and "
                      "fix anything the reviewer finds")
         _controller().execute(plan, "p")
-        assert dispatched == ["implement", "review", "remediate"]
+        assert dispatched == ["implement", "review", "remediate", "rereview", "remediate2"]
 
     def test_injected_text_cannot_widen_scope(self, monkeypatch):
         sent: list[dict] = []
@@ -333,6 +342,10 @@ class TestObjectiveAcceptance:
             # review it is recorded as skipped-and-verified, which still satisfies acceptance.
             TaskOutcome(taskId="remediate", state="skipped", performed=False,
                         verified=True, detail="Not needed: the review reported nothing."),
+            TaskOutcome(taskId="rereview", state="skipped", performed=False,
+                        verified=True, detail="Not needed: the step before it was not needed."),
+            TaskOutcome(taskId="remediate2", state="skipped", performed=False,
+                        verified=True, detail="Not needed: the step before it was not needed."),
         ]
         report = VerificationEngine().verify(plan, rows)
         assert report.objectiveAccepted is True, report.unmetAcceptance

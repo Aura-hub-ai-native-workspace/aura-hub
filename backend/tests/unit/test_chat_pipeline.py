@@ -93,6 +93,10 @@ def build(tmp_path, monkeypatch, *, gateway=None, port=None):
     if port is not None:
         agent.intents.model_port = port
         agent.intents.mode = "model"
+    else:
+        # No text model: the chat falls back to a connected coding agent. A test must never reach
+        # the real agents installed on the machine running it, so none is offered here.
+        monkeypatch.setattr(agent, "_agent_candidates", lambda *a, **k: ([], []))
     return agent
 
 
@@ -172,7 +176,7 @@ def test_with_no_model_the_answer_is_honest_and_still_lists_what_research_found(
     agent = build(tmp_path, monkeypatch, gateway=gateway, port=None)
     result, _sid = agent.chat("What is PEP 8?")
     assert "no reasoning model is available" in result.summary
-    assert "https://peps.python.org/pep-0008/" in result.summary  # real sources, not an invented answer
+    assert "https://peps.python.org/pep-0008/" in result.summary  # a configured gateway's real sources
     assert result.outcome == "completed" and result.model is None
 
 

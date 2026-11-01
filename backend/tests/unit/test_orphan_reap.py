@@ -15,6 +15,7 @@ import time
 import pytest
 
 from aura.environment import procexec
+from _process_probe import alive
 
 pytestmark = pytest.mark.skipif(
     shutil.which("pgrep") is None or sys.platform.startswith("win"),
@@ -22,19 +23,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    # A zombie still answers kill(0) until reaped; treat it as gone.
-    try:
-        with open(f"/proc/{pid}/stat") as fh:
-            return fh.read().split()[2] != "Z"
-    except OSError:
-        return True
+_alive = alive
 
 
 def _wait_gone(pid: int, timeout: float = 5.0) -> bool:

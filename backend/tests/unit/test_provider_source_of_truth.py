@@ -215,7 +215,8 @@ def test_an_unreachable_server_is_configured_but_not_reachable_and_never_ready(h
 def test_a_keyed_provider_reports_a_missing_key_without_its_value(home, monkeypatch):
     monkeypatch.delenv("TEST_PROVIDER_KEY", raising=False)
     (home / "agent" / "providers.json").write_text(json.dumps({"providers": [
-        {"id": "cloud", "baseUrl": "https://api.example.test/v1", "model": "m", "apiKeyEnv": "TEST_PROVIDER_KEY"}]}))
+        {"id": "cloud", "baseUrl": "http://127.0.0.1:9/v1", "model": "m", "apiKeyEnv": "TEST_PROVIDER_KEY",
+         "networkClass": "local"}]}))
     st = status(make_client())["laya"]["providers"][0]["stages"]
     assert st["credentials"] == "missing"
     monkeypatch.setenv("TEST_PROVIDER_KEY", "sk-supersecret-value-1234567890")

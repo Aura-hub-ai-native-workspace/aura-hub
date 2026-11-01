@@ -95,6 +95,16 @@ def _rel_path(value: object, field: str) -> str:
     return path
 
 
+def _review_target(rt: dict, tid: str, earlier: list[str]) -> str | None:
+    """The earlier task this one reviews. A review must be done by a different worker."""
+    target = rt.get("reviewOf")
+    if target in (None, ""):
+        return None
+    if not isinstance(target, str) or target == tid or target not in earlier:
+        raise HandoffError("invalid", f"task '{tid}' reviewOf must name an earlier task")
+    return target
+
+
 def validate_handoff(raw: object) -> dict:
     """Normalise and validate a handoff. Fails closed with HandoffError."""
     if not isinstance(raw, dict):
@@ -165,7 +175,8 @@ def validate_handoff(raw: object) -> dict:
                       "targetFile": target, "files": files,
                       "dependsOn": list(dict.fromkeys(deps)), "worker": worker,
                       "requires": list(dict.fromkeys(requires)),
-                      "expectedOutput": expected, "verification": verification})
+                      "expectedOutput": expected, "verification": verification,
+                      "reviewOf": _review_target(rt, tid, [t["id"] for t in tasks])})
 
     for t in tasks:
         for d in t["dependsOn"]:
@@ -295,18 +306,30 @@ def classify_task(task: dict) -> str:
 _PREFERENCE = {"frontend": ("kilo-code", "opencode"), "backend": ("opencode", "kilo-code")}
 
 
-def select_workers(handoff: dict, candidates: list[dict], unavailable: list[dict]) -> dict:
-    """Assign a connected, allowed coding agent to every task that has none.
+def _worker_description(worker_id: str) -> str:
+    """What AURA knows a worker is good at, as text Laya can compare workers by."""
+    ranked = [(ids.index(worker_id), k) for k, ids in _PREFERENCE.items() if worker_id in ids]
+    if not ranked:
+        return "general coding agent"
+    ranked.sort()
+    first = [k for rank, k in ranked if rank == 0]
+    rest = [k for rank, k in ranked if rank > 0]
+    text = ("first choice for " + " and ".join(f"{k} work" for k in first)) if first else ""
+    if rest:
+        text += ("; " if text else "") + "second choice for " + " and ".join(f"{k} work" for k in rest)
+    return text
 
-    Deterministic and explainable (no model call): availability and policy are
-    facts, and the choice among available agents follows the kind of work and
-    spreads tasks across agents when several are available. Each task also waits
-    for the one before it, so only one coding agent runs at a time and the next
-    starts only after the previous one finished and passed its checks.
+
+def select_workers(handoff: dict, candidates: list[dict], unavailable: list[dict], chooser) -> dict:
+    """Laya selects a connected, allowed coding agent for every task that has none.
+
+    Laya is the only selector: there is no fallback rule and no local model in this
+    path. Each task is offered only the allowed agents (and, for a review, only an
+    agent other than the one that did the work). Each task also waits for the one
+    before it, so only one coding agent runs at a time.
 
     Returns {"handoff": <new handoff>, "selections": [...]} and raises
-    HandoffError("unavailable", ...) naming every blocked agent when a task needs
-    an agent and none is available.
+    HandoffError("unavailable", ...) when no agent is available or Laya cannot name one.
     """
     tasks = [dict(t) for t in handoff["tasks"]]
     pending = [t for t in tasks if needs_selection(t)]
@@ -318,31 +341,38 @@ def select_workers(handoff: dict, candidates: list[dict], unavailable: list[dict
             f"({len(pending)} task(s) need one). {blocked}. Laya plans and coordinates; it does "
             "not write the application itself. Connect an agent, or allow one in "
             "<AURA_HOME>/worker-policy.json.")
-    used: dict[str, int] = {c["id"]: 0 for c in candidates}
+    if pending and chooser is None:
+        raise HandoffError("unavailable", "Laya is not ready to select a coding agent for this plan.")
+    ids = [c["id"] for c in candidates]
+    unavailable_view = [{"id": u["id"], "reason": u["reason"]} for u in unavailable]
     selections: list[dict] = []
-    previous_worker: str | None = None
     for t in tasks:
         if not needs_selection(t):
-            previous_worker = t["worker"] or previous_worker
             continue
         kind = classify_task(t)
-        ids = [c["id"] for c in candidates]
-        preferred = [w for w in _PREFERENCE.get(kind, ()) if w in ids]
-        pool = preferred or ids
-        # least-used first; among equals, not the same agent as the previous task
-        order = list(preferred) + [w for w in ids if w not in preferred]
-        pool = sorted(pool, key=lambda w: (used[w], w == previous_worker, order.index(w)))
-        chosen = pool[0]
-        used[chosen] += 1
-        previous_worker = chosen
+        options = list(candidates)
+        # A review is done by a different agent from the one that did the work, when
+        # one is available. Only a single allowed agent may review its own work.
+        did_it = next((x["worker"] for x in tasks if x["id"] == t.get("reviewOf")), None)
+        if did_it and [c for c in options if c["id"] != did_it]:
+            options = [c for c in options if c["id"] != did_it]
+        brief = f"{t.get('title') or ''}\n{t.get('description') or ''}".strip()
+        pick = chooser(brief, [dict(c, description=_worker_description(c["id"])) for c in options])
+        if not pick or pick.get("worker") not in {c["id"] for c in options}:
+            raise HandoffError(
+                "unavailable",
+                f"Laya could not choose a coding agent for '{t.get('title') or t['id']}'. "
+                "Check that Laya is ready and that an allowed agent is connected.")
+        chosen = pick["worker"]
+        name = next(c.get("name") or chosen for c in candidates if c["id"] == chosen)
+        percent = round(float(pick.get("probability", 0)) * 100)
+        why = f"Laya chose {name} ({percent}% sure) from the agents this owner allows"
+        if t.get("reviewOf"):
+            why += "; a review by a different agent from the one that did the work"
         t["worker"] = chosen
         t["workerChoice"] = "selected"
-        name = next(c.get("name") or chosen for c in candidates if c["id"] == chosen)
-        why = (f"{kind} work" if kind != "general" else "general work") + (
-            f"; {chosen} is the preferred agent for it" if chosen in _PREFERENCE.get(kind, ()) else
-            "; chosen by availability and to spread work across agents")
         selections.append({"taskId": t["id"], "worker": chosen, "name": name, "kind": kind, "reason": why,
-                           "candidates": ids, "unavailable": [{"id": u["id"], "reason": u["reason"]} for u in unavailable]})
+                           "candidates": ids, "unavailable": unavailable_view})
     # One agent at a time, in the plan's order: each task waits for the previous one.
     # (Only agent-delegated tasks are chained; a file AURA itself writes by the
     # owner's opt-in is not a coding agent and does not wait for one.)

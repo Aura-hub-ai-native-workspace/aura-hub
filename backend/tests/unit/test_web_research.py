@@ -263,10 +263,14 @@ class TestPlannerGating:
         assert plan.tasks[0].inputFrom == "literal"
 
     def test_on_puts_a_governed_search_in_front_of_the_work(self):
+        from aura.contracts import AgentIntent
         from aura.central_agent.planner import TaskPlanner
 
-        plan = TaskPlanner().plan(self._delegate(webResearch=True),
-                                  "agt-1", self.NOW)
+        # The request itself asks for outside information; a plain project edit would not trigger a search.
+        asking = AgentIntent(
+            goal="x", expectedOutcome="done", requiredCapabilities=["agent.delegate"], webResearch=True,
+            delegateTask="add retry to the client, using the current best practice you find on the web")
+        plan = TaskPlanner().plan(asking, "agt-1", self.NOW)
         assert [t.capabilityId for t in plan.tasks] == ["web.research",
                                                        "agent.delegate"]
         research, worker = plan.tasks

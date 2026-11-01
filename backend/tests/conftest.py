@@ -50,7 +50,7 @@ SCHEMA_DIR = MIGRATION_DOCS / "schemas"
 
 
 # ── worker billing policy in tests ────────────────────────────────────────
-# Product default is deny-all (aura/workers/billing.py). Tests that exercise
+# The product default is no approval gate (aura/workers/billing.py; "requireApproval" restores it). Tests that exercise
 # dispatch with fake workers would all be refused, so they run under a policy
 # that lets every worker id through. This is test-only plumbing: the product
 # reads the owner's file and has no bypass. Tests that check the policy itself
@@ -62,14 +62,24 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "real_billing_policy: run with the product's real deny-by-default worker billing policy")
     config.addinivalue_line(
+        "markers", "real_billing_policy_off: run with the product's real default (no approval gate)")
+    config.addinivalue_line(
         "markers", "real_agent_architecture: run with the product's default (agents write code, Laya does not)")
 
 
 @pytest.fixture(autouse=True)
 def _workers_allowed_unless_testing_the_policy(request, monkeypatch):
-    if request.node.get_closest_marker("real_billing_policy"):
-        return
     from aura.workers import billing
+
+    if request.node.get_closest_marker("real_billing_policy_off"):
+        return  # the product's real default, untouched
+    if request.node.get_closest_marker("real_billing_policy"):
+        # The gate is off by default (the owner's standing decision); these tests exercise it switched on.
+        real = billing.owner_setting
+        monkeypatch.setattr(billing, "owner_setting",
+                            lambda name, default=False, home=None: True if name == "requireApproval"
+                            else real(name, default, home))
+        return
 
     class _All(frozenset):
         def __contains__(self, item):  # every worker id is allowed

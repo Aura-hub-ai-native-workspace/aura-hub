@@ -450,6 +450,11 @@ def apply_web_research_preference(intent: AgentIntent, web_research: bool,
         # Genuinely unachievable here. Saying so is more useful than
         # fetching a search that cannot answer it.
         return intent
+    if "agent.delegate" in list(intent.requiredCapabilities or []):
+        # Delegated work keeps its plan; the research step is added in front of it by the planner,
+        # only when the request asks for outside information. Dropping the delegation here would
+        # turn "implement it, and look up the guidance" into a search that never builds anything.
+        return intent
     if list(intent.requiredCapabilities or []):
         # The model may have already mapped capabilities. A pure web
         # search should not borrow web.research to grant workflow.create
@@ -699,7 +704,7 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
         # A research worker reasons from what it is given; when the human
         # asked for live sources, AURA fetches them first and hands them
         # over rather than letting the worker reach out itself.
-        if getattr(intent, "webResearch", False):
+        if getattr(intent, "webResearch", False) and wants_web_research(text):
             plan = prepend_web_research(plan)
         return plan
 
@@ -780,6 +785,7 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
             inputFrom="upstream-output",
             dependsOn=["review"],
             workerRole="code",
+            preferWorkerFrom=["implement"],
             runWhen="upstream-reports-findings",
             risk="high", reversible=False,
             verification=VerificationRequirement(
@@ -789,6 +795,48 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
                              "was not needed because the review reported "
                              "nothing to fix."))))
         covered.append("remediate")
+        if wants_review:
+            # A second, bounded round: after a fix, a different worker checks it again, and
+            # anything still wrong goes back once more. Both steps skip themselves when the
+            # first review was clean, so a clean change costs nothing extra.
+            tasks.append(TaskSpecification(
+                id="rereview",
+                description="Check the fix independently",
+                capabilityId="agent.delegate",
+                input=_delegate_input(
+                    "Check the fix described in the verified results above. Report whether the "
+                    "problems the first review listed are now resolved and whether the fix broke "
+                    "anything. Do not modify any file." + verdict_instruction(),
+                    scope, worker_role="review"),
+                inputFrom="upstream-output",
+                dependsOn=["remediate"],
+                workerRole="review",
+                distinctWorkerFrom=["remediate"],
+                runWhen="upstream-ran",
+                risk="high", reversible=True,
+                verification=VerificationRequirement(
+                    kind="exit-code",
+                    description=("The reviewing worker exits 0 and stays inside the "
+                                 "declared scope, or the fix was not needed."))))
+            tasks.append(TaskSpecification(
+                id="remediate2",
+                description="Address what the second review reported",
+                capabilityId="agent.delegate",
+                input=_delegate_input(
+                    "The second review lists problems that remain after the first fix. Fix "
+                    "exactly those problems and nothing else. If it reports no problems, change "
+                    "nothing and say so." + build_note, scope, worker_role="code"),
+                inputFrom="upstream-output",
+                dependsOn=["rereview"],
+                workerRole="code",
+                preferWorkerFrom=["implement"],
+                runWhen="upstream-reports-findings",
+                risk="high", reversible=False,
+                verification=VerificationRequirement(
+                    kind="exit-code",
+                    description=("The worker exits 0 and every file it changed lies inside the "
+                                 "declared scope, or the task was not needed."))))
+            covered.extend(["rereview", "remediate2"])
 
     accepted = "The requested work was carried out and verified"
     if wants_review:
@@ -804,7 +852,9 @@ def plan_delegated_work(intent: AgentIntent, session_id: str,
     # Web research, only because this request asked for it. With the flag
     # off — every request that did not press the toggle — the plan is
     # exactly what it was before this feature existed.
-    if getattr(intent, "webResearch", False):
+    # The toggle only permits research; it does not make every request need it. A request that is
+    # about the project ("add a footer") gets no search, and so no unrelated pages in the worker's brief.
+    if getattr(intent, "webResearch", False) and wants_web_research(text):
         plan = prepend_web_research(plan)
     return plan
 

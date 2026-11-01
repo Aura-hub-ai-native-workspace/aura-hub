@@ -97,13 +97,6 @@ function rail(toolSlots: ToolSlot[], workerIds: (string | null)[] = ['claude', '
       onConnectWorker={vi.fn()}
       onDisconnectWorker={vi.fn()}
       agentBusy={false}
-            text=""
-            setText={vi.fn()}
-            onSend={vi.fn()}
-            onStop={vi.fn()}
-            busy={false}
-            webResearch={false}
-            onWebResearchChange={vi.fn()}
           />,
   );
 }
@@ -196,10 +189,9 @@ describe('LeftControlPanel — what the removal must not take with it', () => {
     expect(markup).toContain('AURA Agent');
   });
 
-  it('carries the one composer — the rail is where you send tasks to AURA', () => {
+  it('no longer carries the composer — the message box is under the conversation', () => {
     const markup = rail(slotsFor('git'));
-    expect(count(markup, 'agent-composer')).toBe(1);
-    expect(count(markup, 'agent-submit')).toBe(1);
-    expect(markup).toContain('<textarea');
+    expect(count(markup, 'agent-composer')).toBe(0);
+    expect(markup).not.toContain('<textarea');
   });
 });

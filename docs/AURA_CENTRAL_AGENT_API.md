@@ -298,6 +298,31 @@ One engine run record: state, node records with transitions/evidence/
 approvals, outputs, log. Resume legs chain via `trigger:{kind:"resume",of}`
 and `supersededBy`; `resume_chain` order is old→new.
 
+## The group chat: what a run publishes
+
+The Workspace is a group chat. You are on the right; the CEO (Laya) and each worker are on the left. It is
+built only from events a run really publishes on `/agent/sessions/{sid}/events`:
+
+| event | payload | shown as |
+|---|---|---|
+| `task.state` | `taskId`, `state` (`running`, `verified`, `failed`, …), `worker`, `description` | a worker card and its state |
+| `task.output` | `taskId`, `stream` (`stdout`, `stderr`, or `prompt`), `line` | the card's live terminal; `prompt` is the exact prompt the worker was given |
+| `ceo.say` | `kind` (`plan`, `assignment`, `selection`, `handoff`), `text` | a line from the CEO |
+
+`task.output` lines are published as the worker prints them, not after it finishes. Output from the shared-context
+file (`common-context.json`) is never counted as a project change.
+
+**Who decides.** Laya plans and chooses: it picks the worker for each step among the workers the owner's billing
+policy already allows (`select_workers`, `_match_role`), proposes plan changes (`laya_plan`), and decides whether
+work is independently reviewed. A change is small (and goes to OpenCode by default) when Laya says so with at
+least 75% confidence. A review is always done by a different worker; a fix goes back to the worker that built the
+change, and is checked once more by another worker. With no text model, a question is answered by a connected
+coding agent running read-only in an empty folder (`agent_text`), and a web question is handed to a read-only
+research worker that searches the web itself.
+
+**Agent versions.** `GET /workers/versions` lists each installed coding agent with its installed and latest
+version and the command that would update it. It changes nothing.
+
 ## Health
 
 ### `GET /health` → `{ "ok": true, "service": "aura-central-agent" }`

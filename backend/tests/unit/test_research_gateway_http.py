@@ -74,7 +74,8 @@ def test_unconfigured_is_reported_and_nothing_is_invented(home):
     c = client()
     assert c.get("/agent/research/config").json() == {"configured": False, "endpoint": None, "source": None}
     r = c.post("/agent/chat", json={"message": "What is PEP 8?"}).json()["result"]
-    assert r["research"]["status"] == "unavailable" and r["research"]["kind"] == "not-configured"
+    # No gateway and no text model: nothing is searched on AURA's behalf, and nothing is made up.
+    assert r["research"]["status"] == "skipped"
     assert r["research"]["allSources"] == [] and r["sources"] == []
 
 

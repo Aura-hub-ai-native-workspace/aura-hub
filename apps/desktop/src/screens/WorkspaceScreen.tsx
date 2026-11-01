@@ -44,7 +44,8 @@ import { CATEGORY_ICON, STATUS_TONE, TONE_DOT } from '../environment/presentatio
 import { useWorkerStore } from '../workspace/useWorkers';
 import { WorkspaceShell } from './workspace/neon/WorkspaceShell';
 import { LeftControlPanel } from './workspace/neon/LeftControlPanel';
-import { AuraAgentWorkspace } from './workspace/neon/AuraAgentWorkspace';
+import { AuraAgentWorkspace, type GroupMember } from './workspace/neon/AuraAgentWorkspace';
+import { AuraComposer } from './workspace/neon/AuraComposer';
 import { useAgentConversations } from '../ai/useAgentConversations';
 import { ToolPlacement } from '../environment/ToolPlacement';
 import { AddWorkerPanel } from '../workspace/AddWorkerPanel';
@@ -246,6 +247,21 @@ export function WorkspaceScreen() {
     [conv.activity.workers],
   );
 
+  /* The group: the CEO is the admin; each installed agent is a member, with what it is doing now. */
+  const { projects } = useWorkspace();
+  const groupTitle = projects.find((p) => p.id === projectId)?.name ?? 'AURA group';
+  const members = useMemo<GroupMember[]>(
+    () => workers
+      .filter((w) => w.installed)
+      .map((w) => ({
+        id: w.id,
+        name: w.name,
+        tone: workerActivity.has(w.id) || workerActivity.has(w.name) ? 'working' : w.connected ? 'ready' : 'idle',
+      })),
+    [workers, workerActivity],
+  );
+  const [railOpen, setRailOpen] = useState(false);
+
   /* The graph's status line: what AURA is doing, in the same words the
      conversation uses. One vocabulary, two places. */
   const agentPhase = conv.activity.phase
@@ -254,6 +270,7 @@ export function WorkspaceScreen() {
   return (
     <div ref={canvasRef} className="relative h-full min-h-0">
       <WorkspaceShell
+        railOpen={railOpen}
         left={
           <LeftControlPanel
             toolSlots={toolSlots}
@@ -276,25 +293,33 @@ export function WorkspaceScreen() {
             onDisconnectWorker={(id) => void disconnectWorker(id)}
             phase={agentPhase}
             agentBusy={conv.phase === 'working'}
-            text={composerText}
-            setText={setComposerText}
-            onSend={sendWithPreference}
-            onStop={() => conv.stop()}
-            busy={conv.phase === 'working'}
-            webResearch={webResearch}
-            onWebResearchChange={setWebResearch}
           />
         }
         right={
           <AuraAgentWorkspace
             messages={conv.messages}
-            activity={conv.activity}
+            frames={conv.frames}
             busy={conv.phase === 'working'}
             agentUp={conv.agentUp}
             onSend={sendWithPreference}
             onRegenerate={() => void conv.regenerate()}
             handoffs={conv.handoffs}
             onAcceptHandoff={(h) => void conv.acceptHandoff(h)}
+            groupTitle={groupTitle}
+            members={members}
+            railOpen={railOpen}
+            onToggleRail={() => setRailOpen((open) => !open)}
+            composer={
+              <AuraComposer
+                text={composerText}
+                onTextChange={setComposerText}
+                onSend={sendWithPreference}
+                onStop={() => conv.stop()}
+                busy={conv.phase === 'working'}
+                webResearch={webResearch}
+                onWebResearchChange={setWebResearch}
+              />
+            }
           />
         }
       />

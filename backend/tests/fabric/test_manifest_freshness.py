@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 
 #: A fixed PATH keeps the Node oracle reproducible on POSIX. Windows has no /usr/bin and needs its own
 #: system directory variables for node to start, so there the real PATH is used.
-_NODE_PATH = os.environ.get("PATH", "") if os.name == "nt" else "/usr/bin:/bin:/usr/local/bin"
+_NODE_PATH = os.environ.get("PATH", "") if os.name == "nt" else (
+    (os.path.dirname(shutil.which("node")) + ":" if shutil.which("node") else "") + "/usr/bin:/bin:/usr/local/bin")
 _WIN_ENV = {k: os.environ[k] for k in ("SYSTEMROOT", "TEMP", "TMP") if k in os.environ} if os.name == "nt" else {}
 import sys
 from pathlib import Path

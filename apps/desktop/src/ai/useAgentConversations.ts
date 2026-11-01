@@ -37,6 +37,9 @@ import { metaWithReason, reasonFromMeta } from './failureReason';
 import { isStartedResult, waitForRun } from './backgroundRun';
 import { foldPlanEvent, type BuildingDraft, type PlanStage } from './planProgress';
 import { create } from 'zustand';
+
+/** Newest session frames kept for the group chat; older ones are dropped. */
+const FRAME_CAP = 3000;
 import {
   centralAgentClient,
   newClientSessionId,
@@ -213,6 +216,8 @@ interface AgentConvState {
   phase: AgentConvPhase;
   /** Live capability activity for the current turn. */
   activity: AgentActivity;
+  /** Raw session event frames, newest last (capped). Feeds the group chat. */
+  frames: AgentEventFrame[];
   loading: boolean;
   /** Liveness of the agent service itself (not a provider key). */
   agentUp: boolean | null;
@@ -607,6 +612,10 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
 
     flight.unsubscribe = centralAgentClient.events(sessionId, (frame: AgentEventFrame) => {
       if (!alive() || frame.sessionId !== sessionId) return;
+      if (frame.type !== 'answer.token') {
+        const kept = [...get().frames, frame];
+        set({ frames: kept.length > FRAME_CAP ? kept.slice(kept.length - FRAME_CAP) : kept });
+      }
       if (frame.type === 'answer.token') {
         const text = typeof frame.payload.text === 'string' ? frame.payload.text : '';
         if (text) appendTokens(assistantId, text);
@@ -705,6 +714,7 @@ export const useAgentConversations = create<AgentConvState>((set, get) => {
     messages: [],
     phase: 'idle',
     activity: IDLE_ACTIVITY,
+    frames: [],
     loading: false,
     agentUp: null,
 

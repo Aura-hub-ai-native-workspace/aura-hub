@@ -515,3 +515,32 @@ Not done: model-based search routing and query rewriting, optional keyed search 
 - **Change:** deleted `shell/CommandBar.tsx`; `AppShell` renders no top bar, so every page starts at the top of the window; the full-page chat is now `inset-y-0`; the theme toggle sits at the right end of the Settings tab row; `ProjectWorkspace.tsx` carries a sticky, transparent `h-14` strip holding `ProjectModeSwitch` (the only chrome left at the top, on project pages only, costing about 56 px there). Typecheck 0 errors; desktop vitest 495 passed; design lint run on the three changed screen files.
 - **Packaged build 18** (`desktop-build-18`, exit 1 only at updater signing): sha256 `3f3947d1443934a8df284fb8058a345a89461eb8ad743a784143eb0f900084f9`. Seen at 956x1016 with visibility checks: Home starts at the top edge with no band or line; Settings has the tab pill at the top and the theme toggle at its right; the project Overview and the Workspace show the floating Overview | Workspace pill, with the page content directly below. At this half-width window the Workspace stacks and its capability graph is squeezed out; at 1920 px it was fully visible (build 17).
 - **Not done:** chat notice width; Codex CLI and Qwen Code invocation support; the owner's Allow for Claude Code; the full backend suite was not rerun for these front-end-only changes; Windows/macOS NOT RUN.
+
+## Run 15 — Group-chat Workspace, Laya-only CEO, in-hub accounts (2026-11-01, uncommitted on `7f3da01`)
+
+- **Scope:** the Workspace as a group chat (AURA admin, agents as members, live terminal and the exact prompt shown, CEO hand-offs, review→fix→re-review loop, small edits to OpenCode by default); Laya alone plans and picks workers; in-hub accounts (local scrypt store, Supabase provider interface); built-in common-context store; agent version/update check; research delegated to workers.
+- **Gates (2026-11-01):** typecheck 0 errors; desktop vitest 520 passed (54 files); ai-service 259 passed; backend full run 3637 passed, 75 skipped, 7 failed — the failures were stale expectations (no-model chat now answers through a coding agent; a configured search gateway still runs) and one test that reached a real installed agent. After the fixes the full backend suite was rerun: 3644 passed, 75 skipped, 0 failed.
+- **Live-verified in the real Tauri window (isolated `AURA_HOME`):** sign-up/sign-in and session persistence; a small edit routed to OpenCode with the CEO lines, member status dot, status line and OpenCode's summary. A plain project edit no longer triggers a web search.
+- **Live re-check (2026-11-01):** after a restart, a fresh Workspace run of "add a small footer" in the real window routed to OpenCode, wrote `<footer><p>2026 Simple Site</p></footer>` to `index.html` (confirmed in the file), and finished with OpenCode's summary and "REMAINING ISSUES: None". The review step's own verdict was not separately inspected.
+- **Not verified:** macOS and Windows CI (nothing pushed); Codex CLI and Qwen Code (need their own logins); Claude Code (needs the owner's Allow); Supabase (needs the owner's project URL and anon key).
+- **Not built:** sign-out button, password reset, common-context tool layer.
+
+### Run 15 addendum — no login, no Supabase, no approval gate (2026-11-01)
+
+- **Owner's decisions:** sign-in and Supabase are off for now; no approval for any agent, paid or not; when a paid agent hits its limit the work moves to the next free agent and continues from the shared context.
+- **Change:** `ACCOUNT_LOGIN_ENABLED = false` (App gate and session check), `SUPABASE_ENABLED = false` (account provider); `workers/billing.decide` allows every worker AURA has an adapter for (`standing-authorization`), with `"requireApproval": true` in `worker-policy.json` bringing the gate back; the quota recovery prefers free agents (`_free_agents`) and tells the new agent to read `common-context.json` and add its progress.
+- **Gates:** typecheck clean; desktop 520, ai-service 259, backend 3649 passed (75 skipped, 0 failed). A fresh data directory opens straight to Home in the real window.
+- **Not verified live:** an actual paid-agent quota hand-over (needs a real limit); covered by unit tests only. Paid agents now run without any prompt and may bill the owner's vendor account.
+
+### Run 15 addendum — common-context tool layer (2026-11-01)
+
+- **Built:** `packages/ai-service/src/commonContext/tools.ts` (load, save, search, failure, claim/release area, summary, handoff, broadcast, snapshot) on the built-in store, and `POST /context/*` routes in the AI service. Sign-out and password reset are left for the login PR.
+- **Gates:** typecheck clean; ai-service 268 passed (9 new: tool behaviour, claims between agents, handoff, file mode 0600, and the HTTP round trip against the real service).
+- **Not done:** no agent calls these routes automatically yet. Agents that write `common-context.json` themselves (OpenCode, Kilo Code) keep doing so; the quota hand-over brief points the next agent at that file.
+
+### Run 15 addendum — common-context in the run (2026-11-01)
+
+- **Behaviour:** a run follows the protocol for its workers (`central_agent/run_context.py`): it loads the project's `common-context.json` brief into each worker's brief, checkpoints after each step (`task:<id>`), records failures, and saves a summary when a run that used coding agents ends. Read-only requests (git status, file lists) write nothing.
+- **Live (real backend, real OpenCode, temp copy of the test site):** a note left by another agent ("footer text in a `<small>` tag") reached OpenCode through the brief, and the footer was written as `<footer><small>2026 Simple Site</small></footer>`. The file then held the other agent's note, OpenCode's own checkpoint and session summary, AURA's `task:implement` checkpoint, and AURA's completed run summary ("1 step(s) verified: implement").
+- **Gates:** backend 3656 passed, 75 skipped, 0 failed; ai-service 268 passed; typecheck clean.
+- **Note:** AURA now leaves a `common-context.json` in projects where agents ran. It is already git-ignored in this repository; in other repositories it shows as untracked.
