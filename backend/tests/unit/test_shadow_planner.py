@@ -228,6 +228,7 @@ class TestRedactionAndCorrelation:
 
 
 class TestPersistence:
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits do not exist on Windows")
     def test_record_is_owner_only(self, tmp_path):
         _, store = _run(FakePort(_good_proposal()), tmp_path)
         path = next(store.root.rglob("*.json"))
@@ -482,6 +483,7 @@ class TestBudgets:
 
 
 class TestPrivateStorage:
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits do not exist on Windows")
     def test_directories_and_files_are_owner_only_from_creation(self, tmp_path):
         store = sp.ShadowPlanStore(tmp_path)
         store.write(sp.ShadowPlanRecord(shadowId="shadow-p", sessionId=SESSION,

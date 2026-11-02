@@ -328,6 +328,8 @@ class TestMacos:
         with simulate(Platform.MACOS):
             assert str(apps) in effective_path()
 
+    @pytest.mark.skipif(os.name == "nt", reason="simulates macOS file layout; not meaningful on a Windows host")
+
     def test_homebrew_cellar_counts_as_an_os_package(self, tmp_path, monkeypatch):
         cellar = Path("/opt/homebrew/Cellar")
         with simulate(Platform.MACOS):

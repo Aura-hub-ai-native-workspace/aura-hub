@@ -27,7 +27,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 TSREF = Path("/tmp/opencode/tsref")
-ESBUILD = REPO / "node_modules" / ".bin" / "esbuild"
+ESBUILD = REPO / "node_modules" / ".bin" / ("esbuild.cmd" if os.name == "nt" else "esbuild")
 DRIVER = Path(__file__).parent / "ts_driver.mjs"
 
 

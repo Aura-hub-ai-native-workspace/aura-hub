@@ -126,7 +126,7 @@ class TestOneExecutionBoundary:
             rel = _relative(source)
             if rel in EXECUTION_EXEMPTIONS:
                 continue
-            imported = _imports(ast.parse(source.read_text()))
+            imported = _imports(ast.parse(source.read_text(encoding="utf-8")))
             spawning = imported & _SPAWNING_MODULES
             if spawning:
                 offenders.append(f"{rel} imports {', '.join(sorted(spawning))}")
@@ -140,7 +140,7 @@ class TestOneExecutionBoundary:
     def test_no_module_shells_out_through_os(self):
         offenders: list[str] = []
         for source in _python_sources():
-            tree = ast.parse(source.read_text())
+            tree = ast.parse(source.read_text(encoding="utf-8"))
             hits = _attribute_calls(tree, "os", _SPAWNING_OS_CALLS)
             if hits:
                 offenders.append(f"{_relative(source)}: {', '.join(sorted(set(hits)))}")
@@ -152,7 +152,7 @@ class TestOneExecutionBoundary:
             rel = _relative(source)
             if rel in EXECUTION_EXEMPTIONS:
                 continue
-            hits = _attribute_calls(ast.parse(source.read_text()), "asyncio", _SPAWNING_ASYNCIO_CALLS)
+            hits = _attribute_calls(ast.parse(source.read_text(encoding="utf-8")), "asyncio", _SPAWNING_ASYNCIO_CALLS)
             if hits:
                 offenders.append(f"{rel}: {', '.join(sorted(set(hits)))}")
         assert offenders == [], "\n  ".join(offenders)
@@ -168,7 +168,7 @@ class TestOneExecutionBoundary:
         shell_invocations = ("/bin/sh -c", "/bin/bash -c", "bash -c", "sh -c", "cmd /c", "cmd.exe /c")
         offenders: list[str] = []
         for source in _python_sources():
-            tree = ast.parse(source.read_text())
+            tree = ast.parse(source.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.keyword) and node.arg == "shell":
                     value = node.value
@@ -186,9 +186,9 @@ class TestOneExecutionBoundary:
             path = BACKEND / rel
             assert path.exists(), f"stale exemption for {rel}"
             assert len(reason) > 20, f"exemption for {rel} needs a real reason"
-            imported = _imports(ast.parse(path.read_text()))
+            imported = _imports(ast.parse(path.read_text(encoding="utf-8")))
             uses_asyncio = _attribute_calls(
-                ast.parse(path.read_text()), "asyncio", _SPAWNING_ASYNCIO_CALLS
+                ast.parse(path.read_text(encoding="utf-8")), "asyncio", _SPAWNING_ASYNCIO_CALLS
             )
             assert (imported & _SPAWNING_MODULES) or uses_asyncio, (
                 f"{rel} no longer spawns processes; remove its exemption"
@@ -196,7 +196,7 @@ class TestOneExecutionBoundary:
 
     def test_the_install_executor_keeps_its_own_guarantees(self):
         """It is exempt from the boundary, not from the requirements."""
-        text = (PACKAGE / "environment" / "executor.py").read_text()
+        text = (PACKAGE / "environment" / "executor.py").read_text(encoding="utf-8")
         assert "stdin=asyncio.subprocess.DEVNULL" in text
         assert "_terminate_tree" in text
         assert "start_new_session" in text
@@ -213,7 +213,7 @@ class TestOneExecutionBoundary:
         # behaviourally instead (see TestBoundaryGuaranteesAreCentral).
         must_be_explicit = {"aura/central_agent/mcp_transport.py"}
         for rel in must_be_explicit:
-            tree = ast.parse((BACKEND / rel).read_text())
+            tree = ast.parse((BACKEND / rel).read_text(encoding="utf-8"))
             spawns = [
                 node
                 for node in ast.walk(tree)
@@ -233,7 +233,7 @@ class TestOneExecutionBoundary:
                 )
 
     def test_the_project_command_runner_cleans_up_its_process_group(self):
-        text = (PACKAGE / "exec_" / "__init__.py").read_text()
+        text = (PACKAGE / "exec_" / "__init__.py").read_text(encoding="utf-8")
         assert "start_new_session" in text
         assert "killpg" in text
         assert "stdin=asyncio.subprocess.DEVNULL" in text
@@ -269,7 +269,7 @@ class TestBoundaryGuaranteesAreCentral:
             outcome = run_argv([str(script)], timeout_ms=5000)
 
             assert outcome.status is ExecStatus.OK
-            body = seen.read_text()
+            body = seen.read_text(encoding="utf-8")
             assert "must-not-leak" not in body, "the boundary leaked a secret"
             assert "notty" in body, "the boundary left stdin attached"
             assert len(outcome.stdout.encode()) <= MAX_OUTPUT_BYTES
