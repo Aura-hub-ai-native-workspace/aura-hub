@@ -15,7 +15,8 @@ def test_checkpoint_then_load_shows_what_another_agent_recorded(tmp_path):
     brief = run_context.load_brief(d)
     assert "add footer" in brief and "opencode" in brief
     mode = stat.S_IMODE(os.stat(tmp_path / "common-context.json").st_mode)
-    assert mode == 0o600
+    # POSIX permission bits do not exist on Windows.
+    assert os.name == "nt" or mode == 0o600
 
 
 def test_the_file_matches_the_store_format_the_agents_and_the_service_use(tmp_path):

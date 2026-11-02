@@ -35,6 +35,10 @@ import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const PORT = Number(process.env.AI_PORT ?? 4319);
+// Services this script starts itself carry a token, as the packaged shell's do: without one the
+// guard has nothing to check and /shutdown is refused (403) by design.
+const TOKEN = 'verify-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+const AUTH = { 'x-aura-instance-token': TOKEN };
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
 const PLATFORM = IS_WIN ? 'Windows' : IS_MAC ? 'macOS' : 'Linux';
@@ -78,7 +82,7 @@ function portOpen(port = PORT, timeout = 600) {
 
 const get = async (p, timeoutMs = 8000) => {
   try {
-    const res = await fetch(`http://127.0.0.1:${PORT}${p}`, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(`http://127.0.0.1:${PORT}${p}`, { headers: AUTH, signal: AbortSignal.timeout(timeoutMs) });
     return { status: res.status, body: await res.json().catch(() => null) };
   } catch (e) { return { status: 0, body: null, error: e.message }; }
 };
@@ -86,7 +90,7 @@ const get = async (p, timeoutMs = 8000) => {
 const post = async (p, body, timeoutMs = 120000) => {
   try {
     const res = await fetch(`http://127.0.0.1:${PORT}${p}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json', ...AUTH },
       body: JSON.stringify(body ?? {}), signal: AbortSignal.timeout(timeoutMs),
     });
     return { status: res.status, body: await res.json().catch(() => null) };
@@ -195,7 +199,7 @@ try {
   section('2. SERVICE LIFECYCLE — START');
   serviceProc = spawn(process.execPath, [bundle, '--none'], {
     cwd: RUN_DIR,
-    env: { ...process.env, AURA_HOME, AI_PORT: String(PORT) },
+    env: { ...process.env, AURA_HOME, AI_PORT: String(PORT), AURA_INSTANCE_TOKEN: TOKEN },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
@@ -386,7 +390,7 @@ try {
     // Windows has no SIGTERM: the shell asks the service to close over its
     // own loopback port, which is exactly what service.rs does.
     const bye = await fetch(`http://127.0.0.1:${PORT}/shutdown`, {
-      method: 'POST', headers: { 'x-aura-shutdown': '1' }, signal: AbortSignal.timeout(8000),
+      method: 'POST', headers: { 'x-aura-shutdown': '1', ...AUTH }, signal: AbortSignal.timeout(8000),
     }).then((x) => x.status).catch(() => 0);
     check('6a. the Windows graceful-shutdown endpoint answers', bye === 200, `HTTP ${bye}`);
   } else {
@@ -402,7 +406,7 @@ try {
   /* ── 7. relaunch ─────────────────────────────────────────────────── */
   section('7. RELAUNCH');
   serviceProc = spawn(process.execPath, [bundle, '--none'], {
-    cwd: RUN_DIR, env: { ...process.env, AURA_HOME, AI_PORT: String(PORT) },
+    cwd: RUN_DIR, env: { ...process.env, AURA_HOME, AI_PORT: String(PORT), AURA_INSTANCE_TOKEN: TOKEN },
     stdio: 'ignore', windowsHide: true,
   });
   const up2 = await waitFor(async () => (await get('/health', 3000)).status === 200, 90000);
