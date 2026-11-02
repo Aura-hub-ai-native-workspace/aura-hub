@@ -72,7 +72,7 @@ def _write_stub_env() -> None:
 
 def _build_fabric_wiring(repo: Path, esbuild: Path, tsref: Path) -> None:
     js = (BUILD_WIRING_JS
-          .replace("<ESBUILD_LIB>", str(repo / "node_modules" / "esbuild" / "lib" / "main.js"))
+          .replace("<ESBUILD_LIB>", (repo / "node_modules" / "esbuild" / "lib" / "main.js").resolve().as_uri())
           .replace("<TSREF>", str(tsref))
           .replace("<REPO>", str(repo)))
     script = tsref / "build-wiring.mjs"

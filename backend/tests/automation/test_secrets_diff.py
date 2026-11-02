@@ -52,7 +52,8 @@ def _ensure_oracle():
                     "--bundle", "--format=esm", "--platform=node",
                     f"--outfile={secrets_mjs}"], cwd=REPO, check=True, capture_output=True)
     DRIVER_SRC = '''// usage: node secrets_driver.mjs <op> <home> <seed> <argsJSON>
-const { secrets } = await import(process.env.TSREF_SECRETS);
+const imp = (p) => import(/^[A-Za-z]:[\\\\/]/.test(p) ? 'file:///' + p.replace(/\\\\/g, '/') : p);
+const { secrets } = await imp(process.env.TSREF_SECRETS);
 const [op, home, seed, argsJson] = process.argv.slice(2);
 process.env.AURA_HOME = home;
 process.env.AURA_SECRET_SEED = seed;

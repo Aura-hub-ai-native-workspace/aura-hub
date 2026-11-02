@@ -53,6 +53,27 @@ def loads_tolerant(text: str | bytes, fallback: Any) -> Any:
         return fallback
 
 
+def replace_with_retry(tmp: str | Path, dest: str | Path) -> None:
+    """``os.replace`` that survives another writer replacing ``dest`` at that instant.
+
+    On Windows a rename onto a file being replaced by another thread fails with
+    ``PermissionError`` for a few milliseconds; the write is still correct, so it is
+    retried briefly. Any other failure, and one that outlasts the retries, is raised.
+    """
+    import time
+
+    delay = 0.005
+    for attempt in range(12):
+        try:
+            os.replace(tmp, dest)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 11:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
+
+
 def write_json_atomic(file: str | Path, value: Any, *, pid: int | None = None) -> None:
     """Mirror persist.ts writeJsonFile: write a temp file, then rename.
 
@@ -80,7 +101,7 @@ def write_json_atomic(file: str | Path, value: Any, *, pid: int | None = None) -
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

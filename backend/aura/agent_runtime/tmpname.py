@@ -19,22 +19,7 @@ def unique_sibling(path: str | Path) -> Path:
 
 
 def replace_atomic(tmp: str | Path, dest: str | Path) -> None:
-    """``os.replace`` that survives another writer holding ``dest`` open.
+    """``os.replace`` that survives another writer holding ``dest`` (see ``jsonutil.replace_with_retry``)."""
+    from ..jsonutil import replace_with_retry
 
-    On Windows a rename onto a file that another thread is replacing at that
-    instant fails with ``PermissionError`` for a few milliseconds. The write is
-    still correct, so it is retried briefly; any other failure, and a failure
-    that outlasts the retries, is raised as before.
-    """
-    import time
-
-    delay = 0.005
-    for attempt in range(12):
-        try:
-            os.replace(tmp, dest)
-            return
-        except PermissionError:
-            if os.name != "nt" or attempt == 11:
-                raise
-            time.sleep(delay)
-            delay = min(delay * 2, 0.25)
+    replace_with_retry(tmp, dest)

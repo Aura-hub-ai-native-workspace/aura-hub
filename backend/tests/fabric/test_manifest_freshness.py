@@ -33,7 +33,8 @@ from differential.conftest import tsref  # noqa: F401  (session fixture)
 
 def test_manifest_snapshot_matches_typescript(tsref):  # noqa: F811
     script = (
-        "const api = await import(process.env.TSREF_FABRIC_INDEX);\n"
+        "const imp = (p) => import(/^[A-Za-z]:[\\\\/]/.test(p) ? 'file:///' + p.replace(/\\\\/g, '/') : p);\n"
+        "const api = await imp(process.env.TSREF_FABRIC_INDEX);\n"
         "process.stdout.write(JSON.stringify({generatedFrom:'packages/capability-fabric/src/manifest.ts',"
         "revision:'141d101',capabilities:api.CAPABILITY_MANIFEST}));"
     )
