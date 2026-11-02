@@ -52,9 +52,11 @@ describe('inspect follows the requested project, not the mount', () => {
     manager.open(a.id);
     await manager.pipeline.whenIndexed();
 
-    // Mounting A persists A's own understanding by design (the
-    // "Understanding repository…" index step load-or-generates). Snapshot
-    // it so the assertions below measure what the B-request adds.
+    // Snapshot A's own understanding so the assertions below measure only
+    // what the B-request adds. Adding a project indexes it in the background, and that run writes the
+    // project's identity whenever it finishes. Wait for both (indexProjectById
+    // joins the run already in flight) so the snapshot is not racing it.
+    await Promise.all([manager.indexProjectById(a.id), manager.indexProjectById(b.id)]);
     const identityOfAAtMount = loadIdentity(a.id);
 
     const meta = await manager.pipeline.inspect('what does this project do', undefined, {
