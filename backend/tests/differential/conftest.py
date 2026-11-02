@@ -13,6 +13,7 @@ they never silently pass.
 from __future__ import annotations
 
 import os
+import tempfile
 import shutil
 import subprocess
 
@@ -26,7 +27,8 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-TSREF = Path("/tmp/opencode/tsref")
+# Windows has no drive-less /tmp: esbuild could not resolve "/tmp/..." there, so use the real temp dir.
+TSREF = Path("/tmp/opencode/tsref") if os.name != "nt" else Path(tempfile.gettempdir()) / "opencode" / "tsref"
 ESBUILD = REPO / "node_modules" / ".bin" / ("esbuild.cmd" if os.name == "nt" else "esbuild")
 DRIVER = Path(__file__).parent / "ts_driver.mjs"
 
@@ -139,7 +141,8 @@ def tsref() -> dict[str, Path]:
             "--bundle", "--format=esm", "--platform=node", "--external:typescript",
             f"--outfile={TSREF / 'wfengine.mjs'}"], cwd=REPO, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
-        pytest.skip(f"failed to build TS reference bundles: {e.stderr[-400:]}")
+        err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
+        pytest.skip(f"failed to build TS reference bundles: {err[:600]} ... {err[-200:]}")
     return {
         "fabric": fabric_out, "index": index_out, "versions": versions_out,
         "wfstore": TSREF / "wfstore.mjs", "runstore": TSREF / "runstore.mjs",
