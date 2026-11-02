@@ -30,7 +30,7 @@ ENV = {"TSREF_AGENTRUNNER": "/tmp/opencode/tsref/agentrunner.mjs",
 def _run_driver(func, payload):
     proc = subprocess.run(["node", str(DRIVER)],
                           input=json.dumps({"func": func, **payload}),
-                          capture_output=True, text=True,
+                          capture_output=True, text=True, encoding="utf-8",
                           env={**ENV, "AURA_TRACE_EVAL": ""}, check=False)
     if proc.returncode != 0:
         raise AssertionError(f"{func} rc={proc.returncode}: {proc.stderr[-900:]}")

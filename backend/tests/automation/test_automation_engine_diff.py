@@ -274,7 +274,7 @@ def _run_auto(cfg, ops, home, start_ms):
         ["node", str(driver)],
         input=json.dumps({"func": "autops", "config": cfg, "ops": ops,
                           "home": home, "startMs": start_ms}),
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
         env={"TSREF_AUTOENGINE": TSREF_PATHS["autoengine"],
              "TSREF_AUTOSTORE": TSREF_PATHS["autostore"],
              # node is located through PATH, so PATH must be inherited

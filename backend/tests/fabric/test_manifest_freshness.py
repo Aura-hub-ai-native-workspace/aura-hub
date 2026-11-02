@@ -40,7 +40,7 @@ def test_manifest_snapshot_matches_typescript(tsref):  # noqa: F811
     )
     proc = subprocess.run(
         ["node", "--input-type=module", "-e", script],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", check=True,
         env={"TSREF_FABRIC_INDEX": str(tsref["index"]),
              "PATH": _NODE_PATH, **_WIN_ENV},
     )

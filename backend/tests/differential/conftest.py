@@ -73,8 +73,9 @@ def _write_stub_env() -> None:
 def _build_fabric_wiring(repo: Path, esbuild: Path, tsref: Path) -> None:
     js = (BUILD_WIRING_JS
           .replace("<ESBUILD_LIB>", (repo / "node_modules" / "esbuild" / "lib" / "main.js").resolve().as_uri())
-          .replace("<TSREF>", str(tsref))
-          .replace("<REPO>", str(repo)))
+          # Forward slashes: these land inside JS string literals, where a Windows backslash is an escape.
+          .replace("<TSREF>", tsref.as_posix())
+          .replace("<REPO>", repo.as_posix()))
     script = tsref / "build-wiring.mjs"
     script.write_text(js, encoding="utf-8")
     subprocess.run(["node", str(script)], cwd=repo, check=True, capture_output=True)
@@ -157,6 +158,6 @@ def run_ts_batch(tsref_paths: dict[str, Path], func: str, cases: list[dict]) -> 
     proc = subprocess.run(
         ["node", str(DRIVER)],
         input=json.dumps({"func": func, "cases": cases}),
-        capture_output=True, text=True, env=env_driver, check=True,
+        capture_output=True, text=True, encoding="utf-8", env=env_driver, check=True,
     )
     return json.loads(proc.stdout)["digests"]

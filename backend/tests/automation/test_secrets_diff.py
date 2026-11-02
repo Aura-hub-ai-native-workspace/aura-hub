@@ -77,7 +77,7 @@ def _ts(op, home, args, seed=SEED):
     env = {**base, "TSREF_SECRETS": str(_ORACLE["mjs"]), "AURA_SECRET_SEED": seed}
     proc = subprocess.run(["node", str(_ORACLE["driver"]), op, home, seed,
                            json.dumps(args)],
-                          capture_output=True, text=True, env=env, check=True)
+                          capture_output=True, text=True, encoding="utf-8", env=env, check=True)
     return json.loads(proc.stdout)
 
 

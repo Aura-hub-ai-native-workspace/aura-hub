@@ -37,7 +37,7 @@ def _run_ts(graph, home, deny_for=None):
                                     "projectId": "p", "projectPath": "/p",
                                     "denyFor": deny_for or [], **graph},
                           "home": home, "startMs": START_MS}),
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
         env={"TSREF_DRYRUN": "/tmp/opencode/tsref/dryrun.mjs",
              "TSREF_FABRIC_INDEX": "/tmp/opencode/tsref/fabric-index.mjs",
              "PATH": "/usr/bin:/bin:/usr/local/bin"},
