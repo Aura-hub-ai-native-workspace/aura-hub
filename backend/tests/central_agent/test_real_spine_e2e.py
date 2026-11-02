@@ -118,14 +118,17 @@ def test_full_agent_lifecycle_with_real_effects_and_sse(tmp_path,
     # BOUNDED read: the route intentionally never terminates, so we stop
     # at the first intent.* frame (the chain-under-test signal) instead
     # of waiting for a [DONE] that will never arrive.
+    # The server stays up until the reconnect below is done: stopping it here
+    # raced the reconnect, which then found nothing listening (seen on Windows).
     try:
         frames = read_frames(
             base, f"/agent/sessions/{sid}/events?after=0",
             terminal_types=frozenset({"intent.compiled",
                                       "intent.clarification-needed"}),
             timeout_s=30.0, session_id=sid or "?")
-    finally:
+    except BaseException:
         server.should_exit = True
+        raise
     types = [f.get("type") for f in frames]
     assert any(t and t.startswith("intent.") for t in types), types[:8]
 
@@ -147,6 +150,8 @@ def test_full_agent_lifecycle_with_real_effects_and_sse(tmp_path,
             want_frames=8, timeout_s=8.0, session_id=sid or "?")
     except SseTimeout as timeout_exc:
         tail = timeout_exc.frames
+    finally:
+        server.should_exit = True
     assert all(f.get("seq", cut + 1) > cut for f in tail
                if isinstance(f.get("seq"), int)), tail
     assert not any(f.get("seq") in seqs for f in tail
