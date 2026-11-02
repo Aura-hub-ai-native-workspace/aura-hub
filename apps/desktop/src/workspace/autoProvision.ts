@@ -74,3 +74,16 @@ export function planAutoProvision(input: {
 
   return { placeWorkers, placeTools, connectWorker, connectTool };
 }
+
+/**
+ * The one installed worker to connect now, wherever the person is, or null.
+ * Never a worker that is missing, not drivable, waiting on the billing policy,
+ * or already tried this session; never while another connection is in flight.
+ */
+export function nextWorkerToConnect(
+  workers: WorkerDescriptor[], connecting: readonly string[], attempted: ReadonlySet<string>,
+): string | null {
+  if (connecting.length > 0) return null;
+  return workers.find((w) => usable(w) && !w.connected && w.reason !== 'BILLING_POLICY'
+    && !attempted.has(`worker:${w.id}`))?.id ?? null;
+}

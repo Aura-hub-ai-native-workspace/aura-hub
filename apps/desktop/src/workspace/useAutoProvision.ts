@@ -5,7 +5,7 @@ import { useEnvironmentStore } from '../environment/environmentStore';
 import { planAutoProvision } from './autoProvision';
 
 /** What was already placed or attempted since the app started. Never repeated on its own. */
-const done = new Set<string>();
+export const done = new Set<string>();
 
 /**
  * Keeps the Workspace connected to what the machine has: installed AI

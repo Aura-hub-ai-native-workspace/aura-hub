@@ -49,3 +49,20 @@ describe('planAutoProvision', () => {
     expect(plan.connectTool).toBeNull();
   });
 });
+
+import { nextWorkerToConnect } from './autoProvision';
+
+describe('nextWorkerToConnect', () => {
+  const w = (id: string, over: Record<string, unknown> = {}) =>
+    ({ id, name: id, installed: true, invocable: true, connected: false, reason: null, ...over }) as never;
+
+  it('picks an installed, drivable, unconnected worker once', () => {
+    const ws = [w('claude-code', { reason: 'BILLING_POLICY' }), w('qwen', { installed: false }), w('opencode')];
+    expect(nextWorkerToConnect(ws, [], new Set())).toBe('opencode');
+    expect(nextWorkerToConnect(ws, [], new Set(['worker:opencode']))).toBeNull();
+  });
+  it('waits while another connection is in flight and skips connected workers', () => {
+    expect(nextWorkerToConnect([w('opencode')], ['kilo-code'], new Set())).toBeNull();
+    expect(nextWorkerToConnect([w('opencode', { connected: true })], [], new Set())).toBeNull();
+  });
+});

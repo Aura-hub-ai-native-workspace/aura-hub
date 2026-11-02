@@ -15,6 +15,7 @@ import { startMemoryRecorder } from './ops/memoryRecorder';
 import { ACCOUNT_EVENT, ACCOUNT_KEY, ACCOUNT_LOGIN_ENABLED, clearAccount, readAccount, writeAccount, type SignedInAccount } from './onboarding/accountSession';
 import { checkSession } from './onboarding/accountClient';
 import { startAgentEngine } from './ops/agentEngine';
+import { useConnectDetectedWorkers } from './workspace/useConnectDetectedWorkers';
 
 /**
  * App root. Owns global keyboard shortcuts,
@@ -104,6 +105,9 @@ export function App() {
       alive = false;
     };
   }, []);
+
+  // Installed AI workers get connected wherever the person is, so Home chat has someone to answer.
+  useConnectDetectedWorkers();
 
   // Persist the session whenever the shape of "where you left off"
   // changes: selected project, focus, or the editor's open tabs.
