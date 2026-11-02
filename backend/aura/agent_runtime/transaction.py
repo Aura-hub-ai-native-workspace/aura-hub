@@ -15,7 +15,7 @@ Restore semantics, used by both automatic rollback and manual restore:
 
 from __future__ import annotations
 
-from .tmpname import unique_sibling
+from .tmpname import replace_atomic, unique_sibling
 import json
 import os
 from dataclasses import dataclass, field
@@ -109,7 +109,7 @@ def _write_atomic(path: Path, data: bytes) -> None:
         os.chmod(tmp, path.stat().st_mode & 0o777)
     else:
         os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    replace_atomic(tmp, path)
 
 
 def rollback_detailed(snap: Snapshot, expected: dict[Path, str | None] | None,
@@ -201,7 +201,7 @@ def write_manifest(store_root: Path, snap: Snapshot,
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(body, indent=2, sort_keys=True))
-    os.replace(tmp, path)
+    replace_atomic(tmp, path)
     return path
 
 

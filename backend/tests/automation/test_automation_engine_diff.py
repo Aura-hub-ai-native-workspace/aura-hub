@@ -280,7 +280,8 @@ def _run_auto(cfg, ops, home, start_ms):
              # node is located through PATH, so PATH must be inherited
              # rather than pinned to POSIX directories — a pinned path made
              # this differential unrunnable on Windows and macOS.
-             "PATH": __import__("os").environ.get("PATH", "")},
+             "PATH": __import__("os").environ.get("PATH", ""),
+             **{k: __import__("os").environ[k] for k in ("SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA") if k in __import__("os").environ}},
         check=False)
     if proc.returncode != 0:
         raise AssertionError(f"driver rc={proc.returncode}: {proc.stderr[-400:]}")

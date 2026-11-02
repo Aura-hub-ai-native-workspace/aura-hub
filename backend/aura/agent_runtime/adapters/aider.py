@@ -16,7 +16,7 @@ exported by the user (advisory note in the change record).
 
 from __future__ import annotations
 
-from ..tmpname import unique_sibling
+from ..tmpname import replace_atomic, unique_sibling
 import re
 import shutil
 from pathlib import Path
@@ -130,7 +130,7 @@ class AiderAdapter(AgentConfigurationAdapter):
         _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = unique_sibling(_CONFIG_PATH)
         tmp.write_text(new_text, encoding="utf-8")
-        tmp.replace(_CONFIG_PATH)
+        replace_atomic(tmp, _CONFIG_PATH)
 
         note = None
         if runtime.auth_type != AuthType.KEYLESS:
@@ -168,7 +168,7 @@ class AiderAdapter(AgentConfigurationAdapter):
         old_cs = checksum(_CONFIG_PATH.read_bytes()) if _CONFIG_PATH.exists() else None
         tmp = unique_sibling(_CONFIG_PATH)
         tmp.write_bytes(backup_bytes)
-        tmp.replace(_CONFIG_PATH)
+        replace_atomic(tmp, _CONFIG_PATH)
         return ConfigurationChange(
             agent_id="aider",
             operation="restore",

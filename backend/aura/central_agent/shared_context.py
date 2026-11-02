@@ -37,6 +37,7 @@ Properties the rest of the system relies on:
 from __future__ import annotations
 
 import re
+import os
 import threading
 import uuid
 from datetime import UTC, datetime
@@ -48,8 +49,24 @@ from ..jsonutil import read_json_file, write_json_atomic
 
 try:  # POSIX advisory lock between the Python and Node processes.
     import fcntl  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover — Windows: in-process lock only
+except ImportError:  # pragma: no cover — Windows has no fcntl; see _lock_file below
     fcntl = None  # type: ignore[assignment]
+try:  # Windows byte-range lock, the counterpart of flock between processes.
+    import msvcrt  # type: ignore[import-not-found]
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
+
+# One lock per file for every SharedContext in this process. A lock held by one
+# instance never stopped another instance (or thread) writing the same file, and
+# on Windows there is no flock to fall back on, so concurrent writers lost entries.
+_PATH_LOCKS: dict[str, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _path_lock(path: Path) -> threading.RLock:
+    key = os.path.normcase(os.path.abspath(path))
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(key, threading.RLock())
 
 #: Kinds the TypeScript store already writes.
 LEGACY_KINDS = frozenset({
@@ -165,21 +182,40 @@ class SharedContext:
             self.fh = None
 
         def __enter__(self) -> list[dict]:
-            self.outer._guard.acquire()
             path = self.outer._file(self.scope)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if fcntl is not None:
-                self.fh = open(f"{path}.lock", "a+")  # noqa: SIM115
-                fcntl.flock(self.fh, fcntl.LOCK_EX)
-            return self.outer._read(self.scope)
+            self.lock = _path_lock(path)
+            self.lock.acquire()
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if fcntl is not None:
+                    self.fh = open(f"{path}.lock", "a+")  # noqa: SIM115
+                    fcntl.flock(self.fh, fcntl.LOCK_EX)
+                elif msvcrt is not None:
+                    self.fh = open(f"{path}.lock", "a+")  # noqa: SIM115
+                    while True:  # LK_LOCK gives up after ~10 s; keep waiting, the holder is short-lived
+                        try:
+                            self.fh.seek(0)
+                            msvcrt.locking(self.fh.fileno(), msvcrt.LK_LOCK, 1)
+                            break
+                        except OSError:
+                            continue
+                return self.outer._read(self.scope)
+            except BaseException:
+                self.__exit__()
+                raise
 
         def __exit__(self, *exc: object) -> None:
             try:
                 if self.fh is not None:
-                    fcntl.flock(self.fh, fcntl.LOCK_UN)  # type: ignore[union-attr]
+                    if fcntl is not None:
+                        fcntl.flock(self.fh, fcntl.LOCK_UN)
+                    elif msvcrt is not None:
+                        self.fh.seek(0)
+                        msvcrt.locking(self.fh.fileno(), msvcrt.LK_UNLCK, 1)
                     self.fh.close()
+                    self.fh = None
             finally:
-                self.outer._guard.release()
+                self.lock.release()
 
     # ── writes ───────────────────────────────────────────────────────────
 

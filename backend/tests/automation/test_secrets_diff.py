@@ -70,8 +70,10 @@ else { throw new Error('op ' + op); }
 
 def _ts(op, home, args, seed=SEED):
     _ensure_oracle()
-    env = {**os.environ, "TSREF_SECRETS": str(_ORACLE["mjs"]),
-           "AURA_SECRET_SEED": seed}
+    # Windows node needs its system variables and little else; a polluted environment makes it abort at startup.
+    base = ({k: os.environ[k] for k in ("PATH", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA")
+             if k in os.environ} if os.name == "nt" else dict(os.environ))
+    env = {**base, "TSREF_SECRETS": str(_ORACLE["mjs"]), "AURA_SECRET_SEED": seed}
     proc = subprocess.run(["node", str(_ORACLE["driver"]), op, home, seed,
                            json.dumps(args)],
                           capture_output=True, text=True, env=env, check=True)

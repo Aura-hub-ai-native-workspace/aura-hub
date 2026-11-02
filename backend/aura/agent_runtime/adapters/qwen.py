@@ -22,7 +22,7 @@ Config mechanism (verified by machine inspection 2026-09-23):
 
 from __future__ import annotations
 
-from ..tmpname import unique_sibling
+from ..tmpname import replace_atomic, unique_sibling
 import json
 import os
 import shutil
@@ -54,7 +54,7 @@ def _write_json(path: Path, data: dict) -> None:
     text = json.dumps(data, indent=2, ensure_ascii=False)
     tmp = unique_sibling(path)
     tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    replace_atomic(tmp, path)
 
 
 class QwenCodeAdapter(AgentConfigurationAdapter):
@@ -175,7 +175,7 @@ class QwenCodeAdapter(AgentConfigurationAdapter):
         old_cs = checksum(_SETTINGS_PATH.read_bytes()) if _SETTINGS_PATH.exists() else None
         tmp = unique_sibling(_SETTINGS_PATH)
         tmp.write_bytes(backup_bytes)
-        tmp.replace(_SETTINGS_PATH)
+        replace_atomic(tmp, _SETTINGS_PATH)
         return ConfigurationChange(
             agent_id="qwen",
             operation="restore",

@@ -34,7 +34,7 @@ WRITE GUARD (root-cause fix, 2026-09-23):
 
 from __future__ import annotations
 
-from ..tmpname import unique_sibling
+from ..tmpname import replace_atomic, unique_sibling
 import json
 import os
 import re
@@ -309,4 +309,4 @@ class ClaudeCodeAdapter(AgentConfigurationAdapter):
 def _write_atomic(path: Path, text: str) -> None:
     tmp = unique_sibling(path)
     tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    replace_atomic(tmp, path)

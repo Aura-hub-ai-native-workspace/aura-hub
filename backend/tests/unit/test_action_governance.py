@@ -251,7 +251,7 @@ class TestOpencodeCompiler:
             with open(plugin, "w") as fh:
                 fh.write(src)
             proc = subprocess.run(
-                ["node", "-e", driver.replace("__GOV_PLUGIN__", plugin)],
+                ["node", "-e", driver.replace("__GOV_PLUGIN__", __import__("pathlib").Path(plugin).as_uri())],
                 capture_output=True, text=True, timeout=60,
                 env={**os.environ, "AURA_ACTION_LOG": ""})
         assert "PLUGIN-VECTORS-OK" in proc.stdout, proc.stderr
@@ -272,7 +272,7 @@ class TestOpencodeCompiler:
                 fh.write(src)
             proc = subprocess.run(
                 ["node", "-e",
-                 f"import('{plugin}').then(async (m) => {{"
+                 f"import('{__import__('pathlib').Path(plugin).as_uri()}').then(async (m) => {{"
                  " const h = await m.AuraGovernance({});"
                  " await h['tool.execute.before']("
                  "  {tool: 'edit'},"
@@ -286,6 +286,7 @@ class TestOpencodeCompiler:
 
 
 class TestClaudeCompiler:
+    @pytest.mark.skipif(os.name == "nt", reason="the fixture uses POSIX absolute paths")
     def test_settings_wire_hook(self, tmp_path):
         from aura.governance.claude import add_dirs, compile_settings
 
@@ -500,6 +501,7 @@ class TestExecutorWiring:
 
 
 class TestProcessCleanup:
+    @pytest.mark.skipif(os.name == "nt", reason="os.kill(pid, 0) terminates on Windows; its process-tree cleanup is verified through the Job Object checks")
     def test_timeout_kills_process_group(self, tmp_path):
         """J7: the existing lifecycle (own session + group kill) leaves
         no orphans when a worker times out."""

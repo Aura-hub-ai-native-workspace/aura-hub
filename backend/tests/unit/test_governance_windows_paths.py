@@ -183,7 +183,7 @@ def _run_driver(driver: str) -> subprocess.CompletedProcess:
         plugin = _compile_to(tmp)
         return subprocess.run(
             ["node", "-e",
-             driver.replace("__GOV_PLUGIN__", plugin.replace("\\", "/"))],
+             driver.replace("__GOV_PLUGIN__", __import__("pathlib").Path(plugin).as_uri())],
             capture_output=True, text=True, timeout=60,
             env={**os.environ, "AURA_ACTION_LOG": ""})
 

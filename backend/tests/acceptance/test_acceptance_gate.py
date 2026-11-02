@@ -554,7 +554,7 @@ class TestA26_TypeScript:
         """A26: tsc --noEmit exits 0 on the desktop app."""
         desktop = Path(__file__).parent.parent.parent.parent / "apps/desktop"
         result = subprocess.run(
-            ["npx", "tsc", "--noEmit"],
+            ["npx.cmd" if os.name == "nt" else "npx", "tsc", "--noEmit"],
             capture_output=True, text=True, cwd=str(desktop),
         )
         assert result.returncode == 0, (

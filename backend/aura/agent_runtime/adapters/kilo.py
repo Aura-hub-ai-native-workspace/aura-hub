@@ -15,7 +15,7 @@ Config mechanism (verified by machine inspection 2026-10-11):
 
 from __future__ import annotations
 
-from ..tmpname import unique_sibling
+from ..tmpname import replace_atomic, unique_sibling
 import json
 import os
 import re
@@ -51,7 +51,7 @@ def _write_jsonc(path: Path, data: dict) -> None:
     text = json.dumps(data, indent=2, ensure_ascii=False)
     tmp = unique_sibling(path)
     tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    replace_atomic(tmp, path)
 
 
 class KiloAdapter(AgentConfigurationAdapter):
@@ -186,7 +186,7 @@ class KiloAdapter(AgentConfigurationAdapter):
         old_cs = checksum(_ADVISORY_PATH.read_bytes()) if _ADVISORY_PATH.exists() else None
         tmp = unique_sibling(_ADVISORY_PATH)
         tmp.write_bytes(backup_bytes)
-        tmp.replace(_ADVISORY_PATH)
+        replace_atomic(tmp, _ADVISORY_PATH)
         _ADVISORY_PATH.chmod(0o600)
         return ConfigurationChange(
             agent_id="kilo",

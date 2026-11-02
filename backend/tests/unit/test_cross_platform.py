@@ -196,8 +196,12 @@ class TestWindowsResolution:
         with simulate(Platform.WINDOWS):
             path = effective_path()
 
-        assert str(appdata / "npm") in path
-        assert str(tmp_path / "ProgramData" / "chocolatey" / "bin") in path
+        # The search path mixes "/" and "\\" on a real Windows host; compare the directories, not the separators.
+        flat = path.replace("\\", "/")
+        assert str(appdata / "npm").replace("\\", "/") in flat
+        assert str(tmp_path / "ProgramData" / "chocolatey" / "bin").replace("\\", "/") in flat
+
+    @pytest.mark.skipif(os.name == "nt", reason="asserts the POSIX verdict first, which a real Windows host does not give")
 
     def test_trust_does_not_apply_posix_bits_on_windows(self, tmp_path):
         """POSIX mode bits do not describe Windows ACLs.

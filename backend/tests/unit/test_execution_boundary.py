@@ -90,7 +90,7 @@ def _python_sources() -> list[Path]:
 
 
 def _relative(path: Path) -> str:
-    return str(path.relative_to(BACKEND))
+    return path.relative_to(BACKEND).as_posix()
 
 
 def _imports(tree: ast.AST) -> set[str]:
