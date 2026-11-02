@@ -416,8 +416,10 @@ jobs:
           xvfb-run -a env AURA_HOME="$RUNNER_TEMP/deb-home" AI_PORT=4319 aura-hub &
           for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
           curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: installed .deb launched and its service is healthy"
-          curl -sf -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan \
-            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const s=JSON.parse(d);if(!s.results.node?.present)process.exit(1);console.log('OK: detection through the installed app — node',s.results.node.version,'| git',s.results.git?.version)})"
+          # The packaged service only answers /health without this launch's instance token (the shell
+          # generates it per launch), so an outside caller must be refused rather than scanned.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan)
+          test "$code" = 401 && echo "OK: the installed app refuses a caller without its instance token (HTTP 401)"
           pkill -f 'aura-hub' || true
           sudo apt-get remove -y aura-hub && echo "OK: uninstalled cleanly"
 
@@ -473,10 +475,11 @@ jobs:
           }
           if (-not $ok) { throw 'the installed application never brought its service up' }
           Write-Host 'OK: installed NSIS build launched and its service is healthy'
-          $scan = Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Method POST -ContentType 'application/json' -Body '{}' http://127.0.0.1:4319/environment/scan
-          $node = ($scan.Content | ConvertFrom-Json).results.node
-          if (-not $node.present) { throw 'the installed application did not detect Node' }
-          Write-Host "OK: detection through the installed app — node $($node.version)"
+          # Only /health is open without the per-launch instance token; anything else must be refused.
+          $code = 0
+          try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Method POST -ContentType 'application/json' -Body '{}' http://127.0.0.1:4319/environment/scan | Out-Null; $code = 200 } catch { $code = [int]$_.Exception.Response.StatusCode }
+          if ($code -ne 401) { throw "the installed application answered $code to a caller without its instance token" }
+          Write-Host 'OK: the installed app refuses a caller without its instance token (HTTP 401)'
           Get-Process -Name $app.BaseName -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep 3
           # Uninstall through the uninstaller the installer itself wrote.
@@ -500,8 +503,10 @@ jobs:
           AURA_HOME="$RUNNER_TEMP/dmg-home" AI_PORT=4319 "$RUNNER_TEMP/AURA Hub.app/Contents/MacOS/aura-hub" &
           for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
           curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: the installed .app launched and its service is healthy"
-          curl -sf -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan \
-            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const s=JSON.parse(d);if(!s.results.node?.present)process.exit(1);console.log('OK: detection through the installed app — node',s.results.node.version,'| git',s.results.git?.version)})"
+          # The packaged service only answers /health without this launch's instance token (the shell
+          # generates it per launch), so an outside caller must be refused rather than scanned.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan)
+          test "$code" = 401 && echo "OK: the installed app refuses a caller without its instance token (HTTP 401)"
           pkill -f 'aura-hub' || true
 
       - name: Upload installers
