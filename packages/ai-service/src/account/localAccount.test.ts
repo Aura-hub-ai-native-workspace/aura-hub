@@ -59,6 +59,6 @@ describe('AccountStore', () => {
     const text = fs.readFileSync(file, 'utf-8');
     expect(text).not.toContain('my-secret-pass');
     expect(text).not.toContain(token);
-    expect((fs.statSync(file).mode & 0o777).toString(8)).toBe('600');
+    if (process.platform !== 'win32') expect((fs.statSync(file).mode & 0o777).toString(8)).toBe('600');
   });
 });

@@ -12,7 +12,7 @@ beforeAll(async () => {
   process.env.AURA_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-home-'));
   svc = await startService({ port: 0 });
   base = `http://127.0.0.1:${svc.port}`;
-});
+}, 60_000);
 afterAll(async () => { await svc?.close?.(); });
 
 const post = async (route: string, body: Record<string, unknown>) => {

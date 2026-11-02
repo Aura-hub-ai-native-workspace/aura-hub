@@ -13,7 +13,8 @@ describe('common-context tool layer', () => {
     const kilo = new ContextTools(d, 'kilo-code');
     expect(kilo.searchContext('footer')[0]).toMatchObject({ key: 'plan', agent: 'opencode' });
     expect(kilo.loadContext().brief).toContain('Add footer to index.html');
-    expect(fs.statSync(path.join(d, 'common-context.json')).mode & 0o777).toBe(0o600);
+    // POSIX permission bits do not exist on Windows.
+    if (process.platform !== 'win32') expect(fs.statSync(path.join(d, 'common-context.json')).mode & 0o777).toBe(0o600);
   });
 
   it('keeps the old value in history when a key is overwritten', () => {

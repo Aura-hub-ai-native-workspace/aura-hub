@@ -52,7 +52,8 @@ async function settle(id: string): Promise<string> {
   throw new Error('graphify run did not settle');
 }
 
-describe('runGraphify — the project root is left as it was', () => {
+// The fake graphify is a /bin/sh script, which Windows cannot spawn.
+describe.skipIf(process.platform === 'win32')('runGraphify — the project root is left as it was', () => {
   it('copies the artifacts into the AURA home and removes the graphify-out it created', async () => {
     process.env.GRAPHIFY_BIN = fakeGraphify(0);
     const dir = project();

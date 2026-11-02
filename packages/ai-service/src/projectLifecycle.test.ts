@@ -12,7 +12,7 @@
  */
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -67,7 +67,7 @@ describe('createProject', () => {
 
   it('a hostile-looking but legal name still lands inside the location', () => {
     const { project } = manager.createProject({ name: 'rm -rf $HOME; echo "x"', parentPath: parent });
-    expect(project.path.startsWith(parent + '/')).toBe(true);
+    expect(project.path.startsWith(parent + sep)).toBe(true);
     expect(project.path).toBe(join(parent, 'rm-rf-home-echo-x'));
   });
 
