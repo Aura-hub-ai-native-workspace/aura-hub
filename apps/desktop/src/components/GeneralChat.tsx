@@ -12,6 +12,7 @@
  * goal and at least one requirement or decision, a Create New Project action
  * appears — offered, never forced; it still needs a name and a click.
  */
+import { useWorkerStore } from '../workspace/useWorkers';
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -34,6 +35,7 @@ const SUGGESTIONS = [
 
 export function GeneralChat({ isOpen, onClose, initialMessage }: { isOpen: boolean; onClose: () => void; initialMessage?: string }) {
   const { turns, phase, sessionId, recent, modelStatus, agentUp, load, open, newChat, send, stop, stopRequesting } = useGeneralChat();
+  const agentConnected = useWorkerStore((s) => s.workers.some((w) => w.connected));
   const [input, setInput] = useState('');
   const [creating, setCreating] = useState(false);
   const [showRecent, setShowRecent] = useState(false);
@@ -126,7 +128,7 @@ export function GeneralChat({ isOpen, onClose, initialMessage }: { isOpen: boole
         </div>
       </div>
 
-      <ModelNotice status={modelStatus} />
+      <ModelNotice status={modelStatus} agentConnected={agentConnected} />
       {agentUp === false && <p className="px-5 pb-2 text-center text-[12.5px] text-attention">AURA is not reachable right now.</p>}
 
       <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-y-auto px-5">
@@ -228,14 +230,18 @@ export function Turn({ turn }: { turn: GeneralTurn }) {
 }
 
 /** The optional local-model suggestion, and the one thing that blocks answers. */
-export function ModelNotice({ status }: { status: ModelStatus | null }) {
+/**
+ * `agentConnected`: a connected coding agent (OpenCode in plan mode) writes the
+ * answers when no model is configured, so "cannot write answers" would be false.
+ */
+export function ModelNotice({ status, agentConnected = false }: { status: ModelStatus | null; agentConnected?: boolean }) {
   const [dismissed, setDismissed] = useState(() => { try { return localStorage.getItem('aura.localModelNotice') === '1'; } catch { return false; } });
   if (!status) return null;
   const dismiss = () => { setDismissed(true); try { localStorage.setItem('aura.localModelNotice', '1'); } catch { /* per-viewer convenience */ } };
   const rec = status.recommendation;
   return (
     <div className="relative z-10 shrink-0 space-y-1.5 px-5 py-2 sm:px-6" data-testid="model-notice-area">
-      {!status.laya.configured && (
+      {!status.laya.configured && !agentConnected && (
         <div data-testid="no-model" className="flex items-start gap-2 text-[11.5px] text-attention">
           <Icon name="shield" size={12} className="mt-0.5 shrink-0" />
           <span>

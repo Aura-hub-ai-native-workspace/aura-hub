@@ -2419,7 +2419,9 @@ class CentralAgent:
         folder = tempfile.mkdtemp(prefix="aura-answer-")
         try:
             outcome = invoke_fabric(
-                "agent.delegate", {"task": prompt, "role": "research", "reasoner": True},
+                # No worker role: a chat answer is a plain reply, not a research report with
+                # FINDINGS/EVIDENCE/UNKNOWNS sections. Plan mode keeps it read-only.
+                "agent.delegate", {"task": prompt, "reasoner": True},
                 {"cwd": folder, "nodeId": worker_id, "taskId": "answer", "cancelToken": _Stop(),
                  "actor": {"kind": "agent", "id": "central-agent"}}, self.fabric_cfg)
         except Exception:  # noqa: BLE001 — a failed answer is reported by the caller, not raised

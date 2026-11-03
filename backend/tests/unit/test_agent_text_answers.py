@@ -44,7 +44,7 @@ def test_opencode_is_preferred_and_the_call_is_read_only_in_an_empty_folder(monk
     port = svc._agent_text_port("What is the capital of France and its population?", "agt-aaaaaa")
     assert port.providers[0].id == "opencode"
     assert port.complete_stream("sys", "usr") == "## Answer\nParis."
-    assert calls["capability"] == "agent.delegate" and calls["payload"]["role"] == "research"
+    assert calls["capability"] == "agent.delegate" and "role" not in calls["payload"]
     assert calls["context"]["nodeId"] == "opencode"
     assert calls["existed"] == []                          # an empty folder: there is no project to change
     assert not os.path.exists(calls["folder"])             # and it is removed afterwards

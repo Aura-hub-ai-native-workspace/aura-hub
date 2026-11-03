@@ -27,4 +27,9 @@ describe('ModelNotice tells the three model states apart', () => {
     expect(h).not.toContain('no-model');
     expect(h).not.toContain('model-unusable');
   });
+
+  it('says nothing about missing answers when a connected agent writes them', () => {
+    const s = { laya: { configured: false, usable: false }, recommendation: null } as never;
+    expect(renderToStaticMarkup(<ModelNotice status={s} agentConnected />)).not.toContain('no-model');
+  });
 });
