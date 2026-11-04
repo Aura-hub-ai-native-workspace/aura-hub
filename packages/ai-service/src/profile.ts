@@ -285,7 +285,10 @@ function readPackageJson(root: string): { deps: Record<string, string>; devDeps:
 export function buildProfile(id: string, root: string): ProjectProfile {
   const { langs, files, hasTests, hasSql } = walk(root);
   const languages = [...langs.entries()].map(([name, n]) => ({ name, files: n })).sort((a, b) => b.files - a.files);
-  const primaryLanguage = languages[0]?.name ?? 'unknown';
+  // Documentation and markup do not make a project "written in" them: the primary language is the
+  // most-used programming language, and docs/markup only when nothing else is there.
+  const notCode = new Set(['Markdown', 'Text', 'JSON', 'YAML', 'TOML', 'XML', 'CSV', 'HTML', 'CSS']);
+  const primaryLanguage = (languages.find((l) => !notCode.has(l.name)) ?? languages[0])?.name ?? 'unknown';
 
   const pkg = readPackageJson(root);
   const allDeps: { name: string; version: string; kind: 'runtime' | 'dev' }[] = [];

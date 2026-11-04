@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useWorkerStore } from './useWorkers';
 import { done } from './useAutoProvision';
 import { nextWorkerToConnect } from './autoProvision';
+import { useAgentChoice } from '../agents/agentChoice';
 
 /**
  * Connects the AI workers this machine already has, wherever the person is.
@@ -33,10 +34,14 @@ export function useConnectDetectedWorkers(): void {
     return () => clearInterval(timer);
   }, [refresh]);
 
+  const chosen = useAgentChoice((s) => s.selected);
+  useEffect(() => { void useAgentChoice.getState().load(); }, []);
+
   useEffect(() => {
-    const next = nextWorkerToConnect(workers, connecting, done);
+    // Only the workspace's agents are connected automatically.
+    const next = nextWorkerToConnect(workers.filter((w) => (chosen as string[]).includes(w.id)), connecting, done);
     if (!next) return;
     done.add(`worker:${next}`);
     void connect(next);
-  }, [workers, connecting, connect]);
+  }, [workers, connecting, connect, chosen]);
 }

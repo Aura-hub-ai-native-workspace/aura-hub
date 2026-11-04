@@ -1,3 +1,5 @@
+import { AgentsSignIn } from '../../agents/AgentsSignIn';
+import { useAgentsSignIn } from '../../agents/signInOverlay';
 import { useCallback, useEffect, useState } from 'react';
 import { cn } from '@aura/core';
 import { Badge, Button, Card, CardHeader, Icon, Input } from '@aura/ui';
@@ -137,6 +139,17 @@ export function AiRuntime() {
       }
     >
       <div className="grid grid-cols-12 gap-5">
+        {/* The one sign-in page for the six coding agents, also shown at first launch. */}
+        <PageBlock className="col-span-12">
+          <Card>
+            <CardHeader
+              title="Your agents"
+              subtitle="Sign in to each coding agent here. Every one is connected to the shared common-context."
+              action={<Button variant="secondary" onClick={() => useAgentsSignIn.getState().show()}>Open sign-in page</Button>}
+            />
+            <div className="pb-1"><AgentsSignIn tone="app" /></div>
+          </Card>
+        </PageBlock>
         {/* Primary Private Runtime form */}
         <PageBlock className="col-span-12 lg:col-span-8">
           <Card>

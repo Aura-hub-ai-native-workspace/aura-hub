@@ -41,9 +41,10 @@ function GroupHeader({ title, members, railOpen, onToggleRail, agentUp }: {
           AURA (admin){live.length > 0 ? ` · ${live.map((m) => m.name).join(', ')}` : ' · no agents connected yet'}
         </p>
       </span>
-      <ul className="hidden items-center -space-x-1.5 sm:flex" aria-label="Members">
-        {members.slice(0, 6).map((m) => (
-          <li key={m.id} title={`${m.name} · ${m.tone === 'working' ? 'working' : m.tone === 'ready' ? 'ready' : 'not connected'}`}
+      {/* Only agents that are connected (or working) appear here; the rest are in Members & tools. */}
+      <ul className="hidden items-center -space-x-1.5 sm:flex" aria-label="Connected agents" data-testid="connected-members">
+        {live.slice(0, 6).map((m) => (
+          <li key={m.id} title={`${m.name} · ${m.tone === 'working' ? 'working' : 'ready'}`}
             className="relative grid h-8 w-8 place-items-center rounded-full border border-line bg-surface text-[11px] font-semibold text-text-muted">
             {m.name.slice(0, 1).toUpperCase()}
             <span className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border border-surface ${TONE_DOT[m.tone]}`} />

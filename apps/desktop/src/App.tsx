@@ -16,6 +16,8 @@ import { ACCOUNT_EVENT, ACCOUNT_KEY, ACCOUNT_LOGIN_ENABLED, clearAccount, readAc
 import { checkSession } from './onboarding/accountClient';
 import { startAgentEngine } from './ops/agentEngine';
 import { useConnectDetectedWorkers } from './workspace/useConnectDetectedWorkers';
+import { AgentsSignInPage } from './agents/AgentsSignInPage';
+import { useAgentsSignIn } from './agents/signInOverlay';
 
 /**
  * App root. Owns global keyboard shortcuts,
@@ -108,6 +110,8 @@ export function App() {
 
   // Installed AI workers get connected wherever the person is, so Home chat has someone to answer.
   useConnectDetectedWorkers();
+  const agentsSignInOpen = useAgentsSignIn((s) => s.open);
+  const hideAgentsSignIn = useAgentsSignIn((s) => s.hide);
 
   // Persist the session whenever the shape of "where you left off"
   // changes: selected project, focus, or the editor's open tabs.
@@ -131,6 +135,7 @@ export function App() {
       <WindowSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
       {/* Renders only for a portable AppImage that is not already installed. */}
       <AppImageInstallPrompt />
+      {agentsSignInOpen && <AgentsSignInPage onContinue={hideAgentsSignIn} continueLabel="Done" />}
       {/*
         The stored flag says onboarding was completed once; the gate says
         the server it was completed against still works. A tunnel that

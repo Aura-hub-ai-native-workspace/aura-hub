@@ -21,7 +21,7 @@ export type ProjectTab =
   | 'code';
 
 /** Tabs inside Settings. */
-export type SettingsTab = 'connections' | 'tools' | 'runtime' | 'updates';
+export type SettingsTab = 'account' | 'connections' | 'tools' | 'runtime' | 'updates';
 
 export type StatusTone = 'positive' | 'attention' | 'critical' | 'info' | 'neutral';
 

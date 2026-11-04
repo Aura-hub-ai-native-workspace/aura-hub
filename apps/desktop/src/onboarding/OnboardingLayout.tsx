@@ -4,7 +4,7 @@ import { AuraLogo } from '../brand/AuraLogo';
 import { AuroraBackground } from './AuroraBackground';
 import { ParticleCanvas } from './ParticleCanvas';
 
-export const ONBOARDING_STEPS = ['welcome', 'activate', 'ready'] as const;
+export const ONBOARDING_STEPS = ['welcome', 'activate', 'google', 'agents', 'signin', 'ready'] as const;
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
 
 /**
@@ -13,8 +13,8 @@ export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
  * step indicator. Individual screens only ever render their own content
  * column; they never re-declare the background.
  */
-export function OnboardingLayout({ step, children }: { step: OnboardingStep; children: ReactNode }) {
-  const index = ONBOARDING_STEPS.indexOf(step);
+export function OnboardingLayout({ step, steps = ONBOARDING_STEPS, children }: { step: OnboardingStep; steps?: readonly OnboardingStep[]; children: ReactNode }) {
+  const index = steps.indexOf(step);
 
   return (
     <div className="fixed inset-0 z-[300] overflow-hidden text-white">
@@ -34,7 +34,7 @@ export function OnboardingLayout({ step, children }: { step: OnboardingStep; chi
 
       {/* Step dots, bottom-center. */}
       <div className="absolute inset-x-0 bottom-8 flex items-center justify-center gap-2">
-        {ONBOARDING_STEPS.map((s, i) => (
+        {steps.map((s, i) => (
           <motion.span
             key={s}
             className="h-1.5 rounded-full bg-white"

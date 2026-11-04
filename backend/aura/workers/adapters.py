@@ -127,6 +127,25 @@ def _qwen_args(task: str, _cwd: str, model: str | None) -> list[str]:
             task]
 
 
+def _agy_args(task: str, _cwd: str, model: str | None) -> list[str]:
+    # `agy -p` is Antigravity's documented headless mode (cached sign-in, runs
+    # once, exits). Permissions are NOT skipped: agy applies its own
+    # permissions.allow rules, and a tool it is not allowed to use is denied,
+    # which surfaces as a failed run rather than an unapproved action.
+    return [*(["--model", model] if model else []), "-p", task]
+
+
+def _pi_args(task: str, _cwd: str, model: str | None) -> list[str]:
+    # `pi -p` is pi's non-interactive print mode: process the prompt and exit.
+    return [*(["--model", model] if model else []), "-p", task]
+
+
+def _freebuff_args(task: str, cwd: str, _model: str | None) -> list[str]:
+    # AURA's headless Freebuff build (`freebuff-headless`): one run, NDJSON
+    # events, no TTY. Upstream freebuff has no headless mode yet (#947).
+    return ["-p", "--cwd", cwd, "--json", task]
+
+
 #: The worker catalogue. Order is catalogue order for auto-selection.
 ADAPTERS: tuple[WorkerAdapter, ...] = (
     WorkerAdapter(
@@ -160,6 +179,30 @@ ADAPTERS: tuple[WorkerAdapter, ...] = (
             "tool.execute.before DENIED an out-of-scope write before "
             "execution, worker self-terminated (exit 42), forbidden file "
             "never created"),
+    ),
+    WorkerAdapter(
+        id="freebuff", name="Freebuff", binary="freebuff-headless",
+        build_args=_freebuff_args,
+        governance=GOV_NONE, supports=dict(NO_ENFORCEMENT),
+        invocation_verified=False,
+        notes=("Driven through AURA's headless Freebuff build, which shares the "
+               "normal freebuff sign-in. Undispatchable until a readiness proof "
+               "succeeds on this machine."),
+    ),
+    WorkerAdapter(
+        id="agy", name="Antigravity CLI", binary="agy",
+        build_args=_agy_args,
+        governance=GOV_NONE, supports=dict(NO_ENFORCEMENT),
+        invocation_verified=False,
+        notes=("`agy -p` headless mode under agy's own permission rules. "
+               "Undispatchable until a readiness proof succeeds."),
+    ),
+    WorkerAdapter(
+        id="pi", name="pi", binary="pi",
+        build_args=_pi_args,
+        governance=GOV_NONE, supports=dict(NO_ENFORCEMENT),
+        invocation_verified=False,
+        notes="`pi -p` print mode. Undispatchable until a readiness proof succeeds.",
     ),
     WorkerAdapter(
         id="codex-cli", name="Codex CLI", binary="codex",
