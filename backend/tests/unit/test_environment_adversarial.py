@@ -178,7 +178,7 @@ class TestTimeOfCheckTimeOfUse:
         pin = file_identity(target)
 
         target.unlink()
-        shutil.copy("/bin/false", target)
+        shutil.copy(shutil.which("false") or "/bin/false", target)   # /usr/bin/false on macOS
 
         outcome = run_argv([str(target), "hello"], timeout_ms=5000, pin=pin)
         assert outcome.status is ExecStatus.TAMPERED
@@ -473,7 +473,7 @@ class TestCacheCannotGoStale:
 
 class TestForeignOwnership:
     @POSIX_ONLY
-    @pytest.mark.skipif(os.getuid() == 0, reason="root owns everything")
+    @pytest.mark.skipif(os.name == "nt" or os.getuid() == 0, reason="root owns everything; Windows has no uids")
     def test_a_file_owned_by_another_user_is_refused(self):
         """Uses a real root-owned path rather than fabricating ownership."""
         candidate = Path("/etc/passwd")

@@ -21,7 +21,7 @@ export function AuraBugButton({ projectId }: { projectId: string }) {
     <>
       <IconButton
         icon="bug"
-        label="AuraBug — find, review, approve and verify bug fixes"
+        label="AuraBug — find, review, apply and verify bug fixes"
         size="sm"
         active={open}
         onClick={() => setOpen((o) => !o)}

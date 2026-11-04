@@ -1,3 +1,4 @@
+import { ENVIRONMENT_BASE, backendFetch } from '../backend/backendSession';
 /**
  * environmentClient — the desktop's window onto real machine state.
  * ==================================================================
@@ -36,15 +37,13 @@
 
 import type { ProbeResult } from '@aura/connected-environment';
 
-const ENV = import.meta.env as unknown as Record<string, string | undefined>;
 
 /**
  * The canonical Python backend. `VITE_ENVIRONMENT_URL` overrides it for a
  * developer running the backend somewhere else; the default is the port
  * the desktop shell supervises (`service::PYTHON_PORT`).
  */
-export const ENVIRONMENT_BASE =
-  ENV.VITE_ENVIRONMENT_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:4320';
+export { ENVIRONMENT_BASE };
 
 export type ToolStatus =
   | 'verified'
@@ -267,7 +266,7 @@ export type InventoryOutcome =
   | { ok: true; response: InventoryResponse }
   | { ok: false; reason: string };
 
-export type InstallOutcome = 'installed' | 'guided' | 'failed' | 'unverified' | 'unavailable';
+export type InstallOutcome = 'installed' | 'guided' | 'failed' | 'unverified' | 'unavailable' | 'preview';
 
 export interface InstallResponse {
   installOutcome: InstallOutcome;
@@ -334,7 +333,7 @@ const UNREACHABLE: ProbeResult = {
  */
 async function scan(ids?: string[], refresh = false): Promise<ScanOutcome> {
   try {
-    const res = await fetch(`${ENVIRONMENT_BASE}/environment/scan`, {
+    const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/scan`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ ids, refresh }),
@@ -358,7 +357,7 @@ async function scan(ids?: string[], refresh = false): Promise<ScanOutcome> {
 /** Probe one node. Used by Connect, where the user is waiting on a result. */
 async function probe(id: string, refresh = true): Promise<ProbeResult> {
   try {
-    const res = await fetch(`${ENVIRONMENT_BASE}/environment/probe`, {
+    const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/probe`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id, refresh }),
@@ -386,11 +385,57 @@ async function readBody<T>(res: Response, what: string): Promise<T> {
   }
 }
 
+/** One entry of the curated Recommended list, joined with this machine's state. */
+export interface RecommendedItem {
+  id: string;
+  name: string;
+  group: 'agent' | 'dev';
+  why: string;
+  summary: string;
+  homepage: string;
+  installed: boolean;
+  version?: string | null;
+  installable: boolean;
+  /** Present only when installable: the exact command that would run. */
+  command?: string;
+  privilege?: 'user' | 'root';
+  /** Present only when not installable. */
+  reason?: string;
+}
+
+async function recommended(): Promise<{ ok: true; items: RecommendedItem[] } | { ok: false; reason: string }> {
+  try {
+    const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/recommended`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) return { ok: false, reason: `The Python environment backend answered ${res.status}` };
+    return { ok: true, items: ((await res.json()) as { items: RecommendedItem[] }).items };
+  } catch {
+    return { ok: false, reason: UNREACHABLE_DETAIL };
+  }
+}
+
+/** Ask what an install WOULD run. Nothing is installed by this call. */
+async function installPreview(id: string): Promise<InstallResponse> {
+  const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/install`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, preview: true }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const body = await readBody<InstallResponse & { error?: string }>(res, 'Install preview');
+  if (!res.ok && !body.installOutcome) throw new Error(body.error || body.detail || `Install preview failed (${res.status})`);
+  return body;
+}
+
 async function install(id: string): Promise<InstallResponse> {
   // No client-side abort: installers run up to the server's own budget
   // and aborting here would report failure while the server keeps
   // installing. The store's busy flag clears when the call settles.
-  const res = await fetch(`${ENVIRONMENT_BASE}/environment/install`, {
+  const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/install`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id }),
@@ -406,7 +451,7 @@ async function install(id: string): Promise<InstallResponse> {
 
 async function uninstall(id: string): Promise<UninstallResponse> {
   // Same no-abort reasoning as install: the server owns the deadline.
-  const res = await fetch(`${ENVIRONMENT_BASE}/environment/uninstall`, {
+  const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/uninstall`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id }),
@@ -421,7 +466,7 @@ async function uninstall(id: string): Promise<UninstallResponse> {
 }
 
 async function connectDirect(id: string): Promise<ConnectResponse> {
-  const res = await fetch(`${ENVIRONMENT_BASE}/environment/connect`, {
+  const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/connect`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id }),
@@ -448,7 +493,7 @@ async function inventory(options: {
   verify?: boolean;
 } = {}): Promise<InventoryOutcome> {
   try {
-    const res = await fetch(`${ENVIRONMENT_BASE}/environment/inventory`, {
+    const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/inventory`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(options),
@@ -543,7 +588,7 @@ async function search(
   opts: { limit?: number; external?: boolean } = {},
 ): Promise<SearchOutcome> {
   try {
-    const res = await fetch(`${ENVIRONMENT_BASE}/environment/search`, {
+    const res = await backendFetch(`${ENVIRONMENT_BASE}/environment/search`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query, limit: opts.limit, external: opts.external }),
@@ -564,4 +609,4 @@ async function search(
   }
 }
 
-export const environmentClient = { scan, probe, install, uninstall, connectDirect, inventory, search };
+export const environmentClient = { scan, probe, install, installPreview, uninstall, connectDirect, inventory, search, recommended };

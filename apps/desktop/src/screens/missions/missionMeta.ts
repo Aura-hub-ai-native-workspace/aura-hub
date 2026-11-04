@@ -115,7 +115,6 @@ export const KIND_LABEL: Record<TaskKind, string> = {
   'git-operation': 'Git operation',
   'manual-operation': 'Manual',
   review: 'Review',
-  approval: 'Approval',
   documentation: 'Documentation',
   research: 'Research',
 };
@@ -125,7 +124,6 @@ export const KIND_ICON: Record<TaskKind, IconName> = {
   'git-operation': 'git-branch',
   'manual-operation': 'check',
   review: 'eye',
-  approval: 'shield',
   documentation: 'doc',
   research: 'research',
 };
@@ -153,22 +151,17 @@ export const RISK_TONE: Record<TaskRisk, StatusTone> = {
 };
 
 export const CHECKPOINT_LABEL: Record<string, string> = {
-  planning: 'Plan approval',
+  planning: 'Plan',
   execution: 'Execution',
-  review: 'Mission review',
+  review: 'Completion check',
   completion: 'Completion',
 };
 
 export const STAGE_LABEL: Record<CreationStage, string> = {
   idle: '',
-  classify: 'Classifying intent…',
-  signals: 'Gathering real project signals…',
-  intent: 'Extracting intent…',
-  strategy: 'Selecting mission strategy…',
-  'goal-graph': 'Building Goal Graph…',
-  risk: 'Analyzing risk…',
-  review: 'Adversarial review…',
-  quality: 'Scoring plan quality…',
+  context: 'Reading the project…',
+  plan: 'Writing the plan…',
+  check: 'Checking the plan…',
   done: 'Done',
   error: 'Failed',
 };

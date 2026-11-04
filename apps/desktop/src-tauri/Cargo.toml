@@ -18,6 +18,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Instance ownership: the HMAC proof a launched backend must answer with (src/instance.rs).
+# Both are already in Cargo.lock through Tauri; these lines only make the use explicit.
+sha2 = "0.10"
+getrandom = "0.2"
 
 # The updater and the restart that follows it. Both are desktop-only by
 # construction — there is no mobile target here — and both are declared

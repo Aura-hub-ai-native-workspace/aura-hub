@@ -44,8 +44,7 @@ const STATUS_TONE: Record<AuraBugIssue['status'], StatusTone> = {
   analyzing: 'info',
   analyzed: 'neutral',
   'fix-proposed': 'info',
-  'awaiting-approval': 'attention',
-  approved: 'info',
+  applying: 'info',
   fixing: 'info',
   verifying: 'info',
   verified: 'positive',
@@ -90,7 +89,7 @@ export function AuraBugPanel({
     rescan,
     navigateTo,
     reviewFix,
-    approveFix,
+    applyFix,
     rejectFix,
     revertFix,
   } = aura;
@@ -103,10 +102,10 @@ export function AuraBugPanel({
     warning: issues.filter((i) => i.severity === 'warning').length,
   };
 
-  const runApprove = async (issue: AuraBugIssue) => {
+  const runApply = async (issue: AuraBugIssue) => {
     setBusyId(issue.id);
     try {
-      await approveFix(issue.id);
+      await applyFix(issue.id);
     } finally {
       setBusyId(null);
     }
@@ -162,7 +161,7 @@ export function AuraBugPanel({
             fileIsOpen={fileIsOpen}
             busyId={busyId}
             onBack={clearReview}
-            onApprove={() => void runApprove(reviewing)}
+            onApply={() => void runApply(reviewing)}
             onReject={() => rejectFix(reviewing.id)}
             onRevert={() => void runRevert(reviewing)}
           />
@@ -340,7 +339,7 @@ function FixReview({
   fileIsOpen,
   busyId,
   onBack,
-  onApprove,
+  onApply,
   onReject,
   onRevert,
 }: {
@@ -348,14 +347,14 @@ function FixReview({
   fileIsOpen: (path: string) => boolean;
   busyId: string | null;
   onBack: () => void;
-  onApprove: () => void;
+  onApply: () => void;
   onReject: () => void;
   onRevert: () => void;
 }) {
   const open = fileIsOpen(issue.filePath);
   const busy = busyId === issue.id;
-  const canApprove =
-    !!issue.fix && open && !busy && (issue.status === 'awaiting-approval' || issue.status === 'fix-proposed' || issue.status === 'reverted');
+  const canApply =
+    !!issue.fix && open && !busy && (issue.status === 'fix-proposed' || issue.status === 'reverted');
   const canRevert = issue.status === 'verification-failed' && !!issue.preFixContent && open && !busy;
 
   return (
@@ -416,7 +415,7 @@ function FixReview({
       <section className="space-y-1.5">
         <h3 className="text-[11px] font-semibold uppercase tracking-wider text-text-subtle">Verification plan</h3>
         <p className="text-[12px] leading-relaxed text-text-muted">
-          After approval the change is written to disk through the editor's own save path, then the file is re-scanned deterministically
+          When you apply the fix, the change is written to disk through the editor's own save path, then the file is re-scanned deterministically
           (language diagnostics + static scan). The finding is marked <span className="text-positive">Verified</span> only if it no longer
           appears; otherwise it is marked <span className="text-danger">Verification failed</span> and can be reverted.
         </p>
@@ -449,14 +448,14 @@ function FixReview({
           size="sm"
           icon="check"
           loading={busy}
-          disabled={!canApprove}
-          onClick={onApprove}
+          disabled={!canApply}
+          onClick={onApply}
         >
           {issue.status === 'verified'
             ? 'Verified'
             : issue.status === 'verification-failed'
               ? 'Verification failed'
-              : 'Approve & Apply'}
+              : 'Apply fix'}
         </Button>
       </div>
     </div>

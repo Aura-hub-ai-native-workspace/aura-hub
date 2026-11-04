@@ -1,3 +1,4 @@
+const imp = (p) => import(/^[A-Za-z]:[\\/]/.test(p) ? 'file:///' + p.replace(/\\/g, '/') : p);
 /**
  * Differential driver — feeds cases to the REAL bundled TypeScript
  * implementations. Adds "storeops": runs an identical persistence op-script
@@ -64,9 +65,9 @@ process.stdin.on('end', async () => {
     return;
   }
 
-  const fabric = await import(process.env.TSREF_FABRIC);
-  const fabricApi = await import(process.env.TSREF_FABRIC_INDEX);
-  const versions = await import(process.env.TSREF_VERSIONS);
+  const fabric = await imp(process.env.TSREF_FABRIC);
+  const fabricApi = await imp(process.env.TSREF_FABRIC_INDEX);
+  const versions = await imp(process.env.TSREF_VERSIONS);
   const results = [];
   for (const c of req.cases) {
     if (req.func === 'fingerprint') {
@@ -110,11 +111,11 @@ async function runStoreOps(req) {
 
   process.env.AURA_HOME = req.home;
 
-  const wfmod = await import(process.env.TSREF_WFSTORE);
-  const runmod = await import(process.env.TSREF_RUNSTORE);
-  const vermod = await import(process.env.TSREF_VERSIONS);
-  const automod = await import(process.env.TSREF_AUTOSTORE);
-  const runtypes = await import(process.env.TSREF_RUNTYPES);
+  const wfmod = await imp(process.env.TSREF_WFSTORE);
+  const runmod = await imp(process.env.TSREF_RUNSTORE);
+  const vermod = await imp(process.env.TSREF_VERSIONS);
+  const automod = await imp(process.env.TSREF_AUTOSTORE);
+  const runtypes = await imp(process.env.TSREF_RUNTYPES);
 
   const WF = new wfmod.WorkflowStore();
   const RUNS = new runmod.WorkflowRunStore();
@@ -225,7 +226,7 @@ async function runFabricOps(req) {
 
   process.env.AURA_HOME = req.home || '/tmp/opencode/fabric-home';
 
-  const api = await import(process.env.TSREF_FABRIC_INDEX);
+  const api = await imp(process.env.TSREF_FABRIC_INDEX);
 
   // instant backoff — timing is compared via Date draws, never wall sleep
   const slept = [];
@@ -330,8 +331,8 @@ async function runFabricOpsWired(req) {
   globalThis.Date = FakeDate;
   process.env.AURA_HOME = req.home;
 
-  const wiring = await import(process.env.TSREF_FABRICWIRING);
-  const apiIndex = await import(process.env.TSREF_FABRIC_INDEX);
+  const wiring = await imp(process.env.TSREF_FABRICWIRING);
+  const apiIndex = await imp(process.env.TSREF_FABRIC_INDEX);
 
   const stubManager = {
     listProjects: () => [], createProject: () => { throw new Error('not in differential'); },
@@ -396,8 +397,8 @@ async function runWfOps(req) {
   globalThis.Date = FakeDate;
   process.env.AURA_HOME = req.home;
 
-  const eng = await import(process.env.TSREF_WFENGINE);
-  const storeMod = await import(process.env.TSREF_RUNSTORE);
+  const eng = await imp(process.env.TSREF_WFENGINE);
+  const storeMod = await imp(process.env.TSREF_RUNSTORE);
 
   const runs = new storeMod.WorkflowRunStore();
   const events = [];
@@ -428,8 +429,8 @@ async function runAutoOps(req) {
   for (const k of Object.getOwnPropertyNames(Math)) if (!(k in globalThis.Math)) globalThis.Math[k] = Math[k];
   process.env.AURA_HOME = req.home;
 
-  const mod = await import(process.env.TSREF_AUTOENGINE);
-  const storeMod = await import(process.env.TSREF_AUTOSTORE);
+  const mod = await imp(process.env.TSREF_AUTOENGINE);
+  const storeMod = await imp(process.env.TSREF_AUTOSTORE);
   const store = new storeMod.AutomationStore();
   const events = [];
   const slept = [];
@@ -522,8 +523,8 @@ async function runDryOps(req) {
   globalThis.Date = FakeDate;
   process.env.AURA_HOME = req.home;
 
-  const mod = await import(process.env.TSREF_DRYRUN);
-  const fabricApi = await import(process.env.TSREF_FABRIC_INDEX);
+  const mod = await imp(process.env.TSREF_DRYRUN);
+  const fabricApi = await imp(process.env.TSREF_FABRIC_INDEX);
 
   class OracleFabric {
     constructor() { this.evaluations = 0; this.invocations = 0; }
@@ -561,7 +562,7 @@ async function runAgentOps(req) {
   }
   globalThis.Date = FakeDate;
 
-  const mod = await import(process.env.TSREF_AGENTRUNNER);
+  const mod = await imp(process.env.TSREF_AGENTRUNNER);
 
   const script = ((req.fabricScript && req.fabricScript.length) ? req.fabricScript : [{ ok: true }]).map((s) => ({ ...s }));
   let invSeq = 0;
@@ -624,8 +625,8 @@ async function runAgentOps(req) {
 
 // ── intentops: frozen KeywordIntentClassifier/TemplatePromptEnhancer parity ──
 async function runIntentOps(req) {
-  const { KeywordIntentClassifier } = await import(process.env.TSREF_INTENTCLS);
-  const { TemplatePromptEnhancer } = await import(process.env.TSREF_PROMPTENH);
+  const { KeywordIntentClassifier } = await imp(process.env.TSREF_INTENTCLS);
+  const { TemplatePromptEnhancer } = await imp(process.env.TSREF_PROMPTENH);
   const cls = new KeywordIntentClassifier();
   const enh = new TemplatePromptEnhancer();
   const out = [];

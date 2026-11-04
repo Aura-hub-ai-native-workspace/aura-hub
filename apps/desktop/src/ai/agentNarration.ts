@@ -26,7 +26,9 @@ const EVENT_PHRASE: Array<[RegExp, string]> = [
   [/^session\.started$/, 'Thinking'],
   [/^intent\.compiled$/, 'Thinking'],
   [/^intent\.clarification-needed$/, 'Waiting for your reply'],
+  [/^plan\.received$/, 'Starting the plan from Planner'],
   [/^plan\.created$/, 'Working out the steps'],
+  [/^task\.authored$/, 'Writing a file'],
   [/^capability\.discovery$/, 'Checking what it can use'],
   [/^authority\.checked$/, 'Checking what it is allowed to do'],
   [/^workflow\.(compiled|validated)$/, 'Working out the steps'],
@@ -34,8 +36,8 @@ const EVENT_PHRASE: Array<[RegExp, string]> = [
   [/^worker\.lifecycle$/, 'Working'],
   [/^worker\.action$/, 'Working'],
   [/^invocation\.observed$/, 'Working'],
-  [/^approval\.required$/, 'Waiting for your approval'],
   [/^verification\.completed$/, 'Checking the result'],
+  [/^task\.retried$/, 'Retrying a step that failed'],
   [/^answer\.(started|token)$/, 'Writing'],
   [/^result\.ready$/, 'Finishing up'],
   [/^agent\.(failed|cancelled)$/, 'Finishing up'],
@@ -111,7 +113,8 @@ export function outcomeNote(outcome: string | null | undefined): OutcomeNote | n
     case undefined:
       return null;
     case 'awaiting-approval':
-      return { tone: 'attention', text: 'This needs your approval before I continue.' };
+      // Legacy outcome from before the approval step was removed: nothing ran.
+      return { tone: 'neutral', text: 'That did not start, so nothing ran.' };
     case 'denied':
       return { tone: 'attention', text: 'That action is not permitted here, so I stopped.' };
     case 'timeout':
@@ -163,6 +166,9 @@ export function workerReason(reason: string | null | undefined): string | null {
 export function failureText(raw: string | null | undefined): string {
   const text = (raw ?? '').trim();
   if (!text) return 'Something went wrong and I could not finish.';
+  // An identity refusal is an accurate, specific statement. It says "connection
+  // refused", so it must be checked before the generic transport wording.
+  if (/identity mismatch/i.test(text)) return text;
   if (/failed to fetch|networkerror|load failed|connection refused|ECONNREFUSED/i.test(text)) {
     return 'I could not reach the AURA service. Check that it is running, then try again.';
   }

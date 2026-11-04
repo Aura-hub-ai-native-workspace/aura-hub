@@ -1,0 +1,31 @@
+F-33 — Ollama: refreshed read-only inspection and recommendation (2026-10-28). NOTHING was changed.
+No systemctl enable/disable/stop/restart, no unit edit, no symlink, and the existing user-run Ollama (pid 132494) and its store were not touched.
+
+Facts re-read today
+- Effective unit: /etc/systemd/system/ollama.service (admin-made; no drop-ins; shadows /usr/lib/systemd/system/ollama.service).
+  ExecStart=/usr/local/bin/ollama serve; User=ollama. /usr/local/bin/ollama does not exist; the binary is /usr/bin/ollama
+  (package ollama 0.40.10-1, root:root 0755).
+- State: activating (auto-restart), ExecMainStatus=203/EXEC, NRestarts=3247 and rising (about one per 3 s; it adds to the journal forever).
+- Models: /mnt/storage/.ollama (+ ~/.ollama symlink), owned by Groot, mode 755. The unit's user `ollama` could read a 755 tree but the unit sets no
+  OLLAMA_MODELS or HOME, so it would look in /usr/share/ollama or /var/lib/ollama: an empty store. Fixing ExecStart alone serves NO models.
+- Network: no OLLAMA_HOST configured anywhere; Ollama's default is 127.0.0.1:11434. The running user-owned server listens on 127.0.0.1:11434 only.
+- Port conflict to plan for: that running server (pid 132494) already holds 127.0.0.1:11434. Any new service will fail to bind until
+  that process is stopped by whoever started it. I did not stop it.
+
+Recommendation (needs your authorization; commands only)
+A. Preferred — run Ollama as the user that owns the models, as a USER service (no daemon account, no access to anyone else's files):
+   1. Stop the restart loop (the only root command):         sudo systemctl disable --now ollama
+   2. Stop the hand-started server when convenient:           kill 132494     (yours; it holds the port)
+   3. Install docs/audit/evidence/loop6/../cross-platform/ollama-option-A-user-service.service as ~/.config/systemd/user/ollama.service
+   4. systemctl --user daemon-reload && systemctl --user enable --now ollama
+   5. Verify: systemctl --user status ollama; ss -ltnp | grep 11434 (must show 127.0.0.1 only); curl -s 127.0.0.1:11434/api/tags
+   Why: least privilege (no root daemon), the intended model directory, loopback binding set explicitly, a start limit so it cannot loop
+   forever, logs in the user journal (journalctl --user -u ollama).
+B. If a system service is required: docs/audit/evidence/cross-platform/ollama-option-B-system-service.service (runs as Groot, explicit
+   OLLAMA_MODELS and OLLAMA_HOST=127.0.0.1:11434, a minimal PATH, start limit, NoNewPrivileges, ProtectSystem=full). Needs
+   sudo systemctl disable --now ollama first, then edit the unit, daemon-reload, enable --now.
+C. Smallest possible change (also needs root): a drop-in `systemctl edit ollama` setting ExecStart= (cleared) then
+   ExecStart=/usr/bin/ollama serve, plus Environment=OLLAMA_MODELS=/mnt/storage/.ollama/models and HOME=/home/Groot, and User=Groot.
+   It keeps the admin unit but leaves its other weaknesses (PATH with /home entries, Restart=always without a start limit).
+Not recommended: a symlink /usr/local/bin/ollama -> /usr/bin/ollama. It would start a server with an empty store, hide the mismatch, and
+survives package updates silently.

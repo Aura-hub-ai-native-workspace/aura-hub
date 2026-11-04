@@ -62,9 +62,11 @@ class TestPlatformSeam:
         assert current() is native
 
     def test_simulation_does_not_leak_between_contexts(self):
-        with simulate(Platform.MACOS):
-            assert current() is Platform.MACOS
-        assert current() is not Platform.MACOS
+        host = current()                      # whatever this machine really is (macOS on a Mac runner)
+        other = Platform.LINUX if host is not Platform.LINUX else Platform.MACOS
+        with simulate(other):
+            assert current() is other
+        assert current() is host
 
     def test_every_platform_decision_uses_the_seam(self):
         """No module may re-derive the platform for itself.
@@ -119,7 +121,7 @@ class TestWindowsResolution:
         with simulate(Platform.WINDOWS):
             resolved = resolve_executable("tool", ";".join([str(near), str(far)]))
 
-        assert resolved == str(near / "tool.cmd")
+        assert resolved.lower() == str(near / "tool.cmd").lower()
 
     def test_pathext_order_is_respected_within_a_directory(self, tmp_path, monkeypatch):
         here = tmp_path / "bin"
@@ -128,11 +130,11 @@ class TestWindowsResolution:
         monkeypatch.setenv("PATHEXT", ".EXE;.CMD")
 
         with simulate(Platform.WINDOWS):
-            assert resolve_executable("tool", str(here)) == str(here / "tool.exe")
+            assert resolve_executable("tool", str(here)).lower() == str(here / "tool.exe").lower()
 
         monkeypatch.setenv("PATHEXT", ".CMD;.EXE")
         with simulate(Platform.WINDOWS):
-            assert resolve_executable("tool", str(here)) == str(here / "tool.cmd")
+            assert resolve_executable("tool", str(here)).lower() == str(here / "tool.cmd").lower()
 
     def test_a_bare_name_never_resolves_to_an_extensionless_file(
             self, tmp_path, monkeypatch):
@@ -150,7 +152,7 @@ class TestWindowsResolution:
         touch(here / "tool.exe")
         monkeypatch.setenv("PATHEXT", ".EXE")
         with simulate(Platform.WINDOWS):
-            assert resolve_executable("tool", str(here)) == str(here / "tool.exe")
+            assert resolve_executable("tool", str(here)).lower() == str(here / "tool.exe").lower()
 
     def test_a_name_already_carrying_an_extension_is_tried_literally(
             self, tmp_path, monkeypatch):
@@ -160,14 +162,14 @@ class TestWindowsResolution:
         touch(here / "tool.exe")
         monkeypatch.setenv("PATHEXT", ".EXE")
         with simulate(Platform.WINDOWS):
-            assert resolve_executable("tool.exe", str(here)) == str(here / "tool.exe")
+            assert resolve_executable("tool.exe", str(here)).lower() == str(here / "tool.exe").lower()
 
     def test_lowercase_extensions_resolve(self, tmp_path, monkeypatch):
         here = tmp_path / "bin"
         touch(here / "tool.cmd")
         monkeypatch.setenv("PATHEXT", ".CMD")
         with simulate(Platform.WINDOWS):
-            assert resolve_executable("tool", str(here)) == str(here / "tool.cmd")
+            assert resolve_executable("tool", str(here)).lower() == str(here / "tool.cmd").lower()
 
     def test_path_is_split_on_semicolons(self, tmp_path, monkeypatch):
         first, second = tmp_path / "a", tmp_path / "b"
@@ -194,8 +196,12 @@ class TestWindowsResolution:
         with simulate(Platform.WINDOWS):
             path = effective_path()
 
-        assert str(appdata / "npm") in path
-        assert str(tmp_path / "ProgramData" / "chocolatey" / "bin") in path
+        # The search path mixes "/" and "\\" on a real Windows host; compare the directories, not the separators.
+        flat = path.replace("\\", "/")
+        assert str(appdata / "npm").replace("\\", "/") in flat
+        assert str(tmp_path / "ProgramData" / "chocolatey" / "bin").replace("\\", "/") in flat
+
+    @pytest.mark.skipif(os.name == "nt", reason="asserts the POSIX verdict first, which a real Windows host does not give")
 
     def test_trust_does_not_apply_posix_bits_on_windows(self, tmp_path):
         """POSIX mode bits do not describe Windows ACLs.
@@ -326,6 +332,8 @@ class TestMacos:
         with simulate(Platform.MACOS):
             assert str(apps) in effective_path()
 
+    @pytest.mark.skipif(os.name == "nt", reason="simulates macOS file layout; not meaningful on a Windows host")
+
     def test_homebrew_cellar_counts_as_an_os_package(self, tmp_path, monkeypatch):
         cellar = Path("/opt/homebrew/Cellar")
         with simulate(Platform.MACOS):
@@ -336,8 +344,9 @@ class TestMacos:
 
     def test_the_same_path_is_not_trusted_on_linux(self):
         """The Cellar is only meaningful on macOS."""
-        index = build_index()
-        provenance = index.classify(Path("/opt/homebrew/Cellar/ripgrep/14.1.0/bin/rg"))
+        with simulate(Platform.LINUX):
+            index = build_index()
+            provenance = index.classify(Path("/opt/homebrew/Cellar/ripgrep/14.1.0/bin/rg"))
         assert provenance.origin is Origin.UNKNOWN
 
     def test_macos_asks_brew(self, monkeypatch):

@@ -1,0 +1,50 @@
+gate:     packaging-verify
+command:  env DISPLAY=:98 node scripts/packaging-verify.mjs
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-28T23:15:16+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 0.86
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 69
+----- output -----
+=== 0. PACKAGED ARTIFACT ===
+PASS  0a. an AppImage was produced — /mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/bundle/appimage/AURA Hub_0.1.20_amd64.AppImage
+PASS  0b. a .deb was produced — /mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/bundle/deb/AURA Hub_0.1.0_amd64.deb
+      AppImage size: 181.5 MB
+
+=== 1. PACKAGED RESOURCES ===
+PASS  1a. the AppImage extracts
+PASS  1b. the AI service is packaged inside the artifact — …/usr/lib/AURA Hub/resources/ai-service.mjs
+PASS  1c. no secrets or user state were bundled — no .env / keys / policy in the bundle
+PASS  1d. no development tree was packaged — only the staged runtime dependency (1 node_modules)
+PASS  1e. only the declared runtime dependency is staged — typescript
+PASS  1f. the Python environment backend is packaged inside the artifact — …/usr/lib/AURA Hub/resources/python/scripts/serve_central_agent_api.py + aura package
+PASS  1g. the packaged resource directory outranks the development fallback — resource lookup precedes the CARGO_MANIFEST_DIR fallback
+PASS  1h. the backend's third-party dependencies are packaged with it — site-packages + 3 ABI build(s) of pydantic_core
+PASS  1l. a Node runtime is packaged inside the artifact — Node v22.23.2, packaged and executable
+PASS  1j. a Python interpreter is packaged inside the artifact — CPython 3.12.14, packaged and executable
+PASS  1k. the packaged interpreter alone can import the packaged backend — the shipped interpreter imports the shipped backend
+PASS  1m. the document libraries (python-docx, openpyxl, reportlab, pypdf, Pillow, lxml) are packaged — docx, openpyxl, reportlab, pypdf, PIL, lxml
+PASS  1n. the packaged interpreter alone writes and reads DOCX, XLSX and PDF — DOCX, XLSX and PDF written and read back; python-docx=1.2.0 openpyxl=3.1.5 reportlab=5.1.0 pypdf=6.21.4 pillow=13.0.0 lxml=6.1.3
+PASS  1i. the packaged backend imports on an interpreter with no packages installed — imports on /home/Groot/.pyenv/shims/python3 with nothing installed
+
+=== 2. LAUNCH OUTSIDE THE REPOSITORY ===
+      cwd     : /tmp/aura-run-fvupeV (outside the repository)
+      PATH    : /usr/bin:/bin:/home/Groot/.pyenv/shims (deliberately minimal)
+      python  : /home/Groot/.pyenv/shims
+      AURA_HOME: /tmp/aura-home-AXP6MF
+
+=== 3. SERVICE LIFECYCLE ===
+FAIL  3a. the packaged application started its own AI service — not healthy — app exited (SIGABRT): 
+thread 'main' (469493) panicked at /home/Groot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tao-0.35.3/src/platform_impl/linux/event_loop.rs:217:53:
+Failed to initialize gtk backend!: BoolErr
+
+app output:
+
+thread 'main' (469493) panicked at /home/Groot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tao-0.35.3/src/platform_impl/linux/event_loop.rs:217:53:
+Failed to initialize gtk backend!: BoolError { message: "Failed to initialize GTK", filename: "/home/Groot/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gtk-0.18.2/src/rt.rs", function: "gtk::rt::init", line: 141 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+RESULT: FAILED
+----- end -----
+finished: 2026-10-28T23:15:27+05:30
+exit:     1

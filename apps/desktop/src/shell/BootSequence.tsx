@@ -41,10 +41,10 @@ export function BootSequence({ onComplete }: { onComplete: () => void }) {
   const [leaving, setLeaving] = useState(false);
 
   // Theme-aware palette (fixed boot canvas, not the app surfaces).
-  const bg = dark ? '#0F1117' : '#F7F9FC';
-  const primary = dark ? 'rgba(255,255,255,0.92)' : '#0F1117';
-  const muted = dark ? 'rgba(255,255,255,0.52)' : '#5B6376';
-  const faint = dark ? 'rgba(255,255,255,0.40)' : '#7A8296';
+  const bg = dark ? '#111111' : '#F7F9FC';
+  const primary = dark ? 'rgba(255,255,255,0.92)' : '#111111';
+  const muted = dark ? 'rgba(255,255,255,0.52)' : '#636363';
+  const faint = dark ? 'rgba(255,255,255,0.40)' : '#828282';
 
   useEffect(() => {
     if (reduce) {
@@ -77,7 +77,7 @@ export function BootSequence({ onComplete }: { onComplete: () => void }) {
             <motion.div
               aria-hidden
               className="absolute h-48 w-48 rounded-full"
-              style={{ background: 'radial-gradient(circle, rgba(1,192,247,0.28) 0%, rgba(1,192,247,0) 68%)' }}
+              style={{ background: 'radial-gradient(circle, rgba(141, 141, 141,0.28) 0%, rgba(141, 141, 141,0) 68%)' }}
               initial={{ opacity: 0, scale: 0.6 }}
               animate={{ opacity: [0, 0.95, 0.7], scale: [0.6, 1.14, 1] }}
               transition={{ duration: 1.5, ease: 'easeOut', times: [0, 0.5, 1] }}
@@ -126,7 +126,7 @@ export function BootSequence({ onComplete }: { onComplete: () => void }) {
             animate={{ width: 176, opacity: 1 }}
             transition={{ delay: 0.42, duration: T.lineDraw, ease: [0.16, 1, 0.3, 1] }}
           >
-            <div className="h-px w-full bg-gradient-to-r from-transparent via-[#01c0f7] to-transparent" />
+            <div className="h-px w-full bg-gradient-to-r from-transparent via-[#8d8d8d] to-transparent" />
           </motion.div>
 
           {/* Boot messages — one calm line, crossfading in place. */}

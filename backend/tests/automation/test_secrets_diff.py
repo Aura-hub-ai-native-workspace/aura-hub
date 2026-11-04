@@ -52,7 +52,8 @@ def _ensure_oracle():
                     "--bundle", "--format=esm", "--platform=node",
                     f"--outfile={secrets_mjs}"], cwd=REPO, check=True, capture_output=True)
     DRIVER_SRC = '''// usage: node secrets_driver.mjs <op> <home> <seed> <argsJSON>
-const { secrets } = await import(process.env.TSREF_SECRETS);
+const imp = (p) => import(/^[A-Za-z]:[\\\\/]/.test(p) ? 'file:///' + p.replace(/\\\\/g, '/') : p);
+const { secrets } = await imp(process.env.TSREF_SECRETS);
 const [op, home, seed, argsJson] = process.argv.slice(2);
 process.env.AURA_HOME = home;
 process.env.AURA_SECRET_SEED = seed;
@@ -70,11 +71,13 @@ else { throw new Error('op ' + op); }
 
 def _ts(op, home, args, seed=SEED):
     _ensure_oracle()
-    env = {**os.environ, "TSREF_SECRETS": str(_ORACLE["mjs"]),
-           "AURA_SECRET_SEED": seed}
+    # Windows node needs its system variables and little else; a polluted environment makes it abort at startup.
+    base = ({k: os.environ[k] for k in ("PATH", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA")
+             if k in os.environ} if os.name == "nt" else dict(os.environ))
+    env = {**base, "TSREF_SECRETS": str(_ORACLE["mjs"]), "AURA_SECRET_SEED": seed}
     proc = subprocess.run(["node", str(_ORACLE["driver"]), op, home, seed,
                            json.dumps(args)],
-                          capture_output=True, text=True, env=env, check=True)
+                          capture_output=True, text=True, encoding="utf-8", env=env, check=True)
     return json.loads(proc.stdout)
 
 

@@ -175,7 +175,7 @@ export function AgentNodePanel({ workflowId, spec = null, trace = null, onClose 
                   ['Execution', 'duration, audit record, and whether the effect was verified'],
                   ['Observation', 'what came back, quarantined as untrusted data'],
                   ['Decision', 'a claim about what it found'],
-                  ['Intervention', 'the approval gate, inline, where the reasoning is'],
+                  ['Intervention', 'a step the agent flagged, shown inline with its reasoning'],
                   ['Result', 'the answer, or which bound stopped the loop'],
                 ].map(([beat, detail], i) => (
                   <li key={beat} className="flex gap-2">

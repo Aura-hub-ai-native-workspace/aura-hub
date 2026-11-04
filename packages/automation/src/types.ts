@@ -289,6 +289,18 @@ export interface AutomationRun {
    * by workflow without loading and walking every action of every run.
    */
   produced?: ProducedRef[];
+  /**
+   * What a Stop actually achieved, beyond the status word.
+   *
+   * A Stop is acknowledged at once (`status: 'cancelled'`: nothing further will
+   * start, no retry will run) and the abort signal is delivered to the action
+   * in flight, but an action that does not watch the signal keeps running, and
+   * nothing it already did is rolled back. `winding-down` says exactly that: an
+   * action was mid-flight when the Stop arrived and has not returned yet.
+   * `complete` says nothing is running any more. Absent on a run that was never
+   * cancelled.
+   */
+  cancellation?: { phase: 'winding-down' | 'complete'; actionId?: string; label?: string };
 }
 
 export interface AutomationRunSummary {

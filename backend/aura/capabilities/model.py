@@ -74,9 +74,6 @@ class CapabilityAction(ContractModel):
     #: Fixed argument template, e.g. ["{exe}", "--version"]. Constant
     #: strings only; resolution refuses templates with any other shape.
     argv: list[str] = []
-    #: When True the action must not run without a human decision upstream
-    #: (the registry never decides that itself — it only reports it).
-    requires_approval: bool = False
 
 
 class Capability(ContractModel):

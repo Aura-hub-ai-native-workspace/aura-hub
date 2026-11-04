@@ -1,0 +1,31 @@
+# PROPOSED, NOT INSTALLED. Option B: keep a system service, but make it correct and contained.
+# Replaces /etc/systemd/system/ollama.service. Needs root:
+#   sudo systemctl disable --now ollama   # stops the 3-second restart loop first
+#   (edit the unit)  &&  sudo systemctl daemon-reload && sudo systemctl enable --now ollama
+# The models live under /mnt/storage/.ollama, owned by the login user, so the service must either run as
+# that user (below) or the models must be moved/copied to a directory the 'ollama' user owns.
+[Unit]
+Description=Ollama Service
+Wants=network-online.target
+After=network.target network-online.target
+
+[Service]
+ExecStart=/usr/bin/ollama serve
+User=Groot
+Group=Groot
+Environment=HOME=/home/Groot
+Environment=OLLAMA_HOST=127.0.0.1:11434
+Environment=OLLAMA_MODELS=/mnt/storage/.ollama/models
+# No /home/Groot/... tool directories in PATH for a daemon; it needs none.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=1
+StartLimitIntervalSec=60
+StartLimitBurst=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

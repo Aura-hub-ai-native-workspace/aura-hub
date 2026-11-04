@@ -51,7 +51,6 @@ def summarize_run(run: dict) -> dict:
     out["succeededCount"] = sum(1 for n in states if n.get("state") == "succeeded")
     out["failedCount"] = sum(1 for n in states if n.get("state") in ("failed", "timed-out"))
     out["evidenceCount"] = len(run.get("evidence") or [])
-    out["approvalCount"] = sum(1 for n in states if n.get("state") == "awaiting-approval")
     out["resumable"] = run.get("resumable", False)
     if run.get("error") is not None:
         out["error"] = run["error"]
@@ -218,9 +217,6 @@ class WorkflowRunStore(CamelAlias):
         limit = max(1, min(500, query.get("limit") if query.get("limit") is not None else 100))
         return {"runs": runs[offset:offset + limit], "total": total, "offset": offset, "limit": limit}
 
-    def list_awaiting_approval(self) -> list[dict]:
-        return [r for r in self.list() if r["state"] == "awaiting-approval" and not r.get("supersededBy")]
-
     def mark_superseded(self, wid: str, rid: str, by_rid: str) -> dict | None:
         run = self.get(wid, rid)
         if not run or run.get("supersededBy"):
@@ -368,7 +364,6 @@ def attach_evidence(run: dict, node_id: str, evidence: dict) -> None:
 
 def run_state_for(node_state: str) -> str | None:
     return {
-        "awaiting-approval": "awaiting-approval",
         "cancelled": "cancelled",
         "timed-out": "timed-out",
         "failed": "failed",

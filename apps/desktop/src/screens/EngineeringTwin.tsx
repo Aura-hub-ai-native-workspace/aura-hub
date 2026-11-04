@@ -1,3 +1,4 @@
+import { backendFetch } from '../backend/backendSession';
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { SectionView, Block, StatTile, Meter } from '../screens/project/components/kit';
 import { EmptyState } from '../components/EmptyState';
@@ -32,7 +33,7 @@ export function EngineeringTwin() {
         aiClient.projectIntelligence(openId),
         aiClient.projectArchitectureLayers(openId),
         missionClient.list(openId),
-        fetch(`${aiClient.base}/projects/${openId}/changes`).then(r => r.ok ? r.json() : null).catch(() => null),
+        backendFetch(`${aiClient.base}/projects/${openId}/changes`).then(r => r.ok ? r.json() : null).catch(() => null),
       ]);
       setIntelligence(intel);
       setArchLayers(layers.layers ?? []);

@@ -1,9 +1,9 @@
 """Automation subsystem: engine + scheduler + the workflow action handler.
 
 The `run-workflow` action is THE convergence point with Phase 6: it calls
-WorkflowRunner.start_workflow_run with an automation trigger and carries NO
-approvedCapabilities — scheduled/event runs park under ask-user policy
-exactly like manual ones.
+WorkflowRunner.start_workflow_run with an automation trigger. Scheduled and
+event runs follow the same policy as manual ones: routine work runs, and what
+policy refuses is refused.
 """
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ from .scheduler import AutomationScheduler, next_after, parse_cron
 def make_workflow_action(runner, projects):
     """Host-injected handler binding automation to the canonical runner.
 
-    Returns ActionResult{ok, summary?, produced?}; NEVER grants approvals
-    (no approved_capabilities parameter exists on this path).
+    Returns ActionResult{ok, summary?, produced?}. Policy decides what runs;
+    the handler has no way to widen it.
     """
 
     async def run_workflow_action(ctx, config):
@@ -44,7 +44,7 @@ def make_workflow_action(runner, projects):
         run, result = started["run"], started["result"]
         produced = {"kind": "workflow-run", "workflowId": workflow_id,
                     "runId": run["id"], "state": result["runState"]}
-        ok = result["runState"] in ("succeeded", "awaiting-approval")
+        ok = result["runState"] == "succeeded"
         detail = f'{wf.get("name")} — {result["runState"]}, run {run["id"]}'
         return ({"ok": True, "summary": detail, "produced": produced} if ok
                 else {"ok": False, "error": detail, "produced": produced})

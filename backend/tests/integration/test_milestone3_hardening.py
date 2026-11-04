@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.central_agent.planner import MAX_TASKS, PlanningError, TaskPlanner
@@ -33,20 +32,16 @@ def env(tmp_path, monkeypatch):
             return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
         def node_available(self, _cap):
             return True
-        async def request_approval(self, _req, _ctx):
-            return False
     home = tmp_path / "home"
     proj = tmp_path / "project"
     proj.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=proj, check=True)
     monkeypatch.setenv("AURA_HOME", str(home))
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
     host = _H()
     fabric = CapabilityFabric(host)
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     from aura.executors import all_executors
     execs = {e.capabilityId: e for e in all_executors(home)}
     for exe in execs.values():
@@ -58,7 +53,7 @@ def env(tmp_path, monkeypatch):
         fabric=fabric,
         policy_config={}, permissions={"read": True, "write": True},
         executors=execs,
-        audit_store=audit, ledger=ledger)
+        audit_store=audit)
     return home, proj, audit, ledger, cfg
 
 
@@ -178,11 +173,13 @@ class TestModelCannotWiden:
                              "risk": "low",
                              "input": {"path": "ok.txt", "content": "fine"}}]}
         plan = planner.plan_from_model(intent, "agt-x", "now", sneaky)
-        # filesystem.write is MEDIUM in the manifest; preflight must reflect that
+        # filesystem.write is MEDIUM in the manifest; preflight must reflect
+        # that. Under a policy where low runs and medium asks, believing the
+        # model's "low" would wave it through — the manifest tier does not.
+        cfg.fabric.set_policy({"byRisk": {"low": "auto-execute", "medium": "ask-user"}})
         from aura.central_agent.authority import AuthorityChecker
         reqs = AuthorityChecker(cfg).check_plan(plan, None, str(proj))
         assert reqs[0].risk == "medium"
-        assert reqs[0].approvalRequired is True
 
     def test_model_plan_size_bound(self):
         planner = TaskPlanner(known_capabilities=lambda: {"workflow.list"})
@@ -205,7 +202,7 @@ class TestApiContinuationSurface:
 
         agent = make_agent(home, cfg)
         server = AgentApiServer(ApiDeps(agent=agent, sessions=agent.sessions,
-                                        ledger=ledger, audit=audit), port=4397)
+                                        audit=audit), port=4397)
         server.start_background()
         try:
             def call(method, path, body=None):
@@ -254,7 +251,7 @@ class TestApiContinuationSurface:
 
         agent = make_agent(home, cfg)
         server = AgentApiServer(ApiDeps(agent=agent, sessions=agent.sessions,
-                                        ledger=ledger, audit=audit), port=4396)
+                                        audit=audit), port=4396)
         server.start_background()
         try:
             def call(method, path, body=None):

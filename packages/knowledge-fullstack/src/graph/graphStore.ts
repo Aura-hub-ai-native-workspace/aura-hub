@@ -144,6 +144,17 @@ export class ProjectGraphStore {
     return path.join(this.dir, name);
   }
 
+  /** Forget everything held in memory (the files on disk are not touched). */
+  reset(): void {
+    this.entities.clear();
+    this.relations.clear();
+    this.outAdj.clear();
+    this.inAdj.clear();
+    this.files.clear();
+    this.nameIndex.clear();
+    this.keyword = new InvertedIndex();
+  }
+
   async save(): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     const writeAtomic = async (name: string, data: unknown) => {

@@ -521,6 +521,36 @@ function backendRequirements() {
 }
 
 /**
+ * The optional extras that ship inside the application.
+ *
+ * Reading, writing and generating Word, Excel and PDF documents are features
+ * of the product (document.ingest, artifact.generate), but their libraries
+ * live in `[project.optional-dependencies]`, which a plain install of the
+ * backend does not take. The packaged application did not ship them: every
+ * DOCX/XLSX/PDF operation failed with "python-docx not installed". They are
+ * read from the same file as the base dependencies, so there is still one
+ * declaration of each constraint.
+ *
+ * `docling` is deliberately not listed: it needs a multi-gigabyte torch stack
+ * and a model cache, and is provisioned separately.
+ */
+const BUNDLED_EXTRAS = ['multimodal', 'artifacts'];
+
+function extraRequirements(extra) {
+  const file = path.join(REPO, 'backend/pyproject.toml');
+  const toml = readFileSync(file, 'utf8').replace(/^\s*#.*$/gm, '');
+  const block = new RegExp(`^${extra} = \\[([\\s\\S]*?)^\\]`, 'm').exec(toml);
+  const reqs = block ? [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : [];
+  if (!reqs.length) {
+    throw new Error(
+      `Cannot read the "${extra}" extra from ${file}. The packaged application `
+      + 'would ship without the libraries its document features need.',
+    );
+  }
+  return reqs;
+}
+
+/**
  * Bytes on disk under `dir`.
  *
  * Uses `lstat`, so a symlink counts as the link and not as a second copy
@@ -550,7 +580,7 @@ function dirBytes(dir) {
  * is built for this CPython because this CPython asked for it.
  */
 const DEV_BUNDLE = Boolean(process.env.AURA_DEV_BUNDLE);
-const vendored = { bytes: 0, abis: [] };
+const vendored = { bytes: 0, abis: [], documents: [] };
 let trimmed = { before: 0, after: 0 };
 let nodeRuntime;
 if (!DEV_BUNDLE) {
@@ -717,8 +747,14 @@ function trimPythonRuntime(runtimeDir) {
 
   const SITE_OUT = path.join(PY_OUT, 'site-packages');
   try {
+    // The document libraries resolve in the same pip run as the backend's own
+    // dependencies, so one resolver picks a mutually compatible set, for the
+    // bundled interpreter, and compiled parts (lxml, Pillow) arrive as wheels
+    // for this CPython and this platform.
+    const documentRequirements = BUNDLED_EXTRAS.flatMap(extraRequirements);
     pip(['install', '--quiet', '--no-compile', '--target', SITE_OUT,
-      ...backendRequirements()]);
+      ...backendRequirements(), ...documentRequirements]);
+    vendored.documents = documentRequirements;
 
   // Console scripts: a `uvicorn` launcher hard-coded to the BUILD machine's
   // interpreter path. Nothing runs it, and shipping it would only invite
@@ -806,5 +842,6 @@ if (!DEV_BUNDLE) {
     `  python deps           ${(vendored.bytes / 1024 / 1024).toFixed(1)} MB`
     + ` (pydantic_core for ${vendored.abis.join(', ')})`,
   );
+  console.log(`  document libraries    ${(vendored.documents ?? []).join(', ')}`);
 }
 console.log(`  staged into           ${OUT_DIR}`);

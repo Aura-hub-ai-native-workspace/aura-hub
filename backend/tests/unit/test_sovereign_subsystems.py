@@ -376,8 +376,8 @@ class TestKnowledgeBase:
         from aura.knowledge import KnowledgeBase
         kb = KnowledgeBase(store_dir=tmp_path)
         kb.add_document("/doc/finance.txt",
-                        self._FakeExtraction("Invoice approval requires three signatories."))
-        results = kb.search("invoice approval")
+                        self._FakeExtraction("Invoice approval requires three signatories."), project_id="proj-test")
+        results = kb.search("invoice approval", project_id="proj-test")
         assert len(results) > 0
         assert results[0].score > 0
         assert "finance.txt" in results[0].doc_record.path
@@ -386,18 +386,18 @@ class TestKnowledgeBase:
         from aura.knowledge import KnowledgeBase
         kb = KnowledgeBase(store_dir=tmp_path)
         kb.add_document("/doc/policy.txt",
-                        self._FakeExtraction("All travel expenses need manager sign-off."))
+                        self._FakeExtraction("All travel expenses need manager sign-off."), project_id="proj-test")
         kb2 = KnowledgeBase(store_dir=tmp_path)
         assert kb2.snapshot()["documents"] == 1
-        results = kb2.search("travel expenses")
+        results = kb2.search("travel expenses", project_id="proj-test")
         assert len(results) > 0
 
     def test_remove_document(self, tmp_path):
         from aura.knowledge import KnowledgeBase
         kb = KnowledgeBase(store_dir=tmp_path)
-        kb.add_document("/doc/x.txt", self._FakeExtraction("Some content here."))
+        kb.add_document("/doc/x.txt", self._FakeExtraction("Some content here."), project_id="proj-test")
         assert kb.snapshot()["documents"] == 1
-        removed = kb.remove_document("/doc/x.txt")
+        removed = kb.remove_document("/doc/x.txt", project_id="proj-test")
         assert removed is True
         assert kb.snapshot()["documents"] == 0
 
@@ -405,8 +405,8 @@ class TestKnowledgeBase:
         from aura.knowledge import KnowledgeBase
         kb = KnowledgeBase(store_dir=tmp_path)
         kb.add_document("/docs/process.txt",
-                        self._FakeExtraction("Procurement process: three quotes required."))
-        results = kb.search("procurement quotes")
+                        self._FakeExtraction("Procurement process: three quotes required."), project_id="proj-test")
+        results = kb.search("procurement quotes", project_id="proj-test")
         assert len(results) > 0
         d = results[0].to_dict()
         assert "path" in d
@@ -417,7 +417,7 @@ class TestKnowledgeBase:
     def test_empty_search_returns_nothing(self, tmp_path):
         from aura.knowledge import KnowledgeBase
         kb = KnowledgeBase(store_dir=tmp_path)
-        results = kb.search("completely unrelated query")
+        results = kb.search("completely unrelated query", project_id="proj-test")
         assert results == []
 
 

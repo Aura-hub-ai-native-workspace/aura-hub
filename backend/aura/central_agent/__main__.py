@@ -15,7 +15,7 @@ import os
 import sys
 
 
-def build_fabric_config(audit, ledger, policy_config=None):
+def build_fabric_config(audit, policy_config=None):
     """FabricConfig wired to this installation's stores.
 
     `policy_config` overrides the base policy through the same merge
@@ -31,15 +31,11 @@ def build_fabric_config(audit, ledger, policy_config=None):
             return {"read": True, "write": True, "execute": True, "autonomous": True, "network": True}
         def node_available(self, _cap):
             return True
-        async def request_approval(self, _req, _ctx):
-            return False
 
     register_canonical_internal_capabilities(None)
     host = _H()
     fabric = CapabilityFabric(host)
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     execs = {}
     for exe in all_executors():
         try:
@@ -53,7 +49,6 @@ def build_fabric_config(audit, ledger, policy_config=None):
         permissions={"read": True, "write": True},
         executors=execs,
         audit_store=audit,
-        ledger=ledger,
     )
     # The live fabric enforces its own policy object: sync the merged
     # config onto it here (same convention as the test suites' explicit
@@ -75,7 +70,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.home:
         os.environ["AURA_HOME"] = args.home
 
-    from ..approvals import ApprovalLedger
     from ..audit import AuditStore
     from ..config import aura_home
     from .events import EventBus
@@ -85,7 +79,6 @@ def main(argv: list[str] | None = None) -> int:
 
     home = aura_home()
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
 
     # `--mode model` used to construct an IntentCompiler with no port,
     # which raises before anything runs. The port comes from the same
@@ -103,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
 
     bus = EventBus()
     agent = CentralAgent(
-        fabric_cfg=build_fabric_config(audit, ledger),
+        fabric_cfg=build_fabric_config(audit),
         session_store=AgentSessionStore(home),
         bus=bus,
         intent_compiler=(
@@ -116,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         "result": result.model_dump(),
         "events": [e.type for e in bus.tail],
     }, indent=2, ensure_ascii=False))
-    return 0 if result.outcome in ("completed", "awaiting-approval") else 1
+    return 0 if result.outcome == "completed" else 1
 
 
 if __name__ == "__main__":

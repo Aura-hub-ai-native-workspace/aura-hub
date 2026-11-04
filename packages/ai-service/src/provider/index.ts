@@ -3,6 +3,7 @@ import { getAdapter, registerAdapter, getAllAdapters } from './registry';
 import type { ProviderAdapter, ActiveRuntime, ProviderHealth, ModelCapabilities } from './types';
 import * as credentialStore from './credentialStore';
 import { cachedModelsFor, resolveModel } from './modelValidation';
+import { startAgentViewSync } from './agentView';
 
 /* ── types ──────────────────────────────────────────────────────────── */
 
@@ -57,6 +58,8 @@ export function registerProvider(adapter: ProviderAdapter): void {
 
 export function setupProviders(): void {
   /* Registry self-initialises via the array literal in registry.ts. */
+  // Keep the Central Agent's secret-free view of the active provider current.
+  startAgentViewSync();
 }
 
 /* ── listing ────────────────────────────────────────────────────────── */

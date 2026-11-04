@@ -1,0 +1,21 @@
+# ADR-003: Artifact Provenance Model
+
+- **Date:** 2026-09-01
+- **Status:** Accepted
+- **Context:** Every engineering output must be tracked with full provenance — who created it, what agent, what tool, what inputs, what constraints.
+- **Problem:** How should artifact provenance be represented and stored?
+- **Decision:** Each artifact has a provenance record containing: agent, capability, tool, inputs (artifact IDs), parameters, constraints, policy decision, approval status, validation result, and timestamp. Provenance is stored alongside artifact metadata in the engineering graph.
+- **Reason:**
+  - Connects to AURA's existing audit architecture (AuditStore)
+  - Provenance links artifacts to the Capability Fabric invocation that produced them
+  - Enables "what produced this?" and "what depends on this?" queries
+  - SHA-256 content hash ensures integrity verification
+- **Consequences:**
+  - Every artifact creation/update produces a provenance record
+  - Provenance is immutable once recorded
+  - Audit trail and provenance are separate but linked (audit records the Fabric invocation, provenance records the artifact lineage)
+- **Rejected Alternatives:**
+  - Separate provenance database: Adds complexity without benefit
+  - File-system-only tracking: No query capability
+  - Blockchain-based provenance: Massive overkill for desktop app
+- **Evidence:** AURA's existing AuditStore provides the audit layer. Provenance extends this with artifact-specific lineage tracking.

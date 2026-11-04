@@ -102,6 +102,12 @@ export class FullStackIndexer {
     return { files, entities: this.store.stats().entities, relations: this.store.stats().relations, bytes, skipped: scan.skipped, errors, durationMs: this.now() - start, byKind, byLayer };
   }
 
+  /** Replace the in-memory graph with the last saved one (or an empty graph if none was saved). */
+  private async rollbackToDisk(): Promise<void> {
+    this.store.reset();
+    await this.store.load();
+  }
+
   async update(root: string, rules: IgnoreRules, opts: AnalyzeOptions = {}): Promise<GraphDelta> {
     const start = this.now();
     const before = this.store.stats();
@@ -115,31 +121,42 @@ export class FullStackIndexer {
     let filesUnchanged = 0;
     const seen = new Set<string>();
 
-    let i = 0;
-    for (const entry of scan.entries) {
-      if (opts.signal?.aborted) throw abortError('Update cancelled');
-      seen.add(entry.relPath);
-      opts.onProgress?.({ phase: 'analyze', processed: ++i, total: scan.entries.length, path: entry.relPath });
-      const rec = manifest.get(entry.relPath);
-      if (rec && rec.size === entry.size && rec.modifiedMs === entry.modifiedMs) { filesUnchanged++; continue; }
-
-      const built = await this.buildFile(entry, rules);
-      if ('error' in built && built.error) { errors.push(built.error); continue; }
-      // Binary/skip: refresh manifest metadata if content-identical.
-      if ('skip' in built && built.skip) {
-        if (rec && rec.checksum === built.checksum) { rec.modifiedMs = entry.modifiedMs; rec.size = entry.size; filesUnchanged++; }
-        continue;
-      }
-      if (!('file' in built) || !built.file) continue;
-      const file = built.file;
-      if (rec && rec.checksum === file.checksum) { rec.modifiedMs = entry.modifiedMs; rec.size = entry.size; filesUnchanged++; continue; }
-      const entities = this.registry.run(file);
-      this.store.setFileEntities(file.relPath, { checksum: file.checksum, modifiedMs: file.modifiedMs, size: file.size }, entities);
-      if (rec) filesModified++; else filesAdded++;
-    }
-
     let filesDeleted = 0;
-    for (const rel of [...manifest.keys()]) if (!seen.has(rel)) { this.store.removeFile(rel); filesDeleted++; }
+    try {
+      let i = 0;
+      for (const entry of scan.entries) {
+        if (opts.signal?.aborted) throw abortError('Update cancelled');
+        seen.add(entry.relPath);
+        opts.onProgress?.({ phase: 'analyze', processed: ++i, total: scan.entries.length, path: entry.relPath });
+        const rec = manifest.get(entry.relPath);
+        if (rec && rec.size === entry.size && rec.modifiedMs === entry.modifiedMs) { filesUnchanged++; continue; }
+
+        const built = await this.buildFile(entry, rules);
+        if ('error' in built && built.error) { errors.push(built.error); continue; }
+        // Binary/skip: refresh manifest metadata if content-identical.
+        if ('skip' in built && built.skip) {
+          if (rec && rec.checksum === built.checksum) { rec.modifiedMs = entry.modifiedMs; rec.size = entry.size; filesUnchanged++; }
+          continue;
+        }
+        if (!('file' in built) || !built.file) continue;
+        const file = built.file;
+        if (rec && rec.checksum === file.checksum) { rec.modifiedMs = entry.modifiedMs; rec.size = entry.size; filesUnchanged++; continue; }
+        const entities = this.registry.run(file);
+        this.store.setFileEntities(file.relPath, { checksum: file.checksum, modifiedMs: file.modifiedMs, size: file.size }, entities);
+        if (rec) filesModified++; else filesAdded++;
+      }
+
+      for (const rel of [...manifest.keys()]) if (!seen.has(rel)) { this.store.removeFile(rel); filesDeleted++; }
+
+
+    } catch (e) {
+      // A cancelled update must not leave a half-applied graph: the loop has already
+      // replaced entities for the files it got to, but nothing was re-linked or
+      // saved. Put the in-memory store back to what is on disk, so searches see the
+      // last consistent index and the next update re-reads what this one abandoned.
+      if (opts.signal?.aborted) await this.rollbackToDisk();
+      throw e;
+    }
 
     opts.onProgress?.({ phase: 'link', processed: 0 });
     this.relink();

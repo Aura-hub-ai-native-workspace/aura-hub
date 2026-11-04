@@ -1,0 +1,10 @@
+F-33 diagnosis, read-only, 2026-10-28 (no system change made)
+- Effective unit: /etc/systemd/system/ollama.service (admin-created, no drop-ins). It shadows the package unit /usr/lib/systemd/system/ollama.service.
+- ExecStart=/usr/local/bin/ollama serve  -> does not exist. Binary: /usr/bin/ollama (package ollama 0.40.10-1, root:root 0755, installed Oct 24 21:14).
+- State: ActiveState=activating/auto-restart, ExecMainStatus=203 (EXEC), NRestarts=2061..2064 and counting; journal: "Unable to locate executable '/usr/local/bin/ollama'".
+- Service user: ollama (uid 957, shell /bin/false, groups render, video). Models: /mnt/storage/.ollama/models (2.8 GB; qwen3.5, nomic-embed-text), owned by Groot:Groot, mode 0755; ~/.ollama -> /mnt/storage/.ollama. /var/lib/ollama (the package unit's store) is empty-ish and owned by ollama.
+  Fixing only the path would start a server that serves NO models (OLLAMA_MODELS is unset in the admin unit, HOME would be /usr/share/ollama).
+- Network: no OLLAMA_HOST configured anywhere, so the default 127.0.0.1:11434 applies; an Ollama started by the user (pid 132494, 20:11, HOME=/home/Groot) listens on 127.0.0.1 only.
+- Least-privilege notes on the current unit: PATH lists /home/Groot/.local/bin, .npm-global/bin, .pyenv/... for a daemon account; no hardening options; Restart=always (no preventing exit, no start limit); WantedBy=default.target on a system unit (multi-user.target is conventional).
+- Proposed, not installed: ollama-option-A-user-service.service (recommended) and ollama-option-B-system-service.service.
+- A symlink /usr/local/bin/ollama -> /usr/bin/ollama was NOT created (it would start a model-less server and hide the real problem).

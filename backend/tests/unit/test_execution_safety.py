@@ -23,7 +23,6 @@ class TestOutcomeStates:
         ("succeeded", "done"),
         ("unverified", "done"),
         ("denied", "denied"),
-        ("awaiting-approval", "awaiting-approval"),
         ("failed", "failed"),
         ("unsupported", "blocked"),
     ])

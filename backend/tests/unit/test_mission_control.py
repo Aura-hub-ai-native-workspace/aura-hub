@@ -77,7 +77,6 @@ class TestMissionHeader:
         allowed = set(typing.get_args(OutcomeType))
         assert "completed" in allowed
         assert "failed" in allowed
-        assert "awaiting-approval" in allowed
         assert "cancelled" in allowed
         assert "denied" in allowed
         assert "timeout" in allowed
@@ -159,7 +158,7 @@ class TestTaskOutcomeFields:
         from aura.contracts.agent import TaskState
         import typing
         allowed = set(typing.get_args(TaskState))
-        for s in ("pending", "running", "done", "failed", "awaiting-approval",
+        for s in ("pending", "running", "done", "failed",
                   "blocked", "skipped", "denied", "timed-out", "cancelled"):
             assert s in allowed, f"TaskState missing: {s}"
 
@@ -172,12 +171,6 @@ class TestTaskOutcomeFields:
         from aura.contracts.agent import TaskOutcome
         outcome = TaskOutcome(taskId="t3", state="done")
         assert outcome.consumedFrom == []
-
-    def test_task_outcome_approval_id_optional(self):
-        from aura.contracts.agent import TaskOutcome
-        outcome = TaskOutcome(taskId="t4", state="awaiting-approval")
-        assert outcome.approvalId is None
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 4. WORKER LIFECYCLE EVENT PAYLOAD
@@ -377,62 +370,6 @@ class TestReplanEvent:
 # 10. APPROVAL EVENT PAYLOAD
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestApprovalEvent:
-    def test_approval_required_is_valid_event_type(self):
-        from aura.contracts.agent import AgentEventType
-        import typing
-        assert "approval.required" in set(typing.get_args(AgentEventType))
-
-    def test_approval_required_event_carries_approval_id(self):
-        e = _make_event("approval.required", payload={
-            "approvalId": "apv-abc123",
-            "taskId": "t1",
-            "capabilityId": "sandbox.execute",
-        })
-        assert e.payload["approvalId"] == "apv-abc123"
-
-    def test_approval_invalidated_is_valid_event_type(self):
-        from aura.contracts.agent import AgentEventType
-        import typing
-        assert "approval.invalidated" in set(typing.get_args(AgentEventType))
-
-    def test_session_parked_task_id_recorded(self):
-        from aura.contracts.agent import AgentSession
-        s = AgentSession(
-            sessionId="agt-park", state="awaiting-approval",
-            createdAt=_now(), updatedAt=_now(),
-            parkedTaskId="t1",
-        )
-        assert s.parkedTaskId == "t1"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 11. EVIDENCE BUNDLE FIELDS
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestEvidenceBundle:
-    def test_evidence_bundle_required_fields(self):
-        from aura.contracts.agent import EvidenceBundle
-        bundle = EvidenceBundle(
-            sessionId="agt-s1", planId="pln-xyz",
-            summary="all tasks verified", createdAt=_now(),
-        )
-        assert bundle.sessionId == "agt-s1"
-        assert bundle.planId == "pln-xyz"
-        assert bundle.auditRecordIds == []
-        assert bundle.approvalIds == []
-
-    def test_evidence_bundle_accepts_artifact_paths(self):
-        from aura.contracts.agent import EvidenceBundle
-        bundle = EvidenceBundle(
-            sessionId="agt-s2", planId="pln-abc",
-            summary="done", createdAt=_now(),
-            artifactPaths=["/home/user/.aura/artifacts/report.docx"],
-        )
-        assert len(bundle.artifactPaths) == 1
-        assert bundle.artifactPaths[0].endswith(".docx")
-
-    def test_evidence_bundle_audit_record_ids(self):
         from aura.contracts.agent import EvidenceBundle
         bundle = EvidenceBundle(
             sessionId="agt-s3", planId="pln-abc",
@@ -891,3 +828,49 @@ class TestCurrentOperation:
         lifecycle = e.payload.get("lifecycle", "")
         assert lifecycle.upper() in ("COMPLETED", "DONE", "EXITED", "IDLE",
                                      "COMPLETED")  # should not be treated as active
+
+
+
+class TestEvidenceBundle:
+    def test_agent_result_evidence_field(self):
+        from aura.contracts.agent import AgentResult, EvidenceBundle
+        bundle = EvidenceBundle(
+            sessionId="agt-s4", planId="pln-abc",
+            summary="done", createdAt=_now(),
+        )
+        result = AgentResult(
+            status="completed", outcome="completed",
+            summary="Work done.", performed=["t1"], verified=["t1"],
+            evidence=bundle,
+        )
+        assert result.evidence is not None
+        assert result.evidence.sessionId == "agt-s4"
+
+    def test_evidence_bundle_accepts_artifact_paths(self):
+        from aura.contracts.agent import EvidenceBundle
+        bundle = EvidenceBundle(
+            sessionId="agt-s2", planId="pln-abc",
+            summary="done", createdAt=_now(),
+            artifactPaths=["/home/user/.aura/artifacts/report.docx"],
+        )
+        assert len(bundle.artifactPaths) == 1
+        assert bundle.artifactPaths[0].endswith(".docx")
+
+    def test_evidence_bundle_audit_record_ids(self):
+        from aura.contracts.agent import EvidenceBundle
+        bundle = EvidenceBundle(
+            sessionId="agt-s3", planId="pln-abc",
+            summary="two tasks", createdAt=_now(),
+            auditRecordIds=["aud-001", "aud-002"],
+        )
+        assert len(bundle.auditRecordIds) == 2
+
+    def test_evidence_bundle_required_fields(self):
+        from aura.contracts.agent import EvidenceBundle
+        bundle = EvidenceBundle(
+            sessionId="agt-s1", planId="pln-xyz",
+            summary="all tasks verified", createdAt=_now(),
+        )
+        assert bundle.sessionId == "agt-s1"
+        assert bundle.planId == "pln-xyz"
+        assert bundle.auditRecordIds == []

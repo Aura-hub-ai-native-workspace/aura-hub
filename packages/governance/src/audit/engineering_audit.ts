@@ -18,6 +18,7 @@ import { getDocumentationHealth, type DocumentationHealthReport } from '../docs/
 import { getReleaseReadiness, type ReleaseReadinessReport } from '../release/release_readiness';
 import { getGitChurn, type GitChurn } from '../core/git';
 import type { ReportMeta } from '../core/types';
+import { throwIfAborted } from '../core/abort';
 
 export type AuditScope = 'daily' | 'weekly' | 'release' | 'architecture';
 
@@ -60,6 +61,8 @@ export interface AuditInput {
   scope?: AuditScope;
   runNpmAudit?: boolean;
   maxBuilds?: number;
+  /** Cooperative cancellation; checked between sub-reports and before the snapshot is written. */
+  signal?: AbortSignal;
 }
 
 export async function getEngineeringAudit(input: AuditInput): Promise<EngineeringAuditReport> {
@@ -67,12 +70,20 @@ export async function getEngineeringAudit(input: AuditInput): Promise<Engineerin
   const scope = input.scope ?? 'daily';
   const root = path.resolve(input.projectPath);
 
+  const signal = input.signal;
+  throwIfAborted(signal, 'Governance audit');
   const scorecard = await getEngineeringScorecard({ projectPath: root, runNpmAudit: input.runNpmAudit });
+  throwIfAborted(signal, 'Governance audit');
   const arch = await getArchitectureHealth({ projectPath: root });
-  const sec = await getSecurityReport({ projectPath: root, runNpmAudit: input.runNpmAudit });
+  throwIfAborted(signal, 'Governance audit');
+  const sec = await getSecurityReport({ projectPath: root, runNpmAudit: input.runNpmAudit, signal });
+  throwIfAborted(signal, 'Governance audit');
   const debt = await getTechnicalDebt({ projectPath: root });
-  const docs = await getDocumentationHealth({ projectPath: root });
+  throwIfAborted(signal, 'Governance audit');
+  const docs = await getDocumentationHealth({ projectPath: root, signal });
+  throwIfAborted(signal, 'Governance audit');
   const churn = await getGitChurn(root, scope === 'weekly' ? 14 : scope === 'daily' ? 2 : 30);
+  throwIfAborted(signal, 'Governance audit');
 
   const snapshot: AuditSnapshot = {
     scope,
@@ -86,7 +97,9 @@ export async function getEngineeringAudit(input: AuditInput): Promise<Engineerin
   };
 
   const previous = loadPreviousSnapshot(root, scope);
-  persistSnapshot(root, scope, snapshot);
+  // The snapshot is persisted at the very end (below), after the last await and a
+  // final cancellation check: a cancelled audit must not leave behind a snapshot
+  // that the next audit would diff against, for a report nobody received.
 
   // ── Top risks (real findings only) ────────────────────────────────
   const topRisks: TopRisk[] = [];
@@ -145,11 +158,15 @@ export async function getEngineeringAudit(input: AuditInput): Promise<Engineerin
   // ── Scope-specific additions ──────────────────────────────────────
   if (scope === 'release') {
     const release = await getReleaseReadiness({ projectPath: root, maxBuilds: input.maxBuilds ?? 0, runNpmAudit: input.runNpmAudit });
+    throwIfAborted(signal, 'Governance audit');
     recommendations.unshift(`Release readiness: ${release.overallScore}/100 (${release.grade}) — ${release.blockers.length ? `blockers: ${release.blockers.join('; ')}` : 'no blockers.'}`);
   }
   if (scope === 'architecture') {
     recommendations.unshift(`Architecture health: ${arch.grade} (${arch.overall.value}/100) — ${arch.metrics.cycles} cycles, ${arch.metrics.layerViolations} layer violations, ${arch.metrics.unusedModules} unused modules.`);
   }
+
+  throwIfAborted(signal, 'Governance audit');
+  persistSnapshot(root, scope, snapshot);
 
   return {
     scope,

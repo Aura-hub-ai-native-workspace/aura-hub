@@ -1,0 +1,11 @@
+Targeted regression runs, 2026-10-28T21:01:13+05:30, source HEAD df2cc92+uncommitted
+F-12 git.branch result propagation | 6 passed in 0.54s
+Windows path handling (simulated on Linux) | 96 passed, 2 skipped in 1.47s
+F-17 sovereign fail-closed | 57 passed, 1 warning in 14.60s
+F-20/F-27 HTTP destination + redirects | 58 passed in 15.82s
+F-23 governance hook fail-closed | 43 passed in 1.93s
+F-24/F-08 cancellation states (backend) | 17 passed, 1 warning in 6.06s
+F-26 project-scoped knowledge | 39 passed, 1 warning in 0.76s
+F-28 document libraries/handling | 72 passed in 6.78s
+F-29 automation lifecycle + differential | 35 passed, 2 skipped in 5.12s
+ Test Files  4 passed (4)       Tests  73 passed (73) 

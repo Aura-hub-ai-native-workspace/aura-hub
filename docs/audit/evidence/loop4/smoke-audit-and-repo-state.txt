@@ -1,0 +1,12 @@
+--- audit:
+{'capabilityId': 'git.status', 'outcome': 'succeeded', 'decision': 'auto-execute'} human
+{'capabilityId': 'git.diff', 'outcome': 'succeeded', 'decision': 'auto-execute'} agent
+{'capabilityId': 'filesystem.read', 'outcome': 'succeeded', 'decision': 'auto-execute'} agent
+--- all sessions' results (oldest first):
+outcome completed verified ['t1'] accepted True
+  has +uncommitted line: True | has diff header: False | has file text: True
+--- repo after all three:
+HEAD 278733504029fcfcce55ef4c12da02c7ea9dd9d7 (before 278733504029fcfcce55ef4c12da02c7ea9dd9d7)
+diff identical to before
+## main
+ M README.md

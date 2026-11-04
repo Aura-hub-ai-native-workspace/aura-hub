@@ -15,7 +15,6 @@ import subprocess
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent import AgentSessionStore, CentralAgent
 from aura.contracts import AgentIntent, TaskPlan, TaskSpecification
@@ -56,7 +55,7 @@ def _live_agent(repo_root, home):
     from aura.fabric.host import WiringHost
 
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
 
     class _Nodes:
         def list_nodes(self):
@@ -66,8 +65,6 @@ def _live_agent(repo_root, home):
 
     fabric = CapabilityFabric(WiringHost(_Nodes()))
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     for exe in all_executors(home):
         try:
             fabric.register(exe)
@@ -77,7 +74,7 @@ def _live_agent(repo_root, home):
     cfg = FabricConfig(
         fabric=fabric, policy_config={}, permissions={"read": True, "write": True},
         executors={e.capabilityId: e for e in all_executors(home)},
-        audit_store=audit, ledger=ledger)
+        audit_store=audit)
     agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
     agent.controller.engine = None
     return agent, ledger

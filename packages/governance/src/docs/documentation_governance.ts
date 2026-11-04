@@ -10,6 +10,7 @@
  *   • broken references  — markdown links resolving to nothing
  */
 
+import { throwIfAborted } from '../core/abort';
 import path from 'node:path';
 import { scanWorkspace, findPackages } from '../core/scan';
 import type { Evidence, Finding, ReportMeta, Severity } from '../core/types';
@@ -35,13 +36,17 @@ export interface DocumentationHealthReport {
 
 export interface DocInput {
   projectPath: string;
+  /** Cooperative cancellation; checked after the workspace scan. */
+  signal?: AbortSignal;
 }
 
 const LOCAL_PATH_RE = /\]\(([^)]+)\)|`(?:\.{1,2}\/[^`]+|[a-zA-Z0-9_./-]+\.(?:ts|tsx|js|jsx|json|md|yml|yaml|css|html))`/g;
 
 export async function getDocumentationHealth(input: DocInput): Promise<DocumentationHealthReport> {
   const t0 = Date.now();
-  const ws = await scanWorkspace(input.projectPath);
+  throwIfAborted(input.signal, 'Documentation review');
+  const ws = await scanWorkspace(input.projectPath, { signal: input.signal });
+  throwIfAborted(input.signal, 'Documentation review');
   const packages = findPackages(ws);
   const issues: DocIssue[] = [];
   let seq = 0;

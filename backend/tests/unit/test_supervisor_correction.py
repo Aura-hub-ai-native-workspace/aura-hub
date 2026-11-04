@@ -45,12 +45,12 @@ class TestDecideTask:
 
     def test_timeout_parks_correctably(self):
         v = decide_task("timed-out", _ev(), verified=None)
-        assert v.status == "parked-timeout"
+        assert v.status == "stopped-timeout"
         assert v.correctable is True
 
     def test_cancelled_parks_without_auto_retry(self):
         v = decide_task("cancelled", _ev(), verified=None)
-        assert v.status == "parked-cancelled"
+        assert v.status == "stopped-cancelled"
         assert v.correctable is False
 
     def test_denied_is_terminal(self):
@@ -65,13 +65,13 @@ class TestDecideTask:
                 scopeCheck={"outside": ["rogue.py"], "changed": ["rogue.py"]}),
             verified=None,
         )
-        assert v.status == "parked-deviation"
+        assert v.status == "stopped-deviation"
         assert v.correctable is True
         assert any("rogue.py" in r for r in v.reasons)
 
     def test_done_unverified_parks(self):
         v = decide_task("done", _ev(), verified=False)
-        assert v.status == "parked-unverified"
+        assert v.status == "stopped-unverified"
         assert v.correctable is True
 
     def test_unknown_state_fails_closed(self):
@@ -99,26 +99,6 @@ class TestDecideRun:
             attempts_used=1 + MAX_CORRECTION_ATTEMPTS)
         assert r.status == "failed-for-review"
         assert r.budget_remaining == 0
-
-    def test_parked_within_budget(self):
-        r = decide_run(
-            [("t1", "failed", _ev(exitCode=1), False)], attempts_used=1)
-        assert r.status == "parked"
-        assert r.budget_remaining == MAX_CORRECTION_ATTEMPTS
-
-    def test_parked_upstream_blocks_downstream(self):
-        r = decide_run(
-            [("tA", "done",
-              _ev(taskId="tA", scopeDeviation=True,
-                  scopeCheck={"outside": ["rogue.py"]}), None),
-             ("tB", "done", _ev(taskId="tB"), True)],
-            depends_on={"tB": ["tA"]},
-            task_contract_id="c1")
-        by_id = {v.task_id: v for v in r.tasks}
-        assert by_id["tA"].status == "parked-deviation"
-        # tB verified on its own, but its dependency did not: blocked.
-        assert by_id["tB"].status == "blocked"
-        assert r.status == "parked"
 
     def test_verified_upstream_does_not_block(self):
         r = decide_run(
@@ -232,7 +212,7 @@ class TestCorrectionRecords:
     def test_record_round_trip(self):
         rec = CorrectionRecord(
             task_contract_id="c1", task_id="t1", worker_node_id="opencode",
-            attempt=2, parent_attempt=1, verdict="parked-deviation",
+            attempt=2, parent_attempt=1, verdict="stopped-deviation",
             reasons=["rogue.py outside scope"],
             evidence={"invocationIds": ["inv-1"], "approvalIds": ["apr-1"],
                       "outside": ["rogue.py"]},
@@ -241,35 +221,3 @@ class TestCorrectionRecords:
         assert restored == rec
         assert restored.worker_node_id == "opencode"
         assert restored.parent_attempt == 1
-
-    def test_approval_ledger_survives_restart(self, tmp_path):
-        from aura.approvals import ApprovalLedger
-
-        store = tmp_path / "approvals.json"
-
-        def load():
-            try:
-                return json.loads(store.read_text())
-            except OSError:
-                return []
-
-        def save(items):
-            store.write_text(json.dumps(items))
-
-        first = ApprovalLedger()
-        first.attach_store(load, save)
-        req = {"id": "apr-1", "state": "pending", "items": [
-            {"invocationId": "inv-1", "capabilityId": "agent.delegate",
-             "fingerprint": "fp-1"}]}
-        first.register("k1", req)
-        # Simulate restart: a fresh ledger over the same store file.
-        second = ApprovalLedger()
-        second.attach_store(load, save)
-        pending = second.pending()
-        assert any(r["id"] == "apr-1" for r in pending)
-        decided = second.decide("apr-1", True, decided_by="human")
-        assert decided and decided["state"] == "granted"
-        spent = second.consume("apr-1")
-        assert spent is not None
-        # Single-use: replay finds nothing.
-        assert second.consume("apr-1") is None

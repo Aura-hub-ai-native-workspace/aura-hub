@@ -70,10 +70,10 @@ function WorkerRow({
       data-testid="add-worker-row"
       data-worker-id={worker.id}
       data-connected={worker.connected}
-      className="rounded-xl border border-[rgba(125,146,255,0.22)] bg-[rgba(13,19,38,0.6)] px-4 py-3"
+      className="rounded-xl border border-[rgba(152, 152, 152,0.22)] bg-[rgba(19, 19, 19,0.6)] px-4 py-3"
     >
       <div className="flex items-start gap-3">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[rgba(125,146,255,0.28)] bg-[rgba(10,16,34,0.9)] text-[13px] font-semibold text-[#8fb0ff]">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[rgba(152, 152, 152,0.28)] bg-[rgba(16, 16, 16,0.9)] text-[13px] font-semibold text-[#afafaf]">
           {worker.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase()}
         </span>
         <span className="min-w-0 flex-1">
@@ -102,7 +102,7 @@ function WorkerRow({
           </span>
           <span className="text-text-muted">
             {worker.connected
-              ? `Connected${worker.governance === 'FULLY_GOVERNED' ? ' · governed in real time' : ''}`
+              ? 'Connected'
               : REASON_LABEL[worker.reason] ?? 'Not connected to AURA'}
           </span>
         </li>
@@ -130,7 +130,7 @@ function WorkerRow({
                     ? `Put ${worker.name} in the first free worker slot. Nothing is installed or connected.`
                     : 'All 6 workspace worker slots are occupied.'
             }
-            className="neon-focus rounded-lg border border-[rgba(122,92,255,0.5)] bg-[rgba(122,92,255,0.14)] px-3 py-1.5 text-[12px] font-semibold text-[#c9bcff] transition-colors hover:bg-[rgba(122,92,255,0.22)] disabled:cursor-not-allowed disabled:opacity-40"
+            className="neon-focus rounded-lg border border-[rgba(119, 119, 119,0.5)] bg-[rgba(119, 119, 119,0.14)] px-3 py-1.5 text-[12px] font-semibold text-[#c7c7c7] transition-colors hover:bg-[rgba(119, 119, 119,0.22)] disabled:cursor-not-allowed disabled:opacity-40"
           >
             {placed
               ? 'In workspace'
@@ -155,7 +155,7 @@ function WorkerRow({
               disabled={busy}
               data-testid="add-worker-disconnect"
               title="Removes AURA's connection. It does not uninstall the software."
-              className="neon-focus rounded-lg border border-[rgba(125,146,255,0.3)] px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:text-text disabled:opacity-50"
+              className="neon-focus rounded-lg border border-[rgba(152, 152, 152,0.3)] px-3 py-1.5 text-[12px] text-text-muted transition-colors hover:text-text disabled:opacity-50"
             >
               Remove from AURA
             </button>
@@ -166,7 +166,7 @@ function WorkerRow({
             onClick={onConnect}
             disabled={busy}
             data-testid="add-worker-connect"
-            className="neon-focus rounded-lg border border-[rgba(122,92,255,0.5)] bg-[rgba(122,92,255,0.14)] px-3 py-1.5 text-[12px] font-semibold text-[#c9bcff] transition-colors hover:bg-[rgba(122,92,255,0.22)] disabled:opacity-50"
+            className="neon-focus rounded-lg border border-[rgba(119, 119, 119,0.5)] bg-[rgba(119, 119, 119,0.14)] px-3 py-1.5 text-[12px] font-semibold text-[#c7c7c7] transition-colors hover:bg-[rgba(119, 119, 119,0.22)] disabled:opacity-50"
           >
             {busy ? 'Connecting…' : 'Connect'}
           </button>
@@ -229,7 +229,7 @@ export function AddWorkerPanel({
         </p>
       </div>
 
-      <label className="flex items-center gap-2 rounded-xl border border-[rgba(125,146,255,0.32)] bg-[rgba(13,19,38,0.85)] px-3 py-2.5 focus-within:border-[rgba(125,146,255,0.6)]">
+      <label className="flex items-center gap-2 rounded-xl border border-[rgba(152, 152, 152,0.32)] bg-[rgba(19, 19, 19,0.85)] px-3 py-2.5 focus-within:border-[rgba(152, 152, 152,0.6)]">
         <Icon name="search" size={15} className="shrink-0 text-text-subtle" />
         <span className="sr-only">Search workers</span>
         <input
@@ -244,7 +244,7 @@ export function AddWorkerPanel({
       {slot && (
         <p
           data-testid="add-worker-replacing"
-          className="rounded-lg border border-[rgba(122,92,255,0.4)] bg-[rgba(122,92,255,0.1)] px-3 py-2 text-[11.5px] text-[#c9bcff]"
+          className="rounded-lg border border-[rgba(119, 119, 119,0.4)] bg-[rgba(119, 119, 119,0.1)] px-3 py-2 text-[11.5px] text-[#c7c7c7]"
         >
           {slot.name
             ? `Choosing a worker puts it in slot ${slot.index + 1}, in place of ${slot.name}. Nothing is uninstalled or disconnected.`

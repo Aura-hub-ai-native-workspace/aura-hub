@@ -122,7 +122,7 @@ class TestMeasuredDiscovery:
         assert actions["status"].risk == "read-only"
         assert actions["commit"].risk == "modify"
         reset = actions["reset-hard"]
-        assert reset.risk == "destructive" and reset.requires_approval is True
+        assert reset.risk == "destructive"
 
 
 # ── 4/13. missing is unavailable, honestly ──────────────────────────
@@ -262,7 +262,7 @@ class TestLookup:
         by_name = {a["name"]: a for a in registry.get_available_actions("git")}
         assert by_name["status"]["risk"] == "read-only"
         assert by_name["push"]["risk"] == "modify"
-        assert by_name["reset-hard"]["requires_approval"] is True
+        assert by_name["reset-hard"]["risk"] == "destructive"
 
 
 # ── 12. project capabilities, separate from global ──────────────────

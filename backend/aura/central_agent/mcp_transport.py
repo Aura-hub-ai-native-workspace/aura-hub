@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import threading
 from pathlib import Path
@@ -159,6 +160,19 @@ class StdioMcpClient:
             self._proc.wait(timeout=3)
         except Exception:
             self._proc.kill()
+        self._sweep_group()
+
+    def _sweep_group(self) -> None:
+        """End whatever the server started. A launcher (`npx`, `uvx`, a shell
+        wrapper) exits with its stdin while the real worker keeps running, so
+        stopping only the leader strands it. The server was started in its own
+        session, so its group id is its pid; Windows has no groups to signal."""
+        if os.name == "nt":
+            return
+        try:
+            os.killpg(self._proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
 
 class McpSession:
@@ -185,7 +199,7 @@ class McpSession:
 
     def call(self, tool_name: str, arguments: dict | None) -> dict:
         """Raw protocol call. Prefer invoke via the Fabric executor instead —
-        that path carries policy, approval, verification and audit."""
+        that path carries policy, verification and audit."""
         return self.client.call_tool(tool_name, arguments)
 
     def close(self) -> None:

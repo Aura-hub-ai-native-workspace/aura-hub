@@ -372,7 +372,6 @@ class TestDeterministicPreserved:
 
 def _submit_agent(tmp_home, monkeypatch, port):
     """CentralAgent over a stub-node fabric with a scripted Fabric edge."""
-    from aura.approvals import ApprovalLedger
     from aura.audit import AuditStore
     from aura.central_agent import AgentSessionStore, CentralAgent
     from aura.central_agent.intent import IntentCompiler
@@ -381,7 +380,7 @@ def _submit_agent(tmp_home, monkeypatch, port):
     from aura.fabric.host import WiringHost
 
     audit = AuditStore(tmp_home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
 
     class _Nodes:
         def list_nodes(self):
@@ -391,8 +390,6 @@ def _submit_agent(tmp_home, monkeypatch, port):
 
     fabric = CapabilityFabric(WiringHost(_Nodes()))
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     for exe in all_executors(tmp_home):
         try:
             fabric.register(exe)
@@ -402,7 +399,7 @@ def _submit_agent(tmp_home, monkeypatch, port):
         fabric=fabric, policy_config={},
         permissions={"read": True, "write": True},
         executors={e.capabilityId: e for e in all_executors(tmp_home)},
-        audit_store=audit, ledger=ledger)
+        audit_store=audit)
     agent = CentralAgent(fabric_cfg=cfg,
                          session_store=AgentSessionStore(tmp_home))
     agent.controller.engine = None
@@ -482,7 +479,7 @@ class TestModelProposedSubmit:
 class TestCorrectionCompat:
     def test_deviation_parks_model_task(self):
         from aura.central_agent.supervisor import (
-            TASK_PARKED_DEVIATION,
+            TASK_STOPPED_DEVIATION,
             decide_task,
         )
 
@@ -495,7 +492,7 @@ class TestCorrectionCompat:
             {"taskId": "t1", "scopeDeviation": True,
              "scopeCheck": {"outside": ["rogue.py"]}},
             verified=False)
-        assert verdict.status == TASK_PARKED_DEVIATION
+        assert verdict.status == TASK_STOPPED_DEVIATION
         assert verdict.correctable is True
         assert "rogue.py" in " ".join(verdict.reasons)
 

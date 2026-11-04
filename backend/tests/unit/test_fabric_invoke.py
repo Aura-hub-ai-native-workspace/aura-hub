@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.fabric import (
     FabricConfig,
@@ -34,15 +33,11 @@ def make_cfg(tmp_home: Path, policy=None, executors=None,
             return self._perms
         def node_available(self, _cap):
             return None
-        async def request_approval(self, _req, _ctx):
-            return False
     audit = AuditStore(tmp_home / "audit.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
     host = _H(permissions or {"read": True, "write": True})
     fabric = CapabilityFabric(host)
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     if executors is not None:
         exec_map = executors
     else:
@@ -62,7 +57,6 @@ def make_cfg(tmp_home: Path, policy=None, executors=None,
         permissions=permissions or {"read": True, "write": True},
         executors=exec_map,
         audit_store=audit,
-        ledger=ledger,
     )
 
 
@@ -140,83 +134,6 @@ class TestExecutionAndVerification:
         assert r["outcome"] == "failed"
         assert "disk gone" in r["detail"]
         assert len(AuditStore(home / "audit.jsonl").load()) == 1
-
-
-class TestApprovalGate:
-    PAYLOAD = {"name": "g", "description": "", "nodes": NODES, "edges": []}
-    POLICY = {"byRisk": {"low": "require-approval", "medium": "ask-user",
-                         "high": "deny"}}
-
-    def test_parks_without_deciding(self, home):
-        cfg = make_cfg(home, policy=self.POLICY)
-        r = invoke_fabric("workflow.create", self.PAYLOAD,
-                          {"taskId": "t"}, cfg)
-        assert r["outcome"] == "awaiting-approval"
-        assert r.get("approvalId")
-        # parked, not performed
-        assert list((home / "workflows").glob("*")) == []
-
-    def test_named_grant_spends_once_then_replay_refused(self, home):
-        cfg = make_cfg(home, policy=self.POLICY)
-        ctx = {"taskId": "t"}
-        first = invoke_fabric("workflow.create", self.PAYLOAD, ctx, cfg)
-        apr = first["approvalId"]
-        cfg.ledger.decide(apr, True, "user")
-        ok = invoke_fabric("workflow.create", self.PAYLOAD,
-                           {"taskId": "t", "approvalId": apr}, cfg)
-        assert ok["outcome"] == "succeeded"
-        replay = invoke_fabric("workflow.create", self.PAYLOAD,
-                               {"taskId": "t", "approvalId": apr}, cfg)
-        assert replay["outcome"] == "awaiting-approval"
-        assert "different action" in replay["detail"] or "no longer" in replay["detail"]
-
-    def test_tampered_arguments_fail_fingerprint_binding(self, home):
-        cfg = make_cfg(home, policy=self.POLICY)
-        ctx = {"taskId": "t"}
-        apr = invoke_fabric("workflow.create", self.PAYLOAD, ctx, cfg)["approvalId"]
-        cfg.ledger.decide(apr, True, "user")
-        tampered = dict(self.PAYLOAD, name="renamed-after-grant")
-        r = invoke_fabric("workflow.create", tampered,
-                          {"taskId": "t", "approvalId": apr}, cfg)
-        assert r["outcome"] == "awaiting-approval"
-        assert list((home / "workflows").glob("*")) == []
-
-    def test_denied_decision_records_audit_with_reason(self, home):
-        cfg = make_cfg(home, policy=self.POLICY)
-        apr = invoke_fabric("workflow.create", self.PAYLOAD, {"taskId": "t"},
-                            cfg)["approvalId"]
-        decided = cfg.ledger.decide(apr, False, "user", "not today")
-        assert decided["state"] == "denied"
-        records = AuditStore(home / "audit.jsonl").load()
-        decisions = [x for x in records if x.get("approvalDecision")]
-        assert decisions and decisions[-1]["approvalDecision"] == "denied"
-
-
-class TestParkedSessionLinkage:
-    """A parked request carries the owning sessionId when the invocation
-    context has one, so the unified approvals inbox can route the
-    decision to /agent/sessions/{sid}/approve. Absent context → absent
-    field (never an empty or guessed value)."""
-
-    POLICY = {"byRisk": {"low": "require-approval", "medium": "ask-user",
-                         "high": "deny"}}
-    PAYLOAD = {"name": "g", "description": "", "nodes": NODES, "edges": []}
-
-    def test_parked_request_carries_session_id(self, home):
-        cfg = make_cfg(home, policy=self.POLICY)
-        r = invoke_fabric("workflow.create", self.PAYLOAD,
-                          {"taskId": "t", "sessionId": "ses-9"}, cfg)
-        assert r["outcome"] == "awaiting-approval"
-        pending = cfg.ledger.pending()
-        assert len(pending) == 1
-        assert pending[0]["sessionId"] == "ses-9"
-
-    def test_no_session_context_means_no_session_field(self, home):
-        cfg = make_cfg(home, policy=self.POLICY)
-        r = invoke_fabric("workflow.create", self.PAYLOAD,
-                          {"taskId": "t"}, cfg)
-        assert r["outcome"] == "awaiting-approval"
-        assert "sessionId" not in cfg.ledger.pending()[0]
 
 
 class TestAuditDegradation:

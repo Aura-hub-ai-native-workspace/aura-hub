@@ -88,6 +88,26 @@ export interface CreateRunInput {
   inputs?: Record<string, string>;
 }
 
+/**
+ * A run parked on an approval, saved before the approval workflow was removed,
+ * can no longer be answered. It is ended here, honestly, instead of waiting
+ * forever: the run and every parked node become failed, with the reason.
+ * Nothing is executed and nothing is approved.
+ */
+const LEGACY_PARKED_REASON = 'This run was waiting for an approval that no longer exists in AURA Hub. It did not run.';
+function terminateLegacyParked<T extends { state: string; error?: string | null }>(run: T): T {
+  if (run.state !== 'awaiting-approval') return run;
+  return { ...run, state: 'failed', error: run.error ?? LEGACY_PARKED_REASON };
+}
+function terminateLegacyParkedRun(run: WorkflowRun | null): WorkflowRun | null {
+  if (!run) return run;
+  const nodes = Object.fromEntries(Object.entries(run.nodes ?? {}).map(([id, n]) => [id, n.state === 'awaiting-approval'
+    ? { ...n, state: 'failed', error: n.error ?? LEGACY_PARKED_REASON }
+    : n]));
+  const ended = terminateLegacyParked(run as unknown as { state: string; error?: string | null }) as unknown as WorkflowRun;
+  return { ...ended, nodes } as WorkflowRun;
+}
+
 export class WorkflowRunStore {
   create(input: CreateRunInput): WorkflowRun {
     const run: WorkflowRun = {
@@ -115,7 +135,7 @@ export class WorkflowRunStore {
   }
 
   get(workflowId: string, runId: string): WorkflowRun | null {
-    return readJsonFile<WorkflowRun | null>(runFile(workflowId, runId), null);
+    return terminateLegacyParkedRun(readJsonFile<WorkflowRun | null>(runFile(workflowId, runId), null));
   }
 
   /** Find a run without knowing its workflow — the id is globally unique. */
@@ -205,7 +225,7 @@ export class WorkflowRunStore {
   list(workflowId?: string): WorkflowRunSummary[] {
     let index = this.readIndex();
     if (!index) { this.rebuildIndex(); index = this.readIndex(); }
-    const runs = index?.runs ?? [];
+    const runs = (index?.runs ?? []).map((r) => terminateLegacyParked(r));
     const filtered = workflowId ? runs.filter((r) => r.workflowId === workflowId) : runs;
     return [...filtered].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }

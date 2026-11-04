@@ -58,7 +58,6 @@ class UpstreamEvidence:
     scope_paths: list[str] = field(default_factory=list)
     changed_paths: list[str] = field(default_factory=list)
     invocation_ids: list[str] = field(default_factory=list)
-    approval_ids: list[str] = field(default_factory=list)
 
 
 def _clip(text: str, limit: int, ref: str,
@@ -85,7 +84,7 @@ def build_envelope(sources: list[UpstreamEvidence]) -> dict:
 
     Returns {"text", "truncated", "consumed_ids", "changed_paths"}.
     Field selection is an allowlist: identity, status, bounded stdout,
-    scope evidence, invocation/approval ids. Nothing else crosses.
+    scope evidence, invocation ids. Nothing else crosses.
     """
     if not sources:
         raise HandoffRefusal("no verified upstream results to hand off.")
@@ -116,8 +115,6 @@ def build_envelope(sources: list[UpstreamEvidence]) -> dict:
         lines.append(
             "<evidence>invocations: "
             + (", ".join(src.invocation_ids) or "unrecorded")
-            + (f" | approvals: {', '.join(src.approval_ids)}"
-               if src.approval_ids else "")
             + "</evidence>")
         lines.append("</AURA-VERIFIED-RESULT>")
         blocks.append("\n".join(lines))

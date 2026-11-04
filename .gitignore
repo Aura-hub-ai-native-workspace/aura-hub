@@ -68,3 +68,8 @@ scripts/.hub-*.png
 # Build output — reproducible from a tagged commit, ~100 MB per platform, and
 # distributed through CI artifacts and GitHub Releases rather than through git.
 dist-release/
+.aider*
+
+# The shared-context store the agents write while they work (a record, not source)
+common-context.json
+common-context.json.*

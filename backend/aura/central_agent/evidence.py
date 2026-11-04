@@ -26,11 +26,8 @@ class EvidenceCollector:
         artifact_paths: list[str] | None = None,
     ) -> EvidenceBundle:
         wanted: set[str] = set()
-        approvals: set[str] = set()
         for o in outcomes:
             wanted.update(o.invocationIds)
-            if o.approvalId:
-                approvals.add(o.approvalId)
         record_ids = [
             r.get("invocationId")
             for r in self._load()
@@ -40,7 +37,6 @@ class EvidenceCollector:
             sessionId=session_id,
             planId=plan_id,
             auditRecordIds=sorted(record_ids),
-            approvalIds=sorted(approvals),
             summary=summary,
             createdAt=now,
             requestIds=[r for r in (request_ids or []) if r],

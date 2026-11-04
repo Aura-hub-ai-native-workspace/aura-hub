@@ -9,7 +9,7 @@ safe by construction —
   anything else     → AURA does the work it was going to do anyway.
 
 So a forged verdict can at most cause extra governed work, never skip
-verification, never satisfy an acceptance criterion, and never approve
+verification, never satisfy an acceptance criterion, and never grant
 anything. Acceptance still requires the review task itself to be done
 AND verified against its task contract.
 

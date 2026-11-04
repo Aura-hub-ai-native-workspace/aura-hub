@@ -17,7 +17,11 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+# RETIRED (approval removal): these compare against the TypeScript oracle, which
+# still encodes the removed park/decide/approval contract. Parity cannot hold
+# for those scenarios. Replace with new-contract tests (see test_autonomous_lifecycle.py).
 import pytest
+pytest.skip("retired: oracle encodes the removed approval contract", allow_module_level=True)
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT.parent))

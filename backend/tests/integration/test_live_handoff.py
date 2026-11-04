@@ -46,7 +46,6 @@ def _live_invoke(monkeypatch, cwd, ledger_decisions=None):
     """Real Python Fabric with stub host presenting opencode+claude."""
     from pathlib import Path
 
-    from aura.approvals import ApprovalLedger
     from aura.audit import AuditStore
     from aura.executors import all_executors
     from aura.fabric import CapabilityFabric
@@ -55,7 +54,7 @@ def _live_invoke(monkeypatch, cwd, ledger_decisions=None):
     home = Path(cwd) / ".." / "wiring-home"
     home.mkdir(exist_ok=True)
     audit = AuditStore(home / "audit.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
 
     class StubNodes:
         def list_nodes(self):
@@ -69,7 +68,6 @@ def _live_invoke(monkeypatch, cwd, ledger_decisions=None):
     host = WiringHost(StubNodes())
     fabric = CapabilityFabric(host)
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric._ledger = ledger
     for e in all_executors(None):
         try:
             fabric.register(e)
@@ -84,7 +82,7 @@ class TestLiveHandoff:
         from aura.fabric import FabricConfig
 
         fabric, ledger = _live_invoke(None, handoff_repo)
-        cfg = FabricConfig(fabric=fabric, ledger=ledger,
+        cfg = FabricConfig(fabric=fabric,
                            permissions={"read": True, "write": True})
         controller = ExecutionController(cfg, engine=None)
 
@@ -140,7 +138,7 @@ class TestLiveHandoff:
         from aura.fabric import FabricConfig
 
         fabric, ledger = _live_invoke(None, handoff_repo)
-        cfg = FabricConfig(fabric=fabric, ledger=ledger,
+        cfg = FabricConfig(fabric=fabric,
                            permissions={"read": True, "write": True})
         controller = ExecutionController(cfg, engine=None)
 

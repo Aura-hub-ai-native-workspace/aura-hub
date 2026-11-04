@@ -19,7 +19,6 @@ import {
   type AgentEventFrame,
   type AgentResult,
   type EditorContext,
-  type PlanReview,
 } from '../ai/centralAgentClient';
 import { useEditorStore } from './editorStore';
 import type { EditorSelection } from './editorTypes';
@@ -31,7 +30,6 @@ export type AiActionPhase =
   | 'idle'
   | 'context-resolved'
   | 'generating'
-  | 'awaiting-approval'
   | 'done'
   | 'error'
   | 'cancelled';
@@ -59,8 +57,6 @@ export interface AiActionState {
   /** Safe progress labels derived from agent lifecycle events. */
   progress: string[];
   result: AgentResult | null;
-  planReview: PlanReview | null;
-  approvalId: string | null;
   stale: boolean;
   errorMessage: string | null;
 }
@@ -69,7 +65,7 @@ const IDLE_STATE: AiActionState = {
   phase: 'idle', action: null, filePath: null, selection: null, originalCode: '',
   snapshotLength: 0, contextSummary: null, elapsedMs: 0, sessionId: null,
   requestId: null,
-  progress: [], result: null, planReview: null, approvalId: null,
+  progress: [], result: null,
   stale: false, errorMessage: null,
 };
 
@@ -121,7 +117,6 @@ const EVENT_LABELS: Array<[RegExp, string]> = [
   [/^worker\.lifecycle$/, 'Working'],
   [/^worker\.action$/, 'Governed action'],
   [/^invocation\.observed$/, 'Governed action'],
-  [/^approval\.required$/, 'Waiting for approval'],
   [/^verification\.completed$/, 'Verifying'],
   [/^result\.ready$/, 'Completed'],
   [/^agent\.(failed|cancelled)$/, 'Settling'],
@@ -201,7 +196,7 @@ export function useAiAction(projectId: string, projectPath?: string) {
   }, []);
 
   /** Route a terminal-or-parked agent result into UI state. Never throws. */
-  const routeResult = useCallback(async (result: AgentResult, sessionId: string) => {
+  const routeResult = useCallback(async (result: AgentResult) => {
     const { openFiles } = useEditorStore.getState();
     setState((s) => {
       const file = s.filePath ? openFiles[s.filePath] : undefined;
@@ -209,26 +204,6 @@ export function useAiAction(projectId: string, projectPath?: string) {
       return { ...s, stale };
     });
     switch (result.outcome) {
-      case 'awaiting-approval': {
-        let planReview: PlanReview | null = null;
-        try {
-          planReview = await centralAgentClient.planReview(sessionId);
-        } catch { /* plan review is advisory; approval ids are authoritative */ }
-        // Exact correlation only: the approval id comes from THIS
-        // result's evidence. When it is absent we surface a
-        // deterministic error rather than guessing another session's
-        // pending approval (the backend would refuse it with 409).
-        const approvalId = result.evidence?.approvalIds?.[0] ?? null;
-        if (!approvalId) {
-          settle({
-            phase: 'error', result,
-            errorMessage: 'The run parked for approval but named no approval. Nothing was approved; start a new request.',
-          });
-          return;
-        }
-        settle({ phase: 'awaiting-approval', result, planReview, approvalId });
-        return;
-      }
       case 'completed':
         settle({ phase: 'done', result });
         return;
@@ -288,7 +263,7 @@ export function useAiAction(projectId: string, projectPath?: string) {
         }).then((r) => ({ ...r, requestId: r.requestId ?? null }));
       const finalSid = res.sessionId ?? sessionId;
       setState((s) => ({ ...s, sessionId: finalSid, requestId: res.requestId }));
-      await routeResult(res.result, finalSid);
+      await routeResult(res.result);
     } catch (e) {
       // A superseded run's abort must not settle over its replacement.
       // A user-cancelled wait settles via the server's run.cancelled
@@ -369,21 +344,6 @@ export function useAiAction(projectId: string, projectPath?: string) {
     await submitToAgent(sid, text, editorCtx, { followUpSid: sid });
   }, [submitToAgent]);
 
-  /** Approve or deny a parked governed action. Approval travels through
-   *  the agent ledger — the same ledger the Fabric spends from. */
-  const decide = useCallback(async (granted: boolean, reason?: string) => {
-    const { sessionId, approvalId } = snapshot();
-    if (!sessionId || !approvalId) return;
-    setState((s) => ({ ...s, phase: 'generating', progress: [...s.progress, granted ? 'Approval granted — resuming' : 'Approval denied'] }));
-    try {
-      const { result } = await centralAgentClient.approve(sessionId, approvalId, granted, reason);
-      await routeResult(result, sessionId);
-    } catch (e) {
-      settle({ phase: 'error', errorMessage: honestError(e) });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeResult, settle]);
-
   /** REAL cancellation: the STOP is recorded server-side (retried while
    *  the session is still appearing). The local wait stops, but the run
    *  settles only on the server's `run.cancelled` verdict — never as a
@@ -391,7 +351,7 @@ export function useAiAction(projectId: string, projectPath?: string) {
    *  still sent, so a bounded fallback settles rather than hanging. */
   const cancel = useCallback(() => {
     const { phase } = snapshot();
-    if (phase !== 'generating' && phase !== 'context-resolved' && phase !== 'awaiting-approval') return;
+    if (phase !== 'generating' && phase !== 'context-resolved') return;
     pushProgress('Cancelling');
     const attempt = async (triesLeft: number): Promise<void> => {
       const sid = snapshot().sessionId;
@@ -434,5 +394,5 @@ export function useAiAction(projectId: string, projectPath?: string) {
     setState(IDLE_STATE);
   }, [cancel, snapshot]);
 
-  return { state, run, reset, cancel, followUp, decide };
+  return { state, run, reset, cancel, followUp };
 }

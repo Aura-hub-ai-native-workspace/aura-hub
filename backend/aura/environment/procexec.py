@@ -548,3 +548,43 @@ def run_argv(
         truncated=truncated,
         pin_mode=pin_mode,
     )
+
+
+#: Matches a process by command line. Callers pass a pattern built from
+#: validated identifiers only; the pattern is an argv element, never a shell.
+def terminate_matching(pattern: str, *, timeout_ms: int = 3000) -> list[int]:
+    """Send SIGTERM to every process whose command line matches ``pattern``.
+
+    Used to reap worker processes orphaned when the backend died, which no
+    in-memory registry can still reach. Discovery goes through
+    :func:`run_argv` (sanitized environment, bounded output, stdin closed)
+    and signalling is limited to the exact PIDs it reports:
+
+      * never this process, and never PID 0 or 1;
+      * never a process group, so AURA's own group is never signalled;
+      * a missing ``pgrep`` (for example on Windows) reaps nothing rather
+        than failing the run.
+
+    Returns the PIDs that were signalled.
+    """
+    if not pattern or len(pattern) > 256:
+        raise ValueError("a process pattern must be 1–256 characters")
+    found = run_argv(["pgrep", "-f", pattern], timeout_ms=timeout_ms)
+    if found.status not in (ExecStatus.OK, ExecStatus.FAILED):
+        # FAILED is pgrep's "no process matched" (exit 1), not an error.
+        return []
+    own = os.getpid()
+    signalled: list[int] = []
+    for token in found.stdout.split():
+        try:
+            pid = int(token)
+        except ValueError:
+            continue
+        if pid <= 1 or pid == own:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+        signalled.append(pid)
+    return signalled

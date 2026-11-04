@@ -12,6 +12,8 @@ is the part that would otherwise be written blind.
 
 from __future__ import annotations
 
+import os
+
 import sys
 import types
 
@@ -176,6 +178,8 @@ class TestWindowsSources:
         for entry in result.items:
             index.add(entry)
         assert len(index.items) == 1, "the same program under two hives is one item"
+
+    @pytest.mark.skipif(os.name == "nt", reason="the real Windows registry is present on a Windows host")
 
     def test_the_registry_is_unavailable_off_windows(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "winreg", None)

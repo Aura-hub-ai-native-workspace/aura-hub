@@ -92,12 +92,12 @@ def _parked_session(svc, plan, verified):
     session.activePlan = plan.model_dump()
     CentralAgent._stash_verified(session, verified)
     session.lastResult = AgentResult(
-        status="awaiting-approval", outcome="awaiting-approval",
-        summary="parked", runId="run-1",
+        status="failed", outcome="failed",
+        summary="stopped", runId="run-1",
         evidence=EvidenceBundle(
             sessionId=session.sessionId, planId=plan.planId,
-            auditRecordIds=["inv-a"], approvalIds=["apr-1"],
-            summary="parked", createdAt="now"))
+            auditRecordIds=["inv-a"],
+            summary="stopped", createdAt="now"))
     svc.sessions.save(session)
     return session
 
@@ -127,77 +127,7 @@ class TestStash:
 
 # ── resume restores, skips, continues ─────────────────────────────────
 
-class TestResumeRestores:
-    def test_verified_skipped_handoff_resolved(self, tmp_path, monkeypatch):
-        seen = []
 
-        def fake_invoke(capability_id, payload, context, cfg):
-            seen.append((capability_id, dict(payload), dict(context)))
-            approval = context.get("approvalId")
-            return {"invocationId": "inv-b", "outcome": "succeeded",
-                    "detail": "done",
-                    "verification": {"passed": True, "kind": "exit-code",
-                                     "detail": ""},
-                    "policy": {"decision": "auto-execute", "rule": "x",
-                               "risk": "low", "reason": ""},
-                    "at": "now",
-                    **({"approvalId": approval} if approval else {}),
-                    "output": {"stdout": "B-result", "exitCode": 0}}
-
-        monkeypatch.setattr("aura.central_agent.execution.invoke_fabric",
-                            fake_invoke)
-        svc = _service(tmp_path)
-        plan = _plan()
-        session = _parked_session(svc, plan, {"t1": _evidence()})
-        result = svc.resume(session.sessionId)
-        # t1 was verified pre-restart: never re-dispatched.
-        assert [c for c, _, _ in seen] == ["agent.delegate"]
-        assert seen[0][1]["task"].endswith("do t2")
-        # Downstream handoff resolved from RESTORED evidence.
-        assert "A-result" in seen[0][1]["task"]
-        assert result.outcome == "completed"
-        assert set(result.verified) == {"t1", "t2"}
-        # Terminal outcome clears the stash.
-        reloaded = svc.sessions.load(session.sessionId)
-        assert reloaded.verifiedEvidence == {}
-
-    def test_stored_plan_used_without_recompile(
-            self, tmp_path, monkeypatch):
-        seen = []
-        monkeypatch.setattr(
-            "aura.central_agent.execution.invoke_fabric",
-            lambda *a: (seen.append(a) or {
-                "invocationId": "inv-b", "outcome": "succeeded",
-                "detail": "done",
-                "verification": {"passed": True, "kind": "exit-code",
-                                 "detail": ""},
-                "policy": {"decision": "auto-execute", "rule": "x",
-                           "risk": "low", "reason": ""},
-                "at": "now",
-                "output": {"stdout": "B", "exitCode": 0}}))
-        svc = _service(tmp_path)
-
-        compiled = []
-
-        class _SpyIntents:
-            def compile(self, *a, **k):
-                compiled.append(a)
-                raise AssertionError("must not recompile")
-
-        svc.intents = _SpyIntents()
-        session = _parked_session(svc, _plan(), {"t1": _evidence()})
-        result = svc.resume(session.sessionId)
-        assert compiled == []
-        assert result.outcome == "completed"
-
-    def test_denied_grant_still_fails_closed(self, tmp_path):
-        svc = _service(tmp_path, ledger=_Ledger(state="denied"))
-        session = _parked_session(svc, _plan(), {"t1": _evidence()})
-        result = svc.resume(session.sessionId)
-        assert result.outcome == "denied"
-
-
-# ── restart round-trip ────────────────────────────────────────────────
 
 class TestRestartRoundTrip:
     def test_plan_chain_evidence_survive_reload(self, tmp_path):
@@ -206,8 +136,8 @@ class TestRestartRoundTrip:
         session = _parked_session(svc, plan, {"t1": _evidence()})
         session.correctionChain.append({
             "taskContractId": "c", "taskId": "t1", "attempt": 2,
-            "parent_attempt": 1, "status": "parked",
-            "approvalId": "apr-9", "verdict": "parked-deviation",
+            "parent_attempt": 1, "status": "stopped",
+            "verdict": "stopped-deviation",
             "reasons": [], "evidence": {},
             "corrective_plan": {"planId": "p", "sessionId": "s",
                                 "intent": _intent().model_dump(),
@@ -227,7 +157,7 @@ class TestRestartRoundTrip:
         assert len(reloaded.correctionChain) == 1
         entry = reloaded.correctionChain[0]
         assert (entry["attempt"], entry["parent_attempt"],
-                entry["status"]) == (2, 1, "parked")
+                entry["status"]) == (2, 1, "stopped")
         assert entry["verified_snapshot"]["t1"]["stdout"] == "A-result"
         # Verified handoff evidence intact.
         assert CentralAgent._restored_verified(reloaded)["t1"][

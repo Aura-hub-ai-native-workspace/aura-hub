@@ -183,8 +183,6 @@ class TestNoApprovalEventForAutoExecute:
                 return {"read": True, "write": True}
             def node_available(self, cap):
                 return True
-            async def request_approval(self, req, ctx):
-                return False
 
         fabric = CapabilityFabric(_AutoHost())
         fabric.policy["overrides"]["document.ingest"] = "auto-execute"
@@ -222,8 +220,6 @@ class TestNoApprovalEventForAutoExecute:
                 return {"read": True, "write": True}
             def node_available(self, cap):
                 return True
-            async def request_approval(self, req, ctx):
-                return False
 
         fabric = CapabilityFabric(_AutoHost())
         fabric.policy["overrides"]["knowledge.search"] = "auto-execute"
@@ -249,50 +245,6 @@ class TestNoApprovalEventForAutoExecute:
 # ── G: risky capability still emits approval_required ────────────────────────
 
 class TestRiskyCapabilityStillGated:
-    @pytest.mark.asyncio
-    async def test_g_sandbox_execute_emits_approval_required(self, tmp_path):
-        """sandbox.execute (ask-user) must emit approval.required and pause."""
-        from aura.executors import multimodal_executors, register_canonical_internal_capabilities
-        from aura.knowledge.store import KnowledgeBase
-        from aura.fabric import CapabilityFabric, FabricHost
-
-        class _DenyHost(FabricHost):
-            def permissions_for(self, cap, ctx):
-                # "execute" → grants_for() → ["process.execute", "network.outbound"]
-                # Required by sandbox.execute so the permission check passes and
-                # the approval gate is reached
-                return {"read": True, "write": True, "execute": True}
-            def node_available(self, cap):
-                return True
-            async def request_approval(self, req, ctx):
-                return False  # deny → outcome is awaiting-approval
-
-        fabric = CapabilityFabric(_DenyHost())
-        # Populate _BY_ID with CANONICAL_INTERNAL_CAPABILITIES descriptors
-        # (sandbox.execute lives there, not in manifest.json)
-        register_canonical_internal_capabilities(fabric)
-        fabric.policy["overrides"]["sandbox.execute"] = "ask-user"
-
-        kb = KnowledgeBase(store_dir=tmp_path / "kb")
-        for ex in multimodal_executors(kb, tmp_path / "artifacts"):
-            if ex.capabilityId == "sandbox.execute":
-                # Already registered by register_canonical_internal_capabilities;
-                # just update the executors dict without re-registering descriptor
-                fabric.executors[ex.capabilityId] = ex
-                break
-
-        events: list[dict] = []
-        fabric.listen(lambda e: events.append(e))
-
-        result = await fabric.invoke(
-            "sandbox.execute",
-            {"command": "echo hi", "cwd": str(tmp_path), "timeout_ms": 5000},
-            {"actor": {"kind": "agent", "id": "test"}},
-        )
-
-        approval_events = [e for e in events if e.get("type") == "approval.required"]
-        assert len(approval_events) >= 1, "sandbox.execute must emit approval.required"
-        assert result["outcome"] == "awaiting-approval"
 
     def test_g_high_risk_floor_unchanged(self):
         """agent.delegate keeps its high-risk tier, and the require-approval
@@ -325,13 +277,14 @@ class TestRiskyCapabilityStillGated:
         assert out["decision"] == "auto-execute"
         assert out["rule"] == "autonomous-delegation"
 
-        # Autonomy off: the high-risk default (require-approval) holds —
-        # the floor was never lowered, only routed around by an explicit grant.
+        # Autonomy off is the person's own switch: delegation then waits for
+        # them (the default auto-execute becomes ask-user) — never silently.
         cfg = dict(fabric.policy, allowAutonomous=False)
         out = evaluate_policy(PolicyInput(
             capability=desc, config=cfg,
             granted=list(desc.permissions), nodeAvailable=True))
-        assert out["decision"] == "require-approval"
+        assert out["decision"] == "deny"
+        assert out["rule"] == "autonomy-disabled"
 
     def test_g_p7_defaults_never_include_high_risk_caps(self):
         """Phase 7 defaults must only cover the intended low/medium caps."""

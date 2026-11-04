@@ -8,7 +8,7 @@ No secret values appear in the meta file.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from aura.agent_runtime.model import checksum
@@ -30,12 +30,22 @@ class ConfigurationBackupManager:
         else:
             raw = path.read_bytes()
 
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        backup_id = f"{agent_id}/{ts}"
         dest_dir = self._root / agent_id
         dest_dir.mkdir(parents=True, exist_ok=True)
-
-        (dest_dir / f"{ts}.backup").write_bytes(raw)
+        # The name is the timestamp, so two backups in one clock tick (Windows'
+        # clock is coarse) would overwrite each other. Claim the name exclusively
+        # and step one microsecond forward on a clash: names stay unique and
+        # still sort in the order the backups were taken.
+        when = datetime.now(timezone.utc)
+        while True:
+            ts = when.strftime("%Y%m%dT%H%M%S%fZ")
+            try:
+                with open(dest_dir / f"{ts}.backup", "xb") as fh:
+                    fh.write(raw)
+                break
+            except FileExistsError:
+                when += timedelta(microseconds=1)
+        backup_id = f"{agent_id}/{ts}"
         meta = {
             "agentId": agent_id,
             "configPath": str(path),

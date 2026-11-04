@@ -107,7 +107,10 @@ def test_resolve_secure_refuses_symlink_escape(tmp_path):
     outside = tmp_path / "secret.txt"
     outside.write_text("classified", encoding="utf-8")
     link = root / "link.txt"
-    link.symlink_to(outside)
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError) as exc:   # a privilege, not a platform: Windows needs Developer Mode or admin
+        pytest.skip(f"this account cannot create symlinks ({exc})")
     # strict resolve lands outside the root → refused
     with pytest.raises(PathSecurityError):
         resolve_secure(link, root=root)
@@ -232,7 +235,21 @@ def test_dispatch_native_txt(tmp_path):
     assert result.status == "ok"
 
 
-def test_dispatch_pdf_without_docling_is_honest(tmp_path):
+def _hide_office_libraries(monkeypatch):
+    """The scenario these tests describe: neither Docling nor the small
+    libraries that read PDF/DOCX/XLSX without it (the lightweight reader) can be
+    imported. With the libraries present a real file is read by the lightweight
+    reader (tests/unit/test_light_office_engine.py)."""
+    import sys
+
+    for name in ("pypdf", "docx", "openpyxl"):
+        for loaded in [m for m in sys.modules if m == name or m.startswith(name + ".")]:
+            monkeypatch.setitem(sys.modules, loaded, None)
+        monkeypatch.setitem(sys.modules, name, None)
+
+
+def test_dispatch_pdf_without_docling_is_honest(tmp_path, monkeypatch):
+    _hide_office_libraries(monkeypatch)
     engine = _engine_without_docling(tmp_path)
     target = tmp_path / "d.pdf"
     target.write_bytes(b"%PDF-1.4 fake")

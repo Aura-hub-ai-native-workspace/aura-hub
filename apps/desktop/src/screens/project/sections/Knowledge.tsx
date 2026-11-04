@@ -7,9 +7,9 @@ import { aiClient, type KGNode, type RetrieveResult, type ProjectIntelligence, t
 import { NodeGraphCanvas, type NodeCardData, type NodeCardEdge } from '../../../components/NodeGraphCanvas';
 
 const KG_COLORS: Record<string, string> = {
-  frontend: '#3b82f6', backend: '#22c55e', database: '#f59e0b', config: '#8b5cf6',
-  docs: '#06b6d4', memory: '#ec4899', conversation: '#a855f7', code: '#60a5fa',
-  service: '#14b8a6', module: '#818cf8', other: '#64748b',
+  frontend: '#797979', backend: '#22c55e', database: '#f59e0b', config: '#7b7b7b',
+  docs: '#848484', memory: '#ec4899', conversation: '#808080', code: '#9a9a9a',
+  service: '#14b8a6', module: '#959595', other: '#727272',
 };
 
 interface SectionCardProps {
@@ -365,7 +365,7 @@ export function Knowledge({ projectId }: { projectId: string }) {
           subtitle={clustering ? 'Every real entity — grouped into clusters until expanded. Click a cluster to open it.' : 'Every real entity — hover to trace, click to inspect'}
         >
           {cards.length === 0 ? (
-            <div className="mt-4 flex h-[400px] items-center justify-center rounded-2xl border border-line" style={{ background: '#0a0e17' }}>
+            <div className="mt-4 flex h-[400px] items-center justify-center rounded-2xl border border-line" style={{ background: '#0e0e0e' }}>
               <div className="text-center">
                 <Icon name="knowledge" size={26} className="mx-auto animate-pulse text-accent" />
                 <p className="mt-3 text-[13px] text-text-muted">{status.phase === 'ready' ? 'No graph entities detected.' : 'Building the knowledge graph…'}</p>

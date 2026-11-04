@@ -2,11 +2,10 @@
 
 One opaque id per inbound HTTP leg (``request_id``) ties together everything
 that leg causes: session events, Fabric invocations, worker dispatches,
-approval decisions, and evidence. Longer-lived identity reuses existing
+policy decisions, and evidence. Longer-lived identity reuses existing
 canonical ids — no new identifiers where one already serves:
 
   request --request_id--> session --session_id--> leg (== request_id)
-    |--approval_id--> ledger decision + resume grant
     |--capability_run_id--> Fabric invocationId / engine runId
     |--worker_run_id--> worker assignment + run record
     └--evidence_id--> (sessionId, planId, createdAt) composite

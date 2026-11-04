@@ -2,14 +2,14 @@
 
 Automation decides WHEN. It never executes workflows directly: the
 `run-workflow` action handler (injected by the host) calls
-WorkflowRunner.start_workflow_run — the ONE canonical path — and carries
-NO approvedCapabilities, so scheduled/event runs park exactly like manual
-ones when policy demands a human.
+WorkflowRunner.start_workflow_run — the ONE canonical path. Scheduled and
+event runs are governed by the same policy as manual runs.
 """
 from __future__ import annotations
 
 import json
 import re
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -126,6 +126,10 @@ def merge_config(payload: dict, config: dict) -> dict:
     return out
 
 
+#: A run in one of these states is finished for good (first terminal state wins).
+TERMINAL_STATES = frozenset({"completed", "failed", "cancelled"})
+
+
 class AutomationEngine:
     def __init__(self, store: AutomationStore, actions: dict[str, Callable],
                  emit: Callable | None = None,
@@ -144,6 +148,43 @@ class AutomationEngine:
         self._id_gen = id_gen or (lambda p: f"{p}-{len(p)}")
         self.running: set[str] = set()
         self.live_runs: dict[str, dict] = {}
+        # A Stop arrives on an API thread while the run executes on the event
+        # loop, so "is it already finished? then finish it" is check-then-write
+        # across threads. Terminal transitions are made under this lock.
+        self._lock = threading.RLock()
+
+    def _save(self, run: dict) -> None:
+        """Persist a run: serialize and write under the engine lock.
+
+        A Stop saves from an API thread while the run's own thread saves as it
+        progresses. Without the lock a snapshot taken BEFORE the Stop could be
+        written AFTER it, leaving the stored record "running" for a run that
+        was cancelled (and had emitted `done: cancelled`). Under the lock the
+        last write is always the latest state."""
+        with self._lock:
+            self.store.save_run(run)
+
+    def _settle(self, run: dict, status: str, *, started: int | None = None,
+                error: str | None = None) -> bool:
+        """Move a run to a terminal state exactly once.
+
+        The FIRST terminal state wins: a run that is completed, failed or
+        cancelled never changes again, so a failure cannot be rewritten as a
+        cancellation (or the reverse) by whatever arrives second, and only the
+        caller that wins emits the run's one `done` event. Returns whether this
+        call made the transition. (The clock is read in the original order,
+        finish time then duration: the deterministic differential against the
+        TypeScript engine depends on identical draw order.)"""
+        with self._lock:
+            if run["status"] in TERMINAL_STATES:
+                return False
+            run["status"] = status
+            if error is not None:
+                run["error"] = error
+            run["finishedAt"] = self._iso()
+            if started is not None:
+                run["ms"] = self._ms() - started
+            return True
 
     # matching ---------------------------------------------------------------
 
@@ -190,7 +231,7 @@ class AutomationEngine:
                 "message": f"{sum(1 for c in conds if c['passed'])}/{len(conds)} conditions passed",
                 "level": "info"})
             run["status"] = "queued"
-            self.store.save_run(run)
+            self._save(run)
             if self.emit:
                 self.emit({"type": "run", "run": run})
             if created is None:
@@ -207,7 +248,7 @@ class AutomationEngine:
             return None
         run = self.store.create_run(rule, event)
         run["conditions"] = conds
-        self.store.save_run(run)
+        self._save(run)
         if self.emit:
             self.emit({"type": "run", "run": run})
         await self.execute(run, rule)
@@ -267,7 +308,7 @@ class AutomationEngine:
             run["status"] = "running"
             run["startedAt"] = self._iso()
             self._timeline(run, "started", f'Executing "{rule["name"]}"')
-            self.store.save_run(run)
+            self._save(run)
             if self.emit:
                 self.emit({"type": "run", "run": run})
 
@@ -277,7 +318,7 @@ class AutomationEngine:
                     break
                 if status == "paused":
                     self._timeline(run, "paused", f'Paused before "{action["label"]}"')
-                    self.store.save_run(run)
+                    self._save(run)
                     if self.emit:
                         self.emit({"type": "run", "run": run})
                     break
@@ -285,13 +326,19 @@ class AutomationEngine:
                 if state is None:
                     continue
                 ok = await self._action_with_retries(run, state, action, rule, controller)
+                if ok is None:
+                    # The run was cancelled while this action was pending. The
+                    # cancellation stands and already emitted the run's `done`;
+                    # the action's own outcome is on its state and timeline.
+                    return
                 if not ok and not action.get("continueOnError"):
-                    run["status"] = "failed"
-                    run["error"] = state.get("error") or f'action "{action["label"]}" failed'
-                    run["finishedAt"] = self._iso()
-                    run["ms"] = self._ms() - t0
+                    error = state.get("error") or f'action "{action["label"]}" failed'
+                    # Only a run that is still active can fail: one that was
+                    # cancelled in the meantime stays cancelled.
+                    if not self._settle(run, "failed", error=error, started=t0):
+                        return
                     self._timeline(run, "failed", run["error"], "error")
-                    self.store.save_run(run)
+                    self._save(run)
                     if self.emit:
                         self.emit({"type": "done", "runId": run["id"], "status": "failed", "ms": run["ms"]})
                     return
@@ -299,11 +346,10 @@ class AutomationEngine:
             after = run["status"]
             if after in ("paused", "cancelled"):
                 return
-            run["status"] = "completed"
-            run["finishedAt"] = self._iso()
-            run["ms"] = self._ms() - t0
+            if not self._settle(run, "completed", started=t0):
+                return   # cancelled between the last action and here: it stands
             self._timeline(run, "completed", f"Completed in {run['ms']}ms")
-            self.store.save_run(run)
+            self._save(run)
             if self.emit:
                 self.emit({"type": "done", "runId": run["id"], "status": "completed", "ms": run["ms"]})
         finally:
@@ -314,19 +360,29 @@ class AutomationEngine:
         policy = rule["retry"]
         label = action["label"]
         while attempt < policy["maxAttempts"]:
+            if run["status"] in TERMINAL_STATES:
+                # Cancelled during the previous attempt or the retry wait: no
+                # further attempt, and the run's status is not touched. (This
+                # used to set the status back to "retrying" and carry on, so a
+                # Stop during a retry wait was silently undone.)
+                return None
             attempt += 1
             state["attempts"] = attempt
             state["status"] = "running" if attempt == 1 else "retrying"
             state["startedAt"] = self._iso()
             state.pop("error", None)
-            run["status"] = state["status"]
+            if run["status"] in ("queued", "running", "retrying"):
+                run["status"] = state["status"]       # never over a paused or finished run
             self._timeline(run, "action-retried" if attempt > 1 else "action-started",
                            f"Attempt {attempt}: {label}", "info", state["actionId"])
-            self.store.save_run(run)
+            self._save(run)
             if self.emit:
                 self.emit({"type": "run", "run": run})
 
             t = self._ms()
+            live = self.live_runs.get(run["id"])
+            if live is not None:
+                live["inFlight"] = {"actionId": state["actionId"], "label": label}
             handler = self.actions.get(state["action"])
             try:
                 if handler is None:
@@ -340,6 +396,16 @@ class AutomationEngine:
                     merge_config(run["event"].get("payload") or {}, action.get("config") or {}))
             except Exception as e:  # noqa: BLE001
                 result = {"ok": False, "error": str(e)}
+            if live is not None:
+                live["inFlight"] = None
+            # A Stop that arrived while this action was running said "winding-down";
+            # the action has now returned, so nothing of this run is executing.
+            if (run.get("cancellation") or {}).get("phase") == "winding-down":
+                run["cancellation"] = {**run["cancellation"], "phase": "complete"}
+                self._timeline(run, "log",
+                               f'"{label}" returned after the stop was requested '
+                               f'({"completed" if result.get("ok") else "failed"}); '
+                               'nothing of this run is still executing', "info", state["actionId"])
 
             state["ms"] = self._ms() - t
             produced = result.get("produced")
@@ -358,27 +424,30 @@ class AutomationEngine:
                 self._timeline(run, "action-completed",
                                f"{label} ok{(' — ' + result['summary']) if result.get('summary') else ''}",
                                "info", state["actionId"])
-                self.store.save_run(run)
+                self._save(run)
                 if self.emit:
                     self.emit({"type": "run", "run": run})
                 return True
 
             state["error"] = result.get("error") or "action failed"
-            if attempt >= policy["maxAttempts"]:
+            cancelled = run["status"] == "cancelled"
+            if cancelled or attempt >= policy["maxAttempts"]:
                 state["status"] = "failed"
                 state["finishedAt"] = self._iso()
                 self._timeline(run, "action-failed",
                                f"{label} failed: {state['error']}", "error", state["actionId"])
-                self.store.save_run(run)
+                self._save(run)
                 if self.emit:
                     self.emit({"type": "run", "run": run})
-                return False
+                # None: the run was cancelled, so this failure is not the run's
+                # outcome (the cancellation stands); False: retries exhausted.
+                return None if cancelled else False
 
             wait = retry_delay(policy, attempt)
             self._timeline(run, "action-retried",
                            f"{label} failed — retrying in {wait}ms ({attempt}/{policy['maxAttempts']})",
                            "warn", state["actionId"])
-            self.store.save_run(run)
+            self._save(run)
             if self.emit:
                 self.emit({"type": "run", "run": run})
             await self._sleep(wait)
@@ -393,7 +462,7 @@ class AutomationEngine:
             return None
         run["status"] = "paused"
         self._timeline(run, "paused", "Rule paused")
-        self.store.save_run(run)
+        self._save(run)
         if self.emit:
             self.emit({"type": "run", "run": run})
         return run
@@ -406,7 +475,7 @@ class AutomationEngine:
             return None
         run["status"] = "running"
         self._timeline(run, "resumed", "Rule resumed")
-        self.store.save_run(run)
+        self._save(run)
         if self.emit:
             self.emit({"type": "run", "run": run})
         rule = self.store.get_rule(rule_id)
@@ -418,12 +487,17 @@ class AutomationEngine:
         live = next((e for e in self.live_runs.values()
                      if e["run"]["ruleId"] == rule_id and (not run_id or e["run"]["id"] == run_id)), None)
         run = (live or {}).get("run") or self.store.get_run(rule_id, run_id)
-        if not run or run["status"] in ("completed", "cancelled"):
-            return None
-        run["status"] = "cancelled"
-        run["finishedAt"] = self._iso()
-        self._timeline(run, "cancelled", "Run cancelled")
-        self.store.save_run(run)
+        if not run or run["status"] in TERMINAL_STATES:
+            return None     # unknown, or already finished (a failed run is not "cancelled")
+        if not self._settle(run, "cancelled"):
+            return None     # a terminal state was reached between the check and here
+        in_flight = (live or {}).get("inFlight")
+        run["cancellation"] = ({"phase": "winding-down", "actionId": in_flight["actionId"], "label": in_flight["label"]}
+                               if in_flight else {"phase": "complete"})
+        self._timeline(run, "cancelled",
+                       f'Run cancelled; "{in_flight["label"]}" was running and is winding down' if in_flight
+                       else "Run cancelled")
+        self._save(run)
         if self.emit:
             self.emit({"type": "run", "run": run})
             self.emit({"type": "done", "runId": run["id"], "status": "cancelled", "ms": run.get("ms") or 0})

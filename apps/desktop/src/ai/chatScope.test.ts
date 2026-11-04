@@ -136,6 +136,14 @@ vi.mock('./aiClient', () => ({
 let emit: ((frame: unknown) => void) | null = null;
 const cancels: { sid: string; reason: string }[] = [];
 let resolveSubmit: ((r: unknown) => void) | null = null;
+let sessionAfterStop: unknown = null;
+/** Let's Chat turns, in order: what was asked and on which session. */
+const chats: { message: string; sessionId?: string; projectId?: string }[] = [];
+let submits = 0;
+let rejectChatOnce: string | null = null;
+/** When set, chat turns stay in flight until the test resolves them. */
+let holdChats = false;
+let resolveChat: ((r: unknown) => void) | null = null;
 
 vi.mock('./centralAgentClient', () => ({
   newClientSessionId: () => 'agt-test',
@@ -145,9 +153,24 @@ vi.mock('./centralAgentClient', () => ({
       emit = cb;
       return () => { emit = null; };
     },
-    submit: () => new Promise((resolve) => { resolveSubmit = resolve; }),
+    submit: () => { submits += 1; return new Promise((resolve) => { resolveSubmit = resolve; }); },
+    chat: (message: string, opts: { sessionId?: string; projectId?: string }) => {
+      chats.push({ message, sessionId: opts.sessionId, projectId: opts.projectId });
+      if (rejectChatOnce) {
+        const text = rejectChatOnce;
+        rejectChatOnce = null;
+        return Promise.reject(new Error(text));
+      }
+      if (holdChats) return new Promise((resolve) => { resolveChat = resolve; });
+      return Promise.resolve({
+        sessionId: opts.sessionId ?? 'agt-chat',
+        requestId: 'req-chat',
+        result: { status: 'completed', outcome: 'completed', summary: `Talking about: ${message}`, performed: [], verified: [], evidence: null },
+      });
+    },
     message: () => new Promise(() => { /* unused */ }),
     cancel: (sid: string, reason: string) => { cancels.push({ sid, reason }); return Promise.resolve(); },
+    getSession: () => Promise.resolve(sessionAfterStop),
     planReview: () => Promise.resolve(null),
   },
 }));
@@ -173,6 +196,12 @@ beforeEach(() => {
   cancels.length = 0;
   emit = null;
   resolveSubmit = null;
+  sessionAfterStop = null;
+  chats.length = 0;
+  submits = 0;
+  rejectChatOnce = null;
+  holdChats = false;
+  resolveChat = null;
 });
 
 /* ── scope identity ──────────────────────────────────────────────── */
@@ -242,11 +271,9 @@ describe('transcript isolation', () => {
     await settle();
     void state().send('explain the retry policy');
     await settle();
-    resolveSubmit?.(DONE_RESULT);
-    await settle();
 
     expect(appendedProject.map((a) => a.msg.content)).toContain('explain the retry policy');
-    expect(appendedProject.map((a) => a.msg.content)).toContain('Work is done.');
+    expect(appendedProject.map((a) => a.msg.content)).toContain('Talking about: explain the retry policy');
     expect(appendedWorkspace).toHaveLength(0);
   });
 });
@@ -255,6 +282,7 @@ describe('transcript isolation', () => {
 
 describe('streaming isolation', () => {
   it('a turn still in flight when the surface changes never leaks into the new scope', async () => {
+    holdChats = true;
     await state().loadForProject('p3');
     await settle();
     void state().send('long running thing');
@@ -269,7 +297,7 @@ describe('streaming isolation', () => {
 
     // The old turn completes afterwards: its result must land in the
     // PROJECT family (if anywhere), never the workspace transcript.
-    resolveSubmit?.(DONE_RESULT);
+    resolveChat?.({ sessionId: 'agt-test', result: DONE_RESULT.result });
     await settle();
     expect(appendedWorkspace).toHaveLength(0);
     expect(state().messages).toHaveLength(0);
@@ -305,6 +333,108 @@ describe('streaming isolation', () => {
     expect(state().phase).toBe('idle');
     expect(state().messages[0].status).toBe('done'); // the user turn
     expect(state().messages[1].status).toBe('cancelled');
+  });
+});
+
+describe('stop() keeps what the run already proved', () => {
+  it('adopts the backend\'s settled stopped result: verified work, stopped step, verdict', async () => {
+    sessionAfterStop = {
+      sessionId: 'agt-test', state: 'cancelled',
+      lastResult: {
+        status: 'cancelled', outcome: 'cancelled', failureReason: 'cancelled-by-user',
+        summary: "You stopped this run. Kilo Code's step was stopped mid-flight. Work already verified is kept: Claude Code.",
+        performed: ['delegate-claude'], verified: ['delegate-claude'],
+        understanding: 'Inspect two files', objectiveAccepted: false, unmetAcceptance: ['x'],
+        tasks: [
+          { taskId: 'delegate-claude', description: 'inspect alpha/a.txt', state: 'done', verified: true, worker: 'claude-code', dependsOn: [] },
+          { taskId: 'delegate-kilo', description: 'inspect alpha/missing.txt', state: 'cancelled', verified: null, worker: 'kilo-code', dependsOn: [] },
+        ],
+      },
+    };
+    await state().loadForWorkspace('workspace:p9');
+    await settle();
+    void state().send('two workers, then stop');
+    await settle();
+    state().stop();
+    for (let i = 0; i < 4; i += 1) await settle();
+
+    const msg = state().messages[1];
+    expect(msg.status).toBe('cancelled');
+    expect(msg.content).toContain('Work already verified is kept: Claude Code.');
+    expect(msg.agent?.failureReason).toBe('cancelled-by-user');
+    expect(msg.agent?.tasks?.map((t) => [t.taskId, t.state, t.verified])).toEqual([
+      ['delegate-claude', 'done', true],
+      ['delegate-kilo', 'cancelled', null],
+    ]);
+  });
+});
+
+/* ── Workspace runs at once; Let's Chat only talks ────────────────── */
+
+describe('Workspace executes the assigned goal immediately', () => {
+  it('one submit is the whole turn: no plan to approve, the result is the run', async () => {
+    await state().loadForWorkspace('workspace:pp1');
+    await settle();
+    void state().send('fix the parser and prove it');
+    await settle();
+    resolveSubmit?.({
+      sessionId: 'agt-test', requestId: 'req-run',
+      result: {
+        status: 'completed', outcome: 'completed', summary: 'Both workers finished; verified.',
+        performed: ['t1', 't2'], verified: ['t1', 't2'], evidence: null,
+      },
+    });
+    await settle();
+
+    expect(submits).toBe(1);
+    expect(chats).toHaveLength(0);
+    const msg = state().messages[1];
+    expect(msg.agent?.outcome).toBe('completed');
+    expect(msg.content).toBe('Both workers finished; verified.');
+    expect(state().phase).toBe('idle');
+  });
+});
+
+describe("Let's Chat is conversation-only", () => {
+  it('a project turn goes to /agent/chat and never to the work routes', async () => {
+    await state().loadForProject('pc1');
+    await settle();
+    await state().send('create a file called notes.md and commit it');
+    await settle();
+
+    expect(submits).toBe(0);
+    expect(chats).toEqual([{ message: 'create a file called notes.md and commit it', sessionId: 'agt-test', projectId: 'pc1' }]);
+    const msg = state().messages[1];
+    expect(msg.status).toBe('done');
+    expect(msg.content).toBe('Talking about: create a file called notes.md and commit it');
+    expect(msg.agent?.performed ?? []).toEqual([]);
+  });
+
+  it('a follow-up continues the same chat session', async () => {
+    await state().loadForProject('pc2');
+    await settle();
+    await state().send('what does the parser do?');
+    await settle();
+    await state().send('and why is it slow?');
+    await settle();
+
+    expect(chats.map((c) => c.sessionId)).toEqual(['agt-test', 'agt-test']);
+    expect(submits).toBe(0);
+  });
+
+  it('a thread saved on a work session continues on a fresh chat session', async () => {
+    await state().loadForProject('pc3');
+    await settle();
+    await state().send('first question');
+    await settle();
+    rejectChatOnce = "this conversation belongs to Workspace; Let's Chat cannot continue it";
+    await state().send('second question');
+    await settle();
+
+    expect(chats).toHaveLength(3);
+    expect(state().messages[3].status).toBe('done');
+    expect(state().messages[3].content).toBe('Talking about: second question');
+    expect(submits).toBe(0);
   });
 });
 

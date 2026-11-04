@@ -1,0 +1,23 @@
+# ADR-002: Engineering Graph Storage Strategy
+
+- **Date:** 2026-09-01
+- **Status:** Accepted
+- **Context:** AURA needs to track relationships between engineering entities (requirements, components, artifacts, validations). The Engineering Graph is the data structure for this.
+- **Problem:** How should the Engineering Graph be stored and queried in a desktop-first architecture?
+- **Decision:** Use SQLite for persistence with an in-memory adjacency list for graph traversal.
+- **Reason:**
+  - SQLite is already used by the project ecosystem (desktop-first, no server dependency)
+  - Engineering projects have hundreds of nodes, not millions — SQLite is sufficient
+  - In-memory adjacency list provides O(1) relationship lookup
+  - Recursive CTEs in SQLite support graph queries when needed
+  - No external database server required (keeps AURA lightweight)
+- **Consequences:**
+  - Graph data persisted in SQLite file per project
+  - In-memory index rebuilt on load
+  - Traversal operations are fast (in-memory)
+  - Persistence uses existing `aura.jsonutil` patterns
+- **Rejected Alternatives:**
+  - Neo4j: Requires running server, overkill for desktop app
+  - Pure JSON files: No efficient traversal queries
+  - Event-sourced only: Considered for Phase 5+ when model stabilizes
+- **Evidence:** OpenBOM uses Neo4j for product knowledge graphs, but at server scale. Academic research (Hedberg et al., 2020) validates graph databases for product lifecycle, but for desktop-first, lighter is better.

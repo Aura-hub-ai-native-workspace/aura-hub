@@ -24,6 +24,13 @@ When sovereign_mode is True:
     rather than silently routing to the internet
 
 Precedence: environment variable AURA_SOVEREIGN_MODE=1 overrides the file.
+
+Failure behaviour (fail-closed):
+  - no file                      → never configured: unrestricted
+  - file exists but is malformed, truncated, empty, binary, not a JSON object,
+    or cannot be read            → sovereign mode ON, cloud blocked, until the
+                                   file is fixed or removed
+  - AURA_SOVEREIGN_MODE set      → decides, whatever the file holds
 """
 
 from __future__ import annotations
@@ -79,6 +86,20 @@ class SovereignPolicy:
         }
 
 
+def fail_closed_policy(reason: object) -> SovereignPolicy:
+    """The policy to use when loading the real one failed unexpectedly.
+
+    Not knowing the policy is not the same as having none: sovereign mode is
+    ON (cloud endpoints blocked, local and private keep working) and the
+    failure is logged, instead of the caller carrying on with no policy."""
+    import logging
+
+    logging.getLogger(__name__).error(
+        "sovereign policy could not be loaded (%s); sovereign mode is ON until it can be",
+        reason)
+    return SovereignPolicy(sovereign_mode=True, source="load-failed")
+
+
 def load_sovereign_policy(path: str | None = None) -> SovereignPolicy:
     """Load policy from ~/.aura/sovereign.json (or the supplied path).
 
@@ -88,8 +109,12 @@ def load_sovereign_policy(path: str | None = None) -> SovereignPolicy:
       3. Default: sovereign_mode=False (unrestricted)
 
     Missing file → unrestricted (policy defaults to False, not an error).
-    Malformed file → unrestricted + warning to stderr (fail-open for policy
-    load failures, fail-closed for sovereign blocking during inference).
+    A file that exists but cannot be read or is not a JSON object → sovereign
+    mode ON (fail-closed), with a warning. The operator wrote that file to
+    restrict something; a half-written or corrupt file must not silently turn
+    the restriction off. Local and private network classes keep working, so
+    only cloud endpoints are blocked until the file is fixed or removed. An
+    explicit AURA_SOVEREIGN_MODE still overrides, as before.
     """
     # Env var overrides everything.
     env_val = os.environ.get("AURA_SOVEREIGN_MODE", "").strip().lower()
@@ -107,26 +132,33 @@ def load_sovereign_policy(path: str | None = None) -> SovereignPolicy:
 
     raw: dict = {}
     source = "default"
+    unreadable = False
     try:
         if config_file.exists():
             raw = json.loads(config_file.read_text(encoding="utf-8"))
             if not isinstance(raw, dict):
                 raw = {}
+                unreadable = True
                 import sys
                 print(
                     f"[aura.sovereign] WARNING: {config_file} is not a JSON"
-                    " object — using defaults",
+                    " object — sovereign mode ON until it is fixed",
                     file=sys.stderr)
             else:
                 source = "file"
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError covers JSONDecodeError and UnicodeDecodeError (binary
+        # garbage), which used to escape this loader unhandled.
+        unreadable = True
         import sys
         print(
             f"[aura.sovereign] WARNING: could not read {config_file}: {exc}"
-            " — using defaults",
+            " — sovereign mode ON until it is fixed",
             file=sys.stderr)
 
-    file_sovereign = bool(raw.get("sovereignMode", False))
+    file_sovereign = True if unreadable else bool(raw.get("sovereignMode", False))
+    if unreadable:
+        source = "unreadable-file"
     sovereign_mode = (
         env_override if env_override is not None else file_sovereign)
     if env_override is not None:

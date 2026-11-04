@@ -62,7 +62,7 @@ export function Architecture({ projectId }: { projectId: string }) {
 
 function BuildingState() {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-line text-center" style={{ height: 620, background: '#0a0e17' }}>
+    <div className="flex flex-col items-center justify-center gap-3 rounded-2xl border border-line text-center" style={{ height: 620, background: '#0e0e0e' }}>
       <span className="grid h-12 w-12 animate-pulse place-items-center rounded-2xl bg-accent/10 text-accent"><Icon name="architecture" size={24} /></span>
       <p className="text-[13px] text-text-muted">Building the architecture from your codebase…</p>
       <p className="text-[11px] text-text-subtle">Analyzing modules and their dependencies.</p>

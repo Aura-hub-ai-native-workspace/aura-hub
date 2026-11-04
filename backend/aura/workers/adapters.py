@@ -79,7 +79,13 @@ class WorkerAdapter:
 
 
 def _opencode_args(task: str, cwd: str, model: str | None) -> list[str]:
-    return ["run", "--dir", cwd, *(["--model", model] if model else []), task]
+    # OpenCode v2 has no --dir flag: the working directory is the process
+    # cwd (set by run_file/run_agent), and the runtime honours it. Passing
+    # --dir made every invocation fail with "Unrecognized flag: --dir".
+    # --auto lets ordinary project work proceed without a per-action prompt;
+    # permissions the governance config explicitly denies (out-of-scope paths,
+    # sensitive files, destructive commands) stay denied.
+    return ["run", "--auto", *(["--model", model] if model else []), task]
 
 
 def _claude_args(task: str, _cwd: str, _model: str | None) -> list[str]:
@@ -92,7 +98,9 @@ def _claude_args(task: str, _cwd: str, _model: str | None) -> list[str]:
 def _kilo_args(task: str, cwd: str, model: str | None) -> list[str]:
     # --dir is LOAD-BEARING: bare `kilo run` writes to the parent
     # directory instead of cwd, escaping confinement. Never drop it.
-    return ["run", "--dir", cwd, *(["--model", model] if model else []), task]
+    # --auto lets ordinary project work proceed without a per-action prompt.
+    return ["run", "--dir", cwd, "--auto",
+            *(["--model", model] if model else []), task]
 
 
 def _codex_args(task: str, cwd: str, model: str | None) -> list[str]:
@@ -127,7 +135,7 @@ ADAPTERS: tuple[WorkerAdapter, ...] = (
         governance=GOV_OPENCODE_PLUGIN, env_prefix="OPENCODE",
         supports=dict(_opencode_gov.SUPPORTS),
         invocation_verified=True,
-        verified_against="OpenCode 1.18.16 (`run --dir`); governance proven Phase J",
+        verified_against="OpenCode 2.0.32 (`run`, cwd via process); governance proven Phase J",
     ),
     WorkerAdapter(
         id="claude-code", name="Claude Code", binary="claude",

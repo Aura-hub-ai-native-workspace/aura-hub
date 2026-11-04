@@ -30,7 +30,7 @@ from .nodes_core import (
 )
 
 EVENT_STATE = {"queued": "queued", "running": "running",
-               "awaiting-approval": "awaiting-approval", "succeeded": "completed",
+               "succeeded": "completed",
                "failed": "failed", "denied": "denied", "skipped": "skipped",
                "cancelled": "cancelled", "timed-out": "timed-out"}
 
@@ -74,7 +74,6 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
     outputs: list[dict] = []
     node_transversals = 0
     failure: dict | None = None
-    parked: dict | None = None
     max_node_executions = opts.get("maxNodeExecutions")
 
     ctx: dict[str, Any] = {
@@ -225,7 +224,7 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
                           "provenance": io.get("provenance")}
 
     async def exec_node(node, input):
-        nonlocal failure, parked, node_transversals, current
+        nonlocal failure, node_transversals, current
         ntype = node["type"]
         if ntype in INTELLIGENCE_TYPES and ntype != "agent":
             from .intelligence import INTELLIGENCE_RUNNERS
@@ -289,17 +288,6 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
                 ms = int((time.time() - t0n) * 1000)
                 if outcome.get("evidence") and record:
                     attach_evidence(record, node["id"], outcome["evidence"])
-                if outcome["kind"] == "awaiting-approval":
-                    set_state(node["id"], "awaiting-approval", {"ms": ms, "summary": outcome["summary"]})
-                    if record and outcome.get("approval"):
-                        record["nodes"][node["id"]]["approval"] = outcome["approval"]
-                    log(node["id"], "info", f"parked — {outcome['summary']}")
-                    parked = {"nodeId": node["id"],
-                              "requestId": (outcome.get("approval") or {}).get("requestId"),
-                              "capabilityId": (outcome.get("approval") or {}).get("capabilityId")}
-                    failure = {"nodeId": node["id"], "message": "waiting on your authorization",
-                               "state": "awaiting-approval"}
-                    return
                 if outcome["kind"] in ("denied", "failed"):
                     st = "denied" if outcome["kind"] == "denied" else "failed"
                     set_state(node["id"], st, {"ms": ms, "error": outcome.get("error"),
@@ -322,11 +310,9 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
                     raise RuntimeError(
                         '"Agent" reasons and calls tools through the Capability Fabric, which is not attached to this run.')
                 t0a = time.time()
-                agent_resume = (opts.get("agentResume") or {}).get(node["id"])
                 runner_call = getattr(agents, "run_async", None)
                 out_a = await (_maybe_await(runner_call(node, ctx, input, {
                     "signal": opts.get("signal"),
-                    **({"resumeFrom": agent_resume} if agent_resume else {}),
                 })) if runner_call is not None
                     else asyncio.ensure_future(_maybe_await(agents.run(
                         node, ctx, input,
@@ -336,17 +322,6 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
                     record["nodes"][node["id"]]["agentTrace"] = out_a["trace"]
                 if out_a.get("evidence") and record:
                     attach_evidence(record, node["id"], out_a["evidence"])
-                if out_a.get("parked"):
-                    set_state(node["id"], "awaiting-approval",
-                              {"ms": ms, "summary": out_a.get("summary")})
-                    if record and out_a.get("approval"):
-                        record["nodes"][node["id"]]["approval"] = out_a["approval"]
-                    parked = {"nodeId": node["id"],
-                              "requestId": (out_a.get("approval") or {}).get("requestId"),
-                              "capabilityId": (out_a.get("approval") or {}).get("capabilityId")}
-                    failure = {"nodeId": node["id"], "message": out_a.get("summary") or "waiting on your authorization",
-                               "state": "awaiting-approval"}
-                    return
                 if out_a["stopReason"] == "denied":
                     set_state(node["id"], "denied", {"ms": ms, "error": out_a.get("error"),
                                                      "summary": out_a.get("summary")})
@@ -447,8 +422,8 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
                     deliver(e, None)
         else:
             set_state(node["id"],
-                      "awaiting-approval" if failure["state"] == "awaiting-approval" else "failed",
-                      {"ms": ms, "error": None if failure["state"] == "awaiting-approval" else "a loop iteration failed"})
+                      "failed",
+                      {"ms": ms, "error": "a loop iteration failed"})
         checkpoint()
 
     async def drain(restrict: set | None = None):
@@ -503,10 +478,7 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
         if f:
             record["error"] = redact(f["message"])
         completed = sum(1 for n in record["nodes"].values() if n.get("state") == "succeeded")
-        if run_state == "awaiting-approval":
-            record["resumable"] = True
-            record.pop("notResumableReason", None)
-        elif run_state == "succeeded":
+        if run_state == "succeeded":
             record["resumable"] = False
             record.pop("notResumableReason", None)
         elif completed > 0:
@@ -522,8 +494,7 @@ async def run_workflow(wf: dict, opts: dict, emit: Any) -> dict:
     return {"status": status, "runState": run_state, "ms": ms, "outputs": outputs,
             "nodes": {nid: {"status": EVENT_STATE[st], "ms": timings.get(nid, 0)}
                       for nid, st in states.items()},
-            **({"error": redact(f["message"])} if f else {}),
-            **({"awaiting": parked} if parked else {})}
+            **({"error": redact(f["message"])} if f else {})}
 
 
 def _num(v, d):

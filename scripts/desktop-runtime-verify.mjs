@@ -35,6 +35,10 @@ import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const PORT = Number(process.env.AI_PORT ?? 4319);
+// Services this script starts itself carry a token, as the packaged shell's do: without one the
+// guard has nothing to check and /shutdown is refused (403) by design.
+const TOKEN = 'verify-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+const AUTH = { 'x-aura-instance-token': TOKEN };
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
 const PLATFORM = IS_WIN ? 'Windows' : IS_MAC ? 'macOS' : 'Linux';
@@ -78,7 +82,7 @@ function portOpen(port = PORT, timeout = 600) {
 
 const get = async (p, timeoutMs = 8000) => {
   try {
-    const res = await fetch(`http://127.0.0.1:${PORT}${p}`, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(`http://127.0.0.1:${PORT}${p}`, { headers: AUTH, signal: AbortSignal.timeout(timeoutMs) });
     return { status: res.status, body: await res.json().catch(() => null) };
   } catch (e) { return { status: 0, body: null, error: e.message }; }
 };
@@ -86,7 +90,7 @@ const get = async (p, timeoutMs = 8000) => {
 const post = async (p, body, timeoutMs = 120000) => {
   try {
     const res = await fetch(`http://127.0.0.1:${PORT}${p}`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json', ...AUTH },
       body: JSON.stringify(body ?? {}), signal: AbortSignal.timeout(timeoutMs),
     });
     return { status: res.status, body: await res.json().catch(() => null) };
@@ -195,7 +199,7 @@ try {
   section('2. SERVICE LIFECYCLE — START');
   serviceProc = spawn(process.execPath, [bundle, '--none'], {
     cwd: RUN_DIR,
-    env: { ...process.env, AURA_HOME, AI_PORT: String(PORT) },
+    env: { ...process.env, AURA_HOME, AI_PORT: String(PORT), AURA_INSTANCE_TOKEN: TOKEN },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
@@ -336,10 +340,26 @@ try {
    * `install-verify` separately proves the install guard specifically,
    * against a warmed policy where the request reaches it.
    */
-  const install = await post('/fabric/invoke', { capabilityId: 'terminal.execute', input: { command: 'npm install --global cowsay' }, context: { projectId: 'rt-proj' } });
-  const blocked = install.body?.outcome !== 'succeeded' && (install.body?.attempts ?? 0) === 0;
+  /* Routine commands now auto-execute, so the approval gate no longer
+     stops this one: the executor is reached (attempts=1) and must refuse
+     BEFORE spawning anything. It runs in the REAL project registered above:
+     the service assigns its own id (the `rt-proj` the other checks name
+     never resolves to a directory), so it is looked up by path. The
+     refusal then has to come from the install guard itself — not from a
+     missing working directory, which would prove nothing. Only this check
+     uses the real id: the delegation checks above must stay unable to
+     launch a coding agent. */
+  const listed = await get('/projects');
+  const installProjectId = (listed.body?.projects ?? []).find((p) => p.path === RUN_DIR)?.id;
+  info(`install check project: ${installProjectId ?? `none registered at ${RUN_DIR}`}`);
+  const install = await post('/fabric/invoke', { capabilityId: 'terminal.execute', input: { command: 'npm install --global cowsay' }, context: { projectId: installProjectId } });
+  const detail = String(install.body?.detail ?? '');
+  const gate = (install.body?.attempts ?? 0) === 0 ? `approval (${install.body?.policy?.rule})`
+    : /Installing software is not something this can do/.test(detail) ? 'install guard'
+      : null;
+  const blocked = install.body?.outcome !== 'succeeded' && gate !== null;
   check('4b. an install attempt through terminal.execute never runs',
-    blocked, `outcome=${install.body?.outcome} attempts=${install.body?.attempts ?? 0} rule=${install.body?.policy?.rule ?? 'install-guard'}`);
+    blocked, `outcome=${install.body?.outcome} attempts=${install.body?.attempts ?? 0} stopped by=${gate ?? 'NOTHING PROVABLE'}`);
 
   /* ── 5. port reuse and foreign refusal ───────────────────────────── */
   section('5. PORT 4319 — REUSE AND FOREIGN REFUSAL');
@@ -370,7 +390,7 @@ try {
     // Windows has no SIGTERM: the shell asks the service to close over its
     // own loopback port, which is exactly what service.rs does.
     const bye = await fetch(`http://127.0.0.1:${PORT}/shutdown`, {
-      method: 'POST', headers: { 'x-aura-shutdown': '1' }, signal: AbortSignal.timeout(8000),
+      method: 'POST', headers: { 'x-aura-shutdown': '1', ...AUTH }, signal: AbortSignal.timeout(8000),
     }).then((x) => x.status).catch(() => 0);
     check('6a. the Windows graceful-shutdown endpoint answers', bye === 200, `HTTP ${bye}`);
   } else {
@@ -386,7 +406,7 @@ try {
   /* ── 7. relaunch ─────────────────────────────────────────────────── */
   section('7. RELAUNCH');
   serviceProc = spawn(process.execPath, [bundle, '--none'], {
-    cwd: RUN_DIR, env: { ...process.env, AURA_HOME, AI_PORT: String(PORT) },
+    cwd: RUN_DIR, env: { ...process.env, AURA_HOME, AI_PORT: String(PORT), AURA_INSTANCE_TOKEN: TOKEN },
     stdio: 'ignore', windowsHide: true,
   });
   const up2 = await waitFor(async () => (await get('/health', 3000)).status === 200, 90000);
@@ -465,8 +485,12 @@ try {
       info(`shell exit code: ${shellProc.exitCode}`);
     }
     if (shellUp) {
-      const sid = await get('/fabric/capabilities');
-      check('9b. the shell-started service has AURA identity', sid.status === 200 && !!sid.body?.policy);
+      // The launch token is private to the shell and its child, so a guarded route cannot be read from
+      // here by design. /health is the one open route, and its AURA-specific body (the pipeline's own
+      // health, key and index status) is what a stand-in answering 200 would not have.
+      const sid = await get('/health');
+      check('9b. the shell-started service has AURA identity',
+        sid.status === 200 && !!sid.body?.health && 'key' in sid.body && 'index' in sid.body);
       const sp = shellProc.pid;
       /**
        * Close it the way a user closes it.

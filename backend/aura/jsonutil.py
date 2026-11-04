@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -52,18 +53,61 @@ def loads_tolerant(text: str | bytes, fallback: Any) -> Any:
         return fallback
 
 
-def write_json_atomic(file: str | Path, value: Any, *, pid: int | None = None) -> None:
-    """Mirror persist.ts writeJsonFile: tmp `${file}.${pid}.tmp` then rename.
+def replace_with_retry(tmp: str | Path, dest: str | Path) -> None:
+    """``os.replace`` that survives another writer replacing ``dest`` at that instant.
 
-    Content is dumps_pretty bytes; rename is atomic on POSIX. Parent dirs are
-    created on demand exactly like the TS writer.
+    On Windows a rename onto a file being replaced by another thread fails with
+    ``PermissionError`` for a few milliseconds; the write is still correct, so it is
+    retried briefly. Any other failure, and one that outlasts the retries, is raised.
+    """
+    import time
+
+    delay = 0.005
+    for attempt in range(12):
+        try:
+            os.replace(tmp, dest)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 11:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
+
+
+def write_json_atomic(file: str | Path, value: Any, *, pid: int | None = None) -> None:
+    """Mirror persist.ts writeJsonFile: write a temp file, then rename.
+
+    The temp name is unique per call (pid, thread, random token), so two
+    threads in one process writing the same store can never share a temp
+    file. A shared name let one writer's rename move the other's file,
+    which raised FileNotFoundError and could tear a write. ``O_EXCL`` makes
+    creation fail rather than reuse a file, and mode 0o666 gives the same
+    umask-governed permissions as ``open(..., "w")``. Content is
+    dumps_pretty bytes; rename is atomic on POSIX; parent dirs are created
+    on demand exactly like the TS writer. On failure the temp file is
+    removed and the error re-raised, so the target is never half-written.
     """
     path = Path(file)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = f"{path}.{pid if pid is not None else os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(dumps_pretty(value))
-    os.replace(tmp, path)
+    owner = pid if pid is not None else os.getpid()
+    data = dumps_pretty(value).encode("utf-8")
+    while True:
+        tmp = f"{path}.{owner}.{uuid.uuid4().hex}.tmp"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            break
+        except FileExistsError:  # astronomically rare; retry with a new token
+            continue
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        replace_with_retry(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def read_json_file(file: str | Path, fallback: Any) -> Any:

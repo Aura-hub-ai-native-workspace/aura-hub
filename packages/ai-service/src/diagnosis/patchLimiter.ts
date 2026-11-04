@@ -66,7 +66,7 @@ export function evaluatePatchLimiter(
     decision = 'auto-rejected';
     reasons.push(`export(s) removed: ${exportsRemoved.join(', ')}`);
   } else if (architectureLayerChanged) {
-    decision = 'requires-manual-approval';
+    decision = 'requires-manual-review';
     reasons.push('this patch changes a cross-layer import violation (introduces or fixes one) — requires manual approval');
   } else {
     decision = 'auto-approved';

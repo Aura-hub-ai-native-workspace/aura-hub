@@ -747,7 +747,7 @@ class TestCollectedInventory:
         # Everything executed must be a package manager being *asked*, never
         # an inventoried item being run.
         for argv in calls:
-            program = os.path.basename(argv[0]).lower()
+            program = os.path.basename(argv[0]).lower().removesuffix('.exe')
             assert program in {
                 "pacman", "dpkg", "dpkg-query", "rpm", "apk", "flatpak", "snap",
                 "brew", "port", "npm", "pip", "pip3", "pipx", "cargo", "uv",

@@ -4,12 +4,12 @@ import type { NodeSpecInfo } from '../../ai/aiClient';
 /** Category identity — one hue per node family, used across canvas,
  *  palette, inspector and legend. */
 export const CATEGORY: Record<NodeSpecInfo['category'], { color: string; icon: IconName; label: string }> = {
-  source: { color: '#3b82f6', icon: 'folder', label: 'Project sources' },
-  intelligence: { color: '#8b5cf6', icon: 'knowledge', label: 'Intelligence' },
+  source: { color: '#797979', icon: 'folder', label: 'Project sources' },
+  intelligence: { color: '#7b7b7b', icon: 'knowledge', label: 'Intelligence' },
   generate: { color: '#10b981', icon: 'spark', label: 'Generate' },
   logic: { color: '#f59e0b', icon: 'workflows', label: 'Logic' },
   action: { color: '#f43f5e', icon: 'deploy', label: 'Actions' },
-  io: { color: '#06b6d4', icon: 'panel', label: 'Output' },
+  io: { color: '#848484', icon: 'panel', label: 'Output' },
 };
 
 export const NODE_W = 208;

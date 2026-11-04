@@ -74,12 +74,30 @@ class ProjectRegistry:
     def save(self) -> None:
         write_json_file(self._file, self._items)
 
+    def _refresh(self) -> None:
+        """Re-read the shared file before answering or writing.
+
+        The desktop adds and removes projects through the ai-service, which
+        writes the same ``projects.json``. A list cached at startup went stale
+        the moment a project was removed there, and the next ``save`` here
+        wrote that stale list back: a removed project came back, and one
+        added since this service started was dropped. The open project is
+        kept while it is still registered.
+        """
+        keep = self._current_id
+        self.load()
+        if self._current_id is None and keep and any(
+                p.get("id") == keep for p in self._items):
+            self._current_id = keep
+
     # queries -------------------------------------------------------------------
 
     def list_projects(self) -> list[dict]:
+        self._refresh()
         return list(self._items)
 
     def get(self, pid: str) -> dict | None:
+        self._refresh()
         return next((p for p in self._items if p["id"] == pid), None)
 
     def current_project(self) -> dict | None:
@@ -91,6 +109,7 @@ class ProjectRegistry:
     # mutations -------------------------------------------------------------------
 
     def add(self, inp: dict) -> dict:
+        self._refresh()
         abs_ = os.path.abspath(inp["path"])
         if not os.path.isdir(abs_):
             raise RuntimeError(f"No folder exists at {abs_}")

@@ -11,7 +11,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -22,7 +21,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _inv(params: dict, cwd: str | None = None) -> dict:
-    return {"input": params, "context": {"cwd": cwd or ""}}
+    return {"input": params, "context": {"cwd": cwd or "", "projectId": "proj-test"}}
 
 
 def _make_kb(tmp_path: Path):
@@ -104,7 +103,7 @@ class TestKnowledgeSearch:
         doc = tmp_path / "doc.txt"
         doc.write_text("The sovereign AI system uses a policy engine for governance.")
         result = DocumentIngestor().ingest(str(doc))
-        kb.add_document(str(doc), result)
+        kb.add_document(str(doc), result, project_id="proj-test")
 
         adapters = multimodal_executors(kb, tmp_path / "artifacts")
         ex = _get_executor(adapters, "knowledge.search")
@@ -131,7 +130,7 @@ class TestKnowledgeSearch:
             doc = tmp_path / f"doc{i}.txt"
             doc.write_text(f"Document {i} about governance and policy frameworks.")
             res = DocumentIngestor().ingest(str(doc))
-            kb.add_document(str(doc), res)
+            kb.add_document(str(doc), res, project_id="proj-test")
 
         adapters = multimodal_executors(kb, tmp_path / "artifacts")
         ex = _get_executor(adapters, "knowledge.search")
@@ -150,7 +149,7 @@ class TestDocumentIngest:
         ex = _get_executor(adapters, "document.ingest")
         doc = tmp_path / "report.txt"
         doc.write_text("Safety findings: item A is critical.")
-        r = await ex.run(_inv({"path": str(doc)}))
+        r = await ex.run(_inv({"path": str(doc)}, cwd=str(tmp_path)))
         assert r["ok"], r
         out = r["output"]
         assert out["chunkCount"] > 0
@@ -163,7 +162,8 @@ class TestDocumentIngest:
         secret_content = "CONFIDENTIAL: password=s3cr3t, api_key=abc123"
         doc = tmp_path / "secret.txt"
         doc.write_text(secret_content)
-        r = await ex.run(_inv({"path": str(doc)}))
+        r = await ex.run(_inv({"path": str(doc)}, cwd=str(tmp_path)))
+        assert r["ok"], r  # the ingest really ran, so the absence below means something
         result_str = json.dumps(r)
         assert "s3cr3t" not in result_str
         assert "abc123" not in result_str
@@ -179,7 +179,7 @@ class TestDocumentIngest:
     async def test_nonexistent_file_handled_gracefully(self, tmp_path):
         adapters, _ = _make_executors(tmp_path)
         ex = _get_executor(adapters, "document.ingest")
-        r = await ex.run(_inv({"path": str(tmp_path / "does_not_exist.pdf")}))
+        r = await ex.run(_inv({"path": str(tmp_path / "does_not_exist.pdf")}, cwd=str(tmp_path)))
         assert isinstance(r, dict)
 
     async def test_verify_passes_when_chunks_indexed(self, tmp_path):
@@ -187,7 +187,7 @@ class TestDocumentIngest:
         ex = _get_executor(adapters, "document.ingest")
         doc = tmp_path / "v.txt"
         doc.write_text("Content for verification test.")
-        run_result = await ex.run(_inv({"path": str(doc)}))
+        run_result = await ex.run(_inv({"path": str(doc)}, cwd=str(tmp_path)))
         verify_result = await ex.verify(_inv({"path": str(doc)}), run_result)
         assert verify_result["passed"]
         assert verify_result["kind"] == "read-back"
@@ -237,7 +237,7 @@ class TestArtifactGenerate:
             "sections": [{"heading": "Summary", "body": "All clear."}],
         })
         r = await ex.run(_inv({"spec": spec_str,
-                               "output_path": str(tmp_path / "out.docx")}))
+                               "output_path": str(tmp_path / "out.docx")}, cwd=str(tmp_path)))
         assert r["ok"], r.get("detail")
         assert Path(r["output"]["path"]).exists()
 
@@ -255,7 +255,7 @@ class TestArtifactGenerate:
                 {"heading": "Decision", "body": "Approved."},
             ],
         }
-        r = await ex.run(_inv({"spec": spec, "output_path": str(out)}))
+        r = await ex.run(_inv({"spec": spec, "output_path": str(out)}, cwd=str(tmp_path)))
         assert r["ok"], r.get("detail")
         assert out.exists()
         assert out.stat().st_size > 100
@@ -278,7 +278,7 @@ class TestArtifactGenerate:
         ex = _get_executor(adapters, "artifact.generate")
         out = str(tmp_path / "v.docx")
         spec = {"artifact_type": "docx", "title": "V"}
-        run_result = await ex.run(_inv({"spec": spec, "output_path": out}))
+        run_result = await ex.run(_inv({"spec": spec, "output_path": out}, cwd=str(tmp_path)))
         verify_result = await ex.verify(_inv({"spec": spec, "output_path": out}), run_result)
         assert verify_result["passed"]
         assert verify_result["kind"] == "read-back"
@@ -288,11 +288,14 @@ class TestArtifactGenerate:
 # sandbox.execute
 # ---------------------------------------------------------------------------
 
+# These run allow-listed commands (the same rule as terminal.execute) inside a
+# project root supplied in the invocation context, as the manifest requires.
 class TestSandboxExecute:
-    async def test_simple_echo_succeeds(self, tmp_path):
+    async def test_simple_command_succeeds(self, tmp_path):
+        (tmp_path / "hello.txt").write_text("x")
         adapters, _ = _make_executors(tmp_path)
         ex = _get_executor(adapters, "sandbox.execute")
-        r = await ex.run(_inv({"command": "echo hello", "cwd": str(tmp_path)}))
+        r = await ex.run(_inv({"command": "ls"}, cwd=str(tmp_path)))
         assert r["ok"], r
         assert r["output"]["exitCode"] == 0
         assert "hello" in r["output"]["stdout"]
@@ -300,7 +303,7 @@ class TestSandboxExecute:
     async def test_nonzero_exit_is_failure(self, tmp_path):
         adapters, _ = _make_executors(tmp_path)
         ex = _get_executor(adapters, "sandbox.execute")
-        r = await ex.run(_inv({"command": "false", "cwd": str(tmp_path)}))
+        r = await ex.run(_inv({"command": "ls no-such-entry"}, cwd=str(tmp_path)))
         assert not r["ok"]
         assert r["output"]["exitCode"] != 0
 
@@ -315,10 +318,9 @@ class TestSandboxExecute:
         adapters, _ = _make_executors(tmp_path)
         ex = _get_executor(adapters, "sandbox.execute")
         r = await ex.run(_inv({
-            "command": "sleep 10",
-            "cwd": str(tmp_path),
+            "command": "node -e setTimeout(function(){},10000)",
             "timeout_ms": 300,
-        }))
+        }, cwd=str(tmp_path)))
         assert not r["ok"]
         assert r["output"]["timedOut"] is True
 
@@ -326,23 +328,22 @@ class TestSandboxExecute:
         adapters, _ = _make_executors(tmp_path)
         ex = _get_executor(adapters, "sandbox.execute")
         r = await ex.run(_inv({
-            "command": f"{sys.executable} -c \"print('AURA_OUTPUT')\"",
-            "cwd": str(tmp_path),
-        }))
+            "command": "python3 -c print('AURA_OUTPUT')",
+        }, cwd=str(tmp_path)))
         assert r["ok"], r
         assert "AURA_OUTPUT" in r["output"]["stdout"]
 
     async def test_verify_passes_on_zero_exit(self, tmp_path):
         adapters, _ = _make_executors(tmp_path)
         ex = _get_executor(adapters, "sandbox.execute")
-        run_result = await ex.run(_inv({"command": "echo ok", "cwd": str(tmp_path)}))
-        verify_result = await ex.verify(_inv({"command": "echo ok"}), run_result)
+        run_result = await ex.run(_inv({"command": "ls"}, cwd=str(tmp_path)))
+        verify_result = await ex.verify(_inv({"command": "ls"}), run_result)
         assert verify_result["passed"]
         assert verify_result["kind"] == "exit-code"
 
     async def test_verify_fails_on_nonzero_exit(self, tmp_path):
         adapters, _ = _make_executors(tmp_path)
         ex = _get_executor(adapters, "sandbox.execute")
-        run_result = await ex.run(_inv({"command": "false", "cwd": str(tmp_path)}))
-        verify_result = await ex.verify(_inv({"command": "false"}), run_result)
+        run_result = await ex.run(_inv({"command": "ls no-such-entry"}, cwd=str(tmp_path)))
+        verify_result = await ex.verify(_inv({"command": "ls no-such-entry"}), run_result)
         assert not verify_result["passed"]

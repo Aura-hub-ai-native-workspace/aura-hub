@@ -1,0 +1,25 @@
+# ADR-006: KiCad as Initial EDA Provider
+
+- **Date:** 2026-09-01
+- **Status:** Accepted
+- **Context:** AURA needs EDA (Electronic Design Automation) capabilities for electronics design.
+- **Problem:** Which EDA tool should be the primary provider?
+- **Decision:** KiCad is the primary EDA provider.
+- **Reason:**
+  - Open source (GPL) — no licensing barriers
+  - Cross-platform (Linux, Windows, macOS)
+  - New IPC API (Protobuf-based, KiCad 9+) for automation
+  - Comprehensive manufacturing outputs (Gerber, drill, BOM, pick-and-place, STEP)
+  - ERC/DRC checking built-in
+  - Active community and rapid development
+  - CLI export for headless operations
+- **Consequences:**
+  - KiCad CLI used for manufacturing exports (headless)
+  - IPC API used for interactive schematic/PCB operations
+  - KiCad must be installed on the user's machine for EDA capabilities
+  - Tool detection via `kicad-cli --version`
+- **Rejected Alternatives:**
+  - Altium: Windows-only, expensive, complex API
+  - Cadence: Enterprise-focused, very expensive
+  - EasyEDA: Web-only, coupled to JLCPCB
+- **Evidence:** KiCad IPC API documentation confirms Protobuf-based API. CLI export capabilities verified via official docs.

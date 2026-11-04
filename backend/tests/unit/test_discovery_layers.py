@@ -556,9 +556,11 @@ class TestOsInventory:
             "_run",
             lambda argv: (ospackages.ExecStatus.OK, lines if "pacman" in argv[0] else ""),
         )
-        monkeypatch.setattr(sys, "platform", "linux")
+        from aura.environment.hostplatform import Platform, simulate
 
-        inventory = ospackages.discover_os_packages(limit=10, of_interest={"docker"})
+        # The platform is read through its seam, so a real macOS host needs this to see Linux.
+        with simulate(Platform.LINUX):
+            inventory = ospackages.discover_os_packages(limit=10, of_interest={"docker"})
 
         assert inventory.total == 501
         assert inventory.truncated is True

@@ -38,11 +38,11 @@ from .readiness import ReadinessProof, prove_worker
 
 #: Worker lifecycle, owned by AURA. The execution states reuse the
 #: TaskOutcome vocabulary rather than inventing a parallel one: a worker
-#: is ACTIVE because a task it holds is running, and PARKED because that
-#: task parked. Only the connection states are new.
+#: is ACTIVE while a task it holds runs, and COMPLETED or TERMINATED once it
+#: settles. Only the connection states are new.
 LIFECYCLE = (
     "DISCOVERED", "NOT_CONNECTED", "CONNECTING", "CONNECTED", "IDLE",
-    "ACTIVE", "WAITING", "PARKED", "COMPLETED", "FAILED", "CANCELLED",
+    "ACTIVE", "WAITING", "COMPLETED", "FAILED", "CANCELLED",
     "TERMINATED", "UNSUPPORTED",
 )
 
@@ -78,7 +78,13 @@ class WorkerDescriptor:
     notes: str = ""
 
     def to_dict(self) -> dict:
+        # Connected is not allowed: whether AURA may RUN this worker is the
+        # owner's billing policy (workers/billing.py), reported beside it.
+        from .billing import decide
+
+        policy = decide(self.id)
         return {
+            "allowedToRun": policy.allowed, "billing": policy.to_dict(),
             "id": self.id, "name": self.name, "binary": self.binary,
             "kind": self.kind, "runtime": self.runtime,
             "installed": self.installed, "version": self.version,
@@ -209,7 +215,7 @@ def connect_worker(worker_id: str, nodes, home: str,
     initiated product operation: it measures the machine, it performs no
     work on a user's project, and it grants no authority — the runtime
     binding it records makes the worker ROUTABLE, exactly as registering
-    any node always has, while policy, approvals and the audit trail
+    any node always has, while policy and the audit trail
     keep deciding every actual dispatch.
 
     Returns (descriptor, proof-dict). A failed proof is persisted too, so

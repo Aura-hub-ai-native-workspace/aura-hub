@@ -101,7 +101,7 @@ def fingerprint_invocation(
     input: dict[str, Any],
     context: dict[str, Any] | None,
 ) -> str:
-    """Identity of an EXACT invocation, for binding an approval to it.
+    """Identity of an EXACT invocation, for recording what ran.
 
     Included: capability, every argument (TOP-LEVEL keys only are sorted —
     nested objects keep insertion order, matching JSON.stringify semantics),

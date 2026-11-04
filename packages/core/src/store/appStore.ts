@@ -7,7 +7,7 @@
  */
 
 import { create } from 'zustand';
-import type { NavKey, ProjectTab } from '../types';
+import type { NavKey, ProjectMode, ProjectTab, SettingsTab } from '../types';
 
 export type Theme = 'light' | 'dark';
 
@@ -91,27 +91,27 @@ interface AppState {
    * on the normal project view.
    */
   askAuraOpen: boolean;
-  /** Active tab within the project workspace. */
+  /** Which side of the open project is showing: its Overview pages or its Workspace. */
+  projectMode: ProjectMode;
+  /** Active page within the project's Overview. */
   projectTab: ProjectTab;
+  /** Active tab within Settings. */
+  settingsTab: SettingsTab;
   /** Left rail expanded vs. rail-only. */
   sidebarExpanded: boolean;
   /** Right context panel visibility. */
-  rightPanelOpen: boolean;
   /** Command palette open state. */
-  paletteOpen: boolean;
   /** "Add a project" dialog open state — shared by Home's own button/tile
    *  and the command palette's "Add Project" command, so both trigger the
    *  same dialog instance instead of each owning a local copy. */
   addProjectDialogOpen: boolean;
   /** "Create project" dialog open state — a frontend-only scaffold flow,
    *  kept separate from "Add project" (which registers a real folder). */
-  createProjectDialogOpen: boolean;
   /** Whether the boot/intro sequence has finished. */
   booted: boolean;
   /** Whether the first-run onboarding experience has been completed. */
   onboarded: boolean;
   /** Recently-run command ids (most-recent first) — powers the palette. */
-  recentCommandIds: string[];
   /** Active theme (also reflected on <html data-theme>). */
   theme: Theme;
   /** Whether AURA checks for updates in the background at startup. */
@@ -123,7 +123,6 @@ interface AppState {
    *  boot animation this one time — the onboarding's own Ready screen
    *  already served as this launch's cinematic boot moment. */
   completeOnboarding: () => void;
-  pushRecentCommand: (id: string) => void;
   /** Toggle the Ask AURA sub-mode. Never touches `activeProjectId`. */
   setAskAuraOpen: (open: boolean) => void;
   /** Make `id` active AND show its workspace. */
@@ -141,31 +140,35 @@ interface AppState {
    */
   clearActiveProject: () => void;
   setProjectTab: (tab: ProjectTab) => void;
+  setProjectMode: (mode: ProjectMode) => void;
+  /**
+   * Open `projectId` (or the already-active project) on its Workspace. The
+   * Workspace only exists inside a project, so with no project to open this
+   * goes Home instead of showing an unscoped workspace.
+   */
+  openWorkspace: (projectId?: string | null) => void;
+  /** Open Settings on a given tab. */
+  openSettings: (tab?: SettingsTab) => void;
+  setSettingsTab: (tab: SettingsTab) => void;
   toggleSidebar: () => void;
-  toggleRightPanel: () => void;
-  setPaletteOpen: (open: boolean) => void;
   toggleTheme: () => void;
   setAutoUpdateCheck: (enabled: boolean) => void;
   openAddProjectDialog: () => void;
   closeAddProjectDialog: () => void;
-  openCreateProjectDialog: () => void;
-  closeCreateProjectDialog: () => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   nav: 'home',
   activeProjectId: initialActiveProject(),
   inProjectView: false,
   askAuraOpen: false,
+  projectMode: 'overview',
   projectTab: 'overview',
+  settingsTab: 'connections',
   sidebarExpanded: false,
-  rightPanelOpen: false,
-  paletteOpen: false,
   addProjectDialogOpen: false,
-  createProjectDialogOpen: false,
   booted: false,
   onboarded: initialOnboarded(),
-  recentCommandIds: [],
   theme: initialTheme(),
   autoUpdateCheck: initialAutoUpdateCheck(),
 
@@ -174,9 +177,6 @@ export const useAppStore = create<AppState>((set) => ({
     if (typeof localStorage !== 'undefined') localStorage.setItem(ONBOARDED_KEY, 'true');
     set({ onboarded: true, booted: true });
   },
-  pushRecentCommand: (id) =>
-    set((s) => ({ recentCommandIds: [id, ...s.recentCommandIds.filter((x) => x !== id)].slice(0, 5) })),
-
   /* ── The three-field state model ──────────────────────────────────
      activeProjectId  WHICH project is active   (persisted, nav-independent)
        └─ inProjectView   is that project's screen showing
@@ -199,7 +199,7 @@ export const useAppStore = create<AppState>((set) => ({
   // Home once it's closed, rather than a dedicated "Projects" nav key.
   openProject: (id) => {
     persistActiveProject(id);
-    set({ nav: 'home', activeProjectId: id, inProjectView: true, askAuraOpen: false, projectTab: 'overview' });
+    set({ nav: 'home', activeProjectId: id, inProjectView: true, askAuraOpen: false, projectMode: 'overview', projectTab: 'overview' });
   },
   closeProject: () => set({ inProjectView: false, askAuraOpen: false }),
   // Re-targeting the active project closes Ask AURA: the open conversation
@@ -216,13 +216,21 @@ export const useAppStore = create<AppState>((set) => ({
   // `activeProjectId`, or Ask AURA would become part of project identity.
   setAskAuraOpen: (askAuraOpen) => set({ askAuraOpen }),
   setProjectTab: (projectTab) => set({ projectTab }),
+  setProjectMode: (projectMode) => set({ projectMode }),
+  openWorkspace: (projectId) => {
+    const id = projectId ?? get().activeProjectId;
+    if (!id) {
+      set({ nav: 'home', inProjectView: false, askAuraOpen: false });
+      return;
+    }
+    persistActiveProject(id);
+    set({ nav: 'home', activeProjectId: id, inProjectView: true, askAuraOpen: false, projectMode: 'workspace' });
+  },
+  openSettings: (tab) => set((s) => ({ nav: 'settings', inProjectView: false, askAuraOpen: false, settingsTab: tab ?? s.settingsTab })),
+  setSettingsTab: (settingsTab) => set({ settingsTab }),
   toggleSidebar: () => set((s) => ({ sidebarExpanded: !s.sidebarExpanded })),
-  toggleRightPanel: () => set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),
-  setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   openAddProjectDialog: () => set({ addProjectDialogOpen: true }),
   closeAddProjectDialog: () => set({ addProjectDialogOpen: false }),
-  openCreateProjectDialog: () => set({ createProjectDialogOpen: true }),
-  closeCreateProjectDialog: () => set({ createProjectDialogOpen: false }),
   setAutoUpdateCheck: (autoUpdateCheck) => {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(AUTO_UPDATE_KEY, autoUpdateCheck ? 'true' : 'false');

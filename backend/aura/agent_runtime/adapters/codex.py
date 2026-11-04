@@ -17,6 +17,7 @@ Config mechanism (verified by machine inspection 2026-09-23):
 
 from __future__ import annotations
 
+from ..tmpname import replace_atomic, unique_sibling
 import os
 import shutil
 from pathlib import Path
@@ -58,9 +59,9 @@ def _write_toml_model(path: Path, model: str) -> None:
             new_lines.append(line)
     if not replaced:
         new_lines.insert(0, f'model = "{model}"\n')
-    tmp = path.with_suffix(".tmp")
+    tmp = unique_sibling(path)
     tmp.write_text("".join(new_lines), encoding="utf-8")
-    tmp.replace(path)
+    replace_atomic(tmp, path)
 
 
 class CodexAdapter(AgentConfigurationAdapter):
@@ -158,9 +159,9 @@ class CodexAdapter(AgentConfigurationAdapter):
 
     def restore(self, backup_bytes: bytes) -> ConfigurationChange:
         old_cs = checksum(_CONFIG_PATH.read_bytes()) if _CONFIG_PATH.exists() else None
-        tmp = _CONFIG_PATH.with_suffix(".tmp")
+        tmp = unique_sibling(_CONFIG_PATH)
         tmp.write_bytes(backup_bytes)
-        tmp.replace(_CONFIG_PATH)
+        replace_atomic(tmp, _CONFIG_PATH)
         return ConfigurationChange(
             agent_id="codex",
             operation="restore",

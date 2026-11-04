@@ -4,10 +4,7 @@
  * Renders the agent's live state (ops/agentStore.ts) and the actions
  * the human is allowed to take at each gate:
  *
- *   • Approval queue — improvement proposals awaiting human approval.
- *     Approving lets the agent create a real improvement mission;
- *     dismissing stops that campaign permanently.
- *   • Action queue — approved campaigns now executing as missions
+ *   • Action queue — campaigns queued under policy and running as missions
  *     (each mission task proposal still needs per-task acceptance in
  *     Mission Control).
  *   • Verification queue — completed missions being measured against
@@ -15,7 +12,7 @@
  *   • Timeline — every agent/human/system transition, replayable.
  *
  * The agent itself never edits code: it only observes, reasons, plans,
- * proposes and — after approval — creates missions.
+ * proposes and creates missions, which run under the same policy as any task.
  *
  * `variant="screen"` renders the full landing; `variant="panel"`
  * renders the compact workspace-panel form.
@@ -32,7 +29,6 @@ import {
   AGENT_SIGNAL_META,
   actionQueue,
   agentStatusSummary,
-  approvalQueue,
   useAgentStore,
   verificationQueue,
   type AgentCampaign,
@@ -59,8 +55,7 @@ const SEVERITY_TONE: Record<AgentSeverity, 'positive' | 'attention' | 'critical'
 const STATUS_META: Record<AgentCampaignStatus, { label: string; tone: 'positive' | 'attention' | 'critical' | 'info' | 'neutral' }> = {
   observed: { label: 'Observed', tone: 'neutral' },
   planned: { label: 'Planned', tone: 'neutral' },
-  'awaiting-approval': { label: 'Awaiting approval', tone: 'attention' },
-  approved: { label: 'Approved', tone: 'info' },
+  approved: { label: 'Queued', tone: 'info' },
   executing: { label: 'Executing', tone: 'info' },
   verifying: { label: 'Verifying', tone: 'attention' },
   verified: { label: 'Verified', tone: 'positive' },
@@ -78,7 +73,6 @@ export function AgentCenter({ variant = 'screen' }: { variant?: 'screen' | 'pane
   const openPanel = useLayoutStore((s) => s.openPanel);
   const [view, setView] = useState<AgentView>('queues');
 
-  const waiting = approvalQueue(campaigns);
   const active = actionQueue(campaigns);
   const verifying = verificationQueue(campaigns);
   const summary = agentStatusSummary(campaigns);
@@ -96,7 +90,7 @@ export function AgentCenter({ variant = 'screen' }: { variant?: 'screen' | 'pane
           </div>
           <p className="mt-1 text-[12.5px] text-text-muted">
             {enabled
-              ? `Observes ${analysis.records} real records — proposes improvements, waits for approval, executes as missions, then verifies.`
+              ? `Observes ${analysis.records} real records — proposes improvements, runs them as missions under policy, then verifies.`
               : 'Paused — no new signals are observed or executed.'}
           </p>
         </div>
@@ -109,7 +103,7 @@ export function AgentCenter({ variant = 'screen' }: { variant?: 'screen' | 'pane
           </Button>
           {variant === 'screen' && (
             <Button size="sm" variant="secondary" icon="clipboard" onClick={() => openPanel('missions')}>
-              Mission Control
+              Planner
             </Button>
           )}
         </div>
@@ -117,7 +111,6 @@ export function AgentCenter({ variant = 'screen' }: { variant?: 'screen' | 'pane
 
       {/* summary strip */}
       <div className={cn('flex flex-wrap items-center gap-2', variant === 'screen' ? 'mb-4' : 'px-3 pb-2')}>
-        <SummaryChip label="Awaiting approval" count={summary.waiting} tone="attention" />
         <SummaryChip label="Executing" count={summary.active} tone="info" />
         <SummaryChip label="Verifying" count={summary.verifying} tone="attention" />
         <SummaryChip label="Verified" count={summary.verified} tone="positive" />
@@ -144,7 +137,7 @@ export function AgentCenter({ variant = 'screen' }: { variant?: 'screen' | 'pane
           >
             <Icon name={v.icon} size={13} />
             {v.label}
-            {v.key === 'queues' && waiting.length + active.length + verifying.length > 0 && <Badge tone="attention">{waiting.length + active.length + verifying.length}</Badge>}
+            {v.key === 'queues' && active.length + verifying.length > 0 && <Badge tone="attention">{active.length + verifying.length}</Badge>}
           </button>
         ))}
       </div>
@@ -153,19 +146,9 @@ export function AgentCenter({ variant = 'screen' }: { variant?: 'screen' | 'pane
         {view === 'queues' && (
           <>
             <QueueSection
-              title="Approval queue"
-              hint="The agent never acts until you approve its improvement plan."
-              empty="No improvement proposals right now. Real signals (repeated bugs, unstable modules, rejected AI proposals, high-risk predictions) appear here."
-            >
-              {waiting.map((c) => (
-                <ApprovalCard key={c.id} campaign={c} />
-              ))}
-            </QueueSection>
-
-            <QueueSection
               title="Action queue"
-              hint="Approved campaigns now run as real missions — every task proposal still needs your acceptance in Mission Control."
-              empty="No approved campaigns executing."
+              hint="Campaigns run as real missions under policy — each one becomes a plan in the Planner."
+              empty="No campaigns queued or executing."
             >
               {active.map((c) => (
                 <CampaignCard key={c.id} campaign={c} />
@@ -232,61 +215,6 @@ function QueueSection({ title, hint, empty, children }: { title: string; hint: s
   );
 }
 
-/* ── approval card ─────────────────────────────────────────────────── */
-
-function ApprovalCard({ campaign }: { campaign: AgentCampaign }) {
-  const approve = useAgentStore((s) => s.approve);
-  const dismiss = useAgentStore((s) => s.dismiss);
-  const meta = AGENT_SIGNAL_META[campaign.kind];
-
-  return (
-    <div className="rounded-xl border border-attention/25 bg-surface-active/60 p-3.5">
-      <div className="flex items-start gap-2.5">
-        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-surface-active text-attention">
-          <Icon name={meta.icon as IconName} size={15} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12.5px] font-semibold text-text">{campaign.signalLabel}</span>
-            <Badge tone={SEVERITY_TONE[campaign.severity]}>{campaign.severity}</Badge>
-            <span className="text-[10.5px] text-text-subtle">{relTime(campaign.createdAt)}</span>
-          </div>
-          <p className="mt-1 text-[12px] leading-relaxed text-text-muted">{campaign.rationale}</p>
-
-          <div className="mt-2 rounded-lg bg-surface px-2.5 py-2">
-            <div className="text-[10.5px] font-semibold uppercase tracking-wide text-text-subtle">Plan</div>
-            <p className="mt-0.5 text-[12px] leading-relaxed text-text">{campaign.plan}</p>
-            <div className="mt-1.5 text-[10.5px] text-text-subtle">
-              <span className="font-medium text-text">Expected outcome:</span> {campaign.expectedOutcome}
-            </div>
-          </div>
-
-          {campaign.evidence.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {campaign.evidence.slice(0, 3).map((e, i) => (
-                <span key={i} className="inline-flex max-w-full items-center gap-1 truncate rounded-md bg-surface-active px-2 py-0.5 text-[10.5px] text-text-subtle">
-                  <Icon name="link" size={10} />
-                  <span className="truncate">{e}</span>
-                </span>
-              ))}
-            </div>
-          )}
-
-          <div className="mt-2.5 flex items-center gap-2">
-            <Button size="sm" variant="primary" icon="check" onClick={() => approve(campaign.id)}>
-              Approve
-            </Button>
-            <Button size="sm" variant="ghost" icon="eye-off" onClick={() => dismiss(campaign.id)}>
-              Dismiss
-            </Button>
-            <span className="ml-auto text-[10.5px] text-text-subtle">The agent will create a real improvement mission in Mission Control.</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /* ── generic campaign card ─────────────────────────────────────────── */
 
 function CampaignCard({ campaign }: { campaign: AgentCampaign }) {
@@ -336,7 +264,7 @@ function TimelineView() {
         </span>
         <div className="text-[13px] font-semibold text-text">No activity yet</div>
         <p className="mx-auto mt-1 max-w-md text-[12px] leading-relaxed text-text-muted">
-          Every agent transition — observation, proposal, approval, execution, verification — lands here for a full, replayable audit trail.
+          Every agent transition — observation, proposal, queueing, execution, verification — lands here for a full, replayable audit trail.
         </p>
       </div>
     );

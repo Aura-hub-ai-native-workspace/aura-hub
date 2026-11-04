@@ -16,9 +16,11 @@
 import type { CheckpointKey, CheckpointState, CheckpointStatus, ExecutionStatus } from './types';
 
 export const CHECKPOINT_LABELS: Record<CheckpointKey, string> = {
-  planning: 'Plan approval',
+  // Neither waits on a person: the plan is accepted with the goal, and
+  // the review step is AURA's completion check.
+  planning: 'Plan',
   execution: 'Execution',
-  review: 'Mission review',
+  review: 'Completion check',
   completion: 'Completion',
 };
 

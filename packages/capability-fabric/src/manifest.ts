@@ -273,6 +273,32 @@ const LOCAL: CapabilityDescriptor[] = [
   }),
 
   cap({
+    id: 'tool.provision', name: 'Provision a development tool', category: 'system', surface: 'local-process',
+    description:
+      'Installs an approved development tool that a task needs and this machine lacks — and ONLY that. '
+      + 'The caller names a catalogue NODE, never a command. The node must be on the provisioning allowlist, '
+      + 'its install must need no administrator rights, and the installer must be one AURA allows '
+      + '(no shell, argv only). Anything else is refused and the person is given the exact command instead. '
+      + 'The result is verified by re-probing the machine, not by the installer\'s exit code.',
+    // NOT `system.modify`, and that is a deliberate, narrow carve-out rather
+    // than a loophole: `system.install` stays a human-only floor for every
+    // tool. This capability exists so that routine, non-privileged,
+    // allowlisted toolchain installs that a running task needs are not
+    // blocked behind a dialog — while privilege, allowlist membership and
+    // the catalogue-only rule are enforced by the executor itself, not by
+    // the model or the caller. Risk is `medium`: it changes software, but
+    // only in user space, and it is undone by uninstalling.
+    risk: 'medium', permissions: ['process.execute', 'network.outbound'],
+    input: [
+      f('nodeId', 'string', true, 'Catalogue id of the tool to provision, e.g. "pnpm"'),
+      f('reason', 'string', false, 'Why the task needs it (recorded; never executed)'),
+    ],
+    output: 'ProvisionResult — installOutcome, privilege, command, probe',
+    verify: 'read-back',
+    irreversible: false,
+  }),
+
+  cap({
     id: 'system.uninstall', name: 'Remove a tool', category: 'system', surface: 'local-process',
     description:
       'Removes a catalogued tool from this machine, using the package manager that tool '

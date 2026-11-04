@@ -29,7 +29,6 @@ from .agent import (
     ToolDescriptor,
     VerificationRequirement,
 )
-from .approvals import ApprovalItem, ApprovalRequest
 from .audit import AuditRecord, InvocationActor
 from .automation_rule import AutomationRule, RetryPolicy, RuleAction, RuleTrigger
 from .automation_run import ActionRunState, AutomationRun, RunTimelineEntry
@@ -40,7 +39,6 @@ from .workflow_def import WfEdge, WfNode, Workflow
 from .workflow_run import (
     AgentBeat,
     AgentBounds,
-    AgentResume,
     AgentTrace,
     EvidenceRef,
     NodeRunRecord,
@@ -72,10 +70,7 @@ __all__ = [
     "ActionRunState",
     "AgentBeat",
     "AgentBounds",
-    "AgentResume",
     "AgentTrace",
-    "ApprovalItem",
-    "ApprovalRequest",
     "AuditRecord",
     "AutomationRule",
     "AutomationRun",

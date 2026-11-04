@@ -57,7 +57,12 @@ class EventBus:
             try:
                 fn(event)
             except Exception:
-                pass  # one bad observer never breaks an execution
+                # One bad observer never breaks an execution, but it is not
+                # invisible either.
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "event subscriber %r failed on %s", fn, getattr(event, "type", "event"),
+                    exc_info=True)
 
     @property
     def tail(self) -> list[AgentEvent]:

@@ -238,44 +238,6 @@ class TestGovernedMcp:
             {"id": "mcp.evil.preloaded",
              "reason": "collides with an existing capability"}]
 
-    def test_risk_floor_high_parks_for_human_approval(self):
-        fabric, reg = self._fabric_with_mcp([])
-        cid = reg["registered"][0]
-        result = asyncio.run(fabric.invoke(
-            cid, {"q": "x"}, {"actor": {"kind": "agent", "id": "t"}}))
-        assert result["outcome"] == "awaiting-approval"
-        assert result["policy"]["risk"] == "high"
-        pending = fabric._ledger.pending() if getattr(fabric, "_ledger", None) \
-            else list(fabric._approvals_by_key.values())
-        assert any(p["id"] == result["approvalId"] for p in pending)
-
-    def test_grant_spends_once_output_fenced_audited(self):
-        calls: list = []
-        fabric, reg = self._fabric_with_mcp(calls)
-        cid = reg["registered"][0]
-        ctx = {"actor": {"kind": "agent", "id": "t"}}
-
-        parked = asyncio.run(fabric.invoke(cid, {"q": "x"}, ctx))
-        aid = parked["approvalId"]
-        assert fabric.decide_approval(aid, True, "user")
-
-        spent = asyncio.run(fabric.invoke(cid, {"q": "x"}, {**ctx, "approvalId": aid}))
-        assert spent["outcome"] == "succeeded"
-        output = spent["output"]
-        assert output["untrusted"] is True
-        assert output["provenance"] == "mcp:docs:Search"
-
-        # exactly ONE transport hop per successful effect — no side channel
-        assert len(calls) == 1 and calls[0][1] == "Search"
-
-        # audited through the canonical trail
-        audit_ids = [a["invocationId"] for a in fabric.audit_log]
-        assert spent["invocationId"] in audit_ids
-
-        # single-use: replaying the same grant cannot ride it again
-        replay = asyncio.run(fabric.invoke(cid, {"q": "x"}, {**ctx, "approvalId": aid}))
-        assert replay["outcome"] == "awaiting-approval"
-        assert len(calls) == 1  # nothing executed without a fresh decision
 
     def test_permissions_never_inferred_from_descriptions(self):
         from aura.fabric.mcp_bridge import sanitize_mcp_tool
@@ -298,7 +260,6 @@ class TestGovernedMcp:
         from aura.fabric.manifest import describe_capability
 
         assert describe_capability("mcp.docs.search") is None
-
 
 # ── P3: SSE restart-safe replay ──────────────────────────────────────────────
 

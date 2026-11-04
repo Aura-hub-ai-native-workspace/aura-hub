@@ -1,0 +1,25 @@
+# ADR-005: CadQuery as Initial Programmatic CAD Provider
+
+- **Date:** 2026-09-01
+- **Status:** Accepted
+- **Context:** AURA needs a programmatic CAD capability for agent-generated parametric models.
+- **Problem:** Which CAD tool should be the primary provider for agent-driven model generation?
+- **Decision:** CadQuery is the primary programmatic CAD provider. FreeCAD is the secondary/interactive provider.
+- **Reason:**
+  - CadQuery is a pure Python library — no GUI dependency
+  - Exports STEP (primary interchange) and STL (visualization)
+  - OpenCascade-backed (industry-standard geometry kernel)
+  - Agents can generate models by writing Python code
+  - Text-to-CadQuery research demonstrates LLM-driven CAD generation feasibility
+  - No installation beyond `pip install cadquery` (though OCP dependency is large)
+- **Consequences:**
+  - CAD executor runs CadQuery Python scripts in a subprocess
+  - Models are generated as Python code, executed, and exported to STEP/STL
+  - STEP is the canonical format for cross-tool exchange
+- **Rejected Alternatives:**
+  - OpenSCAD: CSG-only, no STEP export, limited to simple models
+  - Onshape: Cloud-only, requires internet, OAuth complexity
+  - FreeCAD Python API: GUI module crashes in headless mode
+  - Fusion: Commercial, no Linux support
+  - SolidWorks: Windows-only, expensive, COM-based API
+- **Evidence:** CadQuery documentation confirms STEP/STL export, pure Python, no GUI dependency. Text-to-CadQuery paper (arXiv, May 2025) demonstrates LLM integration.

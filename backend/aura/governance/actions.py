@@ -54,20 +54,27 @@ _DENY_COMMAND_RES = (
     (r"(curl|wget)\b.*\|\s*(sh|bash)\b", True),
     (r"(^|\s)(nc|ncat|netcat|ssh|scp)\b", True),
     (r"(^|\s)(nohup|setsid|daemon)\b", False),
-    (r";", False),
+    # Command substitution hides the command that actually runs from every
+    # check below, so it stays refused. Plain chaining (`;`, `&&`, `||`)
+    # does not: each chained part is checked on its own (_command_parts).
     (r"`", False),
     (r"\$\(", False),
 )
+
+_CHAIN_SPLIT = _re.compile(r";|&&|\|\||\||\n")
+
+
+def _command_parts(command: str) -> list[str]:
+    """The whole command plus every chained part, each stripped, so a
+    pattern anchored at the start of a command also sees `x; rm -rf /`."""
+    parts = [p.strip() for p in _CHAIN_SPLIT.split(command)]
+    return [command, *[p for p in parts if p]]
 
 _DENY_COMMAND = tuple(
     (_re.compile(p, _re.IGNORECASE), dest)
     for p, dest in _DENY_COMMAND_RES)
 
 
-#: Sensitive path segments never readable/writable through governed tools.
-_SENSITIVE_SEGMENTS = (".env", ".git/", ".ssh/", ".aws/", "secrets",
-                       ".gnupg", ".pki", "id_rsa", "id_ed25519", ".pem",
-                       ".key", "credentials")
 
 @dataclass
 class WorkerActionRequest:
@@ -108,16 +115,42 @@ class ActionVerdict:
     # the action (the runtime self-terminates on these)
 
 
+#: A Windows drive letter followed by a separator. Drive-relative forms
+#: (``C:foo``) are NOT absolute and must not be treated as such; only
+#: ``C:\\...`` / ``C:/...`` is. Case is preserved (Windows paths are
+#: case-insensitive in reality, but treating differing cases as
+#: distinct only ever DENIES, never allows, so no bypass is introduced).
+_WIN_DRIVE_RE = _re.compile(r"^[A-Za-z]:/")
+
+
+def _abs_marker(norm: str) -> bool:
+    """True when the (slash-normalized) path is absolute on any platform.
+
+    A POSIX absolute path starts with ``/``. A Windows absolute path
+    starts with a drive letter followed by a separator (``C:/...``).
+    Drive-relative (``C:foo``), UNC (``//host/share``) and bare
+    relative paths are handled by their existing branches: UNC begins
+    with ``/`` after normalization and resolves against cwd; a
+    drive-relative form is treated as relative, which only ever denies
+    an in-scope match, never allows one.
+    """
+    if norm.startswith("/"):
+        return True
+    return bool(_WIN_DRIVE_RE.match(norm))
+
+
 def _inside_scope(target: str, scope_paths: list[str],
                   cwd: str = "") -> bool:
     norm = target.replace("\\", "/").strip()
     if not norm or norm.startswith("~"):
         return False
-    if norm.startswith("/"):
+    if _abs_marker(norm):
         # Absolute paths resolve against the task cwd: inside-cwd
         # targets judge by their repo-relative form, outside-cwd
         # targets never qualify. Runtimes routinely pass absolute
-        # paths for benign in-repo reads.
+        # paths for benign in-repo reads — including Windows
+        # drive-letter paths (``C:/repo/work/f.txt``) which are
+        # absolute but do not start with a slash.
         base = cwd.replace("\\", "/").rstrip("/")
         if not base or not (norm == base or norm.startswith(base + "/")):
             return False
@@ -133,10 +166,45 @@ def _inside_scope(target: str, scope_paths: list[str],
                for s in scope_paths)
 
 
+#: Directories whose contents are secret material, matched as whole
+#: path segments. `.git` covers the repository metadata directory only.
+_SENSITIVE_DIRS = frozenset({".git", ".ssh", ".aws", ".gnupg", ".pki", "secrets"})
+#: File names that are secret material, matched on the whole basename.
+_SENSITIVE_NAMES = frozenset({
+    "id_rsa", "id_ed25519", "credentials", "credentials.json",
+    "secrets", "secrets.json",
+})
+#: File extensions that are key material, matched on the basename suffix.
+_SENSITIVE_SUFFIXES = (".pem", ".key")
+
+
 def _sensitive(target: str) -> str | None:
-    lowered = target.replace("\\", "/").lower()
-    for seg in _SENSITIVE_SEGMENTS:
-        if seg in lowered:
+    """Segment-aware: a path is sensitive only when one of its segments is a
+    secret directory, or its basename is a secret file name, a `.env` file,
+    or key material. `config.keys.ts` and `credentials_helper.ts` are not."""
+    parts = [p for p in target.replace("\\", "/").lower().split("/") if p]
+    if not parts:
+        return None
+    for seg in parts[:-1]:
+        if seg in _SENSITIVE_DIRS:
+            return seg
+    base = parts[-1]
+    if base == ".env" or base.startswith(".env."):
+        return ".env"
+    if base in _SENSITIVE_NAMES or base.startswith("id_rsa") or base.startswith("id_ed25519"):
+        return base
+    if base.endswith(_SENSITIVE_SUFFIXES):
+        return base.rsplit(".", 1)[-1]
+    return None
+
+
+def _sensitive_command(command: str) -> str | None:
+    """A command touches secret material when one of its whitespace tokens,
+    read as a path, does. Substring matching over the whole command string
+    is not used: it blocked ordinary names that merely contain a fragment."""
+    for token in command.split():
+        seg = _sensitive(token.strip("'\""))
+        if seg:
             return seg
     return None
 
@@ -179,14 +247,15 @@ def decide_action(req: WorkerActionRequest,
         command = req.command or " ".join(req.argv)
         if not command.strip():
             return ActionVerdict(DENY, "empty command")
-        seg = _sensitive(command)
+        seg = _sensitive_command(command)
         if seg:
             return ActionVerdict(
                 DENY,
                 f"command touches sensitive material '{seg}'",
                 destructive=True)
+        parts = _command_parts(command)
         for pattern, destructive in _DENY_COMMAND:
-            if pattern.search(command):
+            if any(pattern.search(part) for part in parts):
                 return ActionVerdict(
                     DENY,
                     f"command matches denied pattern "

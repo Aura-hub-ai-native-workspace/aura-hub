@@ -55,6 +55,21 @@ def _docx_available() -> bool:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _project_with_report(tmp_path: Path) -> tuple[Path, Path]:
+    """A project directory holding a copy of the inspection report.
+
+    document.ingest and artifact.generate only touch files inside the project
+    named by the invocation, so the fixture is copied into one. Its content is
+    unchanged; only where it lives is."""
+    import shutil
+
+    proj = tmp_path / "project"
+    proj.mkdir(exist_ok=True)
+    report = proj / INSPECTION_REPORT.name
+    shutil.copy(INSPECTION_REPORT, report)
+    return proj, report
+
+
 def _make_kb(tmp_path: Path):
     from aura.knowledge.store import KnowledgeBase
     return KnowledgeBase(store_dir=tmp_path / "knowledge")
@@ -85,9 +100,9 @@ class TestIngestSearchGenerate:
         kb = _make_kb(tmp_path)
 
         ingest = DocumentIngestor().ingest(str(INSPECTION_REPORT))
-        kb.add_document(str(INSPECTION_REPORT), ingest)
+        kb.add_document(str(INSPECTION_REPORT), ingest, project_id="proj-test")
 
-        results = kb.search_with_context("inspection findings approval")
+        results = kb.search_with_context("inspection findings approval", project_id="proj-test")
         assert len(results) > 0
         combined = " ".join(r.chunk.text for r in results).lower()
         assert "inspection" in combined or "finding" in combined or "approval" in combined
@@ -99,8 +114,10 @@ class TestIngestSearchGenerate:
         adapters = multimodal_executors(kb, tmp_path / "artifacts")
         ex = next(a for a in adapters if a.capabilityId == "document.ingest")
 
-        inv = {"input": {"path": str(INSPECTION_REPORT)}, "context": {"cwd": ""}}
+        proj, report = _project_with_report(tmp_path)
+        inv = {"input": {"path": str(report)}, "context": {"cwd": str(proj), "projectId": "proj-test"}}
         result = await ex.run(inv)
+        assert result["ok"], result  # the ingest really ran, so the absences below mean something
         result_str = json.dumps(result)
 
         # Secret content must not leak into executor output
@@ -174,10 +191,11 @@ class TestExecutorChain:
         # STEP 1: seed approval policy into knowledge base
         from aura.multimodal.ingestor import DocumentIngestor
         policy_result = DocumentIngestor().ingest(str(APPROVAL_POLICY))
-        kb.add_document(str(APPROVAL_POLICY), policy_result)
+        kb.add_document(str(APPROVAL_POLICY), policy_result, project_id="proj-test")
 
         # STEP 2: ingest inspection report via governed executor
-        inv_ingest = {"input": {"path": str(INSPECTION_REPORT)}, "context": {"cwd": ""}}
+        proj, report = _project_with_report(tmp_path)
+        inv_ingest = {"input": {"path": str(report)}, "context": {"cwd": str(proj), "projectId": "proj-test"}}
         r_ingest = await by_id["document.ingest"].run(inv_ingest)
         assert r_ingest["ok"], r_ingest
         assert r_ingest["output"]["chunkCount"] > 0
@@ -185,7 +203,7 @@ class TestExecutorChain:
 
         # STEP 3: search knowledge base for inspection context
         inv_search = {"input": {"query": "inspection findings approval criteria HIGH"},
-                      "context": {"cwd": ""}}
+                      "context": {"cwd": "", "projectId": "proj-test"}}
         r_search = await by_id["knowledge.search"].run(inv_search)
         assert r_search["ok"], r_search
         assert len(r_search["output"]["results"]) > 0
@@ -202,9 +220,9 @@ class TestExecutorChain:
                 {"heading": "Decision", "body": "Conditional approval pending HIGH remediation."},
             ],
         }
-        out_path = str(tmp_path / "artifacts" / "approval_note.docx")
+        out_path = str(proj / "approval_note.docx")
         inv_artifact = {"input": {"spec": spec, "output_path": out_path},
-                        "context": {"cwd": ""}}
+                        "context": {"cwd": str(proj), "projectId": "proj-test"}}
         r_artifact = await by_id["artifact.generate"].run(inv_artifact)
         assert r_artifact["ok"], r_artifact
         assert Path(r_artifact["output"]["path"]).exists()
@@ -228,7 +246,8 @@ class TestExecutorChain:
         adapters = multimodal_executors(kb, tmp_path / "artifacts")
         ex = next(a for a in adapters if a.capabilityId == "document.ingest")
 
-        inv = {"input": {"path": str(INSPECTION_REPORT)}, "context": {"cwd": ""}}
+        proj, report = _project_with_report(tmp_path)
+        inv = {"input": {"path": str(report)}, "context": {"cwd": str(proj), "projectId": "proj-test"}}
         run_result = await ex.run(inv)
         verify_result = await ex.verify(inv, run_result)
         assert verify_result["passed"]
@@ -240,12 +259,12 @@ class TestExecutorChain:
 
         kb = _make_kb(tmp_path)
         policy_result = DocumentIngestor().ingest(str(APPROVAL_POLICY))
-        kb.add_document(str(APPROVAL_POLICY), policy_result)
+        kb.add_document(str(APPROVAL_POLICY), policy_result, project_id="proj-test")
 
         adapters = multimodal_executors(kb, tmp_path / "artifacts")
         ex = next(a for a in adapters if a.capabilityId == "knowledge.search")
 
-        inv = {"input": {"query": "mandatory conditions approval criteria"}, "context": {"cwd": ""}}
+        inv = {"input": {"query": "mandatory conditions approval criteria"}, "context": {"cwd": "", "projectId": "proj-test"}}
         r = await ex.run(inv)
         assert r["ok"]
         combined = " ".join(res["text"] for res in r["output"]["results"]).lower()
@@ -272,9 +291,9 @@ class TestSovereignPath:
         from aura.multimodal.ingestor import DocumentIngestor
         kb = _make_kb(tmp_path)
         ingest = DocumentIngestor().ingest(str(INSPECTION_REPORT))
-        kb.add_document(str(INSPECTION_REPORT), ingest)
+        kb.add_document(str(INSPECTION_REPORT), ingest, project_id="proj-test")
 
-        results = kb.search_with_context("inspection finding", top_k=3)
+        results = kb.search_with_context("inspection finding", top_k=3, project_id="proj-test")
         # BM25 search is entirely local — succeeds without network
         assert isinstance(results, list)
 

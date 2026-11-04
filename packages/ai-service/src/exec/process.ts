@@ -21,8 +21,8 @@
  * runs safely bounded.
  */
 
-import { execFile } from 'node:child_process';
-import { launchSpec, spawnFlags } from './which';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { currentPlatform, launchSpec, spawnFlags } from './which';
 
 /**
  * Spawn an allow-listed binary by name, on whichever OS is running.
@@ -44,26 +44,89 @@ function runFile(
   args: string[],
   opts: { cwd?: string; timeout: number; signal?: AbortSignal; env?: Record<string, string> },
   done: (err: unknown, stdout: string, stderr: string) => void,
-) {
+): ChildProcess {
   const { target } = launchSpec(bin, args);
-  return execFile(
-    target.file,
-    target.args,
-    {
-      cwd: opts.cwd,
-      timeout: opts.timeout,
-      maxBuffer: MAX_BUFFER,
-      signal: opts.signal,
-      // Merge caller-supplied env vars into the inherited environment so
-      // agent-specific endpoint config (base URL, API key) reaches the
-      // subprocess without leaking the full parent environment into an
-      // untrusted command.
-      ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
-      ...spawnFlags(target),
-    },
-    (err, stdout, stderr) => done(err, stdout, stderr),
-  );
+  const posix = currentPlatform() !== 'win32';
+  // `spawn`, not `execFile`: `execFile` drops the `detached` option, and without
+  // it the child shares our process group, so Stop and timeouts could only ever
+  // signal one process and every worker it started outlived the run.
+  const child = spawn(target.file, target.args, {
+    cwd: opts.cwd,
+    detached: posix, // its own group, so the whole tree can be ended together
+    stdio: ['pipe', 'pipe', 'pipe'],
+    // Merge caller-supplied env vars into the inherited environment so
+    // agent-specific endpoint config (base URL, API key) reaches the
+    // subprocess without leaking the full parent environment into an
+    // untrusted command.
+    ...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+    ...spawnFlags(target),
+  });
+
+  let stdout = '';
+  let stderr = '';
+  let reason: 'timeout' | 'abort' | 'maxbuffer' | undefined;
+  let finished = false;
+  const collect = (which: 'out' | 'err') => (chunk: string) => {
+    if (reason) return;
+    if (stdout.length + stderr.length + chunk.length > MAX_BUFFER) { reason = 'maxbuffer'; endTree(child); return; }
+    if (which === 'out') stdout += chunk; else stderr += chunk;
+  };
+  child.stdout?.setEncoding('utf8').on('data', collect('out'));
+  child.stderr?.setEncoding('utf8').on('data', collect('err'));
+
+  const timer = setTimeout(() => { reason ??= 'timeout'; endTree(child); }, opts.timeout);
+  const onAbort = () => { reason ??= 'abort'; endTree(child); };
+  if (opts.signal?.aborted) onAbort(); else opts.signal?.addEventListener('abort', onAbort, { once: true });
+
+  const finish = (err: unknown) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onAbort);
+    done(err, stdout, stderr);
+  };
+  child.once('error', (e) => finish(e)); // ENOENT and friends, shaped as execFile reports them
+  child.once('close', (code, signal) => {
+    if (reason === 'abort') {
+      return finish(Object.assign(new Error('The operation was aborted'), { name: 'AbortError', code: 'ABORT_ERR' }));
+    }
+    if (reason === 'maxbuffer') {
+      return finish(Object.assign(new RangeError('stdout or stderr maxBuffer length exceeded'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }));
+    }
+    if (code === 0 && !signal && reason === undefined) return finish(null);
+    const err: Error & { code?: number | null; killed?: boolean; signal?: string } =
+      new Error(`Command failed: ${target.file}\n${stderr}`);
+    err.code = code;
+    err.killed = reason === 'timeout';
+    if (signal) err.signal = signal;
+    finish(err);
+  });
+  return child;
 }
+
+/**
+ * End a child and everything it started: SIGTERM to the group first (what
+ * `execFile` sent to the one process), SIGKILL after a short grace if anything
+ * in it is still alive. Windows has no groups to signal, so `taskkill /T`
+ * walks the tree. Never throws: a tree already gone is the goal.
+ */
+function endTree(child: ChildProcess): void {
+  const pid = child.pid;
+  if (!pid) return;
+  if (currentPlatform() === 'win32') {
+    try { execFile('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true }, () => undefined); } catch { /* best effort */ }
+    try { child.kill(); } catch { /* best effort */ }
+    return;
+  }
+  const signalGroup = (sig: NodeJS.Signals) => {
+    try { process.kill(-pid, sig); return true; } catch { return false; }
+  };
+  if (!signalGroup('SIGTERM')) { try { child.kill('SIGTERM'); } catch { /* already gone */ } }
+  const hard = setTimeout(() => { signalGroup('SIGKILL'); }, TREE_KILL_GRACE_MS);
+  hard.unref();
+}
+
+const TREE_KILL_GRACE_MS = 1500;
 
 /**
  * Binaries the safe shell will spawn. Deliberately small: a command that

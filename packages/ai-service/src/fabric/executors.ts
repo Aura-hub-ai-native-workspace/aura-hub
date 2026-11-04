@@ -31,6 +31,7 @@ import {
 } from './supervision';
 import { catalogEntry } from '@aura/connected-environment';
 import type { WorkspaceManager } from '../workspace';
+import { DestinationRefused, isAutonomous, policedRequest } from './httpPolicy';
 
 const MAX_READ_BYTES = 512 * 1024;
 
@@ -717,21 +718,22 @@ const httpRequest: Executor = {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.min(inv.context.timeoutMs ?? 10_000, 30_000));
     try {
-      const res = await fetch(url, {
+      const res = await policedRequest(url, {
         method: s(inv.input.method, 'GET').toUpperCase(),
         body: inv.input.body === undefined ? undefined : s(inv.input.body),
+        autonomous: isAutonomous(inv.context.actor),
         signal: controller.signal,
+        maxBytes: MAX_HTTP_BYTES,
       });
-      const buf = await res.arrayBuffer();
-      const text = Buffer.from(buf.slice(0, MAX_HTTP_BYTES)).toString('utf8');
-      return ok(`${res.status} ${res.statusText}`, { status: res.status, text });
+      return ok(`${res.status} ${res.statusText}`.trim(), { status: res.status, text: res.body.toString('utf8') });
     } catch (error) {
+      if (error instanceof DestinationRefused) return no(error.message);
       // Node surfaces DNS/socket failures as a bare "fetch failed" with the
       // real cause nested underneath. Propagating that code matters: the
       // Fabric's retry classifier keys off it, so swallowing it here
       // silently turns every transient network blip into a hard failure.
       const err = error as Error & { cause?: { code?: string } };
-      const code = err.cause?.code;
+      const code = err.cause?.code ?? (err as { code?: string }).code;
       const reason = err.name === 'AbortError' ? 'timeout' : (code ?? err.message);
       return no(`The request did not complete: ${reason}`);
     } finally {

@@ -205,6 +205,16 @@ def prove_worker(adapter: WorkerAdapter, home: str,
         governance_supports=dict(adapter.supports),
         invocation_verified=adapter.invocation_verified)
 
+    # 0. The proof sends a real prompt to the worker, which may bill. Not
+    #    without the owner's say-so (workers.billing).
+    from .billing import decide
+
+    _decision = decide(adapter.id)
+    if not _decision.allowed:
+        proof.reason = "BILLING_POLICY"
+        proof.detail = _decision.reason
+        return proof
+
     # 1. DISCOVERED / INSTALLED / LAUNCHABLE — the existing probe, not a
     #    second discovery mechanism.
     from ..environment import probe_node

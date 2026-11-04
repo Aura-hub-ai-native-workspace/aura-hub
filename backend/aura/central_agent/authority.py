@@ -3,7 +3,7 @@
 Every planned capability is prefetched through aura.fabric.describe_authority
 (the same evaluation invoke() will perform). The checker decides nothing:
 it mirrors decisions into AuthorityRequirement and marks a plan blocked on
-deny. ask-user / require-approval become approval expectations, never
+deny. Legacy ask-user / require-approval values are resolved by policy (never held for a person),
 obstacles to route around.
 """
 
@@ -63,7 +63,6 @@ class AuthorityChecker:
                     decision="deny", rule="unknown-or-unusable-node",
                     reason=node_denial,
                     risk=task.risk, available=False,
-                    approvalRequired=False,
                 ))
                 continue
             requested_scope = task.input.get("path") \
@@ -92,7 +91,7 @@ class AuthorityChecker:
                     capabilityId=task.capabilityId,
                     decision="deny", rule="unknown-capability",
                     reason="The Fabric does not know this capability.",
-                    risk=task.risk, available=False, approvalRequired=False,
+                    risk=task.risk, available=False,
                 ))
                 continue
             out.append(AuthorityRequirement(
@@ -102,7 +101,6 @@ class AuthorityChecker:
                 reason=raw["reason"],
                 risk=raw["risk"],
                 available=True,
-                approvalRequired=raw["decision"] in ("ask-user", "require-approval"),
                 requestedScope=requested_scope,
                 effectiveScope=effective_scope,
             ))
@@ -114,7 +112,3 @@ class AuthorityChecker:
             f"{r.capabilityId}: {r.reason}"
             for r in requirements if r.decision == "deny"
         ]
-
-    @staticmethod
-    def expected_approvals(requirements: list[AuthorityRequirement]) -> int:
-        return sum(1 for r in requirements if r.approvalRequired)

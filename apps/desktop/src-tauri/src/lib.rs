@@ -13,10 +13,11 @@
 //! desktop shell must not become a way around that.
 
 mod appimage;
+mod instance;
 mod service;
 
 use serde::Serialize;
-use service::{ServiceHandle, Startup, DEFAULT_PORT, PYTHON_PORT, SLOT_AI, SLOT_PYTHON};
+use service::{Ownership, ServiceHandle, DEFAULT_PORT, PYTHON_PORT, SLOT_AI, SLOT_PYTHON};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -348,9 +349,9 @@ fn strip_verbatim(p: PathBuf) -> PathBuf {
 #[tauri::command]
 fn service_status(state: tauri::State<'_, ServiceState>) -> ServiceStatus {
     let mut status = state.status.lock().unwrap();
-    if status.state == "ready" && !service::is_healthy(state.port) {
+    if status.state == "ready" && !matches!(service::verify(&state.handle), Ownership::Owned) {
         status.state = "failed".into();
-        status.message = "AURA's local service stopped responding.".into();
+        status.message = "AURA's local service stopped responding or failed its identity check.".into();
     }
     status.clone()
 }
@@ -366,11 +367,78 @@ fn service_status(state: tauri::State<'_, ServiceState>) -> ServiceStatus {
 #[tauri::command]
 fn environment_backend_status(state: tauri::State<'_, ServiceState>) -> ServiceStatus {
     let mut status = state.python_status.lock().unwrap();
-    if status.state == "ready" && !service::is_python_healthy(state.python_port) {
+    if status.state == "ready" && !matches!(service::verify(&state.python), Ownership::Owned) {
         status.state = "failed".into();
-        status.message = "AURA's environment backend stopped responding.".into();
+        status.message = "AURA's environment backend stopped responding or failed its identity check.".into();
     }
     status.clone()
+}
+
+/// One backend as the renderer may use it.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendEndpoint {
+    pub port: u16,
+    /// True only when the backend passed the ownership check just now.
+    pub verified: bool,
+    /// The launch token. Empty unless `verified`. Sent only to this backend.
+    pub token: String,
+    /// Why the backend cannot be used, when it cannot.
+    pub reason: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendSession {
+    pub ai: BackendEndpoint,
+    pub python: BackendEndpoint,
+}
+
+fn endpoint(handle: &ServiceHandle, port: u16) -> BackendEndpoint {
+    match service::verify(handle) {
+        Ownership::Owned => BackendEndpoint {
+            port,
+            verified: true,
+            token: handle.token.clone(),
+            reason: String::new(),
+        },
+        Ownership::Refused(reason) => BackendEndpoint {
+            port,
+            verified: false,
+            token: String::new(),
+            reason,
+        },
+    }
+}
+
+/// The renderer's only route to a backend. Re-runs the ownership check on
+/// every call, so a reconnect or retry repeats it instead of trusting an
+/// earlier answer. Nothing here is cached.
+/// Re-check ONE backend, right now. The renderer calls this before every
+/// request it sends, so a request is never sent on the strength of an earlier
+/// answer. If the child AURA started is gone, no proof is attempted and the
+/// reply refuses, so the launch token is not presented to whatever now holds
+/// the port.
+#[tauri::command]
+fn backend_verify(kind: String, state: tauri::State<'_, ServiceState>) -> BackendEndpoint {
+    match kind.as_str() {
+        "ai" => endpoint(&state.handle, state.port),
+        "python" => endpoint(&state.python, state.python_port),
+        other => BackendEndpoint {
+            port: 0,
+            verified: false,
+            token: String::new(),
+            reason: format!("unknown backend kind \"{other}\""),
+        },
+    }
+}
+
+#[tauri::command]
+fn backend_session(state: tauri::State<'_, ServiceState>) -> BackendSession {
+    BackendSession {
+        ai: endpoint(&state.handle, state.port),
+        python: endpoint(&state.python, state.python_port),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -388,6 +456,17 @@ pub fn run() {
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(PYTHON_PORT);
+
+    // One fresh identity per backend per launch. A backend that was not
+    // started with it cannot pass the ownership check. See instance.rs.
+    let ai_token = instance::new_token().unwrap_or_else(|e| {
+        eprintln!("AURA Hub: {e}");
+        String::new()
+    });
+    let python_token = instance::new_token().unwrap_or_else(|e| {
+        eprintln!("AURA Hub: {e}");
+        String::new()
+    });
 
     let builder = tauri::Builder::default();
 
@@ -412,7 +491,7 @@ pub fn run() {
 
     let app = builder
         .manage(ServiceState {
-            handle: ServiceHandle::new(port, SLOT_AI),
+            handle: ServiceHandle::new(port, SLOT_AI, ai_token),
             port,
             status: Mutex::new(ServiceStatus {
                 state: "starting".into(),
@@ -420,7 +499,7 @@ pub fn run() {
                 message: "Starting AURA's local service…".into(),
                 port,
             }),
-            python: ServiceHandle::new(python_port, SLOT_PYTHON),
+            python: ServiceHandle::new(python_port, SLOT_PYTHON, python_token),
             python_port,
             python_status: Mutex::new(ServiceStatus {
                 state: "starting".into(),
@@ -434,6 +513,8 @@ pub fn run() {
             ui_token,
             service_status,
             environment_backend_status,
+            backend_session,
+            backend_verify,
             code_read_dir,
             code_read_file,
             code_write_file,
@@ -462,13 +543,7 @@ pub fn run() {
                 {
                     let mut status = state.status.lock().unwrap();
                     *status = match &outcome {
-                        Ok(Startup::Reused) => ServiceStatus {
-                            state: "ready".into(),
-                            origin: "reused".into(),
-                            message: format!("Connected to the AURA service already running on port {port}."),
-                            port,
-                        },
-                        Ok(Startup::Spawned) => ServiceStatus {
+                        Ok(()) => ServiceStatus {
                             state: "ready".into(),
                             origin: "spawned".into(),
                             message: format!("AURA's local service is ready on port {port}."),
@@ -544,15 +619,7 @@ pub fn run() {
                 {
                     let mut status = state.python_status.lock().unwrap();
                     *status = match &python_outcome {
-                        Ok(Startup::Reused) => ServiceStatus {
-                            state: "ready".into(),
-                            origin: "reused".into(),
-                            message: format!(
-                                "Connected to the AURA environment backend already running on port {python_port}."
-                            ),
-                            port: python_port,
-                        },
-                        Ok(Startup::Spawned) => ServiceStatus {
+                        Ok(()) => ServiceStatus {
                             state: "ready".into(),
                             origin: "spawned".into(),
                             message: format!(

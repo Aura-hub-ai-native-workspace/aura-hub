@@ -1,0 +1,11 @@
+gate:     parity
+started:  2026-10-28T23:09:17+05:30
+method:   every modified backend/**/*.py compared byte-for-byte with the staged copy in apps/desktop/src-tauri/resources/backend; then string probes in the bundled Node service
+----- output -----
+backend python parity: 0 identical, 0 differ, 20 missing
+node bundle contains: npm.cmd
+node bundle contains: stopped before it finished
+node bundle contains: winding-down
+node bundle contains: index on disk and the live graph were left as they were
+----- output (rerun with the correct staged path: resources/python/backend) -----
+backend python parity (resources/python/backend): 20 identical, 0 differ, 0 missing

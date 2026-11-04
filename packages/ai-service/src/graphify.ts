@@ -56,7 +56,9 @@ const genState = new Map<string, { phase: GraphifyPhase; startedAt: number; erro
  * `graphify update <path>` writes to `<path>/graphify-out/` (there is no
  * output-redirect flag). We run it there, then copy the artifacts into
  * `<aura-home>/index/<projectId>/graphify/` so the HTTP routes serve a
- * stable, project-scoped location regardless of the repo path.
+ * stable, project-scoped location regardless of the repo path. A
+ * graphify-out this run created is removed afterwards; one that already
+ * existed is left alone.
  */
 export function runGraphify(projectId: string, projectPath: string): void {
   const found = findGraphify();
@@ -71,6 +73,18 @@ export function runGraphify(projectId: string, projectPath: string): void {
   const dest = homePath('index', projectId, 'graphify');
   fs.mkdirSync(dest, { recursive: true });
   genState.set(projectId, { phase: 'running', startedAt: Date.now() });
+
+  // graphify can only write to <projectPath>/graphify-out. When this run is
+  // what creates that directory, it is AURA's scratch output: the artifacts
+  // are copied into the AURA home and the directory is removed, so indexing
+  // leaves nothing behind in the user's project. A graphify-out that was
+  // already there may be the user's own and is never removed.
+  const srcOut = path.join(projectPath, 'graphify-out');
+  const createdByThisRun = !fs.existsSync(srcOut);
+  const removeOwnOutput = () => {
+    if (!createdByThisRun) return;
+    try { fs.rmSync(srcOut, { recursive: true, force: true }); } catch { /* best-effort */ }
+  };
 
   console.error(`[GRAPHIFY] Running: ${found.bin} update "${projectPath}"`);
 
@@ -91,9 +105,9 @@ export function runGraphify(projectId: string, projectPath: string): void {
         const detail = (stderr ?? '').trim() || err.message;
         console.error('[GRAPHIFY] Failed:', detail.slice(0, 400));
         genState.set(projectId, { phase: 'error', startedAt: Date.now(), error: detail.slice(0, 400) });
+        removeOwnOutput();
         return;
       }
-      const srcOut = path.join(projectPath, 'graphify-out');
       let copied = 0;
       for (const f of ['graph.json', 'graph.html', 'GRAPH_REPORT.md']) {
         try {
@@ -101,6 +115,7 @@ export function runGraphify(projectId: string, projectPath: string): void {
           if (fs.existsSync(s)) { fs.copyFileSync(s, path.join(dest, f)); copied++; }
         } catch { /* best-effort */ }
       }
+      removeOwnOutput();
       genState.set(projectId, { phase: 'done', startedAt: Date.now() });
       console.error(`[GRAPHIFY] Done — copied ${copied} artifact(s) to ${dest}`);
     },

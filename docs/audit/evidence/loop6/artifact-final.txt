@@ -1,0 +1,8 @@
+artifact: apps/desktop/src-tauri/target/release/bundle/appimage/AURA Hub_0.1.20_amd64.AppImage
+built:    2026-10-28 21:40:13.800943483 +0530
+size:     190278136 bytes
+sha256:   c1796be75d7b187a59230b37fc55da93082f2ea35ccf5b5bf3ed0eadaeb29622
+deb sha256: e831bdf458dfef6e809de9c8f5fdf64542c0d9317daa2749d50255d324193917
+signing:  NONE (build exits 1 at updater signing; TAURI_SIGNING_PRIVATE_KEY not set; no .sig). INTERNAL TEST ARTIFACT, not a release.
+source:   feat/laya-shadow-planner df2cc92 + uncommitted changes
+supersedes: loop 5 artifact 9da5c9c273d481906afdf39c074bf03d132e94117a66777339b4817d94d383c5

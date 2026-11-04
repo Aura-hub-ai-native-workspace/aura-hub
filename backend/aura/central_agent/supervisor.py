@@ -4,19 +4,21 @@ The supervisor does NOT plan, does NOT execute, and does NOT interpret
 beyond evidence. It reads task outcomes plus the executor-level evidence
 (scope checks, exit codes, timeouts) and returns a verdict that the
 Central Agent — or a workflow driver — acts on through the EXISTING
-governed paths (Fabric invoke with approval, workflow resume).
+governed paths (Fabric invoke under policy, workflow resume).
 
 Division of labor, enforced by construction:
 
 - DETERMINISTIC here: refusal conditions, budget accounting, scope
   subset checks, verdict derivation, corrective-invocation assembly.
-- INTERPRETATION elsewhere: whether a parked deviation is safe to
-  continue is the Central Agent's call (possibly model-assisted); this
-  module only ever proposes the *shape* of a safe correction.
+- INTERPRETATION elsewhere: whether a deviation is safe to correct is the
+  Central Agent's call (possibly model-assisted); this module only ever
+  proposes the *shape* of a safe correction. "stopped-*" verdicts name a
+  deviation the automated correction loop handles; nothing waits on a
+  human decision.
 
 A correction is always a NEW governed invocation: the corrective input
-carries `correctionOf`/`attempt` fields, so its approval fingerprint
-differs and every correction is re-gated. Nothing here grants authority.
+carries `correctionOf`/`attempt` fields, so each correction is a distinct,
+audited action that policy evaluates on its own. Nothing here grants authority.
 """
 
 from __future__ import annotations
@@ -36,21 +38,21 @@ def _now() -> str:
 
 # ── verdict vocabularies (small, closed) ──────────────────────────────
 
-# Per-task verdicts. PARKED_* all mean "not accepted, evidence preserved,
+# Per-task verdicts. STOPPED_* all mean "not accepted, evidence preserved,
 # worker must not continue uncontrolled". FAILED_* are terminal for the
 # attempt. BLOCKED marks downstream tasks gated on an unverified upstream.
 TASK_VERIFIED = "verified"
 TASK_FAILED = "failed"
-TASK_PARKED_DEVIATION = "parked-deviation"
-TASK_PARKED_TIMEOUT = "parked-timeout"
-TASK_PARKED_CANCELLED = "parked-cancelled"
-TASK_PARKED_UNVERIFIED = "parked-unverified"
+TASK_STOPPED_DEVIATION = "stopped-deviation"
+TASK_STOPPED_TIMEOUT = "stopped-timeout"
+TASK_STOPPED_CANCELLED = "stopped-cancelled"
+TASK_STOPPED_UNVERIFIED = "stopped-unverified"
 TASK_DENIED = "denied"
 TASK_BLOCKED = "blocked"
 
 # Run verdicts.
 RUN_CONTINUE = "continue"
-RUN_PARKED = "parked"
+RUN_STOPPED = "stopped"
 RUN_FAILED = "failed"
 RUN_FAILED_FOR_REVIEW = "failed-for-review"
 RUN_BLOCKED = "blocked"
@@ -78,7 +80,7 @@ class RunVerdict:
 class CorrectionRecord:
     """One attributable correction step. Serializable for audit/persistence.
 
-    Lifecycle: status "parked" while its corrective invocation awaits (or
+    Lifecycle: status "recorded" while its corrective invocation runs (or
     needs) a decision; "resolved" once the corrective leg verifies;
     "failed" when it ends without verification (denial, timeout, fresh
     deviation handed to the next attempt, budget exhaustion). The
@@ -96,8 +98,7 @@ class CorrectionRecord:
     evidence: dict[str, Any] = field(default_factory=dict)
     corrective_input: dict[str, Any] | None = None
     created_at: str = field(default_factory=_now)
-    status: str = "parked"
-    approval_id: str | None = None
+    status: str = "recorded"
     corrective_plan: dict[str, Any] | None = None
     verified_snapshot: dict[str, dict[str, Any]] = field(default_factory=dict)
     plan_snapshot: dict[str, Any] | None = None
@@ -118,7 +119,6 @@ class CorrectionRecord:
                                 if self.corrective_input is not None else None),
             "createdAt": self.created_at,
             "status": self.status,
-            "approvalId": self.approval_id,
             "correctivePlan": (dict(self.corrective_plan)
                                if self.corrective_plan is not None else None),
             "verifiedSnapshot": {k: dict(v)
@@ -141,8 +141,7 @@ class CorrectionRecord:
             corrective_input=(dict(raw["correctiveInput"])
                               if raw.get("correctiveInput") is not None else None),
             created_at=str(raw.get("createdAt", "")),
-            status=str(raw.get("status", "parked")),
-            approval_id=raw.get("approvalId"),
+            status=str(raw.get("status", "recorded")),
             corrective_plan=(dict(raw["correctivePlan"])
                              if raw.get("correctivePlan") is not None else None),
             verified_snapshot={k: dict(v) for k, v in
@@ -164,8 +163,8 @@ def validate_correction_scope(proposed: list[str] | None,
                               approved: list[str]) -> tuple[bool, str]:
     """A correction may keep or NARROW the approved scope — never widen it.
 
-    Returns (ok, reason). A wider scope is refused here; obtaining it
-    requires a fresh approval through the normal authority path.
+    Returns (ok, reason). A wider scope is refused here: scope never
+    grows during a correction.
     """
     if proposed is None:
         return True, ""
@@ -175,7 +174,7 @@ def validate_correction_scope(proposed: list[str] | None,
         return True, ""
     return (False,
             "corrective scope exceeds the approved scope; "
-            "a wider scope needs a fresh approval, never an automatic grant.")
+            "a wider scope is refused; scope never grows during a correction.")
 
 
 def decide_task(outcome_state: str, evidence: dict[str, Any] | None,
@@ -183,7 +182,7 @@ def decide_task(outcome_state: str, evidence: dict[str, Any] | None,
     """Derive one task's verdict from its terminal state plus evidence.
 
     `outcome_state` is the ExecutionController/TaskOutcome state vocabulary
-    (done/failed/blocked/awaiting-approval/denied/timed-out/cancelled).
+    (done/failed/blocked/denied/timed-out/cancelled).
     `evidence` carries executor-level facts the state alone cannot express:
     scopeDeviation, exitCode, timedOut. Pure function — no I/O, no model.
     """
@@ -198,7 +197,7 @@ def decide_task(outcome_state: str, evidence: dict[str, Any] | None,
         outside = ((evidence.get("scopeCheck") or {}).get("outside")) or []
         shown = ", ".join(outside[:5])
         return TaskVerdict(
-            task_id, TASK_PARKED_DEVIATION, True,
+            task_id, TASK_STOPPED_DEVIATION, True,
             [f"worker files fell outside the declared scope: {shown}.",
              "Changes preserved as evidence; nothing reverted."],
             evidence)
@@ -210,33 +209,29 @@ def decide_task(outcome_state: str, evidence: dict[str, Any] | None,
     if outcome_state == "cancelled":
         # An operator-cancelled run must never auto-retry: re-dispatching
         # would defy the cancellation.
-        return TaskVerdict(task_id, TASK_PARKED_CANCELLED, False,
+        return TaskVerdict(task_id, TASK_STOPPED_CANCELLED, False,
                            ["run was cancelled; automatic re-dispatch is refused."],
                            evidence)
     if outcome_state == "timed-out":
-        return TaskVerdict(task_id, TASK_PARKED_TIMEOUT, True,
+        return TaskVerdict(task_id, TASK_STOPPED_TIMEOUT, True,
                            ["run exceeded its time budget; retry is transient-safe within budget."],
                            evidence)
     if outcome_state in ("failed", "blocked"):
         return TaskVerdict(task_id, TASK_FAILED, True,
                            [f"run ended {outcome_state}; retry within budget is allowed."],
                            evidence)
-    if outcome_state == "awaiting-approval":
-        return TaskVerdict(task_id, TASK_BLOCKED, False,
-                           ["run is parked on a human approval; the supervisor does not decide it."],
-                           evidence)
     if outcome_state == "done":
         if evidence.get("scopeDeviation"):
             outside = ((evidence.get("scopeCheck") or {}).get("outside")) or []
             shown = ", ".join(outside[:5])
             return TaskVerdict(
-                task_id, TASK_PARKED_DEVIATION, True,
+                task_id, TASK_STOPPED_DEVIATION, True,
                 [f"worker files fell outside the declared scope: {shown}.",
                  "Changes preserved as evidence; nothing reverted."],
                 evidence)
         if verified is True:
             return TaskVerdict(task_id, TASK_VERIFIED, False, [], evidence)
-        return TaskVerdict(task_id, TASK_PARKED_UNVERIFIED, True,
+        return TaskVerdict(task_id, TASK_STOPPED_UNVERIFIED, True,
                            ["run finished but verification did not pass."],
                            evidence)
     return TaskVerdict(task_id, TASK_FAILED, False,
@@ -254,7 +249,7 @@ def decide_run(task_decisions: list[tuple[str, str, dict[str, Any] | None,
 
     Each entry: (task_id, outcome_state, evidence, verified). Downstream
     tasks whose dependencies did not verify are marked BLOCKED and never
-    cleared to run — a parked upstream blocks its dependents by
+    cleared to run — a stopped upstream blocks its dependents by
     construction. Budget gates CORRECT-ability, not PARKING: parking is
     always allowed; only re-dispatch consumes budget.
     """
@@ -266,7 +261,7 @@ def decide_run(task_decisions: list[tuple[str, str, dict[str, Any] | None,
     # Propagate blocking downstream in dependency order (stable, bounded).
     # A task that verified on its own but consumed an unverified upstream
     # result is BLOCKED: its verification is meaningless. Tasks that
-    # already failed/parked/denied keep their own (more informative)
+    # already failed/stopped/denied keep their own (more informative)
     # status while still blocking everything below them.
     blocked_ids = {tid for tid, v in verdicts.items()
                    if v.status not in (TASK_VERIFIED,)}
@@ -299,15 +294,15 @@ def decide_run(task_decisions: list[tuple[str, str, dict[str, Any] | None,
                           "Policy denied a task; corrections cannot override denials.")
     if all(v.status == TASK_BLOCKED for v in ordered):
         return RunVerdict(RUN_BLOCKED, ordered, attempts_used, remaining,
-                          "Tasks blocked on approvals or unverified upstreams.")
+                          "Tasks blocked by policy or unverified upstreams.")
     if remaining <= 0:
         return RunVerdict(
             RUN_FAILED_FOR_REVIEW, ordered, attempts_used, 0,
             "Correction budget exhausted. All evidence preserved for review; "
             "no further automatic attempts.")
     return RunVerdict(
-        RUN_PARKED, ordered, attempts_used, remaining,
-        "Parked with evidence preserved; a bounded correction may re-dispatch "
+        RUN_STOPPED, ordered, attempts_used, remaining,
+        "Stopped with evidence preserved; a bounded correction may re-dispatch "
         "through the governed path.")
 
 
@@ -324,7 +319,7 @@ def build_correction(*, task_contract_id: str, task_id: str,
     - attempt/accounting: corrections allowed only within budget;
     - scope: corrective scope must equal the approved scope or a narrower
       subset — widening is refused, never auto-approved;
-    - attribution: correctionOf/attempt ride in the input so the approval
+    - attribution: correctionOf/attempt ride in the input so the audit
       fingerprint differs and every correction is re-gated;
     - instruction: deterministic template grounded in the deviation
       evidence; caller-supplied extra context is appended as context
@@ -339,15 +334,15 @@ def build_correction(*, task_contract_id: str, task_id: str,
     if attempt > 1 + budget:
         raise ValueError(
             f"correction budget exhausted ({budget} corrections used); "
-            "park for review instead.")
+            "record it for review instead.")
     proposed = list(narrower_scope) if narrower_scope is not None else list(approved_scope)
     ok, reason = validate_correction_scope(proposed, approved_scope)
     if not ok:
         raise ValueError(reason)
-    if deviation.status not in (TASK_PARKED_DEVIATION, TASK_PARKED_UNVERIFIED,
-                                TASK_PARKED_TIMEOUT, TASK_FAILED):
+    if deviation.status not in (TASK_STOPPED_DEVIATION, TASK_STOPPED_UNVERIFIED,
+                                TASK_STOPPED_TIMEOUT, TASK_FAILED):
         raise ValueError(
-            f"task {task_id} is {deviation.status}; only parked/failed "
+            f"task {task_id} is {deviation.status}; only stopped/failed "
             "tasks accept corrections.")
 
     outside = ((deviation.evidence.get("scopeCheck") or {}).get("outside")) or []

@@ -2,17 +2,15 @@
 
 One host backs the production app. It implements exactly the semantics of
 fabric/index.ts wiring mode (verbatim Python port lives in
-aura.fabric.routing.resolve_node_for; approval/grant rules mirror
+aura.fabric.routing.resolve_node_for; policy rules mirror
 ScriptedHost.wiring, which is differential-tested against the TS oracle):
 
   • routing: explicit requested node is NEVER substituted; auto-selection
     follows catalogue order; unsupported/no-provider failures stay honest;
   • availability: authority preflight sees the SAME node catalogue that
     execution resolves against (one store, one projection);
-  • grants: a call is granted inline ONLY when THIS invocation context
-    carries explicit approvedCapabilities covering every item — there is
-    no standing permission, and decisions made through the ledger remain
-    the only other way past a gate.
+  • grants: policy decides every call. There is no grant context and no
+    approval step; a call the policy refuses is refused at once.
 """
 from __future__ import annotations
 
@@ -56,13 +54,3 @@ class WiringHost:
         return resolve_node_for(capability, context,
                                 self.present_nodes(), can_use)
 
-    async def request_approval(self, request: dict, context: dict) -> bool:
-        # fabric/index.ts:170-176 — grant ONLY when THIS call carries
-        # explicit authorization for EVERY item. The Fabric then spends it
-        # once (consumedAt) and audits the spend; nothing here persists a
-        # standing grant.
-        approved = set(context.get("approvedCapabilities") or [])
-        items = request.get("items") or []
-        if not items:
-            return False
-        return all(i.get("capabilityId") in approved for i in items)

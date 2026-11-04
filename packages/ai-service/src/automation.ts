@@ -22,6 +22,7 @@ import {
   getEngineeringAudit,
   getSecurityReport,
   getDocumentationHealth,
+  isCancellation,
 } from '@aura/governance';
 import { FullStackKnowledgeEngine } from '@aura/knowledge-fullstack';
 import type { PipelineManager } from './pipeline';
@@ -66,6 +67,17 @@ export interface AutomationRuntime {
   emit?: (e: AutomationRunEvent) => void;
   /** Subscribe to run events (for SSE/UI streaming). Returns an unsubscribe fn. */
   subscribe(fn: (e: AutomationRunEvent) => void): () => void;
+}
+
+/**
+ * A Stop reached an action that was cooperating. The result is a FAILED action
+ * with a plain statement of what was and was not done; the engine keeps the run
+ * `cancelled` (the first terminal state wins) and records this as the action's
+ * own outcome. Anything other than a cancellation is rethrown untouched.
+ */
+function stoppedBy(e: unknown, signal: AbortSignal | undefined, what: string): ActionResult {
+  if (signal?.aborted || isCancellation(e)) return { ok: false, error: what };
+  throw e;
 }
 
 function ok(summary: string): ActionResult {
@@ -129,33 +141,49 @@ export function createAutomationRuntime(host: AutomationHost, emit?: (e: Automat
         const scopeRaw = String(config.scope ?? 'daily');
         const scope: 'daily' | 'weekly' | 'release' | 'architecture' =
           scopeRaw === 'weekly' ? 'weekly' : scopeRaw === 'release' ? 'release' : scopeRaw === 'architecture' ? 'architecture' : 'daily';
-        const report = await getEngineeringAudit({ projectPath: root, scope });
-        return ok(`audit ${report.scope} — overall ${report.overallHealth}/100 (${report.grade})`);
+        try {
+          const report = await getEngineeringAudit({ projectPath: root, scope, signal: ctx.signal });
+          return ok(`audit ${report.scope} — overall ${report.overallHealth}/100 (${report.grade})`);
+        } catch (e) {
+          return stoppedBy(e, ctx.signal, 'governance audit stopped before it finished; no audit snapshot was written');
+        }
       },
 
       'run-security-review': async (ctx): Promise<ActionResult> => {
         const root = host.projectPath(ctx.projectId);
-        const report = await getSecurityReport({ projectPath: root });
-        return ok(`security review — ${report.findings.length} findings`);
+        try {
+          const report = await getSecurityReport({ projectPath: root, signal: ctx.signal });
+          return ok(`security review — ${report.findings.length} findings`);
+        } catch (e) {
+          return stoppedBy(e, ctx.signal, 'security review stopped before it finished; it is read-only, so nothing was changed');
+        }
       },
 
       'run-docs-review': async (ctx): Promise<ActionResult> => {
         const root = host.projectPath(ctx.projectId);
-        const report = await getDocumentationHealth({ projectPath: root });
-        return ok(`docs review — ${report.issues.length} issues`);
+        try {
+          const report = await getDocumentationHealth({ projectPath: root, signal: ctx.signal });
+          return ok(`docs review — ${report.issues.length} issues`);
+        } catch (e) {
+          return stoppedBy(e, ctx.signal, 'documentation review stopped before it finished; it is read-only, so nothing was changed');
+        }
       },
 
       'update-knowledge': async (ctx): Promise<ActionResult> => {
         const root = host.projectPath(ctx.projectId);
         const pipeline = host.pipelineFor(ctx.projectId);
         const fsEngine = pipeline.fullstack;
-        if (fsEngine) {
-          const delta = await fsEngine.update();
-          return ok(`knowledge update — ${delta.filesAdded} added, ${delta.filesModified} modified, ${delta.filesDeleted} deleted`);
+        try {
+          if (fsEngine) {
+            const delta = await fsEngine.update({ signal: ctx.signal });
+            return ok(`knowledge update — ${delta.filesAdded} added, ${delta.filesModified} modified, ${delta.filesDeleted} deleted`);
+          }
+          const fresh = new FullStackKnowledgeEngine(root, { indexDir: homePath('index', ctx.projectId, 'fullstack') });
+          const delta = await fresh.update({ signal: ctx.signal });
+          return ok(`knowledge update (fresh) — ${delta.filesAdded} added, ${delta.filesModified} modified, ${delta.filesDeleted} deleted`);
+        } catch (e) {
+          return stoppedBy(e, ctx.signal, 'knowledge update stopped before it finished; the index on disk and the live graph were left as they were');
         }
-        const fresh = new FullStackKnowledgeEngine(root, { indexDir: homePath('index', ctx.projectId, 'fullstack') });
-        const delta = await fresh.update();
-        return ok(`knowledge update (fresh) — ${delta.filesAdded} added, ${delta.filesModified} modified, ${delta.filesDeleted} deleted`);
       },
 
       /**
@@ -195,7 +223,11 @@ export function createAutomationRuntime(host: AutomationHost, emit?: (e: Automat
         return { ...ok(`workflow ${outcome.runState} — run ${outcome.runId}`), produced };
       },
 
+      // Instant and synchronous: there is nothing to interrupt once it starts, so the
+      // only meaningful check is BEFORE the write. After it, the memory item exists
+      // (a Stop cannot un-write it) and the result says so.
       'save-memory': async (ctx, config): Promise<ActionResult> => {
+        if (ctx.signal?.aborted) return { ok: false, error: 'save-memory not started: the run was stopped first; nothing was saved' };
         const kind = String(config.kind ?? 'decision') as Parameters<ProjectMemory['add']>[0]['kind'];
         const title = String(config.title ?? 'Engineering decision');
         const body = String(config.body ?? '');

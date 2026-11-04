@@ -22,7 +22,7 @@ import { ConversationPane } from './ConversationPane';
 
 const SOURCE = readFileSync(new URL('./ConversationPane.tsx', import.meta.url), 'utf8');
 
-const IDLE: AgentActivity = { workers: {}, tools: [], phase: null, awaitingApproval: false };
+const IDLE: AgentActivity = { workers: {}, tools: [], phase: null };
 
 function handoff(over: Partial<Handoff> = {}): Handoff {
   const now = new Date().toISOString();
@@ -42,12 +42,9 @@ function pane(over: Partial<PaneProps> = {}) {
     activity: IDLE,
     busy: false,
     agentUp: true,
-    approvals: {},
-    deciding: false,
     onSend: vi.fn(),
     onStop: vi.fn(),
     onRegenerate: vi.fn(),
-    onDecide: vi.fn(),
     handoffs: [],
     onAcceptHandoff: vi.fn(),
     projectName: 'Retry Bot',
@@ -70,11 +67,11 @@ describe('Execution Chat identity', () => {
     expect(markup).not.toContain('>AURA</h2>');
   });
 
-  it('the empty state points execution at the workspace, and discussion back at Ask AURA', () => {
+  it("the empty state points execution at the workspace, and discussion back at Let's Chat", () => {
     const markup = render();
     expect(markup).toContain('Ready to execute.');
     // Static markup HTML-escapes the apostrophe, so assert the escaped form.
-    expect(markup).toContain('plans and discussions live in the project&#x27;s Ask AURA');
+    expect(markup).toContain('plans and discussions live in the project&#x27;s Let&#x27;s Chat');
   });
 
   it('keeps exactly one composer exit and one stop control in the source', () => {
@@ -94,9 +91,9 @@ describe('handoff inbox', () => {
     const markup = render({ handoffs: [handoff()] });
     expect(count(markup, 'handoff-panel')).toBe(1);
     expect(count(markup, 'handoff-card')).toBe(1);
-    expect(markup).toContain('Task received from Project Ask AURA');
+    expect(markup).toContain('Task received from Let&#x27;s Chat');
     expect(markup).toContain('Build the retry path');
-    expect(markup).toContain('Source: Ask AURA · 2 message(s)');
+    expect(markup).toContain('Source: Let&#x27;s Chat · 2 message(s)');
     expect(count(markup, 'handoff-accept')).toBe(1);
     expect(markup).toContain('Start execution');
   });
@@ -109,7 +106,7 @@ describe('handoff inbox', () => {
       ],
     });
     expect(markup).not.toContain('handoff-panel');
-    expect(markup).not.toContain('Task received from Project Ask AURA');
+    expect(markup).not.toContain('Task received from Let&#x27;s Chat');
   });
 
   it('the empty state yields to a handoff offer even with no messages', () => {

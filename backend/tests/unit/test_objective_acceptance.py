@@ -182,7 +182,10 @@ class TestSynthesisHonesty:
         result = svc._synthesize(session, plan, outcome)
         assert result.outcome == "failed"
         assert result.failureReason == "objective-unaccepted"
-        assert "NOT verified" in result.summary
+        # Worker-level pass and mission-level verdict are stated separately.
+        assert "Worker checks passed: task t1:" in result.summary
+        assert "Mission not verified" in result.summary
+        assert "Objective NOT verified" not in result.summary
         assert result.verified == ["t1"]  # records stay honest
 
     def test_met_objective_completes(self, tmp_path):

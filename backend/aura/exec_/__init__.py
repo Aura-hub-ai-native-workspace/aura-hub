@@ -12,6 +12,9 @@ Security properties preserved exactly:
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Callable
 import os
 import re
 import shutil
@@ -120,7 +123,7 @@ def parse_command(command: str) -> ParsedCommand:
         return ParsedCommand(
             False, "", [],
             f"Installing software is not something this can do. '{installing}' changes what is installed on "
-            + "this machine, which goes through system.install — where it is gated by approval and verified "
+            + "this machine, which goes through system.install — where it is gated by policy and verified "
             + "by a real probe.")
     return ParsedCommand(True, binary, parts[1:], "")
 
@@ -184,6 +187,62 @@ def _signal_tree(proc, which: str) -> None:
         pass
 
 
+#: A per-line observer for a running worker's output, set by the caller in
+#: the same thread that starts the run. Absent, the run is exactly as before.
+_live_sink: "ContextVar[Callable[[str, str], None] | None]" = ContextVar("aura_live_output_sink", default=None)
+
+
+@contextmanager
+def live_output(sink: Callable[[str, str], None] | None):
+    """Stream a worker's stdout/stderr, line by line, to ``sink(stream, line)``."""
+    token = _live_sink.set(sink)
+    try:
+        yield
+    finally:
+        _live_sink.reset(token)
+
+
+def live_emit(stream: str, text: str) -> None:
+    """Hand one piece of text (for example the exact prompt a worker was given) to the live sink, if any."""
+    sink = _live_sink.get()
+    if sink is not None:
+        try:
+            sink(stream, text)
+        except Exception:  # noqa: BLE001 — observation is never allowed to fail a run
+            pass
+
+
+async def _collect_output(proc: asyncio.subprocess.Process,
+                          sink: Callable[[str, str], None] | None) -> tuple[bytes, bytes]:
+    """communicate(), but each complete line is also handed to ``sink`` as it arrives.
+
+    The bytes returned are exactly what communicate() would return, so every
+    caller's settle, timeout and cancel handling is unchanged. A sink that raises
+    is ignored: observing a run must never change its outcome.
+    """
+    if sink is None:
+        return await proc.communicate()
+
+    async def pump(stream: asyncio.StreamReader | None, name: str) -> bytes:
+        if stream is None:
+            return b""
+        buf = bytearray()
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            buf.extend(line)
+            try:
+                sink(name, line.decode(errors="replace").rstrip("\r\n"))
+            except Exception:  # noqa: BLE001 — observation is never allowed to fail a run
+                pass
+        return bytes(buf)
+
+    out, err = await asyncio.gather(pump(proc.stdout, "stdout"), pump(proc.stderr, "stderr"))
+    await proc.wait()
+    return out, err
+
+
 async def run_file(argv: list[str], cwd: str, timeout_ms: int,
                    cancel: asyncio.Event | None = None,
                    env: dict[str, str] | None = None) -> ProcessOutput:
@@ -214,6 +273,12 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
         for key, value in env.items():
             if isinstance(key, str) and isinstance(value, str):
                 merged_env[key] = value
+    # Some runtimes (OpenCode) resolve their working directory from the
+    # PWD environment variable rather than the process cwd, so a subprocess
+    # spawned with cwd=X but an inherited PWD=parent would operate on the
+    # wrong tree. Keep PWD honest with cwd.
+    if isinstance(cwd, str) and cwd:
+        merged_env["PWD"] = cwd
     if win_cmdline is not None:
         import subprocess as _sp
 
@@ -239,7 +304,7 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
             # as a group rather than leaving them running after a timeout.
             **({"start_new_session": True} if os.name != "nt" else {}),
         )
-        waiter = asyncio.ensure_future(proc.communicate())
+        waiter = asyncio.ensure_future(_collect_output(proc, _live_sink.get()))
     cancel_task = asyncio.ensure_future(cancel.wait()) if cancel else None
     tasks = [waiter] + ([cancel_task] if cancel_task else [])
     # return_when is explicit: some interpreters do not default to
@@ -272,7 +337,16 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
                              SIGNAL_EXIT_BASE + 15, True, "SIGTERM", None)
     if not waiter.done():
         _signal_tree(proc, "KILL")
-        out_b, err_b = await waiter
+        # Bounded like the cancel path above. A descendant that started its
+        # own session survives the group KILL and keeps the pipes open; an
+        # unbounded wait here never returned, and a later STOP could not
+        # reach it, because the cancel check is already behind this point.
+        await asyncio.wait([waiter], timeout=5)
+        if waiter.done() and not waiter.cancelled():
+            out_b, err_b = waiter.result()
+        else:
+            out_b, err_b = b"", b""
+            waiter.cancel()
         out = (out_b or b"").decode(errors="replace")
         err = (err_b or b"").decode(errors="replace")
         combined = f"{out}\n{err}" if err else out

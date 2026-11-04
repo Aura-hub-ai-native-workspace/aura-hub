@@ -115,7 +115,7 @@ export interface PatchLimiterStats {
   architectureLayerChanged: boolean;
 }
 
-export type PatchDecision = 'auto-approved' | 'requires-manual-approval' | 'auto-rejected';
+export type PatchDecision = 'auto-approved' | 'requires-manual-review' | 'auto-rejected';
 
 export interface PatchLimiterResult {
   decision: PatchDecision;

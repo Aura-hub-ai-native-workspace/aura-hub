@@ -163,7 +163,6 @@ class EngineeringEventType(str, enum.Enum):
     ARTIFACT_FAILED = "artifact.failed"
     ARTIFACT_STALE = "artifact.stale"
     CAPABILITY_REQUESTED = "capability.requested"
-    CAPABILITY_APPROVED = "capability.approved"
     CAPABILITY_DENIED = "capability.denied"
     CAPABILITY_EXECUTED = "capability.executed"
     TOOL_DETECTED = "tool.detected"
@@ -372,9 +371,7 @@ class ArtifactProvenance:
     tool: str = ""  # which external tool was used (e.g., "cadquery", "kicad")
     invocation_id: str = ""  # Fabric invocation ID
     audit_id: str = ""  # AuditStore record ID
-    policy_decision: str = ""  # auto-execute, ask-user, require-approval
-    approval_required: bool = False
-    approval_granted: bool = False
+    policy_decision: str = ""  # auto-execute, deny
     input_artifacts: list[str] = field(default_factory=list)  # dependency artifact IDs
     parameters: dict[str, Any] = field(default_factory=dict)
     constraints: dict[str, Any] = field(default_factory=dict)
@@ -390,8 +387,6 @@ class ArtifactProvenance:
             "invocationId": self.invocation_id,
             "auditId": self.audit_id,
             "policyDecision": self.policy_decision,
-            "approvalRequired": self.approval_required,
-            "approvalGranted": self.approval_granted,
             "inputArtifacts": self.input_artifacts,
             "parameters": self.parameters,
             "constraints": self.constraints,
@@ -411,8 +406,6 @@ class ArtifactProvenance:
             invocation_id=d.get("invocationId", ""),
             audit_id=d.get("auditId", ""),
             policy_decision=d.get("policyDecision", ""),
-            approval_required=d.get("approvalRequired", False),
-            approval_granted=d.get("approvalGranted", False),
             input_artifacts=d.get("inputArtifacts", []),
             parameters=d.get("parameters", {}),
             constraints=d.get("constraints", {}),
@@ -564,7 +557,6 @@ class EngineeringCapability:
     description: str
     domain: EngineeringDomain
     risk: CapabilityRisk
-    approval_required: bool
     executor: str  # which executor handles this
     provider: str = ""  # which tool provides this
     input_schema: dict[str, Any] = field(default_factory=dict)
@@ -582,7 +574,6 @@ class EngineeringCapability:
             "description": self.description,
             "domain": self.domain.value,
             "risk": self.risk.value,
-            "approvalRequired": self.approval_required,
             "executor": self.executor,
             "provider": self.provider,
             "inputSchema": self.input_schema,
@@ -602,7 +593,6 @@ class EngineeringCapability:
             description=d.get("description", ""),
             domain=EngineeringDomain(d.get("domain", "mechanical")),
             risk=CapabilityRisk(d.get("risk", "low")),
-            approval_required=d.get("approvalRequired", False),
             executor=d.get("executor", ""),
             provider=d.get("provider", ""),
             input_schema=d.get("inputSchema", {}),

@@ -15,7 +15,7 @@ export function AuroraBackground() {
   const reduce = useReducedMotion();
 
   return (
-    <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-[#07080c]">
+    <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-[#080808]">
       {/* Hairline grid — barely-there structure, reads as "environment" not "poster". */}
       <div
         className="absolute inset-0 opacity-[0.05]"
@@ -29,7 +29,7 @@ export function AuroraBackground() {
       {/* Bloom 1 — AURA blue, upper-left. */}
       <motion.div
         className="absolute -left-[10%] -top-[15%] h-[62vw] w-[62vw] max-w-[820px] rounded-full blur-[110px]"
-        style={{ background: 'radial-gradient(circle, rgba(60,110,255,0.34) 0%, rgba(60,110,255,0) 70%)' }}
+        style={{ background: 'radial-gradient(circle, rgba(111, 111, 111,0.34) 0%, rgba(111, 111, 111,0) 70%)' }}
         initial={{ opacity: 0.7, scale: 1 }}
         animate={
           reduce
@@ -42,7 +42,7 @@ export function AuroraBackground() {
       {/* Bloom 2 — cyan, right side. */}
       <motion.div
         className="absolute -right-[12%] top-[8%] h-[54vw] w-[54vw] max-w-[720px] rounded-full blur-[110px]"
-        style={{ background: 'radial-gradient(circle, rgba(1,192,247,0.26) 0%, rgba(1,192,247,0) 70%)' }}
+        style={{ background: 'radial-gradient(circle, rgba(141, 141, 141,0.26) 0%, rgba(141, 141, 141,0) 70%)' }}
         initial={{ opacity: 0.6, scale: 1 }}
         animate={
           reduce
@@ -55,7 +55,7 @@ export function AuroraBackground() {
       {/* Bloom 3 — violet, lower-center. Adds the "aurora" multi-hue sweep. */}
       <motion.div
         className="absolute bottom-[-20%] left-[26%] h-[58vw] w-[58vw] max-w-[760px] rounded-full blur-[120px]"
-        style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.22) 0%, rgba(139,92,246,0) 70%)' }}
+        style={{ background: 'radial-gradient(circle, rgba(123, 123, 123,0.22) 0%, rgba(123, 123, 123,0) 70%)' }}
         initial={{ opacity: 0.5, scale: 1 }}
         animate={
           reduce
@@ -68,7 +68,7 @@ export function AuroraBackground() {
       {/* Vignette — keeps content readable against the blooms. */}
       <div
         className="absolute inset-0"
-        style={{ background: 'radial-gradient(120% 100% at 50% 40%, transparent 40%, rgba(4,5,8,0.55) 100%)' }}
+        style={{ background: 'radial-gradient(120% 100% at 50% 40%, transparent 40%, rgba(5, 5, 5,0.55) 100%)' }}
       />
       <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-transparent to-black/40" />
     </div>

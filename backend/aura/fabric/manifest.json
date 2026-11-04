@@ -510,6 +510,35 @@
       "irreversible": false
     },
     {
+      "id": "tool.provision",
+      "name": "Provision a development tool",
+      "category": "system",
+      "surface": "local-process",
+      "description": "Installs an approved development tool that a task needs and this machine lacks — and ONLY that. The caller names a catalogue NODE, never a command. The node must be on the provisioning allowlist, its install must need no administrator rights, and the installer must be one AURA allows (no shell, argv only). Anything else is refused and the person is given the exact command instead. The result is verified by re-probing the machine, not by the installer's exit code.",
+      "risk": "medium",
+      "permissions": [
+        "process.execute",
+        "network.outbound"
+      ],
+      "input": [
+        {
+          "name": "nodeId",
+          "type": "string",
+          "required": true,
+          "description": "Catalogue id of the tool to provision, e.g. \"pnpm\""
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "required": false,
+          "description": "Why the task needs it (recorded; never executed)"
+        }
+      ],
+      "output": "ProvisionResult — installOutcome, privilege, command, probe",
+      "verify": "read-back",
+      "irreversible": false
+    },
+    {
       "id": "system.uninstall",
       "name": "Remove a tool",
       "category": "system",

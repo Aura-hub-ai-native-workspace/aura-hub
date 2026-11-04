@@ -30,6 +30,18 @@ export interface ProjectRecord {
   favorite: boolean;
   createdAt: string;
   lastOpenedAt: string | null;
+  /**
+   * How the project came to exist: `created` by AURA (a new project), or
+   * `added` (an existing folder registered). Absent on projects registered
+   * before this field existed — treated as `added`.
+   */
+  origin?: 'created' | 'added';
+  /**
+   * Whether the opening animation has been shown for this project. Absent
+   * on projects opened before this field existed: those are never replayed
+   * (see consumeIntro).
+   */
+  introShown?: boolean;
 }
 
 const COLORS = ['#3b6bff', '#1fb567', '#f5a524', '#7c5cff', '#e5484d', '#0ea5e9'];
@@ -112,7 +124,7 @@ export class ProjectRegistry {
    * Add a real, existing folder as a project. Rejects paths that do not
    * exist or are not directories — never fabricates a project.
    */
-  add(input: { name?: string; path: string; type?: string; language?: string; icon?: string }): ProjectRecord {
+  add(input: { name?: string; path: string; type?: string; language?: string; icon?: string; origin?: 'created' | 'added' }): ProjectRecord {
     const abs = path.resolve(input.path);
     const stat = fs.existsSync(abs) ? fs.statSync(abs) : null;
     if (!stat || !stat.isDirectory()) {
@@ -133,6 +145,7 @@ export class ProjectRegistry {
       favorite: false,
       createdAt: new Date().toISOString(),
       lastOpenedAt: null,
+      origin: input.origin ?? 'added',
     };
     this.items.push(record);
     this.save();
@@ -150,6 +163,27 @@ export class ProjectRegistry {
     if (patch.color !== undefined) p.color = patch.color;
     this.save();
     return p;
+  }
+
+  /**
+   * The first-open decision for the opening animation, consumed once.
+   * `firstOpen` is true exactly once per project: the first time it is
+   * opened after being created or added. A project that was already opened
+   * before this field existed is never replayed. `kind` says which message
+   * applies: `new` (created by AURA) or `existing` (a folder that was added).
+   */
+  consumeIntro(id: string): { firstOpen: boolean; kind: 'new' | 'existing' } {
+    const p = this.get(id);
+    const kind = p?.origin === 'created' ? 'new' : 'existing';
+    if (!p || p.introShown === true) return { firstOpen: false, kind };
+    if (p.introShown === undefined && p.lastOpenedAt !== null) {
+      p.introShown = true; // opened before this existed: do not replay
+      this.save();
+      return { firstOpen: false, kind };
+    }
+    p.introShown = true;
+    this.save();
+    return { firstOpen: true, kind };
   }
 
   touch(id: string): ProjectRecord | undefined {

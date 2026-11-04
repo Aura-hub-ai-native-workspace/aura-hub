@@ -426,7 +426,7 @@ export function NodeGraphCanvas({
     <div
       ref={containerRef}
       className="relative touch-none select-none overflow-hidden rounded-2xl border border-line"
-      style={{ height, background: '#0a0c11' }}
+      style={{ height, background: '#0c0c0c' }}
       onWheel={onWheel}
       onPointerDown={onDown}
       onPointerMove={onMove}
@@ -465,7 +465,7 @@ export function NodeGraphCanvas({
           const active = focus === e.from || focus === e.to;
           const dx = Math.max(40, Math.abs(sb.x - sa.x) * 0.55);
           const d = `M ${sa.x} ${sa.y} C ${sa.x + dx} ${sa.y}, ${sb.x - dx} ${sb.y}, ${sb.x} ${sb.y}`;
-          const color = groupColors[an.group] ?? '#8892a6';
+          const color = groupColors[an.group] ?? '#919191';
           return (
             <path
               key={i}
@@ -497,7 +497,7 @@ export function NodeGraphCanvas({
         const isFocus = focus === node.id;
         const isNeighbor = neighbors.has(node.id);
         const dim = focus && !isFocus && !isNeighbor;
-        const color = groupColors[node.group] ?? '#8892a6';
+        const color = groupColors[node.group] ?? '#919191';
         return (
           <motion.div
             key={node.id}
@@ -517,7 +517,7 @@ export function NodeGraphCanvas({
               // No CSS position transition: the continuous simulation
               // itself supplies smooth per-frame motion, so a left/top
               // transition here would just fight the live position feed.
-              background: '#1c1f26',
+              background: '#1f1f1f',
               borderColor: isFocus ? color : 'rgba(255,255,255,0.08)',
               borderWidth: isFocus ? 1.5 : 1,
             }}
@@ -529,7 +529,7 @@ export function NodeGraphCanvas({
             {/* corner tag */}
             <span className="absolute right-0 top-0 h-2.5 w-2.5 rounded-bl" style={{ background: color }} />
             {/* title bar */}
-            <div className="flex items-center gap-1.5 border-b border-white/10 px-2.5 py-1.5" style={{ background: '#22262f', height: HEADER_H }}>
+            <div className="flex items-center gap-1.5 border-b border-white/10 px-2.5 py-1.5" style={{ background: '#262626', height: HEADER_H }}>
               <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
               <span className="truncate font-medium text-white/90">{node.title}</span>
             </div>
@@ -583,7 +583,7 @@ export function NodeGraphCanvas({
                   className={`inline-flex items-center gap-1.5 text-[10.5px] capitalize transition-colors ${isHidden ? 'text-white/25 line-through' : 'text-white/50 hover:text-white/80'}`}
                   title={isHidden ? `Show ${g}` : `Hide ${g}`}
                 >
-                  <span className="h-2 w-2 rounded-full" style={{ background: groupColors[g] ?? '#8892a6', opacity: isHidden ? 0.35 : 1 }} />
+                  <span className="h-2 w-2 rounded-full" style={{ background: groupColors[g] ?? '#919191', opacity: isHidden ? 0.35 : 1 }} />
                   {g}
                 </button>
               );

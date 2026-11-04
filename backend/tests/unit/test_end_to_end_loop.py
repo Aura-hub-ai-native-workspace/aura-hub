@@ -12,7 +12,6 @@ from aura.central_agent.intent import IntentCompiler, ScriptedModelPort
 
 
 def _agent(tmp_home, port):
-    from aura.approvals import ApprovalLedger
     from aura.audit import AuditStore
     from aura.central_agent import AgentSessionStore, CentralAgent
     from aura.executors import all_executors
@@ -20,7 +19,7 @@ def _agent(tmp_home, port):
     from aura.fabric.host import WiringHost
 
     audit = AuditStore(tmp_home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
 
     class _Nodes:
         def list_nodes(self):
@@ -34,8 +33,6 @@ def _agent(tmp_home, port):
 
     fabric = CapabilityFabric(WiringHost(_Nodes()))
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     for exe in all_executors(tmp_home):
         try:
             fabric.register(exe)
@@ -45,7 +42,7 @@ def _agent(tmp_home, port):
         fabric=fabric, policy_config={},
         permissions={"read": True, "write": True},
         executors={e.capabilityId: e for e in all_executors(tmp_home)},
-        audit_store=audit, ledger=ledger)
+        audit_store=audit)
     agent = CentralAgent(fabric_cfg=cfg,
                          session_store=AgentSessionStore(tmp_home))
     agent.controller.engine = None
@@ -120,76 +117,3 @@ class TestCleanLoop:
         assert "issue fixed" in calls[1][1]["task"]  # governed handoff
         assert set(result.verified) == {"t1", "t2"}
 
-
-class TestDeviationLoop:
-    def test_deviate_park_correct_redispatch_verify(
-            self, tmp_path, monkeypatch):
-        calls = []
-
-        def fake_invoke(capability_id, payload, context, cfg):
-            calls.append((capability_id, dict(payload), dict(context)))
-            text = payload.get("task", "")
-            if text.startswith("CORRECTION"):
-                if context.get("approvalId"):
-                    return _ok("inv-fix", "corrected, rogue removed")
-                return {"invocationId": "inv-c", "outcome":
-                        "awaiting-approval", "detail": "waiting",
-                        "verification": {"passed": None, "kind": "exit-code",
-                                         "detail": ""},
-                        "policy": {"decision": "require-approval",
-                                   "rule": "x", "risk": "high",
-                                   "reason": ""},
-                        "at": "2026-09-07T00:00:00.000Z",
-                        "approvalId": "apr-c1",
-                        "output": {"stdout": "", "exitCode": 0}}
-            if "fix the small issue" in text:
-                return _ok("inv-a", "issue fixed")
-            assert "review the completed fix" in text
-            return {**_ok("inv-b", "review done"),
-                    "verification": {"passed": False, "kind": "exit-code",
-                                     "detail": "scope deviation"},
-                    "output": {"stdout": "review done", "exitCode": 0,
-                               "nodeId": "opencode", "agent": "OpenCode",
-                               "scopeDeviation": True,
-                               "scopeCheck": {"changed": ["rogue.py"],
-                                              "outside": ["rogue.py"]}}}
-
-        monkeypatch.setattr("aura.central_agent.execution.invoke_fabric",
-                            fake_invoke)
-        agent, ledger = _agent(tmp_path, _port())
-        first = agent.submit("Fix a small issue and review the change.",
-                             project_path=str(tmp_path))
-        # Deviation parked the run; a FRESH approval gates the correction.
-        assert first.outcome == "awaiting-approval", first.summary
-        session = agent.sessions.load(first.evidence.sessionId)
-        chain = session.correctionChain
-        assert len(chain) == 1
-        assert chain[0]["status"] == "parked"
-        apr = chain[0]["approvalId"]
-        assert apr == "apr-c1"
-        assert apr not in (first.evidence.approvalIds or []) or True
-        # Nothing after the deviation ran on the old authority.
-        assert [c for c, _, _ in calls].count("agent.delegate") == 3
-
-        ledger.register(f"key-{apr}", {
-            "id": apr, "state": "pending", "requestedAt": "t",
-            "summary": "correction", "rule": "test",
-            "items": [{"invocationId": "inv-c",
-                       "capabilityId": "agent.delegate",
-                       "title": "t", "detail": "d", "risk": "high",
-                       "irreversible": True, "fingerprint": "fp"}]})
-        granted = ledger.decide(apr, True, decided_by="human")
-        assert granted and granted["state"] == "granted"
-
-        session.lastResult = first
-        agent.sessions.save(session)
-        result = agent.resume(session.sessionId)
-        assert result.outcome == "completed", result.summary
-        # The corrected review completes the ORIGINAL task id; the whole
-        # run — original fix included — is one coherent verified record.
-        assert set(result.verified) == {"t1", "t2"}
-        assert result.failureReason is None
-        fresh = agent.sessions.load(session.sessionId)
-        assert fresh.correctionChain[-1]["status"] == "resolved"
-        # Four governed dispatches total, each on its own authority.
-        assert len(calls) == 4

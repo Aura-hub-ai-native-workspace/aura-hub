@@ -19,10 +19,9 @@ export function Overview({ projectId }: { projectId: string }) {
 
   const surfaces = Object.entries(profile.has).filter(([, v]) => v).map(([k]) => k);
   const jump: { label: string; icon: IconName; tab: ProjectTab; show: boolean }[] = [
+    { label: 'Context', icon: 'spark', tab: 'context', show: true },
     { label: 'Architecture', icon: 'architecture', tab: 'architecture', show: (graph?.entities.length ?? 0) > 0 },
-    { label: 'Knowledge', icon: 'knowledge', tab: 'knowledge', show: true },
-    { label: 'Memory', icon: 'memory', tab: 'memory', show: true },
-    { label: 'Docs', icon: 'doc', tab: 'documentation', show: profile.architectureDocs.length > 0 },
+    { label: 'Code', icon: 'code', tab: 'code', show: true },
   ];
 
   return (

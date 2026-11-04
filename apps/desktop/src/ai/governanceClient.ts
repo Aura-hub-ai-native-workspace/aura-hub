@@ -1,3 +1,4 @@
+import { backendFetch } from '../backend/backendSession';
 /**
  * governanceClient — fetch wrappers for the Engineering Governance
  * Platform, matching `missionClient.ts`'s style. The governance engines
@@ -18,22 +19,22 @@ const BASE = aiClient.base;
 
 export const governanceClient = {
   scorecard: (projectPath: string): Promise<EngineeringScorecard> =>
-    fetch(`${BASE}/governance/scorecard`, {
+    backendFetch(`${BASE}/governance/scorecard`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectPath }),
     }).then((r) => r.json()),
 
   audit: (projectPath: string, scope?: string): Promise<EngineeringAuditReport> =>
-    fetch(`${BASE}/governance/audit`, {
+    backendFetch(`${BASE}/governance/audit`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectPath, scope }),
     }).then((r) => r.json()),
 
   insights: (projectPath: string): Promise<ProjectInsightsReport> =>
-    fetch(`${BASE}/governance/insights`, {
+    backendFetch(`${BASE}/governance/insights`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectPath }),
     }).then((r) => r.json()),
 
   council: (projectPath: string): Promise<ArchitectureCouncilReport> =>
-    fetch(`${BASE}/governance/council`, {
+    backendFetch(`${BASE}/governance/council`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectPath }),
     }).then((r) => r.json()),
 };

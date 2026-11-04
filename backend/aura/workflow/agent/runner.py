@@ -2,8 +2,8 @@
 
 Scripted-model injection replaces pipeline.generate for deterministic
 verification; every tool call routes Governor→Fabric. Bounds clamp,
-tool narrowing, beat ledger, honest stop reasons, approval parking and
-resume-carry semantics mirror the TypeScript oracle.
+tool narrowing, beat ledger, honest stop reasons and policy refusal
+mirror the TypeScript oracle.
 """
 from __future__ import annotations
 
@@ -43,7 +43,6 @@ def _json(v) -> str:
 
 
 MSGS = {
-    "awaiting-approval": "waiting on you",
     "denied": "policy refused a tool call",
     "max-iterations": "the agent reached its iteration bound",
     "token-budget": "the agent reached its token budget",
@@ -53,7 +52,7 @@ MSGS = {
 }
 
 PORT_FOR_STOP = {
-    "completed": "done", "awaiting-approval": "needs-human", "denied": "needs-human",
+    "completed": "done", "denied": "needs-human",
     "max-iterations": "failed", "timeout": "failed", "token-budget": "failed",
     "consecutive-failures": "failed", "cancelled": "failed", "failed": "failed",
 }
@@ -109,8 +108,9 @@ class AgentRunner:
         cfg = {**(node.get("config") or {}), "tools": (node.get("config") or {}).get("tools") or []}
         bounds = resolve_bounds(cfg)
         t0 = time.time()
-        prior = ((opts.get("resumeFrom") or {}).get("resume") or {})
-        deadline = t0 + max(1000, bounds["timeoutMs"] - prior.get("elapsedMs", 0))
+        # A run starts fresh every time: nothing is carried in from an earlier leg.
+        prior: dict = {}
+        deadline = t0 + bounds["timeoutMs"]
 
         resolved = resolve_tools(bounds["tools"],
                                  self.envelope.get("capabilities") or [],
@@ -150,7 +150,6 @@ class AgentRunner:
         consecutive_failures = 0
         output_text = ""
         stop_reason = None
-        parked = None
         state = {"iteration": iteration}
         steps_state = {"count": 0}
 
@@ -178,17 +177,14 @@ class AgentRunner:
                 "partial": False,
             }
             trace.update(extra)
-            out = {"trace": trace, "parked": reason == "awaiting-approval",
+            out = {"trace": trace,
                    "stopReason": reason, "text": trace["output"],
                    "summary": message, "evidence": evidence,
                    "inputProvenance": "external",
                    "taskWasQuarantined": False}
-            if reason != "awaiting-approval":
-                out["port"] = PORT_FOR_STOP[reason]
+            out["port"] = PORT_FOR_STOP[reason]
             if extra.get("error") is not None:
                 out["error"] = extra["error"]
-            if extra.get("approval") is not None:
-                out["approval"] = extra["approval"]
             return out
 
         beat("intent", "system", task)
@@ -278,8 +274,6 @@ class AgentRunner:
                   "decisionRule": result["policy"]["rule"], "risk": result["policy"]["risk"],
                   "verified": result["verification"]["passed"], "at": result["endedAt"],
                   "durationMs": result["durationMs"]}
-            if result.get("approvalId"):
-                ev["approvalId"] = result["approvalId"]
             if performed_by:
                 ev["nodeId"] = performed_by
             evidence.append(ev)
@@ -287,29 +281,6 @@ class AgentRunner:
                  f'{result["policy"]["decision"]} — {result["policy"]["reason"]}',
                  rule=result["policy"]["rule"], decision=result["policy"]["decision"],
                  capabilityId=capability_id)
-
-            # Park BEFORE execution/observation beats (oracle order).
-            if result["outcome"] == "awaiting-approval":
-                approval = {"requestId": result.get("approvalId"),
-                            "capabilityId": capability_id,
-                            "requestedAt": result.get("startedAt"),
-                            "summary": f"the agent needs {capability_id}"}
-                stop_reason = "awaiting-approval"
-                parked = approval
-                beat("intervention", "human",
-                     f"Waiting on your authorization for {capability_id}.",
-                     capabilityId=capability_id, evidence=ev)
-                output_text = f"Paused: {capability_id} needs your go-ahead before the agent can continue."
-                # resume payload rides the trace (AgentTrace.resume)
-                self._last_resume = {
-                    "transcript": transcript[-40:],
-                    "pendingCall": {"capabilityId": capability_id,
-                                    "input": call_input},
-                    "iteration": iteration,
-                    "tokensUsed": tokens_used,
-                    "elapsedMs": int((time.time() - t0) * 1000),
-                }
-                break
 
             beat("execution", "fabric", result.get("detail") or "",
                  capabilityId=capability_id, evidence=ev)
@@ -334,14 +305,8 @@ class AgentRunner:
             stop_reason = "max-iterations" if iteration >= bounds["maxIterations"] else "failed"
         if stop_reason != "completed":
             beat("result", "ai", self.redact(output_text))
-        approval_extra = {"approval": parked} if parked else {}
-        resume_extra = {}
-        if parked:
-            resume_extra = {"resume": getattr(self, "_last_resume", None)}
         return finish(stop_reason,
                       MSGS.get(stop_reason, stop_reason),
-                      approval=approval_extra.get("approval") if isinstance(approval_extra, dict) else None,
-                      resume=None,
                       error=None)
 
 def asyncio_run(coro):

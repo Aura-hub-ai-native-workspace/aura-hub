@@ -169,3 +169,15 @@ describe('WorkspaceConversations (scope=workspace, kind=execution)', () => {
     expect(ws.list().map((c) => c.id)).toEqual([b.id]);
   });
 });
+
+describe('a failed turn survives a restart with its reason', () => {
+  it('keeps meta.errorReason through the file on disk and a fresh store instance', () => {
+    const first = new ProjectConversations('p-fail');
+    const c = first.create('Run');
+    first.append(c.id, { role: 'assistant', content: '', error: true, meta: { errorReason: 'model plan rejected: task t1 scopePaths must be a non-empty list' } });
+    const reloaded = new ProjectConversations('p-fail').get(c.id)!;     // "restart": a new store reads the file
+    const m = reloaded.messages[reloaded.messages.length - 1];
+    expect(m.error).toBe(true);
+    expect((m.meta as { errorReason: string }).errorReason).toBe('model plan rejected: task t1 scopePaths must be a non-empty list');
+  });
+});

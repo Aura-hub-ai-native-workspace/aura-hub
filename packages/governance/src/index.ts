@@ -131,3 +131,7 @@ export {
 
 // Core shared types
 export type { Evidence, Finding, ReportMeta, Score, ScorePart, Severity } from './core/types';
+
+// Cooperative cancellation shared by the long-running reports
+export { OperationCancelled, throwIfAborted, isCancellation } from './core/abort';
+export { npmAuditCommand } from './security/security_review';

@@ -1,0 +1,203 @@
+gate:     desktop-build-7
+command:  npm run desktop:build
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-29T22:23:52+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 4.02
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 107
+----- output -----
+
+> aura-hub@0.1.20 desktop:build
+> NO_STRIP=true npm run tauri --workspace @aura/desktop -- build
+
+
+> @aura/desktop@0.1.20 tauri
+> tauri build
+
+        Info Looking up installed tauri packages to check mismatched versions...
+     Running beforeBuildCommand `npm run desktop:prepare:build`
+
+> @aura/desktop@0.1.20 desktop:prepare:build
+> npm run service:bundle && npm run build
+
+
+> @aura/desktop@0.1.20 service:bundle
+> node ../../scripts/build-service-bundle.mjs
+
+
+  src-tauri/resources/ai-service.mjs  1.2mb ⚠️
+
+⚡ Done in 116ms
+  ai-service.mjs        1.2 MB
+  node runtime          119.1 MB (Node v22.23.2, linux-x64)
+  typescript/lib        8.7 MB
+  python backend        2.5 MB (217 files)
+  python runtime        44.1 MB (CPython 3.12.14, linux-x64; trimmed from 101.3 MB)
+  python deps           74.9 MB (pydantic_core for cp312, cp313, cp314)
+  document libraries    pypdf>=4, python-docx>=1.1, pillow>=10, python-docx>=1.1, openpyxl>=3.1, reportlab>=4.2
+  staged into           /mnt/storage/aura-hub/apps/desktop/src-tauri/resources
+
+> @aura/desktop@0.1.20 build
+> tsc -b && vite build
+
+vite v5.4.21 building for production...
+transforming...
+✓ 1708 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                       0.89 kB │ gzip:   0.50 kB
+dist/assets/aura-logo-DWRx5l8b.png                   37.34 kB
+dist/assets/codicon-DCmgc-ay.ttf                     80.34 kB
+dist/assets/editor.worker-kp3fYkIC.js               220.37 kB
+dist/assets/json.worker-CTB9H7_2.js                 352.02 kB
+dist/assets/html.worker-CuHyOg-s.js                 657.93 kB
+dist/assets/css.worker-CXQxMfTz.js                  999.12 kB
+dist/assets/ts.worker-RnAtQTRI.js                 6,003.64 kB
+dist/assets/index-3WwB489n.css                       67.07 kB │ gzip:  12.94 kB
+dist/assets/EditorWorkspace-DI0XgjDu.css            127.45 kB │ gzip:  20.55 kB
+dist/assets/MissionsPanel-CAcYWIeV.js                 0.28 kB │ gzip:   0.23 kB
+dist/assets/MissionDetailPanel-D9qdF_Pq.js            0.28 kB │ gzip:   0.23 kB
+dist/assets/ArchitecturePanel-z-Zu6vX0.js             0.38 kB │ gzip:   0.27 kB
+dist/assets/transports-DK7rzz8m.js                    0.44 kB │ gzip:   0.31 kB
+dist/assets/ErrorState-kvXufACi.js                    0.70 kB │ gzip:   0.39 kB
+dist/assets/azcli-BypH-vXm.js                         1.09 kB │ gzip:   0.46 kB
+dist/assets/javascript-BknAqm-9.js                    1.29 kB │ gzip:   0.68 kB
+dist/assets/ini-BTpWsGps.js                           1.35 kB │ gzip:   0.68 kB
+dist/assets/csp-DrRCxMg5.js                           1.67 kB │ gzip:   0.67 kB
+dist/assets/DocsPanel-lCSxyC-U.js                     1.80 kB │ gzip:   0.88 kB
+dist/assets/pla-2oJWbEOo.js                           1.93 kB │ gzip:   0.79 kB
+dist/assets/FilesPanel-BXzHw2It.js                    2.01 kB │ gzip:   1.06 kB
+dist/assets/scheme-yf5bffbF.js                        2.01 kB │ gzip:   0.96 kB
+dist/assets/ArtifactsPanel-Dk_SF6m2.js                2.05 kB │ gzip:   0.88 kB
+dist/assets/flow9-DLs3tTet.js                         2.06 kB │ gzip:   1.00 kB
+dist/assets/sb-DVG02705.js                            2.08 kB │ gzip:   0.97 kB
+dist/assets/bat-BY6pwuIY.js                           2.09 kB │ gzip:   1.01 kB
+dist/assets/dockerfile-D2PfwrvU.js                    2.12 kB │ gzip:   0.82 kB
+dist/assets/tauriAdapter-CnT1WY-I.js                  2.18 kB │ gzip:   1.02 kB
+dist/assets/pascaligo-BGLI1Hdo.js                     2.25 kB │ gzip:   1.05 kB
+dist/assets/DiagnosticsPanel-waPT4QHg.js              2.26 kB │ gzip:   1.14 kB
+dist/assets/lua-D2Z7JJdl.js                           2.37 kB │ gzip:   1.07 kB
+dist/assets/cameligo-ul-Lp4lw.js                      2.43 kB │ gzip:   1.11 kB
+dist/assets/core-DhEqZVGG.js                          2.44 kB │ gzip:   0.98 kB
+dist/assets/graphql-BygKL3ZF.js                       2.51 kB │ gzip:   1.17 kB
+dist/assets/objective-c-CrrKwR0a.js                   2.65 kB │ gzip:   1.20 kB
+dist/assets/lexon-m09vb5r-.js                         2.68 kB │ gzip:   1.07 kB
+dist/assets/xml-BWy-c9Te.js                           2.78 kB │ gzip:   1.17 kB
+dist/assets/bicep-gRuQeaLk.js                         2.78 kB │ gzip:   1.11 kB
+dist/assets/sparql-B7alP455.js                        2.80 kB │ gzip:   1.31 kB
+dist/assets/mips-Ckkbw-AO.js                          2.83 kB │ gzip:   1.22 kB
+dist/assets/go-CyVeKkvQ.js                            2.90 kB │ gzip:   1.29 kB
+dist/assets/sophia-B4VqtPa2.js                        3.01 kB │ gzip:   1.35 kB
+dist/assets/typespec-BupSXVCO.js                      3.04 kB │ gzip:   1.24 kB
+dist/assets/m3-B2Cf9XSq.js                            3.06 kB │ gzip:   1.47 kB
+dist/assets/qsharp-BLuZWbUW.js                        3.18 kB │ gzip:   1.51 kB
+dist/assets/fsharp-D0UiDa5C.js                        3.23 kB │ gzip:   1.46 kB
+dist/assets/pascal-BWBTHuhh.js                        3.24 kB │ gzip:   1.55 kB
+dist/assets/shell-FNqbgIOG.js                         3.32 kB │ gzip:   1.35 kB
+dist/assets/r-CzF1MCbP.js                             3.38 kB │ gzip:   1.42 kB
+dist/assets/java-3TATJI7h.js                          3.47 kB │ gzip:   1.55 kB
+dist/assets/powershell-B_i9asfM.js                    3.52 kB │ gzip:   1.53 kB
+dist/assets/cypher-DoFvH58O.js                        3.63 kB │ gzip:   1.58 kB
+dist/assets/DocumentsPanel-CgrhdKIz.js                3.64 kB │ gzip:   1.48 kB
+dist/assets/kotlin-DVYH6Lj_.js                        3.69 kB │ gzip:   1.63 kB
+dist/assets/environmentClient-CGuq6Do0.js             3.71 kB │ gzip:   1.03 kB
+dist/assets/redis-C75U4IDy.js                         3.80 kB │ gzip:   1.64 kB
+dist/assets/tcl-CXKOl_mN.js                           3.82 kB │ gzip:   1.52 kB
+dist/assets/coffee-CfnpWUYo.js                        3.84 kB │ gzip:   1.45 kB
+dist/assets/hcl-D_OY6ada.js                           3.84 kB │ gzip:   1.64 kB
+dist/assets/SovereignMonitorPanel-Blrbasmi.js         3.85 kB │ gzip:   1.21 kB
+dist/assets/markdown-BXYnMxBe.js                      4.03 kB │ gzip:   1.54 kB
+dist/assets/restructuredtext-DmdQbaLT.js              4.14 kB │ gzip:   1.52 kB
+dist/assets/less-CuFlys0T.js                          4.14 kB │ gzip:   1.57 kB
+dist/assets/apex-BuapDI9Y.js                          4.20 kB │ gzip:   1.91 kB
+dist/assets/liquid-Bycr5mpg.js                        4.32 kB │ gzip:   1.87 kB
+dist/assets/yaml-B-d5-A54.js                          4.38 kB │ gzip:   1.73 kB
+dist/assets/rust-UMmp-gVE.js                          4.41 kB │ gzip:   1.97 kB
+dist/assets/dart-DIovg4uR.js                          4.50 kB │ gzip:   1.80 kB
+dist/assets/python-BJFE7ZFG.js                        4.56 kB │ gzip:   1.89 kB
+dist/assets/css-BfLuTCmN.js                           4.76 kB │ gzip:   1.53 kB
+dist/assets/csharp-DWGz5Zuj.js                        4.77 kB │ gzip:   1.87 kB
+dist/assets/pug-CCBS_C5_.js                           5.07 kB │ gzip:   1.80 kB
+dist/assets/msdax-B5uW3Zvf.js                         5.16 kB │ gzip:   2.11 kB
+dist/assets/mdx-C01OV5th.js                           5.22 kB │ gzip:   1.65 kB
+dist/assets/html-D6rUBg8X.js                          5.38 kB │ gzip:   1.61 kB
+dist/assets/swift-BYtUz8ZP.js                         5.42 kB │ gzip:   2.22 kB
+dist/assets/cpp-C9L3yaDO.js                           5.55 kB │ gzip:   2.24 kB
+dist/assets/ecl-C_scCXcs.js                           5.59 kB │ gzip:   2.38 kB
+dist/assets/typescript-ByQN62wV.js                    5.77 kB │ gzip:   2.38 kB
+dist/assets/vb-ZlaFEk-P.js                            6.04 kB │ gzip:   2.21 kB
+dist/assets/GovernancePanel-BNcokpKV.js               6.07 kB │ gzip:   1.78 kB
+dist/assets/twig-D9yiNO04.js                          6.22 kB │ gzip:   1.68 kB
+dist/assets/scss-Bzb7OGdO.js                          6.66 kB │ gzip:   1.90 kB
+dist/assets/handlebars-CyYUzGfn.js                    7.14 kB │ gzip:   1.82 kB
+dist/assets/julia-DDpSJMW6.js                         7.34 kB │ gzip:   2.81 kB
+dist/assets/scala-DvSxYeG4.js                         7.56 kB │ gzip:   2.25 kB
+dist/assets/wgsl-DrbANKle.js                          7.58 kB │ gzip:   2.89 kB
+dist/assets/st-VuadG5SK.js                            7.64 kB │ gzip:   2.39 kB
+dist/assets/systemverilog-DOAuugfS.js                 7.85 kB │ gzip:   2.91 kB
+dist/assets/postiats-DOk3G3cc.js                      8.10 kB │ gzip:   2.59 kB
+dist/assets/php-CTNlIIiR.js                           8.27 kB │ gzip:   2.22 kB
+dist/assets/perl-DDrv2Hr-.js                          8.50 kB │ gzip:   3.29 kB
+dist/assets/useAiAction-DrqRWrNv.js                   8.53 kB │ gzip:   3.55 kB
+dist/assets/ConnectedToolsTab-C0zMIIGx.js             8.58 kB │ gzip:   3.19 kB
+dist/assets/AgentPanel-tclafLsJ.js                    8.60 kB │ gzip:   2.66 kB
+dist/assets/ruby-DB0RB20n.js                          8.75 kB │ gzip:   2.73 kB
+dist/assets/razor-7mN9NkoW.js                         9.14 kB │ gzip:   2.50 kB
+dist/assets/SearchPanel-AZMll-n2.js                   9.18 kB │ gzip:   3.15 kB
+dist/assets/DashboardPanel-C7I8XfyA.js                9.22 kB │ gzip:   2.50 kB
+dist/assets/protobuf-CV9EbfTh.js                      9.29 kB │ gzip:   2.23 kB
+dist/assets/AiRuntime-BFIBGeoJ.js                     9.72 kB │ gzip:   2.82 kB
+dist/assets/clojure-DeYg-96x.js                       9.89 kB │ gzip:   3.77 kB
+dist/assets/elixir-BRk-K-rg.js                       10.50 kB │ gzip:   2.69 kB
+dist/assets/sql-D7lU1fdU.js                          10.54 kB │ gzip:   4.01 kB
+dist/assets/mysql-B8ssZoUh.js                        11.52 kB │ gzip:   4.22 kB
+dist/assets/redshift-Bc5xkKR1.js                     12.05 kB │ gzip:   4.49 kB
+dist/assets/TwinPanel-BKn0LPwp.js                    12.41 kB │ gzip:   3.41 kB
+dist/assets/EngineeringLearningPanel-BrKBd1oM.js     12.88 kB │ gzip:   3.81 kB
+dist/assets/pgsql-DLPipH_Q.js                        13.71 kB │ gzip:   4.65 kB
+dist/assets/EngineeringMemoryPanel-B3aw6ntj.js       13.74 kB │ gzip:   4.12 kB
+dist/assets/abap-DRC6TkPh.js                         14.41 kB │ gzip:   5.46 kB
+dist/assets/SettingsScreen-BwTLXBEq.js               16.09 kB │ gzip:   5.26 kB
+dist/assets/freemarker2-DPe2Oftb.js                  16.46 kB │ gzip:   4.37 kB
+dist/assets/powerquery-Dgyr3wWZ.js                   17.19 kB │ gzip:   5.00 kB
+dist/assets/solidity-DyKutqhl.js                     18.84 kB │ gzip:   4.62 kB
+dist/assets/AiSettings-D1cAuf-w.js                   18.86 kB │ gzip:   5.69 kB
+dist/assets/AiChatPanel-CC2xOVY5.js                  22.81 kB │ gzip:   6.64 kB
+dist/assets/tsMode-DNnNYL0M.js                       23.20 kB │ gzip:   6.56 kB
+dist/assets/Planner-Dsf_oISO.js                      24.72 kB │ gzip:   7.78 kB
+dist/assets/KnowledgePanel-9mrZCX9z.js               29.59 kB │ gzip:   9.42 kB
+dist/assets/cssMode-BeuiBEuj.js                      32.47 kB │ gzip:   8.86 kB
+dist/assets/htmlMode-CqRe2ckS.js                     33.02 kB │ gzip:   8.98 kB
+dist/assets/jsonMode-V5prjXYg.js                     41.89 kB │ gzip:  12.19 kB
+dist/assets/WorkspaceScreen-BtA6YE5y.js             143.63 kB │ gzip:  40.23 kB
+dist/assets/Workflows-DDD2_Erv.js                   225.08 kB │ gzip:  59.38 kB
+dist/assets/index-CdxuCdFG.js                       553.87 kB │ gzip: 172.10 kB
+dist/assets/EditorWorkspace-BjD6vN6u.js           3,373.38 kB │ gzip: 871.95 kB
+
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+✓ built in 32.09s
+   Compiling aura-hub v0.1.20 (/mnt/storage/aura-hub/apps/desktop/src-tauri)
+    Finished `release` profile [optimized] target(s) in 2m 14s
+       Built application at: /mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/aura-hub
+        Info Patching /mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/aura-hub with bundle type information: appimage
+    Bundling AURA Hub_0.1.20_amd64.AppImage (/mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/bundle/appimage/AURA Hub_0.1.20_amd64.AppImage)
+        Info Patching /mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/aura-hub with bundle type information: deb
+    Bundling AURA Hub_0.1.20_amd64.deb (/mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/bundle/deb/AURA Hub_0.1.20_amd64.deb)
+    Finished 2 bundles at:
+        /mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/bundle/appimage/AURA Hub_0.1.20_amd64.AppImage
+        /mnt/storage/aura-hub/apps/desktop/src-tauri/target/release/bundle/deb/AURA Hub_0.1.20_amd64.deb
+
+A public key has been found, but no private key. Make sure to set `TAURI_SIGNING_PRIVATE_KEY` environment variable.
+       Error A public key has been found, but no private key. Make sure to set `TAURI_SIGNING_PRIVATE_KEY` environment variable.
+npm error Lifecycle script `tauri` failed with error:
+npm error code 1
+npm error path /mnt/storage/aura-hub/apps/desktop
+npm error workspace @aura/desktop@0.1.20
+npm error location /mnt/storage/aura-hub/apps/desktop
+npm error command failed
+npm error command sh -c tauri build
+----- end -----
+finished: 2026-10-29T22:28:15+05:30
+exit:     1

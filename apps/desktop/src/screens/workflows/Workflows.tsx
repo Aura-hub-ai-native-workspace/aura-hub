@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Icon } from '@aura/ui';
 import { useWorkflows } from '../../data/useWorkflows';
-import { pendingApprovals, useFabric } from '../../data/useFabric';
+import { useFabric } from '../../data/useFabric';
 import { WorkflowLibrary } from './WorkflowLibrary';
 import { WorkflowEditor } from './WorkflowEditor';
 import { AllRuns } from './AllRuns';
-import { ApprovalsInbox } from './ApprovalsInbox';
 import { AutomationScreen } from '../automation/AutomationScreen';
 import { AllAutomationRuns } from '../automation/AllAutomationRuns';
 import { EmptyState } from '../../components/EmptyState';
@@ -19,7 +18,6 @@ import { EmptyState } from '../../components/EmptyState';
  *   Automations — what can run?  (workflows you start, rules that start
  *                 themselves — one catalogue, two kinds)
  *   Runs        — what happened?
- *   Approvals   — what needs me?
  *
  * These are tabs inside one screen, not new nav keys: the left rail's
  * five destinations are one of the calmest things about AURA and adding
@@ -29,7 +27,7 @@ import { EmptyState } from '../../components/EmptyState';
  * its own workflow-scoped views.
  */
 
-type Surface = 'automations' | 'runs' | 'approvals';
+type Surface = 'automations' | 'runs';
 /** Within Automations: what you build, and what builds on it. */
 type Kind = 'workflows' | 'rules';
 /** Within Runs: what a person started, and what a rule started. */
@@ -37,8 +35,6 @@ type RunKind = 'workflow' | 'automation';
 
 export function Workflows() {
   const { loaded, reachable, editingId, def, init, specs, open } = useWorkflows();
-  const approvals = useFabric((s) => s.approvals);
-  const watchApprovals = useFabric((s) => s.watchApprovals);
   const loadCatalogue = useFabric((s) => s.loadCatalogue);
   const [surface, setSurface] = useState<Surface>('automations');
   const [kind, setKind] = useState<Kind>('workflows');
@@ -49,12 +45,7 @@ export function Workflows() {
     void loadCatalogue();
   }, [init, loadCatalogue]);
 
-  // Poll approvals while the domain is open, so the tab badge is honest
-  // even when the user is looking at the library.
-  useEffect(() => watchApprovals(), [watchApprovals]);
-
   const specOf = useMemo(() => new Map(specs.map((s) => [s.type, s])), [specs]);
-  const waiting = pendingApprovals(approvals).length;
 
   if (!loaded) return null;
 
@@ -77,14 +68,6 @@ export function Workflows() {
       <nav className="flex shrink-0 items-center gap-1 border-b border-line px-4 py-2" role="tablist">
         <Tab id="automations" surface={surface} setSurface={setSurface} icon="workflows" label="Automations" />
         <Tab id="runs" surface={surface} setSurface={setSurface} icon="activity" label="Runs" />
-        <Tab
-          id="approvals"
-          surface={surface}
-          setSurface={setSurface}
-          icon="shield"
-          label="Approvals"
-          badge={waiting || undefined}
-        />
       </nav>
 
       {surface === 'automations' && (
@@ -135,7 +118,6 @@ export function Workflows() {
             onOpenRule={() => { setSurface('automations'); setKind('rules'); }}
           />
         )}
-        {surface === 'approvals' && <ApprovalsInbox />}
       </div>
     </div>
   );

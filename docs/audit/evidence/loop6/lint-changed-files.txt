@@ -1,0 +1,6 @@
+ruff vs HEAD, 2026-10-28T21:35:31+05:30
+NEW-FILE backend/tests/unit/test_git_branch_result.py 1
+NEW-FILE backend/tests/unit/test_governance_windows_paths.py 3
+NEW-FILE scripts/extract_toc_pages.py 2
+NEW-FILE scripts/generate_dpr_docx.py 138
+worse: 0

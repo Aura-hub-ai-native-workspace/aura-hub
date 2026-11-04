@@ -580,7 +580,6 @@ class TestEngineeringCapabilities:
         cap = get_engineering_capability("device.flash")
         assert cap is not None
         assert cap.risk == CapabilityRisk.CRITICAL_PHYSICAL
-        assert cap.approval_required is True
         assert cap.irreversible is True
 
     def test_low_risk_caps_dont_require_approval(self):

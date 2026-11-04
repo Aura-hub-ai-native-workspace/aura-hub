@@ -68,9 +68,10 @@ beforeEach(() => {
   // an existing conversation, never from thread creation (which needs
   // the service and is covered elsewhere).
   useAgentConversations.setState({
+    scope: 'workspace', workspaceId: 'workspace:test',
     projectId: null, projectPath: null, conversations: [], activeId: 'conv-test',
     messages: [], phase: 'idle', loading: false, agentUp: null,
-    activity: { workers: {}, tools: [], phase: null, awaitingApproval: false },
+    activity: { workers: {}, tools: [], phase: null },
   });
 });
 

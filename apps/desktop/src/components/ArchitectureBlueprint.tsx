@@ -133,7 +133,7 @@ export function ArchitectureBlueprint({ layers, edges }: { layers: ArchitectureL
     <div
       ref={containerRef}
       className="relative touch-none select-none overflow-hidden rounded-2xl border border-line"
-      style={{ height: 620, background: '#0a0e17' }}
+      style={{ height: 620, background: '#0e0e0e' }}
       onWheel={onWheel}
       onPointerDown={onBackgroundDown}
       onPointerMove={onBackgroundMove}
@@ -147,7 +147,7 @@ export function ArchitectureBlueprint({ layers, edges }: { layers: ArchitectureL
         className="pointer-events-none absolute inset-0 opacity-[0.07]"
         style={{
           backgroundImage:
-            'linear-gradient(rgba(120,170,255,0.9) 1px, transparent 1px), linear-gradient(90deg, rgba(120,170,255,0.9) 1px, transparent 1px)',
+            'linear-gradient(rgba(164, 164, 164,0.9) 1px, transparent 1px), linear-gradient(90deg, rgba(164, 164, 164,0.9) 1px, transparent 1px)',
           backgroundSize: `${32 * zoom}px ${32 * zoom}px`,
           backgroundPosition: `${pan.x}px ${pan.y}px`,
         }}
@@ -182,7 +182,7 @@ export function ArchitectureBlueprint({ layers, edges }: { layers: ArchitectureL
           <svg className="pointer-events-none absolute left-0 top-0 overflow-visible" width="100%" height={contentHeight}>
             <defs>
               <marker id="arch-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-                <path d="M0,0 L6,3 L0,6 Z" fill="rgba(120,170,255,0.85)" />
+                <path d="M0,0 L6,3 L0,6 Z" fill="rgba(164, 164, 164,0.85)" />
               </marker>
               <marker id="arch-arrow-dim" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
                 <path d="M0,0 L6,3 L0,6 Z" fill="rgba(255,255,255,0.18)" />
@@ -210,7 +210,7 @@ export function ArchitectureBlueprint({ layers, edges }: { layers: ArchitectureL
                   key={i}
                   d={d}
                   fill="none"
-                  stroke={active ? '#7aaaff' : 'rgba(120,170,255,0.35)'}
+                  stroke={active ? '#a5a5a5' : 'rgba(164, 164, 164,0.35)'}
                   strokeWidth={active ? 2 : 1.3}
                   opacity={dim ? 0.12 : 1}
                   markerEnd={`url(#${active ? 'arch-arrow' : 'arch-arrow-dim'})`}
@@ -235,7 +235,7 @@ export function ArchitectureBlueprint({ layers, edges }: { layers: ArchitectureL
                   className="relative overflow-hidden rounded-xl border transition-[opacity,border-color] duration-200"
                   style={{
                     width: BAND_WIDTH,
-                    background: '#11151f',
+                    background: '#151515',
                     borderColor: isSelected ? layer.color : 'rgba(255,255,255,0.09)',
                     borderWidth: isSelected ? 1.5 : 1,
                     opacity: dim ? 0.28 : 1,
@@ -303,7 +303,7 @@ function Badge({ label, tone }: { label: string; tone: 'up' | 'down' }) {
       className="shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide"
       style={
         tone === 'down'
-          ? { background: 'rgba(120,170,255,0.15)', color: '#a9c6ff' }
+          ? { background: 'rgba(164, 164, 164,0.15)', color: '#c4c4c4' }
           : { background: 'rgba(255,180,120,0.15)', color: '#ffc99a' }
       }
     >

@@ -2,7 +2,7 @@
 
 The agent never dumps a workspace into a model request. A ContextBundle is
 assembled from: session history (own store), stored workflows (own store),
-capabilities (the Fabric manifest), pending approvals (the ledger), and an
+capabilities (the Fabric manifest), and an
 OPTIONAL bounded project scan that itself goes through governed git
 invocations when a project path is supplied. Every item carries
 provenance; external content stays marked untrusted.
@@ -26,7 +26,7 @@ MAX_ITEM_CHARS = 600
 
 @dataclass
 class ContextItem:
-    kind: str          # 'capability' | 'workflow' | 'approval' | 'message' | 'project'
+    kind: str          # 'capability' | 'workflow' | 'message' | 'project'
     text: str
     provenance: str    # one of the PROVENANCE_* constants
     untrusted: bool = False
@@ -194,13 +194,12 @@ def _artifact_texts(project_id: str, artifacts: dict | None) -> list[str]:
 
 class ContextAssembler:
     def __init__(self, workflow_lister=None, capability_lister=None,
-                 approval_lister=None, session_loader=None,
+                 session_loader=None,
                  project_scanner=None, project_artifacts=None,
                  capability_summary=None, project_inspect=None,
-                 document_lister=None) -> None:
+                 document_lister=None, memory_provider=None) -> None:
         self._workflows = workflow_lister or (lambda: [])
         self._capabilities = capability_lister or (lambda: [])
-        self._approvals = approval_lister or (lambda: [])
         self._sessions = session_loader or (lambda sid: None)
         self._project_scan = project_scanner or (lambda path: [])
         self._artifacts = (project_artifacts
@@ -219,11 +218,18 @@ class ContextAssembler:
         # only filenames + counts — because content is untrusted data
         # and belongs in verified_outputs, not planning context.
         self._documents = document_lister or (lambda: [])
+        # Shared Context (central_agent/shared_context.py): what the person
+        # settled, researched and learned about THIS project. The assembler
+        # still owns no persistence — it reads this through the provider.
+        self._memory = memory_provider
 
     def assemble(self, session_id: str | None = None,
                  project_path: str | None = None,
                  editor_block: str | None = None,
-                 project_id: str | None = None) -> ContextBundle:
+                 project_id: str | None = None,
+                 query: str = "", memory: bool = True,
+                 task_id: str | None = None,
+                 plan_id: str | None = None) -> ContextBundle:
         bundle = ContextBundle()
         # The fabric capability manifest is the model's action space —
         # truncating it silently blinds the intent compiler to real,
@@ -267,13 +273,6 @@ class ContextAssembler:
                 text=f"{w.get('id')}: {w.get('name')} "
                      f"({w.get('nodeCount', '?')} nodes)",
                 provenance=PROVENANCE_STORE))
-        approvals = self._approvals()[:MAX_ITEMS_PER_SOURCE]
-        for a in approvals:
-            summary = a.get("summary") or ""
-            bundle.items.append(ContextItem(
-                kind="approval",
-                text=f"{a.get('id')} pending: {summary[:200]}",
-                provenance=PROVENANCE_SYSTEM))
         if session_id:
             session = self._sessions(session_id)
             if session is not None:
@@ -298,6 +297,24 @@ class ContextAssembler:
                     kind="project", text=text[:300],
                     provenance=PROVENANCE_EXTERNAL, untrusted=True))
                 grounded = True
+        if memory and self._memory is not None and project_id:
+            # The project's settled decisions, requirements, conventions,
+            # research and relevant earlier errors — bounded, ranked by the
+            # request, and fenced where the content came from outside.
+            try:
+                from .shared_context import UNTRUSTED_KINDS
+
+                for rec in self._memory.retrieve(project_id, query, limit=10,
+                                                 task_id=task_id, plan_id=plan_id):
+                    kind = str(rec.get("kind"))
+                    body = str(rec.get("body") or "").strip()
+                    text = f"[{kind}] {rec.get('title', '')}" + (f": {body}" if body else "")
+                    bundle.items.append(ContextItem(
+                        kind="memory", text=text[:MAX_ITEM_CHARS],
+                        provenance=PROVENANCE_STORE,
+                        untrusted=kind in UNTRUSTED_KINDS))
+            except Exception:  # noqa: BLE001 — memory must never break a turn
+                pass
         if (project_id or project_path) and not grounded:
             # The turn names a project AURA knows nothing about. The
             # model must hear that explicitly, or it will fill the gap

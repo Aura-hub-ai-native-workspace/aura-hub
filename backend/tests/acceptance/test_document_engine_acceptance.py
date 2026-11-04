@@ -80,9 +80,23 @@ def test_a3_csv_produces_chunks(tmp_path):
     assert len(r.chunks) > 0
 
 
+def _hide_office_libraries(monkeypatch):
+    """The scenario these tests describe: neither Docling nor the small
+    libraries that read PDF/DOCX/XLSX without it (the lightweight reader) can be
+    imported. With the libraries present a real file is read by the lightweight
+    reader (tests/unit/test_light_office_engine.py)."""
+    import sys
+
+    for name in ("pypdf", "docx", "openpyxl"):
+        for loaded in [m for m in sys.modules if m == name or m.startswith(name + ".")]:
+            monkeypatch.setitem(sys.modules, loaded, None)
+        monkeypatch.setitem(sys.modules, name, None)
+
+
 # ── A4 PDF without Docling ────────────────────────────────────────────────
 
-def test_a4_pdf_without_docling_reports_dependency_missing(tmp_path):
+def test_a4_pdf_without_docling_reports_dependency_missing(tmp_path, monkeypatch):
+    _hide_office_libraries(monkeypatch)
     f = tmp_path / "report.pdf"
     f.write_bytes(b"%PDF-1.4 fake content")
     r = _engine(tmp_path).convert(str(f))
@@ -93,7 +107,8 @@ def test_a4_pdf_without_docling_reports_dependency_missing(tmp_path):
 
 # ── A5 DOCX without Docling ───────────────────────────────────────────────
 
-def test_a5_docx_without_docling_reports_dependency_missing(tmp_path):
+def test_a5_docx_without_docling_reports_dependency_missing(tmp_path, monkeypatch):
+    _hide_office_libraries(monkeypatch)
     f = tmp_path / "letter.docx"
     f.write_bytes(b"PK\x03\x04fake-docx-content")
     r = _engine(tmp_path).convert(str(f))
@@ -103,7 +118,8 @@ def test_a5_docx_without_docling_reports_dependency_missing(tmp_path):
 
 # ── A6 XLSX without Docling ───────────────────────────────────────────────
 
-def test_a6_xlsx_without_docling_reports_dependency_missing(tmp_path):
+def test_a6_xlsx_without_docling_reports_dependency_missing(tmp_path, monkeypatch):
+    _hide_office_libraries(monkeypatch)
     f = tmp_path / "sheet.xlsx"
     f.write_bytes(b"PK\x03\x04fake-xlsx-content")
     r = _engine(tmp_path).convert(str(f))

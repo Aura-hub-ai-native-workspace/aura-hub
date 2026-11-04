@@ -86,7 +86,6 @@ class TestAuthorityAndTools:
     def test_authority_decision_vocabulary(self):
         r = AuthorityRequirement(capabilityId="workflow.create", decision="auto-execute",
                                  rule="risk-default:low", reason="", risk="low")
-        assert r.approvalRequired is False
         with pytest.raises(ValidationError):
             AuthorityRequirement(capabilityId="c", decision="maybe", rule="r",
                                  reason="", risk="low")

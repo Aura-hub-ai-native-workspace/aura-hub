@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 
-from aura.approvals import ApprovalLedger
 from aura.audit import AuditStore
 from aura.central_agent import (
     AgentSessionStore,
@@ -63,14 +62,13 @@ def _live_agent(repo_root, home):
 
     The host presents a real opencode node; the controller runs with no
     engine (single-invocation route only). Returns (agent, ledger)."""
-    from aura.approvals import ApprovalLedger
     from aura.audit import AuditStore
     from aura.executors import all_executors
     from aura.fabric import CapabilityFabric
     from aura.fabric.host import WiringHost
 
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
 
     class _Nodes:
         def list_nodes(self):
@@ -80,8 +78,6 @@ def _live_agent(repo_root, home):
 
     fabric = CapabilityFabric(WiringHost(_Nodes()))
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     for exe in all_executors(home):
         try:
             fabric.register(exe)
@@ -93,7 +89,7 @@ def _live_agent(repo_root, home):
         fabric=fabric, policy_config={}, permissions={"read": True,
                                                       "write": True},
         executors={e.capabilityId: e for e in all_executors(home)},
-        audit_store=audit, ledger=ledger)
+        audit_store=audit)
     agent = CentralAgent(fabric_cfg=cfg,
                          session_store=AgentSessionStore(home))
     # Single-invocation route only: the default engine (real HOME stores)
@@ -134,18 +130,14 @@ def agent_env(monkeypatch):
         def node_available(self, _cap):
             return True
 
-        async def request_approval(self, _req, _ctx):
-            return False
 
     home = Path(tempfile.mkdtemp(prefix="agent-corr-"))
     monkeypatch.setenv("AURA_HOME", str(home))
     audit = AuditStore(home / "audit" / "trail.jsonl")
-    ledger = ApprovalLedger(audit_append=audit.append)
+    ledger = None
     host = _H()
     fabric = CapabilityFabric(host)
     fabric.attach_audit_store(audit.load, audit.append)
-    fabric.attach_approval_store(lambda: [], lambda x: None)
-    fabric._ledger = ledger
     from aura.executors import all_executors
 
     execs = {e.capabilityId: e for e in all_executors(home)}
@@ -157,7 +149,7 @@ def agent_env(monkeypatch):
     cfg = FabricConfig(
         fabric=fabric, policy_config={}, permissions={"read": True,
                                                       "write": True},
-        executors=execs, audit_store=audit, ledger=ledger)
+        executors=execs, audit_store=audit)
     agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
     return home, audit, ledger, cfg, agent
 
@@ -178,6 +170,26 @@ class TestMaybeCorrect:
         assert agent._maybe_correct(session, plan, outcome) is None
         assert session.correctionChain == []
 
+    def test_the_correction_leg_runs_in_the_runs_own_project_directory(self, agent_env, monkeypatch):
+        """Regression: two call sites omitted project_cwd, so every correction started with
+        no working directory ("No project directory is set for this invocation")."""
+        *_, agent = agent_env
+        session = agent.sessions.create("proj")
+        session.projectPath = "/work/the-project"
+        agent.sessions.save(session)
+        seen = {}
+
+        def fake_execute(plan_arg, project_id, **kwargs):
+            seen["cwd"] = kwargs.get("project_cwd")
+            parked = ExecutionOutcome()
+            parked.outcomes.append(TaskOutcome(taskId="t1-correction-2", state="done",
+                                               performed=True, detail="corrected"))
+            return parked
+
+        monkeypatch.setattr(agent.controller, "execute", fake_execute)
+        agent._maybe_correct(session, _deviation_plan(), _deviation_outcome())      # no project_cwd given
+        assert seen["cwd"] == "/work/the-project"
+
     def test_deviation_dispatches_bounded_correction(self, agent_env, monkeypatch):
         *_, agent = agent_env
         session = agent.sessions.create("proj")
@@ -192,16 +204,13 @@ class TestMaybeCorrect:
             seen["kwargs"] = kwargs
             parked = ExecutionOutcome()
             parked.outcomes.append(TaskOutcome(
-                taskId="t1-correction-2", state="awaiting-approval",
-                performed=False, approvalId="apr-corr-1",
-                detail="waiting"))
-            parked.approval_id = "apr-corr-1"
+                taskId="t1-correction-2", state="done",
+                performed=True, detail="corrected"))
             return parked
 
         monkeypatch.setattr(agent.controller, "execute", fake_execute)
         result = agent._maybe_correct(session, plan, outcome)
         assert result is not None
-        assert result.outcome == "awaiting-approval"
         # Corrective plan shape: same capability/scope, correction markers.
         corr_input = seen["plan"].tasks[0].input
         assert seen["plan"].tasks[0].capabilityId == "agent.delegate"
@@ -212,8 +221,7 @@ class TestMaybeCorrect:
         # Chain persisted with parked approval + snapshots for resume.
         assert len(session.correctionChain) == 1
         entry = session.correctionChain[0]
-        assert entry["status"] == "parked"
-        assert entry["approvalId"] == "apr-corr-1"
+        assert entry["status"] == "resolved"  # the corrective leg completed
         assert entry["attempt"] == 2
         assert entry["correctivePlan"]["tasks"][0]["id"] == "t1-correction-2"
         assert "verifiedSnapshot" in entry and "planSnapshot" in entry
@@ -221,7 +229,6 @@ class TestMaybeCorrect:
         reloaded = agent.sessions.load(session.sessionId)
         assert reloaded is not None
         assert len(reloaded.correctionChain) == 1
-        assert reloaded.correctionChain[0]["approvalId"] == "apr-corr-1"
 
     def test_budget_exhaustion_fails_for_review(self, agent_env, monkeypatch):
         *_, agent = agent_env
@@ -271,134 +278,6 @@ class TestMaybeCorrect:
         assert session.correctionChain[-1]["status"] == "failed"
 
 
-class TestResumeCorrection:
-    def _parked_session(self, agent, ledger, plan):
-        session = agent.sessions.create("proj")
-        agent.sessions.save(session)
-        outcome = _deviation_outcome()
-        # Drive one correction round with a stubbed park, as _maybe_correct
-        # would, but capture via the real method with a stubbed execute.
-        return session, outcome, plan
-
-    def test_resume_continues_parked_correction(self, agent_env, monkeypatch):
-        home, audit, ledger, cfg, agent = agent_env
-        plan = _deviation_plan()
-
-        def park_execute(plan_arg, project_id, **kwargs):
-            parked = ExecutionOutcome()
-            parked.outcomes.append(TaskOutcome(
-                taskId=plan_arg.tasks[0].id, state="awaiting-approval",
-                performed=False, approvalId="apr-round-1",
-                detail="waiting"))
-            parked.approval_id = "apr-round-1"
-            return parked
-
-        monkeypatch.setattr(agent.controller, "execute", park_execute)
-        session = agent.sessions.create("proj")
-        agent.sessions.save(session)
-        outcome = _deviation_outcome()
-        first = agent._maybe_correct(session, plan, outcome)
-        assert first is not None and first.outcome == "awaiting-approval"
-
-        # Human grants the corrective approval; resume must continue the
-        # STORED corrective plan, not re-plan from intent.
-        apr = session.correctionChain[-1]["approvalId"]
-        assert apr == "apr-round-1"
-        ledger.register(f"key-{apr}", {
-            "id": apr, "state": "pending", "requestedAt": "t",
-            "summary": "correction", "rule": "test",
-            "items": [{"invocationId": "inv-c",
-                       "capabilityId": "agent.delegate",
-                       "title": "t", "detail": "d", "risk": "high",
-                       "irreversible": True,
-                       "fingerprint": "fp"}]})
-        granted = ledger.decide(apr, True, decided_by="human")
-        assert granted and granted["state"] == "granted"
-        session.lastResult = first
-        agent.sessions.save(session)
-
-        verified_calls = []
-
-        def verify_execute(plan_arg, project_id, **kwargs):
-            verified_calls.append(plan_arg.tasks[0].id)
-            done = ExecutionOutcome()
-            done.outcomes.append(TaskOutcome(
-                taskId=plan_arg.tasks[0].id, state="done", performed=True,
-                verified=True, invocationIds=["inv-fixed"],
-                detail="fixed"))
-            done.verified_outputs[plan_arg.tasks[0].id] = {
-                "task_id": plan_arg.tasks[0].id, "node_id": "opencode",
-                "agent": "OpenCode", "stdout": "fixed",
-                "scope_paths": ["src/auth"], "changed_paths": [],
-                "invocation_ids": ["inv-fixed"], "approval_ids": [apr]}
-            return done
-
-        monkeypatch.setattr(agent.controller, "execute", verify_execute)
-        result = agent.resume(session.sessionId)
-        # Corrective plan id comes from the chain, not from re-planning.
-        assert verified_calls == ["t1-correction-2"], verified_calls
-        assert result.outcome == "completed"
-        # Reload: resume() persists through its own loaded copy.
-        fresh = agent.sessions.load(session.sessionId)
-        assert fresh is not None
-        assert fresh.correctionChain[-1]["status"] == "resolved"
-
-    def test_resume_denied_correction_terminates(self, agent_env, monkeypatch):
-        home, audit, ledger, cfg, agent = agent_env
-        plan = _deviation_plan()
-
-        def park_execute(plan_arg, project_id, **kwargs):
-            parked = ExecutionOutcome()
-            parked.outcomes.append(TaskOutcome(
-                taskId=plan_arg.tasks[0].id, state="awaiting-approval",
-                performed=False, approvalId="apr-round-9",
-                detail="waiting"))
-            parked.approval_id = "apr-round-9"
-            return parked
-
-        monkeypatch.setattr(agent.controller, "execute", park_execute)
-        session = agent.sessions.create("proj")
-        agent.sessions.save(session)
-        first = agent._maybe_correct(session, plan, _deviation_outcome())
-        assert first is not None and first.outcome == "awaiting-approval"
-        apr = session.correctionChain[-1]["approvalId"]
-        ledger.register(f"key-{apr}", {
-            "id": apr, "state": "pending", "requestedAt": "t",
-            "summary": "correction", "rule": "test",
-            "items": [{"invocationId": "inv-c",
-                       "capabilityId": "agent.delegate",
-                       "title": "t", "detail": "d", "risk": "high",
-                       "irreversible": True,
-                       "fingerprint": "fp"}]})
-        denied = ledger.decide(apr, False, decided_by="human")
-        assert denied and denied["state"] == "denied"
-        session.lastResult = first
-        agent.sessions.save(session)
-        result = agent.resume(session.sessionId)
-        assert result.outcome == "denied"
-        # Exactly one corrective dispatch happened total: no retry loop.
-        fresh = agent.sessions.load(session.sessionId)
-        assert fresh is not None
-        assert fresh.correctionChain[-1]["status"] == "failed"
-
-    def test_resume_without_pending_correction_replans(self, agent_env, monkeypatch):
-        home, audit, ledger, cfg, agent = agent_env
-        session = agent.sessions.create("proj")
-        agent.sessions.save(session)
-        # No chain entries: resume must take the legacy intent-rebuild path
-        # (which fails here for lack of messages — proving it did NOT take
-        # the correction path, which would fail differently).
-        from aura.contracts import AgentResult, EvidenceBundle
-
-        session.lastResult = AgentResult(
-            status="awaiting-approval", outcome="awaiting-approval",
-            summary="waiting", evidence=EvidenceBundle(
-                sessionId=session.sessionId, planId="p",
-                approvalIds=[], summary="x",
-                createdAt="2026-09-06T00:00:00.000Z"))
-        agent.sessions.save(session)
-        with pytest.raises(ValueError, match="no intent to resume"):
-            agent.resume(session.sessionId)
 
 
 class TestNoRegression:
@@ -406,24 +285,3 @@ class TestNoRegression:
         _, _, _, _, agent = agent_env
         result = agent.submit("list my workflows")
         assert result.outcome == "completed"
-
-    def test_approval_park_unchanged_without_deviation(self, agent_env, monkeypatch):
-        home, audit, ledger, cfg, agent = agent_env
-        cfg.policy_config = {"byRisk": {"low": "require-approval",
-                                        "medium": "ask-user",
-                                        "high": "require-approval"}}
-        cfg.fabric.set_policy(cfg.sanitized_policy())
-        agent = CentralAgent(fabric_cfg=cfg,
-                             session_store=AgentSessionStore(home))
-        result = agent.submit("list my workflows")
-        assert result.outcome == "awaiting-approval"
-        assert result.evidence.approvalIds
-        # No deviation evidence anywhere: no chain entries created.
-        session_files = sorted((home / "agent" / "sessions").glob("*.json"))
-        import json as _json
-
-        for path in session_files:
-            data = _json.loads(path.read_text())
-            assert data.get("correctionChain") in (None, [])
-
-

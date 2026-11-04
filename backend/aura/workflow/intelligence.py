@@ -5,7 +5,7 @@ call the injected model port — the SAME provider seam the central agent's
 layer implements (`complete(system, user, *, json_mode)`). A missing port
 is an honest failure; a malformed constrained output fails closed. These
 nodes are pure compute in the frozen design (nodes.ts classes
-'generate'/'intelligence'): they invoke nothing, so no approval gate
+'generate'/'intelligence'): they invoke nothing, so no policy gate
 applies — identical to the TypeScript oracle.
 
 The keyword intent classifier and template prompt enhancer are faithful

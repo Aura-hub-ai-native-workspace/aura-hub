@@ -25,6 +25,7 @@ runtimes (placeholder + advisory note).
 
 from __future__ import annotations
 
+from ..tmpname import replace_atomic, unique_sibling
 import json
 import shutil
 from pathlib import Path
@@ -52,9 +53,9 @@ def _read_json(path: Path) -> dict:
 
 def _write_json(path: Path, data: dict) -> None:
     text = json.dumps(data, indent=2, ensure_ascii=False)
-    tmp = path.with_suffix(".tmp")
+    tmp = unique_sibling(path)
     tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    replace_atomic(tmp, path)
 
 
 def _model_ref(model_id: str) -> str:
@@ -168,9 +169,9 @@ class CrushAdapter(AgentConfigurationAdapter):
 
     def restore(self, backup_bytes: bytes) -> ConfigurationChange:
         old_cs = checksum(_CONFIG_PATH.read_bytes()) if _CONFIG_PATH.exists() else None
-        tmp = _CONFIG_PATH.with_suffix(".tmp")
+        tmp = unique_sibling(_CONFIG_PATH)
         tmp.write_bytes(backup_bytes)
-        tmp.replace(_CONFIG_PATH)
+        replace_atomic(tmp, _CONFIG_PATH)
         return ConfigurationChange(
             agent_id="crush",
             operation="restore",

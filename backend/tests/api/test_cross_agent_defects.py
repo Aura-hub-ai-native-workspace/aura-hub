@@ -25,6 +25,29 @@ def svc(tmp_path, monkeypatch):
     return TestClient(create_app()), tmp_path
 
 
+def _ask_for_medium(c) -> None:
+    """The person's own policy: medium-risk steps ask. Defaults never ask;
+    this explicit setting is what parks a write on the ledger, which is
+    the per-step cycle (decide, single-use spend, replay refused) pinned
+    here."""
+    assert c.post("/fabric/policy",
+                  json={"byRisk": {"medium": "ask-user"}}).status_code == 200
+
+
+def _unattended_run(c, wf_id: str, inputs: dict, proj) -> dict:
+    """Start a run no person started (an automation trigger), through the
+    app's own canonical runner."""
+    import asyncio
+
+    wf = c.app.state.wf_store.get(wf_id)
+    out = asyncio.run(c.app.state.runner.start_workflow_run(
+        wf, project_id="default", project_path=str(proj),
+        trigger={"kind": "automation", "ruleId": "rule-t", "runId": "ar-t",
+                 "event": "test"},
+        inputs=inputs))
+    return out["run"]
+
+
 # ── DEFECT A ─────────────────────────────────────────────────────────────────
 
 def test_defect_a_legacy_id_absent_everywhere_live(svc):
@@ -46,13 +69,20 @@ def test_defect_a_legacy_id_absent_everywhere_live(svc):
     sub = c.post("/agent/sessions", json={
         "message": 'create a file called demo.txt containing "hello"',
         "projectPath": str(proj)}).json()
-    assert sub["result"]["outcome"] == "awaiting-approval"
-    aid = c.get("/fabric/approvals").json()["approvals"][0]["id"]
-    assert c.post(f"/fabric/approvals/{aid}/decide",
-                  json={"granted": True}).status_code == 200
-    resumed = c.post(f"/agent/sessions/{sub['sessionId']}/resume").json()["result"]
-    assert resumed["outcome"] == "completed"
+    # Workspace runs the goal immediately, in the background: wait for the
+    # run's terminal result (submit answers `started`), with no approval.
+    import time as _time
+    deadline = _time.monotonic() + 90
+    while True:
+        s = c.get(f"/agent/sessions/{sub['sessionId']}").json()
+        if s.get("orchestrationState") not in (None, "running") and \
+                (s.get("lastResult") or {}).get("outcome") not in (None, "started"):
+            break
+        assert _time.monotonic() < deadline, f"never settled: {str(s)[:300]}"
+        _time.sleep(0.25)
+    assert s["lastResult"]["outcome"] == "completed", s["lastResult"]
     assert (proj / "demo.txt").read_text() == "hello"
+    assert c.get("/fabric/approvals").status_code == 404  # the approval queue no longer exists
 
 
 def test_defect_a_source_scan_has_no_legacy_emitters():
@@ -66,140 +96,6 @@ def test_defect_a_source_scan_has_no_legacy_emitters():
 
 
 # ── DEFECT B ─────────────────────────────────────────────────────────────────
-
-def test_defect_b_park_decide_resume_single_effect_replay_refused(svc):
-    c, home = svc
-    proj = home / "b1proj"; proj.mkdir()
-    c.post("/projects", json={"path": str(proj)})
-    # Frozen semantics: export-file writes the UPSTREAM node's text, so the
-    # faithful graph seeds it through a user-input node.
-    wf = c.post("/workflows", json={"name": "Gated", "nodes": [
-        {"id": "seed", "type": "user-input", "x": 0, "y": 0,
-         "config": {"prompt": "content", "default": ""}},
-        {"id": "n1", "type": "export-file", "x": 80, "y": 0,
-         "config": {"path": "out.txt"}}],
-        "edges": [{"id": "e", "from": "seed", "fromPort": "out", "to": "n1"}]}).json()
-
-    # 1. run parks for approval — no effect yet
-    frames = []
-    with c.stream("POST", f"/workflows/{wf['id']}/run",
-                  json={"inputs": {"seed": "hello"},
-                        "projectPath": str(proj)}) as r:
-        for line in r.iter_lines():
-            if line.strip() == "data: [DONE]":
-                break
-            if line.startswith("data:"):
-                frames.append(json.loads(line[5:].strip()))
-    done = next(f for f in frames if f["type"] == "done")
-    rid = done["runId"]
-    assert done["runState"] == "awaiting-approval"
-    assert not (proj / "out.txt").exists()
-
-    aid = c.get("/fabric/approvals").json()["approvals"][0]["id"]
-
-    # 2. human decides through THE ledger
-    assert c.post(f"/fabric/approvals/{aid}/decide",
-                  json={"granted": True, "reason": "ok"}).status_code == 200
-
-    # 3. HTTP resume forwards approvedCapabilities (the frozen mechanism)
-    with c.stream("POST", f"/workflows/{wf['id']}/runs/{rid}/resume",
-                  json={"approvedCapabilities": ["filesystem.write"]}) as r:
-        frames2 = []
-        for line in r.iter_lines():
-            if line.strip() == "data: [DONE]":
-                break
-            if line.startswith("data:"):
-                frames2.append(json.loads(line[5:].strip()))
-    done2 = next(f for f in frames2 if f["type"] == "done")
-    assert done2["runState"] == "succeeded", done2
-    new_rid = done2["runId"]
-    assert new_rid != rid, "resumed leg must be a NEW superseding run"
-    prev = c.get(f"/workflow-runs/{rid}").json()
-    assert prev.get("supersededBy") == new_rid
-
-    # exactly one effect on disk attributable to the leg
-    assert (proj / "out.txt").read_text() == "hello"
-    runs = c.get(f"/workflows/{wf['id']}/runs").json()["runs"]
-    succeeded = [r_ for r_ in runs if r_["state"] == "succeeded"]
-    assert len(succeeded) == 1 and succeeded[0]["id"] == new_rid
-
-    # 4. replay of the decision is refused
-    replay = c.post(f"/fabric/approvals/{aid}/decide", json={"granted": True})
-    assert replay.status_code == 409
-
-    # 5. no standing grant: another gated run still parks without consent
-    frames3 = []
-    with c.stream("POST", f"/workflows/{wf['id']}/run",
-                  json={"inputs": {"seed": "again"},
-                        "projectPath": str(proj)}) as r3:
-        for line in r3.iter_lines():
-            if line.strip() == "data: [DONE]":
-                break
-            if line.startswith("data:"):
-                frames3.append(json.loads(line[5:].strip()))
-    done3 = next(f for f in frames3 if f["type"] == "done")
-    assert done3["runState"] == "awaiting-approval"
-
-
-def test_defect_b_resume_without_authorization_parks_again(svc):
-    """No standing grant: after a DENIED decision, a resume carrying no
-    consent cannot ride anything; and an unrelated grant never covers a
-    different capability."""
-    c, home = svc
-    proj = home / "b2proj"; proj.mkdir()
-    c.post("/projects", json={"path": str(proj)})
-    wf = c.post("/workflows", json={"name": "G2", "nodes": [
-        {"id": "seed", "type": "user-input", "x": 0, "y": 0,
-         "config": {"prompt": "content", "default": ""}},
-        {"id": "n1", "type": "export-file", "x": 80, "y": 0,
-         "config": {"path": "out.txt"}}],
-        "edges": [{"id": "e", "from": "seed", "fromPort": "out", "to": "n1"}]}).json()
-    frames = []
-    with c.stream("POST", f"/workflows/{wf['id']}/run",
-                  json={"inputs": {"seed": "x"},
-                        "projectPath": str(proj)}) as r:
-        for line in r.iter_lines():
-            if line.strip() == "data: [DONE]":
-                break
-            if line.startswith("data:"):
-                frames.append(json.loads(line[5:].strip()))
-    aid = c.get("/fabric/approvals").json()["approvals"][0]["id"]
-    # deny THIS request through the ledger
-    c.post(f"/fabric/approvals/{aid}/decide", json={"granted": False})
-    # a resume authorizing a DIFFERENT capability grants nothing
-    rid = next(f for f in frames if f["type"] == "done")["runId"]
-    with c.stream("POST", f"/workflows/{wf['id']}/runs/{rid}/resume",
-                  json={"approvedCapabilities": ["git.status"]}) as r2:
-        frames2 = []
-        for line in r2.iter_lines():
-            if line.strip() == "data: [DONE]":
-                break
-            if line.startswith("data:"):
-                frames2.append(json.loads(line[5:].strip()))
-    done2 = next(f for f in frames2 if f["type"] == "done")
-    assert not (proj / "out.txt").exists()
-    assert done2.get("runState") != "succeeded"
-
-
-def test_defect_b_ledger_decision_attributed_in_audit(svc):
-    c, _ = svc
-    c.post("/fabric/nodes", json={"id": "cli", "name": "CLI",
-                                  "capabilities": ["terminal"]})
-    inv = c.post("/fabric/invoke", json={
-        "capabilityId": "terminal.execute", "input": {"command": "ls"},
-        "context": {"actor": {"kind": "human", "id": "user"},
-                    "projectId": "p", "cwd": "."}}).json()
-    aid = inv["approvalId"]
-    dec = c.post(f"/fabric/approvals/{aid}/decide",
-                 json={"granted": True, "reason": "operator says ok"}).json()
-    assert dec["approval"]["decidedBy"] == "user"
-    audit = c.get("/fabric/audit").json()["audit"]
-    decisions = [a for a in audit
-                 if a.get("approvalId") == aid and "approvalDecision" in a]
-    assert len(decisions) == 1
-    assert decisions[0]["approvalDecision"] == "granted"
-    assert decisions[0]["decidedBy"] == "user"
-
 
 # ── DEFECT C ─────────────────────────────────────────────────────────────────
 
@@ -238,12 +134,21 @@ def test_defect_c_auto_selection_follows_catalogue_order(connected):
                if a.get("invocationId") == inv["invocationId"])
     assert row.get("executedNodeId") == "local-cli"
 
-    # without consent the SAME call honestly parks (no standing grant)
-    parked = c.post("/fabric/invoke", json={
+    # Routine work runs without consent by default ...
+    direct = c.post("/fabric/invoke", json={
         "capabilityId": "terminal.execute", "input": {"command": "pwd"},
         "context": {"actor": {"kind": "human", "id": "user"},
                     "projectId": "p", "cwd": str(home)}}).json()
-    assert parked["outcome"] == "awaiting-approval"
+    assert direct["outcome"] == "succeeded", direct
+    # ... and a configured "ask" no longer waits for a person in Alpha: the
+    # same call runs under policy and is recorded. No request is created.
+    _ask_for_medium(c)
+    asked = c.post("/fabric/invoke", json={
+        "capabilityId": "terminal.execute", "input": {"command": "pwd"},
+        "context": {"actor": {"kind": "human", "id": "user"},
+                    "projectId": "p", "cwd": str(home)}}).json()
+    assert asked["outcome"] == "succeeded", asked
+    assert c.get("/fabric/approvals").status_code == 404
 
 
 def test_defect_c_requested_node_never_substituted(connected):

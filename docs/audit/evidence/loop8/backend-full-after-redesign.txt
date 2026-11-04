@@ -1,0 +1,106 @@
+gate:     backend-full-after-redesign
+command:  python -m pytest backend/tests -q -p no:cacheprovider
+cwd:      /mnt/storage/aura-hub
+started:  2026-10-29T20:44:46+05:30
+host:     Linux 6.18.58-1-lts x86_64; node v22.23.2; Python 3.12.7; load 2.12
+repo:     branch feat/laya-shadow-planner HEAD df2cc92; tracked files modified: 105
+----- output -----
+.....s.................................................................. [  1%]
+........................................................................ [  3%]
+..................ss.................................s...............s.. [  5%]
+s.......ss.......ssssssssssssssssssssssssssssssss...........ssssssssssss [  7%]
+sssssssssssssssss....................................................... [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+........................................................................ [ 15%]
+........................................................................ [ 17%]
+........................................................................ [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 33%]
+........................................................................ [ 35%]
+............................................................ss.......... [ 37%]
+........................................................................ [ 39%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 45%]
+........................................................................ [ 47%]
+........................................................................ [ 49%]
+........................................................................ [ 51%]
+........................................................................ [ 53%]
+........................................................................ [ 55%]
+........................................................................ [ 57%]
+........................................................................ [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+........................................................................ [ 72%]
+........................................................................ [ 74%]
+........................................................................ [ 76%]
+........................................................................ [ 78%]
+........................................................................ [ 80%]
+........................................................................ [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+........................................................................ [ 94%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+..................................................s                      [100%]
+=============================== warnings summary ===============================
+../../../home/Groot/.pyenv/versions/3.12.7/lib/python3.12/site-packages/starlette/formparsers.py:12
+  /home/Groot/.pyenv/versions/3.12.7/lib/python3.12/site-packages/starlette/formparsers.py:12: PendingDeprecationWarning: Please use `import python_multipart` instead.
+    import multipart
+
+tests/acceptance/test_acceptance_gate.py::TestA01toA05_MissionPlanning::test_a02_a03_todo_stages_not_in_data_model
+  /mnt/storage/aura-hub/backend/tests/acceptance/test_acceptance_gate.py:115: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    createdAt=datetime.datetime.utcnow().isoformat(),
+
+tests/acceptance/test_acceptance_gate.py::TestA11toA15_DocumentAndArtifact::test_a15_artifact_path_enters_evidence_bundle
+  /mnt/storage/aura-hub/backend/tests/acceptance/test_acceptance_gate.py:310: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now=datetime.datetime.utcnow().isoformat(),
+
+tests/acceptance/test_acceptance_gate.py::TestA25_EvidenceBundle::test_a25_evidence_bundle_schema_complete
+  /mnt/storage/aura-hub/backend/tests/acceptance/test_acceptance_gate.py:522: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    createdAt=datetime.datetime.utcnow().isoformat(),
+
+tests/acceptance/test_acceptance_gate.py::TestA25_EvidenceBundle::test_a25_evidence_collector_wires_artifact_paths
+  /mnt/storage/aura-hub/backend/tests/acceptance/test_acceptance_gate.py:542: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now=datetime.datetime.utcnow().isoformat(),
+
+tests/unit/test_sandbox_confinement.py::test_commands_outside_the_terminal_rule_are_refused[npm install left-pad]
+  /home/Groot/.pyenv/versions/3.12.7/lib/python3.12/site-packages/_pytest/unraisableexception.py:67: PytestUnraisableExceptionWarning: Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x7f051b6f3ec0>
+  
+  Traceback (most recent call last):
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/base_subprocess.py", line 126, in __del__
+      self.close()
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/base_subprocess.py", line 104, in close
+      proto.pipe.close()
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/unix_events.py", line 568, in close
+      self._close(None)
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/unix_events.py", line 592, in _close
+      self._loop.call_soon(self._call_connection_lost, exc)
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/base_events.py", line 795, in call_soon
+      self._check_closed()
+    File "/home/Groot/.pyenv/versions/3.12.7/lib/python3.12/asyncio/base_events.py", line 541, in _check_closed
+      raise RuntimeError('Event loop is closed')
+  RuntimeError: Event loop is closed
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3579 passed, 75 skipped, 6 warnings in 576.93s (0:09:36)
+----- end -----
+finished: 2026-10-29T20:54:25+05:30
+exit:     0

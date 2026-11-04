@@ -6,7 +6,7 @@
  * This is a core extension point for future modules.
  */
 
-import type { NavKey, ProjectTab } from './types';
+import type { NavKey, ProjectMode, ProjectTab, SettingsTab } from './types';
 
 interface NavItem {
   key: NavKey;
@@ -18,10 +18,7 @@ interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { key: 'home', label: 'Home', icon: 'home', group: 'primary' },
-  { key: 'workflows', label: 'Automation', icon: 'workflows', group: 'primary' },
-  { key: 'workspace', label: 'Workspace', icon: 'layout', group: 'primary' },
-  { key: 'environment', label: 'Connected Environment', icon: 'link', group: 'primary' },
-  { key: 'ai-runtime', label: 'AI Runtime', icon: 'cpu', group: 'primary' },
+  { key: 'workflows', label: 'Automations', icon: 'workflows', group: 'primary' },
   { key: 'settings', label: 'Settings', icon: 'settings', group: 'system' },
 ];
 
@@ -38,25 +35,25 @@ export const PROJECT_TABS: ProjectTabDef[] = [
   { key: 'context', label: 'Context', icon: 'spark' },
   { key: 'architecture', label: 'Architecture', icon: 'architecture' },
   { key: 'code', label: 'Code', icon: 'code' },
-  { key: 'frontend', label: 'Frontend', icon: 'layout' },
-  { key: 'backend', label: 'Backend', icon: 'server' },
-  { key: 'database', label: 'Database', icon: 'database' },
-  { key: 'research', label: 'Research', icon: 'research' },
-  { key: 'documentation', label: 'Documentation', icon: 'doc' },
-  { key: 'knowledge', label: 'Knowledge', icon: 'knowledge' },
-  { key: 'intelligence', label: 'Intelligence', icon: 'spark' },
-  { key: 'memory', label: 'Memory', icon: 'memory' },
-  { key: 'tasks', label: 'Tasks', icon: 'check' },
-  { key: 'deployment', label: 'Deployment', icon: 'deploy' },
-  { key: 'settings', label: 'Settings', icon: 'settings' },
+];
+
+/** The top switch of an open project. */
+export const PROJECT_MODES: { key: ProjectMode; label: string }[] = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'workspace', label: 'Workspace' },
+];
+
+/** Settings tabs, in display order. */
+export const SETTINGS_TABS: { key: SettingsTab; label: string }[] = [
+  { key: 'connections', label: 'Connections' },
+  { key: 'tools', label: 'Connected tools' },
+  { key: 'runtime', label: 'AI Runtime' },
+  { key: 'updates', label: 'Updates' },
 ];
 
 /** Human-readable titles for the top command bar breadcrumb. */
 export const NAV_TITLES: Record<NavKey, string> = {
   home: 'Home',
-  workflows: 'Automation',
-  workspace: 'Workspace',
-  environment: 'Connected Environment',
-  'ai-runtime': 'AI Runtime',
+  workflows: 'Automations',
   settings: 'Settings',
 };

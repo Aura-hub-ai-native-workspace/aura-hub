@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { centralAgentClient } from '../../ai/centralAgentClient';
+import { useWorkspace } from '../../data/useWorkspace';
 
 type DocRecord = {
   path: string; chunk_count: number; extraction_status: string; ingested_at: string;
@@ -25,23 +26,25 @@ export default function DocumentsPanel() {
   const [error, setError] = useState<string | null>(null);
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const projectId = useWorkspace((s) => s.openId);
 
   const load = () => {
+    if (!projectId) { setDocs([]); setError('Open a project to see its documents.'); return; }
     setLoading(true);
-    centralAgentClient.listDocuments()
+    centralAgentClient.listDocuments(projectId)
       .then((r) => { setDocs(r.documents); setError(null); })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'failed to load'))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [projectId]);
 
   const handleFile = async (file: File) => {
     setUploading(true);
     setUploadResult(null);
     setError(null);
     try {
-      const r = await centralAgentClient.ingestDocument(file);
+      const r = await centralAgentClient.ingestDocument(file, projectId);
       setUploadResult({
         chunkCount: r.chunkCount,
         engine: r.engine,

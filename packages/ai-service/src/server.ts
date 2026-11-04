@@ -1,6 +1,10 @@
+import { AccountError } from './account/localAccount.js';
+import { accountProvider } from './account/accountProvider.js';
+import { ContextTools } from './commonContext/index.js';
 import http from 'node:http';
 import fs from 'node:fs';
-import { WorkspaceManager } from './workspace';
+import path from 'node:path';
+import { WorkspaceManager, planNewProject } from './workspace';
 import type { PipelineOptions, StreamEmit } from './pipeline';
 import { DEFAULT_SETTINGS } from './settings';
 import type { MemoryKind } from './memory';
@@ -28,6 +32,7 @@ import { AUTOMATION_TEMPLATES, instantiateAutomationTemplate, validateRule } fro
 import type { AutomationEvent, AutomationRule } from '@aura/automation';
 import { automationEvent } from './automation';
 import type { DiagnosisEvent, DiagnosisRequest } from './diagnosis/types';
+import { configuredToken, CORS_ALLOW_HEADERS, decide, shutdownRefusal } from './instanceGuard';
 import type { MissionEvent } from './mission/types';
 import type { ExecutionEvent } from './mission/execution/types';
 import {
@@ -40,7 +45,7 @@ import {
 
 const CORS = {
   'access-control-allow-methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-  'access-control-allow-headers': 'content-type',
+  'access-control-allow-headers': CORS_ALLOW_HEADERS,
 };
 
 /** Local-only server: reflect the origin only for known local clients. */
@@ -247,6 +252,8 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     (e) => console.warn('[environment] boot scan failed:', (e as Error).message),
   );
 
+  // Read once per process: the launch token never changes while it runs.
+  const instanceToken = configuredToken();
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const seg = url.pathname.split('/').filter(Boolean);
@@ -254,6 +261,11 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     const origin = req.headers.origin;
     if (origin && ALLOWED_ORIGIN.test(origin)) res.setHeader('access-control-allow-origin', origin);
     if (method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
+    // Instance ownership before any route runs. See instanceGuard.ts.
+    const guard = decide(method, url.pathname, req.headers, instanceToken,
+      url.searchParams.get('challenge'));
+    if (guard.kind === 'proof') { json(res, guard.status, guard.body); return; }
+    if (guard.kind === 'refused') { json(res, guard.status, guard.body); return; }
     const p = manager.pipeline;
 
     try {
@@ -271,13 +283,81 @@ export async function startService(opts: PipelineOptions & { port?: number; open
        * processes than a signal is on Unix.
        */
       if (method === 'POST' && seg[0] === 'shutdown') {
-        if (req.headers['x-aura-shutdown'] !== '1') {
-          return json(res, 403, { error: 'shutdown requires the x-aura-shutdown header' });
-        }
+        const refusal = shutdownRefusal(req.headers, instanceToken);
+        if (refusal) return json(res, 403, { error: refusal });
         json(res, 200, { ok: true, shuttingDown: true });
         opts.onShutdownRequest?.();
         return;
       }
+      /* ── accounts: sign-up and sign-in stay inside the hub ───── */
+      if (seg[0] === 'account') {
+        const accounts = accountProvider();
+        if (method === 'GET' && seg[1] === 'status') {
+          return json(res, 200, { hasAccounts: await accounts.hasAccounts(), provider: accounts.kind });
+        }
+        if (method === 'POST' && (seg[1] === 'signup' || seg[1] === 'signin')) {
+          const b = await readJson(req);
+          try {
+            const result = seg[1] === 'signup'
+              ? await accounts.signUp(String(b.email ?? ''), String(b.password ?? ''), typeof b.name === 'string' ? b.name : undefined)
+              : { confirmed: true as const, ...(await accounts.signIn(String(b.email ?? ''), String(b.password ?? ''))) };
+            return json(res, 200, result);
+          } catch (err) {
+            if (err instanceof AccountError) {
+              const status = err.code === 'exists' ? 409 : err.code === 'bad-credentials' ? 401
+                : err.code === 'locked' ? 429 : err.code === 'unavailable' ? 503 : 400;
+              return json(res, status, { error: err.code, message: err.message });
+            }
+            throw err;
+          }
+        }
+        if (method === 'POST' && seg[1] === 'session') {
+          const b = await readJson(req);
+          const account = await accounts.resolve(String(b.token ?? ''));
+          return account ? json(res, 200, { account }) : json(res, 401, { error: 'no-session', message: 'Sign in again.' });
+        }
+        if (method === 'POST' && seg[1] === 'refresh') {
+          const b = await readJson(req);
+          const renewed = await accounts.refresh(String(b.refreshToken ?? ''));
+          return renewed ? json(res, 200, renewed) : json(res, 401, { error: 'no-session', message: 'Sign in again.' });
+        }
+        if (method === 'POST' && seg[1] === 'signout') {
+          const b = await readJson(req);
+          await accounts.signOut(String(b.token ?? ''));
+          return json(res, 200, { ok: true });
+        }
+      }
+
+      /* ── shared context: the built-in common-context tool layer ─ */
+      if (seg[0] === 'context' && method === 'POST' && seg[1]) {
+        const b = await readJson(req);
+        const dir = typeof b.projectPath === 'string' ? path.resolve(b.projectPath) : '';
+        if (!dir || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+          return json(res, 400, { error: 'bad-project', message: 'projectPath must be an existing folder.' });
+        }
+        const tools = new ContextTools(dir, typeof b.agent === 'string' ? b.agent : 'aura');
+        const strs = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+        try {
+          switch (seg[1]) {
+            case 'load': return json(res, 200, tools.loadContext());
+            case 'save': tools.saveContext(String(b.key ?? ''), String(b.value ?? ''), strs(b.tags)); return json(res, 200, { ok: true });
+            case 'search': return json(res, 200, { results: tools.searchContext(String(b.query ?? ''), Number(b.limit) || 8) });
+            case 'failure': tools.saveFailure(String(b.approach ?? ''), String(b.whyFailed ?? '')); return json(res, 200, { ok: true });
+            case 'claim': return json(res, 200, tools.claimArea(String(b.area ?? '')));
+            case 'release': return json(res, 200, { released: tools.releaseArea(String(b.area ?? '')) });
+            case 'summary':
+              tools.saveSummary({ title: String(b.title ?? ''), accomplished: String(b.accomplished ?? ''),
+                learned: String(b.learned ?? ''), decisions: String(b.decisions ?? ''), next_steps: String(b.nextSteps ?? '') });
+              return json(res, 200, { ok: true });
+            case 'handoff': tools.handoff(String(b.to ?? ''), String(b.note ?? '')); return json(res, 200, { ok: true });
+            case 'broadcast': tools.broadcast(String(b.message ?? '')); return json(res, 200, { ok: true });
+            case 'snapshot': return json(res, 200, tools.snapshot());
+          }
+        } catch (err) {
+          return json(res, 400, { error: 'context-error', message: err instanceof Error ? err.message : 'failed' });
+        }
+      }
+
       if (method === 'GET' && (seg.length === 0 || seg[0] === 'settings')) {
         const byoak = manager.byoakStatus();
         return json(res, 200, { settings: p.getSettings(), defaults: DEFAULT_SETTINGS, key: p.keyStatus(), connected: byoak.connected, active: byoak.active, activeModel: byoak.model });
@@ -581,6 +661,24 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             catch (e) { return json(res, 400, { error: (e as Error).message }); }
           }
         }
+        /* Create a brand-new project folder and register it. The folder name
+           is derived from the project name (never taken from it) and an
+           existing folder is never reused. */
+        /* Where a project with this name WOULD be created — the same function
+           creation uses, so the dialog's preview cannot disagree with the result. */
+        if (seg.length === 2 && seg[1] === 'location' && method === 'GET') {
+          try { return json(res, 200, planNewProject(url.searchParams.get('name') ?? '')); }
+          catch (e) { return json(res, 400, { error: (e as Error).message }); }
+        }
+        if (seg.length === 2 && seg[1] === 'create' && method === 'POST') {
+          const b = await readJson(req);
+          try {
+            return json(res, 200, manager.createProject({
+              name: String(b.name ?? ''),
+              parentPath: typeof b.parentPath === 'string' && b.parentPath.trim() ? b.parentPath : undefined,
+            }));
+          } catch (e) { return json(res, 400, { error: (e as Error).message }); }
+        }
         const id = seg[1];
         if (seg[2] === 'open' && method === 'POST') {
           try { return json(res, 200, manager.open(id)); }
@@ -806,7 +904,22 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             res.on('close', () => ac.abort());
             const emit = (e: MissionEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
             try {
-              await manager.runMissionCreation(id, text, emit, ac.signal);
+              // Optional shared context the plan must honour (decisions,
+              // requirements, research). Validated and bounded here: it is
+              // data for the planner, never instructions or paths.
+              const c = b.context as { text?: unknown; scope?: unknown; records?: unknown; sources?: unknown } | undefined;
+              const context = c && typeof c.text === 'string' && c.text.trim()
+                ? {
+                  text: c.text.slice(0, 8000),
+                  scope: typeof c.scope === 'string' ? c.scope.slice(0, 96) : id,
+                  records: typeof c.records === 'number' ? c.records : 0,
+                  sources: (Array.isArray(c.sources) ? c.sources : [])
+                    .filter((s): s is { title: string; url: string } => !!s && typeof (s as { url?: unknown }).url === 'string' && /^https?:\/\//i.test((s as { url: string }).url))
+                    .map((s) => ({ title: String(s.title ?? '').slice(0, 200), url: s.url.slice(0, 500) }))
+                    .slice(0, 12),
+                }
+                : undefined;
+              await manager.runMissionCreation(id, text, emit, ac.signal, context);
             } catch (e) {
               emit({ type: 'error', message: (e as Error).message });
             }
@@ -818,9 +931,37 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             const m = manager.getMission(id, mid);
             return m ? json(res, 200, m) : json(res, 404, { error: 'no such mission' });
           }
-          if (seg[4] === 'approve' && method === 'POST') {
-            const m = manager.approveMission(id, mid);
-            return m ? json(res, 200, m) : json(res, 404, { error: 'no such mission' });
+          /* ── Planner: edit, retry planning, hand off to Workspace ── */
+          if (seg[4] === 'plan' && seg.length === 5 && method === 'PUT') {
+            const b = await readJson(req);
+            const r = manager.savePlan(id, mid, Number(b.revision), Array.isArray(b.tasks) ? b.tasks : [], Array.isArray(b.acceptance) ? b.acceptance : undefined);
+            return json(res, r.status, r);
+          }
+          if (seg[4] === 'replan' && method === 'POST') {
+            res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
+            const ac = new AbortController();
+            res.on('close', () => ac.abort());
+            const emit = (e: MissionEvent) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
+            try {
+              const r = await manager.replanMission(id, mid, emit, ac.signal);
+              if (!r) emit({ type: 'error', message: 'no such plan' });
+            } catch (e) {
+              emit({ type: 'error', message: (e as Error).message });
+            }
+            res.end();
+            return;
+          }
+          if (seg[4] === 'handoff' && seg.length === 5 && method === 'POST') {
+            const b = await readJson(req);
+            const r = manager.reserveHandoff(id, mid, Number(b.revision));
+            return json(res, r.status, r);
+          }
+          if (seg[4] === 'handoff' && seg.length === 6 && method === 'POST') {
+            const b = await readJson(req);
+            const status = b.status === 'started' ? 'started' : b.status === 'failed' ? 'failed' : null;
+            if (!status) return json(res, 400, { error: "status must be 'started' or 'failed'" });
+            const r = manager.settleHandoff(id, mid, seg[5], status, typeof b.error === 'string' ? b.error : undefined);
+            return json(res, r.status, r);
           }
           if (seg[4] === 'reject' && method === 'POST') {
             const b = await readJson(req);
@@ -859,11 +1000,6 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           if (seg[4] === 'cancel' && method === 'POST') {
             const b = await readJson(req);
             const r = manager.cancelMissionExecution(id, mid, typeof b.reason === 'string' ? b.reason : undefined);
-            return json(res, r.ok ? 200 : 400, r);
-          }
-          if (seg[4] === 'review' && method === 'POST') {
-            const b = await readJson(req);
-            const r = manager.reviewMissionCheckpoint(id, mid, b.pass === true, typeof b.note === 'string' ? b.note : undefined);
             return json(res, r.ok ? 200 : 400, r);
           }
           if (seg[4] === 'replay' && method === 'GET') {
@@ -1321,7 +1457,14 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             if (!runId && method === 'GET') return json(res, 200, { runs: auto.store.listRuns(ruleId) });
             if (runId && seg[5] === 'cancel' && method === 'POST') {
               const run = auto.engine.cancelRun(ruleId, runId);
-              return run ? json(res, 200, run) : json(res, 404, { error: 'no such run' });
+              if (run) return json(res, 200, run);
+              // Nothing was cancelled: the run does not exist, or it had already
+              // finished. Say which, so a Stop pressed just too late is reported
+              // as that and not as a missing run.
+              const existing = auto.store.getRun(ruleId, runId);
+              return existing
+                ? json(res, 409, { error: `that run already ${existing.status} — there is nothing to cancel` })
+                : json(res, 404, { error: 'no such run' });
             }
             if (runId && method === 'GET') {
               const run = auto.store.getRun(ruleId, runId);

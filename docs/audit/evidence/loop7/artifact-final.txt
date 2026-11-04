@@ -1,0 +1,13 @@
+gate:     artifact-final
+command:  sha256sum + stat of the freshly built AppImage
+started:  2026-10-28T23:08:56+05:30
+repo:     branch feat/laya-shadow-planner HEAD df2cc92
+----- output -----
+path:     apps/desktop/src-tauri/target/release/bundle/appimage/AURA Hub_0.1.20_amd64.AppImage
+size:     190282232 bytes
+build:    2026-10-28 23:08:10.934143726 +0530
+sha256:   5365e71d4848a27506efe19ee72465e2fda66952f2dad11d11ee5d733c92923e
+build gate exit: 1 — 1 means it failed only at updater signing (no TAURI_SIGNING_PRIVATE_KEY); the AppImage and .deb were produced
+signing:  UNSIGNED, internal test build
+----- end -----
+finished: 2026-10-28T23:08:56+05:30

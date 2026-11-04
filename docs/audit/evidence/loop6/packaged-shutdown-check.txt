@@ -1,0 +1,13 @@
+packaged check of POST /shutdown on the new artifact (sha256 c1796be75d7b...), 2026-10-28T21:41:26+05:30
+interpreter: Python 3.12.14 (bundled), backend: bundled, token: random per run, never printed
+no token:                     401
+header only (no token):        401
+wrong token + header:          401
+token, no shutdown header:     403
+still running after refusals:  yes
+authorized:                    200
+repeat request while stopping:     200 (idempotent: alreadyRequested)
+exited after:                  234 ms
+exit status:                   0
+port free:                     yes
+token present in this record or the backend logs: 0

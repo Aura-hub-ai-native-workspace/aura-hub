@@ -151,7 +151,7 @@ export function UpdatePanel() {
             type="checkbox"
             checked={autoUpdateCheck}
             onChange={(e) => setAutoUpdateCheck(e.target.checked)}
-            className="h-4 w-4 shrink-0 accent-[var(--accent,#3b6bff)]"
+            className="h-4 w-4 shrink-0 accent-[var(--accent,#6d6d6d)]"
             aria-label="Check for updates automatically"
           />
         </label>

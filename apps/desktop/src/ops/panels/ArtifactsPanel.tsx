@@ -49,7 +49,7 @@ export default function ArtifactsPanel() {
                     <a
                       href={`/artifacts/download?path=${encodeURIComponent(a.path)}`}
                       download={a.name}
-                      className="shrink-0 rounded bg-accent px-2 py-0.5 text-xs font-medium text-white hover:opacity-90"
+                      className="shrink-0 rounded bg-accent px-2 py-0.5 text-xs font-medium text-on-accent hover:opacity-90"
                       onClick={(e) => e.stopPropagation()}
                     >
                       Download

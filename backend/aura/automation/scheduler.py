@@ -1,7 +1,7 @@
 """AutomationScheduler — port of automation/src/scheduler.ts semantics.
 
 CLOCK → SCHEDULER → AutomationEvent → AutomationEngine → WorkflowRunner.
-The scheduler never executes workflows and can NEVER grant approvals.
+The scheduler never executes workflows and can never widen policy.
 Cron: 5-field, comma lists, ranges a-b, steps /n, * — matching schedule.ts
 parseField. Missed fires are COUNTED, never executed.
 """

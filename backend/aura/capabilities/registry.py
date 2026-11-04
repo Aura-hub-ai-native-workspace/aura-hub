@@ -323,7 +323,7 @@ class CapabilityRegistry:
         if cap is None or cap.availability != "available":
             return []
         return [{"name": a.name, "description": a.description,
-                 "risk": a.risk, "requires_approval": a.requires_approval}
+                 "risk": a.risk}
                 for a in cap.actions]
 
     def resolve(self, capability_id: str, action_name: str) -> Resolution:

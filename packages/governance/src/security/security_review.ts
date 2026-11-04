@@ -19,6 +19,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { scanWorkspace } from '../core/scan';
 import { runGit } from '../core/git';
+import { throwIfAborted } from '../core/abort';
 import { SECRET_PATTERNS, UNSAFE_PATTERNS, PERMISSION_PATTERNS, AUTH_PATTERNS, PLACEHOLDER_PATTERN } from './patterns';
 import type { Evidence, Finding, ReportMeta, Severity } from '../core/types';
 
@@ -42,6 +43,8 @@ export interface SecurityInput {
   projectPath: string;
   /** Run `npm audit --json` (network) — false by default. */
   runNpmAudit?: boolean;
+  /** Cooperative cancellation; checked after each await and between per-file git calls. */
+  signal?: AbortSignal;
 }
 
 const PLACEHOLDER_RE = PLACEHOLDER_PATTERN;
@@ -103,7 +106,10 @@ const AUTH_REF_RE = /\b(auth|authorize|guard|authenticate|requireAuth|session|jw
 
 export async function getSecurityReport(input: SecurityInput): Promise<SecurityReport> {
   const t0 = Date.now();
-  const ws = await scanWorkspace(input.projectPath);
+  const signal = input.signal;
+  throwIfAborted(signal, 'Security review');
+  const ws = await scanWorkspace(input.projectPath, { signal });
+  throwIfAborted(signal, 'Security review');
   const findings: SecurityFinding[] = [];
   let seq = 0;
 
@@ -185,7 +191,8 @@ export async function getSecurityReport(input: SecurityInput): Promise<SecurityR
 
   let npmAudit: SecurityReport['npmAudit'] = { available: false, vulnerabilities: 0, summary: 'npm audit not run' };
   if (input.runNpmAudit) {
-    npmAudit = await runNpmAudit(input.projectPath);
+    npmAudit = await runNpmAudit(input.projectPath, signal);
+    throwIfAborted(signal, 'Security review');
     if (npmAudit.available && npmAudit.vulnerabilities > 0) {
       push(
         'dependency-vulnerability',
@@ -199,7 +206,8 @@ export async function getSecurityReport(input: SecurityInput): Promise<SecurityR
   }
 
   // ── Git history scan for committed secrets (best-effort, real) ────
-  const history = await scanGitHistory(input.projectPath);
+  const history = await scanGitHistory(input.projectPath, signal);
+  throwIfAborted(signal, 'Security review');
   for (const h of history) {
     push('secret', h.severity, `Secret in git history: ${h.file}`, `A credential-shaped string was committed and can still be found in history (${h.commit}).`,
       [{ file: h.file, basis: `git log -S scan found credential pattern in commit ${h.commit}` }],
@@ -309,12 +317,23 @@ function findDeprecatedDependencies(root: string): DeprecatedDep[] & { scanned: 
   return out;
 }
 
-function runNpmAudit(root: string): Promise<SecurityReport['npmAudit']> {
+/**
+ * How to start npm. This used to be the literal `npm.cmd` everywhere: on Linux and
+ * macOS there is no such file (the audit always reported "npm audit failed"), and
+ * on Windows current Node refuses to spawn a `.cmd` without a shell. Windows now
+ * goes through a shell with FIXED arguments only (no caller text reaches it).
+ */
+export function npmAuditCommand(platform: NodeJS.Platform): { file: string; shell: boolean } {
+  return platform === 'win32' ? { file: 'npm.cmd', shell: true } : { file: 'npm', shell: false };
+}
+
+function runNpmAudit(root: string, signal?: AbortSignal): Promise<SecurityReport['npmAudit']> {
   return new Promise((resolve) => {
+    const cmd = npmAuditCommand(process.platform);
     execFile(
-      'npm.cmd',
+      cmd.file,
       ['audit', '--json'],
-      { cwd: root, timeout: 120000, maxBuffer: 16 * 1024 * 1024, windowsHide: true },
+      { cwd: root, timeout: 120000, maxBuffer: 16 * 1024 * 1024, windowsHide: true, shell: cmd.shell, signal },
       (err, stdout) => {
         if (err && !stdout) {
           resolve({ available: false, vulnerabilities: 0, summary: 'npm audit failed' });
@@ -343,7 +362,8 @@ interface HistorySecret {
   severity: Severity;
 }
 
-async function scanGitHistory(root: string): Promise<HistorySecret[]> {
+async function scanGitHistory(root: string, signal?: AbortSignal): Promise<HistorySecret[]> {
+  throwIfAborted(signal, 'Security review');
   const log = await runGit(['log', '--pretty=format:%H', '--name-only', '-n', '200'], root);
   if (!log.ok) return [];
   const out: HistorySecret[] = [];
@@ -359,6 +379,7 @@ async function scanGitHistory(root: string): Promise<HistorySecret[]> {
     const file = line.trim();
     if (!file || seen.has(file)) continue;
     seen.add(file);
+    throwIfAborted(signal, 'Security review');   // one `git show` per file: stop between them
     try {
       const content = runGit(['show', `${commit}:${file}`], root, 15000);
       const text = (await content).stdout;

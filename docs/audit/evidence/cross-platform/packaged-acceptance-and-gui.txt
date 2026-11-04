@@ -1,0 +1,57 @@
+Packaged-artifact acceptance and GUI runs — loop 5, 2026-10-28
+Artifact: AURA Hub_0.1.20_amd64.AppImage, built 2026-10-28 20:41:34, 190,278,136 bytes,
+          sha256 9da5c9c273d481906afdf39c074bf03d132e94117a66777339b4817d94d383c5   (UNSIGNED, internal test)
+Host: Arch Linux x86_64, kernel 6.18.58-lts. Display: my own Xvfb :98 (1400x900) with a minimal i3 (own config, own socket).
+The user's desktop session (i3 pid 1220, display :0) was never touched. Every app process was identified by a unique
+AURA_HOME marker in its environment (never by command-line text) and stopped through SIGTERM to aura-hub; a SIGKILL
+fallback was needed once, see "Method correction".
+Environment of each launch: env -i HOME=<scratch> PATH=/usr/bin:/bin DISPLAY=:98 XDG_RUNTIME_DIR=... AURA_HOME=<scratch>/home/.aura
+
+1. Acceptance B (foreign services on both ports) — PASS (protocol property); UI banner NOT re-observed
+   Setup: disposable "healthy-looking" servers with a wrong identity proof on 127.0.0.1:4319 and :4320, each logging every request.
+   Result: the app log says "Port 4319 is already in use ... AURA only attaches to a backend it started itself" and the same for 4320.
+   Both foreign servers received 0 requests (no request log was ever created). Ports free afterwards.
+   Limit: the screenshot (acceptance-B-final.png) shows the onboarding welcome step; the mismatch banner that loop 4 captured at a later
+   step was not re-captured this loop.
+
+2. Acceptance C (takeover) — PASS (protocol property); UI banner NOT re-observed
+   Setup: healthy app in a fresh home; its own Node child (verified: parent = aura-hub, comm = node) stopped with SIGKILL; a foreign
+   server (wrong identity) started on 4319; 45 s idle.
+   Result: the foreign server received 0 requests (log never created); the genuine Python backend stayed alive; the app quit gracefully.
+   Limit: same screenshot limitation (acceptance-C-final.png is the welcome step).
+   This is my reconstruction of an earlier one-line record, as in loop 4.
+
+3. Graceful quit (supported path) — PASS
+   SIGTERM to aura-hub on a healthy app: shell, WebKit processes, Node service and Python backend all gone in 1.9 s and 2.7 s
+   (two runs); ports 4319/4320 free afterwards.
+
+4. GUI cancellation, "Start Building" chat (real UI, real local model qwen3.5:2b through the user's own Ollama) — PARTIAL
+   - Stop during a running answer: observed. Four rapid clicks on Stop: the control becomes "Stopping..." and the line "Stop requested.
+     Waiting for the agent to confirm." is shown (gui-stop-2-repeated-stop-1s.png). It is NOT shown as "Stopped" at that point.
+   - Repeated Stop: no error, no duplicate state, one outcome.
+   - Terminal state: at +43 s "Stopped. Stopped before the answer finished." after the agent confirmed (gui-stop-3-confirmed-43s.png).
+   - Stop after completion: a short question completes ("OK"), the control is Send, there is no Stop and no spurious "Stopped"
+     (gui-stop-4-completed-no-stop.png).
+   NOT exercised through the GUI: a failed or unconfirmed cancel (needs the service to refuse), Stop during a retry wait, the workflow
+   Stop button, the automation Stop button, a Stop that races completion. Those are covered by unit/integration tests only (see report).
+
+5. Network snapshot — limited
+   While the app was running and had just answered, the sockets of the app's processes were: listeners on 127.0.0.1:4319 and :4320 and
+   one loopback connection to 4319. 0 non-loopback peers. This is a single snapshot, not a continuous capture, and the model server
+   connection (127.0.0.1:11434) was idle at that moment.
+
+6. Not repeated this loop: the packaged UI smoke of "git status / git diff / read README" in a project (needs the folder-picker flow).
+   Loop 4's PASS applies to artifact fca9a7af..., not to this one. Status for this artifact: NOT RUN.
+
+7. Secrets scan: the evidence files and the three app logs contain no launch token, no token header value, no signing material.
+   The only long hexadecimal strings are the git HEAD and the artifact hash.
+
+Method correction (recorded honestly)
+   My first acceptance-C attempt used a helper that finds processes by the AppImage's executable path and signals that tree. With this
+   artifact the aura-hub process was not a descendant of the AppImage runtime, so the helper signalled only the runtime and left aura-hub
+   (and its Python child) running; that run was invalid and was discarded. The leftover tree was identified by DISPLAY=:98 and an
+   AURA_HOME under my scratch directory, did not react to SIGTERM (its Node child was a zombie, its main thread blocked in a pipe write,
+   other threads in do_exit), and was stopped with SIGKILL after re-verifying that identity. I could not establish the cause: it is
+   plausible that tearing down the AppImage runtime (which owns the mount the app runs from) while the app was running caused it, and
+   graceful SIGTERM to aura-hub on a healthy app exits cleanly (item 3). It is therefore recorded as an UNCONFIRMED observation, not a
+   product defect. It was not reproduced through the supported quit path.

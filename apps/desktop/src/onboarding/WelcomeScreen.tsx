@@ -39,10 +39,10 @@ export function WelcomeScreen({ onBegin }: { onBegin: () => void }) {
       <motion.div variants={item} className="mt-10">
         <motion.button
           onClick={onBegin}
-          whileHover={{ scale: 1.03, boxShadow: '0 0 42px -6px rgba(92,134,255,0.75)' }}
+          whileHover={{ scale: 1.03, boxShadow: '0 0 42px -6px rgba(135, 135, 135,0.75)' }}
           whileTap={{ scale: 0.97 }}
           transition={{ type: 'spring', stiffness: 420, damping: 28 }}
-          className="relative rounded-2xl bg-gradient-to-b from-[#6f95ff] to-[#3b6bff] px-9 py-3.5 text-[14.5px] font-semibold text-white shadow-[0_0_28px_-6px_rgba(92,134,255,0.65)]"
+          className="relative rounded-2xl bg-gradient-to-b from-[#959595] to-[#6d6d6d] px-9 py-3.5 text-[14.5px] font-semibold text-white shadow-[0_0_28px_-6px_rgba(135, 135, 135,0.65)]"
         >
           Begin
         </motion.button>

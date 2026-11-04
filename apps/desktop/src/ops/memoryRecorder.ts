@@ -171,7 +171,7 @@ function recordTimelineEntry(projectId: string, missionId: string, t: TimelineEn
 }
 
 function recordMissionSummary(m: MissionSummary): void {
-  const { id, projectId, text, createdAt, approval, execution } = m;
+  const { id, projectId, text, createdAt, execution } = m;
   const short = text.length > 90 ? `${text.slice(0, 90)}…` : text;
 
   record({
@@ -180,43 +180,13 @@ function recordMissionSummary(m: MissionSummary): void {
     importance: importanceOf('mission', { event: 'created' }),
     title: `Mission created: ${short}`,
     summary: short,
-    reason: 'Mission logged in Mission Control',
+    reason: 'Plan logged in the Planner',
     user: 'human',
     missionId: id,
     source: 'mission',
     at: createdAt,
     dedupe: `mission:${id}:created`,
   });
-
-  if (approval?.status === 'approved') {
-    record({
-      projectId,
-      category: 'decision',
-      importance: 'high',
-      title: `Mission approved: ${short}`,
-      summary: 'Plan approved for execution',
-      reason: 'Approved before any task runs',
-      user: 'human',
-      missionId: id,
-      source: 'mission',
-      at: approval.at ?? createdAt,
-      dedupe: `mission:${id}:approved`,
-    });
-  } else if (approval?.status === 'rejected') {
-    record({
-      projectId,
-      category: 'decision',
-      importance: 'high',
-      title: `Mission plan rejected: ${short}`,
-      summary: 'Plan rejected before execution',
-      reason: 'Plan declined before any task ran',
-      user: 'human',
-      missionId: id,
-      source: 'mission',
-      at: approval.at ?? createdAt,
-      dedupe: `mission:${id}:rejected-plan`,
-    });
-  }
 
   if (execution) {
     if (execution.status === 'completed') {
@@ -548,14 +518,14 @@ export function recordDiagnosisMemory(projectId: string, input: DiagnosisMemoryI
 
 export interface BugBotMemoryInput {
   filePath: string;
-  event: 'fix-approved' | 'fix-rejected' | 'fix-reverted' | 'fix-failed';
+  event: 'fix-applied' | 'fix-rejected' | 'fix-reverted' | 'fix-failed';
   title: string;
   summary: string;
   severity: string;
 }
 
 /**
- * Record a Bug Bot decision — a governed, user-approved fix being applied
+ * Record a Bug Bot decision — a governed fix the user chose to apply
  * to (or explicitly rejected for / reverted from) a real file. Same layer
  * as the other explicit event hooks: never fabricated, keyed to the real
  * file path, deduped against the actual event.
@@ -571,8 +541,8 @@ export function recordBugBotMemory(input: BugBotMemoryInput): void {
     title: input.title,
     summary: input.summary,
     reason:
-      input.event === 'fix-approved'
-        ? 'Bug Bot fix approved and applied by the user'
+      input.event === 'fix-applied'
+        ? 'Bug Bot fix applied at the user\'s request'
         : input.event === 'fix-reverted'
           ? 'Bug Bot fix reverted by the user after failed verification'
           : input.event === 'fix-failed'

@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 # Frozen vocabularies (schemas are the authority; never widen here).
-PolicyDecision = Literal["auto-execute", "ask-user", "require-approval", "deny"]
+PolicyDecision = Literal["auto-execute", "deny"]
 RiskLevel = Literal["low", "medium", "high"]
 
 

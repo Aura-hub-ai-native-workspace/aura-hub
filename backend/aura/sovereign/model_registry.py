@@ -27,14 +27,19 @@ Capability tags (vocabulary shared with ModelRouter):
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from aura.agent_runtime.model_metadata import fetch_ollama_metadata, ollama_server_root
+from aura.sovereign.evidence import DEFAULT_POLICY
+
 #: Health cache TTL in seconds.  After this interval a model's health is
 #: considered stale and re-verified on next use.
-HEALTH_TTL_S: float = 120.0
+#: Compatibility name for the reachability TTL. The value is owned by evidence.DEFAULT_POLICY.
+HEALTH_TTL_S: float = DEFAULT_POLICY.reachability_ttl_s
 
 #: Standard capability tag vocabulary (open-ended — registry never rejects
 #: unknown tags, it just doesn't match them in queries)
@@ -46,6 +51,42 @@ CAPABILITY_TAGS = frozenset({
     "vision",
     "long-context",
 })
+
+
+def probe_error_category(exc: BaseException) -> str:
+    """A stable category for a probe failure. Never the message text, which can hold addresses.
+
+    Classified by exception type first; text matching is only a fallback for the
+    wrapped errors urllib produces.
+    """
+    import socket
+    import ssl
+    import urllib.error
+
+    if isinstance(exc, urllib.error.HTTPError):
+        return "http-error"
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, BaseException):
+        inner = probe_error_category(exc.reason)
+        if inner != "probe-failed":
+            return inner
+    if isinstance(exc, ssl.SSLError):
+        return "tls-error"
+    if isinstance(exc, socket.gaierror):
+        return "name-resolution"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return "timeout"
+    if isinstance(exc, ConnectionRefusedError):
+        return "connection-refused"
+    text = str(exc).lower()
+    if "timed out" in text:
+        return "timeout"
+    if "connection refused" in text:
+        return "connection-refused"
+    if "name or service not known" in text or "nodename nor servname" in text:
+        return "name-resolution"
+    if isinstance(exc, OSError):
+        return "network-error"
+    return "probe-failed"
 
 
 @dataclass
@@ -66,6 +107,8 @@ class ModelRecord:
 
     # Capability tags — set during discovery or from manifest
     capabilities: frozenset = field(default_factory=frozenset)
+    # Where each capability tag came from: "name-hint" or the authoritative source.
+    capability_sources: dict = field(default_factory=dict)
 
     # Metadata from discovery
     parameter_size: str = ""        # e.g. "8B", "70B"
@@ -75,11 +118,31 @@ class ModelRecord:
 
     # Health tracking
     healthy: Optional[bool] = None  # None = unchecked
-    last_checked: float = 0.0       # monotonic timestamp
+    last_checked: float = 0.0       # monotonic timestamp of the last health probe
+    #: Monotonic time of the last metadata read (discovery). Separate from health so
+    #: a successful probe does not make old metadata look fresh.
+    metadata_checked: float = 0.0
+    #: Explicit evidence times (monotonic), each set only by an observation of that kind.
+    #: None means never observed. See sovereign.evidence for how they are read.
+    probe_success_at: float | None = None
+    probe_success_wall: float | None = None     # wall clock, for diagnostics only
+    probe_failure_at: float | None = None
+    probe_failure_category: str = ""
+    metadata_success_at: float | None = None
+    metadata_failure_at: float | None = None
+    metadata_failure_category: str = ""
+    #: Tags the server verifiably does NOT have. Kept so a verified absence is never
+    #: confused with "unknown".
+    verified_absent: frozenset = field(default_factory=frozenset)
     last_error: str = ""
+    #: Stable category of the last probe failure. Views use this, never last_error.
+    last_error_category: str = ""
 
     def is_stale(self, ttl: float = HEALTH_TTL_S) -> bool:
-        return (time.monotonic() - self.last_checked) > ttl
+        """True unless the last successful probe is within ``ttl``. A failure is never fresh."""
+        from aura.sovereign.evidence import probe_times
+        success, _failure, _category = probe_times(self)
+        return success is None or (time.monotonic() - success) > ttl
 
     def matches(self, required_caps: frozenset) -> bool:
         """True if this model has all the required capability tags."""
@@ -93,14 +156,67 @@ class ModelRecord:
             "endpointId": self.endpoint_id,
             "networkClass": self.network_class,
             "capabilities": sorted(self.capabilities),
+            "capabilitySources": dict(sorted(self.capability_sources.items())),
+            "verifiedAbsent": sorted(self.verified_absent),
             "parameterSize": self.parameter_size,
             "quantization": self.quantization,
             "contextLength": self.context_length,
             "sizeBytes": self.size_bytes,
             "healthy": self.healthy,
             "lastError": self.last_error or None,
+            "lastErrorCategory": self.last_error_category or None,
             "stale": self.is_stale(),
         }
+
+
+_AUTHORITATIVE_TAGS = {
+    "completion": "text-generation",
+    "tools": "tool-calling",
+    "vision": "vision",
+    "embedding": "embedding",
+}
+
+
+def reconcile_capabilities(hints: frozenset, meta) -> tuple[frozenset, dict, int]:
+    """Combine name hints with authoritative metadata.
+
+    Where the server reported a capability list, its answer wins for the tags
+    it covers: a tag it does not list is removed even if a name hint added it.
+    Tags with no authoritative source (for example code-generation) stay as
+    name hints and are marked as such. Returns (tags, sources, context_length).
+    """
+    caps = set(hints)
+    sources = {tag: "name-hint" for tag in caps}
+    context = 0
+    if getattr(meta, "status", None) != "verified":
+        return frozenset(caps), sources, context
+    if meta.capabilities is not None:
+        for raw, tag in _AUTHORITATIVE_TAGS.items():
+            if raw in meta.capabilities:
+                caps.add(tag)
+                sources[tag] = meta.source
+            elif sources.get(tag) == "name-hint":
+                caps.discard(tag)
+                sources.pop(tag, None)
+    if meta.context_length is not None:
+        context = meta.context_length
+        if context >= 32_000:
+            caps.add("long-context")
+        else:
+            caps.discard("long-context")
+        if "long-context" in caps:
+            sources["long-context"] = meta.source
+        else:
+            sources.pop("long-context", None)
+    return frozenset(caps), {t: sources[t] for t in caps if t in sources}, context
+
+
+def verified_absent_tags(meta) -> frozenset:
+    """Tags the server's capability list verifiably omits. Empty when nothing was verified."""
+    if getattr(meta, "status", None) != "verified" or meta.capabilities is None:
+        return frozenset()
+    return frozenset(tag for raw, tag in _AUTHORITATIVE_TAGS.items()
+                     if raw not in meta.capabilities)
 
 
 def _infer_capabilities(model_name: str, context_length: int) -> frozenset:
@@ -130,7 +246,8 @@ def _infer_capabilities(model_name: str, context_length: int) -> frozenset:
         caps.add("vision")
 
     # JSON-mode / instruct: conservative; nearly all instruct models work
-    if any(k in name for k in ("instruct", "chat", "it", "hermes",
+    tokens = set(re.split(r"[^a-z0-9]+", name))
+    if "it" in tokens or any(k in name for k in ("instruct", "chat", "hermes",
                                 "mixtral", "llama3", "phi", "gemma",
                                 "qwen", "mistral", "nous")):
         caps.add("json-mode")
@@ -154,6 +271,10 @@ class ModelRegistry:
 
     def __init__(self) -> None:
         self._records: Dict[str, ModelRecord] = {}
+        #: How the provider configuration was read, set by the startup discovery.
+        #: None means no discovery was attempted. Empty records with a non-ok status
+        #: are a configuration failure, not an empty healthy registry.
+        self.configuration_status = None
 
     # ------------------------------------------------------------------
     # Discovery
@@ -169,7 +290,10 @@ class ModelRegistry:
         Does NOT raise: a dead server simply returns an empty list and the
         caller gets an honest empty result — never a fabricated one.
         """
-        url = base_url.rstrip("/") + "/api/tags"
+        # Probes always address the server root. An OpenAI-style base (".../v1") would
+        # otherwise probe ".../v1/api/tags", which does not exist and finds no models.
+        root = ollama_server_root(base_url) or base_url.rstrip("/")
+        url = root + "/api/tags"
         try:
             req = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(req, timeout=timeout_s) as resp:
@@ -199,23 +323,31 @@ class ModelRegistry:
             # round-trip per model — too expensive for bulk discovery.
             # Default 0; ModelRouter treats 0 as "unknown, not long-context".
             context_length = 0
-
-            capabilities = _infer_capabilities(model_name, context_length)
+            hints = _infer_capabilities(model_name, context_length)
+            meta = fetch_ollama_metadata(base_url, model_name, timeout_s=timeout_s)
+            capabilities, cap_sources, context_length = reconcile_capabilities(hints, meta)
+            absent = verified_absent_tags(meta)
 
             record_id = f"{endpoint_id}/{model_name}"
             record = ModelRecord(
                 id=record_id,
                 model_name=model_name,
                 endpoint_id=endpoint_id,
-                base_url=base_url.rstrip("/"),
+                base_url=root,
                 network_class=network_class,
                 capabilities=capabilities,
+                capability_sources=cap_sources,
                 parameter_size=param_size,
                 quantization=quantization,
                 context_length=context_length,
                 size_bytes=size_bytes,
                 healthy=True,
                 last_checked=time.monotonic(),
+                metadata_checked=time.monotonic(),
+                probe_success_at=time.monotonic(),
+                probe_success_wall=time.time(),
+                metadata_success_at=time.monotonic(),
+                verified_absent=absent,
             )
             self._records[record_id] = record
             added.append(record)
@@ -231,26 +363,37 @@ class ModelRegistry:
     # ------------------------------------------------------------------
 
     def verify_health(self, record: ModelRecord,
-                      timeout_s: float = 5.0) -> bool:
-        """Probe the endpoint and update the record's health flag.
+                      timeout_s: float = DEFAULT_POLICY.probe_timeout_s) -> bool:
+        """Probe the endpoint and record the outcome as explicit evidence.
 
-        Uses a minimal /api/tags call (Ollama) for local/private endpoints.
-        Returns the health result.  Updates the record in-place.
+        A success sets ``probe_success_at`` and clears any failure. A failure sets
+        ``probe_failure_at`` and a stable category. The raw exception text is never stored,
+        because it can contain an address. Returns the health result.
         """
         url = record.base_url + "/api/tags"
+        now = time.monotonic()
         try:
             req = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(req, timeout=timeout_s):
                 pass
-            record.healthy = True
-            record.last_error = ""
-            record.last_checked = time.monotonic()
-            return True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — classified, never stored as text
+            category = probe_error_category(exc)
             record.healthy = False
-            record.last_error = str(exc)[:200]
-            record.last_checked = time.monotonic()
+            record.probe_failure_at = now
+            record.probe_failure_category = category
+            record.last_error_category = category
+            record.last_error = category
+            record.last_checked = now
             return False
+        record.healthy = True
+        record.probe_success_at = now
+        record.probe_success_wall = time.time()
+        record.last_checked = now
+        record.last_error = ""
+        record.last_error_category = ""
+        record.probe_failure_at = None
+        record.probe_failure_category = ""
+        return True
 
     # ------------------------------------------------------------------
     # Query

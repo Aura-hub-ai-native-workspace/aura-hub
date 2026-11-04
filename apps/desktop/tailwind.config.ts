@@ -40,6 +40,7 @@ const config: Config = {
           muted: 'var(--text-muted)',
           subtle: 'var(--text-subtle)',
         },
+        'on-accent': 'var(--on-accent)',
         accent: {
           DEFAULT: 'var(--accent)',
           50: 'var(--accent-50)',
@@ -66,7 +67,7 @@ const config: Config = {
         },
         vio: {
           DEFAULT: 'var(--neon-violet)',
-          soft: 'rgba(122, 92, 255, 0.14)',
+          soft: 'rgba(128, 128, 128, 0.14)',
         },
       },
       fontFamily: {
@@ -90,9 +91,9 @@ const config: Config = {
         md: '0 8px 24px rgba(20, 23, 29, 0.07), 0 2px 6px rgba(20, 23, 29, 0.04)',
         lg: '0 18px 48px rgba(20, 23, 29, 0.10), 0 4px 12px rgba(20, 23, 29, 0.05)',
         card: '0 8px 30px rgba(0, 0, 0, 0.35)',
-        'glow-blue': '0 0 0 1px rgba(77,124,255,0.35), 0 0 24px rgba(77,124,255,0.25)',
-        'glow-violet': '0 0 0 1px rgba(122,92,255,0.35), 0 0 24px rgba(122,92,255,0.22)',
-        'glow-cyan': '0 0 0 1px rgba(32,211,255,0.35), 0 0 24px rgba(32,211,255,0.22)',
+        'glow-blue': '0 0 0 1px rgba(128,128,128,0.35), 0 0 24px rgba(128,128,128,0.18)',
+        'glow-violet': '0 0 0 1px rgba(128,128,128,0.35), 0 0 24px rgba(128,128,128,0.18)',
+        'glow-cyan': '0 0 0 1px rgba(128,128,128,0.35), 0 0 24px rgba(128,128,128,0.18)',
         'glow-green': '0 0 0 1px rgba(31,211,138,0.35), 0 0 24px rgba(31,211,138,0.22)',
       },
       transitionTimingFunction: {

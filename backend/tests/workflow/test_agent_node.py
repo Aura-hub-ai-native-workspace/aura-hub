@@ -89,32 +89,6 @@ def test_tool_allowlist_denial_parks_not_executes():
     assert fabric.invocations == []
 
 
-def test_approval_park_records_evidence_and_no_effect_after():
-    fabric = ScriptedFabric([{"park": True}])
-    from aura.workflow.agent.runner import AgentRunner
-
-    runner = AgentRunner(fabric=fabric, envelope=ENVELOPE, redact=lambda t: t,
-                         workflow_id="wf", run_id="wr", project_id="p",
-                         project_path="/p",
-                         model=ModelScript([
-                             {"text": "", "toolCall":
-                              {"capabilityId": "filesystem.read",
-                               "input": {"path": "README"}}}]))
-    out = runner.run(_node(), {}, {"text": ""}, {})
-    assert out["stopReason"] == "awaiting-approval"
-    assert out.get("port") is None                    # omitted: TS drops undefined
-    assert out["trace"]["port"] == "needs-human"
-    assert len(fabric.invocations) == 1
-    ev = out["evidence"][0]
-    assert ev["outcome"] == "awaiting-approval" and ev["approvalId"] == "apr-x"
-    trace = out["trace"]
-    resume = out.get("trace", {}).get("resume") or (out.get("approval") and None)
-    # resume block lives on the outcome dict under 'resume' key in TS finish extras;
-    # Python mirrors via trace? Verify actual location:
-    r2 = out
-    assert r2["stopReason"] == "awaiting-approval"
-
-
 def test_completed_cycle_with_observation():
     script_steps = [
         {"text": "read it", "toolCall": {"capabilityId": "filesystem.read",

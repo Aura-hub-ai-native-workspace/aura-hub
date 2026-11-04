@@ -26,12 +26,11 @@ def test_request_id_shape_and_validation() -> None:
 
 
 def _agent(home: Path, **kw):
-    from aura.approvals import ApprovalLedger
     from aura.central_agent import AgentSessionStore, CentralAgent
     from aura.fabric import FabricConfig
 
     cfg = FabricConfig(fabric=None, audit_store=None,
-                       ledger=ApprovalLedger(), permissions={},
+                       ledger=None, permissions={},
                        executors={}, secrets=None)
     return CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
 

@@ -12,14 +12,24 @@ they never silently pass.
 
 from __future__ import annotations
 
+import os
+import tempfile
+import shutil
 import subprocess
+
+#: A fixed PATH keeps the Node oracle reproducible on POSIX. Windows has no /usr/bin and needs its own
+#: system directory variables for node to start, so there the real PATH is used.
+_NODE_PATH = os.environ.get("PATH", "") if os.name == "nt" else (
+    (os.path.dirname(shutil.which("node")) + ":" if shutil.which("node") else "") + "/usr/bin:/bin:/usr/local/bin")
+_WIN_ENV = {k: os.environ[k] for k in ("SYSTEMROOT", "TEMP", "TMP") if k in os.environ} if os.name == "nt" else {}
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parents[3]
-TSREF = Path("/tmp/opencode/tsref")
-ESBUILD = REPO / "node_modules" / ".bin" / "esbuild"
+# Windows has no drive-less /tmp: esbuild could not resolve "/tmp/..." there, so use the real temp dir.
+TSREF = Path("/tmp/opencode/tsref") if os.name != "nt" else Path(tempfile.gettempdir()) / "opencode" / "tsref"
+ESBUILD = REPO / "node_modules" / ".bin" / ("esbuild.cmd" if os.name == "nt" else "esbuild")
 DRIVER = Path(__file__).parent / "ts_driver.mjs"
 
 
@@ -64,9 +74,10 @@ def _write_stub_env() -> None:
 
 def _build_fabric_wiring(repo: Path, esbuild: Path, tsref: Path) -> None:
     js = (BUILD_WIRING_JS
-          .replace("<ESBUILD_LIB>", str(repo / "node_modules" / "esbuild" / "lib" / "main.js"))
-          .replace("<TSREF>", str(tsref))
-          .replace("<REPO>", str(repo)))
+          .replace("<ESBUILD_LIB>", (repo / "node_modules" / "esbuild" / "lib" / "main.js").resolve().as_uri())
+          # Forward slashes: these land inside JS string literals, where a Windows backslash is an escape.
+          .replace("<TSREF>", tsref.as_posix())
+          .replace("<REPO>", repo.as_posix()))
     script = tsref / "build-wiring.mjs"
     script.write_text(js, encoding="utf-8")
     subprocess.run(["node", str(script)], cwd=repo, check=True, capture_output=True)
@@ -130,7 +141,8 @@ def tsref() -> dict[str, Path]:
             "--bundle", "--format=esm", "--platform=node", "--external:typescript",
             f"--outfile={TSREF / 'wfengine.mjs'}"], cwd=REPO, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
-        pytest.skip(f"failed to build TS reference bundles: {e.stderr[-400:]}")
+        err = e.stderr if isinstance(e.stderr, str) else (e.stderr or b"").decode("utf-8", "replace")
+        pytest.skip(f"failed to build TS reference bundles: {err[:600]} ... {err[-200:]}")
     return {
         "fabric": fabric_out, "index": index_out, "versions": versions_out,
         "wfstore": TSREF / "wfstore.mjs", "runstore": TSREF / "runstore.mjs",
@@ -143,12 +155,12 @@ def run_ts_batch(tsref_paths: dict[str, Path], func: str, cases: list[dict]) -> 
     env_driver = {
         "TSREF_FABRIC": str(tsref_paths["fabric"]),
         "TSREF_VERSIONS": str(tsref_paths["versions"]),
-        "PATH": "/usr/bin:/bin:/usr/local/bin",
+        "PATH": _NODE_PATH, **_WIN_ENV,
     }
     import json
     proc = subprocess.run(
         ["node", str(DRIVER)],
         input=json.dumps({"func": func, "cases": cases}),
-        capture_output=True, text=True, env=env_driver, check=True,
+        capture_output=True, text=True, encoding="utf-8", env=env_driver, check=True,
     )
     return json.loads(proc.stdout)["digests"]

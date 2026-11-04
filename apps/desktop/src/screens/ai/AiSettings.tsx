@@ -2,8 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { cn } from '@aura/core';
 import { Badge, Button, Card, CardHeader, Dialog, Dropdown, Icon, Input } from '@aura/ui';
 import { PageContainer, PageBlock } from '../PageContainer';
-import { UpdatePanel } from '../../updater/UpdatePanel';
-import { AppImageInstallPanel } from '../../components/AppImageInstallPanel';
 import { aiClient, type AiSettings as Settings, type ProviderInfo, type ConnectedProvider, type ProviderStatus } from '../../ai/aiClient';
 
 interface DialogState {
@@ -201,7 +199,7 @@ export function AiSettings() {
 
   if (error && !settings) {
     return (
-      <PageContainer title="AI Provider" subtitle="Unable to load settings">
+      <PageContainer title="Connections" subtitle="Unable to load settings">
         <Card>
           <div className="py-8 text-center">
             <Icon name="cpu" size={24} className="mx-auto text-text-subtle" />
@@ -215,14 +213,14 @@ export function AiSettings() {
 
   if (!settings) {
     return (
-      <PageContainer title="AI Provider" subtitle="Connecting to the local AI service…">
+      <PageContainer title="Connections" subtitle="Connecting to the local AI service…">
         <Card><div className="py-8 text-center text-[13px] text-text-muted">Waiting for the local AI service…</div></Card>
       </PageContainer>
     );
   }
 
   return (
-    <PageContainer title="AI Provider" subtitle="AURA has no built-in model. Connect your own model server — a cloud key is only ever an explicitly activated fallback.">
+    <PageContainer title="Connections" subtitle="AURA has no built-in model. Connect your own model server — a cloud key is only ever an explicitly activated fallback.">
       <div className="grid grid-cols-12 gap-5">
         {/* Providers — the primary section */}
         <PageBlock className="col-span-12 lg:col-span-8">
@@ -292,39 +290,6 @@ export function AiSettings() {
           </Card>
         </PageBlock>
 
-        {/* Sovereign Mode */}
-        <PageBlock className="col-span-12">
-          <Card>
-            <div className="flex items-start justify-between gap-6">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <CardHeader title="Sovereign Mode" subtitle="Block cloud AI inference — only local and private servers may process prompts." />
-                  {settings.sovereignMode && (
-                    <Badge tone="attention" dot className="shrink-0 self-start mt-1">Active</Badge>
-                  )}
-                </div>
-                <div className="mt-3 rounded-xl border border-line bg-surface-active/40 px-4 py-3 text-[12px] space-y-1.5">
-                  <div className="flex items-center gap-2 text-text-muted">
-                    <Icon name="check" size={12} className="shrink-0 text-positive" />
-                    <span>When ON — cloud providers (OpenAI, Anthropic, Gemini, etc.) are blocked at the routing layer.</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-text-muted">
-                    <Icon name="check" size={12} className="shrink-0 text-positive" />
-                    <span>AURA uses only self-hosted servers. If none is available, AURA reports the gap honestly.</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-text-muted">
-                    <Icon name="cpu" size={12} className="shrink-0 text-text-subtle" />
-                    <span className="font-medium text-text-subtle">APPLICATION ENFORCED — software policy, not a physical air-gap. Physical isolation requires separate infrastructure controls.</span>
-                  </div>
-                </div>
-              </div>
-              <div className="shrink-0 pt-1">
-                <Toggle on={settings.sovereignMode ?? false} onChange={(v) => patch({ sovereignMode: v })} />
-              </div>
-            </div>
-          </Card>
-        </PageBlock>
-
         {/* Generation */}
         <PageBlock className="col-span-12 lg:col-span-7">
           <Card>
@@ -346,37 +311,26 @@ export function AiSettings() {
           </Card>
         </PageBlock>
 
-        {/* Reliability + cache */}
+        {/* Reliability — timeouts and retries, plus the two controls that
+            decide how far AURA relies on the network and on its own cache. */}
         <PageBlock className="col-span-12 lg:col-span-5">
-          <div className="flex h-full flex-col gap-5">
-            <Card>
-              <CardHeader title="Reliability" />
-              <div className="mt-4 space-y-4">
-                <Row label="Timeout" hint="seconds"><NumberField value={Math.round((settings.timeoutMs ?? 30000) / 1000)} step={5} min={5} max={120} onChange={(v) => patch({ timeoutMs: v * 1000 })} /></Row>
-                <Row label="Retries"><NumberField value={settings.maxRetries ?? 2} step={1} min={0} max={5} onChange={(v) => patch({ maxRetries: v })} /></Row>
-              </div>
-            </Card>
-            <Card>
-              <CardHeader title="Knowledge cache" />
-              <p className="mt-2 text-[12px] text-text-muted">Rebuild the Coding + FullStack indexes from the current project.</p>
-              <Button variant="secondary" icon="knowledge" onClick={clearCache} loading={reindexing} className="mt-3" block>Clear cache & re-index</Button>
-              {reindexMsg && <div className="mt-2 text-[11.5px] text-text-subtle">{reindexMsg}</div>}
-            </Card>
-          </div>
-        </PageBlock>
-
-        {/* Application updates. Its own block rather than a nested card:
-            upgrading the app is not an AI-provider setting. */}
-        <PageBlock className="col-span-12 lg:col-span-7">
-          <UpdatePanel />
-        </PageBlock>
-
-        {/* The installation itself, for the same reason — and beside Updates
-            because both answer "what copy of AURA Hub am I running, and what
-            can I do about it?". Renders nothing unless there is an AppImage
-            installation to act on. */}
-        <PageBlock className="col-span-12 lg:col-span-5">
-          <AppImageInstallPanel />
+          <Card className="h-full">
+            <CardHeader title="Reliability" />
+            <div className="mt-4 space-y-4">
+              <Row label="Timeout" hint="seconds"><NumberField value={Math.round((settings.timeoutMs ?? 30000) / 1000)} step={5} min={5} max={120} onChange={(v) => patch({ timeoutMs: v * 1000 })} /></Row>
+              <Row label="Retries"><NumberField value={settings.maxRetries ?? 2} step={1} min={0} max={5} onChange={(v) => patch({ maxRetries: v })} /></Row>
+              <Row label="Sovereign Mode" hint="Block cloud AI inference — only local and private servers may process prompts.">
+                <Toggle on={settings.sovereignMode ?? false} onChange={(v) => patch({ sovereignMode: v })} />
+              </Row>
+              <p className="rounded-xl border border-line bg-surface-active/40 px-3 py-2 text-[11.5px] leading-relaxed text-text-muted">
+                When ON, cloud providers are blocked at the routing layer and AURA uses only self-hosted servers; if none is available it reports the gap. This is application-enforced software policy, not a physical air-gap.
+              </p>
+              <Row label="Knowledge cache" hint="Rebuild the Coding + FullStack indexes from the current project.">
+                <Button variant="secondary" icon="knowledge" onClick={clearCache} loading={reindexing}>Clear cache & re-index</Button>
+              </Row>
+              {reindexMsg && <div className="text-[11.5px] text-text-subtle">{reindexMsg}</div>}
+            </div>
+          </Card>
         </PageBlock>
       </div>
 

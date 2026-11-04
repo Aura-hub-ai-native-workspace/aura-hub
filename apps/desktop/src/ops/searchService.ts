@@ -342,7 +342,7 @@ export async function runSearch(query: string, scope: SearchScope | null): Promi
   if (files.length) sections.push({ scope: 'files', label: 'Files', hits: files });
   if (symbols.length) sections.push({ scope: 'symbols', label: 'Symbols', hits: symbols });
   if (knowledge.length) sections.push({ scope: 'knowledge', label: 'Knowledge', hits: knowledge });
-  if (missions.length) sections.push({ scope: 'missions', label: 'Missions', hits: missions });
+  if (missions.length) sections.push({ scope: 'missions', label: 'Plans', hits: missions });
   if (diagnoses.length) sections.push({ scope: 'diagnoses', label: 'Diagnoses', hits: diagnoses });
   if (documentation.length) sections.push({ scope: 'documentation', label: 'Documentation', hits: documentation });
   if (architecture.length) sections.push({ scope: 'architecture', label: 'Architecture', hits: architecture });
@@ -355,7 +355,7 @@ export const SEARCH_SCOPE_META: Record<SearchScope, { label: string; icon: IconN
   files: { label: 'Files', icon: 'file' },
   symbols: { label: 'Symbols', icon: 'code' },
   knowledge: { label: 'Knowledge', icon: 'knowledge' },
-  missions: { label: 'Missions', icon: 'deploy' },
+  missions: { label: 'Plans', icon: 'deploy' },
   diagnoses: { label: 'Diagnoses', icon: 'bug' },
   documentation: { label: 'Documentation', icon: 'doc' },
   memory: { label: 'Memory', icon: 'memory' },
