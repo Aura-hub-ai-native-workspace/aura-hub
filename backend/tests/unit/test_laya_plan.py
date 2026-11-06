@@ -95,3 +95,47 @@ def test_a_plan_that_would_fail_validation_is_left_alone():
     except ph.HandoffError:
         raised = True
     assert raised
+
+
+class TestHighRiskAlwaysReviewed:
+    """A fixed floor: Laya can add reviews, but cannot drop these or miss them."""
+
+    def _decide(self, monkeypatch, task, pick):
+        from types import SimpleNamespace
+
+        from aura.central_agent import laya_advisor as advisor_module
+        from aura.central_agent.service import CentralAgent
+
+        asked = []
+
+        def ask_choice(*args):
+            asked.append(args)
+            return pick
+
+        monkeypatch.setattr(advisor_module, "laya_advisor",
+                            lambda: SimpleNamespace(ask_choice=ask_choice))
+        intent = SimpleNamespace(delegateTask=task, delegateReview=False,
+                                 delegateRemediate=False)
+        said = []
+        CentralAgent._laya_review_default(
+            SimpleNamespace(_emit=lambda *a, **k: said.append(k)), intent, "s")
+        return intent, asked, said
+
+    def test_reviewed_without_asking_laya_even_if_she_would_say_no(self, monkeypatch):
+        intent, asked, said = self._decide(
+            monkeypatch, "Add Stripe payments to checkout", ("no-review", 0.99))
+        assert intent.delegateReview and intent.delegateRemediate
+        assert asked == [] and said
+
+    def test_ordinary_work_still_follows_laya(self, monkeypatch):
+        intent, asked, _ = self._decide(
+            monkeypatch, "Change the button colour", ("no-review", 0.99))
+        assert asked and not intent.delegateReview
+
+    def test_matches_whole_words_only(self):
+        from aura.central_agent.laya_plan import HIGH_RISK_WORK
+
+        assert HIGH_RISK_WORK.search("Fix the login flow")
+        assert HIGH_RISK_WORK.search("Add a database migration")
+        assert not HIGH_RISK_WORK.search("Add a blog page")
+        assert not HIGH_RISK_WORK.search("Rename the secretary field")

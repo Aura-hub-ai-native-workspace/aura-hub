@@ -12,11 +12,19 @@ still passes the same validation as any plan. Anything else is left as it was.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
 #: Asks Laya one choice: (brief, instructions, criteria) -> (choice, probability) or None.
 Asker = Callable[[str, str, dict[str, str]], "tuple[str, float] | None"]
+
+#: Work where a missed mistake is costly. Always reviewed, whatever Laya answers
+#: or if she is unavailable. A false match only costs one extra review.
+HIGH_RISK_WORK = re.compile(
+    r"\b(auth\w*|log-?in|sign-?in|passwords?|credentials?|secrets?|api[ -]keys?|"
+    r"payments?|billing|checkout|encrypt\w*|migrations?|migrate|drop table|"
+    r"production|deploy\w*|security|permissions?)\b", re.IGNORECASE)
 
 REVIEW_INSTRUCTIONS = "Does the work described in `body` need a second agent to check it?"
 REVIEW_CRITERIA = {
