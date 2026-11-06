@@ -1332,15 +1332,23 @@ class CentralAgent:
         """Laya decides whether delegated work is independently reviewed, without being asked.
 
         Applies only to delegated work that changes the project and did not already ask for a
-        review. A confident "review" (at least MIN_CONFIDENCE) adds the independent review and
-        the remediation that follows it; otherwise the plan stays as the request described it.
+        review. High-risk work is always reviewed. Otherwise a confident "review" (at least
+        MIN_CONFIDENCE) adds the independent review and the remediation that follows it, and
+        anything else leaves the plan as the request described it.
         """
         from .laya_advisor import MIN_CONFIDENCE, laya_advisor
-        from .laya_plan import REVIEW_CRITERIA, REVIEW_INSTRUCTIONS
+        from .laya_plan import HIGH_RISK_WORK, REVIEW_CRITERIA, REVIEW_INSTRUCTIONS
 
         task = getattr(intent, "delegateTask", None)
         if (not task or getattr(intent, "delegateReadOnly", False) or getattr(intent, "delegateReview", False)
                 or getattr(intent, "needsClarification", False)):
+            return
+        if HIGH_RISK_WORK.search(str(task)):
+            intent.delegateReview = True
+            intent.delegateRemediate = True
+            self._emit("ceo.say", sid, kind="plan",
+                       text="This touches a sensitive area, so a second agent will review it, "
+                            "and anything it finds goes back for a fix.")
             return
         pick = laya_advisor().ask_choice(str(task), REVIEW_INSTRUCTIONS, REVIEW_CRITERIA)
         if pick and pick[0] == "review" and pick[1] >= MIN_CONFIDENCE:

@@ -74,6 +74,103 @@ _DENY_COMMAND = tuple(
     (_re.compile(p, _re.IGNORECASE), dest)
     for p, dest in _DENY_COMMAND_RES)
 
+#: Commands whose arguments are all write targets, and those where only the
+#: last one is. Mirrored in the plugin; both are pinned by SHELL_WRITE_VECTORS.
+_WRITES_ALL_ARGS = frozenset({"tee", "touch", "mkdir", "rm", "rmdir"})
+_WRITES_LAST_ARG = frozenset({"cp", "mv", "ln", "install"})
+_HARMLESS_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+
+
+def shell_write_targets(command: str) -> tuple[list[str], bool]:
+    """Paths a shell command visibly writes, and whether it changes directory
+    (which makes relative targets unjudgeable). Quote-aware. This is a best
+    effort: a program can still write on its own (`python -c ...`), which the
+    post-run scope check catches inside the project."""
+    targets: list[str] = []
+    words: list[str] = []
+    state = {"cur": "", "has": False, "redirect": False, "cd": False}
+
+    def flush() -> None:
+        if state["has"]:
+            (targets if state["redirect"] else words).append(state["cur"])
+            state["redirect"] = False
+        state["cur"], state["has"] = "", False
+
+    def end_command() -> None:
+        flush()
+        args = list(words)
+        words.clear()
+        while args and _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", args[0]):
+            args.pop(0)
+        if not args:
+            return
+        name = args[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+        rest = args[1:]
+        plain = [w for w in rest if not w.startswith("-")]
+        if name in ("cd", "pushd", "popd"):
+            state["cd"] = True
+        elif name in _WRITES_ALL_ARGS:
+            targets.extend(plain)
+        elif name in _WRITES_LAST_ARG:
+            targets.extend(plain[-1:] if len(plain) > 1 else [])
+        elif name == "sed" and any(w.startswith(("-i", "--in-place"))
+                                   for w in rest):
+            targets.extend(plain[1:])
+
+    quote = ""
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        i += 1
+        if quote:
+            if ch == quote:
+                quote = ""
+            else:
+                state["cur"] += ch
+        elif ch in "'\"":
+            quote, state["has"] = ch, True
+        elif ch == "\\" and i < n:
+            state["cur"] += command[i]
+            state["has"] = True
+            i += 1
+        elif ch == ">":
+            if state["cur"].isdigit():
+                state["cur"], state["has"] = "", False
+            flush()
+            while i < n and command[i] in ">|":
+                i += 1
+            if i < n and command[i] == "&":  # 2>&1: a stream, not a file
+                i += 1
+                while i < n and (command[i].isdigit() or command[i] == "-"):
+                    i += 1
+            else:
+                state["redirect"] = True
+        elif ch == "&" and i < n and command[i] == ">":
+            flush()
+        elif ch in ";|&\n":
+            end_command()
+        elif ch in " \t\r":
+            flush()
+        else:
+            state["cur"] += ch
+            state["has"] = True
+    end_command()
+    return targets, bool(state["cd"])
+
+
+def _shell_write_refusal(command: str, scope_paths: list[str],
+                         cwd: str) -> str | None:
+    """Why this command's visible writes are not allowed, or None."""
+    targets, changes_dir = shell_write_targets(command)
+    targets = [t for t in targets if t not in _HARMLESS_TARGETS]
+    if targets and changes_dir:
+        return "cannot judge a write after changing directory"
+    for target in targets:
+        path = target[2:] if target.startswith("./") else target
+        if "$" in path or not _inside_scope(path, scope_paths, cwd):
+            return f"shell write to '{target[:80]}' is outside the task scope"
+    return None
+
 
 
 @dataclass
@@ -261,6 +358,10 @@ def decide_action(req: WorkerActionRequest,
                     f"command matches denied pattern "
                     f"'{pattern.pattern[:40]}'",
                     destructive=destructive)
+        refusal = _shell_write_refusal(command, contract.scopePaths,
+                                       contract.cwd)
+        if refusal:
+            return ActionVerdict(DENY, refusal)
         return ActionVerdict(ALLOW, "command passes argv policy")
 
     if req.actionType == TOOL_CALL:

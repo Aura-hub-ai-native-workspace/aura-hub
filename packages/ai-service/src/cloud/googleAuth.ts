@@ -30,8 +30,21 @@ export interface GoogleProfile { email: string; name: string; picture: string | 
 
 type Fetch = typeof fetch;
 
-/** The OAuth client: environment first, then ~/.aura/google-oauth.env (KEY=value lines). */
-export function loadGoogleConfig(env: NodeJS.ProcessEnv = process.env, file = homePath('google-oauth.env')): GoogleConfig | null {
+/**
+ * The client baked into release builds. esbuild replaces these two names from the CI secrets; a
+ * desktop OAuth client's secret is not confidential, and PKCE protects each sign-in.
+ */
+const BUILT_IN_CLIENT = {
+  clientId: process.env.AURA_BUILT_IN_GOOGLE_CLIENT_ID ?? '',
+  clientSecret: process.env.AURA_BUILT_IN_GOOGLE_CLIENT_SECRET ?? '',
+};
+
+/** The OAuth client: environment, then ~/.aura/google-oauth.env (KEY=value lines), then the built-in one. */
+export function loadGoogleConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  file = homePath('google-oauth.env'),
+  builtIn: GoogleConfig = BUILT_IN_CLIENT,
+): GoogleConfig | null {
   let id = env.AURA_GOOGLE_CLIENT_ID?.trim();
   let secret = env.AURA_GOOGLE_CLIENT_SECRET?.trim();
   if ((!id || !secret) && fs.existsSync(file)) {
@@ -42,7 +55,8 @@ export function loadGoogleConfig(env: NodeJS.ProcessEnv = process.env, file = ho
       if (m[1] === 'AURA_GOOGLE_CLIENT_SECRET' && !secret) secret = m[2].trim();
     }
   }
-  return id && secret ? { clientId: id, clientSecret: secret } : null;
+  if (id && secret) return { clientId: id, clientSecret: secret };
+  return builtIn.clientId && builtIn.clientSecret ? builtIn : null;
 }
 
 const b64url = (buf: Buffer) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

@@ -542,8 +542,12 @@ def _governed_summary(governance: dict, action_events: list[dict],
                   if isinstance(e, dict) and e.get("decision") == "ALLOW")
     summary: dict = {"worker": node.get("name"), "governed": True,
                        "allowed": allowed, "denied": denied,
+                       # OpenCode 2 runs the plugin in a child server, so the
+                       # client exits 1 and only the action log shows the stop.
                        "stoppedByGovernance":
-                       exit_code == _SELF_KILL_CODE,
+                       exit_code == _SELF_KILL_CODE
+                       or (exit_code != 0
+                           and any(d["destructive"] for d in denied)),
                        "logPath": log_path,
                        "supports": dict(governance.get("supports") or {})}
     if include_events:
