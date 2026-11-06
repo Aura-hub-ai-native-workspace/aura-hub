@@ -14,6 +14,7 @@
 
 mod appimage;
 mod instance;
+mod pty;
 mod service;
 
 use serde::Serialize;
@@ -490,6 +491,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init());
 
     let app = builder
+        .manage(pty::LoginPty::default())
         .manage(ServiceState {
             handle: ServiceHandle::new(port, SLOT_AI, ai_token),
             port,
@@ -523,6 +525,10 @@ pub fn run() {
             appimage::appimage_install,
             appimage::appimage_uninstall,
             update_install_kind,
+            pty::agent_login_start,
+            pty::agent_login_write,
+            pty::agent_login_resize,
+            pty::agent_login_stop,
         ])
         .setup(move |app| {
             let script = resolve_service_script(app);

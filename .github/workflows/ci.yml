@@ -37,7 +37,7 @@ jobs:
       # shipped to every platform at once: it is plain TypeScript, identical
       # in all four installers, and no job ever asked it a question.
       - name: Unit tests
-        run: npm run test:front && npm run test:service
+        run: npm run test:front && npm run test:service && npm run test:agents
 
       - name: Build
         run: npm run build
@@ -273,7 +273,7 @@ jobs:
       # on Linux" test quietly stops being true on Windows.
       - name: Unit tests
         shell: bash
-        run: npm run test:front && npm run test:service
+        run: npm run test:front && npm run test:service && npm run test:agents
 
       # Retried because Tauri fetches its bundler tooling at build time —
       # AppRun and linuxdeploy on Linux, the NSIS binaries on Windows — and

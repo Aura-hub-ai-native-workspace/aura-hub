@@ -1,9 +1,14 @@
 import { AccountError } from './account/localAccount.js';
 import { accountProvider } from './account/accountProvider.js';
 import { ContextTools } from './commonContext/index.js';
+import { agentStatus, isAgentId, listAgentChoice, removeAgent, runAgentSetup } from './agentsSetup.js';
+import { googleProfile, loadGoogleConfig, pendingGoogleSignIn, signOutGoogle, startGoogleSignIn } from './cloud/googleAuth.js';
+import { downloadVersion, listVersions, uploadVersionFile } from './cloud/drive.js';
+import { createSnapshotFile, extractSnapshot } from './cloud/snapshot.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { WorkspaceManager, planNewProject } from './workspace';
 import type { PipelineOptions, StreamEmit } from './pipeline';
 import { DEFAULT_SETTINGS } from './settings';
@@ -326,6 +331,107 @@ export async function startService(opts: PipelineOptions & { port?: number; open
           await accounts.signOut(String(b.token ?? ''));
           return json(res, 200, { ok: true });
         }
+      }
+
+      /* ── Google account and the cloud (Google Drive) ─────────────── */
+      if (seg[0] === 'cloud') {
+        const cloudError = (e: unknown) => {
+          const err = e as Error;
+          return json(res, err.name === 'NotSignedInError' ? 401 : 502, { error: err.name === 'NotSignedInError' ? 'not-signed-in' : 'cloud', message: err.message });
+        };
+        if (seg[1] === 'google' && !seg[2] && method === 'GET') {
+          return json(res, 200, { configured: !!loadGoogleConfig(), profile: googleProfile(), pending: pendingGoogleSignIn() });
+        }
+        if (seg[1] === 'google' && seg[2] === 'signin' && method === 'POST') {
+          try {
+            const { authUrl, done } = await startGoogleSignIn();
+            done.catch(() => undefined); // the app polls GET /cloud/google for the outcome
+            return json(res, 200, { authUrl });
+          } catch (e) { return json(res, 400, { error: 'google', message: (e as Error).message }); }
+        }
+        if (seg[1] === 'google' && seg[2] === 'signout' && method === 'POST') {
+          await signOutGoogle();
+          return json(res, 200, { ok: true });
+        }
+        const projectFor = (id: unknown) => manager.listProjects().find((p) => p.id === id) ?? null;
+        if (seg[1] === 'send' && method === 'POST') {
+          const b = await readJson(req);
+          const project = projectFor(b.projectId);
+          if (!project) return json(res, 404, { error: 'no-project', message: 'No such project.' });
+          // Progress as a stream: packing (files read) → uploading (bytes sent) → done | failed.
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
+          const emit = (e: Record<string, unknown>) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); };
+          const tmp = path.join(os.tmpdir(), `aura-cloud-${process.pid}-${Date.now()}.tar.gz`);
+          let last = 0;
+          const throttle = (e: Record<string, unknown>) => { const now = Date.now(); if (now - last > 250) { last = now; emit(e); } };
+          try {
+            const snap = await createSnapshotFile(project.path, tmp, (files, bytes) => throttle({ phase: 'packing', files, bytes }));
+            emit({ phase: 'uploading', sent: 0, total: snap.size });
+            const version = await uploadVersionFile(project.name, tmp, (sent, total) => throttle({ phase: 'uploading', sent, total }));
+            emit({ phase: 'done', version, files: snap.files, skipped: snap.skipped });
+          } catch (e) {
+            const err = e as Error;
+            emit({ phase: 'failed', code: err.name === 'NotSignedInError' ? 'not-signed-in' : 'cloud', message: err.message });
+          } finally {
+            fs.rm(tmp, { force: true }, () => undefined);
+          }
+          if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end(); }
+          return;
+        }
+        if (seg[1] === 'versions' && method === 'GET') {
+          const project = projectFor(url.searchParams.get('projectId'));
+          if (!project) return json(res, 404, { error: 'no-project', message: 'No such project.' });
+          try { return json(res, 200, { versions: await listVersions(project.name) }); } catch (e) { return cloudError(e); }
+        }
+        if (seg[1] === 'restore' && method === 'POST') {
+          const b = await readJson(req);
+          const project = projectFor(b.projectId);
+          if (!project || typeof b.versionId !== 'string') return json(res, 400, { error: 'bad-request', message: 'projectId and versionId are required.' });
+          try {
+            const bytes = await downloadVersion(b.versionId);
+            // Never over the working copy: a new folder beside it, added as its own project.
+            const d = new Date();
+            const p2 = (n: number) => String(n).padStart(2, '0');
+            const stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}.${p2(d.getMinutes())}`; // local time
+            let target = path.join(path.dirname(project.path), `${path.basename(project.path)} (restored ${stamp})`);
+            for (let i = 2; fs.existsSync(target); i++) target = `${target} ${i}`;
+            const files = extractSnapshot(bytes, target);
+            const added = manager.addProject({ name: `${project.name} (restored)`, path: target });
+            return json(res, 200, { path: target, files, project: added.project });
+          } catch (e) { return cloudError(e); }
+        }
+      }
+
+      /* ── the six coding agents: setup and sign-in status ─────────── */
+      if (seg[0] === 'agents' && seg[1] === 'status' && method === 'GET') {
+        try {
+          return json(res, 200, { agents: await agentStatus() });
+        } catch (e) {
+          return json(res, 500, { error: 'agent-status', message: (e as Error).message });
+        }
+      }
+      if (seg[0] === 'agents' && seg[1] === 'list' && method === 'GET') {
+        try { return json(res, 200, await listAgentChoice()); } catch (e) { return json(res, 500, { error: 'agents', message: (e as Error).message }); }
+      }
+      if (seg[0] === 'agents' && seg[1] === 'remove' && method === 'POST') {
+        const b = await readJson(req);
+        if (!isAgentId(b.id)) return json(res, 400, { error: 'unknown-agent', message: 'Unknown agent.' });
+        try { return json(res, 200, await removeAgent(b.id)); } catch (e) { return json(res, 500, { error: 'agents', message: (e as Error).message }); }
+      }
+      if (seg[0] === 'agents' && (seg[1] === 'setup' || seg[1] === 'add') && method === 'POST') {
+        const b = await readJson(req);
+        if (seg[1] === 'add' && !isAgentId(b.id)) return json(res, 400, { error: 'unknown-agent', message: 'Unknown agent.' });
+        const only = Array.isArray(b.only) ? b.only.filter((x: unknown): x is string => typeof x === 'string') : undefined;
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive', ...CORS });
+        const ac = new AbortController();
+        res.on('close', () => ac.abort());
+        const code = await runAgentSetup((e) => { if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`); }, { only, add: seg[1] === 'add' ? (b.id as string) : undefined, signal: ac.signal });
+        if (!res.writableEnded) {
+          res.write(`data: ${JSON.stringify({ agent: 'aura', step: 'setup', status: code === 0 ? 'done' : 'failed' })}\n\n`);
+          res.write('data: [DONE]\n\n');
+          res.end();
+        }
+        return;
       }
 
       /* ── shared context: the built-in common-context tool layer ─ */

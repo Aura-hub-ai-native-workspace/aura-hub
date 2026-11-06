@@ -1,3 +1,4 @@
+import { CloudControls } from '../../cloud/CloudControls';
 import { Suspense, lazy, useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { PROJECT_TABS, pageVariants, useAppStore, cn } from '@aura/core';
@@ -90,7 +91,7 @@ export function ProjectWorkspace() {
         <div className="pointer-events-auto"><ProjectModeSwitch /></div>
       </div>
       {!isWorkspace && (
-      <div className="shrink-0 border-b border-line bg-surface/40 px-8 pb-5 pt-2 backdrop-blur-sm sm:px-10 lg:px-12">
+      <div className="relative z-20 shrink-0 border-b border-line bg-surface/40 px-8 pb-5 pt-2 backdrop-blur-sm sm:px-10 lg:px-12">
         <button onClick={closeProject} className="mb-4 inline-flex items-center gap-1.5 text-[12px] font-medium text-text-muted transition-colors hover:text-text">
           <Icon name="chevron-right" size={14} className="rotate-180" />
           Back to Home
@@ -112,6 +113,7 @@ export function ProjectWorkspace() {
             </div>
             <p className="mt-1 truncate font-mono text-[12px] text-text-muted">{project.path}</p>
           </div>
+          <div className="ml-auto shrink-0 self-start"><CloudControls projectId={project.id} /></div>
         </div>
       </div>
       )}

@@ -140,6 +140,11 @@ for (const required of [pyEntryFrom, pyPackageFrom]) {
     );
   }
 }
+// The one agent-setup script (install the six coding agents, connect common-context, sign-in
+// status). The service runs it with the bundled Node from resources/setup/.
+mkdirSync(path.join(OUT_DIR, 'setup'), { recursive: true });
+copyFileSync(path.join(REPO, 'scripts', 'agents', 'aura-agents.mjs'), path.join(OUT_DIR, 'setup', 'aura-agents.mjs'));
+
 mkdirSync(path.join(PY_OUT, 'scripts'), { recursive: true });
 copyFileSync(pyEntryFrom, path.join(PY_OUT, PY_ENTRY_REL));
 const staged = stagePython(pyPackageFrom, path.join(PY_OUT, PY_PACKAGE_REL));

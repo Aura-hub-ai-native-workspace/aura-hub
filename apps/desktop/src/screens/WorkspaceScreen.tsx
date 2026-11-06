@@ -24,7 +24,8 @@
  * conversation file — never in a project's file — so the Workspace
  * Chat and every project's Ask AURA are disjoint threads. There is no
  * second chat implementation and no second stream.
- */import { useEffect, useMemo, useRef, useState, useCallback, type RefObject } from 'react';
+ */import { useAgentChoice } from '../agents/agentChoice';
+import { useEffect, useMemo, useRef, useState, useCallback, type RefObject } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { cn, spring, useAppStore } from '@aura/core';
 import { Icon } from '@aura/ui';
@@ -250,15 +251,17 @@ export function WorkspaceScreen() {
   /* The group: the CEO is the admin; each installed agent is a member, with what it is doing now. */
   const { projects } = useWorkspace();
   const groupTitle = projects.find((p) => p.id === projectId)?.name ?? 'AURA group';
+  const workspaceAgents = useAgentChoice((s) => s.selected);
   const members = useMemo<GroupMember[]>(
     () => workers
-      .filter((w) => w.installed)
+      // The workspace's agents only (four by default; added or removed on the sign-in page).
+      .filter((w) => w.installed && (workspaceAgents as string[]).includes(w.id))
       .map((w) => ({
         id: w.id,
         name: w.name,
         tone: workerActivity.has(w.id) || workerActivity.has(w.name) ? 'working' : w.connected ? 'ready' : 'idle',
       })),
-    [workers, workerActivity],
+    [workers, workerActivity, workspaceAgents],
   );
   const [railOpen, setRailOpen] = useState(false);
 

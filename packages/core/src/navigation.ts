@@ -45,6 +45,7 @@ export const PROJECT_MODES: { key: ProjectMode; label: string }[] = [
 
 /** Settings tabs, in display order. */
 export const SETTINGS_TABS: { key: SettingsTab; label: string }[] = [
+  { key: 'account', label: 'Account' },
   { key: 'connections', label: 'Connections' },
   { key: 'tools', label: 'Connected tools' },
   { key: 'runtime', label: 'AI Runtime' },

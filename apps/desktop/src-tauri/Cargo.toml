@@ -22,6 +22,9 @@ serde_json = "1"
 # Both are already in Cargo.lock through Tauri; these lines only make the use explicit.
 sha2 = "0.10"
 getrandom = "0.2"
+# The sign-in page's terminal panel (src/pty.rs): each coding agent's own login
+# runs in a real pseudo-terminal, on Linux, macOS (openpty) and Windows (ConPTY).
+portable-pty = "0.8"
 
 # The updater and the restart that follows it. Both are desktop-only by
 # construction — there is no mobile target here — and both are declared

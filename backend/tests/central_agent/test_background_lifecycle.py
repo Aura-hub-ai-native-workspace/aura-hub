@@ -116,4 +116,11 @@ def test_a_quickly_ending_run_is_not_overwritten_by_the_started_save(client, mon
     s = _settle(api, body["sessionId"], timeout=15.0)
     assert s["state"] == "failed"
     assert s["lastResult"]["failureReason"] == "orchestration-crashed"
+    # The state above is readable as soon as the file is written, a moment before
+    # the wrapper records it in `order`, so wait for the record (bounded).
+    import time
+
+    deadline = time.monotonic() + 5
+    while "thread:failed" not in order and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert order.index("request:started") < order.index("thread:failed"), order

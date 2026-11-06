@@ -42,6 +42,7 @@
     "test:ui-events": "node scripts/ui-agent-events.mjs",
     "test:front": "vitest run --pool=threads --config apps/desktop/vite.config.ts --exclude '**/.claude/**' apps/desktop/src",
     "test:service": "vitest run --pool=threads --dir packages/ai-service/src",
+    "test:agents": "node --test scripts/agents/aura-agents.test.mjs",
     "check:environment": "esbuild scripts/environment-inventory-check.ts --bundle --platform=node --format=esm --define:import.meta.env={} --outfile=.aura/environment-inventory-check.mjs --log-level=error && node .aura/environment-inventory-check.mjs"
   },
   "devDependencies": {

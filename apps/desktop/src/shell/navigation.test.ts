@@ -12,8 +12,8 @@ describe('navigation model', () => {
     expect(PROJECT_TABS.map((t) => t.key)).toEqual(['overview', 'context', 'architecture', 'code']);
   });
 
-  it('Settings has exactly four tabs in order', () => {
-    expect(SETTINGS_TABS.map((t) => t.key)).toEqual(['connections', 'tools', 'runtime', 'updates']);
+  it('Settings has exactly five tabs in order, Account first', () => {
+    expect(SETTINGS_TABS.map((t) => t.key)).toEqual(['account', 'connections', 'tools', 'runtime', 'updates']);
   });
 });
 

@@ -71,7 +71,8 @@ describe('inspect follows the requested project, not the mount', () => {
     // persisted is identical afterwards (this still fails if the
     // request reads, generates, or attributes anything to A).
     expect(loadIdentity(a.id)).toEqual(identityOfAAtMount);
-  });
+    // Indexes two projects before reading: past the 5 s default on a slow Windows runner.
+  }, 30_000);
 
   it('falls back to the mount when no project is requested (legacy path)', async () => {
     const manager = new WorkspaceManager({});

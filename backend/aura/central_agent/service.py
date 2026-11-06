@@ -3786,6 +3786,39 @@ class CentralAgent:
                            request_id=request_id,
                            web_research=web_research)
 
+    def review_plan(self, session_id: str) -> dict | None:
+        """Human-readable review of a session's plan — intended actions,
+        risks, verification. NEVER model reasoning. Used by
+        GET /agent/sessions/{sid}/plan; removed by mistake in 0d6c43f while
+        that route still called it (every call answered 500)."""
+        session = self.sessions.load(session_id)
+        if session is None:
+            return None
+
+        def g(o, k, default=None):
+            return o.get(k, default) if isinstance(o, dict) else getattr(o, k, default)
+
+        plan = None
+        if g(session, "activePlanId"):
+            plan = getattr(self, "_active_plans", {}).get(g(session, "activePlanId"))
+        plan = plan or g(session, "activePlan")
+        if not plan:
+            return None
+        rows = []
+        for t in g(plan, "tasks") or []:
+            verification = g(t, "verification")
+            rows.append({
+                "id": g(t, "id"),
+                "action": g(t, "description"),
+                "capability": g(t, "capabilityId"),
+                "worker": g(t, "nodeId") or g(g(t, "input") or {}, "nodeId"),
+                "risk": g(t, "risk"),
+                "reversible": g(t, "reversible"),
+                "verification": (g(verification, "description") or g(verification, "kind")) if verification else None,
+            })
+        return {"planId": g(plan, "planId"), "steps": rows,
+                "estimatedApprovals": g(plan, "estimatedApprovals", 0)}
+
     # ── resume / cancel ──────────────────────────────────────────────────
     def resume(self, session_id: str,
                resume_cancelled: bool = False,

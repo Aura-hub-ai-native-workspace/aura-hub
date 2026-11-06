@@ -514,7 +514,7 @@ pub fn verify(handle: &ServiceHandle) -> Ownership {
 /// a user who sets it deliberately should keep it. The fallback for an
 /// unset-everything case is the current directory rather than `/`, which
 /// has no meaning on Windows.
-fn home_dir() -> PathBuf {
+pub(crate) fn home_dir() -> PathBuf {
     #[cfg(windows)]
     {
         if let Some(p) = std::env::var_os("USERPROFILE") {
@@ -553,7 +553,7 @@ pub(crate) fn aura_home() -> PathBuf {
 /// conventional user tool directories of the running platform are appended
 /// behind it. The joined value uses the platform's own separator
 /// (`:` on Unix, `;` on Windows) via `join_paths`, never a hardcoded one.
-fn augmented_path(node_dir: Option<&PathBuf>) -> String {
+pub(crate) fn augmented_path(node_dir: Option<&PathBuf>) -> String {
     let home = home_dir();
     let mut parts: Vec<PathBuf> = Vec::new();
 
@@ -583,6 +583,14 @@ fn augmented_path(node_dir: Option<&PathBuf>) -> String {
      */
     if let Some(dir) = node_dir {
         parts.push(dir.clone());
+    }
+
+    // Coding agents AURA's own setup installed when the user's npm prefix
+    // was not writable (scripts/agents/aura-agents.mjs → ~/.aura/tools).
+    for candidate in [home.join(".aura/tools/bin"), home.join(".aura/tools")] {
+        if candidate.is_dir() {
+            parts.push(candidate);
+        }
     }
 
     #[cfg(unix)]
@@ -675,7 +683,7 @@ fn augmented_path(node_dir: Option<&PathBuf>) -> String {
 /// A source checkout stages no runtime, so development still resolves
 /// through the search below. `AURA_NODE` still wins, because an explicit
 /// instruction should.
-fn resolve_node(bundled: Option<&std::path::Path>) -> Result<PathBuf, String> {
+pub(crate) fn resolve_node(bundled: Option<&std::path::Path>) -> Result<PathBuf, String> {
     if let Some(explicit) = std::env::var_os("AURA_NODE") {
         let p = PathBuf::from(explicit);
         if p.is_file() {

@@ -1,3 +1,6 @@
+import { useAgentsSignIn } from '../agents/signInOverlay';
+import { useAgentChoice } from '../agents/agentChoice';
+import { fetchAgentStatus } from '../agents/agentsClient';
 import { useEffect, useMemo, useState } from 'react';
 import { useAppStore, cn } from '@aura/core';
 import { Badge, Button, Card, Icon, IconButton, Input, Menu, useToast } from '@aura/ui';
@@ -9,7 +12,6 @@ import { useAgentLink } from '../ai/agentLinkStore';
 import { useWorkspace } from '../data/useWorkspace';
 import { hasUnsavedWorkFor } from '../editor/editorStore';
 import { aiClient, type ProjectRecord } from '../ai/aiClient';
-import { centralAgentClient } from '../ai/centralAgentClient';
 import { AgentStrip, ProjectCards, PromptHero, type AgentRow } from './home/HomeSections';
 
 type Segment = 'all' | 'favorites' | 'recent';
@@ -43,11 +45,11 @@ export function Home() {
   const openProjectNav = useAppStore((s) => s.openProject);
   const addProjectDialogOpen = useAppStore((s) => s.addProjectDialogOpen);
   const openAddProjectDialog = useAppStore((s) => s.openAddProjectDialog);
-  const openSettings = useAppStore((s) => s.openSettings);
   const closeAddProjectDialog = useAppStore((s) => s.closeAddProjectDialog);
   const { projects, localProjects, refresh, open } = useWorkspace();
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
+  const workspaceAgents = useAgentChoice((s) => s.selected);
   const [reachable, setReachable] = useState<boolean | null>(null);
   const [showAllProjects, setShowAllProjects] = useState(false);
   const [isAskAuraOpen, setIsAskAuraOpen] = useState(false);
@@ -84,13 +86,14 @@ export function Home() {
     let tries = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const load = () => {
-      centralAgentClient.agentRuntimeDiscover()
-        .then((r) => { if (alive) { setAgents(r.agents.map((a) => ({ id: a.id, name: a.name, detected: a.detected, status: a.status, drift: a.drift }))); setAgentsLoading(false); } })
+      // The workspace's agents (four by default), not every agent found on the machine.
+      fetchAgentStatus()
+        .then((list) => { if (alive) { setAgents(list.map((a) => ({ id: a.id, name: a.name, detected: a.installed, status: a.signedIn ? 'ok' : 'signed-out', drift: '' }))); setAgentsLoading(false); } })
         .catch(() => { if (!alive) return; if (++tries < 4) timer = setTimeout(load, 4000); else setAgentsLoading(false); });
     };
     load();
     return () => { alive = false; if (timer) clearTimeout(timer); };
-  }, [reachable]);
+  }, [reachable, workspaceAgents]);
 
   const allProjects = useMemo(() => [...localProjects, ...projects], [localProjects, projects]);
   const recents = allProjects.slice(0, 4);
@@ -130,7 +133,7 @@ export function Home() {
           <ProjectCards projects={recents} onOpen={enter} onAdd={openAddProjectDialog} onAll={() => setShowAllProjects((v) => !v)} showingAll={showAllProjects} relTime={relTime} />
         </PageBlock>
         <PageBlock className="mt-12">
-          <AgentStrip agents={agents} loading={agentsLoading} onManage={() => openSettings('runtime')} />
+          <AgentStrip agents={agents} loading={agentsLoading} onManage={() => useAgentsSignIn.getState().show()} />
         </PageBlock>
       </div>
 
