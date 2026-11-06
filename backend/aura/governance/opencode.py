@@ -186,6 +186,65 @@ export const AuraGovernance = async (ctx) => {
     return null;
   };
   // Each chained part is checked on its own, as in actions._command_parts.
+  // Mirrors actions.shell_write_targets; pinned by SHELL_WRITE_VECTORS.
+  const WRITES_ALL = new Set(["tee", "touch", "mkdir", "rm", "rmdir"]);
+  const WRITES_LAST = new Set(["cp", "mv", "ln", "install"]);
+  const HARMLESS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"]);
+  const shellWriteTargets = (command) => {
+    const text = String(command);
+    const targets = [];
+    let words = [], cur = "", has = false, redirect = false, cd = false, quote = "";
+    const flush = () => {
+      if (has) { (redirect ? targets : words).push(cur); redirect = false; }
+      cur = ""; has = false;
+    };
+    const endCommand = () => {
+      flush();
+      const args = words; words = [];
+      while (args.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(args[0])) args.shift();
+      if (!args.length) return;
+      const name = args[0].replace(/\\/g, "/").split("/").pop().toLowerCase();
+      const rest = args.slice(1);
+      const plain = rest.filter((w) => !w.startsWith("-"));
+      if (name === "cd" || name === "pushd" || name === "popd") cd = true;
+      else if (WRITES_ALL.has(name)) targets.push(...plain);
+      else if (WRITES_LAST.has(name)) { if (plain.length > 1) targets.push(plain[plain.length - 1]); }
+      else if (name === "sed" && rest.some((w) => w.startsWith("-i") || w.startsWith("--in-place"))) targets.push(...plain.slice(1));
+    };
+    let i = 0;
+    const n = text.length;
+    while (i < n) {
+      const ch = text[i++];
+      if (quote) { if (ch === quote) quote = ""; else cur += ch; }
+      else if (ch === "'" || ch === '"') { quote = ch; has = true; }
+      else if (ch === "\\" && i < n) { cur += text[i++]; has = true; }
+      else if (ch === ">") {
+        if (/^[0-9]+$/.test(cur)) { cur = ""; has = false; }
+        flush();
+        while (i < n && (text[i] === ">" || text[i] === "|")) i++;
+        if (i < n && text[i] === "&") {
+          i++;
+          while (i < n && /[0-9-]/.test(text[i])) i++;
+        } else redirect = true;
+      }
+      else if (ch === "&" && i < n && text[i] === ">") flush();
+      else if (ch === ";" || ch === "|" || ch === "&" || ch === "\n") endCommand();
+      else if (ch === " " || ch === "\t" || ch === "\r") flush();
+      else { cur += ch; has = true; }
+    }
+    endCommand();
+    return { targets, cd };
+  };
+  const shellWriteRefusal = (command) => {
+    const seen = shellWriteTargets(command);
+    const targets = seen.targets.filter((t) => !HARMLESS.has(t));
+    if (targets.length && seen.cd) return "cannot judge a write after changing directory";
+    for (const target of targets) {
+      const path = target.startsWith("./") ? target.slice(2) : target;
+      if (path.includes("$") || !insideScope(path)) return "shell write to '" + target.slice(0, 80) + "' is outside the task scope";
+    }
+    return null;
+  };
   const commandParts = (command) => [
     command,
     ...String(command).split(/;|&&|\|\||\||\n/).map((p) => p.trim()).filter((p) => p),
@@ -266,6 +325,8 @@ export const AuraGovernance = async (ctx) => {
             return deny(tool, "COMMAND", "", command, "denied command pattern", destructive);
           }
         }
+        const refusal = shellWriteRefusal(command);
+        if (refusal) return deny(tool, "COMMAND", "", command, refusal, false);
         log({ actionType: "COMMAND", tool, target: "", command: clip(command), decision: "ALLOW", reason: "argv policy", destructive: false });
         return;
       }

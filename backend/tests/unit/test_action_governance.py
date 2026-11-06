@@ -192,6 +192,89 @@ class TestEventBounds:
             assert marker not in blob
 
 
+#: (command, allowed) with scope ["src"], cwd "/repo". One list for the Python
+#: decision and the shipped plugin, so the two cannot drift apart.
+SHELL_WRITE_VECTORS = [
+    ("echo hi > src/a.txt", True),
+    ("echo hi >> ./src/a.txt", True),
+    ("echo hi > /repo/src/a.txt", True),
+    ("npm test > /dev/null 2>&1", True),
+    ("npm test 2>/dev/null", True),
+    ("npm test 2>&1 | tail -5", True),
+    ("grep 'a > b' src/x.py", True),
+    ('echo "x > /etc/passwd"', True),
+    ("cat src/a.txt | tee src/b.txt", True),
+    ("cp notes.md src/notes.md", True),
+    ("sed -i s/a/b/ src/a.txt", True),
+    ("mkdir -p src/new", True),
+    ("sed s/a/b/ other.txt", True),
+    ("cd src && npm test", True),
+    ("FOO=1 touch src/a.txt", True),
+    ("echo hi > other.txt", False),
+    ("echo hi >> ../other.txt", False),
+    ("echo hi > /etc/hosts", False),
+    ("echo hi >~/x", False),
+    ("echo hi &> other.log", False),
+    ("echo hi > $HOME/x", False),
+    ("echo hi | tee -a /tmp/x", False),
+    ("cp src/a.txt ../b.txt", False),
+    ("mv src/a.txt other.txt", False),
+    ("touch src/a.txt other.txt", False),
+    ("mkdir -p /tmp/x", False),
+    ("sed -i s/a/b/ other.txt", False),
+    ("FOO=1 /usr/bin/tee other.txt", False),
+    ("npm test; echo done > other.txt", False),
+    ("cd src && echo hi > a.txt", False),
+    ("echo 'quoted' > 'other file.txt'", False),
+]
+
+
+class TestShellWrites:
+    @pytest.mark.parametrize("command,allowed", SHELL_WRITE_VECTORS)
+    def test_python_decision(self, command, allowed):
+        from aura.governance.actions import _shell_write_refusal
+
+        refusal = _shell_write_refusal(command, ["src"], "/repo")
+        assert (refusal is None) == allowed, refusal
+
+    def test_refusal_reaches_the_verdict_and_stays_soft(self):
+        verdict = decide_action(
+            WorkerActionRequest(
+                taskId="t1", workerNodeId="n", invocationId="i",
+                attemptId="1", sequence=1, actionType="COMMAND",
+                tool="bash", command="echo hi > other.txt"),
+            TaskContract(taskId="t1", workerNodeId="n", cwd="/repo",
+                         scopePaths=["src"]))
+        assert verdict.decision == "DENY"
+        assert verdict.destructive is False
+
+    def test_the_shipped_plugin_agrees(self, tmp_path):
+        from aura.governance.opencode import compile_plugin
+
+        if shutil.which("node") is None:
+            pytest.skip("node unavailable")
+        plugin = tmp_path / "gov.mjs"
+        plugin.write_text(compile_plugin(
+            {"taskId": "t", "scopePaths": ["src"], "cwd": "/repo",
+             "nodeId": "n", "invocationId": "i", "attempt": "1"},
+            env_prefix="KILO"), encoding="utf-8")
+        driver = tmp_path / "driver.mjs"
+        driver.write_text(
+            f"import {{ AuraGovernance }} from {json.dumps(plugin.as_uri())};\n"
+            "const h = await AuraGovernance({});\n"
+            f"const vectors = {json.dumps(SHELL_WRITE_VECTORS)};\n"
+            "for (const [command, allowed] of vectors) {\n"
+            "  let ok = true;\n"
+            "  try { await h['tool.execute.before']({tool: 'bash'}, {args: {command}}); }\n"
+            "  catch { ok = false; }\n"
+            "  if (ok !== allowed) console.log('MISMATCH ' + command);\n"
+            "}\nconsole.log('DONE');\n", encoding="utf-8")
+        proc = subprocess.run(
+            ["node", str(driver)], capture_output=True, text=True, timeout=60,
+            env={**os.environ, "AURA_ACTION_LOG": ""})
+        assert proc.stdout.strip() == "DONE", proc.stdout + proc.stderr
+
+
 class TestOpencodeCompiler:
     def test_config_denies_outside_scope(self):
         from aura.governance.opencode import compile_config
