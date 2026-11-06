@@ -51,14 +51,17 @@ def compile_config(scope_paths: list[str]) -> dict:
     """Permission rules compiled from the task contract. Second layer
     behind the plugin (which always enforces); deny rules here are
     terminal inside the worker process."""
-    allow_globs = []
-    for scope in scope_paths:
-        scope = scope.strip().rstrip("/")
-        if scope:
-            allow_globs.append(f"{scope}/**")
+    # Must agree with actions._inside_scope: the runtime matches these against
+    # the path relative to the task cwd. A scope is a file or a folder, and no
+    # scope means anywhere in the cwd (external_directory stays denied below).
+    scopes = [s.strip().rstrip("/") for s in scope_paths]
+    scopes = [s for s in scopes if s]
     edit_rules: dict[str, str] = {"*": "deny"}
-    for glob in allow_globs:
-        edit_rules[glob] = "allow"
+    if not scopes:
+        edit_rules["**"] = "allow"
+    for scope in scopes:
+        edit_rules[scope] = "allow"
+        edit_rules[f"{scope}/**"] = "allow"
     return {
         "$schema": "https://opencode.ai/config.json",
         "permission": {
@@ -83,11 +86,35 @@ def compile_config(scope_paths: list[str]) -> dict:
     }
 
 
-def compile_plugin(policy: dict) -> str:
+#: OpenCode 2 ignores named exports (the file is imported, nothing runs): a
+#: plugin is a default export with setup(ctx), and hooks go through ctx.tool.hook.
+#: Kilo still uses the named-export form, so the module differs per runtime.
+_V2_ENTRY = r"""
+export default {
+  id: "aura-governance",
+  setup: async (ctx) => {
+    const hooks = await AuraGovernance(ctx);
+    const reg = await ctx.tool.hook("execute.before", (call) =>
+      hooks["tool.execute.before"]({ tool: call.tool }, { args: call.input }));
+    return async () => { await reg.dispose(); };
+  },
+};
+"""
+
+
+def compile_plugin(policy: dict, *, env_prefix: str = "OPENCODE") -> str:
     """Governance plugin source with the policy inlined. Dependency-free
     (no imports) so the runtime loads it with no install step. The rule
     surface intentionally mirrors actions.decide_action; both are pinned
     by the same unit vectors (see test_action_governance)."""
+    source = _plugin_source(policy)
+    if env_prefix.strip().upper() == "OPENCODE":
+        source = source.replace("export const AuraGovernance",
+                                "const AuraGovernance", 1) + _V2_ENTRY
+    return source
+
+
+def _plugin_source(policy: dict) -> str:
     policy_json = json.dumps(policy)
     return r"""// AURA governance plugin — generated per invocation, do not edit.
 // Enforces the task contract inside the worker runtime BEFORE tool
@@ -196,11 +223,24 @@ export const AuraGovernance = async (ctx) => {
       const tool = input.tool;
       const args = (output && output.args) || {};
       if (tool === "edit" || tool === "write" || tool === "patch") {
-        const target = norm(args.filePath || "");
+        const target = norm(args.filePath || args.path || "");
         const seg = sensitive(target);
         if (seg) return deny(tool, "FILE_WRITE", target, "", "sensitive material '" + seg + "'", true);
         if (!insideScope(target)) return deny(tool, "FILE_WRITE", target, "", "outside task scope", true);
         log({ actionType: "FILE_WRITE", tool, target: clip(target), command: "", decision: "ALLOW", reason: "inside scope", destructive: false });
+        return;
+      }
+      if (tool === "apply_patch") {
+        const targets = [...String(args.patchText || "").matchAll(
+          /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm,
+        )].map((m) => norm(m[1].trim()));
+        if (!targets.length) return deny(tool, "FILE_WRITE", "", "", "patch names no target", false);
+        for (const target of targets) {
+          const seg = sensitive(target);
+          if (seg) return deny(tool, "FILE_WRITE", target, "", "sensitive material '" + seg + "'", true);
+          if (!insideScope(target)) return deny(tool, "FILE_WRITE", target, "", "outside task scope", true);
+        }
+        log({ actionType: "FILE_WRITE", tool, target: clip(targets.join(", ")), command: "", decision: "ALLOW", reason: "inside scope", destructive: false });
         return;
       }
       if (tool === "read" || tool === "glob" || tool === "grep") {
@@ -215,7 +255,7 @@ export const AuraGovernance = async (ctx) => {
         log({ actionType: "FILE_READ", tool, target: clip(target), command: "", decision: "ALLOW", reason: "read observed", destructive: false });
         return;
       }
-      if (tool === "bash") {
+      if (tool === "bash" || tool === "shell") {
         const command = String(args.command || "");
         if (!command.trim()) return deny(tool, "COMMAND", "", "", "empty command", false);
         const seg = sensitiveCommand(command);

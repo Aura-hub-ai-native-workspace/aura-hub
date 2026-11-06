@@ -202,6 +202,72 @@ class TestOpencodeCompiler:
         assert cfg["permission"]["external_directory"] == "deny"
         assert cfg["permission"]["skill"] == "deny"
 
+    def test_config_scope_forms_agree_with_inside_scope(self):
+        from aura.governance.opencode import compile_config
+
+        # A scope can be one file, and no scope means anywhere in the cwd:
+        # "x/**" alone never matched the file x, and {"*": "deny"} alone
+        # refused every edit that the plugin allowed.
+        assert compile_config(["hello.txt"])["permission"]["edit"] == {
+            "*": "deny", "hello.txt": "allow", "hello.txt/**": "allow"}
+        assert compile_config([])["permission"]["edit"] == {
+            "*": "deny", "**": "allow"}
+
+    def test_plugin_entry_matches_each_runtime(self):
+        from aura.governance.opencode import compile_plugin
+
+        policy = {"taskId": "t", "scopePaths": [], "cwd": "/r", "nodeId": "n",
+                  "invocationId": "i", "attempt": "1"}
+        v2 = compile_plugin(policy)
+        assert "export default" in v2 and "export const" not in v2
+        kilo = compile_plugin(policy, env_prefix="KILO")
+        assert "export default" not in kilo
+        assert "export const AuraGovernance" in kilo
+
+    def test_opencode_v2_plugin_runs_through_setup(self, tmp_path):
+        """The real v2 entry: setup(ctx), ctx.tool.hook, `path`, `shell`.
+        OpenCode 2.2.2 imports other shapes and silently never calls them."""
+        from aura.governance.opencode import compile_plugin
+
+        if shutil.which("node") is None:
+            pytest.skip("node unavailable")
+        plugin = tmp_path / "gov.mjs"
+        plugin.write_text(compile_plugin(
+            {"taskId": "t1", "scopePaths": ["src/auth"], "cwd": "/repo",
+             "nodeId": "n", "invocationId": "i", "attempt": "1"}),
+            encoding="utf-8")
+        driver = tmp_path / "driver.mjs"
+        driver.write_text(
+            f"import p from {json.dumps(plugin.as_uri())};\n"
+            "let hook; const ctx = {tool: {hook: async (name, fn) => {\n"
+            "  if (name !== 'execute.before') process.exit(3);\n"
+            "  hook = fn; return {dispose: async () => {}}; }}};\n"
+            "await p.setup(ctx);\n"
+            "const call = (tool, input) => hook({tool, input});\n"
+            "await call('write', {path: 'src/auth/a.py', content: 'x'});\n"
+            "await call('edit', {path: 'src/auth/a.py'});\n"
+            "await call('shell', {command: 'pytest tests/auth/'});\n"
+            "await call('apply_patch', {patchText:\n"
+            "  '*** Begin Patch\\n*** Update File: src/auth/a.py\\n*** End Patch'});\n"
+            "let refused = false;\n"
+            "try { await call('shell', {command: 'echo $(cat x)'}); }\n"
+            "catch (e) { refused = String(e.message).includes('AURA denied'); }\n"
+            "if (!refused) process.exit(4);\n"
+            "console.log('V2-OK');\n"
+            "await call(process.argv[2], JSON.parse(process.argv[3]));\n",
+            encoding="utf-8")
+        env = {**os.environ, "AURA_ACTION_LOG": ""}
+        for tool, payload in (
+            ("write", {"path": "src/billing/p.py"}),
+            ("apply_patch", {"patchText":
+                             "*** Add File: src/billing/p.py\n"}),
+        ):
+            proc = subprocess.run(
+                ["node", str(driver), tool, json.dumps(payload)],
+                capture_output=True, text=True, timeout=60, env=env)
+            assert "V2-OK" in proc.stdout, proc.stdout + proc.stderr
+            assert proc.returncode == 42, (tool, proc.stderr)
+
     def test_plugin_inlines_policy_no_imports(self):
         from aura.governance.opencode import compile_plugin
 
@@ -222,7 +288,8 @@ class TestOpencodeCompiler:
             pytest.skip("node unavailable")
         src = compile_plugin({"taskId": "t1", "scopePaths": ["src/auth"],
                               "cwd": "/repo", "nodeId": "n",
-                              "invocationId": "i", "attempt": "1"})
+                              "invocationId": "i", "attempt": "1"},
+                             env_prefix="KILO")
         driver = (
             "import { AuraGovernance } from '__GOV_PLUGIN__';\n"
             "const h = await AuraGovernance({});\n"
@@ -263,7 +330,8 @@ class TestOpencodeCompiler:
             pytest.skip("node unavailable")
         src = compile_plugin({"taskId": "t1", "scopePaths": ["src/auth"],
                               "cwd": "/repo", "nodeId": "n",
-                              "invocationId": "i", "attempt": "1"})
+                              "invocationId": "i", "attempt": "1"},
+                             env_prefix="KILO")
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
