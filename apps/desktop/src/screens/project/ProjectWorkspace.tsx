@@ -1,4 +1,5 @@
 import { CloudControls } from '../../cloud/CloudControls';
+import { GoalControls } from '../../goals/GoalControls';
 import { Suspense, lazy, useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
 import { PROJECT_TABS, pageVariants, useAppStore, cn } from '@aura/core';
@@ -113,7 +114,10 @@ export function ProjectWorkspace() {
             </div>
             <p className="mt-1 truncate font-mono text-[12px] text-text-muted">{project.path}</p>
           </div>
-          <div className="ml-auto shrink-0 self-start"><CloudControls projectId={project.id} /></div>
+          <div className="ml-auto flex shrink-0 items-start gap-2 self-start">
+            <GoalControls projectPath={project.path} />
+            <CloudControls projectId={project.id} />
+          </div>
         </div>
       </div>
       )}
