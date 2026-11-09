@@ -22,6 +22,9 @@ describe('goal controls', () => {
     expect(goalStatusText(goal({ state: 'waiting', note: 'waiting 60 s before the next attempt' })))
       .toBe('Waiting · waiting 60 s before the next attempt');
     expect(goalStatusText(goal({ state: 'stopped', cycles: [{ n: 1, kind: 'replan' }] }))).toBe('Stopped · 1 cycle');
+    // Months-long goals keep only recent cycles; the count comes from the totals.
+    expect(goalStatusText(goal({ state: 'stopped', cycles: [{ n: 4312, kind: 'replan' }],
+      stats: { cycles: 4312, achieved: 1, wait: 40, replan: 4271 } }))).toBe('Stopped · 4,312 cycles');
     expect(cycleText({ n: 2, outcome: 'failed', failureReason: 'no-model', kind: 'wait' }))
       .toBe('Cycle 2: failed (no-model), will retry');
   });

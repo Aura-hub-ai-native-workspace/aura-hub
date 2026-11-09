@@ -356,7 +356,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         return sid
 
     goals = GoalLoop(submit=_goal_submit, load=sessions.load, cancel=agent.cancel,
-                     store=GoalStore(Path(H) / "goals"))
+                     store=GoalStore(Path(H) / "goals"), remove_session=sessions.remove)
     try:
         goals.resume_all()
     except Exception:  # noqa: BLE001 — a bad goal file must not stop the service

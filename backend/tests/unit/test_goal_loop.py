@@ -187,3 +187,57 @@ def test_helpers():
     assert repeated_failure(same)
     assert "cycle 3: failed (x)" in compose_message({"goal": "g", **same})
     assert CYCLE_GAP_S > 0
+
+
+def test_months_of_cycles_stay_bounded_and_counted(tmp_path, monkeypatch):
+    import aura.goals as goals_mod
+
+    monkeypatch.setattr(goals_mod, "MAX_CYCLES_KEPT", 6)
+    monkeypatch.setattr(goals_mod, "MAX_SESSIONS_KEPT", 3)
+    removed = []
+    agent = Agent([_result("failed", reason="objective-unaccepted")] * 10)
+    loop = GoalLoop(submit=agent.submit, load=agent.load, cancel=agent.cancel,
+                    store=GoalStore(tmp_path / "goals"), sleep=lambda s: None,
+                    remove_session=removed.append)
+    goal = loop.create("Run for months", str(tmp_path), start=False)
+    for _ in range(10):
+        loop.run_cycle(loop._active(goal["goalId"]))  # noqa: SLF001
+    g = loop.store.load(goal["goalId"])
+    assert g["stats"] == {"cycles": 10, "achieved": 0, "wait": 0, "replan": 10}
+    assert [c["n"] for c in g["cycles"]] == [5, 6, 7, 8, 9, 10]
+    # Each old session is removed once; the newest three are kept.
+    assert removed == [f"agt-{i}" for i in range(1, 8)]
+    assert all(not c.get("sessionRemoved") for c in g["cycles"][-3:])
+
+
+def test_an_old_goal_file_gets_its_totals_from_its_cycles(tmp_path):
+    loop, _ = _loop(tmp_path, [_result("completed", accepted=True)])
+    goal = loop.create("Old file", str(tmp_path), mode="keep-improving", start=False)
+    old = loop.store.load(goal["goalId"])
+    old.pop("stats")
+    old["cycles"] = [{"n": 1, "kind": "achieved"}, {"n": 2, "kind": "wait"}]
+    loop.store.save(old)
+    loop.run_cycle(loop._active(goal["goalId"]))  # noqa: SLF001
+    g = loop.store.load(goal["goalId"])
+    assert g["stats"] == {"cycles": 3, "achieved": 2, "wait": 1, "replan": 0}
+    assert g["cycles"][-1]["n"] == 3
+
+
+def test_keep_improving_remembers_success_after_trimming():
+    msg = compose_message({"goal": "g", "mode": "keep-improving", "cycles": [],
+                           "stats": {"cycles": 900, "achieved": 3}})
+    assert "pick the next most valuable improvement" in msg
+
+
+def test_session_remove_only_accepts_session_ids(tmp_path):
+    from aura.central_agent.session import AgentSessionStore
+
+    store = AgentSessionStore(tmp_path)
+    s = store.create(None)
+    store.save(s)
+    (tmp_path / "agent" / "sessions" / "keep.json").write_text("{}")
+    assert store.remove("../sessions/keep") is False
+    assert store.remove("keep") is False
+    assert store.remove(s.sessionId) is True
+    assert store.load(s.sessionId) is None
+    assert (tmp_path / "agent" / "sessions" / "keep.json").exists()
