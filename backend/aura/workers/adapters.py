@@ -85,7 +85,10 @@ def _opencode_args(task: str, cwd: str, model: str | None) -> list[str]:
     # --auto lets ordinary project work proceed without a per-action prompt;
     # permissions the governance config explicitly denies (out-of-scope paths,
     # sensitive files, destructive commands) stay denied.
-    return ["run", "--auto", *(["--model", model] if model else []), task]
+    # --standalone is LOAD-BEARING: without it `run` joins the shared background
+    # service, which never sees this run's OPENCODE_CONFIG, so governance is lost.
+    return ["run", "--standalone", "--auto",
+            *(["--model", model] if model else []), task]
 
 
 def _claude_args(task: str, _cwd: str, _model: str | None) -> list[str]:

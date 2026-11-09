@@ -169,7 +169,8 @@ def _compile_to(tmp: str) -> str:
 
     src = compile_plugin({"taskId": "t1", "scopePaths": ["work"],
                           "cwd": _WIN_CWD, "nodeId": "opencode",
-                          "invocationId": "i", "attempt": "1"})
+                          "invocationId": "i", "attempt": "1"},
+                         env_prefix="KILO")  # the form with a named export
     path = os.path.join(tmp, "gov.mjs")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(src)

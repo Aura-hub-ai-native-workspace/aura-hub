@@ -68,7 +68,7 @@ def stage_opencode(home: str, *, invocation_id: str, task_id: str,
     }
     _write(config_path, json.dumps(
         _opencode.compile_config(scope_paths), indent=2))
-    _write(plugin_path, _opencode.compile_plugin(policy))
+    _write(plugin_path, _opencode.compile_plugin(policy, env_prefix=env_prefix))
     _write(log_path, "")
     prefix = (env_prefix or "OPENCODE").strip().upper()
     return {

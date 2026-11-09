@@ -101,6 +101,11 @@ describe('Continue with Google', () => {
 
   it('builds a PKCE consent URL with only the narrow Drive scope', () => {
     const cfg = auth.loadGoogleConfig()!;
+    const missing = path.join(os.tmpdir(), 'aura-no-such-google-oauth.env');
+    const builtIn = { clientId: 'built-in', clientSecret: 'shh' };
+    expect(auth.loadGoogleConfig({}, missing, builtIn)).toEqual(builtIn);
+    expect(auth.loadGoogleConfig({}, missing, { clientId: '', clientSecret: '' })).toBeNull();
+    expect(auth.loadGoogleConfig({ AURA_GOOGLE_CLIENT_ID: 'mine', AURA_GOOGLE_CLIENT_SECRET: 's' }, missing, builtIn)?.clientId).toBe('mine');
     const { challenge } = auth.pkcePair();
     const u = new URL(auth.buildAuthUrl(cfg, 'http://127.0.0.1:5555', 'st', challenge));
     expect(u.searchParams.get('scope')).toBe('openid email profile https://www.googleapis.com/auth/drive.file');

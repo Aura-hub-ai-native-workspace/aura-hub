@@ -51,14 +51,17 @@ def compile_config(scope_paths: list[str]) -> dict:
     """Permission rules compiled from the task contract. Second layer
     behind the plugin (which always enforces); deny rules here are
     terminal inside the worker process."""
-    allow_globs = []
-    for scope in scope_paths:
-        scope = scope.strip().rstrip("/")
-        if scope:
-            allow_globs.append(f"{scope}/**")
+    # Must agree with actions._inside_scope: the runtime matches these against
+    # the path relative to the task cwd. A scope is a file or a folder, and no
+    # scope means anywhere in the cwd (external_directory stays denied below).
+    scopes = [s.strip().rstrip("/") for s in scope_paths]
+    scopes = [s for s in scopes if s]
     edit_rules: dict[str, str] = {"*": "deny"}
-    for glob in allow_globs:
-        edit_rules[glob] = "allow"
+    if not scopes:
+        edit_rules["**"] = "allow"
+    for scope in scopes:
+        edit_rules[scope] = "allow"
+        edit_rules[f"{scope}/**"] = "allow"
     return {
         "$schema": "https://opencode.ai/config.json",
         "permission": {
@@ -83,11 +86,35 @@ def compile_config(scope_paths: list[str]) -> dict:
     }
 
 
-def compile_plugin(policy: dict) -> str:
+#: OpenCode 2 ignores named exports (the file is imported, nothing runs): a
+#: plugin is a default export with setup(ctx), and hooks go through ctx.tool.hook.
+#: Kilo still uses the named-export form, so the module differs per runtime.
+_V2_ENTRY = r"""
+export default {
+  id: "aura-governance",
+  setup: async (ctx) => {
+    const hooks = await AuraGovernance(ctx);
+    const reg = await ctx.tool.hook("execute.before", (call) =>
+      hooks["tool.execute.before"]({ tool: call.tool }, { args: call.input }));
+    return async () => { await reg.dispose(); };
+  },
+};
+"""
+
+
+def compile_plugin(policy: dict, *, env_prefix: str = "OPENCODE") -> str:
     """Governance plugin source with the policy inlined. Dependency-free
     (no imports) so the runtime loads it with no install step. The rule
     surface intentionally mirrors actions.decide_action; both are pinned
     by the same unit vectors (see test_action_governance)."""
+    source = _plugin_source(policy)
+    if env_prefix.strip().upper() == "OPENCODE":
+        source = source.replace("export const AuraGovernance",
+                                "const AuraGovernance", 1) + _V2_ENTRY
+    return source
+
+
+def _plugin_source(policy: dict) -> str:
     policy_json = json.dumps(policy)
     return r"""// AURA governance plugin — generated per invocation, do not edit.
 // Enforces the task contract inside the worker runtime BEFORE tool
@@ -159,6 +186,65 @@ export const AuraGovernance = async (ctx) => {
     return null;
   };
   // Each chained part is checked on its own, as in actions._command_parts.
+  // Mirrors actions.shell_write_targets; pinned by SHELL_WRITE_VECTORS.
+  const WRITES_ALL = new Set(["tee", "touch", "mkdir", "rm", "rmdir"]);
+  const WRITES_LAST = new Set(["cp", "mv", "ln", "install"]);
+  const HARMLESS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"]);
+  const shellWriteTargets = (command) => {
+    const text = String(command);
+    const targets = [];
+    let words = [], cur = "", has = false, redirect = false, cd = false, quote = "";
+    const flush = () => {
+      if (has) { (redirect ? targets : words).push(cur); redirect = false; }
+      cur = ""; has = false;
+    };
+    const endCommand = () => {
+      flush();
+      const args = words; words = [];
+      while (args.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(args[0])) args.shift();
+      if (!args.length) return;
+      const name = args[0].replace(/\\/g, "/").split("/").pop().toLowerCase();
+      const rest = args.slice(1);
+      const plain = rest.filter((w) => !w.startsWith("-"));
+      if (name === "cd" || name === "pushd" || name === "popd") cd = true;
+      else if (WRITES_ALL.has(name)) targets.push(...plain);
+      else if (WRITES_LAST.has(name)) { if (plain.length > 1) targets.push(plain[plain.length - 1]); }
+      else if (name === "sed" && rest.some((w) => w.startsWith("-i") || w.startsWith("--in-place"))) targets.push(...plain.slice(1));
+    };
+    let i = 0;
+    const n = text.length;
+    while (i < n) {
+      const ch = text[i++];
+      if (quote) { if (ch === quote) quote = ""; else cur += ch; }
+      else if (ch === "'" || ch === '"') { quote = ch; has = true; }
+      else if (ch === "\\" && i < n) { cur += text[i++]; has = true; }
+      else if (ch === ">") {
+        if (/^[0-9]+$/.test(cur)) { cur = ""; has = false; }
+        flush();
+        while (i < n && (text[i] === ">" || text[i] === "|")) i++;
+        if (i < n && text[i] === "&") {
+          i++;
+          while (i < n && /[0-9-]/.test(text[i])) i++;
+        } else redirect = true;
+      }
+      else if (ch === "&" && i < n && text[i] === ">") flush();
+      else if (ch === ";" || ch === "|" || ch === "&" || ch === "\n") endCommand();
+      else if (ch === " " || ch === "\t" || ch === "\r") flush();
+      else { cur += ch; has = true; }
+    }
+    endCommand();
+    return { targets, cd };
+  };
+  const shellWriteRefusal = (command) => {
+    const seen = shellWriteTargets(command);
+    const targets = seen.targets.filter((t) => !HARMLESS.has(t));
+    if (targets.length && seen.cd) return "cannot judge a write after changing directory";
+    for (const target of targets) {
+      const path = target.startsWith("./") ? target.slice(2) : target;
+      if (path.includes("$") || !insideScope(path)) return "shell write to '" + target.slice(0, 80) + "' is outside the task scope";
+    }
+    return null;
+  };
   const commandParts = (command) => [
     command,
     ...String(command).split(/;|&&|\|\||\||\n/).map((p) => p.trim()).filter((p) => p),
@@ -196,11 +282,24 @@ export const AuraGovernance = async (ctx) => {
       const tool = input.tool;
       const args = (output && output.args) || {};
       if (tool === "edit" || tool === "write" || tool === "patch") {
-        const target = norm(args.filePath || "");
+        const target = norm(args.filePath || args.path || "");
         const seg = sensitive(target);
         if (seg) return deny(tool, "FILE_WRITE", target, "", "sensitive material '" + seg + "'", true);
         if (!insideScope(target)) return deny(tool, "FILE_WRITE", target, "", "outside task scope", true);
         log({ actionType: "FILE_WRITE", tool, target: clip(target), command: "", decision: "ALLOW", reason: "inside scope", destructive: false });
+        return;
+      }
+      if (tool === "apply_patch") {
+        const targets = [...String(args.patchText || "").matchAll(
+          /^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$/gm,
+        )].map((m) => norm(m[1].trim()));
+        if (!targets.length) return deny(tool, "FILE_WRITE", "", "", "patch names no target", false);
+        for (const target of targets) {
+          const seg = sensitive(target);
+          if (seg) return deny(tool, "FILE_WRITE", target, "", "sensitive material '" + seg + "'", true);
+          if (!insideScope(target)) return deny(tool, "FILE_WRITE", target, "", "outside task scope", true);
+        }
+        log({ actionType: "FILE_WRITE", tool, target: clip(targets.join(", ")), command: "", decision: "ALLOW", reason: "inside scope", destructive: false });
         return;
       }
       if (tool === "read" || tool === "glob" || tool === "grep") {
@@ -215,7 +314,7 @@ export const AuraGovernance = async (ctx) => {
         log({ actionType: "FILE_READ", tool, target: clip(target), command: "", decision: "ALLOW", reason: "read observed", destructive: false });
         return;
       }
-      if (tool === "bash") {
+      if (tool === "bash" || tool === "shell") {
         const command = String(args.command || "");
         if (!command.trim()) return deny(tool, "COMMAND", "", "", "empty command", false);
         const seg = sensitiveCommand(command);
@@ -226,6 +325,8 @@ export const AuraGovernance = async (ctx) => {
             return deny(tool, "COMMAND", "", command, "denied command pattern", destructive);
           }
         }
+        const refusal = shellWriteRefusal(command);
+        if (refusal) return deny(tool, "COMMAND", "", command, refusal, false);
         log({ actionType: "COMMAND", tool, target: "", command: clip(command), decision: "ALLOW", reason: "argv policy", destructive: false });
         return;
       }
