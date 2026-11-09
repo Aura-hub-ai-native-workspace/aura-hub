@@ -353,6 +353,12 @@ def agent_delegate_supports_node(node: dict) -> bool:
     return agent_delegate_invocation(node) is not None
 
 
+#: Roles that change files. With no scope they are governed with the whole
+#: project as scope (an empty scope compiles to "anywhere in the cwd"), so
+#: secrets, paths outside the project and destructive commands stay refused.
+_UNSCOPED_GOVERNED_ROLES = frozenset({"code", "testing"})
+
+
 def _stage_governance(inv: dict, bin_name: str, cwd: str,
                       task: str, scope_paths: list[str]) -> dict:
     """Compile per-invocation runtime enforcement from the task contract.
@@ -376,10 +382,11 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
         bundle["supports"] = {"NOTE": "unsupported — no proven "
                                       "interception point for this runtime"}
         return bundle
-    if not scope_paths:
-        # Governance is scope-derived: unscoped runs keep the legacy
-        # boundaries (allow-lists, policy, post-hoc verification)
-        # instead of a deny-all config. Reported in the output.
+    role = str(((inv.get("input") or {}).get("role")) or "")
+    if not scope_paths and role not in _UNSCOPED_GOVERNED_ROLES:
+        # Unscoped read-only work (research, planning, review, roleless
+        # calls) keeps the legacy boundaries: the plugin also refuses web
+        # fetch and search, which research needs.
         return bundle
     try:
         from ..config import aura_home

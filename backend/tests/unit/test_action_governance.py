@@ -729,16 +729,31 @@ class TestStaging:
         assert bundle["env"] == {}
         assert "unsupported" in json.dumps(bundle["supports"])
 
-    def test_unscoped_runs_stage_nothing(self, tmp_path, monkeypatch):
+    def test_unscoped_read_only_runs_stage_nothing(self, tmp_path, monkeypatch):
         import aura.executors as ex
 
         monkeypatch.setenv("AURA_HOME", str(tmp_path))
-        bundle = ex._stage_governance(
-            {"id": "inv-1", "context": {"taskId": "t1"},
-             "node": {"id": "opencode"}},
-            "opencode", "/repo", "do it", [])
-        assert bundle["logPath"] == ""
-        assert bundle["env"] == {}
+        for role in (None, "research", "planning", "review"):
+            bundle = ex._stage_governance(
+                {"id": "inv-1", "context": {"taskId": "t1"},
+                 "input": {"role": role}, "node": {"id": "opencode"}},
+                "opencode", "/repo", "do it", [])
+            assert bundle["logPath"] == "" and bundle["env"] == {}, role
+
+    def test_unscoped_writers_are_governed_with_the_whole_project(
+            self, tmp_path, monkeypatch):
+        import aura.executors as ex
+
+        monkeypatch.setenv("AURA_HOME", str(tmp_path))
+        for role in ("code", "testing"):
+            bundle = ex._stage_governance(
+                {"id": f"inv-{role}", "context": {"taskId": "t1"},
+                 "input": {"role": role}, "node": {"id": "opencode"}},
+                "opencode", "/repo", "do it", [])
+            cfg = json.loads(open(bundle["env"]["OPENCODE_CONFIG"]).read())
+            assert cfg["permission"]["edit"] == {"*": "deny", "**": "allow"}
+            assert cfg["permission"]["external_directory"] == "deny"
+            assert bundle["logPath"], role
 
     def test_opencode_stages_config_plugin_log(
             self, tmp_path, monkeypatch):
