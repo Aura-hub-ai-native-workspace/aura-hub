@@ -340,6 +340,29 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
             "could not recover interrupted agent sessions; sessions that were "
             "running when the previous process died may still look active")
 
+    # Goals keep working with no one in the loop: each cycle is one background
+    # session, and goals that were running before a restart carry on.
+    from ..central_agent.correlation import new_request_id as _new_rid
+    from ..goals import GoalLoop, GoalStore
+
+    def _goal_submit(message: str, project_path: str) -> str:
+        import secrets as _secrets
+
+        sid = f"agt-{_secrets.token_hex(6)}"
+        agent.submit(message, project_path=project_path, session_id=sid,
+                     request_id=_new_rid(), background=True)
+        if sessions.load(sid) is None:
+            raise RuntimeError("the goal's session did not start")
+        return sid
+
+    goals = GoalLoop(submit=_goal_submit, load=sessions.load, cancel=agent.cancel,
+                     store=GoalStore(Path(H) / "goals"))
+    try:
+        goals.resume_all()
+    except Exception:  # noqa: BLE001 — a bad goal file must not stop the service
+        import logging as _log
+        _log.getLogger(__name__).exception("could not resume running goals")
+
     # ── automation engine + scheduler on the same runner ────────────
     from ..automation import AutomationEngine, make_workflow_action
     from ..automation.scheduler import AutomationScheduler
@@ -368,7 +391,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         "nodes": nodes,
         "wf_store": wf_store, "ver_store": ver_store, "run_store": run_store,
         "auto_store": auto_store, "runner": runner, "secrets": secrets_store,
-        "agent": agent, "sessions": sessions, "agent_bus": agent_bus,
+        "agent": agent, "sessions": sessions, "agent_bus": agent_bus, "goals": goals,
         "bus": _bus_for_home(H),
         "auto_engine": auto_engine,
         "scheduler": scheduler, "auto_emit": _auto_emit,
@@ -405,6 +428,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         S["runner"].model = model
     wf_store, ver_store, run_store = S["wf_store"], S["ver_store"], S["run_store"]
     runner, agent, sessions = S["runner"], S["agent"], S["sessions"]
+    goals = S["goals"]
     bus: WorkflowEventBus = S["bus"]
 
     def _sse(frames, done_sentinel=True):
@@ -903,6 +927,33 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
         decision = await anyio.to_thread.run_sync(lambda: agent.classify(message))
         return JSONResponse(decision)
+
+    async def goal_list(request: Request):
+        return JSONResponse({"goals": goals.store.all()})
+
+    async def goal_create(request: Request):
+        body = await _json_body(request)
+        try:
+            goal = goals.create(str(body.get("goal") or ""),
+                                str(body.get("projectPath") or ""),
+                                mode=str(body.get("mode") or "until-achieved"))
+        except ValueError as exc:
+            return _err(str(exc))
+        return JSONResponse({"goal": goal}, status_code=201)
+
+    async def goal_get(request: Request):
+        try:
+            goal = goals.store.load(request.path_params["gid"])
+        except ValueError:
+            goal = None
+        return JSONResponse({"goal": goal}) if goal else _err("no such goal", 404)
+
+    async def goal_stop(request: Request):
+        try:
+            goal = goals.stop(request.path_params["gid"])
+        except ValueError:
+            goal = None
+        return JSONResponse({"goal": goal}) if goal else _err("no such goal", 404)
 
     async def agent_submit(request: Request):
         body = await _json_body(request)
@@ -2264,6 +2315,10 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/agent/tools", agent_tools, methods=["GET"]),
         Route("/agent/model", agent_model, methods=["GET"]),
         Route("/agent/route", agent_route, methods=["POST"]),
+        Route("/goals", goal_list, methods=["GET"]),
+        Route("/goals", goal_create, methods=["POST"]),
+        Route("/goals/{gid}", goal_get, methods=["GET"]),
+        Route("/goals/{gid}/stop", goal_stop, methods=["POST"]),
         Route("/agent/sessions", agent_submit, methods=["POST"]),
         Route("/agent/sessions/{sid}", agent_session_get, methods=["GET"]),
         Route("/agent/sessions/{sid}/status", agent_session_status, methods=["GET"]),
