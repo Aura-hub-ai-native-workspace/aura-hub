@@ -105,6 +105,9 @@ def _every_test_gets_its_own_aura_home(tmp_path_factory, monkeypatch):
     """No test may read or write the person's real ~/.aura. A test that wants a
     specific home sets AURA_HOME itself (that overrides this)."""
     monkeypatch.setenv("AURA_HOME", str(tmp_path_factory.mktemp("aura-home")))
+    # Picking a free model asks the real OpenCode for its list; tests that
+    # want it switch it back on and give it a fake list.
+    monkeypatch.setenv("AURA_FREE_MODELS", "off")
 
 
 @pytest.fixture(autouse=True)
