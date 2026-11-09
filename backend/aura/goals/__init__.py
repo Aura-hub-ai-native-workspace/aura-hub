@@ -45,8 +45,13 @@ MAX_BACKOFF_S = 3600.0
 #: Pause between ordinary cycles, so a loop that fails instantly cannot spin.
 CYCLE_GAP_S = 5.0
 POLL_S = 5.0
-#: Only the most recent cycles go back into the prompt; the file keeps all.
+#: Only the most recent cycles go back into the prompt.
 HISTORY_IN_PROMPT = 5
+#: A goal can run for months. Its file keeps full detail for the latest cycles
+#: and running totals for all of them; the session files of older cycles (the
+#: loop's own run records) are removed so storage and startup stay bounded.
+MAX_CYCLES_KEPT = 200
+MAX_SESSIONS_KEPT = 100
 MODES = ("until-achieved", "keep-improving")
 
 
@@ -84,7 +89,8 @@ def compose_message(goal: dict) -> str:
              "the tests, compare the result with the goal, and fix what falls short. "
              "Make reasonable assumptions instead of asking questions."]
     cycles = goal.get("cycles") or []
-    achieved_before = any(c.get("kind") == "achieved" for c in cycles)
+    achieved_before = bool((goal.get("stats") or {}).get("achieved")) or any(
+        c.get("kind") == "achieved" for c in cycles)
     if goal.get("mode") == "keep-improving" and achieved_before:
         lines += ["", "The goal has been met before. Review the project against it, "
                       "pick the next most valuable improvement, make it, and test it."]
@@ -100,6 +106,14 @@ def compose_message(goal: dict) -> str:
         lines += ["", "The same failure has happened several times in a row. Do not "
                       "repeat that approach: find the cause and try a different one."]
     return "\n".join(lines)
+
+
+def _stats_from(cycles: list[dict]) -> dict:
+    """Totals for a goal written before totals were kept."""
+    stats = {"cycles": len(cycles), "achieved": 0, "wait": 0, "replan": 0}
+    for c in cycles:
+        stats[c.get("kind") or "replan"] = stats.get(c.get("kind") or "replan", 0) + 1
+    return stats
 
 
 def repeated_failure(goal: dict) -> bool:
@@ -157,8 +171,10 @@ class GoalLoop:
     def __init__(self, *, submit: Callable[[str, str], str],
                  load: Callable[[str], Any], cancel: Callable[[str], Any],
                  store: GoalStore | None = None,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep,
+                 remove_session: Callable[[str], Any] | None = None) -> None:
         self.store = store or GoalStore()
+        self._remove_session = remove_session
         self._submit, self._load, self._cancel, self._sleep = submit, load, cancel, sleep
         self._lock = threading.Lock()
         self._threads: dict[str, threading.Thread] = {}
@@ -179,7 +195,9 @@ class GoalLoop:
                 raise ValueError(f"{other['goalId']} is already running in this project")
         record = {"goalId": f"goal-{secrets.token_hex(6)}", "goal": goal,
                   "projectPath": project_path, "mode": mode, "state": "running",
-                  "createdAt": _now(), "cycles": [], "currentSessionId": None,
+                  "createdAt": _now(), "cycles": [],
+                  "stats": {"cycles": 0, "achieved": 0, "wait": 0, "replan": 0},
+                  "currentSessionId": None,
                   "backoffSeconds": 0, "nextAttemptAt": None, "note": None}
         self.store.save(record)
         if start:
@@ -290,14 +308,31 @@ class GoalLoop:
 
     def _record(self, goal: dict, fields: dict) -> dict:
         cycles = goal.setdefault("cycles", [])
-        cycle = {"n": len(cycles) + 1, "startedAt": goal.get("cycleStartedAt"),
+        stats = goal.setdefault("stats", _stats_from(cycles))
+        cycle = {"n": stats["cycles"] + 1, "startedAt": goal.get("cycleStartedAt"),
                  "endedAt": _now(), **fields}
         cycle["kind"] = failure_kind(cycle)
         cycles.append(cycle)
+        stats["cycles"] += 1
+        stats[cycle["kind"]] = stats.get(cycle["kind"], 0) + 1
+        self._prune(goal)
         goal["currentSessionId"] = None
         goal["note"] = None
         self.store.save(goal)
         return cycle
+
+    def _prune(self, goal: dict) -> None:
+        cycles = goal["cycles"]
+        if self._remove_session is not None:
+            for old in cycles[:-MAX_SESSIONS_KEPT]:
+                if old.get("sessionId") and not old.get("sessionRemoved"):
+                    try:
+                        self._remove_session(old["sessionId"])
+                    except Exception:  # noqa: BLE001 — pruning never stops the goal
+                        log.warning("could not remove session %s", old["sessionId"])
+                    old["sessionRemoved"] = True
+        if len(cycles) > MAX_CYCLES_KEPT:
+            del cycles[:-MAX_CYCLES_KEPT]
 
     def _back_off(self, goal: dict) -> None:
         delay = min(MAX_BACKOFF_S, max(MIN_BACKOFF_S, float(goal.get("backoffSeconds") or 0) * 2))

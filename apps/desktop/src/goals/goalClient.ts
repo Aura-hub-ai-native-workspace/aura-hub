@@ -20,7 +20,9 @@ export interface Goal {
   projectPath: string;
   mode: GoalMode;
   state: GoalState;
+  /** Only the latest cycles are kept in detail; these totals cover all of them. */
   cycles: GoalCycle[];
+  stats?: { cycles: number; achieved: number; wait: number; replan: number };
   currentSessionId: string | null;
   nextAttemptAt: string | null;
   note: string | null;
@@ -51,8 +53,8 @@ export function goalForProject(goals: Goal[], projectPath: string): Goal | null 
 }
 
 export function goalStatusText(goal: Goal): string {
-  const n = goal.cycles.length;
-  const cycles = `${n} cycle${n === 1 ? '' : 's'}`;
+  const n = goal.stats?.cycles ?? goal.cycles.length;
+  const cycles = `${n.toLocaleString('en-US')} cycle${n === 1 ? '' : 's'}`;
   switch (goal.state) {
     case 'running': return goal.currentSessionId ? `Working · cycle ${n + 1}` : `Working · ${cycles} so far`;
     case 'waiting': return goal.note ? `Waiting · ${goal.note}` : 'Waiting to retry';

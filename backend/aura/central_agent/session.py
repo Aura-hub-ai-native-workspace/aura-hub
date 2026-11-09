@@ -101,6 +101,19 @@ class AgentSessionStore:
         write_json_atomic(path, session.model_dump(by_alias=True))
         return path
 
+    def remove(self, session_id: str) -> bool:
+        """Delete one session's file. Only a real session id is accepted, so
+        no other file can ever be named. Returns whether a file was removed."""
+        import re as _re
+
+        if not isinstance(session_id, str) or not _re.fullmatch(r"agt-[0-9a-f]{12}", session_id):
+            return False
+        try:
+            (self._dir() / f"{session_id}.json").unlink()
+        except FileNotFoundError:
+            return False
+        return True
+
     def load(self, session_id: str) -> AgentSession | None:
         """The session, or None. None is a plain 'no such session' only when
         the file is absent; a file that exists but cannot be read or validated
