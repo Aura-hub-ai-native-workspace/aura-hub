@@ -235,8 +235,8 @@ class TestEnforcement:
         marker = tmp_path / "written-from-inside.txt"
         proc = _inside(tmp_path, (
             "import os,pathlib,sys\n"
-            f"pathlib.Path({str(marker)!r}).write_text(os.getlogin() "
-            "if hasattr(os,'getlogin') else 'user')\n"
+            # os.getlogin() needs a terminal, which the sandbox may not have.
+            f"pathlib.Path({str(marker)!r}).write_text(str(os.getuid()))\n"
             "sys.exit(0)\n"))
         assert proc.returncode == 0, proc.stderr
         assert marker.exists()

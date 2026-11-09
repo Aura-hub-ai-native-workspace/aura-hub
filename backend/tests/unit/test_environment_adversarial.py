@@ -199,7 +199,9 @@ class TestTimeOfCheckTimeOfUse:
         if not _os.path.isdir("/proc/self/fd"):
             pytest.skip("no /proc on this kernel")
 
-        target = tmp_path / "prog"
+        # Keep the name: a multi-call coreutils (uutils on newer Ubuntu) picks
+        # the program from it, and a copy named anything else does not run.
+        target = tmp_path / "echo"
         shutil.copy("/bin/echo", target)
         outcome = run_argv([str(target), "hi"], timeout_ms=5000, pin=file_identity(target))
 
