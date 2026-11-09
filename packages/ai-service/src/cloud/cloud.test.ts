@@ -203,7 +203,8 @@ describe('large projects', () => {
     const out = tmp('aura-snap-stream-out-');
     expect(extractSnapshot(fs.readFileSync(file), out)).toBe(30);
     expect(fs.readFileSync(path.join(out, 'f/7.txt'), 'utf8')).toBe('file 7\n'.repeat(50));
-  });
+    // Writes and reads 30 files plus an archive: past the 5 s default on the Windows runner.
+  }, 30_000);
 
   it('uploads in pieces and carries on from where Drive got to after a dropped piece', async () => {
     // Sign in first so the access token is available.
