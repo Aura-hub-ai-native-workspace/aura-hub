@@ -7,6 +7,45 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.21] - 2026-11-09 — Autonomous Goals and Real Worker Governance
+
+AURA can now be given one goal and keep working on it alone, and the rules
+that keep its coding agents inside a project are in force on current OpenCode.
+
+### Added
+
+- **Goal loop.** One goal per project, worked on with no one in the loop:
+  build, test, compare with the goal, re-plan, rebuild, until it is met or
+  stopped ("keep improving" mode carries on). Temporary problems back off
+  from 1 minute to 1 hour; the same failure three times asks for a new
+  approach; goals survive restarts; storage stays bounded for runs of months.
+  A Goal panel in the project header starts, shows and stops it.
+- **Free models for OpenCode workers.** A task that names no model runs on a
+  free model whose terms say it does not train on your code, and moves to the
+  next one on a rate limit or quota error.
+- **Workspace agents setup** (OpenCode, Kilo Code, Claude Code, Codex by
+  default; removable and addable), one sign-in page with a built-in terminal,
+  and common-context connected to each.
+- **Google sign-in and "Send to cloud"**: projects saved as dated versions in
+  Google Drive › AURA Hub, restorable into a new folder. Release builds carry
+  the Google client from CI secrets.
+- **High-risk work always reviewed** by a second agent (auth, payments,
+  secrets, migrations, production).
+
+### Fixed
+
+- **OpenCode 2 governance was not in force.** Runs joined a background
+  service that ignored AURA's per-run rules, and the plugin used an export
+  OpenCode 2 never calls. Workers now run standalone with a v2 plugin.
+- **Shell writes outside the task scope** (`echo x > ../y`, `cp`, `tee`, ...)
+  are refused, not only file-tool writes.
+- **Unscoped code and testing work** is governed with the whole project as
+  its scope.
+- Edit rules for single-file and empty scopes; governance stops on OpenCode 2
+  are recognised from the action log.
+- Windows backend failures, CI flakiness on slow runners, and tests broken by
+  the newer Linux runner image.
+
 ## [0.1.20] - 2026-10-08 — Cross-Platform Release Readiness
 
 This release moves the release *pipeline*, and fixes what stopped it from
