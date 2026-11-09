@@ -690,7 +690,14 @@ async def agent_delegate_run(inv: dict) -> dict:
             f"{node['name']} is connected, but AURA has no verified non-interactive invocation for it yet, "
             f"so nothing was run. Verified today: {', '.join(AGENT_INVOCATIONS)}.")
 
-    args = spec["args"](brief, cwd, model)
+    # No model named: OpenCode runs on a private free model, and moves to the
+    # next one if this one is out of capacity (see workers/free_models).
+    auto_model = None
+    if model is None and node.get("id") == "opencode":
+        from ..workers import free_models as _free
+
+        auto_model = await asyncio.to_thread(_free.pick, bin_name)
+    args = spec["args"](brief, cwd, model or auto_model)
     if inv["input"].get("reasoner") and node.get("id") == "opencode" \
             and args and args[0] == "run" and "--agent" not in args:
         # OpenCode's plan agent: its read-only reasoning mode, used when it acts as AURA's general reasoner.
@@ -761,12 +768,27 @@ async def agent_delegate_run(inv: dict) -> dict:
                        "cancelled": True, "exitCode": None, "stdout": "",
                        **({"role": role} if role else {})},
         }
+    rested: list[str] = []
     try:
-        res = await _run_governed(
-            bin_name, args, cwd,
-            worker_timeout_ms(inv.get("context")),
-            governance, action_events, cancel_token=cancel_token,
-            argv_prefix=net.argv_prefix)
+        while True:
+            res = await _run_governed(
+                bin_name, args, cwd,
+                worker_timeout_ms(inv.get("context")),
+                governance, action_events, cancel_token=cancel_token,
+                argv_prefix=net.argv_prefix)
+            if (auto_model is None or res.timedOut
+                    or (cancel_token is not None and cancel_token.cancelled)):
+                break
+            from ..workers import free_models as _free
+
+            if not _free.is_capacity_failure(res.out):
+                break
+            _free.cool_down(auto_model)
+            rested.append(auto_model)
+            nxt = _free.pick(bin_name, exclude=tuple(rested))
+            if nxt is None:
+                break
+            auto_model, args = nxt, _free.with_model(args, nxt)
     except Exception as e:  # noqa: BLE001 — TS catches all too
         net.close()
         return _no(f"{node['name']} could not be run: {e}")
@@ -783,6 +805,10 @@ async def agent_delegate_run(inv: dict) -> dict:
         "timedOut": bool(res.timedOut), "signal": res.signal,
         "network": network_record,
     }
+    if auto_model:
+        output["model"] = auto_model
+    if rested:
+        output["modelsOutOfCapacity"] = rested
     # Role echo: the result records which role contract the worker ran
     # under, so the workspace, the audit trail and the tests can show
     # it. Roleless legacy runs keep roleless outputs.
