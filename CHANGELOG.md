@@ -7,6 +7,15 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.22] - 2026-11-09 — Google Sign-in in the Installers
+
+### Added
+
+- **Google sign-in and "Send to cloud" work in installed copies.** 0.1.21 was
+  built before the Google client was available to the release build, so its
+  installers could not sign in to Google. This build carries the client from
+  the repository secrets. Nothing else changes.
+
 ## [0.1.21] - 2026-11-09 — Autonomous Goals and Real Worker Governance
 
 AURA can now be given one goal and keep working on it alone, and the rules
