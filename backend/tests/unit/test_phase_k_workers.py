@@ -232,7 +232,7 @@ class TestHandshake:
         assert "CORRELATED" in proof.stages
         # It went through the REAL adapter shape and the REAL governance
         # bundle, not a side channel.
-        assert seen["argv"][:2] == ["run", "--auto"]
+        assert seen["argv"][:3] == ["run", "--standalone", "--auto"]
         assert "OPENCODE_CONFIG" in seen["env"]
 
     def test_a_stale_nonce_cannot_satisfy_a_later_probe(
@@ -603,3 +603,17 @@ class TestGovernanceMatrixIsHonest:
 
 
 # ── N. persistence / recovery across a restart ───────────────────────
+
+
+def test_a_stop_seen_only_in_the_action_log_counts_as_governance():
+    # OpenCode 2's plugin dies in its child server, so the client exits 1.
+    from aura.executors import _governed_summary
+
+    deny = {"decision": "DENY", "destructive": True, "tool": "write"}
+    gov = {"logPath": "x", "supports": {}}
+    stopped = lambda code, events: _governed_summary(  # noqa: E731
+        gov, events, {"name": "w"}, code)["stoppedByGovernance"]
+    assert stopped(1, [deny]) is True
+    assert stopped(42, [{**deny, "destructive": False}]) is True
+    assert stopped(1, [{**deny, "destructive": False}]) is False
+    assert stopped(0, [deny]) is False

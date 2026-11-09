@@ -297,6 +297,8 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AURA_GOOGLE_CLIENT_ID: ${{ secrets.AURA_GOOGLE_CLIENT_ID }}
+          AURA_GOOGLE_CLIENT_SECRET: ${{ secrets.AURA_GOOGLE_CLIENT_SECRET }}
         run: |
           for attempt in 1 2 3; do
             if npm run tauri --workspace @aura/desktop -- build; then exit 0; fi

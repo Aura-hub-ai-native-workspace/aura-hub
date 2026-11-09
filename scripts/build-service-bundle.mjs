@@ -86,6 +86,11 @@ await build({
   platform: 'node',
   format: 'esm',
   external: ['typescript'],
+  // Release builds get the Google sign-in client from CI secrets; elsewhere these stay empty.
+  define: {
+    'process.env.AURA_BUILT_IN_GOOGLE_CLIENT_ID': JSON.stringify(process.env.AURA_GOOGLE_CLIENT_ID ?? ''),
+    'process.env.AURA_BUILT_IN_GOOGLE_CLIENT_SECRET': JSON.stringify(process.env.AURA_GOOGLE_CLIENT_SECRET ?? ''),
+  },
   outfile: path.join(OUT_DIR, 'ai-service.mjs'),
   absWorkingDir: REPO,
   logLevel: 'info',
