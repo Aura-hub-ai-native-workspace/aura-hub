@@ -45,6 +45,10 @@ tauri-plugin-process = "2"
 # provides. Omitting this line is what left v0.1.2 unable to check for
 # updates: `platform()` threw on every call, on every platform.
 tauri-plugin-os = "2"
+# One AURA per user. A second launch (a double click, a menu entry clicked
+# twice) used to start a second shell whose service lost the race for port
+# 4319 and showed "Backend offline" for good. Now it focuses the first one.
+tauri-plugin-single-instance = "2"
 
 # Only for SIGTERM on shutdown. `Child::kill` sends SIGKILL, which would
 # deny the service the graceful close its SIGTERM handler performs.
