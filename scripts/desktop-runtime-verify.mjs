@@ -127,14 +127,19 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
  * Returns 0 when there is no child, which is itself a meaningful answer.
  */
 function childPidOf(parentPid) {
+  // The shell has more children than its service: WebView2's browser process
+  // on Windows, the Python backend and its interpreter probes. "The first
+  // child" was whichever of those the OS listed first, so the service is
+  // picked by its command line, the ai-service bundle.
   try {
     if (IS_WIN) {
       const out = execFileSync('powershell', ['-NoProfile', '-Command',
-        `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${parentPid}" | Select-Object -First 1 -ExpandProperty ProcessId)`],
+        `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${parentPid}" | ` +
+        `Where-Object { $_.CommandLine -like '*ai-service*' } | Select-Object -First 1 -ExpandProperty ProcessId)`],
         { encoding: 'utf8', timeout: 30000 });
       return Number(String(out).trim()) || 0;
     }
-    const out = execFileSync('pgrep', ['-P', String(parentPid)], { encoding: 'utf8', timeout: 15000 });
+    const out = execFileSync('pgrep', ['-P', String(parentPid), '-f', 'ai-service'], { encoding: 'utf8', timeout: 15000 });
     return Number(String(out).trim().split('\n')[0]) || 0;
   } catch {
     return 0; // no child, or the parent is already gone
@@ -548,7 +553,16 @@ try {
         const svcGone = svcPid > 0
           ? await waitFor(async () => !pidAlive(svcPid), 45000)
           : false;
-        check('10e. the service process was killed with its shell — no orphan', svcGone, `pid ${svcPid}`);
+        let survivor = '';
+        if (!svcGone && svcPid > 0) {
+          try {
+            survivor = String(execFileSync('powershell', ['-NoProfile', '-Command',
+              `(Get-CimInstance Win32_Process -Filter "ProcessId=${svcPid}").CommandLine`],
+              { encoding: 'utf8', timeout: 20000 })).trim();
+          } catch { /* gone by now */ }
+        }
+        check('10e. the service process was killed with its shell — no orphan', svcGone,
+          survivor ? `pid ${svcPid} still running: ${survivor}` : `pid ${svcPid}`);
         try { abrupt.kill(); } catch { /* already gone */ }
       }
     }
