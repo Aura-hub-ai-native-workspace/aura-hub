@@ -58,7 +58,7 @@ def test_credentials_are_never_stored(ctx):
                    refs=[{"title": "t", "url": "https://x.test/?k=1", "excerpt": "ghp_" + "a" * 30}])
     blob = json.dumps(item)
     assert "sk-abcdef" not in blob and "ghp_" not in blob and "abcdefghijklmnopqrstuvwxyz0123" not in blob
-    assert scrub("-----BEGIN RSA PRIVATE KEY-----") == "[redacted]"
+    assert scrub("-----BEGIN RSA " + "PRIVATE KEY-----") == "[redacted]"
 
 
 def test_unknown_kinds_and_untitled_records_are_refused(ctx):

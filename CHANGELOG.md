@@ -7,6 +7,20 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.23] - 2026-11-10 — Steadier Startup
+
+### Fixed
+
+- **Only one hub runs at a time.** Opening AURA Hub again brings the open
+  window to the front instead of starting a second copy that fought over the
+  local ports and showed "backend is offline".
+- **Local services come back on their own.** If the AI service or the Python
+  backend stops, the hub restarts it (waiting 3 s, up to 60 s between tries).
+- **Faster status checks.** The hub no longer waits up to 5 s on an
+  unreachable AI provider every time a screen asks whether it is up; it answers
+  in under a second and checks the provider in the background. **Test
+  connection** in Settings still does a full check.
+
 ## [0.1.22] - 2026-11-09 — Google Sign-in in the Installers
 
 ### Added
