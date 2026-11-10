@@ -117,15 +117,19 @@ export function ProjectTerminal({ cwd, visible }: { cwd: string; visible: boolea
   }
 
   return (
-    <div className="relative h-full w-full" data-testid="project-terminal">
-      <div ref={host} className="h-full w-full overflow-hidden rounded-lg bg-[#0b0b0c] p-2" />
+    <div className="flex h-full w-full flex-col" data-testid="project-terminal">
+      <div ref={host} className="min-h-0 w-full flex-1 overflow-hidden rounded-lg bg-[#0b0b0c] p-2" />
+      {/* Below the output, not over it: the last lines are usually the ones worth reading. */}
       {ended !== null && (
-        <button
-          onClick={() => setGeneration((g) => g + 1)}
-          className="absolute right-3 top-2 rounded-md border border-line bg-surface px-2 py-1 text-[11px] font-medium text-text-muted hover:text-text"
-        >
-          Restart terminal
-        </button>
+        <div className="mt-1.5 flex shrink-0 items-center justify-between gap-2 text-[11px] text-text-subtle">
+          <span className="truncate">{ended === 0 ? 'The shell has exited.' : `The shell exited with code ${ended}.`}</span>
+          <button
+            onClick={() => setGeneration((g) => g + 1)}
+            className="shrink-0 rounded-md border border-line bg-surface px-2 py-0.5 font-medium text-text-muted hover:text-text"
+          >
+            Restart terminal
+          </button>
+        </div>
       )}
     </div>
   );

@@ -49,7 +49,7 @@ export function BottomPanel({ cwd }: { cwd?: string }) {
   const terminalVisible = open && tab === 'terminal';
 
   return (
-    <div className="flex shrink-0 flex-col border-t border-line bg-surface/40" style={open ? { height } : undefined}>
+    <div className="flex min-w-0 shrink-0 flex-col overflow-hidden border-t border-line bg-surface/40" style={open ? { height } : undefined}>
       {!open && (
         <div className="flex h-8 shrink-0 items-center px-3">
           <button onClick={toggle} className="flex items-center gap-1.5 text-[11.5px] font-medium text-text-muted transition-colors hover:text-text">
@@ -61,14 +61,15 @@ export function BottomPanel({ cwd }: { cwd?: string }) {
       {open && (
         <>
           <div onPointerDown={onDragStart} onPointerMove={onDragMove} onPointerUp={onDragEnd} className="h-1 shrink-0 cursor-row-resize" />
-          <div className="flex h-8 shrink-0 items-center justify-between border-b border-line px-2">
-            <div className="flex items-center gap-1">
+          {/* Tabs scroll and the close button never shrinks, so in a narrow editor column it stays clickable instead of spilling under the side panel. */}
+          <div className="flex h-8 min-w-0 shrink-0 items-center justify-between gap-1 border-b border-line px-2">
+            <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
               {TABS.map((t) => (
                 <button
                   key={t.key}
                   onClick={() => setTab(t.key)}
                   className={cn(
-                    'rounded-md px-2.5 py-1 text-[11.5px] font-medium transition-colors',
+                    'shrink-0 whitespace-nowrap rounded-md px-2.5 py-1 text-[11.5px] font-medium transition-colors',
                     tab === t.key ? 'bg-surface-active text-text' : 'text-text-muted hover:text-text',
                   )}
                 >
@@ -76,7 +77,7 @@ export function BottomPanel({ cwd }: { cwd?: string }) {
                 </button>
               ))}
             </div>
-            <IconButton icon="close" label="Close panel" size="sm" onClick={toggle} />
+            <IconButton icon="close" label="Close panel" size="sm" onClick={toggle} className="shrink-0" />
           </div>
         </>
       )}
