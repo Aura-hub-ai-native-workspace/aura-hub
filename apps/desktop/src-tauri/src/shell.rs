@@ -127,6 +127,23 @@ fn resolve_cwd(cwd: &str) -> Result<PathBuf, String> {
     Ok(p.to_path_buf())
 }
 
+/// The AppImage folder the hub is running from, if it is.
+///
+/// `APPDIR` alone decides, not `APPIMAGE`: the AppImage's AppRun sets `APPDIR`
+/// (and the library paths with it) whether the hub was started from the
+/// `.AppImage` file or from an unpacked copy (`--appimage-extract-and-run`),
+/// while `APPIMAGE` is only set in the first case. It must also contain the
+/// running program, so an `APPDIR` inherited from some unrelated launcher
+/// cannot strip a `.deb` user's own LD_LIBRARY_PATH.
+fn appimage_root(appdir: Option<String>, exe: Option<PathBuf>) -> Option<String> {
+    let dir = appdir.filter(|d| !d.trim().is_empty())?;
+    let root = Path::new(dir.trim_end_matches('/'));
+    let exe = exe?;
+    let inside = exe.starts_with(root)
+        || root.canonicalize().ok().zip(exe.canonicalize().ok()).is_some_and(|(r, e)| e.starts_with(r));
+    inside.then_some(dir)
+}
+
 /// The user's shell, in `cwd`, with the cleaned environment. Shared by `shell_start` and the tests.
 fn shell_command(cwd: &Path) -> (PathBuf, CommandBuilder) {
     let (shell, args) = user_shell();
@@ -134,7 +151,7 @@ fn shell_command(cwd: &Path) -> (PathBuf, CommandBuilder) {
     cmd.args(&args);
     cmd.cwd(cwd);
 
-    let appdir = std::env::var("APPDIR").ok().filter(|_| std::env::var_os("APPIMAGE").is_some());
+    let appdir = appimage_root(std::env::var("APPDIR").ok(), std::env::current_exe().ok());
     let mut env: Vec<(String, String)> = std::env::vars().collect();
     // The PATH the rest of AURA uses for agents: the user's own first, then ~/.local/bin, ~/.aura/tools and so on.
     env.retain(|(k, _)| k != "PATH");
@@ -289,6 +306,20 @@ mod tests {
         assert!(resolve_cwd(&std::env::temp_dir().join("aura-no-such-dir-x9").to_string_lossy()).is_err());
         let tmp = std::env::temp_dir();
         assert_eq!(resolve_cwd(&tmp.to_string_lossy()).unwrap(), tmp);
+    }
+
+    #[test]
+    fn appimage_is_recognised_by_appdir_containing_the_hub() {
+        let exe = Some(PathBuf::from("/tmp/.mount_AURA-x/usr/bin/aura-hub"));
+        assert_eq!(appimage_root(Some("/tmp/.mount_AURA-x".into()), exe.clone()).as_deref(), Some("/tmp/.mount_AURA-x"));
+        assert_eq!(appimage_root(Some("/tmp/.mount_AURA-x/".into()), exe.clone()).as_deref(), Some("/tmp/.mount_AURA-x/"));
+        // Unpacked copies have no APPIMAGE variable but are still AppImages.
+        let unpacked = Some(PathBuf::from("/home/u/squashfs-root/usr/bin/aura-hub"));
+        assert!(appimage_root(Some("/home/u/squashfs-root".into()), unpacked).is_some());
+        // An APPDIR that has nothing to do with the running hub is ignored.
+        assert_eq!(appimage_root(Some("/opt/other-app".into()), Some(PathBuf::from("/usr/bin/aura-hub"))), None);
+        assert_eq!(appimage_root(None, exe.clone()), None);
+        assert_eq!(appimage_root(Some("".into()), exe), None);
     }
 
     /// End to end through a real pseudo-terminal: the shell starts in the
