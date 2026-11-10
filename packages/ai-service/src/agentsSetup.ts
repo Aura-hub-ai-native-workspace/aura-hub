@@ -90,10 +90,13 @@ export function runAgentSetup(
 }
 
 /** `status --json`: who is installed, connected and signed in. */
-export function agentStatus(script: string | null = agentsScriptPath()): Promise<AgentStatus[]> {
+export function agentStatus(
+  script: string | null = agentsScriptPath(),
+  { versions = true }: { versions?: boolean } = {},
+): Promise<AgentStatus[]> {
   if (!script) return Promise.reject(new Error('the agent setup script is missing from this install'));
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [script, 'status', '--json'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(process.execPath, [script, 'status', '--json', ...(versions ? [] : ['--no-version'])], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let out = '';
     let err = '';
     child.stdout.on('data', (d) => { out += d; });

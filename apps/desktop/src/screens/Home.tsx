@@ -87,7 +87,7 @@ export function Home() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const load = () => {
       // The workspace's agents (four by default), not every agent found on the machine.
-      fetchAgentStatus()
+      fetchAgentStatus({ versions: false })
         .then((list) => { if (alive) { setAgents(list.map((a) => ({ id: a.id, name: a.name, detected: a.installed, status: a.signedIn ? 'ok' : 'signed-out', drift: '' }))); setAgentsLoading(false); } })
         .catch(() => { if (!alive) return; if (++tries < 4) timer = setTimeout(load, 4000); else setAgentsLoading(false); });
     };

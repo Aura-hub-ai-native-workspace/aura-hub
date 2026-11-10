@@ -32,6 +32,13 @@ describe('agent setup through the service', () => {
     expect(status.find((s) => s.id === 'claude-code')?.signIn).toBe('skipped');
   }, 60_000);
 
+  it('answers without versions when asked, with the same agents and states', async () => {
+    const full = await agentStatus();
+    const quick = await agentStatus(undefined, { versions: false });
+    expect(quick.every((s) => s.version === null)).toBe(true);
+    expect(quick.map(({ version: _v, ...rest }) => rest)).toEqual(full.map(({ version: _v, ...rest }) => rest));
+  }, 60_000);
+
   it('remove and add change the workspace’s agents', async () => {
     expect((await removeAgent('kilo-code')).selected).toEqual(['opencode', 'claude-code', 'codex-cli']);
     const events: AgentSetupEvent[] = [];

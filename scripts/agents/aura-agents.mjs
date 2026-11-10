@@ -566,7 +566,8 @@ async function main(argv) {
   const [cmd, ...rest] = argv;
   const json = rest.includes('--json');
   if (cmd === 'status') {
-    const s = status();
+    // `--no-version` skips running each agent's `--version`, the only slow part (the Home strip needs none of it).
+    const s = status({ withVersion: !rest.includes('--no-version') });
     if (json) process.stdout.write(JSON.stringify(s) + '\n');
     else for (const a of s) process.stdout.write(`${a.name.padEnd(16)} ${a.installed ? (a.version ?? 'installed') : 'missing'} · mcp ${a.mcpConnected ? 'on' : 'off'} · ${a.signIn === 'skipped' ? 'sign-in skipped' : a.signedIn ? 'signed in' : 'not signed in'}\n`);
     return 0;
