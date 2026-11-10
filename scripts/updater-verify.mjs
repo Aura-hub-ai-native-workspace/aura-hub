@@ -783,7 +783,7 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * TypeScript compiled once into every installer — and no CI job ran the
    * tests that covered it. Both are fixed here.
    */
-   const RELEASE_CANDIDATE = '0.1.24';
+   const RELEASE_CANDIDATE = '0.1.25';
   check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);
 }
 
