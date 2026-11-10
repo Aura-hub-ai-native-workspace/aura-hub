@@ -7,6 +7,22 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.25] - 2026-11-10 — A Real Terminal in Code
+
+### Added
+
+- **The Code view's terminal is a real shell.** It opens your own shell in the
+  project folder, keeps running while the panel is collapsed or another tab is
+  showing, and ends when the project closes. When the shell exits, a
+  "Restart terminal" bar appears below the output.
+
+### Fixed
+
+- The terminal starts with a clean environment: the hub's private token and
+  the AppImage's library paths never reach your shell, so tools like `python3`
+  work as they do in a normal terminal.
+- The bottom panel's close button stays reachable in a narrow editor.
+
 ## [0.1.24] - 2026-11-10 — Faster Home
 
 ### Fixed
