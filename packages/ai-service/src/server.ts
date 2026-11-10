@@ -405,7 +405,7 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       /* ── the six coding agents: setup and sign-in status ─────────── */
       if (seg[0] === 'agents' && seg[1] === 'status' && method === 'GET') {
         try {
-          return json(res, 200, { agents: await agentStatus() });
+          return json(res, 200, { agents: await agentStatus(undefined, { versions: url.searchParams.get('versions') !== '0' }) });
         } catch (e) {
           return json(res, 500, { error: 'agent-status', message: (e as Error).message });
         }

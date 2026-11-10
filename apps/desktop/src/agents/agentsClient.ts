@@ -29,8 +29,9 @@ export interface AgentStatus {
   headless: boolean;
 }
 
-export async function fetchAgentStatus(): Promise<AgentStatus[]> {
-  const res = await backendFetch(`${AI_BASE}/agents/status`);
+/** `versions: false` skips asking each agent for its version: the answer then takes milliseconds instead of seconds. */
+export async function fetchAgentStatus({ versions = true }: { versions?: boolean } = {}): Promise<AgentStatus[]> {
+  const res = await backendFetch(`${AI_BASE}/agents/status${versions ? '' : '?versions=0'}`);
   const body = (await res.json().catch(() => ({}))) as { agents?: AgentStatus[]; message?: string };
   if (!res.ok || !Array.isArray(body.agents)) throw new Error(body.message ?? `agent status failed (${res.status})`);
   return body.agents;
