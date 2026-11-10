@@ -156,7 +156,7 @@ export function EditorWorkspace({ projectId }: { projectId: string }) {
           <EditorView projectName={project.name} onAction={handleAction} onOpenPalette={() => setAuraPaletteOpen(true)} />
         </div>
 
-        <BottomPanel />
+        <BottomPanel cwd={project.path} />
       </div>
 
       {aiPanelOpen && (
