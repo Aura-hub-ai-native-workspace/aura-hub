@@ -57,7 +57,7 @@ fn agents_script(app: &AppHandle) -> Option<PathBuf> {
 }
 
 /// Bytes to text without splitting a multi-byte character across two events.
-fn take_utf8(pending: &mut Vec<u8>) -> String {
+pub(crate) fn take_utf8(pending: &mut Vec<u8>) -> String {
     match std::str::from_utf8(pending) {
         Ok(s) => {
             let out = s.to_string();

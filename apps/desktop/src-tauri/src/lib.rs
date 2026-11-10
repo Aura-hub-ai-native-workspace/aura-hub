@@ -15,6 +15,7 @@
 mod appimage;
 mod instance;
 mod pty;
+mod shell;
 mod service;
 
 use serde::Serialize;
@@ -552,6 +553,7 @@ pub fn run() {
 
     let app = builder
         .manage(pty::LoginPty::default())
+        .manage(shell::ShellPty::default())
         .manage(ServiceState {
             handle: ServiceHandle::new(port, SLOT_AI, ai_token),
             port,
@@ -589,6 +591,10 @@ pub fn run() {
             pty::agent_login_write,
             pty::agent_login_resize,
             pty::agent_login_stop,
+            shell::shell_start,
+            shell::shell_write,
+            shell::shell_resize,
+            shell::shell_stop,
         ])
         .setup(move |app| {
             let script = resolve_service_script(app);
@@ -769,6 +775,8 @@ pub fn run() {
             // service this process started must not outlive it holding a
             // port the next launch will need.
             state.python.shutdown();
+            // The Code workspace's terminals end with the hub.
+            shell::stop_all(&app_handle.state::<shell::ShellPty>());
         }
     });
 }
