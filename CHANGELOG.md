@@ -7,6 +7,15 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.24] - 2026-11-10 — Faster Home
+
+### Fixed
+
+- **Home finds your agents right away.** "Looking for your agents…" no longer
+  waits while every coding agent is asked for its version one after another
+  (about 1.4 s on a warm machine, longer right after boot). Home does not show
+  versions, so it now skips that step; the sign-in pages still show them.
+
 ## [0.1.23] - 2026-11-10 — Steadier Startup
 
 ### Fixed
