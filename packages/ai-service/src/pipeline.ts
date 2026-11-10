@@ -7,7 +7,7 @@ import {
 } from '@aura/intelligence';
 import { CodingKnowledgeEngine } from '@aura/knowledge-coding';
 import { FullStackKnowledgeEngine } from '@aura/knowledge-fullstack';
-import type { GenerateRequest, RuntimeMessage } from '@aura/runtime';
+import type { GenerateRequest, HealthStatus, RuntimeMessage } from '@aura/runtime';
 import { DEFAULT_SETTINGS, type AiSettings } from './settings';
 import { ProjectMemory, type MemoryItem } from './memory';
 import { loadProfile, type ProjectProfile } from './profile';
@@ -229,6 +229,11 @@ export interface ProviderStatus {
   label: string;
   model: string;
 }
+
+/** How long a provider health answer is reused before it is refreshed in the background. */
+const HEALTH_TTL_MS = 15_000;
+/** The longest `/health` waits for the provider when there is no earlier answer. */
+const HEALTH_QUICK_MS = 800;
 
 export class PipelineManager {
   private mounted: Mount | null = null;
@@ -514,11 +519,47 @@ export class PipelineManager {
     return { configured: connected, fingerprint: connected ? this.runtimeManager.providerLabel : '(no provider)' };
   }
 
-  health() {
+  /**
+   * The provider's health, without making the app wait on it.
+   *
+   * `/health` is how every screen asks "is AURA up?", and it used to wait for
+   * a round trip to the provider. A remote model server that is down or slow
+   * (an Ollama box on a VPN that is off) held every one of those answers for
+   * up to 5 s, so the whole app felt slow to start. Now the last answer is
+   * returned at once and refreshed in the background; the first check waits
+   * at most HEALTH_QUICK_MS. `fresh` (the Test connection button) waits for a
+   * real check.
+   */
+  health(opts: { fresh?: boolean } = {}): Promise<HealthStatus> {
     const runtime = this.runtimeManager.runtime;
-    if (!runtime) return Promise.resolve({ ok: false, status: 'offline' as const, latencyMs: 0, error: 'No AI provider connected' });
-    return runtime.health();
+    if (!runtime) return Promise.resolve({ ok: false, status: 'offline', latencyMs: 0, error: 'No AI provider connected' });
+    const check = (): Promise<HealthStatus> => {
+      if (!this.healthInFlight || this.healthInFlight.runtime !== runtime) {
+        const promise = runtime.health()
+          .catch((e: unknown): HealthStatus => ({ ok: false, status: 'error', latencyMs: 0, error: (e as Error)?.message ?? String(e) }))
+          .then((value) => {
+            this.healthCache = { runtime, at: Date.now(), value };
+            return value;
+          })
+          .finally(() => { if (this.healthInFlight?.promise === promise) this.healthInFlight = null; });
+        this.healthInFlight = { runtime, promise };
+      }
+      return this.healthInFlight.promise;
+    };
+    if (opts.fresh) return check();
+    const cached = this.healthCache;
+    if (cached && cached.runtime === runtime) {
+      if (Date.now() - cached.at > HEALTH_TTL_MS) void check();
+      return Promise.resolve(cached.value);
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const quick = new Promise<HealthStatus>((resolve) => {
+      timer = setTimeout(() => resolve({ ok: false, status: 'offline', latencyMs: HEALTH_QUICK_MS, error: 'Still checking the provider' }), HEALTH_QUICK_MS);
+    });
+    return Promise.race([check(), quick]).finally(() => clearTimeout(timer));
   }
+  private healthCache: { runtime: object; at: number; value: HealthStatus } | null = null;
+  private healthInFlight: { runtime: object; promise: Promise<HealthStatus> } | null = null;
 
   /* ── real project views ─────────────────────────────────────────── */
 

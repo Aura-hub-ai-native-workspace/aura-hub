@@ -109,7 +109,7 @@ export function AiSettings() {
 
   const test = useCallback(async () => {
     setTesting(true);
-    const h = await aiClient.health().catch(() => null);
+    const h = await aiClient.healthFresh().catch(() => null);
     setHealth(h?.health ?? null);
     setTesting(false);
   }, []);

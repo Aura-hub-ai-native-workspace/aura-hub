@@ -784,6 +784,8 @@ export const aiClient = {
 
   /* AI */
   health: () => jget<HealthResult>('/health'),
+  /** A real round trip to the provider, for "Test connection"; `/health` alone may answer from the last check. */
+  healthFresh: () => jget<HealthResult>('/health?fresh=1'),
   getSettings: () => jget<SettingsResult>('/settings'),
   setSettings: (partial: Partial<AiSettings>) => jpost<{ settings: AiSettings }>('/settings', partial),
   setKey: (apiKey: string, persist = false) => jpost<{ ok: boolean; fingerprint: string; reason?: string }>('/settings/key', { apiKey, persist }),

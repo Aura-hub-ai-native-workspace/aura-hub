@@ -275,7 +275,7 @@ export async function startService(opts: PipelineOptions & { port?: number; open
 
     try {
       /* ── health / settings / key ──────────────────────────────── */
-      if (method === 'GET' && seg[0] === 'health') return json(res, 200, { health: await p.health(), key: p.keyStatus(), index: manager.indexStatus(), project: manager.currentProject() });
+      if (method === 'GET' && seg[0] === 'health') return json(res, 200, { health: await p.health({ fresh: url.searchParams.get('fresh') === '1' }), key: p.keyStatus(), index: manager.indexStatus(), project: manager.currentProject() });
 
       /**
        * Graceful shutdown over the loopback port — the desktop shell's
