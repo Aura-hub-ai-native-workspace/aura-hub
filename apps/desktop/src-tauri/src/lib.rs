@@ -21,7 +21,9 @@ use serde::Serialize;
 use service::{Ownership, ServiceHandle, DEFAULT_PORT, PYTHON_PORT, SLOT_AI, SLOT_PYTHON};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::path::BaseDirectory;
 use tauri::{Manager, RunEvent};
 
@@ -214,6 +216,53 @@ fn code_create_file(root: String, rel_path: String, contents: String) -> Result<
 }
 
 /* ── local service supervision ───────────────────────────────────── */
+
+/// Set once the app is closing, so the watchdog stops restarting services.
+static EXITING: AtomicBool = AtomicBool::new(false);
+
+fn outcome_status(outcome: &Result<(), String>, port: u16, ready: String) -> ServiceStatus {
+    match outcome {
+        Ok(()) => ServiceStatus { state: "ready".into(), origin: "spawned".into(), message: ready, port },
+        Err(message) => ServiceStatus { state: "failed".into(), origin: String::new(), message: message.clone(), port },
+    }
+}
+
+/// One backend the watchdog keeps running: it is restarted when it dies or
+/// when it never started (its port was busy, it crashed while starting).
+/// Retries back off from a few seconds to a minute and reset after a start.
+struct Watched {
+    wait: Duration,
+    next: Instant,
+}
+
+impl Watched {
+    const MIN: Duration = Duration::from_secs(3);
+    const MAX: Duration = Duration::from_secs(60);
+
+    fn new() -> Self {
+        Self { wait: Self::MIN, next: Instant::now() + Self::MIN }
+    }
+
+    /// Restart through `start` when `alive` is false and a retry is due.
+    /// Returns the outcome when a start was attempted.
+    fn tick(
+        &mut self,
+        alive: bool,
+        start: impl FnOnce() -> Result<(), String>,
+    ) -> Option<Result<(), String>> {
+        if alive {
+            self.wait = Self::MIN;
+            return None;
+        }
+        if Instant::now() < self.next {
+            return None;
+        }
+        let outcome = start();
+        self.wait = if outcome.is_ok() { Self::MIN } else { (self.wait * 2).min(Self::MAX) };
+        self.next = Instant::now() + self.wait;
+        Some(outcome)
+    }
+}
 
 /// What the shell knows about the local service, as the UI sees it.
 #[derive(Clone, Serialize)]
@@ -484,6 +533,17 @@ pub fn run() {
     // `cfg` rather than an unconditional call because the plugins are
     // declared under the same desktop cfg in Cargo.toml — on any other
     // target the crates are absent and this would not compile.
+    // First, so a second launch hands over to this one before it starts
+    // anything of its own.
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     let builder = builder
         .plugin(tauri_plugin_os::init())
@@ -541,8 +601,8 @@ pub fn run() {
             // user never sees a live window pointed at a dead backend.
             std::thread::spawn(move || {
                 let state = handle.state::<ServiceState>();
-                let outcome = match script {
-                    Some(path) => service::ensure_running(&state.handle, path, port),
+                let outcome = match &script {
+                    Some(path) => service::ensure_running(&state.handle, path.clone(), port),
                     None => Err("AURA's local service bundle is missing from this installation.".to_string()),
                 };
 
@@ -646,6 +706,50 @@ pub fn run() {
                     eprintln!("AURA Hub: {message}");
                 }
 
+                /*
+                 * The watchdog. A service that dies, or that could not start
+                 * because its port was still held (a previous AURA closing,
+                 * a second launch racing this one), used to stay down until
+                 * the user restarted the app: "Backend offline", a Settings
+                 * page that could not load, and nothing in the window that
+                 * could fix it. Now it is started again as soon as it can be.
+                 * The same ownership rules apply: `ensure_running` still
+                 * refuses a port someone else holds and never touches them.
+                 */
+                let mut ai = Watched::new();
+                let mut py = Watched::new();
+                while !EXITING.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_secs(1));
+                    if let Some(path) = &script {
+                        if let Some(outcome) = ai.tick(state.handle.is_alive(), || {
+                            service::ensure_running(&state.handle, path.clone(), port)
+                        }) {
+                            if outcome.is_ok() {
+                                eprintln!("AURA Hub: local service restarted on port {port}.");
+                            }
+                            *state.status.lock().unwrap() = outcome_status(
+                                &outcome,
+                                port,
+                                format!("AURA's local service is ready on port {port}."),
+                            );
+                        }
+                    }
+                    if let Some((entry, root)) = &python_backend {
+                        if let Some(outcome) = py.tick(state.python.is_alive(), || {
+                            service::ensure_python_running(&state.python, entry.clone(), root.clone(), python_port)
+                        }) {
+                            *state.python_status.lock().unwrap() = outcome_status(
+                                &outcome,
+                                python_port,
+                                format!("AURA's environment backend is ready on port {python_port}."),
+                            );
+                        }
+                    }
+                }
+                // A start that finished while the app was closing must not
+                // outlive it.
+                state.handle.shutdown();
+                state.python.shutdown();
             });
 
             Ok(())
@@ -658,6 +762,7 @@ pub fn run() {
         // signals a child this process actually spawned, so a developer's
         // own `npm run ai` survives the app closing.
         if let RunEvent::Exit = event {
+            EXITING.store(true, Ordering::SeqCst);
             let state = app_handle.state::<ServiceState>();
             state.handle.shutdown();
             // The environment backend too, and for the same reason: a
@@ -666,4 +771,43 @@ pub fn run() {
             state.python.shutdown();
         }
     });
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::Watched;
+    use std::time::{Duration, Instant};
+
+    fn due(w: &mut Watched) {
+        w.next = Instant::now() - Duration::from_millis(1);
+    }
+
+    #[test]
+    fn a_running_service_is_left_alone() {
+        let mut w = Watched::new();
+        due(&mut w);
+        assert!(w.tick(true, || panic!("must not restart a live service")).is_none());
+    }
+
+    #[test]
+    fn a_dead_service_is_restarted_once_due() {
+        let mut w = Watched::new();
+        assert!(w.tick(false, || panic!("not due yet")).is_none());
+        due(&mut w);
+        assert_eq!(w.tick(false, || Ok(())), Some(Ok(())));
+        assert_eq!(w.wait, Watched::MIN);
+    }
+
+    #[test]
+    fn failures_back_off_up_to_a_minute_and_reset_after_a_start() {
+        let mut w = Watched::new();
+        for _ in 0..10 {
+            due(&mut w);
+            assert!(matches!(w.tick(false, || Err("port busy".into())), Some(Err(_))));
+        }
+        assert_eq!(w.wait, Watched::MAX);
+        due(&mut w);
+        w.tick(false, || Ok(()));
+        assert_eq!(w.wait, Watched::MIN);
+    }
 }
