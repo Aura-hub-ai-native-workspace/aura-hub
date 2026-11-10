@@ -772,6 +772,7 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * at each release — that edit IS the check, and `bump-version.mjs`
    * deliberately does not touch it.
    *
+   * 0.1.24: Home's agent strip answers in milliseconds.
    * 0.1.23: one hub at a time, services restart themselves, fast /health.
    *
    * 0.1.13 repairs 0.1.12. That release could trap anyone who had set up
@@ -782,7 +783,7 @@ async function runProgress(events, { spreadMs = 0 } = {}) {
    * TypeScript compiled once into every installer — and no CI job ran the
    * tests that covered it. Both are fixed here.
    */
-   const RELEASE_CANDIDATE = '0.1.23';
+   const RELEASE_CANDIDATE = '0.1.24';
   check('V2. the release candidate version is preserved', unique[0] === RELEASE_CANDIDATE, unique[0]);
 }
 
