@@ -255,9 +255,20 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   //
   // The scan runs WHILE the server starts listening, not before: it spawns
   // one probe per catalogue entry (about a second of wall time), and the
-  // desktop shell shows the window only once this service answers. Every
-  // route except /health, the ownership proof and /shutdown waits for the
-  // scan below, so no request is ever decided on an unscanned machine.
+  // desktop shell shows the window only once this service answers. Routes
+  // that use the scan's results wait for it (`answersBeforeScan`), so no
+  // capability is ever decided on an unscanned machine.
+  /*
+   * Routes that never read the scan's results answer at once: the ones the
+   * window needs to draw its first screen. Everything else (the Fabric,
+   * workflows, the environment, agent runs) waits, as before. The scan can
+   * take several seconds on a slow machine, which is why this is a list of
+   * what may skip it rather than a blanket wait.
+   */
+  const answersBeforeScan = (m: string, s: string[]) =>
+    ['health', 'shutdown', 'account', 'context', 'storage'].includes(s[0])
+    || (s[0] === 'agents' && (s[1] === 'status' || s[1] === 'list') && m === 'GET')
+    || (s[0] === 'projects' && m === 'GET' && s[2] !== 'context');
   let bootScanDone = false;
   const bootScan = refreshNodeAvailability().then(
     (scan) => console.log(`[environment] ${scan.found ?? providedNodeCapabilities.size} node(s) present · ${providedNodeCapabilities.size} capabilities available`),
@@ -279,7 +290,7 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     if (guard.kind === 'proof') { json(res, guard.status, guard.body); return; }
     if (guard.kind === 'refused') { json(res, guard.status, guard.body); return; }
     const p = manager.pipeline;
-    if (!bootScanDone && seg[0] !== 'health' && seg[0] !== 'shutdown') await bootScan;
+    if (!bootScanDone && !answersBeforeScan(method, seg)) await bootScan;
 
     try {
       /* ── health / settings / key ──────────────────────────────── */
