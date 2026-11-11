@@ -328,11 +328,31 @@ jobs:
       - name: Verify the release
         run: node scripts/release-verify.mjs --tag "${GITHUB_REF_NAME}"
 
-      - name: Publish
+      # Created as a DRAFT on purpose. A draft is not served at
+      # `/releases/latest/`, which is the URL every installed copy reads —
+      # so nothing below can be seen by a client until it has passed.
+      #
+      # The alternative is publishing first and checking afterwards, and
+      # there is no "afterwards" that helps: by then the manifest is live
+      # and machines are already acting on it.
+      - name: Stage the release as a draft
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
+            --draft \
             --title "AURA Hub $GITHUB_REF_NAME" \
             --generate-notes \
             dist-release/*
+
+      # The upload can partially fail. This is the only step that compares
+      # what the manifest PROMISES against what the release actually HOLDS.
+      - name: Verify the release assets match the manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/verify-release-assets.mjs --tag "${GITHUB_REF_NAME}"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false

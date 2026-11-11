@@ -426,6 +426,117 @@ console.log('\n=== 7. VERSION BUMP ===');
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   8 · the manifest and the release must agree
+   ══════════════════════════════════════════════════════════════════ */
+
+console.log('\n=== 8. RELEASE ASSETS ===');
+{
+  /*
+   * Between a manifest generated on a build machine and the release users
+   * fetch sits an upload that can partially fail. These exercise the check
+   * that catches that, using a recorded release payload instead of a live
+   * one — the point is the comparison logic, and it must be testable
+   * without publishing anything.
+   */
+  const stage = (manifest, assetNames, sizes = {}) => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'assets-'));
+    fs.writeFileSync(path.join(dir, 'latest.json'), JSON.stringify(manifest, null, 2));
+    fs.writeFileSync(path.join(dir, 'release.json'), JSON.stringify({
+      tag_name: TAG,
+      assets: assetNames.map((name) => ({ name, size: sizes[name] ?? 1024 })),
+    }));
+    return dir;
+  };
+
+  const verifyAssets = (dir) => {
+    try {
+      const stdout = execFileSync('node', [
+        path.join(ROOT, 'scripts/verify-release-assets.mjs'),
+        '--tag', TAG, '--dir', dir, '--assets-json', path.join(dir, 'release.json'),
+      ], { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' });
+      return { ok: true, stdout };
+    } catch (e) {
+      return { ok: false, stderr: `${e.stderr ?? ''}${e.stdout ?? ''}` };
+    }
+  };
+
+  const url = (file) => `https://github.com/Aura-hub-ai-native-workspace/aura-hub/releases/download/${TAG}/${file}`;
+  const goodManifest = {
+    version: VERSION,
+    notes: 'n',
+    pub_date: '2026-08-15T00:00:00Z',
+    platforms: Object.fromEntries(
+      Object.entries(BUNDLES).map(([t, f]) => [t, { signature: SIG, url: url(f) }]),
+    ),
+  };
+  const allAssets = [...Object.values(BUNDLES), ...Object.values(BUNDLES).map((f) => `${f}.sig`), 'latest.json'];
+
+  {
+    const r = verifyAssets(stage(goodManifest, allAssets));
+    check('8a. a complete release passes', r.ok, r.stderr ?? '');
+  }
+  {
+    // THE FAILURE THIS EXISTS FOR: an upload that dropped one artifact.
+    const missing = allAssets.filter((a) => a !== BUNDLES['windows-x86_64']);
+    const r = verifyAssets(stage(goodManifest, missing));
+    check('8b. a manifest naming an asset that was never attached is REFUSED',
+      !r.ok && /NOT attached/.test(r.stderr), r.ok ? 'PUBLISHED ANYWAY' : 'refused');
+  }
+  {
+    const r = verifyAssets(stage(goodManifest, allAssets.filter((a) => a !== 'latest.json')));
+    check('8c. a release without latest.json is REFUSED',
+      !r.ok && /latest\.json is not attached/.test(r.stderr), r.ok ? 'PUBLISHED ANYWAY' : 'refused');
+  }
+  {
+    const r = verifyAssets(stage(goodManifest, allAssets, { [BUNDLES['linux-x86_64']]: 0 }));
+    check('8d. a zero-byte asset is REFUSED', !r.ok && /zero bytes/.test(r.stderr));
+  }
+  {
+    // An Actions artifact URL expires and was never public.
+    const bad = JSON.parse(JSON.stringify(goodManifest));
+    bad.platforms['linux-x86_64'].url =
+      'https://github.com/Aura-hub-ai-native-workspace/aura-hub/actions/runs/123/artifacts/456';
+    const r = verifyAssets(stage(bad, allAssets));
+    check('8e. an ACTIONS ARTIFACT url is REFUSED',
+      !r.ok && /not a permanent release-asset URL/.test(r.stderr));
+  }
+  {
+    const bad = JSON.parse(JSON.stringify(goodManifest));
+    bad.platforms['linux-x86_64'].url = `file:///home/build/dist-release/${BUNDLES['linux-x86_64']}`;
+    const r = verifyAssets(stage(bad, allAssets));
+    check('8f. a LOCAL PATH url is REFUSED', !r.ok && /not a permanent release-asset URL/.test(r.stderr));
+  }
+  {
+    // A URL for a different tag would serve an older build forever.
+    const bad = JSON.parse(JSON.stringify(goodManifest));
+    bad.platforms['linux-x86_64'].url =
+      `https://github.com/Aura-hub-ai-native-workspace/aura-hub/releases/download/v0.0.9/${BUNDLES['linux-x86_64']}`;
+    const r = verifyAssets(stage(bad, allAssets));
+    check('8g. a url pointing at ANOTHER TAG is REFUSED', !r.ok);
+  }
+  {
+    const bad = JSON.parse(JSON.stringify(goodManifest));
+    bad.platforms['linux-x86_64'].signature = '';
+    const r = verifyAssets(stage(bad, allAssets));
+    check('8h. an entry with no signature is REFUSED', !r.ok && /no signature/.test(r.stderr));
+  }
+  {
+    const bad = JSON.parse(JSON.stringify(goodManifest));
+    bad.platforms = {};
+    const r = verifyAssets(stage(bad, allAssets));
+    check('8i. a manifest with no platforms is REFUSED', !r.ok && /no platforms/.test(r.stderr));
+  }
+
+  // The pipeline must never publish before this check.
+  const ci = fs.readFileSync(path.join(ROOT, '.github/workflows/ci.yml'), 'utf8');
+  check('8j. the release is created as a DRAFT first',
+    /gh release create[\s\S]{0,120}--draft\b/.test(ci), 'a draft is not served at /releases/latest/');
+  check('8k. assets are verified before the release is made public',
+    ci.indexOf('verify-release-assets.mjs') < ci.indexOf('--draft=false')
+    && ci.includes('--draft=false'));
+}
+
 console.log('\n=== 6. REAL ARTIFACTS ===');
 {
   const present = fs.existsSync(DIR)
