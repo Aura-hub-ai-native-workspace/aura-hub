@@ -252,6 +252,288 @@ jobs:
       #
       # Fix both. Bound apt at the transport layer and bound the step at the
       # workflow layer. No mirror rewrite is needed.
+      # The packages are cached on GitHub after the first successful
+      # download, so a run normally installs them without contacting Ubuntu
+      # at all. GitHub runners have lost DNS for the Ubuntu mirrors for over
+      # an hour at a time ("Temporary failure resolving archive.ubuntu.com"),
+      # which no amount of retrying survives.
+      - name: Restore the Linux system packages
+        if: runner.os == 'Linux'
+        id: aptcache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-debs
+          key: apt-debs-${{ env.ImageOS }}-webkit41-v1
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        timeout-minutes: 20
+        run: |
+          echo 'Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
+          echo 'Acquire::https::Timeout "30";' | sudo tee -a /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
+          echo 'Acquire::Retries "3";' | sudo tee -a /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
+          pkgs="libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb"
+          cache="$HOME/apt-debs"
+          installed() { dpkg -s $pkgs >/dev/null 2>&1; }
+          # 1. From the cache, with no network.
+          if ls "$cache"/*.deb >/dev/null 2>&1; then
+            echo "installing $(ls "$cache"/*.deb | wc -l) cached packages"
+            sudo apt-get install -y --no-download -o Dir::Cache::Archives="$cache" $pkgs \
+              || sudo dpkg -i "$cache"/*.deb || true
+            if installed; then echo "OK: installed from the cache"; exit 0; fi
+            echo "::warning::the cached packages did not install; downloading instead"
+          fi
+          # 2. From the mirror, keeping what is downloaded for the cache. A
+          # stuck attempt is bounded and retried rather than failing the job.
+          mkdir -p "$cache/partial"
+          for attempt in 1 2 3 4; do
+            if timeout 300 sudo apt-get update \
+              && timeout 300 sudo apt-get install -y -o Dir::Cache::Archives="$cache" $pkgs; then
+              sudo rm -rf "$cache/partial" "$cache/lock"
+              sudo chown -R "$USER" "$cache"
+              echo "downloaded=1" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed; retrying in $((attempt * 30))s"
+            sleep $((attempt * 30))
+          done
+          echo "::error::could not install Linux system dependencies after 4 attempts"
+          exit 1
+        id: aptinstall
+
+      - name: Save the Linux system packages
+        if: runner.os == 'Linux' && steps.aptcache.outputs.cache-hit != 'true' && steps.aptinstall.outputs.downloaded == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-debs
+          key: apt-debs-${{ env.ImageOS }}-webkit41-v1
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Nothing ran these until now. 230 tests existed and CI executed none
+      # of them, which is how a gate able to trap a user on the setup screen
+      # shipped to every platform at once: it is plain TypeScript, identical
+      # in all four installers, and no job ever asked it a question.
+      - name: Unit tests
+        run: npm run test:front && npm run test:service && npm run test:agents
+
+      - name: Build
+        run: npm run build
+
+  # The Python backend suite. It was absent from CI entirely until now, and
+  # that absence is not academic: v0.1.19 shipped a `aura.executors` module
+  # that imported a file which was never committed, so the backend could not
+  # be imported at all — and the TypeScript suite, the typecheck and the
+  # Tauri build all passed, because none of them import Python. A gate that
+  # cannot see the defect cannot catch it, and this repository's entire
+  # orchestration surface (Central Agent, policy engine, Capability Fabric,
+  # environment scanner, process boundary, evidence/audit) lives in this
+  # suite rather than in the TypeScript one.
+  #
+  # Runs on all three hosted OS families. It was Linux-only until the Windows
+  # and macOS defects found by the cross-platform audit (process-tree cleanup,
+  # the shutdown request) showed what a Linux-only gate cannot see: they live
+  # in code paths that only execute on those kernels. Nothing is allowed to
+  # hide a platform difference here — no continue-on-error, no blanket skips:
+  # a test that cannot apply to a platform must say so itself (pytest skipif
+  # with a reason, printed by -ra below), and a failure fails the job.
+  #
+  # One Apple Silicon runner stands for macOS: the Intel leg of
+  # `desktop-build` already covers the x64 packaging path, and this suite is
+  # architecture-independent Python. The first run on Windows and macOS is the
+  # first observation of this suite there; expect it to surface real findings.
+  backend:
+    name: Backend tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    # Every existing step was written for bash; Windows runners default to PowerShell.
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, label: linux-x64 }
+          - { os: windows-latest, label: windows-x64 }
+          - { os: macos-latest, label: macos-arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      # The acceptance suite is not purely Python. `test_a26_tsc_noEmit_clean`
+      # shells out to `npx tsc --noEmit` in apps/desktop, which typechecks
+      # through TypeScript PROJECT REFERENCES — so it needs the referenced
+      # packages' emitted `dist/*.d.ts`. On a fresh checkout those do not
+      # exist, and every one of them fails with TS6305 ("output file has not
+      # been built from source file"), cascading into TS7006/TS2345 noise that
+      # looks like real type errors and is not.
+      #
+      # This was observed, not predicted: this job was first written without
+      # these three steps and the test failed on a clean tree while passing in
+      # a working tree that happened to hold build output. `packages/core` and
+      # friends declare no build script at all — `dist` is produced by the
+      # reference build, which is the same command the root `typecheck` script
+      # already runs.
+      #
+      # It is built rather than skipped. Skipping the only test in this job
+      # that can see a TypeScript break would let the job report green on a
+      # tree whose types do not compile.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript project references (test_a26 requires them)
+        run: npx tsc -b apps/desktop/tsconfig.json
+
+      # The declared `test` extra, not an ad-hoc pip line: it carries
+      # pytest, pytest-asyncio, jsonschema and — the one that is easy to
+      # forget — httpx, without which `starlette.testclient` refuses to
+      # import and every API test silently stops being collectable.
+      - name: Install the backend with its test extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "backend[test]"
+
+      - name: Verify the backend is importable
+        run: python -c "import sys; sys.path.insert(0, 'backend'); import aura.executors, aura.central_agent, aura.fabric"
+
+      # Recorded so a result can be read against what produced it.
+      - name: Record the platform and toolchain
+        shell: bash
+        run: |
+          {
+            echo "### Backend tests: ${{ matrix.label }}"
+            echo "- runner: ${{ runner.os }} ${{ runner.arch }} (${{ matrix.os }})"
+            echo "- python: $(python --version 2>&1)"
+            echo "- node: $(node --version)"
+            echo "- rust: $(rustc --version 2>/dev/null || echo 'not installed on this job')"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # -ra lists every skip with its reason, so an incompatible test is visible
+      # rather than silently absent. The junit file is kept even on failure.
+      - name: Backend tests
+        shell: bash
+        run: python -m pytest backend/tests -ra -p no:cacheprovider --junitxml="pytest-${{ matrix.label }}.xml"
+
+      - name: Summarise the result
+        if: always()
+        shell: bash
+        run: |
+          python - "pytest-${{ matrix.label }}.xml" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          try:
+              r = ET.parse(sys.argv[1]).getroot()
+              r = r if r.tag == "testsuite" else r.find("testsuite")
+              print(f"- result: {r.get('tests')} tests, {r.get('failures')} failed, {r.get('errors')} errors, {r.get('skipped')} skipped")
+          except Exception as exc:
+              print(f"- result: no junit report ({type(exc).__name__})")
+          PY
+
+      - name: Keep the junit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-${{ matrix.label }}
+          path: pytest-${{ matrix.label }}.xml
+          if-no-files-found: ignore
+
+  # Native release packaging. Each OS builds its REAL Tauri artifact on its
+  # own runner: AppImage + deb on Linux, NSIS on Windows, .app + .dmg on
+  # macOS. A compile on Linux is not a build on Windows/macOS, so nothing
+  # here is cross-compiled — every artifact is produced by its native
+  # toolchain, and then RUNS what it built on that same OS. A build is not a
+  # run: `desktop-runtime-verify` boots the packaged service natively, checks
+  # the health gate, measures the real machine, exercises the port and
+  # shutdown paths, and launches the packaged shell. That is what lets
+  # Windows and macOS be reported as runtime-verified instead of merely
+  # compiled — and where a step genuinely cannot run, it says so rather
+  # than passing quietly.
+  #
+  # macOS is built twice on purpose: macos-latest is Apple Silicon and
+  # macos-15-intel is Intel, so each architecture is produced and tested on
+  # its own hardware rather than cross-compiled and assumed.
+  #
+  # The Intel leg was `macos-13`, which never ran: that image was retired in
+  # December 2025, and a retired label does not fail a job, it queues it
+  # forever. Eight consecutive runs sat unassigned for ten hours looking
+  # exactly like runner scarcity. `macos-15-intel` is the current Intel
+  # image and is planned to be the last one, so this leg has a finite life;
+  # when it goes, Intel coverage ends with it rather than silently pretending.
+  desktop-build:
+    name: Desktop packaging (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x64
+            bundles: appimage,deb
+          - os: windows-latest
+            label: windows-x64
+            bundles: nsis
+          - os: macos-latest
+            label: macos-arm64
+            bundles: app,dmg
+          - os: macos-15-intel
+            label: macos-x64
+            bundles: app,dmg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The packaging step vendors the Python backend's dependencies into the
+      # artifact, and the interpreter that resolves them decides which
+      # versions ship. Pinned rather than left to the runner image so a
+      # Linux, macOS and Windows build of the same commit carry the same
+      # packages, and an image update cannot change them underneath us.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Record the platform and toolchain
+        shell: bash
+        run: |
+          {
+            echo "### Desktop packaging: ${{ matrix.label }}"
+            echo "- runner: ${{ runner.os }} ${{ runner.arch }} (${{ matrix.os }})"
+            echo "- node: $(node --version)  python: $(python --version 2>&1)  rust: $(rustc --version)  cargo: $(cargo --version)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Linux apt has stalled for up to 6 hours in CI (observed 21s … 85m39s
+      # across 18 runs, plus a 360m job timeout in PR #11 that occurred
+      # *after* apt had already failed over from azure.archive.ubuntu.com to
+      # archive.ubuntu.com). The mirror is not the root cause:
+      # archive.ubuntu.com is already configured as the fallback in
+      # /etc/apt/apt-mirrors.txt, and the stall happened on it.
+      #
+      # The real defects are:
+      #   1. apt has no effective ceiling — it waits indefinitely rather than
+      #      timing out and retrying (Acquire::http::Timeout / Retries).
+      #   2. the step has no budget — no timeout-minutes, so GitHub's 6h
+      #      default is the only bound and a stall burns a whole runner.
+      #
+      # Fix both. Bound apt at the transport layer and bound the step at the
+      # workflow layer. No mirror rewrite is needed.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         timeout-minutes: 20
@@ -264,7 +546,7 @@ jobs:
           # A slow mirror used to hang one attempt until the step timed out and
           # the whole packaging job had to be re-run by hand. Each attempt is
           # now bounded, and a stuck one is retried instead of failing the job.
-          pkgs="libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf"
+          pkgs="libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb"
           for attempt in 1 2 3 4; do
             if timeout 300 sudo apt-get update && timeout 300 sudo apt-get install -y $pkgs; then
               exit 0
@@ -381,7 +663,8 @@ jobs:
       - name: Install a virtual display (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 5
-        run: sudo apt-get install -y xvfb
+        # Installed with the cached system packages above; this only checks.
+        run: command -v xvfb-run || sudo apt-get install -y xvfb
 
       - name: Runtime verification (Linux)
         if: runner.os == 'Linux'
@@ -426,8 +709,11 @@ jobs:
           # The runner's DNS can drop for a minute (seen: "Temporary failure
           # resolving archive.ubuntu.com"), and apt resolves its sources even
           # for a local .deb. Retried like the dependency install above.
+          # dpkg first: every dependency is already installed above, so this
+          # needs no network. apt (with retries) only if dpkg reports a gap.
           for attempt in 1 2 3 4; do
-            timeout 300 sudo apt-get install -y ./dist-release/*.deb && break
+            sudo dpkg -i ./dist-release/*.deb && break
+            timeout 300 sudo apt-get install -y -f && break
             test "$attempt" = 4 && { echo "::error::could not install the .deb after 4 attempts"; exit 1; }
             echo "::warning::.deb install attempt $attempt failed; retrying in $((attempt * 30))s"
             sleep $((attempt * 30))
