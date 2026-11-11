@@ -45,6 +45,10 @@ export function useNotificationsFeed(intervalMs = 15000) {
             at: request.requestedAt,
             projectId: request.projectId,
             missionId: request.missionId,
+            // Carried so the row can open the gate itself. A `system.install`
+            // approval has no mission, and without this the notification had
+            // nothing to route to — clicking it did nothing at all.
+            approvalId: request.id,
           });
         }
       } catch {

@@ -43,7 +43,7 @@ export interface WorkspaceTemplate {
 
 /** Optional, curated starting layouts — never applied automatically. */
 export const WORKSPACE_TEMPLATES: WorkspaceTemplate[] = [
-  { id: 'ai-development', label: 'AI Development', icon: 'spark', hint: 'Help Chat Assistant + Files + Diagnostics', kinds: ['ai-chat', 'files', 'diagnostics'] },
+  { id: 'ai-development', label: 'AI Development', icon: 'spark', hint: 'Project Chat + Files + Diagnostics', kinds: ['ai-chat', 'files', 'diagnostics'] },
   { id: 'architecture-review', label: 'Architecture Review', icon: 'architecture', hint: 'Architecture + Knowledge', kinds: ['architecture', 'knowledge'] },
   { id: 'debugging', label: 'Debugging', icon: 'bug', hint: 'Diagnostics + Files + Memory', kinds: ['diagnostics', 'files', 'engineering-memory'] },
   { id: 'documentation', label: 'Documentation', icon: 'doc', hint: 'Docs + Knowledge', kinds: ['docs', 'knowledge'] },

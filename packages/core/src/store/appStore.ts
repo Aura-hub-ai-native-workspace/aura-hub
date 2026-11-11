@@ -77,6 +77,23 @@ interface AppState {
    * on the normal project view.
    */
   askAuraOpen: boolean;
+  /**
+   * The dashboard's Ask AURA quick chat, which is a DIFFERENT surface from
+   * `askAuraOpen` above: that one is a project sub-mode, this one is the
+   * overlay that answers without a project at all. It lives here rather
+   * than in Home's local state because the command bar has to be able to
+   * open it — while it was local, the only Ask-AURA-shaped command that
+   * could exist was one that navigated to the Workspace and opened the
+   * project chat panel, which is precisely the bug.
+   */
+  askAuraChatboxOpen: boolean;
+  /**
+   * Fabric approval awaiting an answer in the app-level modal, by request
+   * id. Approvals raised for a mission are answered inside Mission Control;
+   * one raised for `system.install` belongs to no mission and had nowhere
+   * to be answered, so the request stalled and the install never ran.
+   */
+  pendingApprovalId: string | null;
   /** Active tab within the project workspace. */
   projectTab: ProjectTab;
   /** Left rail expanded vs. rail-only. */
@@ -110,6 +127,14 @@ interface AppState {
   pushRecentCommand: (id: string) => void;
   /** Toggle the Ask AURA sub-mode. Never touches `activeProjectId`. */
   setAskAuraOpen: (open: boolean) => void;
+  /**
+   * Open or close the dashboard Ask AURA overlay. Deliberately touches
+   * nothing else: no `nav`, no `activeProjectId`, no project view. Ask AURA
+   * answers with whatever project happens to be in scope, or with none.
+   */
+  setAskAuraChatboxOpen: (open: boolean) => void;
+  /** Show the app-level approval modal for a request, or close it with null. */
+  setPendingApprovalId: (id: string | null) => void;
   /** Make `id` active AND show its workspace. */
   openProject: (id: string) => void;
   /** Leave the project screen. The project stays active. */
@@ -140,6 +165,8 @@ export const useAppStore = create<AppState>((set) => ({
   activeProjectId: initialActiveProject(),
   inProjectView: false,
   askAuraOpen: false,
+  askAuraChatboxOpen: false,
+  pendingApprovalId: null,
   projectTab: 'overview',
   sidebarExpanded: false,
   rightPanelOpen: false,
@@ -197,6 +224,8 @@ export const useAppStore = create<AppState>((set) => ({
   // The sub-mode toggle, and ONLY the sub-mode — it must never write
   // `activeProjectId`, or Ask AURA would become part of project identity.
   setAskAuraOpen: (askAuraOpen) => set({ askAuraOpen }),
+  setAskAuraChatboxOpen: (askAuraChatboxOpen) => set({ askAuraChatboxOpen }),
+  setPendingApprovalId: (pendingApprovalId) => set({ pendingApprovalId }),
   setProjectTab: (projectTab) => set({ projectTab }),
   toggleSidebar: () => set((s) => ({ sidebarExpanded: !s.sidebarExpanded })),
   toggleRightPanel: () => set((s) => ({ rightPanelOpen: !s.rightPanelOpen })),

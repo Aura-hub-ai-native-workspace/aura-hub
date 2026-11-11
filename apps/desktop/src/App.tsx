@@ -10,6 +10,8 @@ import { useEditorStore } from './editor/editorStore';
 import { useLayoutStore } from './ops/layoutStore';
 import { WindowSwitcher } from './ops/WindowSwitcher';
 import { useNotificationsFeed } from './ops/useNotificationsFeed';
+import { ApprovalRequestModal } from './ops/ApprovalRequestModal';
+import { AskAuraChatbox } from './components/AskAuraChatbox';
 import { restoreSession, saveSession } from './ops/session';
 import { startMemoryRecorder } from './ops/memoryRecorder';
 import { startAgentEngine } from './ops/agentEngine';
@@ -24,6 +26,8 @@ import { startAgentEngine } from './ops/agentEngine';
 export function App() {
   const commands = useCommands();
   const paletteOpen = useAppStore((s) => s.paletteOpen);
+  const askAuraChatboxOpen = useAppStore((s) => s.askAuraChatboxOpen);
+  const setAskAuraChatboxOpen = useAppStore((s) => s.setAskAuraChatboxOpen);
   const setPaletteOpen = useAppStore((s) => s.setPaletteOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const toggleRightPanel = useAppStore((s) => s.toggleRightPanel);
@@ -112,6 +116,12 @@ export function App() {
         onRun={(cmd) => pushRecentCommand(cmd.id)}
       />
       <WindowSwitcher open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
+      {/* App-level, so an approval that belongs to no mission can still be
+          answered — see ApprovalRequestModal for why that case existed. */}
+      <ApprovalRequestModal />
+      {/* App-level so Ask AURA opens from anywhere — Home, the Workspace or
+          the command bar — without navigating and without a project. */}
+      <AskAuraChatbox isOpen={askAuraChatboxOpen} onClose={() => setAskAuraChatboxOpen(false)} />
       {!onboarded ? (
         <OnboardingFlow onComplete={completeOnboarding} />
       ) : (

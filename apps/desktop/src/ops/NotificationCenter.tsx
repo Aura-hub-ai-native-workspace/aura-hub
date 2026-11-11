@@ -72,6 +72,7 @@ export function NotificationCenter({ embedded = false, onNavigate }: { embedded?
 function NotificationRow({ n, onNavigate }: { n: AuraNotification; onNavigate?: () => void }) {
   const markRead = useNotificationsStore((s) => s.markRead);
   const setNav = useAppStore((s) => s.setNav);
+  const setPendingApprovalId = useAppStore((s) => s.setPendingApprovalId);
   const meta = NOTIFICATION_KIND_META[n.kind];
 
   /* A notification can reference an entity in a project other than the
@@ -84,6 +85,17 @@ function NotificationRow({ n, onNavigate }: { n: AuraNotification; onNavigate?: 
      the Workspace only once the panel is genuinely open. */
   const open = () => {
     if (!n.read) markRead(n.id);
+    /* An approval is answered where it was raised. One that belongs to a
+       mission opens Mission Control, which is where its gate lives; one that
+       belongs to no mission — `system.install` asking to install a node —
+       opens the app-level gate instead. Before this branch existed the row
+       matched neither case below, so it silently marked itself read and the
+       request went on waiting for an answer nothing could give. */
+    if (n.approvalId && !n.missionId) {
+      setPendingApprovalId(n.approvalId);
+      onNavigate?.();
+      return;
+    }
     if (n.missionId) {
       openProjectDetail({
         projectId: n.projectId ?? null,

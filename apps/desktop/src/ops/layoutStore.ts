@@ -450,7 +450,7 @@ export const PANEL_META: Record<PanelKind, PanelMeta> = {
   'engineering-memory': { label: 'Engineering Memory', icon: 'memory', hint: 'Timeline, history, search and graph' },
   'engineering-learning': { label: 'Engineering Learning', icon: 'research', hint: 'Patterns, predictions, trends and health' },
   'engineering-agent': { label: 'Engineering Agent', icon: 'spark', hint: 'Autonomous improvement proposals, approval and verification' },
-  'ai-chat': { label: 'Help Chat Assistant', icon: 'spark', hint: 'Chat grounded in the open project' },
+  'ai-chat': { label: 'Project Chat', icon: 'spark', hint: 'Chat grounded in the open project' },
   dashboard: { label: 'Engineering Dashboard', icon: 'activity', hint: 'Global mission execution control plane' },
   twin: { label: 'Engineering Twin', icon: 'cpu', hint: 'Live digital twin of the repository' },
   governance: { label: 'Engineering Governance', icon: 'shield', hint: 'Health scorecard, risks, audits and council reviews' },

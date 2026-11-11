@@ -30,6 +30,13 @@ export interface AuraNotification {
   projectId?: string;
   missionId?: string;
   diagnosisId?: string;
+  /**
+   * Fabric approval this notification is asking about. Set for approvals
+   * that belong to no mission — `system.install` is the one that reaches
+   * users — which is exactly the case that previously had no way to be
+   * opened, because the row could only route a mission or a diagnosis.
+   */
+  approvalId?: string;
 }
 
 const KEY = 'aura.ops.notifications';
@@ -54,6 +61,7 @@ export interface NotificationInput {
   projectId?: string;
   missionId?: string;
   diagnosisId?: string;
+  approvalId?: string;
 }
 
 interface NotificationsState {
@@ -90,6 +98,7 @@ export const useNotificationsStore = create<NotificationsState>((set, get) => ({
       projectId: input.projectId,
       missionId: input.missionId,
       diagnosisId: input.diagnosisId,
+      approvalId: input.approvalId,
     };
     const next = [notification, ...items].slice(0, CAP);
     set({ items: next });

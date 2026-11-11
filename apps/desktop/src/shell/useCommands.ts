@@ -23,6 +23,7 @@ export function useCommands(): Command[] {
   const projectList = useWorkspace((s) => s.projects);
   const setSearchScope = useLayoutStore((s) => s.setSearchScope);
   const openPanel = useLayoutStore((s) => s.openPanel);
+  const setAskAuraChatboxOpen = useAppStore((s) => s.setAskAuraChatboxOpen);
 
   return useMemo<Command[]>(() => {
       const inWorkspace = (run: () => void) => () => { setNav('workspace'); run(); };
@@ -37,7 +38,14 @@ export function useCommands(): Command[] {
         // own nav destinations — they're Workspace panels now (see 'Actions'
         // section below), consistent with every other panel-opening command.
         { id: 'open-knowledge', title: 'Open Knowledge', section: 'Actions', icon: 'knowledge', run: inWorkspace(() => openPanel('knowledge')) },
-        { id: 'open-ai-chat', title: 'Help Chat Assistant', section: 'Actions', icon: 'spark', run: inWorkspace(() => openPanel('ai-chat')) },
+        // Ask AURA answers without a project and without the Workspace, so it
+        // must NOT go through `inWorkspace`. Routing it there is what made
+        // clicking Ask AURA open the Workspace and start the project
+        // conversation instead of Ask AURA.
+        { id: 'open-ask-aura', title: 'Ask AURA', section: 'Actions', icon: 'spark', keywords: ['chat', 'ask', 'assistant', 'aura'], run: () => setAskAuraChatboxOpen(true) },
+        // The project chat panel is a different surface: it is grounded in
+        // the open project, so it legitimately needs the Workspace.
+        { id: 'open-ai-chat', title: 'Open Project Chat', section: 'Actions', icon: 'spark', keywords: ['project', 'chat', 'grounded'], run: inWorkspace(() => openPanel('ai-chat')) },
         { id: 'open-dashboard', title: 'Open Engineering Dashboard', section: 'Actions', icon: 'activity', run: inWorkspace(() => openPanel('dashboard')) },
         { id: 'open-twin', title: 'Open Engineering Twin', section: 'Actions', icon: 'cpu', run: inWorkspace(() => openPanel('twin')) },
         { id: 'open-governance', title: 'Open Governance', section: 'Actions', icon: 'shield', run: inWorkspace(() => openPanel('governance')) },

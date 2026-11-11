@@ -6,7 +6,6 @@ import { PageContainer, PageBlock } from './PageContainer';
 import { EmptyState } from '../components/EmptyState';
 import { AddProjectDialog } from '../components/AddProjectDialog';
 import { CreateProjectDialog } from '../components/CreateProjectDialog';
-import { AskAuraChatbox } from '../components/AskAuraChatbox';
 import { useWorkspace } from '../data/useWorkspace';
 import { hasUnsavedWorkFor } from '../editor/editorStore';
 import { aiClient, type HealthResult, type ProjectRecord } from '../ai/aiClient';
@@ -50,7 +49,12 @@ export function Home() {
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [reachable, setReachable] = useState<boolean | null>(null);
   const [showAllProjects, setShowAllProjects] = useState(false);
-  const [isAskAuraOpen, setIsAskAuraOpen] = useState(false);
+  /* Ask AURA is opened here but RENDERED app-level (App.tsx), so the same
+     overlay answers from Home, from the Workspace, or from the command bar.
+     While it was Home's own `useState` + JSX, nothing outside Home could
+     open it — which is why the only Ask-AURA-shaped command that existed
+     navigated to the Workspace and opened the project chat panel instead. */
+  const setIsAskAuraOpen = useAppStore((s) => s.setAskAuraChatboxOpen);
   const { push } = useToast();
 
   useEffect(() => {
@@ -81,7 +85,6 @@ export function Home() {
     <PageContainer wide>
       <AddProjectDialog open={addProjectDialogOpen} onClose={closeAddProjectDialog} />
       <CreateProjectDialog open={createProjectDialogOpen} onClose={closeCreateProjectDialog} />
-      <AskAuraChatbox isOpen={isAskAuraOpen} onClose={() => setIsAskAuraOpen(false)} />
 
       <PageBlock className="mb-8">
         <div className="relative overflow-hidden rounded-3xl border border-line bg-surface p-8">
