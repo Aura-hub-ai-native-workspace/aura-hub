@@ -249,14 +249,35 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     console.warn('[providers] env auto-connect failed:', (e as Error).message);
   });
 
-  // Discover the environment before serving. Without this a restart left
-  // every node-backed capability denied as `no-provider` until someone
-  // happened to trigger a scan — git would be installed and working, and
-  // the Fabric would still refuse `git.diff`.
-  await refreshNodeAvailability().then(
+  // Discover the environment at boot. Without this a restart left every
+  // node-backed capability denied as `no-provider` until someone happened
+  // to trigger a scan — git would be installed and working, and the Fabric
+  // would still refuse `git.diff`.
+  //
+  // The scan runs WHILE the server starts listening, not before: it spawns
+  // one probe per catalogue entry (about a second of wall time), and the
+  // desktop shell shows the window only once this service answers. Routes
+  // that use the scan's results wait for it (`answersBeforeScan`), so no
+  // capability is ever decided on an unscanned machine.
+  /*
+   * Routes that never read the scan's results answer at once: the ones the
+   * window needs to draw its first screen. Everything else (the Fabric,
+   * workflows, the environment, agent runs) waits, as before. The scan can
+   * take several seconds on a slow machine, which is why this is a list of
+   * what may skip it rather than a blanket wait.
+   */
+  const answersBeforeScan = (m: string, s: string[]) =>
+    // Not /health: it reports the Fabric's capabilities, which come from the
+    // scan. The shell's readiness check is the ownership proof, answered
+    // before routing, so the window still appears without waiting.
+    ['shutdown', 'account', 'context', 'storage'].includes(s[0])
+    || (s[0] === 'agents' && (s[1] === 'status' || s[1] === 'list') && m === 'GET')
+    || (s[0] === 'projects' && m === 'GET' && s[2] !== 'context');
+  let bootScanDone = false;
+  const bootScan = refreshNodeAvailability().then(
     (scan) => console.log(`[environment] ${scan.found ?? providedNodeCapabilities.size} node(s) present · ${providedNodeCapabilities.size} capabilities available`),
     (e) => console.warn('[environment] boot scan failed:', (e as Error).message),
-  );
+  ).finally(() => { bootScanDone = true; });
 
   // Read once per process: the launch token never changes while it runs.
   const instanceToken = configuredToken();
@@ -273,6 +294,7 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     if (guard.kind === 'proof') { json(res, guard.status, guard.body); return; }
     if (guard.kind === 'refused') { json(res, guard.status, guard.body); return; }
     const p = manager.pipeline;
+    if (!bootScanDone && !answersBeforeScan(method, seg)) await bootScan;
 
     try {
       /* ── health / settings / key ──────────────────────────────── */
