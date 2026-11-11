@@ -275,6 +275,55 @@ jobs:
         shell: bash
         run: npm run test:front && npm run test:service && npm run test:agents
 
+      # Operating-system code signing, switched on by adding its secrets.
+      # Unsigned builds make Windows SmartScreen say "unknown publisher" and
+      # macOS Gatekeeper refuse the app, which stops most first-time users.
+      # With no secrets set nothing changes: the build stays unsigned, as
+      # before. See docs/CODE_SIGNING.md for what to buy and which secrets
+      # to add. Values are passed by reference and masked in logs.
+      - name: Enable OS code signing when its secrets are set
+        if: runner.os != 'Linux'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+              for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+                echo "$v=${!v}" >> "$GITHUB_ENV"
+              done
+              echo "macOS signing: on"
+              if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+                for v in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do echo "$v=${!v}" >> "$GITHUB_ENV"; done
+                echo "macOS notarization: on"
+              else
+                echo "::warning::macOS notarization is off (APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID not set)"
+              fi
+            else
+              echo "macOS signing: off (no APPLE_CERTIFICATE / APPLE_SIGNING_IDENTITY secret)"
+            fi
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            if [ -n "$WINDOWS_CERTIFICATE" ]; then
+              pfx="$RUNNER_TEMP/aura-signing.pfx"
+              echo "$WINDOWS_CERTIFICATE" | base64 --decode > "$pfx"
+              thumb=$(powershell -NoProfile -Command "\$p = ConvertTo-SecureString -String \$env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText; (Import-PfxCertificate -FilePath '$pfx' -CertStoreLocation Cert:\\CurrentUser\\My -Password \$p).Thumbprint" | tr -d '\r')
+              rm -f "$pfx"
+              test -n "$thumb" || { echo "::error::the Windows certificate could not be imported"; exit 1; }
+              echo "TAURI_CONFIG={\"bundle\":{\"windows\":{\"certificateThumbprint\":\"$thumb\",\"digestAlgorithm\":\"sha256\",\"timestampUrl\":\"http://timestamp.digicert.com\"}}}" >> "$GITHUB_ENV"
+              echo "Windows signing: on"
+            else
+              echo "Windows signing: off (no WINDOWS_CERTIFICATE secret)"
+            fi
+          fi
+
       # Retried because Tauri fetches its bundler tooling at build time —
       # AppRun and linuxdeploy on Linux, the NSIS binaries on Windows — and
       # GitHub's CDN intermittently drops those connections, surfacing as
