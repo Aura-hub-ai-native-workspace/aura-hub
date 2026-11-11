@@ -21,7 +21,7 @@
       "name": "Create project",
       "category": "project",
       "surface": "aura-internal",
-      "description": "Creates a project directory and registers it. Reuses the existing project service — there is no second implementation.",
+      "description": "Creates a project directory and registers it. Reuses the existing project service \u2014 there is no second implementation.",
       "risk": "medium",
       "permissions": [
         "aura.write",
@@ -92,7 +92,7 @@
       "name": "Create mission",
       "category": "mission",
       "surface": "aura-internal",
-      "description": "Runs Mission Control v3 planning on a free-text objective. The ONLY way the Fabric creates missions — it owns no mission model of its own.",
+      "description": "Runs Mission Control v3 planning on a free-text objective. The ONLY way the Fabric creates missions \u2014 it owns no mission model of its own.",
       "risk": "low",
       "permissions": [
         "aura.write"
@@ -119,7 +119,7 @@
       "name": "Approve mission plan",
       "category": "mission",
       "surface": "aura-internal",
-      "description": "Passes the planning checkpoint. A human gate by design — never auto-executed.",
+      "description": "Passes the planning checkpoint. A human gate by design \u2014 never auto-executed.",
       "risk": "medium",
       "permissions": [
         "aura.write"
@@ -293,7 +293,7 @@
       "name": "Run workflow",
       "category": "automation",
       "surface": "aura-internal",
-      "description": "Executes an existing workflow through the Workflow Engine. The Fabric delegates — it does not re-implement workflow execution.",
+      "description": "Executes an existing workflow through the Workflow Engine. The Fabric delegates \u2014 it does not re-implement workflow execution.",
       "risk": "medium",
       "permissions": [
         "aura.write",
@@ -479,7 +479,7 @@
       "name": "Install a tool",
       "category": "system",
       "surface": "local-process",
-      "description": "Installs a catalogued tool that is missing from this machine, using the package manager that tool declares. The caller names a NODE, never a command: the package and arguments come from the catalogue, so this can never be turned into \"run anything\". Installs that need administrator rights are not performed — AURA hands you the exact verified command instead.",
+      "description": "Installs a catalogued tool that is missing from this machine, using the package manager that tool declares. The caller names a NODE, never a command: the package and arguments come from the catalogue, so this can never be turned into \"run anything\". Installs that need administrator rights are not performed \u2014 AURA hands you the exact verified command instead.",
       "risk": "high",
       "permissions": [
         "process.execute",
@@ -493,7 +493,7 @@
           "description": "Catalogue id of the node to install, e.g. \"pnpm\""
         }
       ],
-      "output": "InstallResult — installOutcome, privilege, command, probe",
+      "output": "InstallResult \u2014 installOutcome, privilege, command, probe",
       "verify": "read-back",
       "irreversible": false
     },
@@ -705,7 +705,7 @@
       "name": "Open a page",
       "category": "browser",
       "surface": "browser",
-      "description": "Loads a URL in a driven browser session. Implementation path: Playwright, per §9.",
+      "description": "Loads a URL in a driven browser session. Implementation path: Playwright, per \u00a79.",
       "risk": "low",
       "permissions": [
         "network.outbound"
@@ -801,6 +801,59 @@
       "verify": null,
       "requiresNodeCapability": "browser-automation",
       "input": []
+    },
+    {
+      "id": "workflow.create",
+      "name": "Create workflow",
+      "category": "automation",
+      "surface": "aura-internal",
+      "description": "Creates a workflow definition. Validates the graph and stores it.",
+      "risk": "low",
+      "permissions": [
+        "aura.write"
+      ],
+      "input": [
+        {
+          "name": "name",
+          "type": "string",
+          "required": true,
+          "description": "Workflow name"
+        },
+        {
+          "name": "nodes",
+          "type": "string[]",
+          "required": true,
+          "description": "Graph nodes"
+        },
+        {
+          "name": "edges",
+          "type": "string[]",
+          "required": true,
+          "description": "Graph edges"
+        },
+        {
+          "name": "description",
+          "type": "string",
+          "required": false,
+          "description": "Description"
+        }
+      ],
+      "output": "WorkflowRecord",
+      "verify": "read-back"
+    },
+    {
+      "id": "workflow.list",
+      "name": "List workflows",
+      "category": "automation",
+      "surface": "aura-internal",
+      "description": "Lists stored workflows.",
+      "risk": "low",
+      "permissions": [
+        "aura.read"
+      ],
+      "input": [],
+      "output": "WorkflowRecord[]",
+      "verify": null
     }
   ]
 }
