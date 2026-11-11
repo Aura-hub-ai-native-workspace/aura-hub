@@ -1,0 +1,82 @@
+[
+  {
+    "name": "30/70 split",
+    "pass": true,
+    "detail": "left=359px right=821px (30/70)"
+  },
+  {
+    "name": "single left composer, none in right panel",
+    "pass": true,
+    "detail": "left=1, right=0"
+  },
+  {
+    "name": "exactly two composer action buttons",
+    "pass": true,
+    "detail": "count=2"
+  },
+  {
+    "name": "right panel: passive status chip, zero interactive toggles",
+    "pass": true,
+    "detail": "switches=0, statusChips=1"
+  },
+  {
+    "name": "11-state legend",
+    "pass": true,
+    "detail": "states=11"
+  },
+  {
+    "name": "attachment appears with ingestion state",
+    "pass": true,
+    "detail": "status=ready, text=\"aura-v2-fixture.txt1 kB · in knowledge baseReady\""
+  },
+  {
+    "name": "attachment removal",
+    "pass": true,
+    "detail": "rowsAfter=0"
+  },
+  {
+    "name": "timeline cards from real backend run",
+    "pass": true,
+    "detail": "2 cards visible after run"
+  },
+  {
+    "name": "card statuses are real vocabulary",
+    "pass": true,
+    "detail": "[\"planning\",\"executing\"]"
+  },
+  {
+    "name": "expandable execution facts",
+    "pass": true,
+    "detail": "li before=0 after=2"
+  },
+  {
+    "name": "theme captures saved",
+    "pass": true,
+    "detail": "dark + light, 1280 viewport"
+  },
+  {
+    "name": "narrow layout stacks panels",
+    "pass": true,
+    "detail": "leftW=636, rightW=636, viewport=720"
+  },
+  {
+    "name": "no horizontal overflow @720px",
+    "pass": true,
+    "detail": "overflow=0px"
+  },
+  {
+    "name": "mobile layout usable @400px",
+    "pass": true,
+    "detail": "overflow=0px, mLeftW=316, actions=2"
+  },
+  {
+    "name": "approval-required state reached when requested",
+    "pass": true,
+    "detail": "waiting-for-approval cards=1 (expected 1)"
+  },
+  {
+    "name": "approval action buttons present (expect 0 = limitation)",
+    "pass": true,
+    "detail": "found=0"
+  }
+]
