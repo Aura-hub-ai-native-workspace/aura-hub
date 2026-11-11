@@ -49,6 +49,7 @@ export const SETTINGS_TABS: { key: SettingsTab; label: string }[] = [
   { key: 'connections', label: 'Connections' },
   { key: 'tools', label: 'Connected tools' },
   { key: 'runtime', label: 'AI Runtime' },
+  { key: 'storage', label: 'Storage' },
   { key: 'updates', label: 'Updates' },
 ];
 
