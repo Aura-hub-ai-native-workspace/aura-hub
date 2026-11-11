@@ -1,4 +1,5 @@
 import { AccountError } from './account/localAccount.js';
+import { pruneOrphanIndexes, storageUsage } from './storage';
 import { accountProvider } from './account/accountProvider.js';
 import { ContextTools } from './commonContext/index.js';
 import { agentStatus, isAgentId, listAgentChoice, removeAgent, runAgentSetup } from './agentsSetup.js';
@@ -422,6 +423,16 @@ export async function startService(opts: PipelineOptions & { port?: number; open
             return json(res, 200, { path: target, files, project: added.project });
           } catch (e) { return cloudError(e); }
         }
+      }
+
+      /* ── the AURA home: what it holds, and clearing old caches ───── */
+      if (seg[0] === 'storage' && seg.length === 1 && method === 'GET') {
+        return json(res, 200, storageUsage());
+      }
+      if (seg[0] === 'storage' && seg[1] === 'clean' && method === 'POST') {
+        // Any index of an unregistered project, however recent: the user asked.
+        const r = pruneOrphanIndexes(manager.registry.list().map((p) => p.id), { olderThanDays: 0 });
+        return json(res, 200, { ...r, usage: storageUsage() });
       }
 
       /* ── the six coding agents: setup and sign-in status ─────────── */
