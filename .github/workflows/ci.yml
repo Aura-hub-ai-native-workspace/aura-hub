@@ -254,15 +254,26 @@ jobs:
       # workflow layer. No mirror rewrite is needed.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           echo 'Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
           echo 'Acquire::https::Timeout "30";' | sudo tee -a /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
           echo 'Acquire::Retries "3";' | sudo tee -a /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
           echo '--- apt timeout config ---'
           cat /etc/apt/apt.conf.d/99-ci-timeout
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          # A slow mirror used to hang one attempt until the step timed out and
+          # the whole packaging job had to be re-run by hand. Each attempt is
+          # now bounded, and a stuck one is retried instead of failing the job.
+          pkgs="libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf"
+          for attempt in 1 2 3; do
+            if timeout 300 sudo apt-get update && timeout 300 sudo apt-get install -y $pkgs; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed; retrying in $((attempt * 20))s"
+            sleep $((attempt * 20))
+          done
+          echo "::error::could not install Linux system dependencies after 3 attempts"
+          exit 1
 
       - name: Install dependencies
         run: npm ci
