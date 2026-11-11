@@ -207,3 +207,24 @@ describe('startup verdict: a service the shell could not start is not waited for
     expect(verdict).toEqual({ kind: 'failed', message: 'bundle is missing' });
   });
 });
+
+describe('a backend started on another port', () => {
+  it('requests go to the port the shell reports, with the token', async () => {
+    inTauri(true);
+    shell = {
+      ai: { port: 51234, verified: true, token: 'launch-token-ai', reason: '' },
+      python: { port: 51240, verified: true, token: 'launch-token-py', reason: '' },
+    };
+    await mod.backendFetch(`${mod.AI_BASE}/agents/status?versions=0`);
+    await mod.backendFetch(`${mod.ENVIRONMENT_BASE}/workers`);
+    expect(fetchSpy.mock.calls[0][0]).toBe('http://127.0.0.1:51234/agents/status?versions=0');
+    expect(fetchSpy.mock.calls[1][0]).toBe('http://127.0.0.1:51240/workers');
+    expect(tokenSentTo(0)).toBe('launch-token-ai');
+  });
+
+  it('the default port is left alone, and a non-loopback base is never moved', () => {
+    expect(mod.onActualPort('http://127.0.0.1:4319/x', 'ai', 4319)).toBe('http://127.0.0.1:4319/x');
+    expect(mod.onActualPort('http://127.0.0.1:4319/x', 'ai', undefined)).toBe('http://127.0.0.1:4319/x');
+    expect(mod.onActualPort('/agent-api/x', 'python', 5000)).toBe('/agent-api/x');
+  });
+});

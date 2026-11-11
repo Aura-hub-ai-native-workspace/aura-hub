@@ -35,7 +35,7 @@ export type BackendKind = 'ai' | 'python';
 
 export const IDENTITY_MISMATCH = 'Backend identity mismatch — connection refused.';
 
-type Verdict = { verified: true; token: string } | { verified: false; reason: string };
+type Verdict = { verified: true; token: string; port?: number } | { verified: false; reason: string };
 
 /** The last answer per backend. `null` until the first check. */
 const verdicts: Record<BackendKind, Verdict | null> = { ai: null, python: null };
@@ -110,7 +110,7 @@ export async function refreshBackendSession(): Promise<BackendSessionView> {
 }
 
 function fromWire(e: WireEndpoint): Verdict {
-  if (e.verified && e.token) return { verified: true, token: e.token };
+  if (e.verified && e.token) return { verified: true, token: e.token, port: e.port };
   return { verified: false, reason: e.reason || 'the identity check did not pass' };
 }
 
@@ -191,6 +191,28 @@ export function startupVerdict(startup: ServiceStartup | null, error: unknown): 
 }
 
 /**
+ * The URL a request really goes to.
+ *
+ * The bases above name the default ports. When another program holds one,
+ * the shell starts that backend on a free port instead and reports it with
+ * the ownership proof; requests are moved there. Only a loopback base with an
+ * explicit port is moved: a dev proxy path (`/agent-api`) or a custom
+ * `VITE_*_URL` host stays as configured.
+ */
+export function onActualPort(url: string, kind: BackendKind, port: number | undefined): string {
+  if (!port) return url;
+  const bases = kind === 'ai' ? [AI_BASE] : [AGENT_BASE, ENVIRONMENT_BASE];
+  for (const base of bases) {
+    const m = /^(http:\/\/(?:127\.0\.0\.1|localhost)):(\d+)$/.exec(base);
+    if (!m || Number(m[2]) === port) continue;
+    if (url === base || url.startsWith(`${base}/`) || url.startsWith(`${base}?`)) {
+      return `${m[1]}:${port}${url.slice(base.length)}`;
+    }
+  }
+  return url;
+}
+
+/**
  * Send a request to one of AURA's backends. Ownership is proved immediately
  * before the request, every time. A backend that is not ours is refused before
  * the network, and the launch token is never sent to it.
@@ -206,7 +228,7 @@ export async function backendFetch(url: string, init: RequestInit = {}): Promise
   }
   const headers = new Headers(init.headers);
   headers.set(TOKEN_HEADER, verdict.token);
-  const res = await fetch(url, { ...init, headers });
+  const res = await fetch(onActualPort(url, kind, verdict.port), { ...init, headers });
   if (res.status === 401) {
     // A backend that refuses this launch's token is not this instance's.
     // Stop trusting it until the next check, rather than retrying into it.
