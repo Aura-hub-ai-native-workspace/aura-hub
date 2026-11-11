@@ -13,6 +13,7 @@
 //! desktop shell must not become a way around that.
 
 mod appimage;
+mod crash;
 mod instance;
 mod pty;
 mod shell;
@@ -497,6 +498,7 @@ pub fn run() {
     // Installed before anything is spawned, so there is no window in which
     // a termination signal could leave a service behind.
     service::install_termination_handlers();
+    crash::install_panic_hook();
 
     let port = std::env::var("AI_PORT")
         .ok()
@@ -595,6 +597,8 @@ pub fn run() {
             shell::shell_write,
             shell::shell_resize,
             shell::shell_stop,
+            crash::record_renderer_error,
+            crash::list_crash_records,
         ])
         .setup(move |app| {
             let script = resolve_service_script(app);
@@ -727,7 +731,15 @@ pub fn run() {
                 while !EXITING.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_secs(1));
                     if let Some(path) = &script {
+                        // It was running and is gone: keep a record of why.
+                        let was_up = state.status.lock().unwrap().state == "ready";
                         if let Some(outcome) = ai.tick(state.handle.is_alive(), || {
+                            if was_up {
+                                crash::record_service_exit(
+                                    "AURA's local service",
+                                    &service::aura_home().join("logs").join("ai-service.log"),
+                                );
+                            }
                             service::ensure_running(&state.handle, path.clone(), port)
                         }) {
                             if outcome.is_ok() {
@@ -741,7 +753,14 @@ pub fn run() {
                         }
                     }
                     if let Some((entry, root)) = &python_backend {
+                        let was_up = state.python_status.lock().unwrap().state == "ready";
                         if let Some(outcome) = py.tick(state.python.is_alive(), || {
+                            if was_up {
+                                crash::record_service_exit(
+                                    "AURA's environment backend",
+                                    &service::aura_home().join("logs").join("environment-backend.log"),
+                                );
+                            }
                             service::ensure_python_running(&state.python, entry.clone(), root.clone(), python_port)
                         }) {
                             *state.python_status.lock().unwrap() = outcome_status(

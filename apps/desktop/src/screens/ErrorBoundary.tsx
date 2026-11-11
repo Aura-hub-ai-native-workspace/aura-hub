@@ -1,3 +1,4 @@
+import { recordError } from '../diagnostics/crashRecords';
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { Button, Icon } from '@aura/ui';
 
@@ -10,6 +11,7 @@ export class ErrorBoundary extends Component<Props, State> {
   static getDerivedStateFromError(error: Error): State { return { error }; }
   componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error('[ErrorBoundary]', error, info.componentStack);
+    recordError('render', error, info.componentStack ? `component stack:${info.componentStack}` : undefined);
     this.props.onError?.(error);
   }
 
