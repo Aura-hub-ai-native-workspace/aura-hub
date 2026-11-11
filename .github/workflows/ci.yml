@@ -17,7 +17,7 @@ on:
 jobs:
   build:
     name: Typecheck & Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -75,7 +75,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, label: linux-x64 }
+          - { os: ubuntu-24.04, label: linux-x64 }
           - { os: windows-latest, label: windows-x64 }
           - { os: macos-latest, label: macos-arm64 }
     steps:
@@ -197,7 +197,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Pinned: ubuntu-latest moved to 26.04 on 2026-11-11. The AppImage
+          # bundles against the build machine's glibc, so building on the
+          # newest Ubuntu would stop it starting on older distributions.
+          - os: ubuntu-24.04
             label: linux-x64
             bundles: appimage,deb
           - os: windows-latest
@@ -252,17 +255,73 @@ jobs:
       #
       # Fix both. Bound apt at the transport layer and bound the step at the
       # workflow layer. No mirror rewrite is needed.
+      # The packages are cached on GitHub after the first successful
+      # download, so a run normally installs them without contacting Ubuntu
+      # at all. GitHub runners have lost DNS for the Ubuntu mirrors for over
+      # an hour at a time ("Temporary failure resolving archive.ubuntu.com"),
+      # which no amount of retrying survives.
+      - name: Restore the Linux system packages
+        if: runner.os == 'Linux'
+        id: aptcache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-debs
+          key: apt-debs-${{ runner.os }}-${{ matrix.os }}-webkit41-v1
+
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        timeout-minutes: 10
+        id: aptinstall
+        timeout-minutes: 20
         run: |
           echo 'Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
           echo 'Acquire::https::Timeout "30";' | sudo tee -a /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
           echo 'Acquire::Retries "3";' | sudo tee -a /etc/apt/apt.conf.d/99-ci-timeout >/dev/null
-          echo '--- apt timeout config ---'
-          cat /etc/apt/apt.conf.d/99-ci-timeout
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          pkgs="libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb"
+          cache="$HOME/apt-debs"
+          installed() { dpkg -s $pkgs >/dev/null 2>&1; }
+          # 1. From the cache, with no network.
+          if ls "$cache"/*.deb >/dev/null 2>&1; then
+            echo "installing $(ls "$cache"/*.deb | wc -l) cached packages"
+            sudo apt-get install -y --no-download -o Dir::Cache::Archives="$cache" $pkgs \
+              || sudo dpkg -i "$cache"/*.deb || true
+            if installed; then echo "OK: installed from the cache"; exit 0; fi
+            echo "::warning::the cached packages did not install; downloading instead"
+          fi
+          # 2. From the mirror, keeping what is downloaded for the cache. A
+          # stuck attempt is bounded and retried rather than failing the job.
+          mkdir -p "$cache/partial"
+          for attempt in 1 2 3 4; do
+            if timeout 300 sudo apt-get update \
+              && timeout 300 sudo apt-get install -y -o Dir::Cache::Archives="$cache" $pkgs; then
+              sudo rm -rf "$cache/partial" "$cache/lock"
+              sudo chown -R "$USER" "$cache"
+              echo "downloaded=1" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed; retrying in $((attempt * 30))s"
+            # After the first failure, switch to a mirror outside ubuntu.com:
+            # the outage seen was DNS for *.ubuntu.com only, lasting hours.
+            if [ "$attempt" = 1 ]; then
+              echo "switching apt to mirrors.edge.kernel.org"
+              sudo sed -i -E 's#https?://(azure\.)?(archive|security)\.ubuntu\.com/ubuntu/?#http://mirrors.edge.kernel.org/ubuntu/#g' \
+                /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+              # Runner images may list their mirrors in a mirror file instead.
+              if [ -f /etc/apt/apt-mirrors.txt ]; then
+                echo "http://mirrors.edge.kernel.org/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+              fi
+              grep -rh "^URIs\|^deb " /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null | sort -u || true
+            fi
+            sleep $((attempt * 30))
+          done
+          echo "::error::could not install Linux system dependencies after 4 attempts"
+          exit 1
+
+      - name: Save the Linux system packages
+        if: runner.os == 'Linux' && steps.aptcache.outputs.cache-hit != 'true' && steps.aptinstall.outputs.downloaded == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-debs
+          key: apt-debs-${{ runner.os }}-${{ matrix.os }}-webkit41-v1
 
       - name: Install dependencies
         run: npm ci
@@ -370,7 +429,8 @@ jobs:
       - name: Install a virtual display (Linux)
         if: runner.os == 'Linux'
         timeout-minutes: 5
-        run: sudo apt-get install -y xvfb
+        # Installed with the cached system packages above; this only checks.
+        run: command -v xvfb-run || sudo apt-get install -y xvfb
 
       - name: Runtime verification (Linux)
         if: runner.os == 'Linux'
@@ -412,7 +472,18 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -e
-          sudo apt-get install -y ./dist-release/*.deb
+          # The runner's DNS can drop for a minute (seen: "Temporary failure
+          # resolving archive.ubuntu.com"), and apt resolves its sources even
+          # for a local .deb. Retried like the dependency install above.
+          # dpkg first: every dependency is already installed above, so this
+          # needs no network. apt (with retries) only if dpkg reports a gap.
+          for attempt in 1 2 3 4; do
+            sudo dpkg -i ./dist-release/*.deb && break
+            timeout 300 sudo apt-get install -y -f && break
+            test "$attempt" = 4 && { echo "::error::could not install the .deb after 4 attempts"; exit 1; }
+            echo "::warning::.deb install attempt $attempt failed; retrying in $((attempt * 30))s"
+            sleep $((attempt * 30))
+          done
           test -x "/usr/bin/aura-hub" || test -x "/usr/local/bin/aura-hub"
           echo "installed binary: $(command -v aura-hub)"
           xvfb-run -a env AURA_HOME="$RUNNER_TEMP/deb-home" AI_PORT=4319 aura-hub &
@@ -535,7 +606,7 @@ jobs:
     # can detect that, so the backend gate is a precondition for publishing.
     needs: [desktop-build, backend]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       # To create the release and upload assets. Nothing else is granted.
       contents: write
