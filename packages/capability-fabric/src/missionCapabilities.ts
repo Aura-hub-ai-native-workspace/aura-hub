@@ -61,7 +61,7 @@ export interface SignalsView {
 export interface TaskView {
   id: string;
   title: string;
-  kind: 'file-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
+  kind: 'file-operation' | 'git-operation' | 'manual-operation' | 'review' | 'approval' | 'documentation' | 'research';
   targetFile: string | null;
   mode: 'diff' | 'new-file' | null;
   risk: RiskLevel;
@@ -139,6 +139,19 @@ function requirementsFor(task: TaskView): { requires: string[]; rationale: strin
       return task.mode === 'new-file'
         ? { requires: ['filesystem.write'], rationale: `Creates ${task.targetFile}.` }
         : { requires: ['filesystem.read', 'filesystem.write'], rationale: `Rewrites ${task.targetFile}, so it reads the current contents first.` };
+
+    case 'git-operation':
+      // Which git operation this is (status/diff/log vs commit/branch/checkout)
+      // is only decided later, on the proposal — `MissionTask` carries no
+      // operation at planning time, so this cannot narrow the way
+      // `file-operation` narrows on `mode`. It therefore declares everything
+      // the git executor is able to perform, which keeps the derived risk at
+      // the write level instead of understating a commit as a read. `git.push`
+      // is deliberately absent: the executor never pushes.
+      return {
+        requires: ['git.status', 'git.diff', 'git.branch', 'git.commit'],
+        rationale: 'Acts on the repository. The concrete operation is not known until the proposal, so it is bound for everything the git executor can do, short of pushing.',
+      };
 
     case 'documentation':
       return {
@@ -251,6 +264,16 @@ export function planTaskInvocation(task: TaskView, projectId: string | null): Ta
         reason: task.targetFile
           ? 'File edits go through proposal review, so this task runs on the existing propose-then-accept path rather than as a direct capability call.'
           : 'This task edits files but no target file was resolved when it was planned.',
+      };
+
+    case 'git-operation':
+      // Same reasoning as `manual-operation`: the plan says a git task
+      // exists, but the arguments that make it a real command — which
+      // operation, the commit message, the branch name — are decided on the
+      // proposal, not here. Binding one would mean inventing them.
+      return {
+        kind: 'unbound',
+        reason: 'Git work goes through proposal review, where the operation and its message or branch name are settled, so this task runs on the propose-then-accept path rather than as a direct capability call.',
       };
 
     case 'documentation':
