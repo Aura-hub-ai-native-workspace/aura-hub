@@ -17,6 +17,7 @@ output is a structured description.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Protocol
 
@@ -617,6 +618,31 @@ _FILE_WRITE_RE = re.compile(
     r"(?:called\s+|named\s+)?['\"]?(.+?)['\"]?\s+(?:containing|with|that contains)\s+"
     r"['\"]?(.+?)['\"]?\s*$", re.IGNORECASE)
 
+#: A FILE_WRITE capture whose "path" does not LOOK like a path is a
+#: misfire: "Create two independent utilities … containing Task one: …"
+#: parses the whole plan as a filename. A real path names a file — a
+#: segment, a dot-suffix or an explicit slash form — and never a
+#: multi-sentence objective. Anything else leaves the write branch so
+#: the delegation path can classify the request.
+_FILE_PATH_SHAPE = re.compile(
+    r"^~?[A-Za-z0-9._\-/]{1,180}$")
+
+
+def _plausible_write_path(candidate: str | None) -> bool:
+    if not candidate:
+        return False
+    c = candidate.strip().strip("'\"")
+    if not c or len(c) > 180:
+        return False
+    if not _FILE_PATH_SHAPE.match(c):
+        return False
+    # A path almost never contains sentence machinery; a captured
+    # objective does.
+    if any(w in c.lower() for w in (" ", ". ")) and "/" not in c \
+            and "." not in os.path.basename(c):
+        return False
+    return True
+
 
 
 def heuristic_interpret(user_message: str) -> AgentIntent:
@@ -678,6 +704,13 @@ def heuristic_interpret(user_message: str) -> AgentIntent:
         match = _FILE_WRITE_RE.search(user_message.strip())
         path = match.group(1).strip().strip("'\"").rstrip(".")
         content = match.group(2).strip().strip("'\"").rstrip(".")
+        if not _plausible_write_path(path):
+            # The write-pattern captured prose, not a path. Fall through
+            # to delegation: the request is work to DO, and its real file
+            # targets were named elsewhere in the sentence.
+            file_write = False
+            match = None
+    if file_write and not authoring and not running_wf and match is not None:
         return AgentIntent.model_validate({
             "goal": user_message.strip(),
             "surface": "project",

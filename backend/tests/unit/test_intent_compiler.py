@@ -78,6 +78,28 @@ class TestDelegateScope:
         from aura.central_agent.intent import _delegate_scope
         assert _delegate_scope("refactor the parser module") == []
 
+    def test_multi_task_plan_classifies_as_delegation_not_file_write(self):
+        """A parallel-execution objective names work and files, not a
+        single write. Its first sentence once matched the file-write
+        pattern and captured the whole plan as a "path", planning one
+        filesystem.write of prose instead of delegating to workers."""
+        intent = heuristic_interpret(
+            "Create two independent utilities in the working project. "
+            "Task one: implement a slugify function with its tests in "
+            "src/slugify.py. Task two: independently implement a "
+            "normalize_whitespace function with its tests in "
+            "src/normalize.py. Delegate both coding tasks to two "
+            "different connected workers running in parallel.")
+        assert intent.requiredCapabilities == ["agent.delegate"]
+        assert getattr(intent, "delegateTask", None)
+        assert "src/slugify.py" in (getattr(intent, "delegateScope", None) or [])
+
+    def test_real_file_write_still_classifies_as_write(self):
+        intent = heuristic_interpret(
+            "write a file called notes.txt with hello world")
+        assert intent.requiredCapabilities == ["filesystem.write"]
+        assert getattr(intent, "writePath", None) == "notes.txt"
+
 
 class TestModelMode:
     def test_scripted_model_output_validated(self):
