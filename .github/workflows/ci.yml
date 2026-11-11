@@ -296,6 +296,14 @@ jobs:
               exit 0
             fi
             echo "::warning::apt attempt $attempt failed; retrying in $((attempt * 30))s"
+            # After the first failure, switch to a mirror outside ubuntu.com:
+            # the outage seen was DNS for *.ubuntu.com only, lasting hours.
+            if [ "$attempt" = 1 ]; then
+              echo "switching apt to mirrors.edge.kernel.org"
+              sudo sed -i -E 's#https?://(azure\.)?(archive|security)\.ubuntu\.com/ubuntu/?#http://mirrors.edge.kernel.org/ubuntu/#g' \
+                /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+              grep -rh "^URIs\|^deb " /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null | sort -u || true
+            fi
             sleep $((attempt * 30))
           done
           echo "::error::could not install Linux system dependencies after 4 attempts"
