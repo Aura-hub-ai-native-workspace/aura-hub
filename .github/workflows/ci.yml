@@ -265,14 +265,14 @@ jobs:
           # the whole packaging job had to be re-run by hand. Each attempt is
           # now bounded, and a stuck one is retried instead of failing the job.
           pkgs="libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf"
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4; do
             if timeout 300 sudo apt-get update && timeout 300 sudo apt-get install -y $pkgs; then
               exit 0
             fi
-            echo "::warning::apt attempt $attempt failed; retrying in $((attempt * 20))s"
-            sleep $((attempt * 20))
+            echo "::warning::apt attempt $attempt failed; retrying in $((attempt * 30))s"
+            sleep $((attempt * 30))
           done
-          echo "::error::could not install Linux system dependencies after 3 attempts"
+          echo "::error::could not install Linux system dependencies after 4 attempts"
           exit 1
 
       - name: Install dependencies
@@ -423,7 +423,15 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -e
-          sudo apt-get install -y ./dist-release/*.deb
+          # The runner's DNS can drop for a minute (seen: "Temporary failure
+          # resolving archive.ubuntu.com"), and apt resolves its sources even
+          # for a local .deb. Retried like the dependency install above.
+          for attempt in 1 2 3 4; do
+            timeout 300 sudo apt-get install -y ./dist-release/*.deb && break
+            test "$attempt" = 4 && { echo "::error::could not install the .deb after 4 attempts"; exit 1; }
+            echo "::warning::.deb install attempt $attempt failed; retrying in $((attempt * 30))s"
+            sleep $((attempt * 30))
+          done
           test -x "/usr/bin/aura-hub" || test -x "/usr/local/bin/aura-hub"
           echo "installed binary: $(command -v aura-hub)"
           xvfb-run -a env AURA_HOME="$RUNNER_TEMP/deb-home" AI_PORT=4319 aura-hub &
