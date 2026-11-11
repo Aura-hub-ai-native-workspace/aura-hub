@@ -3,6 +3,7 @@ import { ProjectRegistry, slug, type ProjectRecord } from './projects';
 import { getOrBuildProfile, loadProfile, type ProjectProfile } from './profile';
 import { extractArchitectureLayers, layersFromFullstack, type LayerStack } from './architectureExtractor';
 import { graphifyJsonPath } from './graphify';
+import { dropProjectCaches, pruneOrphanIndexes } from './storage';
 import { ProjectMemory, type MemoryItem, type MemoryKind } from './memory';
 import { engineeringMemory, decisionMemory, missionMemory, type BaseMemoryRecord, type DecisionAlternative } from '@aura/engineering-memory';
 import { ProjectConversations, WorkspaceConversations, type Conversation, type ConversationSummary } from './conversations';
@@ -122,6 +123,12 @@ export class WorkspaceManager {
   constructor(opts: PipelineOptions = {}) {
     this.pipeline = new PipelineManager(opts);
     this.initAutomation();
+    // Off the startup path: indexes left by projects removed earlier (or by
+    // versions that did not clean up) are cleared once the service is up.
+    const sweep = setTimeout(() => {
+      try { pruneOrphanIndexes(this.registry.list().map((p) => p.id)); } catch { /* best effort */ }
+    }, 60_000);
+    sweep.unref?.();
   }
 
   /* ── projects ───────────────────────────────────────────────────── */
@@ -199,7 +206,13 @@ export class WorkspaceManager {
 
   removeProject(id: string): boolean {
     if (this.pipeline.currentProjectId === id) this.pipeline.unmount();
-    return this.registry.remove(id);
+    const removed = this.registry.remove(id);
+    // The index is a cache rebuilt on the next open; it must not outlive
+    // the project. Conversations and memory are kept.
+    if (removed) {
+      try { dropProjectCaches(id); } catch { /* best effort: removal already succeeded */ }
+    }
+    return removed;
   }
 
   open(id: string): OpenResult {

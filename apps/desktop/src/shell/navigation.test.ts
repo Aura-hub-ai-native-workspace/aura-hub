@@ -13,7 +13,7 @@ describe('navigation model', () => {
   });
 
   it('Settings has exactly five tabs in order, Account first', () => {
-    expect(SETTINGS_TABS.map((t) => t.key)).toEqual(['account', 'connections', 'tools', 'runtime', 'updates']);
+    expect(SETTINGS_TABS.map((t) => t.key)).toEqual(['account', 'connections', 'tools', 'runtime', 'storage', 'updates']);
   });
 });
 
