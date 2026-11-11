@@ -266,7 +266,10 @@ export async function startService(opts: PipelineOptions & { port?: number; open
    * what may skip it rather than a blanket wait.
    */
   const answersBeforeScan = (m: string, s: string[]) =>
-    ['health', 'shutdown', 'account', 'context', 'storage'].includes(s[0])
+    // Not /health: it reports the Fabric's capabilities, which come from the
+    // scan. The shell's readiness check is the ownership proof, answered
+    // before routing, so the window still appears without waiting.
+    ['shutdown', 'account', 'context', 'storage'].includes(s[0])
     || (s[0] === 'agents' && (s[1] === 'status' || s[1] === 'list') && m === 'GET')
     || (s[0] === 'projects' && m === 'GET' && s[2] !== 'context');
   let bootScanDone = false;
