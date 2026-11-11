@@ -58,9 +58,16 @@ const lazyScreen = (el: ReactNode) => <Suspense fallback={<ScreenLoading />}>{el
 export function ScreenRouter() {
   const nav = useAppStore((s) => s.nav);
   const activeProjectId = useAppStore((s) => s.activeProjectId);
+  const inProjectView = useAppStore((s) => s.inProjectView);
   const projectTab = useAppStore((s) => s.projectTab);
 
-  const inProject = Boolean(activeProjectId);
+  /* Routing asks "is the project screen showing?", which is `inProjectView`
+     — NOT "is a project active?". Those are now different questions: a
+     project stays active while the user is on Home or the Hub. The
+     `activeProjectId` guard covers the one incoherent combination (in the
+     project view with no project), which the pruning in `useActiveProject`
+     can produce for a frame. */
+  const inProject = inProjectView && Boolean(activeProjectId);
   const key = inProject ? `project:${activeProjectId}` : nav;
 
   // The workflow editor and the Code Workspace are fixed-viewport canvases

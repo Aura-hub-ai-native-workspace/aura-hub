@@ -13,7 +13,11 @@ import { useWorkspace } from '../../../data/useWorkspace';
 export function Settings({ projectId }: { projectId: string }) {
   const { profile, status } = useProjectData(projectId);
   const { projects, favorite, rename, remove, reindex } = useWorkspace();
-  const closeProject = useAppStore((s) => s.closeProject);
+  /* Removal must FORGET the project, not merely leave its screen.
+     `closeProject()` now only exits the view and deliberately keeps the
+     project active, so using it here would leave a removed project as the
+     active one and persist that id across relaunches. */
+  const clearActiveProject = useAppStore((s) => s.clearActiveProject);
   const setNav = useAppStore((s) => s.setNav);
   const { push } = useToast();
   const project = projects.find((p) => p.id === projectId);
@@ -60,7 +64,7 @@ export function Settings({ projectId }: { projectId: string }) {
                     // Only navigate away / claim success once the removal actually
                     // succeeds — a failed request must never look like it worked.
                     void remove(project.id).then(
-                      () => { closeProject(); push({ title: 'Project removed', description: 'The folder was left untouched.', tone: 'info' }); },
+                      () => { clearActiveProject(); push({ title: 'Project removed', description: 'The folder was left untouched.', tone: 'info' }); },
                       () => push({ title: 'Could not remove project', description: 'The project was not removed. Try again.', tone: 'critical' }),
                     );
                   }

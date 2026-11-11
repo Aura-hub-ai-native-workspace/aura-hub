@@ -57,7 +57,9 @@ try {
   await page.goto(UI);
   await page.evaluate(() => {
     localStorage.setItem('aura-onboarded', 'true');
-    localStorage.removeItem('aura.workspace.projectId');
+    // Start with NO project selected. The Hub's own `aura.workspace.projectId`
+    // is retired; the shell's single active-project key is what must be clear.
+    localStorage.removeItem('aura.activeProjectId');
   });
   await page.goto(UI);
   await page.waitForFunction(() => !document.querySelector('div.fixed.inset-0.z-\\[300\\]'), { timeout: 25000 });

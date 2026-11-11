@@ -28,7 +28,7 @@ import { assembleContext, type AssembledContext, type ContextAssemblerInput } fr
 import { buildGlossary, loadGlossary } from './glossary';
 import { generateRepositoryHealth, loadRepositoryHealth } from './healthEngine';
 import { buildRepositoryProfile, loadRepositoryProfile } from './repositoryMemory';
-import { detectChanges, updateIndexState, hasChanges, LazyFileLoader } from './performance';
+import { detectChanges, updateIndexState, hasChanges, isArtifactStale, LazyFileLoader, type IndexResult } from './performance';
 import { generateVerificationReport, loadVerificationReport, type VerificationReport } from './verification';
 import {
   loadWorkspaceGraph, saveWorkspaceGraph, upsertRepository, removeRepository,
@@ -63,7 +63,6 @@ import {
   readFile, searchCode, getProjectInfo, listFiles, getDirectoryTree,
   fileExists, getFileInfo, type AgentContext, type FileContent, type SearchResult, type ProjectInfo,
 } from './agentApis';
-import fs from 'node:fs';
 
 export type {
   ProjectIdentity, RepositoryIntent, RepositorySummary, RepositoryProfile,
@@ -73,9 +72,9 @@ export type {
   IndexVersion, VersionHistory, CrossRepoGraph, CrossRepoEdge, RepositoryCluster,
   ValidationResult, ValidationRule, AgentContext, FileContent, SearchResult, ProjectInfo,
 };
-export type { RepositoryIntentType };
+export type { RepositoryIntentType, IndexResult };
 export {
-  detectChanges, updateIndexState, hasChanges, LazyFileLoader,
+  detectChanges, updateIndexState, hasChanges, isArtifactStale, LazyFileLoader,
   generateVerificationReport, loadVerificationReport,
   loadWorkspaceGraph, saveWorkspaceGraph, upsertRepository, removeRepository,
   detectCrossRepoDependencies, findRepositories, getRepositoryDependencies,
@@ -104,22 +103,16 @@ export interface IntelligenceEngineResult {
   usedSummary: boolean;
 }
 
-/**
- * Check if cached data is stale by comparing generation time against
- * repository file modification times. Returns true if regeneration needed.
- */
-function isCacheStale(generatedAt: string, projectRoot: string, maxAgeMs: number = 3600000): boolean {
-  const genTime = new Date(generatedAt).getTime();
-  if (Date.now() - genTime > maxAgeMs) return true;
+/* Staleness now comes from `isArtifactStale` in ./performance, driven by a
+   real per-project file diff.
 
-  // Check if any source file changed since generation
-  try {
-    const stats = fs.statSync(projectRoot);
-    if (stats.mtimeMs > genTime) return true;
-  } catch { /* ignore */ }
-
-  return false;
-}
+   What it replaced, and why: the old `isCacheStale` compared an artifact's
+   age against a one-hour TTL, then checked `fs.statSync(projectRoot).mtimeMs`.
+   A directory's mtime only changes when its own entries change, so editing
+   any nested file — which is nearly every edit — left the root untouched and
+   the check returned "fresh". In practice artifacts refreshed on the
+   one-hour timer and not on change, which is the opposite of an incremental
+   index. The replacement statts the files, so a nested edit is visible. */
 
 /**
  * Run the full intelligence pipeline for a user query.
@@ -137,6 +130,14 @@ export function runIntelligencePipeline(
 ): IntelligenceEngineResult {
   // 1. Classify intent
   const intent = classifyRepositoryIntent(query);
+
+  /* 1b. Diff the tree against this project's baseline, ONCE.
+     Every staleness question below is answered from this one walk, so a
+     single pass over the tree serves all four artifacts rather than four
+     passes — and, more importantly, so they all judge freshness against
+     exactly the same observation of the tree. */
+  const changes = detectChanges(projectId, projectRoot);
+  const stale = (generatedAt: string | undefined | null) => isArtifactStale(generatedAt, changes);
 
   // 2. Load or generate identity
   let identity = loadIdentity(projectId);
@@ -159,7 +160,7 @@ export function runIntelligencePipeline(
   // 3. Load or generate repository summary (with staleness check)
   let summary = loadRepositorySummary(projectId);
   let usedSummary = !!summary;
-  if (!summary || (summary.generatedAt && isCacheStale(summary.generatedAt, projectRoot))) {
+  if (!summary || stale(summary.generatedAt)) {
     summary = generateRepositorySummary(projectId, projectRoot, identity ? {
       name: identity.name,
       purpose: identity.purpose,
@@ -170,21 +171,26 @@ export function runIntelligencePipeline(
 
   // 4. Load or generate repository profile (memory) with staleness check
   let profile = loadRepositoryProfile(projectId);
-  if (!profile || (profile.generatedAt && isCacheStale(profile.generatedAt, projectRoot))) {
+  if (!profile || stale(profile.generatedAt)) {
     profile = buildRepositoryProfile(projectId, projectRoot);
   }
 
   // 5. Load or generate glossary with staleness check
   let glossary = loadGlossary(projectId);
-  if (!glossary || (glossary.generatedAt && isCacheStale(glossary.generatedAt, projectRoot))) {
+  if (!glossary || stale(glossary.generatedAt)) {
     glossary = buildGlossary(projectId, projectRoot);
   }
 
   // 6. Load or generate health with staleness check
   let health = loadRepositoryHealth(projectId);
-  if (!health || (health.generatedAt && isCacheStale(health.generatedAt, projectRoot))) {
+  if (!health || stale(health.generatedAt)) {
     health = generateRepositoryHealth(projectId, projectRoot, identity, summary);
   }
+
+  /* 6b. Rebase the baseline now that every artifact above describes THIS
+     tree. Done after regeneration, never before: rebasing first would erase
+     the diff that the checks above depend on. */
+  updateIndexState(projectId, projectRoot);
 
   // 7. Prioritize documents based on intent
   const prioritizedDocs = prioritizeDocuments(projectRoot, intent.type, projectProfile?.importantFiles);
@@ -276,8 +282,17 @@ export function runProjectIntelligence(projectId: string, root: string): Project
 
   const agent = { info: getProjectInfo({ projectId, root, identity, summary, profile, glossary }), tree: getDirectoryTree(root) };
 
-  const p = detectChanges(root);
-  const performance = { hasChanges: hasChanges(root), changed: p.changed.length, added: p.added.length, removed: p.removed.length, totalIndexed: p.totalIndexed };
+  /* One diff answers both questions. `hasChanges(projectId, root)` would
+     repeat the identical tree walk to derive a boolean this result already
+     contains. */
+  const p = detectChanges(projectId, root);
+  const performance = {
+    hasChanges: p.changed.length > 0 || p.added.length > 0 || p.removed.length > 0,
+    changed: p.changed.length,
+    added: p.added.length,
+    removed: p.removed.length,
+    totalIndexed: p.totalIndexed,
+  };
 
   return { verification, architecture, personality, validation, change, versions, agent, performance };
 }

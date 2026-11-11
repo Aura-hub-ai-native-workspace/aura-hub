@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { PROJECT_TABS, pageVariants, spring, useAppStore, cn } from '@aura/core';
 import { Badge, Button, Icon } from '@aura/ui';
@@ -20,14 +19,15 @@ export function ProjectWorkspace() {
   const closeProject = useAppStore((s) => s.closeProject);
   const setNav = useAppStore((s) => s.setNav);
   const openPanel = useLayoutStore((s) => s.openPanel);
-  const { projects, openId, status, open } = useWorkspace();
+  const { projects, status } = useWorkspace();
 
   const project = projects.find((p) => p.id === activeProjectId) ?? null;
 
-  // Ensure the active project is actually mounted + indexing in the backend.
-  useEffect(() => {
-    if (activeProjectId && openId !== activeProjectId) void open(activeProjectId);
-  }, [activeProjectId, openId, open]);
+  /* Mounting the project in the backend used to happen here. It now happens
+     in `useActiveProjectSync` (AppShell), because the project must be
+     mounted whenever it is ACTIVE — not only while this screen is on
+     display. Doing it here meant the Hub could be working against a project
+     the service had not mounted. */
 
   if (!project) {
     return (

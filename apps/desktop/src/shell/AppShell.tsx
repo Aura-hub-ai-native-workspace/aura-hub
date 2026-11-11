@@ -5,6 +5,7 @@ import { CommandBar } from './CommandBar';
 import { RightPanel } from './RightPanel';
 import { StatusBar } from './StatusBar';
 import { ScreenRouter } from '../screens/ScreenRouter';
+import { useActiveProjectSync } from '../data/useActiveProject';
 
 /**
  * AppShell — the fixed frame of the operating environment.
@@ -22,9 +23,13 @@ import { ScreenRouter } from '../screens/ScreenRouter';
  */
 export function AppShell() {
   const rightPanelOpen = useAppStore((s) => s.rightPanelOpen);
-  const activeProjectId = useAppStore((s) => s.activeProjectId);
+  const inProjectView = useAppStore((s) => s.inProjectView);
   const projectTab = useAppStore((s) => s.projectTab);
   const nav = useAppStore((s) => s.nav);
+
+  /* The shell is the one place the active project is reconciled with the
+     service mount, because it is the one component always mounted. */
+  useActiveProjectSync();
 
   // The Code Workspace supplies its own file-aware AI Context panel, and
   // the Workspace screen supplies its own per-window contextual inspector
@@ -32,7 +37,10 @@ export function AppShell() {
   // alongside either would be duplicate chrome. Neither touches the
   // user's sidebar toggle state, so the global panel reappears exactly as
   // they left it on any other screen.
-  const showRightPanel = rightPanelOpen && !(activeProjectId && projectTab === 'code') && nav !== 'workspace';
+  //
+  // Gated on `inProjectView`, not on a project merely being active: the
+  // Code tab only occupies the screen while the project view is showing.
+  const showRightPanel = rightPanelOpen && !(inProjectView && projectTab === 'code') && nav !== 'workspace';
 
   return (
     <div
