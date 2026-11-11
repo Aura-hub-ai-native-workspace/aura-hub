@@ -27,3 +27,19 @@ describe('RunObserverView', () => {
     expect(html).not.toMatch(/Complete: /);
   });
 });
+
+describe('undoing a run', () => {
+  const base = seedFromReport('s', {
+    outcome: 'completed', limitations: [], testsObserved: [], verificationEvidence: [], toolsInstalled: [], toolsReused: [], handoffs: [],
+    workCompleted: [{ taskId: 't1', description: 'Edit app', worker: 'codex' }], unfinished: [], errors: [],
+    filesChanged: [{ path: 'app.py', op: 'modified', taskId: 't1', worker: 'codex', verified: true }],
+  });
+  it('offers Undo for a finished run that recorded a restore point', () => {
+    const html = renderToStaticMarkup(<RunObserverView view={{ ...base, restorePoints: ['p1'] }} />);
+    expect(html).toContain('Undo this run’s file changes');
+  });
+  it('offers nothing without a restore point (not a git project)', () => {
+    const html = renderToStaticMarkup(<RunObserverView view={base} />);
+    expect(html).not.toContain('Undo this run');
+  });
+});

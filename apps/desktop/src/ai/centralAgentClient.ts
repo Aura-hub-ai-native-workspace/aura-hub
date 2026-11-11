@@ -169,6 +169,8 @@ export interface ExecutionReport {
   workCompleted: { taskId: string; sourceId?: string | null; description: string; worker: string | null }[];
   unfinished: { taskId: string; sourceId?: string | null; description: string; state: string; detail: string }[];
   filesChanged: { path: string; op: 'created' | 'modified' | 'deleted'; taskId: string; worker: string | null; verified: boolean }[];
+  /** Restore points recorded before tasks that changed files, oldest first. */
+  restorePoints?: string[];
   testsObserved: { taskId?: string; worker?: string; command: string; decision?: string }[];
   toolsInstalled: ToolRecord[];
   toolsReused: ToolRecord[];
@@ -432,6 +434,9 @@ export const centralAgentClient = {
         }, opts.signal),
 
   getSession: (sessionId: string) => jget<AgentSession>(`/agent/sessions/${encodeURIComponent(sessionId)}`),
+  /** Put the session's project back to a restore point recorded before its agents changed files. */
+  restoreRun: (sessionId: string, id: string) =>
+    jpost<{ ok: boolean; restored: number; removed: string[] }>(`/agent/sessions/${encodeURIComponent(sessionId)}/restore`, { id }),
 
   /**
    * Planner → Workspace: run a handed-over plan now, in Workspace. The

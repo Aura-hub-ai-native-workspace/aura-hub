@@ -731,6 +731,12 @@ class ExecutionController:
         before_len = len(result.outcomes)
         watch = bool(project_cwd) and mutates_project(task)
         before = change_observer.snapshot(project_cwd) if watch else None
+        # The project as it was, so a person can put it back after an
+        # unattended run (restore_point.py). None outside a git project.
+        restore_id = None
+        if watch:
+            from . import restore_point
+            restore_id = restore_point.create(project_cwd, f"task-{task.id}")
         # The brief the worker is given is shown on its card, so the person sees
         # exactly what was asked of it (the task's own description, not AURA's
         # internal instructions).
@@ -758,9 +764,10 @@ class ExecutionController:
                 changes, complete = change_observer.diff(before, change_observer.snapshot(project_cwd))
                 if changes or not complete:
                     result.file_changes[task.id] = {"changes": changes, "complete": complete,
-                                                    "worker": worker}
+                                                    "worker": worker, "restorePoint": restore_id}
                 self._notify("files.changed", correlation, taskId=task.id, worker=worker,
-                             changes=changes[:200], total=len(changes), complete=complete)
+                             changes=changes[:200], total=len(changes), complete=complete,
+                             restorePoint=restore_id)
             for o in result.outcomes[before_len:]:
                 self._notify("task.state", correlation, taskId=o.taskId, state=task_state(o),
                              worker=worker, verified=o.verified, detail=(o.detail or "")[:300])

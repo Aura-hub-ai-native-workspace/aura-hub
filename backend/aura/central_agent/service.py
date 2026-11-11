@@ -1881,6 +1881,9 @@ class CentralAgent:
                             "description": t["description"], "state": t["state"],
                             "detail": t.get("detail", "")} for t in unfinished],
             "filesChanged": changes,
+            # Oldest first: the first is the project before this run changed anything.
+            "restorePoints": [fc["restorePoint"] for fc in rep["changes"].values()
+                              if fc.get("restorePoint") and fc.get("changes")],
             "testsObserved": rep["tests"][:20],
             "toolsInstalled": [t for t in rep.get("tools", []) if t.get("outcome") == "installed"],
             "toolsReused": [t for t in rep.get("tools", []) if t.get("outcome") == "reused"],

@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { cn } from '@aura/core';
+import { centralAgentClient } from '../../../ai/centralAgentClient';
 import { useRunObserver } from '../../../ai/useRunObserver';
 import { completionLine, type CheckState, type RunView } from '../../../ai/runObserver';
 
@@ -51,7 +53,10 @@ export function RunObserverView({ view }: { view: RunView }) {
 
       {view.files.length > 0 && (
         <div data-testid="run-files"><div className="mb-1 text-[10.5px] font-semibold uppercase tracking-wide text-text-subtle">Files changed (observed)</div>
-          <ul className="space-y-0.5 font-mono text-[11.5px] text-text-muted">{view.files.map((f) => <li key={`${f.taskId}:${f.path}`}>{f.op} · {f.path}</li>)}</ul></div>
+          <ul className="space-y-0.5 font-mono text-[11.5px] text-text-muted">{view.files.map((f) => <li key={`${f.taskId}:${f.path}`}>{f.op} · {f.path}</li>)}</ul>
+          {view.finished && view.sessionId && view.restorePoints.length > 0 && (
+            <UndoRun sessionId={view.sessionId} point={view.restorePoints[0]} />
+          )}</div>
       )}
       {(view.toolsInstalled.length + view.toolsReused.length + view.toolsBlocked.length) > 0 && (
         <div data-testid="run-tools" className="text-[11.5px] text-text-muted">
@@ -84,5 +89,46 @@ export function RunObserverView({ view }: { view: RunView }) {
         </details>
       )}
     </section>
+  );
+}
+
+/**
+ * Put the project back to how it was before this run's first file change.
+ * Two steps, in place: no browser dialog. The restore itself is recorded
+ * as a restore point, so it can be undone too.
+ */
+export function UndoRun({ sessionId, point }: { sessionId: string; point: string }) {
+  const [stage, setStage] = useState<'idle' | 'confirm' | 'working' | 'done' | 'error'>('idle');
+  const [note, setNote] = useState('');
+  const undo = async () => {
+    setStage('working');
+    try {
+      const r = await centralAgentClient.restoreRun(sessionId, point);
+      setNote(`Restored ${r.restored} file${r.restored === 1 ? '' : 's'}${r.removed.length ? `, removed ${r.removed.length} new` : ''}.`);
+      setStage('done');
+    } catch (e) {
+      setNote((e as Error).message);
+      setStage('error');
+    }
+  };
+  return (
+    <div data-testid="run-undo" className="mt-2 flex flex-wrap items-center gap-2 text-[11.5px]">
+      {stage === 'idle' && (
+        <button onClick={() => setStage('confirm')} className="rounded-md border border-line px-2 py-0.5 text-text-muted hover:text-text">
+          Undo this run’s file changes
+        </button>
+      )}
+      {stage === 'confirm' && (
+        <>
+          <span className="text-text-muted">Put the project back to how it was before this run?</span>
+          <button onClick={() => void undo()} className="rounded-md border border-line px-2 py-0.5 font-medium text-neon-warning">Undo changes</button>
+          <button onClick={() => setStage('idle')} className="rounded-md px-2 py-0.5 text-text-subtle hover:text-text">Keep</button>
+        </>
+      )}
+      {stage === 'working' && <span className="text-text-subtle">Restoring…</span>}
+      {(stage === 'done' || stage === 'error') && (
+        <span className={stage === 'done' ? 'text-neon-success' : 'text-neon-danger'}>{note}</span>
+      )}
+    </div>
   );
 }
