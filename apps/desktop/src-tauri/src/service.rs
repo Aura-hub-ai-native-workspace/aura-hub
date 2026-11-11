@@ -430,6 +430,21 @@ fn request_graceful_shutdown(port: u16, token: &str) -> bool {
     matches!(http_post(port, "/shutdown", token, CONNECT_TIMEOUT), Ok((200, _)))
 }
 
+/// Above this a service log is rotated when the service (re)starts.
+const LOG_LIMIT: u64 = 10 * 1024 * 1024;
+
+/// Keep one previous log (`<name>.1`) and start a fresh one once a log has
+/// passed `LOG_LIMIT`. Logs were append-only forever before; a service that
+/// restarts often, or logs a lot, slowly filled the AURA home.
+fn rotate_log(path: &std::path::Path) {
+    let big = std::fs::metadata(path).map(|m| m.len() > LOG_LIMIT).unwrap_or(false);
+    if big {
+        let mut old = path.as_os_str().to_owned();
+        old.push(".1");
+        let _ = std::fs::rename(path, PathBuf::from(old));
+    }
+}
+
 /// Refuse to start on a port that already has a listener.
 ///
 /// A listener the shell did not start cannot prove it belongs to this
@@ -805,6 +820,7 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
     std::fs::create_dir_all(&log_dir)
         .map_err(|e| format!("Could not create {}: {e}", log_dir.display()))?;
     let log_path = log_dir.join("ai-service.log");
+    rotate_log(&log_path);
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1178,6 +1194,7 @@ pub fn ensure_python_running(
     std::fs::create_dir_all(&log_dir)
         .map_err(|e| format!("Could not create {}: {e}", log_dir.display()))?;
     let log_path = log_dir.join("environment-backend.log");
+    rotate_log(&log_path);
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1333,6 +1350,22 @@ mod ownership_tests {
     fn no_launch_identity_means_no_ownership() {
         let port = serve(|c| (200, format!(r#"{{"backend":"python","proof":"{}"}}"#, crate::instance::expected_proof("", c))));
         assert!(matches!(prove(port, "", "python"), Ownership::Refused(_)));
+    }
+
+    #[test]
+    fn a_large_log_is_rotated_and_a_small_one_kept() {
+        let dir = std::env::temp_dir().join(format!("aura-log-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.log");
+        let small = dir.join("small.log");
+        std::fs::write(&big, vec![b'x'; (LOG_LIMIT + 1) as usize]).unwrap();
+        std::fs::write(&small, b"keep").unwrap();
+        rotate_log(&big);
+        rotate_log(&small);
+        assert!(!big.exists());
+        assert!(dir.join("big.log.1").exists());
+        assert_eq!(std::fs::read(&small).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
