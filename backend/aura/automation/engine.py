@@ -141,7 +141,13 @@ class AutomationEngine:
         self._ms = clock_ms or (lambda: int(datetime.now(UTC).timestamp() * 1000))
         # TS genId('t') consumes Date.now + Math.random per timeline entry;
         # the deterministic differential requires identical draw counts.
-        self._id_gen = id_gen or (lambda p: f"{p}-{len(p)}")
+        # Fallback must still be unique per call — the previous lambda
+        # `f"{p}-{len(p)}"` was constant `t-1` for every entry, breaking React keys.
+        _ctr = [0]
+        def _fallback_id(prefix: str) -> str:
+            _ctr[0] += 1
+            return f"{prefix}-{_ctr[0]}-{self._ms()}"
+        self._id_gen = id_gen or _fallback_id
         self.running: set[str] = set()
         self.live_runs: dict[str, dict] = {}
 
