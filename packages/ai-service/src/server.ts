@@ -248,14 +248,21 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     console.warn('[providers] env auto-connect failed:', (e as Error).message);
   });
 
-  // Discover the environment before serving. Without this a restart left
-  // every node-backed capability denied as `no-provider` until someone
-  // happened to trigger a scan — git would be installed and working, and
-  // the Fabric would still refuse `git.diff`.
-  await refreshNodeAvailability().then(
+  // Discover the environment at boot. Without this a restart left every
+  // node-backed capability denied as `no-provider` until someone happened
+  // to trigger a scan — git would be installed and working, and the Fabric
+  // would still refuse `git.diff`.
+  //
+  // The scan runs WHILE the server starts listening, not before: it spawns
+  // one probe per catalogue entry (about a second of wall time), and the
+  // desktop shell shows the window only once this service answers. Every
+  // route except /health, the ownership proof and /shutdown waits for the
+  // scan below, so no request is ever decided on an unscanned machine.
+  let bootScanDone = false;
+  const bootScan = refreshNodeAvailability().then(
     (scan) => console.log(`[environment] ${scan.found ?? providedNodeCapabilities.size} node(s) present · ${providedNodeCapabilities.size} capabilities available`),
     (e) => console.warn('[environment] boot scan failed:', (e as Error).message),
-  );
+  ).finally(() => { bootScanDone = true; });
 
   // Read once per process: the launch token never changes while it runs.
   const instanceToken = configuredToken();
@@ -272,6 +279,7 @@ export async function startService(opts: PipelineOptions & { port?: number; open
     if (guard.kind === 'proof') { json(res, guard.status, guard.body); return; }
     if (guard.kind === 'refused') { json(res, guard.status, guard.body); return; }
     const p = manager.pipeline;
+    if (!bootScanDone && seg[0] !== 'health' && seg[0] !== 'shutdown') await bootScan;
 
     try {
       /* ── health / settings / key ──────────────────────────────── */
