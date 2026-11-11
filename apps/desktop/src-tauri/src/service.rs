@@ -52,17 +52,17 @@ pub const SLOT_AI: usize = 0;
 /// Slot of the canonical Python backend.
 pub const SLOT_PYTHON: usize = 1;
 
-/// The port AURA's service and the renderer both agree on. The renderer
-/// has this baked in at build time (`aiClient.ts`), so this is not a
-/// preference — the two must match or the UI talks to nothing.
+/// The port AURA's service prefers. When another program holds it, the
+/// shell starts the service on a free port instead (`choose_port`) and the
+/// renderer follows the port reported by `backend_verify`.
 pub const DEFAULT_PORT: u16 = 4319;
 
 /// The port the canonical Python backend listens on.
 ///
 /// The Python backend is the sole authority on machine state: discovery,
 /// the inventory, the safe-probe boundary, install and connect all live
-/// there and nowhere else. The renderer has this baked in the same way
-/// (`environmentClient.ts` → `ENVIRONMENT_BASE`), so the two must agree.
+/// there and nowhere else. Like `DEFAULT_PORT` it is a preference: a free
+/// port is used when it is taken, and the renderer follows the shell.
 ///
 /// It is a SECOND port rather than a replacement because the Node AI
 /// service still owns the workflow, provider and knowledge surfaces on
@@ -445,6 +445,31 @@ fn rotate_log(path: &std::path::Path) {
     }
 }
 
+/// The port to start a backend on: `preferred` when it is free, otherwise a
+/// free one the operating system hands out, never `avoid`.
+///
+/// AURA used to insist on 4319/4320. Any other program on either port (a dev
+/// server, a second tool, a leftover process) meant AURA would not start at
+/// all. The renderer now learns the real port from the shell
+/// (`backend_verify`), so the default is only a preference.
+pub fn choose_port(preferred: u16, avoid: u16) -> u16 {
+    use std::net::TcpListener;
+    let free = |port: u16| port != avoid && TcpListener::bind(("127.0.0.1", port)).is_ok();
+    if free(preferred) {
+        return preferred;
+    }
+    for _ in 0..8 {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", 0)) {
+            if let Ok(addr) = listener.local_addr() {
+                if addr.port() != avoid {
+                    return addr.port();
+                }
+            }
+        }
+    }
+    preferred
+}
+
 /// Refuse to start on a port that already has a listener.
 ///
 /// A listener the shell did not start cannot prove it belongs to this
@@ -786,7 +811,7 @@ pub(crate) fn resolve_node(bundled: Option<&std::path::Path>) -> Result<PathBuf,
 /// `script` is the resolved `ai-service.mjs` bundle — the caller owns
 /// finding it, because that differs between a dev tree and a packaged
 /// resource directory and the shell should not guess.
-pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Result<(), String> {
+pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16, python_port: u16) -> Result<(), String> {
     if handle.token.is_empty() {
         return Err("AURA could not create this launch's identity, so it will not start its service.".into());
     }
@@ -845,6 +870,9 @@ pub fn ensure_running(handle: &ServiceHandle, script: PathBuf, port: u16) -> Res
         .current_dir(&home)
         .env("PATH", augmented_path(node_dir.as_ref()))
         .env("AI_PORT", port.to_string())
+        // The service calls the environment backend; it must use the port
+        // that backend was really given, not the default.
+        .env("AURA_ENVIRONMENT_URL", format!("http://127.0.0.1:{python_port}"))
         .env("AURA_HOME", &home)
         .env("AURA_INSTANCE_TOKEN", &handle.token)
         .stdin(Stdio::null())
@@ -1366,6 +1394,31 @@ mod ownership_tests {
         assert!(dir.join("big.log.1").exists());
         assert_eq!(std::fs::read(&small).unwrap(), b"keep");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_free_preferred_port_is_kept() {
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        assert_eq!(choose_port(port, 0), port);
+    }
+
+    #[test]
+    fn a_taken_port_is_replaced_by_a_free_one() {
+        let held = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = held.local_addr().unwrap().port();
+        let chosen = choose_port(port, 0);
+        assert_ne!(chosen, port);
+        assert!(std::net::TcpListener::bind(("127.0.0.1", chosen)).is_ok());
+    }
+
+    #[test]
+    fn the_other_backends_port_is_never_chosen() {
+        let probe = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        assert_ne!(choose_port(port, port), port);
     }
 
     #[test]
