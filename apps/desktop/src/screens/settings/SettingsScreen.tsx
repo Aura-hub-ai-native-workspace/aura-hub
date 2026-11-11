@@ -9,6 +9,7 @@ import { ErrorBoundary } from '../ErrorBoundary';
 import { PageBlock, PageContainer } from '../PageContainer';
 import { UpdatePanel } from '../../updater/UpdatePanel';
 import { AppImageInstallPanel } from '../../components/AppImageInstallPanel';
+import { CrashRecordsPanel } from '../../diagnostics/CrashRecordsPanel';
 
 const AiSettings = lazy(() => import('../ai/AiSettings').then((m) => ({ default: m.AiSettings })));
 const AiRuntime = lazy(() => import('../ai/AiRuntime').then((m) => ({ default: m.AiRuntime })));
@@ -33,6 +34,7 @@ function UpdatesTab() {
         <PageBlock className="col-span-12 lg:col-span-7"><UpdatePanel /></PageBlock>
         {/* Renders nothing unless there is an AppImage installation to act on. */}
         <PageBlock className="col-span-12 lg:col-span-5"><AppImageInstallPanel /></PageBlock>
+        <PageBlock className="col-span-12 lg:col-span-7"><CrashRecordsPanel /></PageBlock>
       </div>
     </PageContainer>
   );
