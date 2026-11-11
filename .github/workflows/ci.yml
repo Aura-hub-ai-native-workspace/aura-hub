@@ -486,13 +486,23 @@ jobs:
           done
           test -x "/usr/bin/aura-hub" || test -x "/usr/local/bin/aura-hub"
           echo "installed binary: $(command -v aura-hub)"
-          xvfb-run -a env AURA_HOME="$RUNNER_TEMP/deb-home" AI_PORT=4319 aura-hub &
+          export AURA_HOME_LOGS="$RUNNER_TEMP/deb-home/logs"
+          xvfb-run -a env AURA_HOME="$RUNNER_TEMP/deb-home" AI_PORT=4319 AURA_ENVIRONMENT_PORT=4320 aura-hub &
           for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
-          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: installed .deb launched and its service is healthy"
+          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null || { echo "::error::not healthy: http://127.0.0.1:4319/health"; tail -n 40 "$AURA_HOME_LOGS"/*.log 2>/dev/null || true; exit 1; }
+          echo "OK: installed .deb launched and its service is healthy"
+          # The Python environment backend starts after the window, with the
+          # Python runtime the installer ships. Nothing checked it before: a
+          # broken bundled runtime shipped an app whose machine inventory,
+          # workers and agents were all empty.
+          for i in $(seq 1 90); do curl -sf -m 2 http://127.0.0.1:4320/health >/dev/null && break; sleep 2; done
+          curl -sf -m 5 http://127.0.0.1:4320/health >/dev/null || { echo "::error::not healthy: http://127.0.0.1:4320/health"; tail -n 40 "$AURA_HOME_LOGS"/*.log 2>/dev/null || true; exit 1; }
+          echo "OK: the environment backend (bundled Python) is healthy"
           # The packaged service only answers /health without this launch's instance token (the shell
           # generates it per launch), so an outside caller must be refused rather than scanned.
           code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan)
-          test "$code" = 401 && echo "OK: the installed app refuses a caller without its instance token (HTTP 401)"
+          test "$code" = 401 || { echo "::error::expected 401 without the instance token, got $code"; exit 1; }
+          echo "OK: the installed app refuses a caller without its instance token (HTTP 401)"
           pkill -f 'aura-hub' || true
           sudo apt-get remove -y aura-hub && echo "OK: uninstalled cleanly"
 
@@ -501,9 +511,18 @@ jobs:
         run: |
           set -e
           chmod +x dist-release/*.AppImage
-          xvfb-run -a env AURA_HOME="$RUNNER_TEMP/appimage-home" AI_PORT=4319 ./dist-release/*.AppImage &
+          export AURA_HOME_LOGS="$RUNNER_TEMP/appimage-home/logs"
+          xvfb-run -a env AURA_HOME="$RUNNER_TEMP/appimage-home" AI_PORT=4319 AURA_ENVIRONMENT_PORT=4320 ./dist-release/*.AppImage &
           for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
-          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: AppImage ran directly and its service is healthy"
+          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null || { echo "::error::not healthy: http://127.0.0.1:4319/health"; tail -n 40 "$AURA_HOME_LOGS"/*.log 2>/dev/null || true; exit 1; }
+          echo "OK: AppImage ran directly and its service is healthy"
+          # The Python environment backend starts after the window, with the
+          # Python runtime the installer ships. Nothing checked it before: a
+          # broken bundled runtime shipped an app whose machine inventory,
+          # workers and agents were all empty.
+          for i in $(seq 1 90); do curl -sf -m 2 http://127.0.0.1:4320/health >/dev/null && break; sleep 2; done
+          curl -sf -m 5 http://127.0.0.1:4320/health >/dev/null || { echo "::error::not healthy: http://127.0.0.1:4320/health"; tail -n 40 "$AURA_HOME_LOGS"/*.log 2>/dev/null || true; exit 1; }
+          echo "OK: the environment backend (bundled Python) is healthy"
           pkill -f 'AURA' || true
 
       - name: Verify the NSIS installer installs and launches (Windows)
@@ -548,6 +567,17 @@ jobs:
           }
           if (-not $ok) { throw 'the installed application never brought its service up' }
           Write-Host 'OK: installed NSIS build launched and its service is healthy'
+          # The Python environment backend, on the Python runtime the installer ships.
+          $pyok = $false
+          foreach ($i in 1..90) {
+            try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 http://127.0.0.1:4320/health | Out-Null; $pyok = $true; break } catch { Start-Sleep 2 }
+          }
+          if (-not $pyok) {
+            $log = Join-Path $env:AURA_HOME 'logs\environment-backend.log'
+            if (Test-Path $log) { Get-Content $log -Tail 40 }
+            throw 'the installed application never brought its environment backend up'
+          }
+          Write-Host 'OK: the environment backend (bundled Python) is healthy'
           # Only /health is open without the per-launch instance token; anything else must be refused.
           $code = 0
           try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 -Method POST -ContentType 'application/json' -Body '{}' http://127.0.0.1:4319/environment/scan | Out-Null; $code = 200 } catch { $code = [int]$_.Exception.Response.StatusCode }
@@ -573,13 +603,23 @@ jobs:
           cp -R "/Volumes/AURA/AURA Hub.app" "$RUNNER_TEMP/AURA Hub.app"
           hdiutil detach /Volumes/AURA -quiet
           echo "OK: DMG mounted and the .app copied out of it"
-          AURA_HOME="$RUNNER_TEMP/dmg-home" AI_PORT=4319 "$RUNNER_TEMP/AURA Hub.app/Contents/MacOS/aura-hub" &
+          export AURA_HOME_LOGS="$RUNNER_TEMP/dmg-home/logs"
+          AURA_HOME="$RUNNER_TEMP/dmg-home" AI_PORT=4319 AURA_ENVIRONMENT_PORT=4320 "$RUNNER_TEMP/AURA Hub.app/Contents/MacOS/aura-hub" &
           for i in $(seq 1 60); do curl -sf -m 2 http://127.0.0.1:4319/health >/dev/null && break; sleep 2; done
-          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null && echo "OK: the installed .app launched and its service is healthy"
+          curl -sf -m 5 http://127.0.0.1:4319/health >/dev/null || { echo "::error::not healthy: http://127.0.0.1:4319/health"; tail -n 40 "$AURA_HOME_LOGS"/*.log 2>/dev/null || true; exit 1; }
+          echo "OK: the installed .app launched and its service is healthy"
+          # The Python environment backend starts after the window, with the
+          # Python runtime the installer ships. Nothing checked it before: a
+          # broken bundled runtime shipped an app whose machine inventory,
+          # workers and agents were all empty.
+          for i in $(seq 1 90); do curl -sf -m 2 http://127.0.0.1:4320/health >/dev/null && break; sleep 2; done
+          curl -sf -m 5 http://127.0.0.1:4320/health >/dev/null || { echo "::error::not healthy: http://127.0.0.1:4320/health"; tail -n 40 "$AURA_HOME_LOGS"/*.log 2>/dev/null || true; exit 1; }
+          echo "OK: the environment backend (bundled Python) is healthy"
           # The packaged service only answers /health without this launch's instance token (the shell
           # generates it per launch), so an outside caller must be refused rather than scanned.
           code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST -H 'content-type: application/json' -d '{}' http://127.0.0.1:4319/environment/scan)
-          test "$code" = 401 && echo "OK: the installed app refuses a caller without its instance token (HTTP 401)"
+          test "$code" = 401 || { echo "::error::expected 401 without the instance token, got $code"; exit 1; }
+          echo "OK: the installed app refuses a caller without its instance token (HTTP 401)"
           pkill -f 'aura-hub' || true
 
       - name: Upload installers
