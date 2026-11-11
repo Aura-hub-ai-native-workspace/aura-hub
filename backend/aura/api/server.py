@@ -1029,6 +1029,29 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             return _err("no such session", 404)
         return JSONResponse(_model_dump(session))
 
+    async def agent_restore_points(request: Request):
+        """The restore points recorded before this session's agents changed files."""
+        session = _session_or_none(request.path_params["sid"])
+        if session is None:
+            return _err("no such session", 404)
+        from ..central_agent import restore_point
+        return JSONResponse({"points": restore_point.list_points(getattr(session, "projectPath", None))})
+
+    async def agent_restore(request: Request):
+        """Put the session's project back to one of its restore points."""
+        session = _session_or_none(request.path_params["sid"])
+        if session is None:
+            return _err("no such session", 404)
+        body = await _json_body(request)
+        from ..central_agent import restore_point
+        try:
+            result = restore_point.restore(getattr(session, "projectPath", None), str(body.get("id") or ""))
+        except ValueError as e:
+            return _err(str(e), 400)
+        except (RuntimeError, OSError) as e:
+            return _err(f"Could not restore: {e}", 500)
+        return JSONResponse({"ok": True, **result})
+
     async def agent_session_status(request: Request):
         """Authoritative orchestration status for a session.
 
@@ -2322,6 +2345,8 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/agent/sessions", agent_submit, methods=["POST"]),
         Route("/agent/sessions/{sid}", agent_session_get, methods=["GET"]),
         Route("/agent/sessions/{sid}/status", agent_session_status, methods=["GET"]),
+        Route("/agent/sessions/{sid}/restore-points", agent_restore_points, methods=["GET"]),
+        Route("/agent/sessions/{sid}/restore", agent_restore, methods=["POST"]),
         Route("/agent/sessions/{sid}/message", agent_message, methods=["POST"]),
         Route("/agent/chat", agent_chat, methods=["POST"]),
         Route("/agent/plans/execute", agent_plan_execute, methods=["POST"]),

@@ -35,6 +35,8 @@ export interface RunView {
   timeline: TimelineEntry[];
   checklist: CheckItem[];
   files: FileChange[];
+  /** Restore points recorded before each task that changed files, oldest first. */
+  restorePoints: string[];
   toolsInstalled: ToolEvent[];
   toolsReused: ToolEvent[];
   toolsBlocked: ToolEvent[];
@@ -48,7 +50,7 @@ export interface RunView {
 
 export const EMPTY_RUN: RunView = {
   sessionId: null, goal: null, phase: null, currentTask: null, currentWorker: null, waitingFor: null,
-  timeline: [], checklist: [], files: [], toolsInstalled: [], toolsReused: [], toolsBlocked: [], workers: [],
+  timeline: [], checklist: [], files: [], restorePoints: [], toolsInstalled: [], toolsReused: [], toolsBlocked: [], workers: [],
   handoffs: [], errors: [], finished: false, summary: null, seen: [],
 };
 
@@ -134,6 +136,8 @@ export function foldRunEvent(view: RunView, f: AgentEventFrame): RunView {
       const add: FileChange[] = changes.map((c: any) => ({ path: str(c.path), op: c.op, taskId: str(p.taskId), worker: str(p.worker) || null }));
       const keys = new Set(v.files.map((x) => `${x.taskId}:${x.path}`));
       v = { ...v, files: [...v.files, ...add.filter((x) => !keys.has(`${x.taskId}:${x.path}`))] };
+      const point = str(p.restorePoint);
+      if (point && changes.length > 0 && !v.restorePoints.includes(point)) v = { ...v, restorePoints: [...v.restorePoints, point] };
       say(`${changes.length || 'No'} file change${changes.length === 1 ? '' : 's'} observed${p.complete === false ? ' (observation incomplete)' : ''}`, p.complete === false ? 'warn' : 'info', str(p.taskId));
       break;
     }
@@ -217,6 +221,7 @@ export function seedFromReport(sessionId: string, report: ExecutionReport | null
   return {
     ...base, sessionId, finished: true, phase: 'Finished', summary: report, checklist,
     files: report.filesChanged.map((f) => ({ path: f.path, op: f.op, taskId: f.taskId, worker: f.worker })),
+    restorePoints: report.restorePoints ?? base.restorePoints,
     toolsInstalled: report.toolsInstalled.map((t) => toolEv(t, 'installed')),
     toolsReused: report.toolsReused.map((t) => toolEv(t, 'present')),
     handoffs: report.handoffs.map((h) => ({ taskId: h.taskId, from: h.fromNode, to: h.toNode, reason: h.reason })),

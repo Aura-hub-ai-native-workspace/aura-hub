@@ -117,3 +117,22 @@ describe('an unfinished task is labelled by what actually happened, never as fai
     expect(item?.state).toBe('pending');
   });
 });
+
+describe('restore points', () => {
+  it('keeps the restore point of each task that changed files, oldest first', () => {
+    const v = fold([
+      frame('files.changed', { taskId: 't1', changes: [{ path: 'a', op: 'modified' }], restorePoint: 'p1' }),
+      frame('files.changed', { taskId: 't2', changes: [], restorePoint: 'p-none' }),
+      frame('files.changed', { taskId: 't3', changes: [{ path: 'b', op: 'created' }], restorePoint: 'p3' }),
+    ]);
+    expect(v.restorePoints).toEqual(['p1', 'p3']);
+  });
+
+  it('a stored report brings them back after a reload', () => {
+    const v = seedFromReport('s', {
+      outcome: 'completed', limitations: [], testsObserved: [], verificationEvidence: [], toolsInstalled: [], toolsReused: [], handoffs: [],
+      workCompleted: [], unfinished: [], errors: [], filesChanged: [], restorePoints: ['p1'],
+    });
+    expect(v.restorePoints).toEqual(['p1']);
+  });
+});

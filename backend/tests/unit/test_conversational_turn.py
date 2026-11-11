@@ -395,6 +395,11 @@ class TestNoParallelArchitecture:
             # Read-only authoritative orchestration status (task queue and
             # state). Deliberately part of the surface; it carries no effect.
             "/agent/sessions/{sid}/status",
+            # Undo for unattended runs: the restore points recorded before the
+            # session's agents changed files, and putting the project back to
+            # one. Bound to the session's own project; not a conversation route.
+            "/agent/sessions/{sid}/restore-points",
+            "/agent/sessions/{sid}/restore",
         }
 
     def test_no_new_module_backs_the_conversation(self):
