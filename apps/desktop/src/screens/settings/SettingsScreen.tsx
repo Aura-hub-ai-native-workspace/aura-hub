@@ -1,4 +1,5 @@
 import { AccountTab } from './AccountTab';
+import { StorageTab } from './StorageTab';
 import { Suspense, lazy } from 'react';
 import type { ReactNode } from 'react';
 import { motion } from 'framer-motion';
@@ -42,11 +43,12 @@ const TAB_BODY: Record<SettingsTab, { title: string; render: () => ReactNode }> 
   connections: { title: 'Connections', render: () => <AiSettings /> },
   tools: { title: 'Connected tools', render: () => <ConnectedToolsTab /> },
   runtime: { title: 'AI Runtime', render: () => <AiRuntime /> },
+  storage: { title: 'Storage', render: () => <StorageTab /> },
   updates: { title: 'Updates', render: () => <UpdatesTab /> },
 };
 
 /**
- * Settings — five tabs, one active at a time. The tab strip is fixed; the
+ * Settings — six tabs, one active at a time. The tab strip is fixed; the
  * active tab's body scrolls inside its own region, so the strip never moves.
  */
 export function SettingsScreen() {
