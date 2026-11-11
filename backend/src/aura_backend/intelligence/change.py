@@ -116,3 +116,50 @@ def _iso(ms: float) -> str:
 
     dt = datetime.fromtimestamp(ms / 1000, tz=UTC)
     return f"{dt.strftime('%Y-%m-%dT%H:%M:%S')}.{dt.microsecond // 1000:03d}Z"
+
+
+def save_change_log(home: Path, log: dict[str, Any]) -> None:
+    from ..core.json_store import atomic_write_json
+
+    atomic_write_json(home / "changes" / "log.json", log)
+
+
+def record_change(
+    home: Path, file: str, change_type: str, now: str,
+    lines_added: int | None = None, lines_removed: int | None = None,
+) -> None:
+    log = load_change_log(home) or {"entries": [], "patterns": [], "generatedAt": now}
+    # `linesAdded`/`linesRemoved` are `undefined` when not supplied, and
+    # `JSON.stringify` drops them — so the key is absent on disk, not null.
+    entry: dict[str, Any] = {"file": file, "timestamp": now, "type": change_type}
+    if lines_added is not None:
+        entry["linesAdded"] = lines_added
+    if lines_removed is not None:
+        entry["linesRemoved"] = lines_removed
+    log["entries"].append(entry)
+
+    if len(log["entries"]) > 1000:
+        log["entries"] = log["entries"][-1000:]
+
+    log["generatedAt"] = now
+    save_change_log(home, log)
+
+
+def generate_change_report(log: dict[str, Any]) -> str:
+    from ..core.js_number import to_fixed
+
+    velocity = get_change_velocity(log)
+    patterns = analyze_change_patterns(log)
+    hotspots = detect_hotspots(log)
+
+    lines = [
+        f"Change Velocity: {to_fixed(velocity, 1)} changes/day",
+        f"Total Changes: {len(log.get('entries') or [])}",
+        f"Patterns Detected: {len(patterns)}",
+        f"Hotspots: {len(hotspots)}",
+    ]
+    if hotspots:
+        lines.append("\nHotspot Files:")
+        for hotspot in hotspots[:5]:
+            lines.append(f"  - {hotspot['file']} (score: {hotspot['score']})")
+    return "\n".join(lines)

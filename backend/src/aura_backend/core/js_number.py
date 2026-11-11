@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import math
 import re
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 _EXPONENT = re.compile(r"e([+-])0*(\d)")
@@ -48,6 +49,22 @@ def js_number(value: Any) -> str:
         # (`1e-07` here, `1e-7` there).
         return _EXPONENT.sub(r"e\1\2", repr(value))
     return str(value)
+
+
+def to_fixed(value: float, digits: int) -> str:
+    """`Number.prototype.toFixed`.
+
+    JavaScript rounds half away from zero on the decimal expansion of the
+    double; Python's `format` rounds half to even. `(0.5).toFixed(0)` is
+    `"1"` there and `"0"` here, and change velocity is reported with one
+    decimal place.
+    """
+    if math.isnan(value):
+        return "NaN"
+    if math.isinf(value):
+        return "Infinity" if value > 0 else "-Infinity"
+    quantized = Decimal(value).quantize(Decimal(1).scaleb(-digits), rounding=ROUND_HALF_UP)
+    return f"{quantized:f}"
 
 
 def to_js_numbers(payload: Any) -> Any:

@@ -15,33 +15,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..core.js_number import js_number
 from ..core.json_store import read_json
-from ..core.node_time import mtime_ms
 
-# The manifests whose mtimes define a project's identity fingerprint.
-# Note this list differs from the profile's — it includes Makefile and
-# CMakeLists.txt, because identity classifies native and kernel projects
-# that have no package manifest at all.
-IDENTITY_MARKERS = (
-    "package.json", "requirements.txt", "pyproject.toml", "go.mod",
-    "Cargo.toml", "pom.xml", "Makefile", "CMakeLists.txt",
-)
+# The fingerprint has ONE definition, in `identity.py`, beside the
+# generator that writes it. Re-deriving it here would be a second
+# authority for a string that is compared byte-for-byte.
+from .identity import IDENTITY_MARKERS, compute_fingerprint
 
+compute_identity_fingerprint = compute_fingerprint
 
-def _mtime_ms(path: Path) -> float:
-    try:
-        return mtime_ms(path)
-    except OSError:
-        return 0
-
-
-def compute_identity_fingerprint(root: str) -> str:
-    base = Path(root)
-    # Stringified exactly as the reference stringifies it: this value is
-    # compared for equality, so one digit decides whether the whole
-    # repository identity is regenerated.
-    return "|".join(f"{m}:{js_number(_mtime_ms(base / m))}" for m in IDENTITY_MARKERS)
+__all__ = [
+    "IDENTITY_MARKERS", "compute_identity_fingerprint", "get_current_version",
+    "identity_needs_regeneration", "load_identity", "load_repository_health",
+    "load_repository_profile", "load_repository_summary", "load_version_history",
+]
 
 
 def load_identity(home: Path, project_id: str) -> dict[str, Any] | None:

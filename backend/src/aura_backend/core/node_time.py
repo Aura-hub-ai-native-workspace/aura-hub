@@ -27,6 +27,7 @@ Every mtime the backend exposes or fingerprints goes through here.
 
 from __future__ import annotations
 
+import math
 import os
 
 _NS_PER_S = 10**9
@@ -45,3 +46,14 @@ def mtime_ms(path: str | os.PathLike[str]) -> float:
 def stat_mtime_ms(stat_result: os.stat_result) -> float:
     """Node's `mtimeMs` from an already-taken `stat`."""
     return mtime_ms_from_ns(stat_result.st_mtime_ns)
+
+
+def date_ms_from_stat(stat_result: os.stat_result) -> int:
+    """The integer millisecond Node's `stat.mtime` Date carries.
+
+    Measured against the real `fs.statSync().mtime.getTime()`: Node
+    ROUNDS HALF UP, not truncating and not to even. A modification time
+    of `…000.5` ms becomes `…001` there, `…000` under Python's `round`
+    (banker's) and `…000` under `trunc`.
+    """
+    return math.floor(mtime_ms_from_ns(stat_result.st_mtime_ns) + 0.5)
