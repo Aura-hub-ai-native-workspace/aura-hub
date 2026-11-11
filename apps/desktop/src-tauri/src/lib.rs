@@ -502,15 +502,18 @@ pub fn run() {
     // Before Tauri starts WebKit: the environment is read once, at startup.
     let render_fallback = render::apply_fallback_if_needed();
 
+    // An explicit port is honoured exactly. Otherwise the defaults are
+    // preferred, and a free port is used when another program holds one;
+    // the renderer learns the real ports from `backend_verify`.
     let port = std::env::var("AI_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT);
+        .unwrap_or_else(|| service::choose_port(DEFAULT_PORT, PYTHON_PORT));
 
     let python_port = std::env::var("AURA_ENVIRONMENT_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
-        .unwrap_or(PYTHON_PORT);
+        .unwrap_or_else(|| service::choose_port(PYTHON_PORT, port));
 
     // One fresh identity per backend per launch. A backend that was not
     // started with it cannot pass the ownership check. See instance.rs.
@@ -613,7 +616,7 @@ pub fn run() {
             std::thread::spawn(move || {
                 let state = handle.state::<ServiceState>();
                 let outcome = match &script {
-                    Some(path) => service::ensure_running(&state.handle, path.clone(), port),
+                    Some(path) => service::ensure_running(&state.handle, path.clone(), port, python_port),
                     None => Err("AURA's local service bundle is missing from this installation.".to_string()),
                 };
 
@@ -734,7 +737,7 @@ pub fn run() {
                     std::thread::sleep(Duration::from_secs(1));
                     if let Some(path) = &script {
                         if let Some(outcome) = ai.tick(state.handle.is_alive(), || {
-                            service::ensure_running(&state.handle, path.clone(), port)
+                            service::ensure_running(&state.handle, path.clone(), port, python_port)
                         }) {
                             if outcome.is_ok() {
                                 eprintln!("AURA Hub: local service restarted on port {port}.");
