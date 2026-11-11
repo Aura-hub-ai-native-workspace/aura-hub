@@ -15,6 +15,7 @@
 mod appimage;
 mod instance;
 mod pty;
+mod render;
 mod shell;
 mod service;
 
@@ -498,6 +499,9 @@ pub fn run() {
     // a termination signal could leave a service behind.
     service::install_termination_handlers();
 
+    // Before Tauri starts WebKit: the environment is read once, at startup.
+    let render_fallback = render::apply_fallback_if_needed();
+
     let port = std::env::var("AI_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
@@ -595,6 +599,7 @@ pub fn run() {
             shell::shell_write,
             shell::shell_resize,
             shell::shell_stop,
+            render::renderer_ready,
         ])
         .setup(move |app| {
             let script = resolve_service_script(app);
@@ -664,6 +669,7 @@ pub fn run() {
                 if let Some(window) = handle.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.set_focus();
+                    render::watch(window, render_fallback);
                 }
 
                 // The environment backend, started after the Node service
