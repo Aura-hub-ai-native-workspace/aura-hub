@@ -17,7 +17,7 @@ on:
 jobs:
   build:
     name: Typecheck & Build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -75,7 +75,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, label: linux-x64 }
+          - { os: ubuntu-24.04, label: linux-x64 }
           - { os: windows-latest, label: windows-x64 }
           - { os: macos-latest, label: macos-arm64 }
     steps:
@@ -197,7 +197,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Pinned: ubuntu-latest moved to 26.04 on 2026-11-11. The AppImage
+          # bundles against the build machine's glibc, so building on the
+          # newest Ubuntu would stop it starting on older distributions.
+          - os: ubuntu-24.04
             label: linux-x64
             bundles: appimage,deb
           - os: windows-latest
@@ -302,6 +305,10 @@ jobs:
               echo "switching apt to mirrors.edge.kernel.org"
               sudo sed -i -E 's#https?://(azure\.)?(archive|security)\.ubuntu\.com/ubuntu/?#http://mirrors.edge.kernel.org/ubuntu/#g' \
                 /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+              # Runner images may list their mirrors in a mirror file instead.
+              if [ -f /etc/apt/apt-mirrors.txt ]; then
+                echo "http://mirrors.edge.kernel.org/ubuntu/" | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+              fi
               grep -rh "^URIs\|^deb " /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null | sort -u || true
             fi
             sleep $((attempt * 30))
@@ -599,7 +606,7 @@ jobs:
     # can detect that, so the backend gate is a precondition for publishing.
     needs: [desktop-build, backend]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       # To create the release and upload assets. Nothing else is granted.
       contents: write
