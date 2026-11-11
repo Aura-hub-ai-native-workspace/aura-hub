@@ -254,7 +254,7 @@ def prove_worker(adapter: WorkerAdapter, home: str,
     except Exception as exc:  # noqa: BLE001 — any spawn failure is honest
         proof.reason = INVOCATION_FAILED
         proof.detail = f"{adapter.name} could not be run: {exc}"
-        _cleanup(root, keep_workspace)
+        _cleanup(root, keep_workspace, home, probe_id)
         return proof
     proof.stages.append("DISPATCHED")
 
@@ -266,13 +266,13 @@ def prove_worker(adapter: WorkerAdapter, home: str,
         proof.detail = (f"{adapter.name} did not answer within "
                         f"{timeout_ms // 1000}s. Presence is not the same as "
                         "usability; nothing is claimed.")
-        _cleanup(root, keep_workspace)
+        _cleanup(root, keep_workspace, home, probe_id)
         return proof
     if not stdout.strip():
         proof.reason = NO_RESPONSE
         proof.detail = (f"{adapter.name} ran and exited "
                         f"{proof.exit_code} without producing any output.")
-        _cleanup(root, keep_workspace)
+        _cleanup(root, keep_workspace, home, probe_id)
         return proof
     proof.stages.append("RESPONDED")
 
@@ -292,7 +292,7 @@ def prove_worker(adapter: WorkerAdapter, home: str,
             f"{adapter.name} replied, but produced no work correlated to "
             f"this request (exit {proof.exit_code}). Its own output: "
             f"{stdout.strip()[-300:] or '(none)'}")
-        _cleanup(root, keep_workspace)
+        _cleanup(root, keep_workspace, home, probe_id)
         return proof
     proof.stages.append("CORRELATED")
 
@@ -327,15 +327,26 @@ def prove_worker(adapter: WorkerAdapter, home: str,
             f"{adapter.name} received an AURA request, performed the "
             f"requested work, and returned a result correlated to "
             f"invocation {probe_id}.")
-    _cleanup(root, keep_workspace)
+    _cleanup(root, keep_workspace, home, probe_id)
     return proof
 
 
-def _cleanup(root: str, keep: bool) -> None:
+def _cleanup(root: str, keep: bool, home: str | None = None,
+             probe_id: str | None = None) -> None:
+    """Drop the probe's workspace and its governance dir under
+    <home>/gov. The proof already carries what the probe observed, so a
+    throwaway probe leaves nothing behind (it used to leave ~63MB of
+    runtime-installed node_modules per probe). With ``keep`` the files
+    stay for inspection, minus the runtime-installed deps."""
+    from ..governance import staging
+
+    gov_root = staging.gov_dir(home, probe_id) if home and probe_id else None
     if keep:
+        staging.release_runtime_deps(gov_root)
         return
     try:
         shutil.rmtree(root, ignore_errors=True)
+        staging.remove_gov_dir(gov_root)
     except Exception:  # noqa: BLE001
         pass
 

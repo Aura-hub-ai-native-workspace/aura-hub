@@ -22,17 +22,81 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import time
 
 from . import claude as _claude
 from . import opencode as _opencode
 
 GOV_DIRNAME = "gov"
 
+#: What the opencode-family runtime installs into OPENCODE_CONFIG_DIR on
+#: its own (it ``npm install``s @opencode-ai/plugin, ~63MB, into every
+#: config dir it is pointed at). AURA's plugin is dependency-free, so
+#: none of this is policy or evidence: once the worker has exited it is
+#: dead weight, and one copy per invocation fills the AURA home.
+RUNTIME_INSTALLED = ("node_modules", "package.json", "package-lock.json",
+                     "bun.lock", "bun.lockb", ".gitignore")
+
+#: A gov dir untouched this long cannot belong to a live worker
+#: (MAX_WORKER_TIMEOUT_MS is 6h), so the sweep may release its deps.
+STALE_AFTER_S = 12 * 60 * 60
+
 
 def gov_dir(home: str, invocation_id: str) -> str:
     safe = "".join(
         c if (c.isalnum() or c in "-_") else "-" for c in invocation_id)[:64]
     return os.path.join(home, GOV_DIRNAME, safe or "inv")
+
+
+def release_runtime_deps(root: str | None) -> None:
+    """Drop what the runtime installed into this invocation's config dir.
+
+    Only RUNTIME_INSTALLED entries go; the policy (aura-governance.json),
+    the plugin and actions.jsonl stay on disk as evidence. Best-effort:
+    a failure here must never fail the run it follows."""
+    if not root:
+        return
+    config_dir = os.path.join(root, "config-dir")
+    for name in RUNTIME_INSTALLED:
+        path = os.path.join(config_dir, name)
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.lexists(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def remove_gov_dir(root: str | None) -> None:
+    """Remove a throwaway invocation's whole gov dir (readiness probes)."""
+    if root and os.path.basename(os.path.dirname(root)) == GOV_DIRNAME:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def sweep_stale_runtime_deps(home: str, *,
+                             older_than_s: float = STALE_AFTER_S) -> int:
+    """Release deps left behind by invocations that never reached their
+    own cleanup (crash, kill, older AURA builds). Returns dirs released."""
+    base = os.path.join(home, GOV_DIRNAME)
+    cutoff = time.time() - older_than_s
+    released = 0
+    try:
+        entries = list(os.scandir(base))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            modules = os.path.join(entry.path, "config-dir", "node_modules")
+            if (entry.is_dir(follow_symlinks=False)
+                    and os.path.isdir(modules)
+                    and entry.stat().st_mtime < cutoff):
+                release_runtime_deps(entry.path)
+                released += 1
+        except OSError:
+            continue
+    return released
 
 
 def _write(path: str, content: str) -> None:
@@ -53,6 +117,10 @@ def stage_opencode(home: str, *, invocation_id: str, task_id: str,
     ``tool.execute.before`` interception point, verified independently
     against each runtime — the prefix is the only difference, so one
     staging routine serves both instead of a duplicated adapter."""
+    try:
+        sweep_stale_runtime_deps(home)
+    except Exception:  # noqa: BLE001 — housekeeping never blocks staging
+        pass
     root = gov_dir(home, invocation_id)
     plugin_dir = os.path.join(root, "config-dir", "plugin")
     config_path = os.path.join(root, _opencode.CONFIG_NAME)
@@ -77,6 +145,7 @@ def stage_opencode(home: str, *, invocation_id: str, task_id: str,
             f"{prefix}_CONFIG_DIR": os.path.join(root, "config-dir"),
             "AURA_ACTION_LOG": log_path,
         },
+        "govRoot": root,
         "configPath": config_path,
         "pluginPath": plugin_path,
         "logPath": log_path,

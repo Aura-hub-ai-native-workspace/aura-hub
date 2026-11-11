@@ -413,7 +413,8 @@ def _stage_governance(inv: dict, bin_name: str, cwd: str,
                 scope_paths=scope_paths,
                 env_prefix=adapter.env_prefix or "OPENCODE")
             bundle.update(env=staged["env"], logPath=staged["logPath"],
-                          supports=staged["supports"])
+                          supports=staged["supports"],
+                          govRoot=staged["govRoot"])
             bundle["invocationId"] = invocation_id
         elif adapter.governance == GOV_CLAUDE_HOOK:
             staged = staging.stage_claude(
@@ -799,6 +800,13 @@ async def agent_delegate_run(inv: dict) -> dict:
     except Exception as e:  # noqa: BLE001 — TS catches all too
         net.close()
         return _no(f"{node['name']} could not be run: {e}")
+    finally:
+        # The worker has exited: what its runtime installed into the
+        # staged config dir (~63MB of node_modules per run) is neither
+        # policy nor evidence. The policy, plugin and action log stay.
+        from ..governance import staging as _gov_staging
+
+        _gov_staging.release_runtime_deps(governance.get("govRoot"))
     # The egress door belongs to THIS invocation. Read what it decided
     # while it is still open, then close it — a gateway that outlived
     # its worker would be a standing hole in the next task's boundary.
