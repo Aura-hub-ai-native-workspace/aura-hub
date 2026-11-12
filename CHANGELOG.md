@@ -7,6 +7,17 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.27] - 2026-11-12 — Private Data Folder
+
+### Security
+
+- **Your AURA data is private to your account.** The data folder (`~/.aura`)
+  holds saved keys, account files, logs and crash records. It was readable by
+  other accounts on the same computer. From this version it is owner-only,
+  and existing installs are fixed at the next launch (Linux and macOS).
+- **Crash records no longer keep secrets.** API keys, tokens and passwords
+  found in a crash record are replaced with `[redacted]` before it is saved.
+
 ## [0.1.26] - 2026-11-12 — Steadier Hub
 
 ### Added
