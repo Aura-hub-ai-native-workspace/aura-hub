@@ -7,6 +7,33 @@ and this project uses date-based milestone releases rather than strict
 [SemVer](https://semver.org/) while it's pre-1.0 — breaking changes can
 land on any `0.x` release.
 
+## [0.1.26] - 2026-11-12 — Steadier Hub
+
+### Added
+
+- **Undo a run.** Before an agent run changes files, the hub saves a restore
+  point. "Undo run" in the run panel puts the project back as it was, and
+  saves the current state first so the undo can itself be undone.
+- **Settings → Storage.** Shows how much space the hub uses and cleans caches
+  of removed projects and old indexes. Old caches are also cleaned on start.
+- **Crash records.** If the app, a page or a background service crashes, a
+  short record is kept on this computer (Settings → Updates). Nothing is sent.
+
+### Fixed
+
+- The hub starts even when its usual ports are taken by another program.
+- A blank window reloads itself; if it stays blank, the next launch uses a
+  safer graphics mode on Linux.
+- Faster start: the hub answers while it is still scanning your tools.
+- Log files are rotated at 10 MB.
+
+### Changed
+
+- Release builds are more reliable (package-install retries, fixed Linux
+  build image, checks that the Python service starts in every installer).
+- Builds are ready for macOS and Windows code signing once certificates are
+  added.
+
 ## [0.1.25] - 2026-11-10 — A Real Terminal in Code
 
 ### Added
