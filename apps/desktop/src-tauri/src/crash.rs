@@ -38,6 +38,139 @@ fn clip(s: &str) -> &str {
     &s[..end]
 }
 
+/// What replaces a secret in a crash record.
+const MARK: &str = "[redacted]";
+
+/// Prefixes of well-known API keys and tokens.
+const KEY_PREFIXES: &[&str] = &[
+    "sk-ant-", "sk-", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "xoxb-",
+    "xoxp-", "xoxa-", "hf_", "AIza",
+];
+
+/// Names whose value is a secret in `name=value`, `name: value` or
+/// `"name": "value"`.
+const SECRET_NAMES: &[&str] = &[
+    "token", "secret", "password", "passwd", "api_key", "apikey", "api-key", "authorization",
+    "cookie", "credential", "bearer",
+];
+
+/// Endings of names whose value is not a secret.
+const NOT_SECRET_SUFFIXES: &[&str] = &[
+    "_env", "_name", "_names", "_id", "_path", "_file", "_url", "_type", "_count", "_len",
+    "_length", "_limit", "_usage", "_expires", "_expiry", "tokens", "_set", "_present",
+];
+
+fn is_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'+'
+}
+
+fn is_uuid(word: &str) -> bool {
+    let parts: Vec<&str> = word.split('-').collect();
+    parts.len() == 5
+        && parts.iter().map(|p| p.len()).eq([8, 4, 4, 4, 12])
+        && parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// One run of token characters: a known key prefix, or a long random-looking
+/// string (letters and digits, 32+ characters), is replaced.
+fn redact_word(word: &str) -> std::borrow::Cow<'_, str> {
+    for prefix in KEY_PREFIXES {
+        if word.len() >= prefix.len() + 8 && word.starts_with(prefix) {
+            return format!("{prefix}{MARK}").into();
+        }
+    }
+    let has_digit = word.bytes().any(|b| b.is_ascii_digit());
+    let has_alpha = word.bytes().any(|b| b.is_ascii_alphabetic());
+    if word.len() >= 32 && has_digit && has_alpha && !is_uuid(word) {
+        return MARK.into();
+    }
+    word.into()
+}
+
+/// Replace the value after a secret-looking name (`token=…`, `"apiKey": "…"`,
+/// `Authorization: Bearer …`).
+fn redact_named_values(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let Some(name) = SECRET_NAMES.iter().find(|n| lower.as_bytes()[i..].starts_with(n.as_bytes())) else {
+            i += 1;
+            continue;
+        };
+        // Skip the rest of the identifier (`api_key_env`, `tokens`), then
+        // quotes, spaces and one separator.
+        let mut j = i + name.len();
+        while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+            j += 1;
+        }
+        // `api_key_env`, `token_count`, `tokens`: the value names or counts
+        // something; it is not the secret.
+        let ident = &lower[i..j];
+        if NOT_SECRET_SUFFIXES.iter().any(|sfx| ident.ends_with(sfx)) {
+            i = j;
+            continue;
+        }
+        let mut k = j;
+        while k < bytes.len() && matches!(bytes[k], b'"' | b'\'' | b' ') {
+            k += 1;
+        }
+        let bearer = *name == "bearer";
+        if !bearer {
+            if k < bytes.len() && matches!(bytes[k], b'=' | b':') {
+                k += 1;
+            } else {
+                i = j;
+                continue;
+            }
+        }
+        while k < bytes.len() && matches!(bytes[k], b'"' | b'\'' | b' ') {
+            k += 1;
+        }
+        // `Authorization: Bearer abc` — the scheme word stays, the credential goes.
+        if !bearer && lower.as_bytes()[k..].starts_with(b"bearer ") {
+            k += "bearer ".len();
+        }
+        let start = k;
+        while k < bytes.len() && !matches!(bytes[k], b'"' | b'\'' | b' ' | b',' | b'&' | b';' | b'}' | b'\n' | b'\r' | b'\t') {
+            k += 1;
+        }
+        if k - start >= 4 {
+            out.push_str(&text[copied..start]);
+            out.push_str(MARK);
+            copied = k;
+        }
+        i = k.max(i + 1);
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+/// Remove API keys, tokens and passwords from text before it is saved.
+pub(crate) fn redact(text: &str) -> String {
+    let named = redact_named_values(text);
+    let bytes = named.as_bytes();
+    let mut out = String::with_capacity(named.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if is_token_byte(bytes[i]) {
+            let mut j = i;
+            while j < bytes.len() && is_token_byte(bytes[j]) {
+                j += 1;
+            }
+            out.push_str(&redact_word(&named[i..j]));
+            i = j;
+        } else {
+            let ch = named[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
 fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
 }
@@ -49,14 +182,17 @@ fn write(dir: &Path, source: &str, body: &str) -> Option<PathBuf> {
         return None;
     }
     std::fs::create_dir_all(dir).ok()?;
+    crate::private::restrict(dir);
     let path = dir.join(format!("crash-{:013}-{source}.txt", now_ms()));
     let text = format!(
-        "AURA Hub {} on {} {}\nsource: {source}\n\n{body}\n",
+        "AURA Hub {} on {} {}\nsource: {source}\n\n{}\n",
         env!("CARGO_PKG_VERSION"),
         std::env::consts::OS,
         std::env::consts::ARCH,
+        redact(body),
     );
     std::fs::write(&path, text).ok()?;
+    crate::private::restrict(&path);
     prune(dir, KEEP);
     Some(path)
 }
@@ -165,6 +301,30 @@ mod tests {
         let d = std::env::temp_dir().join(format!("aura-crash-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+
+    #[test]
+    fn secrets_are_removed_from_records() {
+        let text = "start\nAuthorization: Bearer abcdEFGH1234ijkl\nkey sk-ant-api03-AbCdEfGh12345678 and ghp_abcdefghijklmnop1234\n\
+            {\"apiKey\": \"plainvalue99\", \"api_key_env\": \"OPENAI_API_KEY\", \"tokens\": 1234}\n\
+            url?token=deadbeef42&x=1 password=hunter2hunter\n\
+            instance 3f9a8c7d6e5b4a3928171615141312110f0e0d0c0b0a09080706050403020100\n\
+            session 123e4567-e89b-12d3-a456-426614174000 at src/service.rs:439 ünïcode";
+        let out = redact(text);
+        for secret in ["abcdEFGH1234ijkl", "AbCdEfGh12345678", "abcdefghijklmnop1234", "plainvalue99", "deadbeef42", "hunter2hunter", "3f9a8c7d6e5b"] {
+            assert!(!out.contains(secret), "{secret} survived: {out}");
+        }
+        // The useful parts stay.
+        for kept in ["Authorization: Bearer [redacted]", "sk-ant-[redacted]", "OPENAI_API_KEY", "\"tokens\": 1234", "x=1", "123e4567-e89b-12d3-a456-426614174000", "src/service.rs:439", "ünïcode", "start"] {
+            assert!(out.contains(kept), "{kept} lost: {out}");
+        }
+    }
+
+    #[test]
+    fn ordinary_text_is_unchanged() {
+        let text = "thread 'main' panicked at src/lib.rs:12:5:\nindex out of bounds: the len is 3 but the index is 7\n   0: core::panicking::panic_fmt";
+        assert_eq!(redact(text), text);
     }
 
     #[test]
