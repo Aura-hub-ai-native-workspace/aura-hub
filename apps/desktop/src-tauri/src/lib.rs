@@ -15,6 +15,7 @@
 mod appimage;
 mod crash;
 mod instance;
+mod private;
 mod pty;
 mod render;
 mod shell;
@@ -500,6 +501,10 @@ pub fn run() {
     // a termination signal could leave a service behind.
     service::install_termination_handlers();
     crash::install_panic_hook();
+
+    // Keys, account files, logs and crash records stay readable only by
+    // this user, before any service writes to them.
+    private::protect_home(&service::aura_home(), &service::home_dir());
 
     // Before Tauri starts WebKit: the environment is read once, at startup.
     let render_fallback = render::apply_fallback_if_needed();

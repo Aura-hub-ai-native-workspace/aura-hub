@@ -18,10 +18,36 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+const protectedHomes = new Set<string>();
+
+/**
+ * The data folder holds encrypted keys with the seed that unlocks them,
+ * account files and logs, so it is private to its owner (0700). Skipped on
+ * Windows (the profile folder is already private) and for a folder that is
+ * the user's home itself or a filesystem root.
+ */
+function protectHome(home: string): void {
+  if (process.platform === 'win32' || protectedHomes.has(home)) return;
+  protectedHomes.add(home);
+  const resolved = path.resolve(home);
+  if (resolved === path.resolve(os.homedir()) || resolved === path.parse(resolved).root) return;
+  try {
+    if ((fs.statSync(resolved).mode & 0o777) !== 0o700) fs.chmodSync(resolved, 0o700);
+  } catch {
+    /* a folder we cannot change is still usable */
+  }
+}
+
 export function configHome(): string {
   const home = process.env.AURA_HOME || path.join(os.homedir(), '.aura');
-  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+  protectHome(home);
   return home;
+}
+
+function insideConfigHome(file: string): boolean {
+  const rel = path.relative(path.resolve(configHome()), path.resolve(file));
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 export function homePath(...parts: string[]): string {
@@ -81,6 +107,10 @@ export function readJsonFileResult<T>(file: string, fallback: T): JsonReadResult
 export function writeJsonFile(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2));
+  // Files in the data folder are owner-only (0600); files written
+  // elsewhere keep the usual permissions.
+  const ownerOnly = process.platform !== 'win32' && insideConfigHome(file);
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), ownerOnly ? { mode: 0o600 } : undefined);
+  if (ownerOnly) fs.chmodSync(tmp, 0o600);
   fs.renameSync(tmp, file);
 }

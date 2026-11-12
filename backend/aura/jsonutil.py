@@ -81,20 +81,28 @@ def write_json_atomic(file: str | Path, value: Any, *, pid: int | None = None) -
     threads in one process writing the same store can never share a temp
     file. A shared name let one writer's rename move the other's file,
     which raised FileNotFoundError and could tear a write. ``O_EXCL`` makes
-    creation fail rather than reuse a file, and mode 0o666 gives the same
-    umask-governed permissions as ``open(..., "w")``. Content is
+    creation fail rather than reuse a file. Inside the data folder the file
+    is created 0600; elsewhere mode 0o666 gives the same umask-governed
+    permissions as ``open(..., "w")``. Content is
     dumps_pretty bytes; rename is atomic on POSIX; parent dirs are created
     on demand exactly like the TS writer. On failure the temp file is
     removed and the error re-raised, so the target is never half-written.
     """
+    from .config import inside_aura_home, protect_aura_home
+
     path = Path(file)
+    # Stores in the data folder are owner-only (0600); files elsewhere keep
+    # the usual umask-governed permissions.
+    owner_only = os.name != "nt" and inside_aura_home(path)
+    if owner_only:
+        protect_aura_home()
     path.parent.mkdir(parents=True, exist_ok=True)
     owner = pid if pid is not None else os.getpid()
     data = dumps_pretty(value).encode("utf-8")
     while True:
         tmp = f"{path}.{owner}.{uuid.uuid4().hex}.tmp"
         try:
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600 if owner_only else 0o666)
             break
         except FileExistsError:  # astronomically rare; retry with a new token
             continue
