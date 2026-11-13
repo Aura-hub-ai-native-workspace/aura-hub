@@ -7,6 +7,9 @@ WORKDIR /src
 COPY package.json package-lock.json ./
 COPY apps/desktop/package.json apps/desktop/package.json
 COPY packages packages
+# esbuild resolves the `@aura/*` subpath imports through the `paths` in the
+# root tsconfig that packages/*/tsconfig.json extend.
+COPY tsconfig.base.json ./
 # Same esbuild call as the root `npm run ai` script. TypeScript stays
 # external: diagnosis/* loads the real compiler at runtime.
 RUN npm ci --ignore-scripts --no-audit --no-fund \
