@@ -1,0 +1,61 @@
+# AURA backend services without the desktop app. See docs/DOCKER.md.
+#
+#   docker compose up -d --build                    # backend + AI service
+#   docker compose --profile ollama up -d --build   # ...plus a bundled Ollama
+#
+# Ports are published on 127.0.0.1 only. The services have no login of their
+# own (the desktop app is their only client), so do not publish them on a
+# public interface without putting an authenticating proxy in front.
+
+x-aura-env: &aura-env
+  AURA_HOME: /data
+  # Without the `ollama` profile this reaches an Ollama on the host machine.
+  # Set AURA_OLLAMA_BASE_URL=http://ollama:11434 in .env with the profile.
+  AURA_OLLAMA_BASE_URL: ${AURA_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+      args:
+        AURA_EXTRAS: ${AURA_EXTRAS:-}
+    image: aura-backend:local
+    environment:
+      <<: *aura-env
+      AURA_INSTANCE_TOKEN: ${AURA_INSTANCE_TOKEN:-}
+    ports:
+      - "127.0.0.1:${AURA_ENVIRONMENT_PORT:-4320}:4320"
+    volumes:
+      - aura-home:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: docker/ai-service.Dockerfile
+    image: aura-ai-service:local
+    environment:
+      <<: *aura-env
+    ports:
+      - "127.0.0.1:${AI_PORT:-4319}:4319"
+    volumes:
+      - aura-home:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:0.40.12
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    restart: unless-stopped
+
+volumes:
+  aura-home:
+  ollama-models:

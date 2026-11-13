@@ -1820,7 +1820,11 @@ export async function startService(opts: PipelineOptions & { port?: number; open
   });
 
   const port = opts.port ?? 4319;
-  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
+  // Loopback unless AURA_BIND_HOST says otherwise; the desktop app never
+  // sets it. A container sets 0.0.0.0 so its published port is reachable
+  // (see docs/DOCKER.md). The returned URL stays loopback either way.
+  const host = process.env.AURA_BIND_HOST?.trim() || '127.0.0.1';
+  await new Promise<void>((resolve) => server.listen(port, host, () => resolve()));
   const addr = server.address() as { port: number };
   return { port: addr.port, url: `http://127.0.0.1:${addr.port}`, manager, close: () => new Promise((r) => server.close(() => r())) };
 }

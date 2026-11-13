@@ -54,3 +54,37 @@ def protect_aura_home() -> None:
             os.chmod(home, 0o700)
     except OSError:
         pass
+
+
+#: Ollama's default listen address. Mirrors defaultOllamaBaseUrl() in
+#: packages/ai-service/src/provider/adapters/ollama.ts.
+DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+
+
+def ollama_base_url() -> str:
+    """Where to look for Ollama: ``AURA_OLLAMA_BASE_URL``, else loopback.
+
+    The variable is the one the AI service already honours, so a container
+    (``http://ollama:11434``, ``http://host.docker.internal:11434``) or a
+    deployment needs to set one name for both services. The value is
+    normalised the same way the TS side does it: a missing scheme gets
+    ``http://`` and a trailing slash or ``/v1`` is dropped.
+    """
+    value = (os.environ.get("AURA_OLLAMA_BASE_URL") or "").strip()
+    if not value:
+        return DEFAULT_OLLAMA_URL
+    if not value.lower().startswith(("http://", "https://")):
+        value = f"http://{value}"
+    value = value.rstrip("/")
+    if value.lower().endswith("/v1"):
+        value = value[:-3]
+    return value
+
+
+def bind_host() -> str:
+    """Interface the Python API listens on: ``AURA_BIND_HOST``, else loopback.
+
+    The desktop app never sets it, so it keeps listening on 127.0.0.1 only.
+    A container sets 0.0.0.0 so the published port is reachable.
+    """
+    return (os.environ.get("AURA_BIND_HOST") or "").strip() or "127.0.0.1"
