@@ -1,0 +1,24 @@
+# Keep the build context small: only sources and lockfiles are needed.
+.git
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+.aura
+apps/desktop/dist
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/resources
+graphify-out
+video
+docs/promo
+.tmp-*
+.verify-*
+.agents
+.commandcode
+.kilo
+.taste-skill
+.claude
+/*.txt
+/*.docx
+/*.pdf

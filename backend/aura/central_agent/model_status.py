@@ -26,6 +26,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
+from aura.config import DEFAULT_OLLAMA_URL, ollama_base_url
+
 #: The recommended small coding/classification model, its approximate
 #: download size (Q4_K_M, as published), and the headroom we require
 #: before calling a machine compatible.
@@ -36,8 +38,9 @@ MIN_RAM_GB = 4.0
 
 #: The loopback address Ollama listens on by default. Probing it only
 #: *detects* a runtime; using it for routing still requires an explicit
-#: entry in agent/providers.json.
-LOCAL_RUNTIME_URL = "http://127.0.0.1:11434"
+#: entry in agent/providers.json. AURA_OLLAMA_BASE_URL overrides it (see
+#: aura.config.ollama_base_url), e.g. when the backend runs in a container.
+LOCAL_RUNTIME_URL = DEFAULT_OLLAMA_URL
 
 
 def _http_json(url: str, timeout: float) -> dict | None:
@@ -75,7 +78,7 @@ def detect_local_runtime(*, probe: Callable[[str, float], dict | None] = _http_j
                          which: Callable[[str], str | None] = shutil.which,
                          timeout: float = 1.5) -> dict:
     """Is a local model runtime here, running, and holding models?"""
-    tags = probe(f"{LOCAL_RUNTIME_URL}/api/tags", timeout)
+    tags = probe(f"{ollama_base_url()}/api/tags", timeout)
     installed = bool(which("ollama"))
     if tags is None:
         return {"runtime": "ollama", "installed": installed, "running": False,

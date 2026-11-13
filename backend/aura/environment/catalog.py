@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from aura.config import ollama_base_url
+
 
 @dataclass(frozen=True)
 class ProbeSpec:
@@ -1038,7 +1040,7 @@ AI: list[CatalogEntry] = [
         maintained=True,
         summary="Runs open models on this machine.",
         homepage="https://ollama.com",
-        endpoint="http://127.0.0.1:11434/api/version",
+        endpoint=f"{ollama_base_url()}/api/version",
     ),
     CatalogEntry(
         id="lm-studio",
