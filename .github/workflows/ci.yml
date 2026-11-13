@@ -229,7 +229,14 @@ jobs:
         with:
           python-version: '3.12'
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned, not `stable`: with Rust 1.100.0 (stable from 2026-11-12) the
+      # Tauri build script no longer copied `resources/**` next to the
+      # release binary, so the packaged shell launched without its service
+      # bundle (runtime verify 9a, Linux and Windows). 1.99.1 is the last
+      # toolchain verified here; raise it deliberately with a passing run.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
 
       - name: Record the platform and toolchain
         shell: bash
