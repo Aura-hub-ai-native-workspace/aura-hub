@@ -27,13 +27,15 @@ afterAll(() => { server.close(); });
 
 describe('request deadline reaches the transport', () => {
   it('waits longer than the adapter default when the caller asks for more', async () => {
-    delayMs = 400;
+    delayMs = 2000;
     const rt = new OllamaAdapter().createRuntime(base, 'm');
     // Adapter default is 120s, so this only proves the request is honoured
-    // when it is SHORTER: the call must fail at ~150ms, not wait 400ms.
+    // when it is SHORTER: the call must fail at ~150ms, not wait for the
+    // server's 2s reply. The gap is wide on purpose: with a 400ms reply and
+    // a 380ms bound, a loaded macOS runner fired the 150ms timer at 424ms.
     const started = Date.now();
     await expect(rt.generate({ messages: [{ role: 'user', content: 'hi' }], timeoutMs: 150 })).rejects.toMatchObject({ name: 'TimeoutError' });
-    expect(Date.now() - started).toBeLessThan(380);
+    expect(Date.now() - started).toBeLessThan(1500);
   });
 
   it('completes when the caller allows enough time', async () => {
