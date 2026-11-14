@@ -12,6 +12,7 @@ import {
   type AgentConfigChange,
 } from '../../ai/centralAgentClient';
 import { versionForAgent, workerClient, type AgentVersion } from '../../ai/workerClient';
+import { RunIsolationCard } from './RunIsolationCard';
 
 function statusTone(s: AgentRecord['status']): 'positive' | 'attention' | 'critical' | 'neutral' {
   if (s === 'ok') return 'positive';
@@ -248,6 +249,11 @@ export function AiRuntime() {
               </div>
             </div>
           </Card>
+        </PageBlock>
+
+        {/* Run isolation: container or this computer */}
+        <PageBlock className="col-span-12">
+          <RunIsolationCard />
         </PageBlock>
 
         {/* Connected AI Agents */}

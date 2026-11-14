@@ -1230,6 +1230,51 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
 
         return JSONResponse(netgov.capability())
 
+    async def isolation_status(request: Request):
+        """Run isolation: the setting, whether this machine can run a
+        sandbox container, the image, and what the next run will do."""
+        import anyio
+
+        from ..config import aura_home
+        from ..governance import container as sandbox
+
+        return JSONResponse(await anyio.to_thread.run_sync(
+            sandbox.status, str(aura_home())))
+
+    async def isolation_save(request: Request):
+        import anyio
+
+        from ..config import aura_home
+        from ..governance import container as sandbox
+
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        mode = body.get("mode") if isinstance(body, dict) else None
+        try:
+            sandbox.write_setting(str(aura_home()), str(mode or ""))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(await anyio.to_thread.run_sync(
+            sandbox.status, str(aura_home())))
+
+    async def isolation_prepare(request: Request):
+        """Build the sandbox image now, in the background, so the first
+        isolated run does not wait for it."""
+        import anyio
+
+        from ..config import aura_home
+        from ..governance import container as sandbox
+
+        st = await anyio.to_thread.run_sync(sandbox.docker_status, True)
+        if not st.available:
+            return JSONResponse({"error": st.reason, **sandbox.status(
+                str(aura_home()))}, status_code=409)
+        await anyio.to_thread.run_sync(sandbox.ensure_image, False)
+        return JSONResponse(await anyio.to_thread.run_sync(
+            sandbox.status, str(aura_home())))
+
     async def agent_resume_cancelled(request: Request):
         """Explicitly re-attempt a cancelled run. Recovery is a decision
         the user makes; nothing resumes a cancelled run on its own."""
@@ -2361,6 +2406,9 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/agent/sessions/{sid}/resume-cancelled",
               agent_resume_cancelled, methods=["POST"]),
         Route("/governance/network", agent_network_capability, methods=["GET"]),
+        Route("/governance/isolation", isolation_status, methods=["GET"]),
+        Route("/governance/isolation", isolation_save, methods=["PUT"]),
+        Route("/governance/isolation/prepare", isolation_prepare, methods=["POST"]),
         Route("/agent/sessions/{sid}/plan", agent_plan, methods=["GET"]),
         Route("/agent/sessions/{sid}/evidence", agent_evidence, methods=["GET"]),
         Route("/agent/sessions/{sid}/events", agent_events, methods=["GET"]),

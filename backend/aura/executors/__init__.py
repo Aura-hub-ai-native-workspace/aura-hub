@@ -720,22 +720,42 @@ async def agent_delegate_run(inv: dict) -> dict:
         net_policy = netgov.NetworkPolicy.parse(inv["input"].get("network"))
     except ValueError as exc:
         return _no(f"The network policy was refused: {exc} Nothing has run.")
-    try:
-        from ..config import aura_home
+    from ..config import aura_home
+    from ..governance import container as sandbox
 
-        net = netgov.establish(net_policy, str(aura_home()))
-    except Exception as exc:  # noqa: BLE001 — a broken boundary is a refusal
-        return _no(f"Network governance could not be established: {exc} "
-                   "Nothing has run.")
-    if not net.ok:
+    home = str(aura_home())
+    # Run isolation: a throwaway container when this machine can run one
+    # (Settings → AI Runtime → Run isolation), otherwise the host, said
+    # in the output either way. A setting that demands a container this
+    # machine cannot give refuses the run instead of quietly downgrading.
+    isolation = await asyncio.to_thread(sandbox.decide, home)
+    if isolation.refusal:
         return {
             "ok": False,
-            "detail": (f"{node['name']} was not run: {net.detail}"),
+            "refused": True,
+            "detail": f"{node['name']} was not run: {isolation.reason}",
             "output": {"nodeId": node["id"], "agent": node["name"],
-                       "network": net.to_dict(), "exitCode": None,
-                       "stdout": "",
+                       "isolation": isolation.to_dict(), "exitCode": None,
+                       "stdout": "", "blocked": "isolation-unavailable",
                        **({"role": role} if role else {})},
         }
+    net = None
+    sandbox_run = None
+    if not isolation.use_container:
+        try:
+            net = netgov.establish(net_policy, home)
+        except Exception as exc:  # noqa: BLE001 — a broken boundary is a refusal
+            return _no(f"Network governance could not be established: {exc} "
+                       "Nothing has run.")
+        if not net.ok:
+            return {
+                "ok": False,
+                "detail": (f"{node['name']} was not run: {net.detail}"),
+                "output": {"nodeId": node["id"], "agent": node["name"],
+                           "network": net.to_dict(), "exitCode": None,
+                           "stdout": "", "isolation": isolation.to_dict(),
+                           **({"role": role} if role else {})},
+            }
     # Real-time action governance: per-invocation, AURA-authored runtime
     # enforcement compiled from the task contract (opencode permission
     # config + tool.execute.before plugin; claude directory confinement
@@ -747,7 +767,8 @@ async def agent_delegate_run(inv: dict) -> dict:
         # A scope contract was given and its enforcement could not be built.
         # Starting the worker anyway would let a governance failure authorize
         # the work, so nothing is started.
-        net.close()
+        if net is not None:
+            net.close()
         return {
             "ok": False,
             "refused": True,
@@ -761,12 +782,48 @@ async def agent_delegate_run(inv: dict) -> dict:
         }
     if governance.get("args") is not None:
         args = governance["args"]
+    if isolation.use_container:
+        # The container is planned after staging because the staged
+        # governance env (config paths, action log) must travel into it.
+        def _contain():
+            sandbox.sweep()
+            run = sandbox.plan_worker(
+                bin_name, cwd, home,
+                invocation=str(inv.get("id") or node.get("id") or bin_name))
+            try:
+                return run, sandbox.establish(
+                    net_policy, home, run,
+                    env=dict(governance.get("env") or {}))
+            except Exception:
+                sandbox.finish(run)
+                raise
+
+        try:
+            sandbox_run, net = await asyncio.to_thread(_contain)
+        except Exception as exc:  # noqa: BLE001 — no container, no run
+            return _no(f"{node['name']} was not run: its container could not "
+                       f"be prepared ({exc}). Nothing has run.")
+        if not net.ok:
+            sandbox.finish(sandbox_run)
+            return {
+                "ok": False,
+                "detail": (f"{node['name']} was not run: {net.detail}"),
+                "output": {"nodeId": node["id"], "agent": node["name"],
+                           "network": net.to_dict(), "exitCode": None,
+                           "stdout": "", "isolation": isolation.to_dict(),
+                           **({"role": role} if role else {})},
+            }
+    isolation_record = isolation.to_dict()
+    if sandbox_run is not None:
+        isolation_record.update(container=sandbox_run.name,
+                                image=sandbox.image_tag())
     action_events: list[dict] = []
     # The run's stop signal, when it has one. A token already cancelled
     # means the worker is never launched at all.
     cancel_token = inv["context"].get("cancelToken")
     if cancel_token is not None and getattr(cancel_token, "cancelled", False):
         net.close()
+        sandbox.finish(sandbox_run)
         return {
             "ok": False,
             "detail": (f"{node['name']} was not started: the run was "
@@ -796,9 +853,16 @@ async def agent_delegate_run(inv: dict) -> dict:
             if nxt is None:
                 break
             auto_model, args = nxt, _free.with_model(args, nxt)
+            if sandbox_run is not None:
+                # The retry reuses the run's container name.
+                await asyncio.to_thread(sandbox.remove, sandbox_run.name)
     except Exception as e:  # noqa: BLE001 — TS catches all too
         net.close()
+        await asyncio.to_thread(sandbox.finish, sandbox_run)
         return _no(f"{node['name']} could not be run: {e}")
+    # A stopped or timed-out run kills the docker CLI, not the container
+    # it started; removing it here is what makes STOP reach the worker.
+    await asyncio.to_thread(sandbox.finish, sandbox_run)
     # The egress door belongs to THIS invocation. Read what it decided
     # while it is still open, then close it — a gateway that outlived
     # its worker would be a standing hole in the next task's boundary.
@@ -810,7 +874,7 @@ async def agent_delegate_run(inv: dict) -> dict:
         "stdout": res.out, "exitCode": res.code, "nodeId": node["id"],
         "agent": node["name"], "args": args,
         "timedOut": bool(res.timedOut), "signal": res.signal,
-        "network": network_record,
+        "network": network_record, "isolation": isolation_record,
     }
     if auto_model:
         output["model"] = auto_model
@@ -1733,24 +1797,67 @@ def multimodal_executors(kb, artifacts_dir=None) -> "list[ExecutorAdapter]":
             return {"ok": False,
                     "detail": "The command was not started: the run was cancelled before it could be dispatched.",
                     "output": {"exitCode": None, "stdout": "", "timedOut": False, "cancelled": True}}
+        # Run isolation: inside a throwaway container with no network when
+        # this machine can run one, so a command sees the project and
+        # nothing else. A binary the sandbox image does not carry (cargo,
+        # go) stays on the host under the boundaries above, and says so;
+        # with isolation set to Container it is refused instead.
+        from ..config import aura_home
+        from ..governance import container as sandbox
+
+        home = str(aura_home())
+        isolation = await asyncio.to_thread(sandbox.decide, home)
+        argv = [parsed.bin, *parsed.args]
+        cmd_run = None
+        if isolation.refusal:
+            return {"ok": False, "refused": True,
+                    "detail": f"The command was not run: {isolation.reason}",
+                    "output": {"exitCode": None, "stdout": "", "timedOut": False,
+                               "isolation": isolation.to_dict()}}
+        if isolation.use_container and parsed.bin not in sandbox.IMAGE_BINARIES:
+            if isolation.setting == sandbox.CONTAINER:
+                return {"ok": False, "refused": True,
+                        "detail": (f"The command was not run: {parsed.bin} is not "
+                                   "part of the sandbox image, and run isolation "
+                                   "is set to Container."),
+                        "output": {"exitCode": None, "stdout": "", "timedOut": False,
+                                   "isolation": {**isolation.to_dict(),
+                                                 "mode": "refused"}}}
+            isolation = sandbox.Decision(
+                False, isolation.setting,
+                reason=(f"{parsed.bin} is not part of the sandbox image, so "
+                        "this command ran on the host."))
+        if isolation.use_container:
+            # The whole project is mounted, not just the command's folder,
+            # so a command run from a subfolder still sees its repository.
+            cmd_run = sandbox.plan_command(cwd_of(inv), home, hint="exec")
+            cmd_run.workdir = os.path.realpath(cwd_resolved)
+            argv = [*sandbox.run_prefix(cmd_run, network="none"), *argv]
+        isolation_record = isolation.to_dict()
+        if cmd_run is not None:
+            isolation_record.update(container=cmd_run.name,
+                                    image=sandbox.image_tag())
         cancel_event = None
         bridge = None
         if cancel_token is not None:
             cancel_event = asyncio.Event()
             bridge = asyncio.ensure_future(_bridge_cancel(cancel_token, cancel_event))
         try:
-            proc_out = await _run_file([parsed.bin, *parsed.args], cwd_resolved, timeout_ms, cancel_event)
+            proc_out = await _run_file(argv, cwd_resolved, timeout_ms, cancel_event)
         except Exception as exc:
             return {"ok": False, "detail": f"subprocess error: {exc}"}
         finally:
             if bridge is not None:
                 bridge.cancel()
+            if cmd_run is not None:
+                await asyncio.to_thread(sandbox.finish, cmd_run)
         timed_out = bool(proc_out.timedOut)
         exit_code = proc_out.code
         out_data = {
             "exitCode": exit_code,
             "stdout": proc_out.out[:8_000],
             "timedOut": timed_out,
+            "isolation": isolation_record,
         }
         if cancel_token is not None and cancel_token.cancelled:
             return {"ok": False,

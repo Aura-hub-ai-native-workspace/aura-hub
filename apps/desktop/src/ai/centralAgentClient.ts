@@ -68,6 +68,23 @@ async function jpost<T>(path: string, body?: unknown, signal?: AbortSignal): Pro
   return res.json() as Promise<T>;
 }
 
+async function jput<T>(path: string, body?: unknown): Promise<T> {
+  const res = await backendFetch(`${BASE}${path}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) {
+    let message = `request failed (${res.status})`;
+    try {
+      const parsed = JSON.parse(await res.text()) as { error?: string };
+      if (parsed.error) message = parsed.error;
+    } catch { /* keep the status-line message */ }
+    throw new Error(message);
+  }
+  return res.json() as Promise<T>;
+}
+
 /* ── wire shapes (mirrors of the Python contracts) ─────────────────── */
 
 export type AgentOutcome =
@@ -274,6 +291,19 @@ export interface NetworkCapability {
   detail: string;
   /** Which protocols can pass an allowlist, where one is enforced. */
   protocols?: Record<string, string>;
+}
+
+/** Run isolation (aura/governance/container.py `status`). */
+export type IsolationSetting = 'auto' | 'container' | 'host';
+
+export interface IsolationStatus {
+  setting: IsolationSetting;
+  settings: IsolationSetting[];
+  docker: { available: boolean; platformSupported: boolean; version: string; reason: string };
+  image: { tag: string; state: 'unknown' | 'missing' | 'building' | 'ready' | 'failed' | 'unavailable'; detail: string };
+  /** What the next worker run will actually do. */
+  active: 'container' | 'host' | 'refused';
+  reason: string;
 }
 
 export interface SubmitResponse {
@@ -550,6 +580,12 @@ export const centralAgentClient = {
 
   /** What this host can really enforce for worker network access. */
   networkCapability: () => jget<NetworkCapability>('/governance/network'),
+
+  /** Run isolation: the setting, Docker, the sandbox image, the next run. */
+  isolationStatus: () => jget<IsolationStatus>('/governance/isolation'),
+  isolationSave: (mode: IsolationSetting) => jput<IsolationStatus>('/governance/isolation', { mode }),
+  /** Build the sandbox image now, in the background. */
+  isolationPrepare: () => jpost<IsolationStatus>('/governance/isolation/prepare'),
 
   /* Agent Runtime Control Plane ───────────────────────────────────── */
 

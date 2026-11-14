@@ -144,7 +144,11 @@ jobs:
       # rather than silently absent. The junit file is kept even on failure.
       - name: Backend tests
         shell: bash
-        run: python -m pytest backend/tests -ra -p no:cacheprovider --junitxml="pytest-${{ matrix.label }}.xml"
+        # A hung test fails the job in an hour (it normally takes 20-27
+        # minutes) and prints every thread's stack after 10 minutes, so a
+        # hang says where it is instead of running for six hours unseen.
+        timeout-minutes: 60
+        run: python -m pytest backend/tests -ra -p no:cacheprovider -o faulthandler_timeout=600 --junitxml="pytest-${{ matrix.label }}.xml"
 
       - name: Summarise the result
         if: always()
@@ -711,6 +715,20 @@ jobs:
           test "$code" = 401 || { echo "::error::expected 401 without the instance token, got $code"; exit 1; }
           code=$(curl -s -o /dev/null -w '%{http_code}' -H 'x-aura-instance-token: ci-smoke-token' http://127.0.0.1:4320/agent/models/status)
           test "$code" = 200
+
+      # Run isolation, proven with real containers: what a worker can see,
+      # the network policy enforced from inside, governance denials, STOP,
+      # and cleanup. Skipped nowhere here — this runner has Docker.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run-isolation tests (real containers)
+        run: |
+          set -euo pipefail
+          python -m pip install -e "backend[test]"
+          python -c "from aura.governance import container as c; s = c.docker_status(refresh=True); assert s.available, s.reason; print('docker', s.version)"
+          python -m pytest -q backend/tests/unit/test_run_isolation.py backend/tests/unit/test_run_isolation_docker.py
 
       - name: Container logs
         if: always()

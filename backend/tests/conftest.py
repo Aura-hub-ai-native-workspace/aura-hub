@@ -65,6 +65,8 @@ def pytest_configure(config):
         "markers", "real_billing_policy_off: run with the product's real default (no approval gate)")
     config.addinivalue_line(
         "markers", "real_agent_architecture: run with the product's default (agents write code, Laya does not)")
+    config.addinivalue_line(
+        "markers", "real_isolation: run with the product's real run-isolation setting (may start Docker containers)")
 
 
 @pytest.fixture(autouse=True)
@@ -117,3 +119,15 @@ def _no_real_search_engine_in_tests(monkeypatch):
     fallback off (the old "nothing configured" state); tests of the fallback itself
     set AURA_SEARCH_PROVIDER back and inject their own fetch."""
     monkeypatch.setenv("AURA_SEARCH_PROVIDER", "off")
+
+
+@pytest.fixture(autouse=True)
+def _workers_run_on_the_host_unless_testing_isolation(request, monkeypatch):
+    """The product default (Auto) runs workers in a Docker container when the
+    machine can. Tests of dispatch use fake workers and must behave the same
+    on every machine, so they run with isolation pinned to Host; tests of the
+    sandbox itself opt in with ``@pytest.mark.real_isolation``."""
+    if request.node.get_closest_marker("real_isolation"):
+        monkeypatch.delenv("AURA_ISOLATION", raising=False)
+        return
+    monkeypatch.setenv("AURA_ISOLATION", "host")
