@@ -401,10 +401,15 @@ def install_root(real: str, home: str | None = None) -> str:
     home = os.path.realpath(home or os.path.expanduser("~"))
     folder = os.path.dirname(real)
     cur = folder
-    while cur not in ("/", home) and len(cur) > 1:
+    while cur != home:
         if os.path.isfile(os.path.join(cur, "package.json")):
             return cur
-        cur = os.path.dirname(cur)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            # The filesystem root ("/", or "C:\\" on Windows, whose parent
+            # is itself): nothing above it to look at.
+            break
+        cur = parent
     if os.path.basename(folder) == "bin" and os.path.dirname(folder) != home:
         return os.path.dirname(folder)
     return folder

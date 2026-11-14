@@ -144,7 +144,11 @@ jobs:
       # rather than silently absent. The junit file is kept even on failure.
       - name: Backend tests
         shell: bash
-        run: python -m pytest backend/tests -ra -p no:cacheprovider --junitxml="pytest-${{ matrix.label }}.xml"
+        # A hung test fails the job in an hour (it normally takes 20-27
+        # minutes) and prints every thread's stack after 10 minutes, so a
+        # hang says where it is instead of running for six hours unseen.
+        timeout-minutes: 60
+        run: python -m pytest backend/tests -ra -p no:cacheprovider -o faulthandler_timeout=600 --junitxml="pytest-${{ matrix.label }}.xml"
 
       - name: Summarise the result
         if: always()

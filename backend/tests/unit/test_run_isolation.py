@@ -11,11 +11,20 @@ from __future__ import annotations
 import asyncio
 import os
 import stat
+import sys
+import threading
 
 import pytest
 
 from aura.governance import container as sandbox
 from aura.governance import network as netgov
+
+
+#: Planning a container (uid/gid, symlinks, the docker argv) is Linux-only,
+#: like the feature itself. The decision, the setting and install_root are
+#: platform-neutral and run everywhere.
+linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"),
+                                reason="run isolation is Linux-only")
 
 
 @pytest.fixture()
@@ -180,6 +189,18 @@ class TestPlan:
         root = sandbox.install_root(str(tmp_path / "bin" / "tool"), str(tmp_path))
         assert root == str(tmp_path / "bin")
 
+    def test_install_root_stops_at_the_filesystem_root(self, tmp_path):
+        """A home that is not an ancestor used to loop forever on Windows,
+        where the parent of "C:\\" is itself. Bounded here by a thread."""
+        found = []
+        worker = threading.Thread(target=lambda: found.append(sandbox.install_root(
+            str(tmp_path / "a" / "b" / "tool"), str(tmp_path / "elsewhere"))),
+            daemon=True)
+        worker.start()
+        worker.join(10)
+        assert found == [str(tmp_path / "a" / "b")]
+
+    @linux_only
     def test_the_worker_sees_its_project_install_and_sign_in_only(
             self, tmp_path, home, user_home):
         proj = tmp_path / "proj"
@@ -206,11 +227,13 @@ class TestPlan:
             sandbox.finish(run)
         assert not os.path.exists(run.scratch)
 
+    @linux_only
     def test_a_missing_worker_is_an_error_not_an_empty_container(self, home, tmp_path):
         with pytest.raises(FileNotFoundError):
             sandbox.plan_worker("opencode", str(tmp_path), home, which=lambda n: None)
 
 
+@linux_only
 class TestPrefix:
     def _prefix(self, tmp_path, home, user_home, network="none", env=None):
         proj = tmp_path / "proj"
@@ -265,6 +288,7 @@ class TestPrefix:
 
 # ── network policy, through the container ────────────────────────────
 
+@linux_only
 class TestEstablish:
     def _run(self, tmp_path, home, user_home):
         proj = tmp_path / "proj"
