@@ -74,6 +74,7 @@ AI_INFERENCE_HOSTS: tuple[str, ...] = (
     "openrouter.ai",
     "api.cerebras.ai",
     "api.novita.ai",
+    "api.demonroute.com",
     "inference.qwen.ai",
     "api.kimi.ai",
     "api.nvidia.com",

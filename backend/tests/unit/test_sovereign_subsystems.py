@@ -326,9 +326,11 @@ class TestEgressGatewayAI:
         from aura.governance.netgate import _is_ai_inference_host
         assert _is_ai_inference_host("api.openai.com")
         assert _is_ai_inference_host("api.anthropic.com")
+        assert _is_ai_inference_host("api.demonroute.com")
         assert _is_ai_inference_host("generativelanguage.googleapis.com")
         assert not _is_ai_inference_host("github.com")
         assert not _is_ai_inference_host("fakopenai.com")
+        assert not _is_ai_inference_host("fakedemonroute.com")
         assert not _is_ai_inference_host("localhost")
 
     def test_inference_journal_entry(self):

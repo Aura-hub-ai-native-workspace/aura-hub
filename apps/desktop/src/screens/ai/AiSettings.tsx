@@ -40,7 +40,7 @@ function providerIcon(id: string): 'spark' | 'cpu' {
   const icons: Record<string, 'spark' | 'cpu'> = {
     openai: 'spark', anthropic: 'spark', groq: 'cpu', gemini: 'spark',
     mistral: 'spark', kimi: 'spark', openrouter: 'cpu', nvidia: 'cpu', cerebras: 'cpu',
-    novita: 'cpu', qwen: 'spark', scalemax: 'spark', kage7: 'cpu',
+    novita: 'cpu', qwen: 'spark', scalemax: 'spark', kage7: 'cpu', demonroute: 'cpu',
   };
   return icons[id] ?? 'cpu';
 }
