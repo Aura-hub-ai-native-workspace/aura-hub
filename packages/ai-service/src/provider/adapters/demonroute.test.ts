@@ -177,3 +177,130 @@ describe('runtime: chat completions over the shared OpenAI-compatible path', () 
       .rejects.toMatchObject({ status: 401, providerName: 'Demon Route' });
   });
 });
+
+describe('capability claims: no tool calling or structured output through the shared interface', () => {
+  it('discoverModels never claims toolCalling, jsonMode or functionCalling capabilities', async () => {
+    stubFetch(() => new Response(JSON.stringify({
+      data: [{ id: 'glm-5.3-flash' }, { id: 'glm-5.3-uncensored' }],
+    }), { status: 200 }));
+    const models = await adapter.discoverModels(KEY);
+    expect(models).toHaveLength(2);
+    for (const model of models) {
+      expect(model.capabilities.streaming).toBe(true);
+      expect(model.capabilities.toolCalling).toBeUndefined();
+      expect(model.capabilities.jsonMode).toBeUndefined();
+      expect(model.capabilities.functionCalling).toBeUndefined();
+      expect(model.capabilities).not.toHaveProperty('toolCalling');
+      expect(model.capabilities).not.toHaveProperty('jsonMode');
+      expect(model.capabilities).not.toHaveProperty('functionCalling');
+    }
+  });
+
+  it('generate request body has no tools, tool_choice or response_format keys', async () => {
+    const calls = stubFetch(() => new Response(JSON.stringify({
+      model: 'glm-5.3-flash',
+      choices: [{ finish_reason: 'stop', message: { content: 'Hi there' } }],
+      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+    }), { status: 200 }));
+    const runtime = adapter.createRuntime(KEY);
+    await runtime.generate({ messages: [{ role: 'user', content: 'hi' }] });
+    expect(calls).toHaveLength(1);
+    const body = JSON.parse(calls[0].body!);
+    expect(body).not.toHaveProperty('tools');
+    expect(body).not.toHaveProperty('tool_choice');
+    expect(body).not.toHaveProperty('response_format');
+  });
+
+  it('stream request body has no tools, tool_choice or response_format keys', async () => {
+    const calls = stubFetch(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    const runtime = adapter.createRuntime(KEY);
+    for await (const _chunk of runtime.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+      // drain the stream
+    }
+    expect(calls).toHaveLength(1);
+    const body = JSON.parse(calls[0].body!);
+    expect(body.stream).toBe(true);
+    expect(body).not.toHaveProperty('tools');
+    expect(body).not.toHaveProperty('tool_choice');
+    expect(body).not.toHaveProperty('response_format');
+  });
+});
+
+describe('runtime: streaming edge cases', () => {
+  it('terminates on a usage-only final chunk and attaches usage', async () => {
+    stubFetch(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'));
+          controller.enqueue(encoder.encode('data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n'));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    const runtime = adapter.createRuntime(KEY);
+    const chunks: unknown[] = [];
+    for await (const chunk of runtime.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+      chunks.push(chunk);
+    }
+    expect(chunks).toEqual([
+      { delta: 'Hello', done: false },
+      { delta: '', done: true, usage: { promptTokens: 3, completionTokens: 2, totalTokens: 5 } },
+    ]);
+  });
+
+  it('reassembles an SSE event split across reads, including inside the data: prefix', async () => {
+    stubFetch(() => {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('da'));
+          controller.enqueue(encoder.encode('ta: {"choices":[{"delta":{"content":"Hel'));
+          controller.enqueue(encoder.encode('lo"}}]}\n\ndata: {"choices":[{"delta":{"content":" world"}}]}\n\n'));
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    const runtime = adapter.createRuntime(KEY);
+    const chunks: { delta: string; done: boolean }[] = [];
+    for await (const chunk of runtime.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+      chunks.push({ delta: chunk.delta, done: chunk.done });
+    }
+    expect(chunks).toEqual([
+      { delta: 'Hello', done: false },
+      { delta: ' world', done: false },
+      { delta: '', done: true },
+    ]);
+  });
+
+  it('rejects a streaming 401 as ProviderHttpError and sends stream: true', async () => {
+    const calls = stubFetch(() => new Response('bad key', { status: 401 }));
+    const runtime = adapter.createRuntime(KEY);
+    let caught: unknown;
+    try {
+      for await (const _chunk of runtime.stream({ messages: [{ role: 'user', content: 'hi' }] })) {
+        // drain the stream — it should reject before yielding
+      }
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ProviderHttpError);
+    expect(caught).toMatchObject({ status: 401, providerName: 'Demon Route' });
+    expect(calls).toHaveLength(1);
+    const body = JSON.parse(calls[0].body!);
+    expect(body.stream).toBe(true);
+  });
+});
