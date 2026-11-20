@@ -9,6 +9,7 @@ import { MistralAdapter } from './adapters/mistral';
 import { CerebrasAdapter } from './adapters/cerebras';
 import { KimiAdapter } from './adapters/kimi';
 import { NovitaAdapter } from './adapters/novita';
+import { DemonRouteAdapter } from './adapters/demonroute';
 import { QwenAdapter } from './adapters/qwen';
 import { ScaleMaxAdapter } from './adapters/scalemax';
 import { Kage7Adapter } from './adapters/kage7';
@@ -38,6 +39,7 @@ const ALL: ProviderAdapter[] = [
   new CerebrasAdapter(),
   new KimiAdapter(),
   new NovitaAdapter(),
+  new DemonRouteAdapter(),
   new QwenAdapter(),
   new ScaleMaxAdapter(),
   new Kage7Adapter(),
@@ -64,6 +66,7 @@ export const ENV_VAR_BY_PROVIDER: Record<string, string> = {
   // credential store on connect and never written to source, config or logs.
   scalemax: 'SCALEMAX_API_KEY',
   kage7: 'KAGE7_API_KEY',
+  demonroute: 'DEMONROUTE_API_KEY',
 };
 
 export function registerAdapter(adapter: ProviderAdapter): void {

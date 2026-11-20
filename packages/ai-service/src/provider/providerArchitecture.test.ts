@@ -38,7 +38,7 @@ beforeEach(async () => {
   store = await import('./credentialStore');
 });
 
-const CLOUD_IDS = ['openai', 'anthropic', 'gemini', 'openrouter', 'groq', 'nvidia', 'cerebras', 'mistral'];
+const CLOUD_IDS = ['openai', 'anthropic', 'gemini', 'openrouter', 'groq', 'nvidia', 'cerebras', 'mistral', 'demonroute'];
 
 describe('primary: self-hosted servers', () => {
   it('TEST 1 — the local server adapter is classified self-hosted primary', () => {

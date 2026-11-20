@@ -37,6 +37,7 @@ Registered today (`packages/ai-service/src/provider/registry.ts`):
 | `cerebras` | **Cerebras** | `adapters/cerebras.ts` | `llama3.3-70b` |
 | `kimi` | Kimi | `adapters/kimi.ts` | — |
 | `novita` | **Novita AI** | `adapters/novita.ts` | `deepseek/deepseek-r1` |
+| `demonroute` | **Demon Route** | `adapters/demonroute.ts` | `glm-5.3-flash` |
 | `qwen` | **Qwen** | `adapters/qwen.ts` | `qwen-plus` |
 
 ---
@@ -224,6 +225,7 @@ mock OpenAI-compatible endpoints.
 |----------|---------|
 | `MISTRAL_API_KEY` | Env-configures Mistral: validates, stores and **activates** it at startup (see §2). |
 | `CEREBRAS_API_KEY` | Env-configures Cerebras: validates, stores and **activates** it at startup (see §2). |
+| `DEMONROUTE_API_KEY` | Env-configures Demon Route: validates, stores and **activates** it at startup (see §2). |
 | `AURA_HOME` | Override the config home (default `~/.aura`); also where `providers.json` lives. |
 | `AURA_PROVIDER_SECRET` | Deterministic AES seed for the provider store (instead of a generated secret). |
 | `AI_PORT` | Local service port (default `4319`). |
@@ -344,7 +346,42 @@ Qwen is a full peer of every provider above:
 
 ---
 
-## 12. API Surface
+## 12. Demon Route — first-class provider
+
+Demon Route is a full peer of every provider above:
+
+- **Adapter** — `packages/ai-service/src/provider/adapters/demonroute.ts`,
+  extends `BaseOpenAICompatible`, base URL
+  `https://api.demonroute.com/v1`, default model `glm-5.3-flash`, docs
+  link to `https://demonroute.com/docs`. Demon Route has no documented
+  key prefix, so `detect()` returns `false` — the user picks Demon Route
+  explicitly (Settings connect dialog).
+- **Validation** — real `GET /models` call through the shared
+  `BaseOpenAICompatible` implementation; same classified states as every
+  other OpenAI-compatible adapter (§3.1).
+- **Discovery** — dynamic via Demon Route's OpenAI-compatible Models API
+  (`GET /models`); the stored model list feeds the model dropdown in
+  **AI Settings**.
+- **Runtime** — streaming SSE `chat/completions` through the shared
+  OpenAI-compatible runtime: generate, stream, cancel, health.
+- **Switching** — identical to any provider via `RuntimeManager`.
+- **Environment** — `DEMONROUTE_API_KEY` auto-connects and activates
+  Demon Route at startup through the same `ENV_VAR_BY_PROVIDER` path as
+  `MISTRAL_API_KEY`.
+- **UI** — generic Settings connect dialog, status card, model dropdown
+  and Status Bar; `cpu` icon in `AiSettings.tsx::providerIcon()`. No
+  bespoke UI or provider-specific branches anywhere in the codebase.
+- **Inference host classification** — `api.demonroute.com` is included
+  in `AI_INFERENCE_HOSTS` in the netgate classification, so its calls
+  are classified as AI inference.
+- **Capabilities** — tool calling and structured output are not exposed
+  through the shared `GenerateRequest` interface, so they are
+  unavailable through AURA Hub for Demon Route today; discovered models
+  claim streaming only (no `toolCalling`/`jsonMode`).
+
+---
+
+## 13. API Surface
 
 `GET /providers` — known providers, connected providers (fingerprint,
 models, health), active id/model, pipeline status.
@@ -363,7 +400,7 @@ deactivates if it was active.
 
 ---
 
-## 13. UI Surfaces
+## 14. UI Surfaces
 
 - **Onboarding** (`apps/desktop/src/onboarding/WorkspaceActivation.tsx`)
   — featured provider cards, live debounced key validation through the

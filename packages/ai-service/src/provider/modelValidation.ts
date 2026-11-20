@@ -30,18 +30,42 @@ export function isModelValidForProvider(providerId: string | null, model: string
 
 /**
  * Resolves a requested model against what's actually known for the
- * provider: the request if it's valid, else the provider's declared
- * default if that's in the known list, else the first known model, else
- * '' (nothing to fall back to — e.g. discovery hasn't produced anything
- * yet). Used by both provider switching and startup repair so "recover to
- * something that actually works" is defined in exactly one place.
+ * provider. Used by provider switching, connecting and startup repair so
+ * "recover to something that actually works" is defined in exactly one
+ * place. In order:
+ *
+ *   1. the request, when the provider lists it;
+ *   2. the adapter's declared default, when the provider lists it —
+ *      wherever it sits in the list, so a vendor's catalog order never
+ *      outranks the model the adapter was written for;
+ *   3. the first listed model (adapters that deliberately declare no
+ *      default, e.g. key-scoped gateways and self-hosted servers, rely on
+ *      this being the provider's own first entry);
+ *
+ * and when nothing has been discovered yet (empty list), there is no
+ * evidence against anything — the same rule `isModelValidForProvider`
+ * applies — so the request is kept, else the declared default, else ''.
+ *
+ * Whenever the list is non-empty the result is always one of its ids.
  */
 export function resolveModel(providerId: string, requested: string | undefined, known: DiscoveredModel[]): string {
-  if (requested && known.some((m) => m.id === requested)) return requested;
   const adapter = getAdapter(providerId);
-  if (adapter && known.some((m) => m.id === adapter.metadata.defaultModel)) return adapter.metadata.defaultModel;
-  if (known.length > 0) return known[0].id;
-  return adapter?.metadata.defaultModel ?? '';
+  const declared = adapter?.metadata.defaultModel ?? '';
+  if (known.length === 0) return requested || declared;
+  if (requested && known.some((m) => m.id === requested)) return requested;
+  if (declared && known.some((m) => m.id === declared)) return declared;
+  return known[0].id;
+}
+
+/**
+ * The model the user already had selected for `providerId`, if that
+ * provider is the active one — what a reconnect (a rotated key, a moved
+ * server) should try to keep before falling back to the default. A
+ * different provider's selection never carries over.
+ */
+export function previousSelectionFor(providerId: string): string | undefined {
+  const active = credentialStore.getActive();
+  return active.providerId === providerId && active.model ? active.model : undefined;
 }
 
 export { cachedModelsFor };

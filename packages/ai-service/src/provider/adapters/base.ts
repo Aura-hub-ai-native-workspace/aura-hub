@@ -85,6 +85,58 @@ export abstract class BaseOpenAICompatible implements ProviderAdapter {
   }
 }
 
+/**
+ * After a stream has signalled the end of its answer (`finish_reason`, or
+ * a usage-only chunk), how long to wait for the trailing usage chunk and
+ * `[DONE]` before treating what arrived as complete. Every compliant
+ * server sends both immediately; this only bounds a server that finishes
+ * and then holds the connection open.
+ */
+export const STREAM_TRAILER_GRACE_MS = 2_000;
+
+type SseEvent = { delta: string; finishReason?: string; usage?: StreamChunk['usage']; usageOnly: boolean };
+
+/**
+ * One SSE line → what it means. `null` for anything that is not a usable
+ * `data:` event (comments, `event:`/`id:` fields, blank separators, and
+ * malformed JSON — skipped, never fatal, as before).
+ */
+function parseSseLine(raw: string): SseEvent | 'done' | null {
+  const line = raw.trimEnd(); // tolerate CRLF framing
+  if (!line.startsWith('data:')) return null;
+  const data = line.slice(5).trim();
+  if (data === '[DONE]') return 'done';
+  let p: {
+    choices?: { delta?: { content?: string | null }; finish_reason?: string | null }[];
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null;
+  };
+  try { p = JSON.parse(data); } catch { return null; }
+  if (!p || typeof p !== 'object') return null;
+  const c = p.choices?.[0];
+  const u = p.usage;
+  return {
+    delta: c?.delta?.content ?? '',
+    finishReason: c?.finish_reason ?? undefined,
+    usage: u ? { promptTokens: u.prompt_tokens ?? 0, completionTokens: u.completion_tokens ?? 0, totalTokens: u.total_tokens ?? 0 } : undefined,
+    usageOnly: Boolean(u) && !c,
+  };
+}
+
+/**
+ * `reader.read()` bounded by `ms`; `null` when the time runs out first.
+ * The losing read stays attached to the race (so its eventual rejection
+ * is handled) and is torn down with the request in the caller's `finally`.
+ */
+async function readWithin<T>(reader: ReadableStreamDefaultReader<T>, ms: number): Promise<ReadableStreamReadResult<T> | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ms); });
+  try {
+    return await Promise.race([reader.read(), expired]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 class OpenAICompatibleRuntime implements Runtime {
   private baseUrl: string;
   private apiKey: string;
@@ -188,30 +240,74 @@ class OpenAICompatibleRuntime implements Runtime {
     if (!response.ok) { if (idle) clearTimeout(idle); const t = await response.text().catch(() => ''); throw new ProviderHttpError(this.providerName, response.status, t || response.statusText); }
     const reader = response.body?.pipeThrough(new TextDecoderStream()).getReader();
     if (!reader) { if (idle) clearTimeout(idle); throw new Error('No stream body'); }
+    /*
+     * Completion is ONE `done` chunk, emitted when the stream really ends.
+     *
+     * With `stream_options.include_usage` (always sent, see buildBody) an
+     * OpenAI-compatible server ends a stream as:
+     *
+     *   …content… → {finish_reason:"stop"} → {choices:[], usage:{…}} → [DONE]
+     *
+     * Stopping at `finish_reason` threw the usage chunk away, so callers
+     * reported zero tokens for every streamed answer. Instead the finish
+     * reason and the usage are remembered, and the single terminal chunk
+     * carries both once the stream says it is over: `[DONE]`, the body
+     * closing, or — for a server that stops talking after finishing but
+     * holds the connection open — a short trailer grace period.
+     */
     let buf = '';
+    let finishReason: string | undefined;
+    let usage: StreamChunk['usage'];
+    let trailing = false;
+    const final = (): StreamChunk => ({
+      delta: '', done: true,
+      ...(finishReason ? { finishReason } : {}),
+      ...(usage ? { usage } : {}),
+    });
+    const grace = Math.min(STREAM_TRAILER_GRACE_MS, this.timeoutMs);
     try {
       while (true) {
-        const { done, value } = await reader.read();
-        resetIdle();
-        if (done) break;
-        buf += value;
-        const lines = buf.split('\n');
-        buf = lines.pop() ?? '';
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const data = line.slice(6).trim();
-          if (data === '[DONE]') { yield { delta: '', done: true }; return; }
-          try {
-            const p = JSON.parse(data) as { choices?: { delta: { content?: string | null }; finish_reason?: string | null }[]; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } };
-            if (p.usage) { yield { delta: '', done: true, usage: { promptTokens: p.usage.prompt_tokens, completionTokens: p.usage.completion_tokens, totalTokens: p.usage.total_tokens } }; return; }
-            const c = p.choices?.[0];
-            if (!c) continue;
-            const d = c.delta?.content ?? '';
-            if (d) yield { delta: d, done: false };
-            if (c.finish_reason) { yield { delta: '', done: true, finishReason: c.finish_reason }; return; }
-          } catch { /* skip */ }
+        // Once the answer has finished, the trailer grace alone bounds the
+        // wait — the silence timer must not abort what is already complete.
+        if (trailing && idle) { clearTimeout(idle); idle = null; }
+        let next: ReadableStreamReadResult<string> | null;
+        if (trailing) {
+          // The answer is already complete; only trailing metadata is
+          // outstanding. A reset or cancel now must not turn a finished
+          // answer into a failure — before the trailer was read at all,
+          // the stream had already returned at this point.
+          try { next = await readWithin(reader, grace); } catch { next = null; }
+        } else {
+          next = await reader.read();
+          resetIdle();
         }
+        if (next === null) break; // finished, then silence or a reset: what we have is complete
+        let lines: string[];
+        if (next.done) {
+          // A last event without a trailing newline still counts.
+          lines = buf.split('\n');
+          buf = '';
+        } else {
+          buf += next.value;
+          lines = buf.split('\n');
+          buf = lines.pop() ?? '';
+        }
+        for (const line of lines) {
+          const ev = parseSseLine(line);
+          if (ev === null) continue;
+          if (ev === 'done') { yield final(); return; }
+          if (ev.delta && !finishReason) yield { delta: ev.delta, done: false };
+          if (ev.usage) usage = ev.usage;
+          if (ev.finishReason && !finishReason) finishReason = ev.finishReason;
+          if (finishReason || ev.usageOnly) trailing = true;
+        }
+        if (next.done) break;
       }
+      // Closed without [DONE]. Evidence of a finished answer → complete it.
+      // No evidence at all (a cut-off stream) → end without claiming
+      // completion, exactly as before, so a truncation is not dressed up
+      // as a clean stop.
+      if (finishReason || usage) yield final();
     } finally {
       if (idle) clearTimeout(idle);
       // Tear the connection down via the controller: aborting the fetch
