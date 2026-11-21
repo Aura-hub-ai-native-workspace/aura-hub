@@ -187,7 +187,50 @@ const signed = new Set(
 );
 
 const installers = artifacts.filter((f) => INSTALLER.test(f));
-const updaters = artifacts.filter((f) => UPDATER.test(f) && !DISTRIBUTION_ONLY.test(f));
+
+/*
+ * UPDATER ARTIFACTS DISABLED — a fork pull request build, and nothing else.
+ *
+ * A pull request from a fork gets no repository secrets, so CI builds it
+ * with `bundle.createUpdaterArtifacts` off and sets
+ * AURA_UPDATER_ARTIFACTS=disabled here. Such a build has installers to
+ * verify but no updater artifacts: the AppImage and the NSIS installer
+ * exist, unsigned, as downloads only. Guard 2 would rightly refuse them as
+ * unsigned updaters, so in this mode nothing is classed as an updater and
+ * no signature is staged.
+ *
+ * It is opt-in by an explicit value, never inferred from a missing
+ * signature (that is exactly the failure Guard 2 exists to catch), and it
+ * refuses in the two situations where it could mask a real problem:
+ *   - on a tag, the only ref that publishes, an unsigned build is never
+ *     acceptable;
+ *   - if anything WAS signed, the build did not run the way this mode
+ *     claims, and staging it half-classified would hide that.
+ */
+const UPDATERS_DISABLED = process.env.AURA_UPDATER_ARTIFACTS === 'disabled';
+if (UPDATERS_DISABLED) {
+  if ((process.env.GITHUB_REF ?? '').startsWith('refs/tags/')) {
+    fail([
+      `AURA_UPDATER_ARTIFACTS=disabled on ${process.env.GITHUB_REF}.`,
+      'A tag publishes a release, and a release must carry signed updater artifacts.',
+      'Refusing to stage an unsigned build for it.',
+    ]);
+  }
+  if (signed.size) {
+    fail([
+      'AURA_UPDATER_ARTIFACTS=disabled, but the build directory holds signatures:',
+      ...[...signed].map((f) => `  ${path.basename(f)}.sig`),
+      '',
+      'A build with updater artifacts off signs nothing. Either the overlay did not',
+      'take effect or stale output is in the bundle directory.',
+      'Refusing to continue: clean the bundle directory and rebuild.',
+    ]);
+  }
+}
+
+const updaters = UPDATERS_DISABLED
+  ? []
+  : artifacts.filter((f) => UPDATER.test(f) && !DISTRIBUTION_ONLY.test(f));
 
 /*
  * GUARD 1 — an unrecognised signed artifact stops the release.
@@ -365,6 +408,9 @@ const sigs = staged.filter((s) => s.name.endsWith('.sig')).length;
 console.log(`\n${staged.length} file(s) staged in ${path.relative(ROOT, OUT)}/ for ${OS_NAME} v${VERSION}`);
 console.log(`  downloads: ${installers.length} · updater artifacts: ${updaters.length} · signatures: ${sigs}`);
 
-if (updaters.length === 0) {
+if (UPDATERS_DISABLED) {
+  console.log('  updater artifacts disabled (fork pull request build): installers staged for verification only;');
+  console.log('  nothing here is signed, and none of it can be published.');
+} else if (updaters.length === 0) {
   console.warn('  !! no updater artifact was produced — check bundle.createUpdaterArtifacts in tauri.conf.json');
 }
