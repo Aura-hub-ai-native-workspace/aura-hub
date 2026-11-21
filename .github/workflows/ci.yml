@@ -197,6 +197,16 @@ jobs:
   desktop-build:
     name: Desktop packaging (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
+    # A pull request whose head lives in another repository (a fork). GitHub
+    # gives such a run no repository secrets, so it can never hold the
+    # updater signing key. Derived only from the event payload GitHub
+    # writes, never from anything the PR's code controls. A deleted head
+    # repository makes `full_name` null, which also compares unequal and so
+    # takes the restricted path. Every other event (push, tag,
+    # workflow_dispatch, a PR from a branch of this repository) is 'false'
+    # and keeps the mandatory signing below.
+    env:
+      AURA_FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
     strategy:
       fail-fast: false
       matrix:
@@ -401,7 +411,13 @@ jobs:
       # different platforms in three runs and says nothing about the code, so
       # it is retried rather than re-run by hand. A genuine build error still
       # fails: it simply fails three times.
+      #
+      # Only the network flake is retried. A signing-key failure (key absent,
+      # undecodable, wrong password, or not matching the configured pubkey)
+      # is deterministic: it fails the same way every time, so it stops the
+      # job on the first attempt instead of burning two more full builds.
       - name: Build desktop application
+        if: env.AURA_FORK_PR != 'true'
         shell: bash
         # The updater's signing key, passed by reference only — the value is
         # a repository secret and never appears in this file or in a log.
@@ -419,8 +435,60 @@ jobs:
           AURA_GOOGLE_CLIENT_ID: ${{ secrets.AURA_GOOGLE_CLIENT_ID }}
           AURA_GOOGLE_CLIENT_SECRET: ${{ secrets.AURA_GOOGLE_CLIENT_SECRET }}
         run: |
+          set -o pipefail
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::the updater signing key secret is empty on a trusted build (${GITHUB_EVENT_NAME} ${GITHUB_REF}); this build must sign its updater artifacts. Not retried: a missing key is configuration, not a flake."
+            exit 1
+          fi
+          signing_failure='public key has been found, but no private key|failed to decode (base64 )?secret key|incorrect updater private key password|does not match the public key'
+          log="$RUNNER_TEMP/desktop-build.log"
           for attempt in 1 2 3; do
-            if npm run tauri --workspace @aura/desktop -- build; then exit 0; fi
+            if npm run tauri --workspace @aura/desktop -- build 2>&1 | tee "$log"; then exit 0; fi
+            if grep -Eq "$signing_failure" "$log"; then
+              echo "::error::desktop build failed on the updater signing key (missing, undecodable, wrong password, or not matching plugins.updater.pubkey). Not retried: this fails identically every time."
+              exit 1
+            fi
+            echo "::warning::desktop build attempt $attempt failed; retrying"
+            sleep 20
+          done
+          echo "::error::desktop build failed after 3 attempts"
+          exit 1
+
+      # The same build for a pull request from a fork, which has no secrets
+      # and therefore no signing key. Updater artifacts are switched off for
+      # this run only, by a config overlay merged over tauri.conf.json:
+      #   {"bundle":{"createUpdaterArtifacts":false}}
+      # Written to a file rather than passed inline so the JSON reaches the
+      # CLI unmangled through npm on Windows (cmd.exe quoting) as well.
+      # Everything else is unchanged: frontend build, Rust compile, bundling,
+      # and every test and install check after this step still runs. No
+      # secret is referenced here, and the result can never be published:
+      # only a version tag publishes, and a tag is never a fork PR.
+      - name: Build desktop application (fork PR, updater artifacts off)
+        if: env.AURA_FORK_PR == 'true'
+        shell: bash
+        # Untrusted PR metadata reaches the script through the environment,
+        # never by `${{ }}` interpolation into the script text.
+        env:
+          FORK_HEAD: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -o pipefail
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || [ -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ]; then
+            echo "::error::a signing key is present in a fork pull request run; refusing to build with it"
+            exit 1
+          fi
+          overlay="$RUNNER_TEMP/aura-fork-pr.tauri.json"
+          printf '%s\n' '{"bundle":{"createUpdaterArtifacts":false}}' > "$overlay"
+          echo "::notice::fork pull request (${FORK_HEAD:-deleted repository}): repository secrets are unavailable, so updater artifacts are disabled for this build. Installers are still built and verified; nothing from this run can be published."
+          echo "- fork PR: updater artifacts disabled (no signing key available); installers built and verified unsigned" >> "$GITHUB_STEP_SUMMARY"
+          signing_failure='public key has been found, but no private key|failed to decode (base64 )?secret key|incorrect updater private key password|does not match the public key'
+          log="$RUNNER_TEMP/desktop-build.log"
+          for attempt in 1 2 3; do
+            if npm run tauri --workspace @aura/desktop -- build --config "$overlay" 2>&1 | tee "$log"; then exit 0; fi
+            if grep -Eq "$signing_failure" "$log"; then
+              echo "::error::the fork build still asked for an updater signing key, so the createUpdaterArtifacts overlay did not take effect. Not retried."
+              exit 1
+            fi
             echo "::warning::desktop build attempt $attempt failed; retrying"
             sleep 20
           done
@@ -475,10 +543,18 @@ jobs:
           if-no-files-found: ignore
 
       - name: Patch the AppImage (Linux only)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && env.AURA_FORK_PR != 'true'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node scripts/patch-appimage-linux.mjs
+
+      # The same patch for a fork PR build. That build signed nothing (its
+      # updater artifacts were off), so there is no signature to replace and
+      # no key is passed: the script patches the bytes and reports the
+      # AppImage as still unsigned. The Wayland fix is verified either way.
+      - name: Patch the AppImage (Linux only, fork PR, unsigned)
+        if: runner.os == 'Linux' && env.AURA_FORK_PR == 'true'
         run: node scripts/patch-appimage-linux.mjs
 
       # Native runtime verification. Linux runners have no display, so the
@@ -500,7 +576,12 @@ jobs:
         if: runner.os != 'Linux'
         run: node scripts/desktop-runtime-verify.mjs
 
+      # 'disabled' only for a fork PR, whose build produced no updater
+      # artifacts. Staging then stages installers for the install checks
+      # below and refuses outright on a tag or if any signature exists.
       - name: Stage release artifacts
+        env:
+          AURA_UPDATER_ARTIFACTS: ${{ env.AURA_FORK_PR == 'true' && 'disabled' || 'required' }}
         run: node scripts/stage-release-artifacts.mjs
 
       # The Linux download that can carry a permission bit. A browser writes
