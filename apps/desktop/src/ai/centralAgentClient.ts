@@ -195,6 +195,9 @@ export interface ExecutionReport {
   acceptanceStated?: string[];
   errors: { id: string; status: 'open' | 'workaround' | 'resolved'; summary: string; taskId: string | null; path: string }[];
   handoffs: { taskId: string; fromNode: string; toNode: string; reason: string; round: number; verified: boolean }[];
+  recoveryActions?: { taskId: string; round: number; fromNode: string; toNode: string; reason: string;
+    previousState: string; state: string; verified: boolean; handoff: boolean;
+    alternativeSelected?: boolean; alternativeAvailable?: boolean; sameRuntimeRetry?: boolean }[];
   limitations: string[];
 }
 

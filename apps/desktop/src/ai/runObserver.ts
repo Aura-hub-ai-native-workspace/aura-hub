@@ -19,10 +19,25 @@ import type { AgentEventFrame, ExecutionReport, ToolRecord } from './centralAgen
 export type CheckState = 'pending' | 'running' | 'verification' | 'verified' | 'failed' | 'blocked' | 'cancelled';
 
 export interface TimelineEntry { id: string; at: string; type: string; text: string; tone: 'info' | 'ok' | 'warn' | 'bad'; taskId?: string }
-export interface CheckItem { taskId: string; title: string; dependsOn: string[]; state: CheckState; worker: string | null; detail: string }
+export interface CheckItem { taskId: string; title: string; dependsOn: string[]; state: CheckState; worker: string | null; detail: string;
+  /** Which of AURA's six specialists holds this task, when the backend said so. */
+  specialist?: string }
 export interface FileChange { path: string; op: 'created' | 'modified' | 'deleted'; taskId: string; worker: string | null }
 export interface ToolEvent { nodeId: string; name: string; stage: string; reason?: string; detail?: string }
 export interface Handoff { taskId: string | null; from: string | null; to: string | null; reason: string }
+export interface RecoveryAction {
+  taskId: string;
+  round: number;
+  fromNode: string | null;
+  toNode: string | null;
+  reason: string;
+  previousState: string;
+  state: string;
+  verified: boolean;
+  alternativeSelected?: boolean;
+  alternativeAvailable?: boolean;
+  sameRuntimeRetry?: boolean;
+}
 export interface RunError { id: string; status: string; summary?: string; taskId: string | null; path?: string }
 
 export interface RunView {
@@ -42,6 +57,7 @@ export interface RunView {
   toolsBlocked: ToolEvent[];
   workers: string[];
   handoffs: Handoff[];
+  recoveries: RecoveryAction[];
   errors: RunError[];
   finished: boolean;
   summary: ExecutionReport | null;
@@ -51,7 +67,7 @@ export interface RunView {
 export const EMPTY_RUN: RunView = {
   sessionId: null, goal: null, phase: null, currentTask: null, currentWorker: null, waitingFor: null,
   timeline: [], checklist: [], files: [], restorePoints: [], toolsInstalled: [], toolsReused: [], toolsBlocked: [], workers: [],
-  handoffs: [], errors: [], finished: false, summary: null, seen: [],
+  handoffs: [], recoveries: [], errors: [], finished: false, summary: null, seen: [],
 };
 
 const MAX_TIMELINE = 400;
@@ -124,7 +140,8 @@ export function foldRunEvent(view: RunView, f: AgentEventFrame): RunView {
       const taskId = str(p.taskId);
       const state = asState(p.state);
       const worker = str(p.worker) || null;
-      v = { ...v, checklist: setCheck(v.checklist, taskId, { state, detail: str(p.detail), ...(worker ? { worker } : {}) }) };
+      const specialist = str(p.specialistName);
+      v = { ...v, checklist: setCheck(v.checklist, taskId, { state, detail: str(p.detail), ...(worker ? { worker } : {}), ...(specialist ? { specialist } : {}) }) };
       if (state === 'running') v = { ...v, phase: 'Working', currentTask: taskId, currentWorker: worker ?? v.currentWorker, waitingFor: null };
       if (worker && !v.workers.includes(worker)) v = { ...v, workers: [...v.workers, worker] };
       say(`${v.checklist.find((c) => c.taskId === taskId)?.title ?? taskId}: ${state}${p.detail ? ` — ${str(p.detail)}` : ''}`,
@@ -148,6 +165,34 @@ export function foldRunEvent(view: RunView, f: AgentEventFrame): RunView {
     case 'worker.handoff': {
       v = { ...v, handoffs: [...v.handoffs, { taskId: p.taskId ?? null, from: p.fromWorker ?? null, to: p.toWorker ?? null, reason: str(p.reason) }] };
       say(`Handed over from ${p.fromWorker ?? 'a worker'} to ${p.toWorker ?? 'another worker'}: ${str(p.reason)}`, 'warn', str(p.taskId));
+      break;
+    }
+    case 'task.retried': {
+      const taskId = str(p.taskId);
+      const rec: RecoveryAction = {
+        taskId,
+        round: typeof p.round === 'number' ? p.round : 0,
+        fromNode: str(p.fromNode) || null,
+        toNode: str(p.toNode) || null,
+        reason: str(p.reason),
+        previousState: str(p.previousState),
+        state: str(p.state),
+        verified: p.verified === true,
+        ...(typeof p.alternativeSelected === 'boolean' ? { alternativeSelected: p.alternativeSelected } : {}),
+        ...(typeof p.alternativeAvailable === 'boolean' ? { alternativeAvailable: p.alternativeAvailable } : {}),
+        ...(typeof p.sameRuntimeRetry === 'boolean' ? { sameRuntimeRetry: p.sameRuntimeRetry } : {}),
+      };
+      v = { ...v, recoveries: [...v.recoveries.filter((x) => x.taskId !== taskId || x.round !== rec.round), rec] };
+      const title = v.checklist.find((c) => c.taskId === taskId)?.title ?? taskId;
+      const target = rec.toNode ?? rec.fromNode ?? 'an eligible runtime';
+      const text = rec.alternativeAvailable === false && rec.sameRuntimeRetry
+        ? `${title}: no alternative runtime was available; the permitted runtime was retried and ended ${rec.state}. ${rec.reason}`
+        : rec.alternativeAvailable === false
+          ? `${title}: no permitted alternative runtime was available. ${rec.reason}`
+        : rec.verified
+          ? `${title}: recovered on ${target}. ${rec.reason}`
+          : `${title}: recovery ended ${rec.state}. ${rec.reason}`;
+      say(text, rec.verified ? 'ok' : 'warn', taskId);
       break;
     }
     case 'tool.provisioning': {
@@ -225,6 +270,7 @@ export function seedFromReport(sessionId: string, report: ExecutionReport | null
     toolsInstalled: report.toolsInstalled.map((t) => toolEv(t, 'installed')),
     toolsReused: report.toolsReused.map((t) => toolEv(t, 'present')),
     handoffs: report.handoffs.map((h) => ({ taskId: h.taskId, from: h.fromNode, to: h.toNode, reason: h.reason })),
+    recoveries: (report.recoveryActions ?? []).map((r) => ({ ...r })),
     errors: report.errors.map((e) => ({ id: e.id, status: e.status, summary: e.summary, taskId: e.taskId, path: e.path })),
     workers: [...new Set(report.workCompleted.map((w) => w.worker).filter((w): w is string => !!w))],
   };

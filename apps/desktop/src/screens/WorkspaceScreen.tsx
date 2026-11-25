@@ -26,6 +26,7 @@
  * second chat implementation and no second stream.
  */import { useAgentChoice } from '../agents/agentChoice';
 import { useEffect, useMemo, useRef, useState, useCallback, type RefObject } from 'react';
+import { fetchSpecialists, type Specialist } from '../ai/workerClient';
 import { AnimatePresence, motion } from 'framer-motion';
 import { cn, spring, useAppStore } from '@aura/core';
 import { Icon } from '@aura/ui';
@@ -265,6 +266,15 @@ export function WorkspaceScreen() {
   );
   const [railOpen, setRailOpen] = useState(false);
 
+  /* AURA's six agents. Re-read whenever the worker roster changes, because an
+     agent is only as available as the runtime it is assigned to. */
+  const [specialists, setSpecialists] = useState<{ specialists: Specialist[]; error?: string }>({ specialists: [] });
+  useEffect(() => {
+    let live = true;
+    void fetchSpecialists().then((r) => { if (live) setSpecialists(r); });
+    return () => { live = false; };
+  }, [workers]);
+
   /* The graph's status line: what AURA is doing, in the same words the
      conversation uses. One vocabulary, two places. */
   const agentPhase = conv.activity.phase
@@ -296,6 +306,8 @@ export function WorkspaceScreen() {
             onDisconnectWorker={(id) => void disconnectWorker(id)}
             phase={agentPhase}
             agentBusy={conv.phase === 'working'}
+            specialists={specialists.specialists}
+            specialistsError={specialists.error ?? null}
           />
         }
         right={
