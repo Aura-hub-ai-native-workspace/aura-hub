@@ -115,6 +115,8 @@ Limitations reported, not changed: `enforce_admins` is off (admins can bypass); 
 
 Run `45638369911` on `fe72298`: the Windows service suite now passes (390 passed, 32 skipped), confirming the `.cmd` fix. The next step, `test:agents`, failed on one test whose fake MCP servers were shebang scripts that Windows cannot execute (`spawn … ENOENT`) — a test portability bug, not a product bug. Fixed in `e6c6cd4` (fixtures launched via `node`); 20/20 locally. CI re-run `45640855107`: _running_.
 
+**macOS backend tests (first run `45637055087`): 11 failed / 3858 passed**, all in the Verified Relay gate tests. Cause: the test helper defaults to the Linux `/proc` identity method, and 11 adversarial scenarios lack the Linux-only marker. The product uses `lsof` on macOS, and its 3 `lsof` scenarios passed (91 of 109 gate tests passed on macOS). Not changed in #106: making them Linux-only would hide that the macOS security path has only 3 adversarial scenarios. Recorded on #107 as part of C8 (parametrise over both methods). **Consequence:** the macOS backend check on #106 stays red until the #107 remediation, consistent with "do not merge".
+
 ---
 
 ## Phase 1 task status
