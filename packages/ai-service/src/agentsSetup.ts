@@ -1,8 +1,9 @@
 /**
  * Runs AURA's one agent-setup script (`aura-agents.mjs`) for the desktop app.
  *
- * The script installs the six coding agents, connects the common-context MCP server to each and
- * reports who is signed in. It lives at `resources/setup/aura-agents.mjs` in the packaged app and
+ * The script installs and configures supported agents, reports sign-in/MCP configuration, and can run
+ * an opt-in context-server probe.
+ * It lives at `resources/setup/aura-agents.mjs` in the packaged app and
  * at `scripts/agents/aura-agents.mjs` in a checkout; it is always run with the same Node that runs
  * this service, so no system Node is needed.
  */
@@ -13,7 +14,7 @@ import path from 'node:path';
 export interface AgentSetupEvent {
   agent: string;
   step: string;
-  status: 'running' | 'done' | 'failed' | 'log';
+  status: 'running' | 'done' | 'failed' | 'log' | 'configured' | 'verified' | 'unverified';
   detail?: string;
 }
 
@@ -22,7 +23,19 @@ export interface AgentStatus {
   name: string;
   installed: boolean;
   version: string | null;
+  mcpConfigured: boolean;
+  mcpConfigError: string | null;
+  contextServerHandshakeVerified: boolean;
+  contextServerToolInvocationVerified: boolean;
+  contextServerVerified: boolean;
+  contextServerError: string | null;
+  mcpHandshakeVerified: boolean;
+  mcpToolInvocationVerified: boolean;
+  mcpError: string | null;
+  /** Compatibility field; a server probe never verifies an agent's own MCP client. */
   mcpConnected: boolean;
+  /** Null in the setup script; the backend fills this from AGENT_INVOCATIONS. */
+  executableByAura: boolean | null;
   signedIn: boolean;
   signIn: string;
   hint: string | null;
@@ -89,14 +102,14 @@ export function runAgentSetup(
   });
 }
 
-/** `status --json`: who is installed, connected and signed in. */
+/** `status --json`: installation, MCP configuration, optional server probe, and sign-in state. */
 export function agentStatus(
   script: string | null = agentsScriptPath(),
-  { versions = true }: { versions?: boolean } = {},
+  { versions = true, verifyContextServer = false }: { versions?: boolean; verifyContextServer?: boolean } = {},
 ): Promise<AgentStatus[]> {
   if (!script) return Promise.reject(new Error('the agent setup script is missing from this install'));
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [script, 'status', '--json', ...(versions ? [] : ['--no-version'])], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawn(process.execPath, [script, 'status', '--json', ...(versions ? [] : ['--no-version']), ...(verifyContextServer ? ['--verify-context-server'] : [])], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     let out = '';
     let err = '';
     child.stdout.on('data', (d) => { out += d; });

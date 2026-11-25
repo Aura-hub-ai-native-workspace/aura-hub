@@ -12,7 +12,7 @@ export type AgentId = (typeof AGENT_IDS)[number];
 export interface AgentSetupEvent {
   agent: string;
   step: string;
-  status: 'running' | 'done' | 'failed' | 'log';
+  status: 'running' | 'done' | 'failed' | 'log' | 'configured' | 'verified' | 'unverified';
   detail?: string;
 }
 
@@ -21,7 +21,17 @@ export interface AgentStatus {
   name: string;
   installed: boolean;
   version: string | null;
+  mcpConfigured: boolean;
+  mcpConfigError: string | null;
+  contextServerHandshakeVerified: boolean;
+  contextServerToolInvocationVerified: boolean;
+  contextServerVerified: boolean;
+  contextServerError: string | null;
+  mcpHandshakeVerified: boolean;
+  mcpToolInvocationVerified: boolean;
+  mcpError: string | null;
   mcpConnected: boolean;
+  executableByAura: boolean;
   signedIn: boolean;
   /** How this agent signs in ("OpenCode Go", "Chrome", …), or "skipped". */
   signIn: string;
@@ -30,8 +40,12 @@ export interface AgentStatus {
 }
 
 /** `versions: false` skips asking each agent for its version: the answer then takes milliseconds instead of seconds. */
-export async function fetchAgentStatus({ versions = true }: { versions?: boolean } = {}): Promise<AgentStatus[]> {
-  const res = await backendFetch(`${AI_BASE}/agents/status${versions ? '' : '?versions=0'}`);
+export async function fetchAgentStatus({ versions = true, verifyContextServer = false }: { versions?: boolean; verifyContextServer?: boolean } = {}): Promise<AgentStatus[]> {
+  const query = new URLSearchParams();
+  if (!versions) query.set('versions', '0');
+  if (verifyContextServer) query.set('verify-context-server', '1');
+  const suffix = query.size ? `?${query}` : '';
+  const res = await backendFetch(`${AI_BASE}/agents/status${suffix}`);
   const body = (await res.json().catch(() => ({}))) as { agents?: AgentStatus[]; message?: string };
   if (!res.ok || !Array.isArray(body.agents)) throw new Error(body.message ?? `agent status failed (${res.status})`);
   return body.agents;
@@ -93,11 +107,12 @@ export function reduceSetup(rows: Record<string, { state: RowState; detail: stri
   if (!AGENT_IDS.includes(e.agent as AgentId)) return rows;
   const prev = rows[e.agent] ?? { state: 'waiting' as RowState, detail: '' };
   let next = prev;
-  if (e.step === 'finished') next = { state: e.status === 'done' ? 'ready' : 'failed', detail: e.status === 'done' ? 'Ready' : prev.detail || 'Failed' };
+  if (e.step === 'finished') next = { state: e.status === 'done' ? 'ready' : 'failed', detail: e.status === 'done' ? 'Installed · MCP configured; agent client unverified' : prev.detail || 'Failed' };
   else if (e.status === 'failed') next = { state: 'failed', detail: e.detail ?? 'Failed' };
   else if (e.step === 'install' && e.status === 'running') next = { state: 'working', detail: 'Installing…' };
   else if (e.step === 'install' && e.status === 'done') next = { state: 'working', detail: e.detail === 'present' ? 'Already installed' : 'Installed' };
-  else if (e.step === 'mcp') next = { state: 'working', detail: 'Connecting common-context…' };
+  else if (e.step === 'mcp' && e.status === 'configured') next = { state: 'working', detail: 'Common Context configured · agent client unverified' };
+  else if (e.step === 'mcp') next = { state: 'working', detail: 'Configuring Common Context…' };
   return next === prev ? rows : { ...rows, [e.agent]: next };
 }
 

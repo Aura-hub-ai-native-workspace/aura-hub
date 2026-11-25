@@ -20,7 +20,7 @@ describe('agent setup through the service', () => {
     expect(agentsScriptPath()).toMatch(/aura-agents\.mjs$/);
   });
 
-  it('streams per-agent steps and ends with every agent connected', async () => {
+  it('streams per-agent steps and ends with MCP configuration (client not verified)', async () => {
     const events: AgentSetupEvent[] = [];
     const code = await runAgentSetup((e) => events.push(e));
     expect(code).toBe(0);
@@ -28,7 +28,7 @@ describe('agent setup through the service', () => {
     expect(finished).toEqual(['opencode:done', 'kilo-code:done', 'claude-code:done', 'codex-cli:done']);
     const status = await agentStatus();
     expect(status.map((s) => s.id)).toEqual(['opencode', 'kilo-code', 'claude-code', 'codex-cli']);
-    expect(status.every((s) => s.installed && s.mcpConnected)).toBe(true);
+    expect(status.every((s) => s.installed && s.mcpConfigured && !s.mcpConnected && !s.mcpToolInvocationVerified)).toBe(true);
     expect(status.find((s) => s.id === 'claude-code')?.signIn).toBe('skipped');
   }, 60_000);
 

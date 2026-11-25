@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AGENT_IDS, DEFAULT_AGENTS, reduceSetup, signInLabel, type AgentStatus } from './agentsClient';
 
 const base = (over: Partial<AgentStatus>): AgentStatus => ({
-  id: 'opencode', name: 'OpenCode', installed: true, version: '1', mcpConnected: true,
+  id: 'opencode', name: 'OpenCode', installed: true, version: '1', mcpConfigured: true, mcpConfigError: null, contextServerHandshakeVerified: true, contextServerToolInvocationVerified: true, contextServerVerified: true, contextServerError: null, mcpHandshakeVerified: false, mcpToolInvocationVerified: false, mcpError: null, mcpConnected: false, executableByAura: true,
   signedIn: false, signIn: 'OpenCode Go', hint: null, headless: true, ...over,
 });
 
@@ -15,7 +15,14 @@ describe('agent setup progress', () => {
     expect((rows as Record<string, { detail: string }>).pi.detail).toBe('Already installed');
     rows = reduceSetup(rows, { agent: 'pi', step: 'mcp', status: 'done' });
     rows = reduceSetup(rows, { agent: 'pi', step: 'finished', status: 'done' });
-    expect(rows).toEqual({ pi: { state: 'ready', detail: 'Ready' } });
+    expect(rows).toEqual({ pi: { state: 'ready', detail: 'Installed · MCP configured; agent client unverified' } });
+  });
+
+  it('says Common Context is configured, never connected, when the MCP step only wrote config', () => {
+    const rows = reduceSetup({}, { agent: 'opencode', step: 'mcp', status: 'configured' });
+    expect(rows).toEqual({ opencode: { state: 'working', detail: 'Common Context configured · agent client unverified' } });
+    expect(reduceSetup({}, { agent: 'opencode', step: 'mcp', status: 'running' }))
+      .toEqual({ opencode: { state: 'working', detail: 'Configuring Common Context…' } });
   });
 
   it('keeps the failure reason and ignores log lines and non-agent events', () => {
