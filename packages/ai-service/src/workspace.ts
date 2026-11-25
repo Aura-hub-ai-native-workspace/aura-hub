@@ -48,6 +48,7 @@ import { genId } from './workflow/types';
 import { randomBytes } from 'node:crypto';
 import { getAdapter, getAllAdapters, ENV_VAR_BY_PROVIDER } from './provider/registry';
 import { storeKey, removeKey, getKey, getActive, getAllProviderStores, storeModels, storeHealth } from './provider/credentialStore';
+import { previousSelectionFor } from './provider/modelValidation';
 import { normaliseOllamaUrl } from './provider/adapters/ollama';
 import { detectProvider } from './provider/detector';
 import type { DiscoveredModel } from './provider/types';
@@ -1707,6 +1708,8 @@ export class WorkspaceManager {
     // A self-hosted provider is identified by where it is, not by a masked
     // secret — see the note on `storeKey`.
     const addressed = (adapter.metadata as { selfHosted?: boolean }).selfHosted === true;
+    // Read before anything is stored: a reconnect keeps the user's model.
+    const previous = previousSelectionFor(providerId);
     const { fingerprint } = storeKey(providerId, apiKey, addressed ? normaliseOllamaUrl(apiKey) : undefined);
     let models: DiscoveredModel[] = [];
     try {
@@ -1715,7 +1718,10 @@ export class WorkspaceManager {
     } catch { models = []; }
     const health = await adapter.checkHealth(apiKey);
     storeHealth(providerId, health);
-    await this.pipeline.runtimeManager.switchToProvider(providerId, models[0]?.id);
+    // Not `models[0]`: that hands the choice to the vendor's catalog order.
+    // `resolveModel` (inside switchToProvider) prefers the previous
+    // selection, then the adapter's declared default, then the first entry.
+    await this.pipeline.runtimeManager.switchToProvider(providerId, previous);
     return { ok: true, fingerprint, models };
   }
 
@@ -1748,13 +1754,14 @@ export class WorkspaceManager {
     if (!adapter) return { ok: false, error: 'Unknown provider' };
     if (!baseUrl.trim() || models.length === 0) return { ok: false, error: 'Nothing verified to save.' };
     const addressed = (adapter.metadata as { selfHosted?: boolean }).selfHosted === true;
+    const previous = previousSelectionFor(providerId);
     const { fingerprint } = storeKey(providerId, baseUrl, addressed ? normaliseOllamaUrl(baseUrl) : undefined);
     storeModels(providerId, models);
     // Verified by a real generation moments ago — that IS the health
     // evidence. No separate probe: one more request is exactly the
     // failure mode this path exists to avoid.
     storeHealth(providerId, { ok: true, latencyMs: 0, lastChecked: new Date().toISOString() });
-    await this.pipeline.runtimeManager.switchToProvider(providerId, models[0]?.id);
+    await this.pipeline.runtimeManager.switchToProvider(providerId, previous);
     return { ok: true, fingerprint, models };
   }
 
