@@ -304,6 +304,56 @@ export function runAgent(bin: string, args: string[], opts: SpawnOptions): Promi
   });
 }
 
+/** A long-running agent helper process (e.g. a private `opencode serve`). */
+export interface AgentServer {
+  pid: number | undefined;
+  /** Bounded tail of the server's stderr, where these CLIs write their logs. */
+  log(): string;
+  /** Bounded tail of the server's stdout, where these CLIs announce the address they listen on. */
+  output(): string;
+  /** True once the process has exited, however it ended. */
+  exited(): boolean;
+  /** End the server and everything it started. Safe to call more than once. */
+  stop(): Promise<void>;
+}
+
+/**
+ * Start an allow-listed agent binary as a background helper and return a
+ * handle to it. Same allow-list, same no-shell argv and same whole-tree
+ * teardown as `runAgent`; the only difference is that the caller decides
+ * when it ends. A spawned process is NOT evidence that it is ready for
+ * anything: callers must probe readiness themselves.
+ */
+export function startAgentServer(bin: string, args: string[], opts: { cwd: string; env?: Record<string, string> }): AgentServer {
+  const resolved = resolveAgentBinary(bin);
+  if (!resolved.ok) throw new Error(resolved.reason);
+  const { target } = launchSpec(resolved.bin, args);
+  const child = spawn(target.file, target.args, {
+    cwd: opts.cwd,
+    detached: currentPlatform() !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    ...spawnFlags(target),
+  });
+  let log = '';
+  let out = '';
+  let done = false;
+  child.stderr?.on('data', (d: Buffer) => { log = (log + d.toString('utf8')).slice(-200_000); });
+  child.stdout?.on('data', (d: Buffer) => { out = (out + d.toString('utf8')).slice(-200_000); });
+  child.once('error', () => { done = true; });
+  const closed = new Promise<void>((resolve) => child.once('close', () => { done = true; resolve(); }));
+  return {
+    pid: child.pid,
+    log: () => log,
+    output: () => out,
+    exited: () => done,
+    stop: async () => {
+      endTree(child);
+      if (!done) await Promise.race([closed, new Promise<void>((r) => setTimeout(r, TREE_KILL_GRACE_MS + 500).unref())]);
+    },
+  };
+}
+
 export interface SpawnOptions {
   cwd: string;
   signal?: AbortSignal;

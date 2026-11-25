@@ -28,6 +28,7 @@ from ..exec_ import (
     git as run_git,
 )
 from ..exec_ import (
+    ProcessOutput,
     parse_command,
     resolve_agent_binary,
     run_agent,
@@ -453,6 +454,27 @@ async def _bridge_cancel(token, event: asyncio.Event) -> None:
             return
 
 
+async def _run_context_gated(args: list[str], cwd: str, timeout_ms: int | None,
+                              kwargs: dict, governance: dict, bin_name: str = "opencode"):
+    """OpenCode or Kilo behind the shared Common Context readiness gate.
+
+    A connection that never becomes ready is returned as a failed process
+    result whose output is the plain reason, so every caller's existing
+    failure handling reports it; the task itself was never sent.
+    """
+    from ..workers.opencode_mcp import McpNotReady, run_kilo, run_opencode
+
+    gate = run_kilo if bin_name == "kilo" else run_opencode
+    try:
+        res, mcp = await gate(run_agent, args, cwd, timeout_ms,
+                              env=kwargs.get("env"), cancel=kwargs.get("cancel"))
+    except McpNotReady as exc:
+        governance["contextMcp"] = f"not-ready:{exc.reason}"
+        return ProcessOutput(out=str(exc), code=1)
+    governance["contextMcp"] = mcp
+    return res
+
+
 async def _run_governed(bin_name: str, args: list[str], cwd: str,
                         timeout_ms: int | None, governance: dict,
                         action_events: list[dict], cancel_token=None,
@@ -491,8 +513,17 @@ async def _run_governed(bin_name: str, args: list[str], cwd: str,
             bridge = asyncio.ensure_future(
                 _bridge_cancel(cancel_token, cancel_event))
         kwargs["cancel"] = cancel_event
-    run_task = asyncio.ensure_future(
-        run_agent(bin_name, full_args, cwd, timeout_ms, **kwargs))
+    # OpenCode and Kilo connect their MCP servers after start-up. On this computer
+    # the task is sent only once Common Context is really connected
+    # (workers.opencode_mcp, one gate with a profile per runtime). Inside a
+    # network boundary or container (argv_prefix) the worker cannot reach MCP
+    # servers on this computer at all, so there is nothing to wait for there.
+    if bin_name in ("opencode", "kilo") and not argv_prefix:
+        run_task = asyncio.ensure_future(
+            _run_context_gated(full_args, cwd, timeout_ms, kwargs, governance, bin_name))
+    else:
+        run_task = asyncio.ensure_future(
+            run_agent(bin_name, full_args, cwd, timeout_ms, **kwargs))
     seen = 0
     try:
         while not run_task.done():
@@ -875,6 +906,10 @@ async def agent_delegate_run(inv: dict) -> dict:
         "agent": node["name"], "args": args,
         "timedOut": bool(res.timedOut), "signal": res.signal,
         "network": network_record, "isolation": isolation_record,
+        # What was established about Common Context before the task was sent:
+        # connected | not-configured | not-ready:<reason> (gated runtimes), or
+        # not-checked (other runtimes, and runs inside a sandbox boundary).
+        "contextMcp": governance.get("contextMcp", "not-checked"),
     }
     if auto_model:
         output["model"] = auto_model

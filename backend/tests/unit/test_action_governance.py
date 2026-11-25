@@ -517,6 +517,8 @@ class TestExecutorWiring:
 
         async def fake_run(bin_name, args, cwd, timeout_ms=None,
                            env=None):
+            if args[:3] == ["--standalone", "debug", "config"]:
+                return _FakeOut(out='{"mcp":{"servers":{}}}')
             seen["env"] = dict(env or {})
             assert "OPENCODE_CONFIG" in seen["env"]
             with open(seen["env"]["AURA_ACTION_LOG"], "a") as fh:
@@ -551,6 +553,8 @@ class TestExecutorWiring:
 
         async def fake_run(bin_name, args, cwd, timeout_ms=None,
                            env=None):
+            if args[:3] == ["--standalone", "debug", "config"]:
+                return _FakeOut(out='{"mcp":{"servers":{}}}')
             with open(env["AURA_ACTION_LOG"], "a") as fh:
                 fh.write(json.dumps({
                     "taskId": "t9", "workerNodeId": "opencode",
@@ -580,6 +584,8 @@ class TestExecutorWiring:
 
         async def fake_run(bin_name, args, cwd, timeout_ms=None,
                            env=None):
+            if args[:3] == ["--standalone", "debug", "config"]:
+                return _FakeOut(out='{"mcp":{"servers":{}}}')
             return _FakeOut(out="", code=42)
 
         monkeypatch.setattr(ex, "run_agent", fake_run)
