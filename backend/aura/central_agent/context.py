@@ -54,6 +54,28 @@ class ContextBundle:
         return "\n".join(parts)
 
 
+def append_run_context(bundle: ContextBundle, project_path: str | None,
+                       budget: int = 2400) -> None:
+    """Add the worker bridge's existing project brief to CentralAgent context.
+
+    The bridge reads the same project-scoped common-context.json used by
+    delegated agents. Contributions are still untrusted agent data; this
+    helper neither creates another store nor grants them authority.
+    """
+    if not project_path:
+        return
+    try:
+        from .run_context import load_brief
+
+        brief = load_brief(project_path, budget=budget)
+    except Exception:  # noqa: BLE001 — shared context is optional
+        return
+    if brief:
+        bundle.items.append(ContextItem(
+            kind="common-context", text=brief[:budget],
+            provenance=PROVENANCE_EXTERNAL, untrusted=True))
+
+
 #: Bounded project sampling. A planner needs to know what KIND of
 #: project this is and roughly where things live; it does not need the
 #: repository. Everything here is capped, and every item it produces is

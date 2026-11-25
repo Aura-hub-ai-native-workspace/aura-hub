@@ -6,6 +6,7 @@ import stat
 from types import SimpleNamespace as NS
 
 from aura.central_agent import run_context
+from aura.central_agent.context import ContextBundle, append_run_context
 from aura.central_agent.execution import ExecutionController
 
 
@@ -17,6 +18,19 @@ def test_checkpoint_then_load_shows_what_another_agent_recorded(tmp_path):
     mode = stat.S_IMODE(os.stat(tmp_path / "common-context.json").st_mode)
     # POSIX permission bits do not exist on Windows.
     assert os.name == "nt" or mode == 0o600
+
+
+def test_central_agent_reads_the_same_worker_context_as_untrusted_data(tmp_path):
+    run_context.checkpoint(str(tmp_path), "decision:api", "Keep the route backward compatible.",
+                           agent="backend-builder")
+    bundle = ContextBundle()
+    append_run_context(bundle, str(tmp_path))
+    assert len(bundle.items) == 1
+    item = bundle.items[0]
+    assert "Keep the route backward compatible." in item.text
+    assert "backend-builder" in item.text
+    assert item.untrusted is True
+    assert "untrusted-data" in bundle.render()
 
 
 def test_the_file_matches_the_store_format_the_agents_and_the_service_use(tmp_path):

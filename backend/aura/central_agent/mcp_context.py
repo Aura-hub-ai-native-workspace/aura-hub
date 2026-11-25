@@ -16,7 +16,10 @@ the Central Agent:
 from __future__ import annotations
 
 import time
+import json
+import re
 from typing import Callable
+from pathlib import Path
 
 from .context import ContextItem
 from .mcp_transport import McpTransportError, StdioMcpClient
@@ -24,6 +27,8 @@ from .mcp_transport import McpTransportError, StdioMcpClient
 MAX_RESOURCE_CHARS = 24_000
 MAX_ITEMS_PER_SERVER = 3
 STALE_MARKER = " [STALE SNAPSHOT — older than the freshness window]"
+CONTEXT_SERVERS_FILE = "mcp-context-servers.json"
+_SERVER_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$")
 
 
 class McpContextCache:
@@ -46,8 +51,9 @@ class McpContextCache:
     def put(self, key: str, text: str) -> None:
         self._entries[key] = (self._now(), text)
 
-    def drop_except(self, live_keys: set[str]) -> set[str]:
-        gone = set(self._entries) - live_keys
+    def drop_except(self, live_keys: set[str], prefix: str | None = None) -> set[str]:
+        gone = {key for key in self._entries
+                if (prefix is None or key.startswith(prefix)) and key not in live_keys}
         for k in gone:
             del self._entries[k]
         return gone
@@ -101,7 +107,7 @@ def collect_mcp_context_items(
                 text=f"{server_id} {desc}\n{uri}{stale}\n{_fence(body)}",
                 provenance="external", untrusted=True))
         if cache is not None:
-            cache.drop_except(live_keys)
+            cache.drop_except(live_keys, prefix=f"res:{server_id}:")
 
         try:
             for prompt in client.list_prompts()[:2]:
@@ -122,3 +128,118 @@ def collect_mcp_context_items(
                 text=f"[mcp {server_id} prompts unavailable: {exc}]"[:300],
                 provenance="external", untrusted=True))
     return out
+
+
+def load_context_server_specs(home: str | Path | None = None) -> dict[str, dict]:
+    """Read the user's explicit, owner-managed MCP context configuration.
+
+    This is a list of stdio servers that expose MCP resources/prompts to
+    CentralAgent. It does not infer or import every coding-agent MCP config,
+    which could start unrelated tools or leak their credentials.
+    """
+    if home is None:
+        from ..config import aura_home
+
+        home = aura_home()
+    path = Path(home) / "agent" / CONTEXT_SERVERS_FILE
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read {path.name}: {type(exc).__name__}") from exc
+    if not isinstance(raw, dict) or "servers" not in raw or not isinstance(raw.get("servers"), dict):
+        raise ValueError("MCP context config must contain a servers object")
+    servers = raw.get("servers", {})
+    if len(servers) > 8:
+        raise ValueError("MCP context config supports at most 8 servers")
+    specs: dict[str, dict] = {}
+    for server_id, spec in servers.items():
+        if not isinstance(server_id, str) or not _SERVER_ID.fullmatch(server_id):
+            raise ValueError("MCP context server id is invalid")
+        if not isinstance(spec, dict):
+            raise ValueError(f"MCP context server {server_id} must be an object")
+        command = spec.get("command")
+        if (not isinstance(command, list) or not command
+                or len(command) > 32
+                or any(not isinstance(part, str) or not part or "\x00" in part
+                       for part in command)):
+            raise ValueError(f"MCP context server {server_id} command must be a non-empty argument array")
+        cwd = spec.get("cwd")
+        env = spec.get("env", {})
+        timeout_s = spec.get("timeoutSeconds", 10)
+        if cwd is not None and (not isinstance(cwd, str) or "\x00" in cwd):
+            raise ValueError(f"MCP context server {server_id} cwd is invalid")
+        if (not isinstance(env, dict) or len(env) > 32
+                or any(not isinstance(k, str) or not isinstance(v, str)
+                       or "\x00" in k or "\x00" in v for k, v in env.items())):
+            raise ValueError(f"MCP context server {server_id} env is invalid")
+        if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
+                or not 0.1 <= timeout_s <= 30):
+            raise ValueError(f"MCP context server {server_id} timeoutSeconds must be 0.1–30")
+        specs[server_id] = {"command": command, "cwd": cwd,
+                            "env": env, "timeoutSeconds": float(timeout_s)}
+    return specs
+
+
+class ConfiguredMcpContextProvider:
+    """Own configured stdio context servers for one API application lifecycle."""
+
+    def __init__(self, specs: dict[str, dict], client_factory=None,
+                 startup_error: str | None = None) -> None:
+        self._specs = specs
+        self._factory = client_factory or StdioMcpClient
+        self._clients: dict[str, StdioMcpClient] = {}
+        self._errors: dict[str, str] = {}
+        if startup_error:
+            self._errors["configuration"] = startup_error[:120]
+        self._started = False
+        self._cache = McpContextCache()
+
+    def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        for server_id, spec in sorted(self._specs.items()):
+            client = None
+            try:
+                client = self._factory(
+                    spec["command"], cwd=spec.get("cwd"),
+                    timeout_s=spec["timeoutSeconds"], env=spec.get("env"))
+                client.initialize()
+                self._clients[server_id] = client
+            except Exception as exc:  # optional context servers never gate app startup
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                self._errors[server_id] = type(exc).__name__
+
+    def __call__(self) -> list[ContextItem]:
+        if not self._started:
+            self.start()
+        items = collect_mcp_context_items(self._clients, self._cache)
+        items.extend(ContextItem(
+            kind="mcp.error",
+            text=f"[mcp {server_id} unavailable during startup: {reason}]",
+            provenance="external", untrusted=True)
+            for server_id, reason in sorted(self._errors.items()))
+        return items
+
+    def close(self) -> None:
+        for client in list(self._clients.values()):
+            try:
+                client.close()
+            except Exception:
+                pass
+        self._clients.clear()
+
+
+def configured_context_provider(home: str | Path | None = None):
+    """Build the optional provider from the user's AURA agent configuration."""
+    try:
+        specs = load_context_server_specs(home)
+    except ValueError as exc:
+        return ConfiguredMcpContextProvider({}, startup_error=str(exc))
+    return ConfiguredMcpContextProvider(specs) if specs else None

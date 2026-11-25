@@ -707,6 +707,12 @@ class CentralAgent:
             editor_block=editor_block,
             project_id=getattr(session, "projectId", None),
             query=user_message)
+        # Delegated workers checkpoint the existing project-scoped
+        # common-context.json bridge. Make those facts available to the
+        # orchestrator as untrusted context too; this is the same store, not
+        # a second memory system.
+        from .context import append_run_context
+        append_run_context(bundle, getattr(session, "projectPath", None))
         if self._mcp_context_provider is not None:
             try:
                 bundle.items.extend(self._mcp_context_provider()[:8])

@@ -50,6 +50,35 @@ external LLM was consulted and none is claimed.
 | Model routing (provider chain, health/circuit, env-only keys, capped retries) | `central_agent/model_routing.py` | unit smoke: success, failover, honest RoutingError |
 | Bounded context assembly (provenance marks, untrusted fencing, size caps) | `central_agent/context.py` | render caps; wired into intent compilation |
 
+### Current MCP context wiring
+
+The Python API reads optional resource/prompt MCP server definitions from
+`~/.aura/agent/mcp-context-servers.json` (or `$AURA_HOME/agent/` when
+`AURA_HOME` is set). Example:
+
+```json
+{
+  "servers": {
+    "engineering-docs": {
+      "command": ["npx", "-y", "some-mcp-server"],
+      "cwd": "/path/to/project",
+      "env": {},
+      "timeoutSeconds": 10
+    }
+  }
+}
+```
+
+Commands are launched as argument arrays through the existing sanitized
+environment boundary. The API owns each process and closes it on shutdown;
+missing or failed optional servers do not prevent startup, and their context
+diagnostics remain marked untrusted. This feed reads MCP resources/prompts;
+the Common Context MCP server is tool-oriented. Delegated workers and
+CentralAgent share the existing project `common-context.json` through
+`central_agent/run_context.py`, which is added to planning context as
+untrusted data. This does not establish live OpenCode/Kilo agent-client
+round-trip verification.
+
 ## Runtime verification (12 checks — `backend/scripts/verify_central_agent.py`)
 
 1. status slice end-to-end · 2. evidence ↔ trail linkage ·

@@ -242,6 +242,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         EventBus,
         IntentCompiler,
     )
+    from ..central_agent.mcp_context import configured_context_provider
 
     # AURA's OWN reasoning model, separate from every worker runtime.
     # Present only when an operator configured a provider; absent means
@@ -329,6 +330,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         workflow_engine=engine, workflow_store=wf_store, run_store=run_store,
         agent_runtime=agent_runtime_svc,
         model_registry=_model_registry,
+        mcp_context_provider=configured_context_provider(H),
     )
     # Work that was in flight when a previous process died is not running
     # any more: say so now, rather than leaving it looking active.
@@ -2508,6 +2510,13 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     app.state.agent = agent
     app.state.shutdown = shutdown_coordinator
     app.state.bus = bus
+    # Optional MCP context servers are owned by the normal application
+    # lifecycle. Their failures remain visible to CentralAgent as untrusted
+    # context diagnostics and never prevent the API from starting.
+    context_provider = getattr(agent, "_mcp_context_provider", None)
+    if context_provider is not None:
+        app.add_event_handler("startup", context_provider.start)
+        app.add_event_handler("shutdown", context_provider.close)
     return app
 
 
