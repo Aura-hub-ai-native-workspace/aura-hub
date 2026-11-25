@@ -171,6 +171,18 @@ process.stdin.on('data', chunk => {
   assert.deepEqual({ handshake: good.handshakeVerified, call: good.toolInvocationVerified }, { handshake: true, call: true });
 });
 
+test('a probe whose server cannot even be spawned is reported unverified, not thrown', async () => {
+  // spawn() throws synchronously for some inputs (on Windows: a .cmd shim
+  // without a shell; everywhere: an argument containing a NUL byte). The
+  // probe must turn that into an unverified result so setup keeps going.
+  const before = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('aura-context-probe-')).length;
+  const r = await mod.verifyMcp({ command: process.execPath, args: ['bad\0arg'], environment: {} }, 1000);
+  assert.deepEqual({ configured: r.configured, handshake: r.handshakeVerified, verified: r.verified }, { configured: true, handshake: false, verified: false });
+  assert.match(r.error, /could not be started/);
+  const after = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('aura-context-probe-')).length;
+  assert.equal(after, before, 'the probe directory is removed');
+});
+
 test('status probes the context server only when requested and keeps server scope explicit', async () => {
   const dir = path.join(home, '.config', 'opencode'); fs.mkdirSync(dir, { recursive: true });
   const fixtureDir = path.join(home, 'mcp-fixtures'); fs.mkdirSync(fixtureDir, { recursive: true });

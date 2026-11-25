@@ -487,7 +487,18 @@ export function verifyMcp(spec, timeoutMs = 5000) {
   const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-context-probe-'));
   const probeStore = path.join(probeDir, 'probe.json');
   const env = { ...Object.fromEntries(['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SYSTEMROOT', 'TEMP', 'TMP'].filter((k) => process.env[k]).map((k) => [k, process.env[k]])), ...(spec.environment ?? {}), CONTEXT_MCP_FILE: probeStore, CONTEXT_MCP_AGENT_ID: 'aura-context-server-probe' };
-  const child = spawn(resolved, spec.args ?? [], { cwd: probeDir, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, env, detached: process.platform !== 'win32' });
+  let child;
+  try {
+    // npm installs the server as a `.cmd` shim on Windows. Node refuses to
+    // spawn `.cmd`/`.bat` without a shell (it throws synchronously), so use
+    // the same rule as every other spawn in this file.
+    child = spawn(resolved, spec.args ?? [], { cwd: probeDir, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, env, detached: process.platform !== 'win32', shell: IS_WIN && /\.(cmd|bat)$/i.test(resolved) });
+  } catch (e) {
+    // A probe that cannot start is an unverified server, never a crash of
+    // the caller (setup and status both await this).
+    fs.rmSync(probeDir, { recursive: true, force: true });
+    return Promise.resolve({ configured: true, handshakeVerified: false, toolInvocationVerified: false, verified: false, error: `MCP server could not be started (${String(e?.code ?? e?.message ?? e).slice(0, 120)})` });
+  }
   let buffer = '';
   let nextId = 0;
   const pending = new Map();
