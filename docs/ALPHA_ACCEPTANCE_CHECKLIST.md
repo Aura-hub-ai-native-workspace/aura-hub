@@ -35,21 +35,23 @@ Run on a clean user account for each of: **Linux x64**, **Windows x64**, **macOS
 | B2 | Bundled services start (AI service + Python API); failure shows a readable reason, not a blank window | NOT RUN | NOT RUN | NOT RUN |
 | B3 | Sign-in stays inside the hub (Google may open the browser once) | NOT RUN | NOT RUN | NOT RUN |
 | B4 | Connect one provider (BYOK or Ollama); model choice survives reconnect | NOT RUN | NOT RUN | NOT RUN |
-| B5 | Quit the app: no orphan processes remain (`process-containment-verify` + manual check) | PASS (`PHASE1_HANDOFF.md`) | **NOT VERIFIED** | **NOT VERIFIED** |
+| B5 | Quit the app: no orphan processes remain (`process-containment-verify` + manual check) | PASS for normal exit (`PHASE1_HANDOFF.md`). Observed 2026-11-25: after a `kill -9`, the worker's sandbox container keeps running until the next sandboxed task (cleanup is lazy) — not yet reproduced without an auto-resume, not filed | **NOT VERIFIED** | **NOT VERIFIED** |
 | B6 | Updater detects and applies a newer build | NOT RUN | NOT RUN | NOT RUN |
 
 ## C. Workspace execution (required)
 
-| # | Check | How to verify | Status |
+Linux run 2026-11-25 on PR #106 (`fe72298`): the Python API the Workspace uses, driven over HTTP on a throwaway home and project, with no model configured (deterministic mode). Real agents and credentials were unreachable (stripped `PATH`); delegation used a **fake** `claude` worker that passed AURA's readiness proof. Windows and macOS: NOT RUN.
+
+| # | Check | How to verify | Status (Linux) |
 |---|---|---|---|
-| C1 | Read-only request runs and answers with real output ("Show me the git status", "List the files") | Workspace run; answer contains tool output, not advice to run it yourself | NOT RUN |
-| C2 | Edit task completes and is verified (file change appears in the run observer and on disk) | Workspace run on a scratch repo | NOT RUN |
-| C3 | Delegated coding-agent task (OpenCode or Kilo) runs and reports `contextMcp` honestly | Run observer + execution report | NOT RUN |
-| C4 | Policy denial affects only the denied task; independent tasks still complete; summary says "partially completed" | Covered by unit tests in PR #106; needs one real run | NOT RUN |
-| C5 | Failed task recovers on a permitted alternative, or says plainly that none exists | Run observer "recoveries" list | NOT RUN |
-| C6 | STOP cancels a running mission within seconds; no worker keeps running | Manual + `process-containment-verify` | NOT RUN |
-| C7 | `kill -9` of the service mid-mission: decisions and outcomes still on disk; tampering detectable | `audit-journal-verify` | PASS on Linux (`PHASE1_HANDOFF.md`) |
-| C8 | A finished run never stays shown as "running" after restart | Restart during and after a run | NOT RUN |
+| C1 | Read-only request runs and answers with real output ("Show me the git status", "List the files") | Workspace run; answer contains tool output, not advice to run it yourself | **PASS** — git status, list files, read file, git diff, current branch: real output, verified, ~1 s each. Minor: "git diff" says "no uncommitted changes" while an untracked file exists |
+| C2 | Edit task completes and is verified (file change appears in the run observer and on disk) | Workspace run on a scratch repo | **PARTIAL** — file creation PASS (byte-identical read-back). A code change with no coding agent connected is refused before any effect, but worded as "Policy denied" rather than "no agent connected" |
+| C3 | Delegated coding-agent task (OpenCode or Kilo) runs and reports `contextMcp` honestly | Run observer + execution report | **PARTIAL** — delegation PASS with a fake worker (file modified, reported, verified). Not run with real OpenCode/Kilo (gate under #107). `contextMcp` is set by the executor but not shown in the report or audit trail |
+| C4 | Policy denial affects only the denied task; independent tasks still complete; summary says "partially completed" | Covered by unit tests in PR #106; needs one real run | **NOT VERIFIED** — the deterministic planner never produced a mixed plan (it drops or merges parts). The failure it reported was honest. Needs a model-backed run |
+| C5 | Failed task recovers on a permitted alternative, or says plainly that none exists | Run observer "recoveries" list | **PASS (no-alternative case)** — auth failure classified, not re-dispatched, `alternativeAvailable: false`, run failed honestly. The recovered-on-alternative case is NOT RUN |
+| C6 | STOP cancels a running mission within seconds; no worker keeps running | Manual + `process-containment-verify` | **PASS** — `cancelled` in 669 ms; worker container and grandchild process gone (`ps`, `docker ps`) |
+| C7 | `kill -9` of the service mid-mission: decisions and outcomes still on disk; tampering detectable | `audit-journal-verify` | **FAIL** (Python/Workspace path) — the in-flight invocation left no audit record (#109). The earlier PASS covered the Node service only |
+| C8 | A finished run never stays shown as "running" after restart | Restart during and after a run | **FAIL** — after restart the run is auto-resumed but shown as "interrupted" while its worker runs, and still after STOP (#110) |
 
 ## D. Agent sessions and coordination (required)
 

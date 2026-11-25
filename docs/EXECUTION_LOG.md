@@ -90,6 +90,31 @@ Evidence: every commit passes backend import + `npm run typecheck`; branch tip i
 
 Limitations reported, not changed: `enforce_admins` is off (admins can bypass); required names are tied to the matrix labels in `ci.yml` (renaming one blocks every PR until protection is updated); Docker compose smoke is not required.
 
+**Docs-only PR:** #108 (this log + approved checklist). Funding details kept out of the public repository at the owner's choice.
+
+## 2026-11-25 — Linux Workspace acceptance run (checklist §C)
+
+**Setup:** PR #106 at `fe72298`. The Python API the Workspace calls, on a private port with a throwaway home, project and instance token, driven over HTTP. No model configured (deterministic mode). `PATH` stripped so the real OpenCode/Kilo binaries and the owner's credentials were unreachable. Delegation used a **fake** `claude` worker that passed AURA's readiness proof (reported as "connected for basic work"). Afterwards: no test API, containers or processes left (`ss`, `docker ps`, `ps`).
+
+| Item | Result |
+|---|---|
+| C1 read-only | **PASS** — 5 requests, real output, verified, ~1 s each |
+| C2 edit | **PARTIAL** — file creation PASS; code change without an agent refused, worded as "Policy denied" |
+| C3 delegation | **PARTIAL** — PASS with a fake worker; real OpenCode/Kilo not run (#107); `contextMcp` not surfaced in report/audit |
+| C4 per-task denial | **NOT VERIFIED** — deterministic planner never produced a mixed plan |
+| C5 recovery | **PASS** for "no alternative" (auth failure, honest failure); alternative case NOT RUN |
+| C6 STOP | **PASS** — cancelled in 669 ms; container and grandchild gone |
+| C7 crash audit | **FAIL** — **#109**: in-flight invocation leaves no audit record after `kill -9` |
+| C8 restart state | **FAIL** — **#110**: auto-resumed run shown as "interrupted" while its worker runs |
+
+**Issues filed (freshly reproduced, with evidence):** #109, #110.
+
+**Observed, not filed** (not critical, or not independently reproduced): "no agent connected" worded as policy denial; deterministic planner silently drops or merges parts of multi-part requests (the objective check still reports failure honestly); `contextMcp` not surfaced; "git diff" says "no uncommitted changes" when only untracked files exist; a cancelled invocation is audited as `failed`; `lastResult.tasks` empty on a failed delegation; after a crash, the sandbox container keeps running until the next sandboxed task (cleanup is lazy).
+
+## 2026-11-25 — PR #106 CI, second Windows failure
+
+Run `45638369911` on `fe72298`: the Windows service suite now passes (390 passed, 32 skipped), confirming the `.cmd` fix. The next step, `test:agents`, failed on one test whose fake MCP servers were shebang scripts that Windows cannot execute (`spawn … ENOENT`) — a test portability bug, not a product bug. Fixed in `e6c6cd4` (fixtures launched via `node`); 20/20 locally. CI re-run `45640855107`: _running_.
+
 ---
 
 ## Phase 1 task status
@@ -97,8 +122,8 @@ Limitations reported, not changed: `enforce_admins` is off (admins can bypass); 
 | Task | Status | Notes |
 |---|---|---|
 | Establish repository and release baseline | **IN PROGRESS** | Change set preserved and in PR #106. Cross-OS merge gate enforced on `main` (8 required checks). Remaining: stale PRs #67/#62, root clutter, old stashes, `enforce_admins` decision. |
-| Close critical Workspace execution bugs | **IN PROGRESS** | #107 filed (security). Other critical bugs need a reproduction run (checklist §C) — prior audit docs are out of date and were not filed without fresh evidence. |
-| Complete priority agent-session and coordination gaps | **IN PROGRESS** | PR #106 (draft) — awaiting cross-OS CI, independent review, #107. |
+| Close critical Workspace execution bugs | **IN PROGRESS** | Linux acceptance run done. Open critical bugs: #107 (security), #109 (crash audit gap), #110 (resumed run state). None fixed yet. |
+| Complete priority agent-session and coordination gaps | **IN PROGRESS** | PR #106 (draft) — 2 Windows CI failures fixed (`fe72298`, `e6c6cd4`); awaiting green cross-OS CI, independent review, #107. |
 | Validate Windows, Linux and macOS | **PARTIAL** | CI builds and backend tests pass on all three. Process containment NOT VERIFIED on Windows/macOS. No hands-on install run recorded. |
 | Define verified alpha acceptance checklist | **DONE** | `docs/ALPHA_ACCEPTANCE_CHECKLIST.md` approved by the owner 2026-11-25. |
 
@@ -107,8 +132,8 @@ Limitations reported, not changed: `enforce_admins` is off (admins can bypass); 
 Tracked privately by the owner (not in this public repository). No GPU allocation or 24/7 server is secured; budget ₹0; Phase 2 implementation not started.
 
 ## In progress
-- PR #106 cross-OS CI run `45638369911` (Windows fix `fe72298`).
-- Workspace acceptance checks (checklist §C) on Linux.
+- PR #106 cross-OS CI run `45640855107` (`e6c6cd4`).
+- Docs PR #108 CI.
 
 ## Blockers and dependencies
 - PR #106 merge: cross-OS CI + independent review + #107.
@@ -116,7 +141,7 @@ Tracked privately by the owner (not in this public repository). No GPU allocatio
 - Phase 2 credit checks need the owner's account access.
 
 ## Next concrete action
-Run checklist §C Workspace journeys on Linux; file critical Workspace bugs only when freshly reproduced, with evidence.
+Owner decides the fix order for #109 and #110 (and whether #107 remediation starts now); confirm PR #106 cross-OS CI is green.
 
 ## Recommended changes to the roadmap (awaiting approval)
 - None.
