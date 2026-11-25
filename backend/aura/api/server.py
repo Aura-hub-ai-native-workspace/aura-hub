@@ -242,6 +242,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         EventBus,
         IntentCompiler,
     )
+    from ..central_agent.mcp_context import configured_context_provider
 
     # AURA's OWN reasoning model, separate from every worker runtime.
     # Present only when an operator configured a provider; absent means
@@ -329,6 +330,7 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         workflow_engine=engine, workflow_store=wf_store, run_store=run_store,
         agent_runtime=agent_runtime_svc,
         model_registry=_model_registry,
+        mcp_context_provider=configured_context_provider(H),
     )
     # Work that was in flight when a previous process died is not running
     # any more: say so now, rather than leaving it looking active.
@@ -1552,6 +1554,22 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
             "total": len(workers),
         })
 
+    async def specialists_list(request: Request):
+        """AURA's six specialists and whether each one's assigned runtime is connected now."""
+        from ..central_agent.specialists import roster
+        from ..workers import describe_workers
+
+        try:
+            workers = describe_workers(S["nodes"])
+            present = {w.id for w in workers if w.connected}
+            names = {w.id: w.name for w in workers}
+        except Exception:  # noqa: BLE001 — unknown availability is reported as unknown, never guessed
+            present, names = None, {}
+        items = roster(present)
+        for item in items:
+            item["runtimeName"] = names.get(item["runtime"], item["runtime"])
+        return JSONResponse({"specialists": items})
+
     async def workers_authorize(request: Request):
         """The owner accepts the cost of one worker. Called by the app's own Allow button only."""
         from ..workers.billing import authorize
@@ -2419,6 +2437,7 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
         Route("/fabric/nodes", fabric_nodes_get, methods=["GET"]),
         Route("/fabric/nodes", fabric_nodes_register, methods=["POST"]),
         Route("/fabric/nodes/{nid}", fabric_nodes_remove, methods=["DELETE"]),
+        Route("/agent/specialists", specialists_list, methods=["GET"]),
         Route("/workers", workers_list, methods=["GET"]),
         Route("/workers/versions", workers_versions, methods=["GET"]),
         Route("/workers/authorize", workers_authorize, methods=["POST"]),
@@ -2508,6 +2527,13 @@ def create_api_server(*, fabric=None, run_scopes=None, secrets_store=None,
     app.state.agent = agent
     app.state.shutdown = shutdown_coordinator
     app.state.bus = bus
+    # Optional MCP context servers are owned by the normal application
+    # lifecycle. Their failures remain visible to CentralAgent as untrusted
+    # context diagnostics and never prevent the API from starting.
+    context_provider = getattr(agent, "_mcp_context_provider", None)
+    if context_provider is not None:
+        app.add_event_handler("startup", context_provider.start)
+        app.add_event_handler("shutdown", context_provider.close)
     return app
 
 

@@ -1,19 +1,20 @@
 """MCP stdio transport — the untrusted-external boundary made real.
 
-Speaks JSON-RPC 2.0 over stdio with an MCP-style server (initialize,
-tools/list, tools/call). The client enforces strict timeouts and response
+Speaks JSON-RPC 2.0 over stdio with an MCP server (initialize,
+notifications/initialized, tools/list, tools/call, resources and prompts). The client enforces strict timeouts and response
 size caps. Everything a server SAYS is data: tool descriptors are
 sanitized by the gateway before they can be discovered, and every call is
 a governed fabric invocation — never a direct execution.
 
-Protocol scope for this milestone: initialize / tools/list / tools/call.
-Resources and prompts are not claimed and not implemented.
+Protocol scope: initialize / notifications/initialized / tools/list /
+tools/call / resources / prompts.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import queue
 import signal
 import subprocess
 import threading
@@ -57,6 +58,31 @@ class StdioMcpClient:
         self._timeout = timeout_s
         self._next_id = 0
         self._server_info: dict | None = None
+        self._responses: queue.Queue = queue.Queue()
+        self._closed = False
+        self._reader = threading.Thread(
+            target=self._read_responses, name="aura-mcp-stdout", daemon=True)
+        self._reader.start()
+
+    def _read_responses(self) -> None:
+        """Drain stdout independently so request deadlines also work on Windows.
+
+        select() cannot wait on Windows anonymous pipes. This one daemon
+        reader owns stdout for the process lifetime and hands bounded lines
+        back to the serialized request path.
+        """
+        try:
+            while True:
+                raw = self._proc.stdout.readline(MAX_RESPONSE_BYTES + 1)
+                if not raw:
+                    self._responses.put(None)
+                    return
+                if len(raw.encode("utf-8", "replace")) > MAX_RESPONSE_BYTES:
+                    self._responses.put(McpTransportError("server response exceeds size limit"))
+                    return
+                self._responses.put(raw)
+        except Exception as exc:  # noqa: BLE001 — reported to the waiting caller
+            self._responses.put(McpTransportError(f"failed to read server response: {type(exc).__name__}"))
 
     def _request(self, method: str, params: dict | None = None) -> dict:
         with self._lock:
@@ -72,7 +98,14 @@ class StdioMcpClient:
                 self._proc.stdin.flush()
             except (BrokenPipeError, OSError) as exc:
                 raise McpTransportError(f"failed to write request: {exc}") from exc
-            raw = self._proc.stdout.readline(MAX_RESPONSE_BYTES)
+            try:
+                raw = self._responses.get(timeout=self._timeout)
+            except queue.Empty as exc:
+                self.close()
+                raise McpTransportError(
+                    f"server response timed out after {self._timeout:g}s") from exc
+            if isinstance(raw, McpTransportError):
+                raise raw
             if not raw:
                 raise McpTransportError("empty response from server")
             try:
@@ -85,6 +118,20 @@ class StdioMcpClient:
                 raise McpTransportError(f"server error: {reply['error']}")
             return reply.get("result") or {}
 
+    def _notify(self, method: str, params: dict | None = None) -> None:
+        """Send a JSON-RPC notification, which has no response id."""
+        with self._lock:
+            if self._proc.poll() is not None:
+                raise McpTransportError("server process has exited")
+            line = json.dumps({"jsonrpc": "2.0", "method": method,
+                              "params": params or {}}, ensure_ascii=False)
+            try:
+                self._proc.stdin.write(line + "\n")
+                self._proc.stdin.flush()
+            except (BrokenPipeError, OSError) as exc:
+                raise McpTransportError(
+                    f"failed to write notification: {exc}") from exc
+
     # ── protocol ─────────────────────────────────────────────────────────
     def initialize(self) -> dict:
         result = self._request("initialize", {
@@ -92,6 +139,7 @@ class StdioMcpClient:
             "capabilities": {},
             "clientInfo": {"name": "aura-central-agent", "version": "0.2.0"},
         })
+        self._notify("notifications/initialized")
         self._server_info = result.get("serverInfo")
         return result
 
@@ -151,6 +199,9 @@ class StdioMcpClient:
         return self._server_info
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         try:
             self._proc.stdin.close()
         except Exception:

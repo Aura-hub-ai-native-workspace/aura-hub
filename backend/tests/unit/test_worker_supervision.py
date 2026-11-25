@@ -376,6 +376,8 @@ class TestAgentDelegateContract:
         import aura.executors as ex
 
         async def fake_run(bin_name, args, cwd, timeout_ms=None, env=None):
+            if args[:3] == ["--standalone", "debug", "config"]:
+                return FakeOut(out='{"mcp":{"servers":{}}}')
             return FakeOut(out="done", code=0)
 
         monkeypatch.setattr(ex, "run_agent", fake_run)
@@ -390,6 +392,8 @@ class TestAgentDelegateContract:
         import aura.executors as ex
 
         async def fake_run(bin_name, args, cwd, timeout_ms=None, env=None):
+            if args[:3] == ["--standalone", "debug", "config"]:
+                return FakeOut(out='{"mcp":{"servers":{}}}')
             with open(os.path.join(cwd, "rogue.py"), "w") as fh:
                 fh.write("x = 1\n")
             return FakeOut(out="done", code=0)
@@ -410,6 +414,8 @@ class TestAgentDelegateContract:
         import aura.executors as ex
 
         async def fake_run(bin_name, args, cwd, timeout_ms=None, env=None):
+            if args[:3] == ["--standalone", "debug", "config"]:
+                return FakeOut(out='{"mcp":{"servers":{}}}')
             with open(os.path.join(cwd, "leg-b.txt"), "w") as fh:
                 fh.write("b\n")
             return FakeOut(out="done", code=0)

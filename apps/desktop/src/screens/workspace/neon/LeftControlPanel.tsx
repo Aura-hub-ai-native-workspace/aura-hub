@@ -3,6 +3,8 @@ import type { WorkerDescriptor } from '../../../ai/workerClient';
 import type { ToolSlot } from '../../../workspace/toolSlots';
 import type { WorkerSlot } from '../../../workspace/workerSlots';
 import { OrchestrationGraph } from './OrchestrationGraph';
+import { SpecialistRoster } from './SpecialistRoster';
+import type { Specialist } from '../../../ai/workerClient';
 
 /**
  * LeftControlPanel — the members and tools rail.
@@ -48,7 +50,12 @@ export function LeftControlPanel({
   onConnectWorker,
   onDisconnectWorker,
   agentBusy,
+  specialists,
+  specialistsError,
 }: {
+  /** AURA's six agents with their runtime's real availability; omitted until read. */
+  specialists?: Specialist[];
+  specialistsError?: string | null;
   /** The workspace's three active tool slots, filled or empty. */
   toolSlots: ToolSlot[];
   /** The workspace's six worker slots, filled or empty. */
@@ -129,6 +136,8 @@ export function LeftControlPanel({
             onRemoveTool={onRemoveTool}
             onReplaceTool={onReplaceTool}
           />
+
+          <SpecialistRoster specialists={specialists ?? []} error={specialistsError} />
 
           {/* Worker status counts */}
           <p

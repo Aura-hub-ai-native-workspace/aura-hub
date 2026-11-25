@@ -27,6 +27,12 @@ describe('the run view is built only from reported events', () => {
     expect(v.checklist[0].worker).toBe('codex');
   });
 
+  it('records which AURA specialist holds a task only when the backend names one', () => {
+    const v = fold([...frames, frame('task.state', { taskId: 'task-2', state: 'running', worker: 'kilo-code', specialist: 'debugger', specialistName: 'Debugger' })]);
+    expect(v.checklist[1].specialist).toBe('Debugger');
+    expect(v.checklist[0].specialist).toBeUndefined();
+  });
+
   it('lists observed files and the workers seen', () => {
     const v = fold(frames);
     expect(v.files).toEqual([{ path: 'NOTES.md', op: 'created', taskId: 'task-1', worker: 'codex' }]);
@@ -55,6 +61,21 @@ describe('the run view is built only from reported events', () => {
     expect(v.handoffs).toEqual([{ taskId: 'task-2', from: 'codex', to: 'claude-code', reason: 'quota exhausted' }]);
   });
 
+  it('shows recovery outcomes and selected alternatives from actual retry events', () => {
+    const v = fold([
+      frame('plan.received', { tasks: [{ id: 't1', title: 'Run the tests' }] }),
+      frame('task.retried', { taskId: 't1', round: 1, fromNode: 'opencode', toNode: 'kilo-code',
+        previousState: 'failed', reason: 'provider unavailable', state: 'done', verified: true,
+        alternativeSelected: true, alternativeAvailable: true }),
+    ]);
+    expect(v.recoveries).toEqual([{
+      taskId: 't1', round: 1, fromNode: 'opencode', toNode: 'kilo-code',
+      previousState: 'failed', reason: 'provider unavailable', state: 'done', verified: true,
+      alternativeSelected: true, alternativeAvailable: true,
+    }]);
+    expect(v.timeline.at(-1)?.text).toContain('recovered on kilo-code');
+  });
+
   it('says it is waiting when another worker holds the project', () => {
     const v = fold([frame('worker.queued', { taskId: 't', waitingFor: { worker: 'codex' }, reason: 'another worker is editing this project; one at a time' })]);
     expect(v.waitingFor).toBe('codex');
@@ -73,10 +94,14 @@ describe('recovery and the completion line', () => {
       workCompleted: [{ taskId: 'task-1', description: 'Write NOTES.md', worker: 'codex' }],
       unfinished: [{ taskId: 'task-2', description: 'Add a test', state: 'blocked', detail: 'needs pnpm' }],
       filesChanged: [{ path: 'NOTES.md', op: 'created', taskId: 'task-1', worker: 'codex', verified: true }],
+      recoveryActions: [{ taskId: 'task-2', round: 1, fromNode: 'codex', toNode: 'claude-code',
+        reason: 'quota exhausted', previousState: 'failed', state: 'blocked', verified: false,
+        handoff: true, alternativeSelected: true, alternativeAvailable: true }],
     }));
     expect(v.finished).toBe(true);
     expect(v.checklist.map((c) => c.state)).toEqual(['verified', 'blocked']);
     expect(v.files).toHaveLength(1);
+    expect(v.recoveries[0]?.toNode).toBe('claude-code');
   });
   it('never calls partial success complete', () => {
     const partial = seedFromReport('s', report({ outcome: 'completed', workCompleted: [{ taskId: 'a', description: 'a', worker: null }], unfinished: [{ taskId: 'b', description: 'b', state: 'failed', detail: '' }] }));

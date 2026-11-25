@@ -707,6 +707,12 @@ class CentralAgent:
             editor_block=editor_block,
             project_id=getattr(session, "projectId", None),
             query=user_message)
+        # Delegated workers checkpoint the existing project-scoped
+        # common-context.json bridge. Make those facts available to the
+        # orchestrator as untrusted context too; this is the same store, not
+        # a second memory system.
+        from .context import append_run_context
+        append_run_context(bundle, getattr(session, "projectPath", None))
         if self._mcp_context_provider is not None:
             try:
                 bundle.items.extend(self._mcp_context_provider()[:8])
@@ -843,10 +849,15 @@ class CentralAgent:
             if session.orchestrationState == "running":
                 if result.outcome == "completed":
                     session.orchestrationState = "completed"
-                elif result.outcome in ("failed", "denied", "timeout"):
-                    session.orchestrationState = "failed"
                 elif result.outcome == "cancelled":
                     session.orchestrationState = "cancelled"
+                elif result.outcome == "interrupted":
+                    session.orchestrationState = "interrupted"
+                else:
+                    # failed, denied, timeout, blocked (capability
+                    # unavailable) and any future terminal outcome: never
+                    # leave a finished run reported as still running.
+                    session.orchestrationState = "failed"
                 session.orchestrationFinishedAt = _now()
                 self.sessions.save(session)
         except Exception as exc:  # noqa: BLE001 — must not die silently
@@ -944,13 +955,14 @@ class CentralAgent:
         # Installs still run only through the governed tool.provision path.
         self._provision_for_plan(session, plan)
 
-        # 4. authority — read-only preflight through the ONE policy engine
+        # 4. authority — read-only preflight through the ONE policy engine.
+        # Carry a denial onto only the task it governs. ExecutionController
+        # records that task as denied without invoking it, then continues
+        # independent work. Allowed tasks still reach Fabric's enforcement.
         requirements = self.authority.check_plan(plan, session.projectId)
-        blocked = self.authority.blocked(requirements)
+        self.authority.mark_denials(plan, requirements)
         self._emit("authority.checked", sid,
                    decisions=[r.model_dump() for r in requirements])
-        if blocked:
-            return self._fail(session, "Policy denies this plan: " + "; ".join(blocked))
         self._emit("workflow.considered", sid, **self.workflow_assessment(plan))
 
         # 4b. Workspace runs the assigned goal now. Routine work runs by
@@ -1051,14 +1063,14 @@ class CentralAgent:
                 outcome=outcome, plan=plan)
 
         if outcome.denied:
-            report = self.verifier.verify(plan, outcome.outcomes)
-            bundle = self._collect_evidence(sid, plan.planId, outcome.outcomes,
-                                           f"Denied: {outcome.stop_reason}", _now())
-            self._emit("agent.failed", sid, reason="policy denial", denied=True)
-            return AgentResult(status="failed", outcome="denied",
-                               summary=f"Policy denied this request: {outcome.stop_reason}",
-                               performed=[o.taskId for o in outcome.outcomes if o.performed],
-                               evidence=bundle, failureReason="policy-denied")
+            # A denial is terminal for that task, not necessarily for the
+            # mission. Let existing correction logic inspect concurrent
+            # failures/deviations, then synthesize the aggregate task rows.
+            if outcome.stopped or getattr(outcome, "deviation_evidence", None):
+                corrected = self._maybe_correct(session, plan, outcome)
+                if corrected is not None:
+                    return corrected
+            return self._synthesize(session, plan, outcome)
         if outcome.timed_out:
             bundle = self._collect_evidence(sid, plan.planId, outcome.outcomes,
                                            "Timed out.", _now())
@@ -1722,7 +1734,7 @@ class CentralAgent:
     def _report_slot(self, sid: str) -> dict:
         return self._reports.setdefault(sid, {
             "tasks": {}, "changes": {}, "tests": [], "workers": {}, "evidence": {},
-            "limitations": [], "handoffs": [], "tools": []})
+            "limitations": [], "handoffs": [], "recoveries": [], "tools": []})
 
     @staticmethod
     def workflow_assessment(plan: TaskPlan) -> dict:
@@ -1839,6 +1851,13 @@ class CentralAgent:
                 rep["tests"].append({"taskId": ev.get("taskId"), "worker": ev.get("workerNodeId"),
                                      "command": cmd[:160], "decision": ev.get("decision")})
         for r in (getattr(outcome, "recovery", None) or []):
+            recovery = {k: r.get(k) for k in
+                        ("taskId", "round", "fromNode", "toNode", "reason",
+                         "previousState", "state", "verified", "handoff",
+                         "alternativeSelected", "alternativeAvailable",
+                         "sameRuntimeRetry")}
+            if recovery not in rep["recoveries"]:
+                rep["recoveries"].append(recovery)
             if r.get("toNode") and r.get("toNode") != r.get("fromNode"):
                 rep["handoffs"].append({k: r.get(k) for k in
                                         ("taskId", "fromNode", "toNode", "reason", "round", "verified")})
@@ -1890,6 +1909,7 @@ class CentralAgent:
             "verificationEvidence": [{"taskId": k, "invocations": v} for k, v in rep["evidence"].items()],
             "acceptanceStated": stated,
             "errors": errors, "handoffs": rep["handoffs"][:12],
+            "recoveryActions": rep["recoveries"][:20],
             "limitations": limits,
         }
 
@@ -2039,6 +2059,12 @@ class CentralAgent:
         for rec in list(getattr(outcome, "recovery", None) or []):
             tid = str(rec.get("taskId"))
             if tid in seen or tid not in by_task:
+                continue
+            # A pre-dispatch provider substitution is a routing decision,
+            # not a worker failure: nothing ran, so nothing failed. If the
+            # chosen alternative then fails, the final-state pass below
+            # records it like any other failing task.
+            if rec.get("kind") == "alternative-provider":
                 continue
             seen.add(tid)
             reason = str(rec.get("reason") or "")
@@ -2947,6 +2973,28 @@ class CentralAgent:
             return (NO_OUTPUT, False)
         return (describe(capability, dict(task.input or {}), str(record.get("stdout") or "")), True)
 
+    @staticmethod
+    def _blocked_reason(rows: Any) -> str | None:
+        """Classify a run whose ONLY unsuccessful rows are blocked.
+
+        Returns ``capability-unavailable`` / ``tool-blocked`` /
+        ``task-blocked``, or None when any row failed, timed out, was
+        cancelled or denied (those outcomes take precedence) or nothing
+        was blocked at all.
+        """
+        rows = list(rows)
+        blocked = [r for r in rows if r.state == "blocked"]
+        if not blocked or any(
+                r.state in {"failed", "timed-out", "cancelled", "denied"}
+                for r in rows):
+            return None
+        details = [(r.detail or "") for r in blocked]
+        if any(d.startswith("Capability unavailable:") for d in details):
+            return "capability-unavailable"
+        if any(d.startswith("Tool blocked:") for d in details):
+            return "tool-blocked"
+        return "task-blocked"
+
     def _synthesize(self, session: AgentSession, plan: TaskPlan,
                     outcome: ExecutionOutcome) -> AgentResult:
         """Steps 7-9: verify + evidence + result synthesis from records."""
@@ -2978,6 +3026,64 @@ class CentralAgent:
             self._emit("worker.lifecycle", sid,
                        event="write-conflict-detected",
                        conflicts=outcome.write_conflicts)
+        latest = {row.taskId: row for row in outcome.outcomes}
+        planned_ids = [task.id for task in plan.tasks]
+        all_denied = bool(planned_ids) and all(
+            task_id in latest and latest[task_id].state == "denied"
+            for task_id in planned_ids)
+        if all_denied:
+            detail = "; ".join(dict.fromkeys(
+                latest[task_id].detail for task_id in planned_ids
+                if latest[task_id].detail)) or "The policy denied every task."
+            self._emit("agent.failed", sid, reason="policy denial", denied=True)
+            self._emit("result.ready", sid, passed=False)
+            return AgentResult(
+                **mission,
+                status="failed", outcome="denied",
+                summary=f"Policy denied this request: {detail}",
+                performed=[o.taskId for o in outcome.outcomes if o.performed],
+                verified=[o.taskId for o in report.outcomes
+                          if o.verified is True],
+                evidence=bundle, failureReason="policy-denied")
+
+        if "denied" in {row.state for row in latest.values()}:
+            # Keep denial attached to its task while describing the actual
+            # aggregate. This branch also prevents a verified subset from
+            # being reported as full mission completion.
+            verified_ids = [row.taskId for row in report.outcomes
+                            if row.verified is True]
+            reasons = self._practical_reasons(plan, outcome, report)
+            summary = "Mission partially completed. "
+            if verified_ids:
+                summary += f"{len(verified_ids)} task(s) verified. "
+            summary += " ".join(reasons)
+            self._emit("agent.failed", sid, reason="mixed mission outcomes",
+                       denied=True)
+            self._emit("result.ready", sid, passed=False)
+            return AgentResult(
+                **mission,
+                status="failed", outcome="failed", summary=summary,
+                performed=[o.taskId for o in outcome.outcomes if o.performed],
+                verified=verified_ids, evidence=bundle,
+                failureReason="mixed-outcomes")
+        blocked_reason = self._blocked_reason(latest.values())
+        if blocked_reason in {"capability-unavailable", "tool-blocked"}:
+            reason = blocked_reason
+            label = ("Capability unavailable"
+                     if reason == "capability-unavailable"
+                     else "Required tool unavailable")
+            self._emit("agent.failed", sid, reason=label.lower(), denied=False)
+            self._emit("result.ready", sid, passed=False)
+            return AgentResult(
+                **mission,
+                status="failed", outcome="blocked",
+                summary=("Mission not verified. "
+                         + " ".join(self._practical_reasons(
+                             plan, outcome, report))),
+                performed=[o.taskId for o in outcome.outcomes if o.performed],
+                verified=[o.taskId for o in report.outcomes
+                          if o.verified is True],
+                evidence=bundle, failureReason=reason)
         self._emit("result.ready", sid, passed=report.passed)
         # Model-backed read-only answer synthesis, streamed as
         # answer.token frames. This path only REASONS OVER records the
@@ -3128,7 +3234,9 @@ class CentralAgent:
             elif "cancelled" in states:
                 term, reason = "cancelled", "cancelled"
             elif states & {"failed", "blocked"}:
-                term, reason = "failed", "task-failed"
+                blocked_reason = self._blocked_reason(outcome.outcomes)
+                term, reason = (("blocked", blocked_reason) if blocked_reason
+                                else ("failed", "task-failed"))
             else:
                 term, reason = "failed", "unverified-actions"
             names = [o.taskId for o in outcome.outcomes
@@ -3140,7 +3248,8 @@ class CentralAgent:
                 outcome=term,
                 summary=(
                     f"{'; '.join(summary_bits)}. "
-                    + (f"Not finished or not verified: {', '.join(names)}. "
+                    + ("Not finished or not verified: "
+                       + " ".join(self._practical_reasons(plan, outcome, report))
                        if names else "")
                     + (f"Verified — {'; '.join(verified_lines)}. "
                        if verified_lines else "")

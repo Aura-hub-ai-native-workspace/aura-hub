@@ -50,6 +50,8 @@ def main() -> int:
             reply(rid, {"protocolVersion": "2024-11-05",
                         "capabilities": {"tools": {}},
                         "serverInfo": server})
+        elif method == "notifications/initialized":
+            continue
         elif method == "tools/list":
             reply(rid, {"tools": TOOLS})
         elif method == "tools/call":

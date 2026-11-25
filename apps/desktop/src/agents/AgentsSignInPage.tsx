@@ -26,13 +26,13 @@ const phaseOf = (a: AgentStatus): Phase =>
 const ASSURANCES = [
   ['Each agent signs in with its own provider', 'OpenCode Go, Kilo Gateway, ChatGPT, Google, Radius — the provider’s own sign-in, nothing in between.'],
   ['Your credentials stay on this device', 'Each agent stores its own sign-in locally. AURA only checks whether one exists.'],
-  ['One shared context', 'Every connected agent reads and writes the same common-context, so work carries over.'],
+  ['Shared context', 'AURA can check the configured Common Context server separately; this does not test an agent’s MCP client.'],
 ] as const;
 
 function Badge({ phase }: { phase: Phase }) {
   const map: Record<Phase, [string, string]> = {
-    connected: ['Connected', 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'],
-    pending: ['Not connected', 'border-white/10 bg-white/[0.04] text-white/60'],
+    connected: ['Signed in', 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'],
+    pending: ['Not signed in', 'border-white/10 bg-white/[0.04] text-white/60'],
     later: ['Later', 'border-white/10 bg-transparent text-white/45'],
     missing: ['Not installed', 'border-amber-500/30 bg-amber-500/10 text-amber-300'],
   };
@@ -62,7 +62,7 @@ export function AgentsSignInPage({ onContinue, onSkip, continueLabel = 'Continue
 
   const refresh = useCallback(() => {
     void loadChoice();
-    fetchAgentStatus().then((a) => { setAgents(a); setError(null); }).catch((e) => setError(String(e?.message ?? e)));
+    fetchAgentStatus({ verifyContextServer: true }).then((a) => { setAgents(a); setError(null); }).catch((e) => setError(String(e?.message ?? e)));
   }, [loadChoice]);
 
   const remove = async (id: AgentId) => {
@@ -146,7 +146,7 @@ export function AgentsSignInPage({ onContinue, onSkip, continueLabel = 'Continue
                           <span className="text-[14px] font-medium">{a.name}</span>
                           <Badge phase={phase} />
                         </div>
-                        <div className="mt-0.5 truncate text-[12.5px] text-white/45">{METHOD[a.id]}</div>
+                        <div className="mt-0.5 truncate text-[12.5px] text-white/45">{METHOD[a.id]} · MCP {a.mcpConfigError ? `configuration invalid · ${a.mcpConfigError}` : a.mcpConfigured ? 'configured' : 'not configured'} · {a.contextServerVerified ? 'Context server verified' : a.contextServerHandshakeVerified ? `Context server handshake verified; tool invocation not verified${a.contextServerError ? ` · ${a.contextServerError}` : ''}` : a.contextServerError ? `Context server not verified · ${a.contextServerError}` : 'Context server not checked'} · {a.executableByAura ? 'Executable by AURA' : 'Not executable by AURA'}</div>
                       </div>
                       {!open && (
                         <button type="button" onClick={() => remove(a.id)} disabled={busy !== null || active !== null}

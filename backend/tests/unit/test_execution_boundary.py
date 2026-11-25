@@ -36,6 +36,11 @@ EXECUTION_EXEMPTIONS: dict[str, str] = {
         "the boundary deliberately refuses to provide; it still passes an "
         "explicit sanitized environment and its own session"
     ),
+    "aura/workers/opencode_mcp.py": (
+        "owns OpenCode's private loopback MCP readiness server and must retain "
+        "its live stderr pipe, cancellation signal and bounded process-group "
+        "cleanup; it launches no project command"
+    ),
     "aura/exec_/__init__.py": (
         "runs the project commands a user asked for, where the project's own "
         "environment is the point; stdin is closed and the whole process "

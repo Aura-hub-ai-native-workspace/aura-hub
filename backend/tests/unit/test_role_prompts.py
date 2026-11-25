@@ -417,6 +417,8 @@ class TestExecutorRoleComposition:
         seen: dict = {}
 
         async def fake_run(bin_name, args, cwd, timeout_ms=None, env=None):
+            if args[:3] == ["--standalone", "debug", "config"]:
+                return _FakeOut(out='{"mcp":{"servers":{}}}')
             seen["args"] = list(args)
             return _FakeOut(out="done", code=0)
 
@@ -438,6 +440,8 @@ class TestExecutorRoleComposition:
         seen: dict = {}
 
         async def fake_run(bin_name, args, cwd, timeout_ms=None, env=None):
+            if args[:3] == ["--standalone", "debug", "config"]:
+                return _FakeOut(out='{"mcp":{"servers":{}}}')
             seen["args"] = list(args)
             return _FakeOut(out="done", code=0)
 
@@ -458,6 +462,8 @@ class TestExecutorRoleComposition:
         seen: dict = {}
 
         async def fake_run(bin_name, args, cwd, timeout_ms=None, env=None):
+            if args[:3] == ["--standalone", "debug", "config"]:
+                return _FakeOut(out='{"mcp":{"servers":{}}}')
             seen["args"] = list(args)
             return _FakeOut(out="done", code=0)
 

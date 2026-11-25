@@ -96,6 +96,8 @@ def _run(tmp_path, monkeypatch, outputs, extra=None):
     seen: list[list[str]] = []
 
     async def fake_run(bin_name, args, cwd, timeout_ms=None, env=None):
+        if args[:3] == ["--standalone", "debug", "config"]:
+            return _Out('{"mcp":{"servers":{}}}')
         seen.append(list(args))
         return _Out(outputs[len(seen) - 1])
 

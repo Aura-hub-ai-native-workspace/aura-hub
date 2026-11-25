@@ -85,15 +85,60 @@ def test_partial_failure_shows_failed_and_not_started_tasks(tmp_path):
     assert "t1" not in result.verified
 
 
-def test_denied_worker_is_reported_as_denied_not_completed(tmp_path):
+def test_denied_worker_with_successful_sibling_is_reported_as_mixed(tmp_path):
     svc = _service(tmp_path)
     plan = _plan(_task("t1"), _task("t2"))
     denied = TaskOutcome(taskId="t1", state="denied", performed=False,
                          verified=None, detail="policy refused")
     result = svc._synthesize(_session(tmp_path), plan,
                              _outcome(denied, _done("t2")))
-    assert result.outcome == "denied"
-    assert result.failureReason == "action-denied"
+    states = {task.taskId: task for task in result.tasks}
+    assert result.outcome == "failed"
+    assert result.status == "failed"
+    assert result.failureReason == "mixed-outcomes"
+    assert states["t1"].state == "denied"
+    assert states["t2"].state == "done" and states["t2"].verified is True
+    assert result.verified == ["t2"]
+    assert result.summary.startswith("Mission partially completed.")
+
+
+def test_capability_unavailability_is_a_blocked_mission_with_candidate_detail(tmp_path):
+    svc = _service(tmp_path)
+    plan = _plan(_task("tool"), _task("independent"))
+    blocked = TaskOutcome(
+        taskId="tool", state="blocked", performed=False,
+        detail=("Capability unavailable: git.diff: no connected provider. "
+                "Rejected: provider-x (billing: owner has not allowed it)."))
+    result = svc._synthesize(_session(tmp_path), plan,
+                             _outcome(blocked, _done("independent")))
+
+    assert (result.status, result.outcome, result.failureReason) == (
+        "failed", "blocked", "capability-unavailable")
+    assert {task.taskId: task.state for task in result.tasks} == {
+        "tool": "blocked", "independent": "done"}
+    assert "Capability unavailable" in result.summary
+    assert "provider-x (billing" in result.summary
+    assert result.verified == ["independent"]
+
+
+def test_policy_denial_plus_unavailability_and_success_stays_mixed(tmp_path):
+    svc = _service(tmp_path)
+    plan = _plan(_task("denied"), _task("missing"), _task("independent"))
+    denial = TaskOutcome(taskId="denied", state="denied", performed=False,
+                         detail="Policy denied database access")
+    missing = TaskOutcome(taskId="missing", state="blocked", performed=False,
+                          detail="Capability unavailable: no connected provider")
+    result = svc._synthesize(_session(tmp_path), plan,
+                             _outcome(denial, missing, _done("independent")))
+
+    assert (result.status, result.outcome, result.failureReason) == (
+        "failed", "failed", "mixed-outcomes")
+    assert {task.taskId: task.state for task in result.tasks} == {
+        "denied": "denied", "missing": "blocked", "independent": "done"}
+    assert result.summary.startswith("Mission partially completed.")
+    assert "Policy denied database access" in result.summary
+    assert "Capability unavailable" in result.summary
+    assert result.verified == ["independent"]
 
 
 def test_no_criteria_means_no_mission_verdict(tmp_path):
@@ -204,3 +249,36 @@ def test_chrome_only_worker_output_is_not_presented_as_an_answer(tmp_path):
     result = svc._synthesize(_session(tmp_path), plan, out)
     assert "Real finding here." in result.summary
     assert "model:x" not in result.summary
+
+
+class TestBlockedReasonClassification:
+    """``CentralAgent._blocked_reason`` — one classifier for both
+    synthesis paths, so a mission's blocked label cannot drift between them."""
+
+    @staticmethod
+    def _row(state, detail=""):
+        return TaskOutcome(taskId=f"t-{state}-{detail}", state=state,
+                           detail=detail)
+
+    def test_specific_blocked_reasons(self):
+        from aura.central_agent.service import CentralAgent as S
+        assert S._blocked_reason([
+            self._row("done"),
+            self._row("blocked", "Capability unavailable: git status"),
+            self._row("blocked", "Tool blocked: gh")]) == "capability-unavailable"
+        assert S._blocked_reason([
+            self._row("blocked", "Tool blocked: gh")]) == "tool-blocked"
+        assert S._blocked_reason([
+            self._row("blocked", "waiting on t1")]) == "task-blocked"
+
+    @pytest.mark.parametrize("state", ["failed", "timed-out", "cancelled", "denied"])
+    def test_harder_outcomes_take_precedence_over_blocked(self, state):
+        from aura.central_agent.service import CentralAgent as S
+        assert S._blocked_reason([
+            self._row("blocked", "Capability unavailable: x"),
+            self._row(state)]) is None
+
+    def test_nothing_blocked(self):
+        from aura.central_agent.service import CentralAgent as S
+        assert S._blocked_reason([self._row("done")]) is None
+        assert S._blocked_reason([]) is None

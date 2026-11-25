@@ -10,6 +10,7 @@ describe('RunObserverView', () => {
   it('shows partial success as not complete, with each task state', () => {
     const view = seedFromReport('s', {
       outcome: 'completed', limitations: [], testsObserved: [], verificationEvidence: [], toolsInstalled: [{ nodeId: 'pnpm', name: 'pnpm', outcome: 'installed' }], toolsReused: [], handoffs: [{ taskId: 't2', fromNode: 'codex', toNode: 'claude-code', reason: 'quota', round: 1, verified: false }],
+      recoveryActions: [{ taskId: 't2', round: 1, fromNode: 'codex', toNode: 'claude-code', reason: 'quota exhausted', previousState: 'failed', state: 'failed', verified: false, handoff: true, alternativeSelected: true, alternativeAvailable: true }],
       workCompleted: [{ taskId: 't1', description: 'Write NOTES.md', worker: 'codex' }],
       unfinished: [{ taskId: 't2', description: 'Add a test', state: 'failed', detail: 'the test did not pass' }],
       filesChanged: [{ path: 'NOTES.md', op: 'created', taskId: 't1', worker: 'codex', verified: true }],
@@ -23,6 +24,7 @@ describe('RunObserverView', () => {
     expect(html).toContain('created · NOTES.md');
     expect(html).toContain('Installed for this run: pnpm');
     expect(html).toContain('Handed over codex');
+    expect(html).toContain('Retried Add a test on claude-code: quota exhausted — failed');
     expect(html).toContain('(open)');
     expect(html).not.toMatch(/Complete: /);
   });

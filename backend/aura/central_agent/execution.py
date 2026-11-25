@@ -5,9 +5,10 @@ Two routes, both governed:
   workflow-run      → the Python Workflow Engine loads the stored
                       definition and drives nodes through the same Fabric.
 
-The controller performs no side effects itself. Failure policy (deliberate,
-documented): NO automatic retries of side-effectful steps. Nothing parks
-for a human: a step the policy refuses is refused at once, and the run ends.
+The controller performs no side effects itself. Policy denials are terminal
+for that operation and are never retried or bypassed. Independent tasks may
+continue; tasks that depend on a denied result remain blocked. Recoverable
+worker failures use bounded retries without repeating verified side effects.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import Any
 from ..exec_ import live_output
 from .ceo_voice import assignment_line, handoff_line
 from .laya_advisor import SMALL_EDIT_WORKER, laya_advisor
+from .specialists import execution_guidance, specialist_for
 from .plan_handoff import _worker_description
 from ..contracts import TaskOutcome, TaskPlan
 from ..fabric import FabricConfig, invoke_fabric
@@ -209,6 +211,11 @@ class ExecutionOutcome:
     # Coordinator recovery history: one record per task retried by the
     # completion check (round, task, worker before/after, how it ended).
     recovery: list[dict] = field(default_factory=list)
+    # Alternative-provider decisions for non-agent tasks whose named node was
+    # unavailable before anything ran, keyed by task id: the original node and
+    # why it was unusable, every candidate with the check it failed, and the
+    # node selected (or None). At most one decision per task.
+    provider_alternatives: dict[str, dict] = field(default_factory=dict)
     # Files that changed on disk while each project-mutating task ran,
     # MEASURED (central_agent/change_observer.py), keyed by task id:
     # {"changes": [{path, op}], "complete": bool, "worker": str}.
@@ -320,12 +327,37 @@ class ExecutionController:
             if not retry:
                 break
             leg_plan, notes = self._recovery_plan(plan, result, retry)
+            # STOP may arrive while the recovery plan is being prepared.
+            # Check again at the dispatch boundary so no recovery worker is
+            # started after the run has been cancelled.
+            if ((cancel_token is not None
+                 and getattr(cancel_token, "cancelled", False))
+                    or bool(cancel_check and cancel_check())):
+                snapshot = getattr(cancel_token, "snapshot", None)
+                details = snapshot() if callable(snapshot) else {}
+                reason = str(details.get("reason") or "").strip()
+                leg = ExecutionOutcome(
+                    cancelled=True,
+                    stopped=True,
+                    stop_reason=(reason or
+                                 "Cancelled before recovery dispatch; no "
+                                 "recovery tasks were dispatched."),
+                    cancelled_before=[
+                        task.id for task in leg_plan.tasks
+                        if task.id not in result.verified_outputs],
+                )
+                self._merge_leg(result, leg, round_no, notes,
+                                cancel_token=cancel_token,
+                                cancel_check=cancel_check)
+                break
             for tid in retry:
                 attempts[tid] = attempts.get(tid, 1) + 1
             leg = self._execute_plan(leg_plan, project_id,
                                      prior_verified=dict(result.verified_outputs),
                                      **legs)
-            self._merge_leg(result, leg, round_no, notes)
+            self._merge_leg(result, leg, round_no, notes,
+                            cancel_token=cancel_token,
+                            cancel_check=cancel_check)
         result.plan = plan
         self._save_run_summary(project_cwd, plan, result)
         result.write_conflicts = self._detect_write_conflicts(
@@ -369,14 +401,19 @@ class ExecutionController:
     @staticmethod
     def _unverified_failure(o: TaskOutcome) -> bool:
         return (o.state in ("failed", "timed-out")
-                or (o.state == "done" and o.verified is not True))
+                or (o.state == "done" and o.verified is False))
 
     def _recoverable(self, plan: TaskPlan, result: ExecutionOutcome,
                      attempts: dict[str, int],
                      cancel_token: Any | None) -> dict[str, TaskOutcome]:
-        """Tasks the completion check may schedule again, or {} when the
-        run must end as it is."""
-        if (result.cancelled or result.denied
+        """Select only bounded worker failures that can safely be retried.
+
+        A permanent denial or a non-retryable task failure elsewhere in the
+        mission must not suppress recovery of an independent worker task.
+        Those terminal rows are left out of the recovery leg and preserved
+        when its outcomes are merged.
+        """
+        if (result.cancelled
                 or (cancel_token is not None and getattr(cancel_token, "cancelled", False))):
             return {}
         if result.deviation_evidence:
@@ -387,18 +424,18 @@ class ExecutionController:
             latest[o.taskId] = o
         retry: dict[str, TaskOutcome] = {}
         for tid, o in latest.items():
-            if tid in result.verified_outputs or o.state in ("skipped", "blocked", "pending"):
+            if tid in result.verified_outputs or o.state in (
+                    "skipped", "blocked", "pending", "denied", "cancelled"):
                 continue
-            if o.state in ("denied", "cancelled"):
-                return {}
             if not self._unverified_failure(o):
                 continue
             task = by_id.get(tid)
             if task is None or task.capabilityId != "agent.delegate":
-                # No automatic re-run of a side-effectful non-worker step.
-                return {}
+                # Never repeat side effects outside the delegated-worker
+                # recovery contract; keep looking for independent workers.
+                continue
             if attempts.get(tid, 1) >= MAX_TASK_ATTEMPTS:
-                return {}
+                continue
             retry[tid] = o
         return retry
 
@@ -410,6 +447,8 @@ class ExecutionController:
         from .quota import classify_failure, is_quota_exhaustion
         leg_plan = plan.model_copy(deep=True)
         notes: dict[str, dict] = {}
+        unavailable: set[str] = set()
+        before_states = {o.taskId: o for o in result.outcomes}
         for task in leg_plan.tasks:
             if task.id not in retry:
                 continue
@@ -417,20 +456,27 @@ class ExecutionController:
             before = str((result.worker_assignments.get(task.id) or {}).get("nodeId") or "")
             quota = is_quota_exhaustion(failed.detail,
                                        timed_out=(failed.state == "timed-out"))
-            # A retry always avoids the worker that just failed (that is
-            # what makes it a recovery rather than a repeat); quota
-            # exhaustion is the case that forces a different worker even
-            # when the task was pinned to the failing one.
+            reason = ("quota exhausted" if quota
+                      else classify_failure(failed.detail,
+                                           timed_out=(failed.state == "timed-out"),
+                                           exit_code=1 if failed.state in ("failed", "timed-out") else None))
+            # Authentication and malformed/invalid worker failures cannot
+            # recover by replaying the same runtime. Quota keeps its
+            # separate free-worker-first policy. These cases may override a
+            # task pin only after the normal compatibility, billing,
+            # executor-usability and Fabric policy checks select an alternative.
             exclude = {before} if before else set()
             after = before
-            # On quota, the pin is overridden so the work can move to a
-            # genuinely available worker.
+            # On permanent runtime failures, the pin is overridden so work
+            # can move only to a genuinely available, permitted worker.
             # An agent Laya selected (the person did not name it) is not a
             # commitment: after any failed attempt the retry goes to another
             # allowed agent when there is one.
             selected = getattr(task, "workerChoice", None) == "selected"
-            pinned = None if (quota or selected) else getattr(task, "nodeId", None)
-            if quota or selected or not getattr(task, "nodeId", None):
+            force_alternative = quota or reason in {"auth", "malformed"}
+            pinned = (None if (force_alternative or selected)
+                      else getattr(task, "nodeId", None))
+            if force_alternative or selected or not getattr(task, "nodeId", None):
                 # A paid agent that hit its limit hands over to a free one first; any allowed agent is the fallback.
                 free_first = self._free_agents(exclude) if quota else None
                 alt = self._match_role(task, getattr(task, "workerRole", None) or "code",
@@ -438,11 +484,26 @@ class ExecutionController:
                 if alt:
                     task.nodeId = alt
                     after = alt
+                elif not getattr(task, "nodeId", None) or force_alternative or selected:
+                    if reason in {"ordinary", "unknown"}:
+                        # A bounded retry with the same permitted runtime is
+                        # still a recovery strategy for non-permanent errors.
+                        # Keep the identity explicit so routing cannot silently
+                        # pick a different, unreviewed runtime.
+                        if before:
+                            task.nodeId = before
+                    else:
+                        # Never replay quota, authentication, malformed,
+                        # timeout, or otherwise permanent/unavailable cases
+                        # on the same runtime when no permitted alternative
+                        # exists. Preserve the original task result.
+                        task.toolBlocked = (
+                            f"Recovery unavailable: no other permitted, ready runtime "
+                            f"satisfies role '{getattr(task, 'workerRole', None) or 'code'}'. "
+                            f"Previous runtime: {before or 'unassigned'}; reason: {reason}."
+                        )
+                        unavailable.add(task.id)
             brief = dict(task.input or {})
-            reason = ("quota exhausted" if quota
-                      else classify_failure(failed.detail,
-                                           timed_out=(failed.state == "timed-out"),
-                                           exit_code=1 if failed.state in ("failed", "timed-out") else None))
             prior = (f"A previous attempt{' by ' + before if before else ''} "
                      f"did not complete ({failed.state}, {reason}): "
                      f"{failed.detail[:300]}. "
@@ -456,12 +517,72 @@ class ExecutionController:
             task.input = brief
             notes[task.id] = {"fromNode": before, "toNode": after,
                               "previousState": failed.state, "reason": reason,
-                              "handoff": quota and before != after}
+                              "handoff": quota and before != after,
+                              "alternativeSelected": before != after,
+                              "sameRuntimeRetry": (before == after
+                                                   and task.id not in unavailable),
+                              "alternativeAvailable": not bool(getattr(task, "toolBlocked", None))}
+
+        # Restrict a recovery leg to its failed tasks, newly unstarted
+        # independent work, and dependents that can now become runnable.
+        # This prevents a permanent denial or completed-but-unverified
+        # non-worker action from being silently dispatched again.
+        latest = before_states
+        verified = set(result.verified_outputs)
+        settled = verified | {tid for tid, row in latest.items()
+                              if row.state == "skipped"
+                              or (row.state == "done" and row.verified is not False)}
+        selected = set(retry) - unavailable
+        for task in topo_order(leg_plan.tasks):
+            if task.id in selected or getattr(task, "toolBlocked", None):
+                continue
+            prior = latest.get(task.id)
+            if prior is not None and prior.state not in ("blocked", "pending"):
+                continue
+            deps = set(task.dependsOn or [])
+            if deps and not deps <= (settled | selected):
+                continue
+            if task.inputFrom == "upstream-output" and not deps <= (
+                    verified | selected):
+                continue
+            # A blocked task with no dependency is commonly blocked by a
+            # missing tool/provider. It is not a candidate for blind replay.
+            if prior is not None and prior.state == "blocked" and not deps:
+                continue
+            selected.add(task.id)
+        # A task that consumes upstream OUTPUT is gated on its dependency
+        # edges (_gate_handoff reads them to find the verified evidence), so
+        # those edges are never pruned. The already-verified upstreams it
+        # names travel in the leg as SEEDS instead: `prior_verified` holds
+        # their evidence, so the leg reports each one "already verified; not
+        # re-executed" and never dispatches it. Selection above guarantees
+        # every such dependency is either in this leg or verified.
+        consumers = {task.id for task in leg_plan.tasks
+                     if task.id in selected and task.inputFrom == "upstream-output"}
+        seeds = {dep for task in leg_plan.tasks if task.id in consumers
+                 for dep in (task.dependsOn or [])
+                 if dep not in selected and dep in verified}
+        leg_plan.tasks = [task for task in leg_plan.tasks
+                          if task.id in selected or task.id in seeds]
+        for task in leg_plan.tasks:
+            if task.id in seeds:
+                # Never executed in this leg, so its own ordering edges are
+                # irrelevant; dropping them keeps the subgraph self-contained.
+                task.dependsOn = []
+            elif task.id in consumers:
+                continue  # complete handoff edges, exactly as planned
+            else:
+                # Plain ordering dependencies only: an already-settled task
+                # outside this leg has nothing left to order against.
+                task.dependsOn = [dep for dep in task.dependsOn
+                                  if dep in selected or dep not in settled]
         return leg_plan, notes
 
     @staticmethod
     def _merge_leg(result: ExecutionOutcome, leg: ExecutionOutcome,
-                   round_no: int, notes: dict) -> None:
+                   round_no: int, notes: dict,
+                   cancel_token: Any | None = None,
+                   cancel_check: Any | None = None) -> None:
         """Fold a recovery leg into the run. The leg's rows replace the
         open rows they settled; verified evidence, assignments and actions
         accumulate; the run's stop state is the leg's, since the leg is the
@@ -476,13 +597,48 @@ class ExecutionController:
         result.governed_actions.extend(leg.governed_actions)
         result.file_changes.update(leg.file_changes)
         result.deviation_evidence.update(leg.deviation_evidence)
+        for tid, choice in leg.provider_alternatives.items():
+            result.provider_alternatives.setdefault(tid, choice)
         result.artifact_paths.extend(p for p in leg.artifact_paths
                                      if p not in result.artifact_paths)
         result.scope_conflicts.extend(leg.scope_conflicts)
-        result.cancelled_before = list(leg.cancelled_before)
-        for flag in ("stopped", "stop_reason", "cancelled",
-                     "timed_out", "denied"):
-            setattr(result, flag, getattr(leg, flag))
+        result.cancelled_before = list(dict.fromkeys(
+            [*result.cancelled_before, *leg.cancelled_before]))
+        # A recovery leg settles only the tasks it contains. Recompute global
+        # state from the merged final rows so it cannot erase an unrelated
+        # denial, nor retain a failure that was actually recovered.
+        latest = {o.taskId: o for o in result.outcomes}
+        states = {o.state for o in latest.values()}
+        unverified = [o for o in latest.values()
+                      if o.state == "done" and o.verified is False]
+        result.denied = "denied" in states
+        result.timed_out = "timed-out" in states
+        token_cancelled = bool(cancel_token is not None
+                               and getattr(cancel_token, "cancelled", False))
+        predicate_cancelled = bool(cancel_check and cancel_check())
+        result.cancelled = bool(result.cancelled or leg.cancelled
+                                or token_cancelled
+                                or predicate_cancelled
+                                or "cancelled" in states)
+        result.stopped = bool(
+            states & {"failed", "timed-out", "cancelled"} or unverified
+            or result.cancelled)
+        if result.cancelled:
+            snapshot = getattr(cancel_token, "snapshot", None)
+            details = snapshot() if callable(snapshot) else {}
+            cancelled_row = next((o for o in latest.values()
+                                  if o.state == "cancelled"), None)
+            result.stop_reason = (
+                str(details.get("reason") or "").strip()
+                or (cancelled_row.detail if cancelled_row else "")
+                or leg.stop_reason
+                or "Run cancelled before recovery could continue.")
+        else:
+            terminal = next((o for o in latest.values()
+                             if o.state in {"denied", "blocked", "failed",
+                                            "timed-out", "cancelled"}), None)
+            result.stop_reason = (terminal.detail if terminal else
+                                  (unverified[0].detail if unverified else ""))
         if leg.run_id:
             result.run_id = leg.run_id
         settled = {o.taskId: o for o in leg.outcomes}
@@ -530,6 +686,18 @@ class ExecutionController:
                 return True
             return bool(cancel_check and cancel_check())
 
+        # Close the race where cancellation arrives just after execute()
+        # checked the recovery boundary. In particular, the concurrent path
+        # must not submit tasks to its worker pool once STOP is already set.
+        if _stop_requested():
+            result.cancelled = True
+            result.stopped = True
+            result.stop_reason = "cancelled before task dispatch"
+            result.cancelled_before.extend(
+                task.id for task in plan.tasks
+                if task.id not in result.verified_outputs)
+            return result
+
         # Worker runs can span minutes; an invocation timeout is per-run,
         # not mission-wide, so several independent workers may all be in
         # flight together for the same project and mission. Run such a
@@ -559,6 +727,41 @@ class ExecutionController:
                 result.cancelled_before.append(task.id)
                 break
 
+            policy_denial = getattr(task, "policyDeniedReason", None)
+            if policy_denial and getattr(task, "providerUnavailable", None):
+                # Not a decision about the work: routing found no usable
+                # provider. Nothing has run, so another connected, permitted
+                # provider may take it; otherwise this task is blocked as
+                # unavailable, not reported as a policy denial.
+                if self._alternative_provider(task, project_id, result, correlation,
+                                              str(task.providerUnavailable)):
+                    task.policyDeniedReason = None
+                    task.providerUnavailable = None
+                    policy_denial = None
+                else:
+                    detail = self._with_rejections(
+                        f"Capability unavailable: {task.capabilityId}: "
+                        f"{task.providerUnavailable}", result, task.id)
+                    blocked = TaskOutcome(taskId=task.id, state="blocked",
+                                          performed=False, detail=detail)
+                    result.outcomes.append(blocked)
+                    if not result.stop_reason:
+                        result.stop_reason = detail
+                    self._notify("task.state", correlation, taskId=task.id,
+                                 state="blocked", detail=detail[:300])
+                    continue
+            if policy_denial:
+                denied = TaskOutcome(
+                    taskId=task.id, state="denied", performed=False,
+                    detail=f"Policy denied this operation: {policy_denial}")
+                result.outcomes.append(denied)
+                result.denied = True
+                if not result.stop_reason:
+                    result.stop_reason = denied.detail
+                self._notify("task.state", correlation, taskId=task.id,
+                             state="denied", detail=denied.detail[:300])
+                continue
+
             # Independent work runs concurrently even when the plan also has
             # dependency-gated tasks: every ready, eligible task goes out as
             # one wave, then the sequential loop resumes for the rest. A wave
@@ -572,14 +775,21 @@ class ExecutionController:
                     on_task_complete=on_task_complete,
                     )
                 dispatched.update(t.id for t in wave)
-                # Same stop rules the sequential loop applies per task: a
-                # wave member that failed, was denied, timed out, was
-                # cancelled halts the run before
-                # any dependent task starts. In-flight siblings finish.
+                # A denial or unavailable capability settles only that
+                # operation: dependent tasks are blocked by
+                # _unmet_dependency, while unrelated work can continue in
+                # later waves. Failures, timeouts and cancellation still stop
+                # the run. In-flight siblings always settle first.
                 wave_ids = {t.id for t in wave}
                 for o in result.outcomes:
                     if o.taskId in wave_ids:
-                        self._stop_for_outcome(result, o)
+                        if o.state in ("denied", "blocked"):
+                            if o.state == "denied":
+                                result.denied = True
+                            if not result.stop_reason:
+                                result.stop_reason = o.detail
+                        else:
+                            self._stop_for_outcome(result, o)
                 if result.stopped:
                     return result
                 continue
@@ -622,7 +832,9 @@ class ExecutionController:
             blocker = getattr(task, "toolBlocked", None) or self._unmet_dependency(task, result)
             if blocker:
                 blocked = TaskOutcome(taskId=task.id, state="blocked", performed=False,
-                                      detail=str(blocker))
+                                      detail=(f"Tool blocked: {blocker}"
+                                              if getattr(task, "toolBlocked", None)
+                                              else str(blocker)))
                 result.outcomes.append(blocked)
                 self._notify("task.state", correlation, taskId=task.id, state="blocked",
                              detail=str(blocker)[:300])
@@ -679,9 +891,19 @@ class ExecutionController:
                 break
             if last.state in ("denied",):
                 result.denied = True
-                result.stopped = True
-                result.stop_reason = last.detail
-                break
+                if not result.stop_reason:
+                    result.stop_reason = last.detail
+                # Never retry or work around this operation. Let independent
+                # tasks continue; dependency checks block tasks needing its
+                # result.
+                continue
+            if last.state == "blocked":
+                if not result.stop_reason:
+                    result.stop_reason = last.detail
+                # Unsupported or unavailable work cannot unlock its
+                # dependents, but is not a reason to abandon independent
+                # tasks. No retry is attempted for a terminal blocker.
+                continue
             if last.state == "timed-out":
                 result.timed_out = True
                 result.stopped = True
@@ -692,7 +914,7 @@ class ExecutionController:
                 result.stopped = True
                 result.stop_reason = f"{task.id}: {last.detail}"
                 break
-            if last.state in ("failed", "blocked"):
+            if last.state == "failed":
                 # A stop that landed while the worker was settling reads
                 # as a failure from the executor's side. The token says
                 # what actually happened, and it outranks the exit code.
@@ -828,6 +1050,8 @@ class ExecutionController:
             return False
         if any(getattr(t, "toolBlocked", None) for t in plan.tasks):
             return False
+        if any(getattr(t, "policyDeniedReason", None) for t in plan.tasks):
+            return False
         # One project-mutating task at a time: two workers (or a worker and
         # a file write) never run side by side, whatever their scopes say.
         if sum(1 for t in plan.tasks if mutates_project(t)) > 1:
@@ -854,6 +1078,7 @@ class ExecutionController:
         scheduler in execute()."""
         return not (
             task.id in seeded_ids
+            or getattr(task, "policyDeniedReason", None)
             or task.route == "workflow-run"
             or task.inputFrom == "upstream-output"
             or getattr(task, "runWhen", "always") != "always"
@@ -920,12 +1145,17 @@ class ExecutionController:
 
     @staticmethod
     def _stop_for_outcome(result: ExecutionOutcome, o: TaskOutcome) -> None:
-        """Apply the sequential loop's stop rules to one settled outcome.
-        Flags are always applied, so a timeout or denial is never lost
-        because a sibling already stopped the run. The first stop reason
-        recorded for the run is kept."""
+        """Apply run-level handling to one settled concurrent outcome.
+
+        Denial and unavailability are terminal for their own task, while the
+        caller may still schedule independent work. Timeouts, cancellation
+        and execution failures stop further scheduling. The first reason is
+        retained.
+        """
         if o.state == "denied":
             result.denied = True
+            reason = o.detail
+        elif o.state == "blocked":
             reason = o.detail
         elif o.state == "timed-out":
             result.timed_out = True
@@ -933,13 +1163,14 @@ class ExecutionController:
         elif o.state == "cancelled":
             result.cancelled = True
             reason = f"{o.taskId}: {o.detail}"
-        elif o.state in ("failed", "blocked"):
+        elif o.state == "failed":
             reason = f"{o.taskId}: {o.detail}"
         else:
             return
         if not result.stopped or not result.stop_reason:
             result.stop_reason = reason
-        result.stopped = True
+        if o.state not in ("denied", "blocked"):
+            result.stopped = True
 
     def _dispatch_parallel(self, plan: TaskPlan, project_id: str | None,
                            compiled_workflow: dict | None,
@@ -1003,6 +1234,9 @@ class ExecutionController:
             result.worker_assignments.update(per.worker_assignments)
             result.governed_actions.extend(per.governed_actions)
             result.file_changes.update(per.file_changes)
+            result.recovery.extend(per.recovery)
+            for _tid, _choice in per.provider_alternatives.items():
+                result.provider_alternatives.setdefault(_tid, _choice)
             result.deviation_evidence.update(per.deviation_evidence)
             result.cancelled_before.extend(per.cancelled_before)
             if per.run_id and result.run_id is None:
@@ -1083,6 +1317,145 @@ class ExecutionController:
         ]
 
     # ── Phase G worker requirement matching ────────────────────────────
+    # ── alternative providers for non-agent capabilities ───────────────
+    def _route_problem(self, task: Any) -> tuple[str | None, str | None]:
+        """Return a pre-dispatch route/billing problem and Fabric's first node.
+
+        An unpinned task is checked using ordinary Fabric routing. If that
+        route is usable and billing-eligible, it remains unpinned and normal
+        routing is preserved. If routing or billing rejects the first node,
+        the caller may select a separately checked alternative before any
+        invocation starts. A substitute is still pinned and Fabric revalidates
+        it at dispatch.
+        """
+        try:
+            from ..fabric import describe_capability
+
+            fabric = getattr(self._cfg, "fabric", None)
+            resolve = getattr(getattr(fabric, "host", None), "resolve_node", None)
+            capability = describe_capability(task.capabilityId or "")
+            if resolve is None or not capability:
+                return None, None
+            got = resolve(capability, {"nodeId": task.nodeId} if task.nodeId else {},
+                          self._role_usable(task.capabilityId))
+            if isinstance(got, dict) and got.get("ok") is False:
+                return (str(got.get("reason") or got.get("code")
+                            or "no usable provider is available"), None)
+            node = got.get("node") if isinstance(got, dict) else None
+            node_id = str((node or {}).get("id") or "") or None
+            if node_id:
+                from ..workers.billing import decide
+
+                decision = decide(node_id)
+                if not decision.allowed:
+                    return (f"Fabric's default route {node_id} is not billing-eligible: "
+                            f"{decision.reason}", node_id)
+            return None, node_id
+        except Exception as exc:  # noqa: BLE001 — fail closed before invoking
+            return f"Fabric route could not be verified ({exc})", None
+
+    @staticmethod
+    def _with_rejections(reason: str, result: ExecutionOutcome, task_id: str) -> str:
+        choice = result.provider_alternatives.get(task_id) or {}
+        rejected = "; ".join(
+            f"{c['name']} ({c['failed']}: {c['reason']})"
+            for c in choice.get("candidates") or [] if not c.get("eligible"))
+        tail = choice.get("reason") or ""
+        extra = " ".join(x for x in (tail, f"Rejected: {rejected}." if rejected else "") if x)
+        return f"{reason} No alternative provider was used. {extra}".strip() if choice else reason
+
+    def _alternative_provider(self, task: Any, project_id: str | None,
+                              result: ExecutionOutcome, correlation: dict | None,
+                              why_unavailable: str,
+                              original_node: str | None = None) -> bool:
+        """Pin another connected provider for a non-agent task that has NOT run.
+
+        Returns True when one was selected (``task.nodeId`` now names it; the
+        caller dispatches through the normal path, where dependencies,
+        cancellation, billing and Fabric's own routing and policy are all
+        checked again). At most one decision per task for the whole run, so
+        this can never loop. Tasks that were dispatched are never offered here.
+        """
+        tid = task.id
+        if (task.capabilityId == "agent.delegate" or not task.capabilityId
+                or tid in result.provider_alternatives
+                or tid in result.verified_outputs
+                or any(o.taskId == tid for o in result.outcomes)):
+            return False
+        from ..fabric import describe_capability
+        from ..workers.billing import decide, is_free_tier
+        from .alternatives import select_alternative
+        from .authority import AuthorityChecker
+        from .discovery import CapabilityDiscovery
+
+        original = str(original_node or getattr(task, "nodeId", None) or "")
+        capability = describe_capability(task.capabilityId) or {}
+        fabric = getattr(self._cfg, "fabric", None)
+        try:
+            found = CapabilityDiscovery(capability_registry=self._registry).available_for([task.capabilityId])
+            tool = next((t for t in found if t.id == task.capabilityId), None)
+            cap_ok = ((True, "") if tool is not None and tool.available
+                      else (False, (tool.description if tool is not None else "not registered")))
+        except Exception as exc:  # noqa: BLE001
+            cap_ok = (False, f"discovery failed ({exc})")
+        try:
+            present = getattr(getattr(fabric, "host", None), "present_nodes", None)
+            nodes = [n for n in (present() if callable(present) else []) if isinstance(n, dict)]
+        except Exception:  # noqa: BLE001 — an unreadable registry offers no candidates
+            nodes = []
+        executors = {**(getattr(fabric, "executors", None) or {}),
+                     **(getattr(self._cfg, "executors", None) or {})}
+        checker = AuthorityChecker(self._cfg)
+        plan = getattr(result, "plan", None)
+
+        def policy_for(node_id: str) -> tuple[str, str]:
+            probe = task.model_copy(deep=True)
+            probe.nodeId = node_id
+            probe.policyDeniedReason = None
+            probe.providerUnavailable = None
+            probe.dependsOn = []
+            if plan is None:
+                return "deny", "no plan to evaluate policy against"
+            reqs = checker.check_plan(plan.model_copy(update={"tasks": [probe]}), project_id)
+            req = next((r for r in reqs if str(r.taskId or "") == tid), None)
+            if req is None:
+                return "deny", "policy returned no decision"
+            return str(req.decision), str(req.reason)
+
+        choice = select_alternative(
+            capability_id=task.capabilityId,
+            needed=capability.get("requiresNodeCapability"),
+            original_node=original,
+            capability_available=cap_ok,
+            present_nodes=nodes,
+            can_use=self._role_usable(task.capabilityId),
+            has_executor=task.capabilityId in executors,
+            policy_for=policy_for,
+            billing_for=lambda node_id: decide(node_id),
+            is_free=lambda node_id: is_free_tier(node_id),
+        )
+        record = {"taskId": tid, "capabilityId": task.capabilityId,
+                  "fromNode": original, "unavailable": why_unavailable[:300],
+                  **choice.to_dict()}
+        result.provider_alternatives[tid] = record
+        result.recovery.append({
+            "round": 0, "taskId": tid, "kind": "alternative-provider",
+            "fromNode": original, "toNode": choice.selected or "",
+            "previousState": "not-dispatched", "reason": "provider unavailable",
+            "alternativeSelected": bool(choice.selected),
+            "alternativeAvailable": bool(choice.selected),
+            "state": "selected" if choice.selected else "none-eligible", "verified": False,
+        })
+        self._notify("capability.alternative", correlation, **record)
+        if not choice.selected:
+            return False
+        task.nodeId = choice.selected
+        name = next((c.name for c in choice.candidates if c.nodeId == choice.selected), choice.selected)
+        self._notify("ceo.say", correlation, taskId=tid, kind="selection",
+                     text=(f"{original or 'The named provider'} is not available for this step, "
+                           f"so {name} takes it."))
+        return True
+
     def _present_nodes(self) -> list[dict]:
         try:
             host = getattr(getattr(self._cfg, "fabric", None), "host", None)
@@ -1204,6 +1577,21 @@ class ExecutionController:
             self.__dict__.setdefault("_laya_picks", {})[getattr(task, "id", "")] = {
                 "worker": SMALL_EDIT_WORKER, "name": small.get("name") or SMALL_EDIT_WORKER, "small": True}
             return SMALL_EDIT_WORKER
+        # Each of AURA's six specialists has an assigned runtime. When that runtime is
+        # eligible for this task it takes the step; otherwise the selection below picks
+        # another eligible worker and the run says the specialist is on a different one.
+        who = specialist_for(role, brief)
+        # Only enforce the specialist's runtime preference when AURA can
+        # actually evaluate that runtime's executor usability. Without that
+        # registry, retain catalogue-order role matching and let dispatch
+        # report the existing readiness boundary honestly.
+        if who is not None and usable is not None:
+            assigned = next((n for n in eligible if n.get("id") == who.runtime), None)
+            if assigned is not None:
+                self.__dict__.setdefault("_laya_picks", {})[tid0] = {
+                    "worker": who.runtime, "name": assigned.get("name") or who.runtime,
+                    "specialist": who.id, "specialistName": who.name, "assigned": True}
+                return who.runtime
         # Laya chooses among the workers that are allowed and eligible. If Laya is not
         # ready, the first eligible worker is used and the chat says so.
         candidates = [{"id": n.get("id"), "name": n.get("name") or n.get("id"),
@@ -1420,6 +1808,25 @@ class ExecutionController:
         # AURA-validated worker pin (planner-checked, routing-enforced):
         # the requested node is never substituted, only denied.
         node_id = getattr(task, "nodeId", None)
+        if task.capabilityId and task.capabilityId != "agent.delegate":
+            # Check both explicit pins and the normal unpinned route. A healthy
+            # default route is left untouched; alternatives are considered
+            # only when that route is unavailable or fails billing before
+            # invocation. Fabric revalidates the selected pin at dispatch.
+            unusable, routed_node = self._route_problem(task)
+            if unusable:
+                if self._alternative_provider(
+                        task, project_id, result, correlation, unusable,
+                        original_node=routed_node or node_id):
+                    node_id = task.nodeId
+                else:
+                    detail = self._with_rejections(
+                        f"Capability unavailable: {task.capabilityId}: {unusable}",
+                        result, task.id)
+                    result.outcomes.append(TaskOutcome(
+                        taskId=task.id, state="blocked", performed=False,
+                        detail=detail))
+                    return
         if node_id:
             # Billing policy: a pinned node that is denied cannot run,
             # even when no role matching is requested.
@@ -1436,12 +1843,38 @@ class ExecutionController:
         # re-validates, including usability). No eligible worker fails
         # the task closed — never a silent unsuitable dispatch.
         role = getattr(task, "workerRole", None)
+        specialist_id = ""
         if role:
             excluded = self._excluded_workers(task, result)
             matched = self._match_role(task, role, node_id, excluded, self._preferred_workers(task, result))
             pick = self.__dict__.get("_laya_picks", {}).pop(task.id, None)
+            _brief = str((getattr(task, "input", None) or {}).get("task") or getattr(task, "description", "") or "")
+            _who = specialist_for(role, _brief)
+            if matched is not None and _who is not None:
+                specialist_id = _who.id
+                if task.capabilityId == "agent.delegate":
+                    # The roster is meaningful only if the selected identity's
+                    # focus reaches the real delegated process. Keep this as
+                    # bounded task context; it adds no tools, authority, or
+                    # filesystem scope.
+                    requirement = getattr(task, "verification", None)
+                    guidance = execution_guidance(
+                        _who.id,
+                        task=str(getattr(task, "description", "") or _brief),
+                        verification_kind=str(getattr(requirement, "kind", "") or ""),
+                        verification_description=str(
+                            getattr(requirement, "description", "") or ""),
+                    )
+                    existing = payload.get("context")
+                    payload["context"] = (
+                        f"{existing}\n\n{guidance}"
+                        if isinstance(existing, str) and existing.strip()
+                        else guidance
+                    )
             if matched is not None and pick is not None and task.capabilityId == "agent.delegate":
-                if pick.get("small"):
+                if pick.get("assigned"):
+                    line = f"{pick['specialistName']} takes this step, on {pick['name']}."
+                elif pick.get("small"):
                     line = f"This is a small edit, so {pick['name']} takes it by default."
                 elif pick.get("returned"):
                     line = f"The fix goes back to {pick['name']}, who built this change."
@@ -1451,10 +1884,13 @@ class ExecutionController:
                     line = f"Laya was not ready, so {pick['name']} takes this step by the usual order."
                 else:
                     line = f"{pick['name']} is the only eligible agent for this step."
+                if _who is not None and not pick.get("assigned"):
+                    line = f"{_who.name} takes this step. {line}"
                 self._notify("ceo.say", correlation, taskId=task.id, kind="selection", text=line)
                 # The card learns who is working as soon as the choice is made, not when the step ends.
                 self._notify("task.state", correlation, taskId=task.id, state="running",
-                             worker=str(matched), capability=task.capabilityId)
+                             worker=str(matched), capability=task.capabilityId,
+                             **({"specialist": _who.id, "specialistName": _who.name} if _who is not None else {}))
             if matched is None:
                 if self._nodes_error:
                     why = (f"the worker registry could not be read "
@@ -1550,6 +1986,7 @@ class ExecutionController:
             "taskId": task.id,
             "nodeId": context.get("nodeId") or "",
             "role": role or "",
+            **({"specialist": specialist_id} if specialist_id else {}),
             "capabilityId": task.capabilityId,
             **({"missionId": task.missionId} if getattr(task, "missionId", None) else {}),
             "lifecycle": "ACTIVE",
@@ -1627,6 +2064,21 @@ class ExecutionController:
                     taskId=task.id, state="timeout", performed=False, detail=str(exc)))
                 return
         try:
+            # Alternative discovery and the route/policy checks above may
+            # take time. Recheck the user's stop request at the last boundary
+            # before Fabric can dispatch any operation.
+            if cancel_token is not None and getattr(cancel_token, "cancelled", False):
+                result.cancelled = True
+                result.stopped = True
+                snapshot = getattr(cancel_token, "snapshot", None)
+                details = snapshot() if callable(snapshot) else {}
+                reason = str(details.get("reason") or "Stopped before dispatch.")
+                result.stop_reason = reason
+                result.cancelled_before.append(task.id)
+                result.outcomes.append(TaskOutcome(
+                    taskId=task.id, state="cancelled", performed=False,
+                    detail=f"{reason}; no operation was dispatched."))
+                return
             invocation = invoke_fabric(
                 task.capabilityId, payload, context, self._cfg,
             )

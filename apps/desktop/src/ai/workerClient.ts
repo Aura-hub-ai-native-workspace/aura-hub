@@ -103,6 +103,30 @@ export interface WorkerConnectResult {
   error?: string;
 }
 
+/** One of AURA's six permanent agents, with the runtime it is assigned to. */
+export interface Specialist {
+  id: string;
+  name: string;
+  /** Worker id of the assigned runtime ("opencode", "kilo-code"). */
+  runtime: string;
+  runtimeName: string;
+  /** Whether that runtime is connected now; null when the backend could not tell. */
+  runtimeAvailable: boolean | null;
+  focus: string;
+  responsibilities: string[];
+}
+
+export async function fetchSpecialists(): Promise<{ specialists: Specialist[]; error?: string }> {
+  try {
+    const res = await backendFetch(`${ENVIRONMENT_BASE}/agent/specialists`);
+    if (!res.ok) return { specialists: [], error: `request failed (${res.status})` };
+    const body = (await res.json()) as { specialists?: Specialist[] };
+    return { specialists: Array.isArray(body.specialists) ? body.specialists : [] };
+  } catch (e) {
+    return { specialists: [], error: e instanceof Error ? e.message : 'the AURA service could not be reached' };
+  }
+}
+
 async function list(): Promise<WorkerListResult> {
   try {
     const res = await backendFetch(`${ENVIRONMENT_BASE}/workers`);

@@ -3,6 +3,7 @@ import { pruneOrphanIndexes, storageUsage } from './storage';
 import { accountProvider } from './account/accountProvider.js';
 import { ContextTools } from './commonContext/index.js';
 import { agentStatus, isAgentId, listAgentChoice, removeAgent, runAgentSetup } from './agentsSetup.js';
+import { isAgentExecutableByAura } from './fabric/executors.js';
 import { googleProfile, loadGoogleConfig, pendingGoogleSignIn, signOutGoogle, startGoogleSignIn } from './cloud/googleAuth.js';
 import { downloadVersion, listVersions, uploadVersionFile } from './cloud/drive.js';
 import { createSnapshotFile, extractSnapshot } from './cloud/snapshot.js';
@@ -438,7 +439,17 @@ export async function startService(opts: PipelineOptions & { port?: number; open
       /* ── the six coding agents: setup and sign-in status ─────────── */
       if (seg[0] === 'agents' && seg[1] === 'status' && method === 'GET') {
         try {
-          return json(res, 200, { agents: await agentStatus(undefined, { versions: url.searchParams.get('versions') !== '0' }) });
+          const agents = await agentStatus(undefined, {
+            versions: url.searchParams.get('versions') !== '0',
+            verifyContextServer: url.searchParams.get('verify-context-server') === '1',
+          });
+          const invocationById: Record<string, string> = {
+            opencode: 'opencode', 'kilo-code': 'kilo', 'claude-code': 'claude',
+          };
+          return json(res, 200, { agents: agents.map((agent) => ({
+            ...agent,
+            executableByAura: isAgentExecutableByAura(invocationById[agent.id] ?? ''),
+          })) });
         } catch (e) {
           return json(res, 500, { error: 'agent-status', message: (e as Error).message });
         }

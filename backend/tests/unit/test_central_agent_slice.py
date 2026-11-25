@@ -90,15 +90,15 @@ class TestVerticalSlice:
         assert result.outcome == "needs-clarification"
         assert len(audit.load()) == 0
 
-    def test_policy_deny_blocks_plan_before_execution(self, monkeypatch, env):
+    def test_policy_denial_is_recorded_without_fabric_invocation(self, monkeypatch, env):
         home, audit, ledger, cfg, _agent = env
         cfg.policy_config = {"byRisk": {"low": "deny", "medium": "deny",
                                         "high": "deny"}}
         agent = CentralAgent(fabric_cfg=cfg, session_store=AgentSessionStore(home))
         result = agent.submit("list my workflows")
-        assert result.outcome == "failed"
-        assert "denies" in result.failureReason.lower()
-        # preflight caught it: no invocation was attempted
+        assert result.outcome == "denied"
+        assert result.failureReason == "policy-denied"
+        # Task-scoped policy preflight denied the action; no invocation ran.
         invocations = [r for r in audit.load() if r.get("capabilityId")]
         assert invocations == []
 

@@ -21,6 +21,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { Executor, ExecutorResult, Invocation, VerificationReport } from '@aura/capability-fabric';
 import { git, parseCommand, resolveAgentBinary, runAgent, safeShellWithCode } from '../exec/process';
+import { McpNotReadyError, runKiloTask, runOpenCodeTask } from './opencodeMcp';
 import {
   checkScopePaths,
   deltaSince,
@@ -204,10 +205,15 @@ interface AgentInvocation {
 const AGENT_INVOCATIONS: Record<string, AgentInvocation> = {
   // `opencode run` is the documented non-interactive mode: it performs the
   // work and exits, where the bare `opencode` command opens a TUI.
-  // `--dir` pins it to the project directory.
+  // runAgent already sets cwd to the registry-resolved project root. OpenCode
+  // 2.x removed `--dir`; passing it makes current releases exit before work.
+  // `--standalone` prevents this task from joining the user's shared daemon.
+  // These args are the fallback shape only: the executor runs OpenCode
+  // through `runOpenCodeTask`, which waits for Common Context to connect
+  // and reports the argv it actually used.
   opencode: {
-    args: (task, cwd, model) => ['run', '--dir', cwd, ...(model ? ['--model', model] : []), task],
-    verifiedAgainst: 'OpenCode 1.18.16',
+    args: (task, _cwd, model) => ['--standalone', 'run', ...(model ? ['--model', model] : []), task],
+    verifiedAgainst: 'OpenCode 2.x (uses subprocess cwd)',
   },
   // `claude -p` is the documented non-interactive mode: it prints the
   // result and exits. Verified live (exact-output reply, exit 0; file
@@ -225,6 +231,20 @@ const AGENT_INVOCATIONS: Record<string, AgentInvocation> = {
     verifiedAgainst: 'kilo 7.5.14 (run --dir)',
   },
 };
+
+/**
+ * The result for a delegated task the Common Context readiness gate did not
+ * send: a refusal whose output records why (`contextMcp: not-ready:<reason>`),
+ * the same field a run that did go uses to record what was established.
+ */
+export function contextRefusal(e: McpNotReadyError, target: { nodeId: string; name: string }, args: string[]): ExecutorResult {
+  return { ...no(e.message), output: { nodeId: target.nodeId, agent: target.name, args, contextMcp: `not-ready:${e.reason}` } };
+}
+
+/** True only when AURA has a registered invocation and can resolve its binary. */
+export function isAgentExecutableByAura(bin: string): boolean {
+  return !!AGENT_INVOCATIONS[bin] && resolveAgentBinary(bin).ok;
+}
 
 /**
  * How much context may ride along with a task.
@@ -321,16 +341,42 @@ const agentDelegate: Executor = {
     }
 
     const target = { nodeId: node.id, name: node.name, bin, invocation: invocationSpec };
-    const args = target.invocation.args(brief, cwd, model);
+    let args = target.invocation.args(brief, cwd, model);
     // Read endpoint config (base URL, API key) from the AURA advisory env
     // file written by the agent runtime manager. This is how env vars that
     // the agent's own config schema cannot carry (e.g. kilo.jsonc has no
     // "env" key) reach the subprocess without requiring a process restart.
     const agentEnv = await _readAdvisoryEnv(target.bin);
     let res: Awaited<ReturnType<typeof runAgent>>;
+    // What was established about the agent's Common Context connection
+    // before the task was sent. OpenCode and Kilo are gated (one gate, a
+    // profile per runtime); for the others nothing was checked, and that is
+    // what is recorded.
+    let contextMcp: 'connected' | 'not-configured' | 'not-checked' = 'not-checked';
     try {
-      res = await runAgent(target.bin, args, { cwd, timeoutMs: inv.context.timeoutMs, env: agentEnv });
+      if (target.bin === 'opencode') {
+        // OpenCode connects its MCP servers after start-up; the task must
+        // not be sent before Common Context is really connected.
+        const ran = await runOpenCodeTask(brief, { cwd, model, timeoutMs: inv.context.timeoutMs, env: agentEnv });
+        res = ran;
+        args = ran.args;
+        contextMcp = ran.mcp;
+      } else if (target.bin === 'kilo') {
+        // Same for Kilo: its verified invocation (`run --dir <cwd> <task>`) is
+        // attached to a private server only once Common Context is connected.
+        const ran = await runKiloTask(args, { cwd, timeoutMs: inv.context.timeoutMs, env: agentEnv });
+        res = ran;
+        args = ran.args;
+        contextMcp = ran.mcp;
+      } else {
+        res = await runAgent(target.bin, args, { cwd, timeoutMs: inv.context.timeoutMs, env: agentEnv });
+      }
     } catch (e) {
+      if (e instanceof McpNotReadyError) {
+        // The task was not sent. The result says so, and records why, the
+        // same way a run that did go records what was established.
+        return contextRefusal(e, target, args);
+      }
       return no(`${target.name} could not be run: ${(e as Error).message}`);
     }
 
@@ -344,6 +390,7 @@ const agentDelegate: Executor = {
       args,
       timedOut: res.timedOut ?? false,
       signal: res.signal,
+      contextMcp,
     };
     if (scopePaths.length > 0) output.scopePaths = [...scopePaths];
     if (res.code === 0 && scopePaths.length > 0) {

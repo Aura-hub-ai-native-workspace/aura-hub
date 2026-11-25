@@ -60,6 +60,7 @@ class AuthorityChecker:
             if node_denial is not None:
                 out.append(AuthorityRequirement(
                     capabilityId=task.capabilityId,
+                    taskId=task.id,
                     decision="deny", rule="unknown-or-unusable-node",
                     reason=node_denial,
                     risk=task.risk, available=False,
@@ -89,6 +90,7 @@ class AuthorityChecker:
             if raw is None:
                 out.append(AuthorityRequirement(
                     capabilityId=task.capabilityId,
+                    taskId=task.id,
                     decision="deny", rule="unknown-capability",
                     reason="The Fabric does not know this capability.",
                     risk=task.risk, available=False,
@@ -96,6 +98,7 @@ class AuthorityChecker:
                 continue
             out.append(AuthorityRequirement(
                 capabilityId=task.capabilityId,
+                taskId=task.id,
                 decision=raw["decision"],
                 rule=raw["rule"],
                 reason=raw["reason"],
@@ -107,8 +110,26 @@ class AuthorityChecker:
         return out
 
     @staticmethod
-    def blocked(requirements: list[AuthorityRequirement]) -> list[str]:
-        return [
-            f"{r.capabilityId}: {r.reason}"
-            for r in requirements if r.decision == "deny"
-        ]
+    def mark_denials(plan: TaskPlan, requirements: list[AuthorityRequirement]) -> None:
+        """Carry each denial onto only the task it governs.
+
+        The execution controller continues independent work; allowed tasks
+        still reach Fabric's own enforcement. An unavailable route is not a
+        decision about the work itself, so specific Fabric routing failures
+        are also recorded as ``providerUnavailable`` for non-agent tasks. The
+        controller can search for another permitted provider, and reports a
+        blocked task if none qualifies.
+        """
+        by_task = {task.id: task for task in plan.tasks}
+        for requirement in requirements:
+            task = by_task.get(str(requirement.taskId or ""))
+            if task is None or requirement.decision != "deny":
+                continue
+            task.policyDeniedReason = f"{requirement.capabilityId}: {requirement.reason}"
+            if (requirement.rule in {
+                    "unknown-or-unusable-node", "unknown-node",
+                    "node-lacks-capability", "node-unsupported",
+                    "no-provider",
+            }
+                    and task.capabilityId != "agent.delegate"):
+                task.providerUnavailable = str(requirement.reason)

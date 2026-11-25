@@ -4,7 +4,7 @@
  *
  *   setup [--only a,b] [--json]   install what is missing, connect the common-context MCP server to
  *                                 every agent, write the protocol text where the agent reads rules
- *   status [--json]               installed / version / MCP connected / signed in, per agent
+ *   status [--json]               installed / MCP configured / context server / signed in
  *   login <agent>                 run that agent's own sign-in in this terminal (the sign-in page
  *                                 runs this inside its terminal panel)
  *   add <agent> / remove <agent>  add an agent to the workspace (installs + connects it) or take it off
@@ -27,6 +27,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { terminateProcessTree } from './process-tree.mjs';
 
 const IS_WIN = process.platform === 'win32';
 const home = () => process.env.AURA_AGENTS_HOME || os.homedir();
@@ -183,6 +184,16 @@ export function which(bin) {
       const p = path.join(d, bin + e);
       try { if (fs.statSync(p).isFile()) return p; } catch { /* next */ }
     }
+  }
+  return null;
+}
+
+function whichMcpCommand(bin, searchPath = process.env.PATH ?? '') {
+  const dirs = String(searchPath).split(path.delimiter).filter(Boolean);
+  const exts = IS_WIN ? [...new Set(['', ...(process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').map((ext) => ext.toLowerCase())])] : [''];
+  for (const dir of dirs) for (const ext of exts) {
+    const candidate = path.join(dir, bin + ext);
+    try { if (fs.statSync(candidate).isFile()) return candidate; } catch { /* try next PATH candidate */ }
   }
   return null;
 }
@@ -428,15 +439,108 @@ function version(bin) {
   return ((r.stdout || r.stderr || '').trim().split(/\r?\n/).pop() || '').slice(0, 60) || null;
 }
 
-function mcpConnected(agent) {
+function mcpConfiguration(agent) {
+  const file = agent.mcp.file();
+  if (!fs.existsSync(file)) return { spec: null, error: null };
   if (agent.mcp.kind === 'toml') {
-    try { return /^\[mcp_servers\.(common-context|"common-context")\]/m.test(fs.readFileSync(agent.mcp.file(), 'utf8')); } catch { return false; }
+    try {
+      const raw = fs.readFileSync(file, 'utf8');
+      const header = /^\[mcp_servers\.(?:"common-context"|common-context)\]\s*$/m.exec(raw);
+      if (!header) return { spec: null, error: null };
+      const nextHeader = raw.slice(header.index + header[0].length).search(/^\[/m);
+      const section = raw.slice(header.index + header[0].length, nextHeader < 0 ? undefined : header.index + header[0].length + nextHeader);
+      const commandMatch = section.match(/^command\s*=\s*"((?:[^"\\]|\\.)*)"/m);
+      if (!commandMatch) return { spec: null, error: 'MCP configuration is invalid' };
+      const rawCommand = JSON.parse(`"${commandMatch[1]}"`);
+      const argsMatch = section.match(/^args\s*=\s*(\[[^\n]*\])/m);
+      const envMatch = section.match(/^env\s*=\s*\{([^}]*)\}/m);
+      const environment = {};
+      for (const pair of (envMatch?.[1] ?? '').matchAll(/([A-Za-z_][\w-]*)\s*=\s*"((?:[^"\\]|\\.)*)"/g)) environment[pair[1]] = JSON.parse(`"${pair[2]}"`);
+      const args = argsMatch ? JSON.parse(argsMatch[1]) : [];
+      if (!rawCommand || !Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) return { spec: null, error: 'MCP configuration is invalid' };
+      return { spec: { command: rawCommand, args, environment }, error: null };
+    } catch { return { spec: null, error: 'MCP configuration is invalid' }; }
   }
   try {
-    const raw = fs.readFileSync(agent.mcp.file(), 'utf8');
+    const raw = fs.readFileSync(file, 'utf8');
     const j = JSON.parse(agent.mcp.jsonc ? stripJsonc(raw) : raw);
-    return !!dig(j, mcpPath(agent))?.[MCP_NAME];
-  } catch { return false; }
+    const entry = dig(j, mcpPath(agent))?.[MCP_NAME];
+    if (entry === undefined) return { spec: null, error: null };
+    const commandParts = Array.isArray(entry?.command) ? entry.command : [entry?.command];
+    const command = commandParts[0];
+    const extraArgs = Array.isArray(entry.args) ? entry.args : [];
+    const environment = entry.environment ?? entry.env;
+    if (typeof command !== 'string' || !command || commandParts.some((arg) => typeof arg !== 'string') || extraArgs.some((arg) => typeof arg !== 'string')
+      || (environment !== undefined && (!environment || typeof environment !== 'object' || Array.isArray(environment) || Object.values(environment).some((value) => typeof value !== 'string')))) {
+      return { spec: null, error: 'MCP configuration is invalid' };
+    }
+    return { spec: { command, args: [...commandParts.slice(1), ...extraArgs], environment: environment ?? {} }, error: null };
+  } catch { return { spec: null, error: 'MCP configuration is invalid' }; }
+}
+
+/** Probe the context server (not the agent's own MCP client) using real MCP stdio. */
+export function verifyMcp(spec, timeoutMs = 5000) {
+  if (typeof spec === 'string') spec = { command: spec, args: [], environment: {} };
+  if (!spec?.command) return Promise.resolve({ configured: false, handshakeVerified: false, toolInvocationVerified: false, verified: false, error: 'MCP is not configured' });
+  const resolved = spec.command.includes('/') || spec.command.includes('\\') ? (fs.existsSync(spec.command) ? spec.command : null) : whichMcpCommand(spec.command, spec.environment?.PATH ?? process.env.PATH);
+  if (!resolved) return Promise.resolve({ configured: true, handshakeVerified: false, toolInvocationVerified: false, verified: false, error: 'MCP executable is missing' });
+  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-context-probe-'));
+  const probeStore = path.join(probeDir, 'probe.json');
+  const env = { ...Object.fromEntries(['PATH', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SYSTEMROOT', 'TEMP', 'TMP'].filter((k) => process.env[k]).map((k) => [k, process.env[k]])), ...(spec.environment ?? {}), CONTEXT_MCP_FILE: probeStore, CONTEXT_MCP_AGENT_ID: 'aura-context-server-probe' };
+  let child;
+  try {
+    // npm installs the server as a `.cmd` shim on Windows. Node refuses to
+    // spawn `.cmd`/`.bat` without a shell (it throws synchronously), so use
+    // the same rule as every other spawn in this file.
+    child = spawn(resolved, spec.args ?? [], { cwd: probeDir, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, env, detached: process.platform !== 'win32', shell: IS_WIN && /\.(cmd|bat)$/i.test(resolved) });
+  } catch (e) {
+    // A probe that cannot start is an unverified server, never a crash of
+    // the caller (setup and status both await this).
+    fs.rmSync(probeDir, { recursive: true, force: true });
+    return Promise.resolve({ configured: true, handshakeVerified: false, toolInvocationVerified: false, verified: false, error: `MCP server could not be started (${String(e?.code ?? e?.message ?? e).slice(0, 120)})` });
+  }
+  let buffer = '';
+  let nextId = 0;
+  const pending = new Map();
+  const failPending = (err) => { for (const p of pending.values()) p.reject(err); pending.clear(); };
+  child.on('error', failPending);
+  child.on('close', (code, signal) => failPending(new Error(`MCP server exited before responding (${code ?? signal ?? 'unknown'})`)));
+  child.stdin.on('error', failPending);
+  child.stdout.on('data', (chunk) => {
+    buffer += chunk.toString('utf8');
+    for (;;) {
+      const n = buffer.indexOf('\n'); if (n < 0) break;
+      const line = buffer.slice(0, n).trim(); buffer = buffer.slice(n + 1);
+      try { const msg = JSON.parse(line); if (pending.has(msg.id)) { pending.get(msg.id).resolve(msg); pending.delete(msg.id); } } catch { /* protocol stdout only */ }
+    }
+  });
+  const request = (method, params = {}) => new Promise((resolve, reject) => {
+    const id = ++nextId; pending.set(id, { resolve, reject });
+    try { child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`); }
+    catch (err) { pending.delete(id); reject(err); }
+  });
+  const timer = setTimeout(() => { for (const p of pending.values()) p.reject(new Error('MCP request timed out')); pending.clear(); child.kill(); }, timeoutMs);
+  return (async () => {
+    let handshakeVerified = false;
+    try {
+      const init = await request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'aura-status-probe', version: '1' } });
+      if (init.error) throw new Error('MCP initialize failed');
+      handshakeVerified = true;
+      try { child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`); } catch { /* server may have exited after initialize */ }
+      const listed = await request('tools/list');
+      if (listed.error) throw new Error('MCP tools/list failed');
+      if (!(listed.result?.tools ?? []).some((t) => t.name === 'search_context')) throw new Error('Required MCP tool search_context is missing');
+      const called = await request('tools/call', { name: 'search_context', arguments: { query: `aura-status-${Date.now()}-${Math.random().toString(36).slice(2)}`, limit: 1 } });
+      if (called.error || called.result?.isError) throw new Error('MCP tool invocation failed');
+      return { configured: true, handshakeVerified, toolInvocationVerified: true, verified: true, error: null };
+    } catch (e) {
+      return { configured: true, handshakeVerified, toolInvocationVerified: false, verified: false, error: String(e?.message ?? e).slice(0, 180) };
+    } finally {
+      clearTimeout(timer);
+      await terminateProcessTree(child, 100);
+      fs.rmSync(probeDir, { recursive: true, force: true });
+    }
+  })();
 }
 
 /* ── the workspace's agents ────────────────────────────────────────────── */
@@ -479,22 +583,45 @@ export function listAgents() {
   };
 }
 
-export function status({ withVersion = true, all = false } = {}) {
+export async function status({ withVersion = true, all = false, verifyContextServer = false } = {}) {
   const chosen = selectedAgents();
-  return AGENTS.filter((a) => all || chosen.includes(a.id)).map((a) => {
+  const selected = AGENTS.filter((a) => all || chosen.includes(a.id));
+  const configurations = selected.map((a) => [a.id, mcpConfiguration(a)]);
+  const probes = new Map();
+  if (verifyContextServer) {
+    for (const [, { spec }] of configurations) if (spec) {
+      const key = JSON.stringify(spec);
+      if (!probes.has(key)) probes.set(key, verifyMcp(spec));
+    }
+  }
+  return Promise.all(selected.map(async (a) => {
     const installed = !!which(a.bin);
     let signedIn = false;
     try { signedIn = a.signedIn(); } catch { /* unreadable reads as not signed in */ }
+    const config = configurations.find(([id]) => id === a.id)?.[1] ?? { spec: null, error: null };
+    const spec = config.spec;
+    const mcp = spec ? (verifyContextServer ? await probes.get(JSON.stringify(spec)) : { configured: true, handshakeVerified: false, toolInvocationVerified: false, verified: false, error: null }) : { configured: false, handshakeVerified: false, toolInvocationVerified: false, verified: false, error: config.error };
     return {
       id: a.id, name: a.name, installed,
       version: installed && withVersion ? version(a.bin) : null,
-      mcpConnected: mcpConnected(a),
+      mcpConfigured: mcp.configured,
+      mcpConfigError: config.error,
+      contextServerHandshakeVerified: mcp.handshakeVerified ?? false,
+      contextServerToolInvocationVerified: mcp.toolInvocationVerified ?? false,
+      contextServerVerified: mcp.verified,
+      contextServerError: mcp.error,
+      // Compatibility only. A server probe does not verify this agent client.
+      mcpHandshakeVerified: false,
+      mcpToolInvocationVerified: false,
+      mcpError: null,
+      mcpConnected: false,
+      executableByAura: null,
       signedIn,
       signIn: a.login ? a.login.via : 'skipped',
       hint: a.login?.hint ?? null,
       headless: a.headless,
     };
-  });
+  }));
 }
 
 /** Set up the chosen agents; `emit` receives one event per step. */
@@ -503,6 +630,8 @@ export async function setup({ only = null, emit = () => {} } = {}) {
   const chosen = AGENTS.filter((a) => ids.includes(a.id));
   const server = await ensureMcpServer((line) => emit({ agent: MCP_PACKAGE, step: 'install', status: 'log', detail: line }));
   emit({ agent: MCP_PACKAGE, step: 'install', status: server.ok ? 'done' : 'failed', detail: server.detail ?? server.command });
+  const serverVerification = server.ok ? await verifyMcp(server.command) : { verified: false, error: server.detail ?? 'server unavailable' };
+  emit({ agent: MCP_PACKAGE, step: 'context-server', status: serverVerification.verified ? 'verified' : 'unverified', detail: serverVerification.error ?? 'Context server handshake and tool invocation verified' });
   const results = [];
   for (const a of chosen) {
     const r = { id: a.id, install: null, mcp: null, rules: null, error: null };
@@ -512,7 +641,7 @@ export async function setup({ only = null, emit = () => {} } = {}) {
       emit({ agent: a.id, step: 'install', status: r.install.status === 'failed' ? 'failed' : 'done', detail: r.install.detail ?? r.install.status });
       if (r.install.status !== 'failed' && server.ok) {
         r.mcp = connectMcp(a, server.command);
-        emit({ agent: a.id, step: 'mcp', status: 'done', detail: `${r.mcp.status} ${r.mcp.file}` });
+        emit({ agent: a.id, step: 'mcp', status: 'configured', detail: `${r.mcp.status} ${r.mcp.file}; agent MCP client has not been tested` });
         if (a.extra) {
           const x = a.extra();
           emit({ agent: a.id, step: 'permissions', status: 'done', detail: `${x.status} ${x.file}` });
@@ -547,12 +676,13 @@ export function login(id) {
   });
 }
 
-function doctor() {
+async function doctor() {
   const lines = [];
   if (!npmCommand()) lines.push('npm not found: npm-based agents cannot be installed. Install Node.js, or run this from AURA Hub.');
-  for (const s of status({ withVersion: false })) {
+  for (const s of await status({ withVersion: false })) {
     if (!s.installed) lines.push(`${s.name}: not installed — run \`aura-agents setup --only ${s.id}\`.`);
-    else if (!s.mcpConnected) lines.push(`${s.name}: common-context not connected — run setup again.`);
+    else if (s.mcpConfigError) lines.push(`${s.name}: MCP configuration is invalid (${s.mcpConfigError}).`);
+    else if (!s.mcpConfigured) lines.push(`${s.name}: common-context is not configured — run setup again.`);
     if (s.installed && !s.signedIn && s.signIn !== 'skipped') lines.push(`${s.name}: not signed in — run \`aura-agents login ${s.id}\` (${s.signIn}).`);
   }
   const bin = path.join(toolsDir(), 'bin');
@@ -567,9 +697,10 @@ async function main(argv) {
   const json = rest.includes('--json');
   if (cmd === 'status') {
     // `--no-version` skips running each agent's `--version`, the only slow part (the Home strip needs none of it).
-    const s = status({ withVersion: !rest.includes('--no-version') });
+    const verifyContextServer = rest.includes('--verify-context-server');
+    const s = await status({ withVersion: !rest.includes('--no-version'), verifyContextServer });
     if (json) process.stdout.write(JSON.stringify(s) + '\n');
-    else for (const a of s) process.stdout.write(`${a.name.padEnd(16)} ${a.installed ? (a.version ?? 'installed') : 'missing'} · mcp ${a.mcpConnected ? 'on' : 'off'} · ${a.signIn === 'skipped' ? 'sign-in skipped' : a.signedIn ? 'signed in' : 'not signed in'}\n`);
+    else for (const a of s) process.stdout.write(`${a.name.padEnd(16)} ${a.installed ? (a.version ?? 'installed') : 'missing'} · MCP ${a.mcpConfigError ? 'invalid configuration' : a.mcpConfigured ? 'configured' : 'not configured'} · ${a.signIn === 'skipped' ? 'sign-in skipped' : a.signedIn ? 'signed in' : 'not signed in'}${verifyContextServer ? ` · Context server ${a.contextServerVerified ? 'verified' : `not verified${a.contextServerError ? ` (${a.contextServerError})` : ''}`}` : ''}\n`);
     return 0;
   }
   if (cmd === 'setup') {
@@ -586,7 +717,7 @@ async function main(argv) {
     if (r.detail) process.stdout.write(`${r.detail}\n`);
     return r.code;
   }
-  if (cmd === 'doctor') { for (const l of doctor()) process.stdout.write(l + '\n'); return 0; }
+  if (cmd === 'doctor') { for (const l of await doctor()) process.stdout.write(l + '\n'); return 0; }
   if (cmd === 'list') {
     const l = listAgents();
     process.stdout.write(json ? JSON.stringify(l) + '\n' : `workspace: ${l.selected.join(', ')}\ncan add: ${l.available.map((a) => a.id).join(', ') || 'none'}\n`);

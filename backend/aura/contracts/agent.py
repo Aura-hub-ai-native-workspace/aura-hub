@@ -158,6 +158,19 @@ class TaskSpecification(ContractModel):
     id: str = Field(min_length=1)
     description: str
     capabilityId: str | None = None
+    #: AURA runtime-only result from the existing Policy Engine preflight.
+    #: It can only narrow execution; the planner cannot grant authority.
+    policyDeniedReason: str | None = Field(default=None, exclude=True)
+    #: AURA runtime-only: the preflight refusal above was because the node this
+    #: task names is not connected or cannot be driven (not a policy decision
+    #: about the work). The controller may then look for another connected,
+    #: permitted provider before the task is settled as denied.
+    providerUnavailable: str | None = Field(default=None, exclude=True)
+    #: Catalogue tool ids the provisioner must verify before this task runs.
+    #: This field was already carried as an allowed extension from planner
+    #: output; declaring it makes the existing contract explicit without
+    #: changing its wire representation.
+    requiresTools: list[str] = Field(default_factory=list)
     missionId: str | None = None
     """Durable umbrella identity for the natural user request that owns
     this delegated task. All tasks from the same request share it; it is
@@ -261,6 +274,7 @@ class AuthorityRequirement(ContractModel):
     the Fabric acts on it."""
 
     capabilityId: str
+    taskId: str | None = None
     decision: PolicyDecision
     rule: str
     reason: str

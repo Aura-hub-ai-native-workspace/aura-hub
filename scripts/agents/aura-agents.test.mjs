@@ -107,21 +107,97 @@ test('setup installs what is missing and connects every agent; one failure does 
   const kilo = results.find((r) => r.id === 'kilo-code');
   assert.ok(kilo.error, 'broken kilo config is reported');
   for (const r of results.filter((x) => x.id !== 'kilo-code')) assert.equal(r.mcp.status, 'updated', r.id);
-  assert.ok(events.some((e) => e.agent === 'pi' && e.step === 'finished' && e.status === 'done'));
-  const s = mod.status({ withVersion: false });
+  assert.ok(events.some((e) => e.agent === mod.MCP_PACKAGE && e.step === 'context-server' && e.status === 'unverified'), 'server probe is reported at server scope');
+  assert.ok(events.some((e) => e.agent === 'pi' && e.step === 'mcp' && e.status === 'configured' && /client has not been tested/.test(e.detail)), 'agent config is not represented as client verification');
+  const s = await mod.status({ withVersion: false });
   assert.ok(s.every((a) => a.installed));
-  assert.deepEqual(s.filter((a) => a.mcpConnected).map((a) => a.id).sort(), ['agy', 'claude-code', 'codex-cli', 'freebuff', 'opencode', 'pi']);
+  assert.deepEqual(s.filter((a) => a.mcpConfigured).map((a) => a.id).sort(), ['agy', 'claude-code', 'codex-cli', 'freebuff', 'opencode', 'pi']);
+  assert.ok(s.filter((a) => a.mcpConfigured).every((a) => !a.mcpConnected && !a.mcpToolInvocationVerified && !a.contextServerToolInvocationVerified));
+  assert.ok(s.find((a) => a.id === 'kilo-code').mcpConfigError, 'invalid JSONC is represented as invalid configuration, not merely unconfigured');
 });
 
-test('status reads sign-in from credential presence, never values', () => {
+test('status reads sign-in from credential presence, never values', async () => {
   write('.local/share/kilo/auth.json', JSON.stringify({ kilo: { type: 'oauth', access: 'SECRET' } }));
   write('.pi/agent/auth.json', JSON.stringify({ radius: {} }));
-  const s = Object.fromEntries(mod.status({ withVersion: false, all: true }).map((a) => [a.id, a]));
+  const s = Object.fromEntries((await mod.status({ withVersion: false, all: true })).map((a) => [a.id, a]));
   assert.equal(s['kilo-code'].signedIn, true);
   assert.equal(s.pi.signedIn, true);
   assert.equal(s.opencode.signedIn, false);
   assert.equal(s['claude-code'].signIn, 'skipped');
   assert.ok(!JSON.stringify(s).includes('SECRET'));
+});
+
+test('live MCP status distinguishes handshake, required tools, and successful tool calls', async () => {
+  const dir = path.join(home, 'mcp-fixtures'); fs.mkdirSync(dir, { recursive: true });
+  // Launch fixtures as `node <script>`: Windows cannot execute a shebang script directly.
+  const viaNode = (file) => ({ command: process.execPath, args: [file], environment: {} });
+  const fixture = (name, mode) => {
+    const file = path.join(dir, name);
+    const source = String.raw`#!/usr/bin/env node
+const mode = ${JSON.stringify(mode)};
+let buffer = '';
+process.stdin.on('data', chunk => {
+  buffer += chunk;
+  let end;
+  while ((end = buffer.indexOf('\n')) >= 0) {
+    const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+    const req = JSON.parse(line);
+    if (!req.id) continue;
+    if (req.method === 'initialize' && mode === 'handshake-fail') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, error: { code: -1, message: 'no' } }) + '\n'); continue;
+    }
+    let result = {};
+    if (req.method === 'initialize') result = { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'fixture', version: '1' } };
+    else if (req.method === 'tools/list') result = { tools: mode === 'missing-tool' ? [] : [{ name: 'search_context', inputSchema: { type: 'object' } }] };
+    else if (req.method === 'tools/call') result = mode === 'call-fail' ? { isError: true } : { content: [{ type: 'text', text: 'ok' }] };
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: req.id, result }) + '\n');
+  }
+});
+`;
+    fs.writeFileSync(file, source);
+    fs.chmodSync(file, 0o700); return viaNode(file);
+  };
+  const absent = await mod.verifyMcp(path.join(dir, 'absent'), 100);
+  assert.equal(absent.handshakeVerified, false); assert.equal(absent.toolInvocationVerified, false);
+  const startupFailure = path.join(dir, 'startup-failure');
+  fs.writeFileSync(startupFailure, '#!/usr/bin/env node\nprocess.stderr.write("startup failed");process.exit(7);\n'); fs.chmodSync(startupFailure, 0o700);
+  const startup = await mod.verifyMcp(viaNode(startupFailure), 1000);
+  assert.equal(startup.handshakeVerified, false); assert.match(startup.error, /server exited before responding/);
+  const handshake = await mod.verifyMcp(fixture('bad-handshake', 'handshake-fail'), 3000);
+  assert.equal(handshake.handshakeVerified, false);
+  const missing = await mod.verifyMcp(fixture('missing-tool', 'missing-tool'), 3000);
+  assert.equal(missing.handshakeVerified, true); assert.equal(missing.toolInvocationVerified, false);
+  const callError = await mod.verifyMcp(fixture('call-error', 'call-fail'), 3000);
+  assert.equal(callError.handshakeVerified, true); assert.equal(callError.toolInvocationVerified, false);
+  const good = await mod.verifyMcp(fixture('good', 'ok'), 3000);
+  assert.deepEqual({ handshake: good.handshakeVerified, call: good.toolInvocationVerified }, { handshake: true, call: true });
+});
+
+test('a probe whose server cannot even be spawned is reported unverified, not thrown', async () => {
+  // spawn() throws synchronously for some inputs (on Windows: a .cmd shim
+  // without a shell; everywhere: an argument containing a NUL byte). The
+  // probe must turn that into an unverified result so setup keeps going.
+  const before = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('aura-context-probe-')).length;
+  const r = await mod.verifyMcp({ command: process.execPath, args: ['bad\0arg'], environment: {} }, 1000);
+  assert.deepEqual({ configured: r.configured, handshake: r.handshakeVerified, verified: r.verified }, { configured: true, handshake: false, verified: false });
+  assert.match(r.error, /could not be started/);
+  const after = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('aura-context-probe-')).length;
+  assert.equal(after, before, 'the probe directory is removed');
+});
+
+test('status probes the context server only when requested and keeps server scope explicit', async () => {
+  const dir = path.join(home, '.config', 'opencode'); fs.mkdirSync(dir, { recursive: true });
+  const fixtureDir = path.join(home, 'mcp-fixtures'); fs.mkdirSync(fixtureDir, { recursive: true });
+  const file = path.join(fixtureDir, 'ok');
+  fs.writeFileSync(file, `#!/usr/bin/env node\nif(process.argv[2]!=='probe-arg'||process.env.PROBE_SENTINEL!=='present')process.exit(9);process.stdin.on('data',d=>{for(const l of d.toString().split('\\n')){if(!l.trim())continue;const q=JSON.parse(l);if(!q.id)continue;const result=q.method==='initialize'?{protocolVersion:'2024-11-05',capabilities:{},serverInfo:{name:'fixture',version:'1'}}:q.method==='tools/list'?{tools:[{name:'search_context'}]}:{content:[{type:'text',text:'ok'}]};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:q.id,result})+'\\n')}});\n`);
+  fs.chmodSync(file, 0o700);
+  write('.config/opencode/opencode.json', JSON.stringify({ mcp: { servers: { 'common-context': { type: 'local', command: ['node', file, 'probe-arg'], environment: { PROBE_SENTINEL: 'present' } } } } }));
+  const normal = Object.fromEntries((await mod.status({ withVersion: false })).map((a) => [a.id, a]));
+  assert.equal(normal.opencode.contextServerVerified, false);
+  const probed = Object.fromEntries((await mod.status({ withVersion: false, verifyContextServer: true })).map((a) => [a.id, a]));
+  assert.equal(probed.opencode.contextServerHandshakeVerified, true);
+  assert.equal(probed.opencode.contextServerToolInvocationVerified, true);
+  assert.equal(probed.opencode.mcpToolInvocationVerified, false, 'server probe is not per-agent client verification');
 });
 
 test('login: Claude Code is skipped and unknown agents are refused', async () => {
@@ -150,7 +226,7 @@ test('Codex: common-context is appended to config.toml once, other settings kept
 
 test('the workspace starts with four agents; remove and add change only the choice', async () => {
   assert.deepEqual(mod.selectedAgents(), ['opencode', 'kilo-code', 'claude-code', 'codex-cli']);
-  assert.deepEqual(mod.status({ withVersion: false }).map((a) => a.id), ['opencode', 'kilo-code', 'claude-code', 'codex-cli']);
+  assert.deepEqual((await mod.status({ withVersion: false })).map((a) => a.id), ['opencode', 'kilo-code', 'claude-code', 'codex-cli']);
   mod.removeAgent('kilo-code');
   assert.deepEqual(mod.selectedAgents(), ['opencode', 'claude-code', 'codex-cli']);
   assert.deepEqual(mod.listAgents().available.map((a) => a.id), ['kilo-code', 'freebuff', 'agy', 'pi']);

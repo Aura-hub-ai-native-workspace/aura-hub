@@ -4,6 +4,7 @@ from aura.central_agent.execution import ExecutionController
 from aura.fabric import FabricConfig
 
 OPENCODE = {"id": "opencode", "name": "OpenCode", "binary": "opencode", "capabilities": ["coding-agent", "terminal"]}
+CLAUDE = {"id": "claude-code", "name": "Claude Code", "binary": "claude", "capabilities": ["coding-agent"]}
 KILO = {"id": "kilo-code", "name": "Kilo Code", "binary": "kilo", "capabilities": ["coding-agent", "terminal"]}
 
 
@@ -59,9 +60,18 @@ def test_a_small_edit_goes_to_opencode_even_when_laya_would_pick_another(monkeyp
 
 
 def test_a_larger_change_goes_to_the_worker_laya_chooses(monkeypatch):
+    # The header change is the Frontend Builder's, whose assigned runtime (OpenCode) is not
+    # connected here, so Laya chooses among the workers that are.
+    monkeypatch.setattr(ex, "laya_advisor", lambda: _Laya(small=False, pick="kilo-code"))
+    ctl = _controller([CLAUDE, KILO])
+    assert ctl._match_role(_Task(), "code", None) == "kilo-code"
+
+
+def test_a_larger_change_goes_to_its_specialists_runtime_when_that_is_connected(monkeypatch):
     monkeypatch.setattr(ex, "laya_advisor", lambda: _Laya(small=False, pick="kilo-code"))
     ctl = _controller([OPENCODE, KILO])
-    assert ctl._match_role(_Task(), "code", None) == "kilo-code"
+    assert ctl._match_role(_Task(), "code", None) == "opencode"
+    assert ctl._laya_picks["implement"]["specialist"] == "frontend-builder"
 
 
 def test_a_fix_returns_to_the_builder_when_it_is_eligible(monkeypatch):
@@ -84,6 +94,6 @@ def test_laya_not_ready_falls_back_to_the_first_eligible_worker_and_says_so(monk
             return None
 
     monkeypatch.setattr(ex, "laya_advisor", lambda: _NotReady())
-    ctl = _controller([KILO, OPENCODE])
+    ctl = _controller([KILO, CLAUDE])
     assert ctl._match_role(_Task(), "code", None) == "kilo-code"
     assert ctl._laya_picks["implement"]["fallback"] is True

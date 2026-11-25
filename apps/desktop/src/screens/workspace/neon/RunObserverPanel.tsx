@@ -43,7 +43,7 @@ export function RunObserverView({ view }: { view: RunView }) {
             <li key={c.taskId} data-state={c.state} className="flex items-start gap-2">
               <span className={cn('w-3 shrink-0 text-center font-semibold', TONE[c.state])}>{MARK[c.state]}</span>
               <span className="min-w-0 text-text-muted">
-                <span className="text-text">{c.title}</span> <span className="text-text-subtle">— {c.state}{c.worker ? ` · ${c.worker}` : ''}</span>
+                <span className="text-text">{c.title}</span> <span className="text-text-subtle">— {c.state}{c.specialist ? ` · ${c.specialist}` : ''}{c.worker ? ` · ${c.worker}` : ''}</span>
                 {c.detail && (c.state === 'failed' || c.state === 'blocked') ? <span className="block text-[11.5px] text-text-subtle">{c.detail}</span> : null}
               </span>
             </li>
@@ -68,6 +68,21 @@ export function RunObserverView({ view }: { view: RunView }) {
       {view.handoffs.length > 0 && (
         <ul data-testid="run-handoffs" className="space-y-0.5 text-[11.5px] text-text-muted">
           {view.handoffs.map((h, i) => <li key={i}>Handed over {h.from ?? 'a worker'} → {h.to ?? 'another worker'}: {h.reason}</li>)}
+        </ul>
+      )}
+      {view.recoveries.length > 0 && (
+        <ul data-testid="run-recoveries" className="space-y-0.5 text-[11.5px] text-text-muted">
+          {view.recoveries.map((r, i) => {
+            const title = view.checklist.find((c) => c.taskId === r.taskId)?.title ?? r.taskId;
+            const target = r.toNode ?? r.fromNode ?? 'an eligible runtime';
+            return <li key={`${r.taskId}:${r.round}:${i}`}>
+              {r.alternativeAvailable === false && r.sameRuntimeRetry
+                ? `No alternative runtime for ${title}; retried the permitted runtime: ${r.reason} — ${r.verified ? 'verified' : r.state}`
+                : r.alternativeAvailable === false
+                  ? `No permitted alternative for ${title}: ${r.reason}`
+                : `${r.verified ? 'Recovered' : 'Retried'} ${title}${r.alternativeSelected ? ` on ${target}` : ''}: ${r.reason}${r.verified ? ' — verified' : ` — ${r.state}`}`}
+            </li>;
+          })}
         </ul>
       )}
       {view.errors.length > 0 && (

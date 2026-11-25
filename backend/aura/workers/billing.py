@@ -36,6 +36,28 @@ AUTHORIZED = "owner-authorized"
 STANDING = "standing-authorization"
 BILLABLE = "billable"
 UNKNOWN = "unknown"
+LOCAL = "local-execution"
+
+
+def _catalogued_local_tool(worker_id: str) -> bool:
+    """Whether an id is a known, unauthenticated local program, not a provider.
+
+    The shared policy file also governs worker CLIs, whose metering is
+    unknowable. A catalogued local-process tool with no external account
+    authentication is a different billing class. Its capability still goes
+    through Fabric policy and its executor checks; this answers only provider
+    billing, and never makes unknown ids free.
+    """
+    try:
+        from ..environment.catalog import catalog_entry
+        from .adapters import adapter_for_id
+
+        entry = catalog_entry(worker_id)
+        return bool(entry and entry.transport == "local-process"
+                    and entry.auth == "none"
+                    and adapter_for_id(worker_id) is None)
+    except Exception:  # noqa: BLE001 — an unreadable catalog fails closed
+        return False
 
 
 @dataclass(frozen=True)
@@ -129,6 +151,12 @@ def decide(worker_id: str, home: str | Path | None = None) -> WorkerDecision:
     if wid in authorized:
         return WorkerDecision(wid, True, AUTHORIZED,
                               f"{wid} is authorized in {POLICY_FILE}: the owner accepted its cost.")
+    if wid and _catalogued_local_tool(wid):
+        return WorkerDecision(
+            wid, True, LOCAL,
+            f"{wid} is a catalogued local tool; no external model-provider "
+            "billing classification applies. Fabric policy still governs its use.",
+        )
     # The owner's standing decision: no approval gate. Any worker AURA has an adapter for may run;
     # when a paid one reaches its limit, the run moves to the next free agent (see central_agent.quota).
     # The owner can bring the gate back with "requireApproval": true in the policy file.
@@ -150,10 +178,16 @@ def decide(worker_id: str, home: str | Path | None = None) -> WorkerDecision:
 
 
 def is_free_tier(worker_id: str, home: str | Path | None = None) -> bool:
-    """A worker that does not bill a vendor account: owner-marked verified-free, or not a known paid CLI."""
+    """Whether an allowed candidate has no metered provider billing."""
     free, _ = load_policy(home)
     wid = str(worker_id or "")
-    return wid in free or (bool(wid) and wid not in KNOWN_BILLABLE)
+    if wid in free:
+        return True
+    if _catalogued_local_tool(wid):
+        return True
+    # This is only a preference after decide() has allowed the candidate;
+    # unknown ids remain denied by decide() and are never dispatched.
+    return bool(wid) and wid not in KNOWN_BILLABLE
 
 
 def worker_id_of(node: dict | None) -> str:
