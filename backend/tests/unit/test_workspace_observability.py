@@ -140,6 +140,11 @@ def test_a_quota_handoff_is_announced_and_keeps_what_was_done(tmp_path, monkeypa
     assert handoffs and handoffs[0].payload["fromWorker"] == "claude-code"
     assert handoffs[0].payload["toWorker"] == "kilo-code" and "quota" in handoffs[0].payload["reason"]
     assert result.report["handoffs"][0]["toNode"] == "kilo-code"
+    recovery = result.report["recoveryActions"][0]
+    assert recovery["taskId"] == "delegate-claude"
+    assert recovery["alternativeSelected"] is True
+    assert recovery["alternativeAvailable"] is True
+    assert recovery["state"] == "done" and recovery["verified"] is True
     assert result.report["errors"] and result.report["errors"][0]["status"] == "resolved"
 
 

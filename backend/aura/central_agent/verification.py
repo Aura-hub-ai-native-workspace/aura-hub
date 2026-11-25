@@ -37,9 +37,11 @@ class VerificationEngine:
             verified_flag = outcome.verified if task else None
             kind = task.verification.kind if task else "audit-only"
             # audit-only verification passes when the invocation was performed
-            # and recorded; mechanical kinds need the Fabric's own pass flag.
+            # and recorded ONLY when the Fabric supplied no verdict. An
+            # explicit failed verifier result must never be overwritten.
             effective = (
-                True if (outcome.performed and kind == "audit-only")
+                True if (outcome.performed and kind == "audit-only"
+                         and outcome.verified is None)
                 else verified_flag
             )
             row = outcome.model_copy(update={"verified": effective})

@@ -32,6 +32,17 @@ class TestWorkerRoutes:
             assert worker["connected"] is False
             assert worker["governance"] == "NOT_CONNECTED"
 
+    def test_the_six_specialists_are_listed_with_no_runtime_claimed_before_it_is_connected(self, client):
+        c, _ = client
+        items = c.get("/agent/specialists").json()["specialists"]
+        assert [(s["name"], s["runtime"]) for s in items] == [
+            ("Researcher", "opencode"), ("Planner", "opencode"), ("Frontend Builder", "opencode"),
+            ("Backend Builder", "kilo-code"), ("Debugger", "kilo-code"), ("Reviewer / Fixer", "kilo-code"),
+        ]
+        # Nothing is connected in a fresh home, so no specialist's runtime is reported available.
+        assert all(s["runtimeAvailable"] is False for s in items)
+        assert {s["runtimeName"] for s in items} == {"OpenCode", "Kilo Code"}
+
     def test_the_matrix_has_no_fabricated_cells(self, client):
         c, _ = client
         for row in c.get("/workers").json()["matrix"]:

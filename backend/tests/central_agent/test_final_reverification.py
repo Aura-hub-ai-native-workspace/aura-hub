@@ -128,23 +128,25 @@ def test_agent_low_risk_autoexecutes_via_connected_node_routing(env):
     assert client.get("/fabric/approvals").status_code == 404  # no queue; nothing can be pending
 
 
-def test_unconnected_capability_is_denied_before_any_effect(env, monkeypatch):
+def test_unconnected_capability_is_denied_at_fabric_before_any_effect(env, monkeypatch):
     client, proj, _h, _t = env
     # The tool is found but cannot be recorded as connected: policy has no
-    # node to authorize, so the run is denied before any effect.
+    # node to authorize, so Fabric denies the invocation before any effect.
     monkeypatch.setattr("aura.central_agent.provisioner.connect_verified_tool",
                         lambda node_id, version: False)
-    # SECURITY: policy denial BEFORE effect when nothing provides the node cap
+    # SECURITY: Fabric policy denial BEFORE effect when nothing provides the node cap
     r = client.post("/agent/sessions", json={
         "message": "show me git status",
         "projectId": "p", "projectPath": str(proj)})
     res = await_result(lambda p: client.get(p).json(), r.json())
     assert res["status"] == "failed"
-    assert "Policy denies this plan" in res["summary"]
+    assert "Capability unavailable" in res["summary"]
+    assert "Nothing connected can perform git status yet" in res["summary"]
     # The executor never ran: a run that executed would list the task here.
     assert res.get("performed") == [] and res.get("verified") == [], res
-    # zero side effects: only the pre-existing .git fixture dir remains
-    assert [x.name for x in proj.iterdir()] == [".git"]
+    # Preflight denial happens before execution, so neither the governed
+    # command nor an execution diagnostic writes into the project.
+    assert sorted(x.name for x in proj.iterdir()) == [".git"]
 
 
 # ── items 5–11: governed write → park → decide → approved resume ────────────
@@ -193,6 +195,8 @@ MCP_FIXTURE = textwrap.dedent("""
         m = req.get("method")
         if m == "initialize":
             send({"id": req["id"], "result": {"protocolVersion": "2024-11-05"}})
+        elif m == "notifications/initialized":
+            continue
         elif m == "tools/list":
             send({"id": req["id"], "result": {"tools": [
                 {"name": "echo-loud", "description": "echoes text",

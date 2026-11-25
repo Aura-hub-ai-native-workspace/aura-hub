@@ -34,9 +34,9 @@ def _settle(client, sid, timeout=90.0):
         time.sleep(0.2)
 
 
-def test_background_run_without_a_connected_node_ends_in_a_terminal_denial(client, monkeypatch):
+def test_background_run_without_a_connected_node_records_terminal_unavailability(client, monkeypatch):
     # The tool is found on the machine but cannot be recorded as connected,
-    # so policy has no node to authorize and must deny before any effect.
+    # so policy has no node to authorize and Fabric must deny at execution.
     monkeypatch.setattr("aura.central_agent.provisioner.connect_verified_tool",
                         lambda node_id, version: False)
     api, proj = client
@@ -47,8 +47,10 @@ def test_background_run_without_a_connected_node_ends_in_a_terminal_denial(clien
     s = _settle(api, body["sessionId"])
     assert s["state"] == "failed"
     assert s["orchestrationState"] == "failed"
-    assert s["lastResult"]["outcome"] == "failed"
-    assert "Policy denies this plan" in s["lastResult"]["summary"]
+    assert s["lastResult"]["outcome"] == "blocked"
+    assert s["lastResult"]["failureReason"] == "capability-unavailable"
+    assert "Capability unavailable" in s["lastResult"]["summary"]
+    assert "Nothing connected can perform git status yet" in s["lastResult"]["summary"]
     assert s["lastResult"]["performed"] == [] and s["lastResult"]["verified"] == []
 
 

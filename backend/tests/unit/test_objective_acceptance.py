@@ -69,6 +69,13 @@ class TestVerifyObjective:
         assert report.objectiveAccepted is False
         assert any("t2" in u for u in report.unmetAcceptance)
 
+    def test_audit_only_does_not_overwrite_an_explicit_failed_verifier(self):
+        plan = _plan(_task("t1", kind="audit-only"))
+        report = VerificationEngine().verify(plan, [_done("t1", verified=False)])
+        assert report.passed is False
+        assert report.outcomes[0].performed is True
+        assert report.outcomes[0].verified is False
+
     def test_kind_coverage_required(self):
         # Tasks verified audit-only cannot prove a read-back objective.
         plan = _plan(_task("t1", kind="audit-only"), acceptance=[

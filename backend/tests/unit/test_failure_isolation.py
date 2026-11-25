@@ -14,7 +14,9 @@ from aura.central_agent.verification import VerificationEngine
 from aura.contracts.agent import TaskOutcome, VerificationRequirement
 from aura.executors import agent_delegate_verify
 
-from test_mission_status_view import _outcome, _plan, _service, _session, _task  # noqa: F401
+from test_mission_status_view import (  # noqa: F401
+    _done, _outcome, _plan, _service, _session, _task,
+)
 
 
 @pytest.fixture()
@@ -83,6 +85,116 @@ def test_a_required_sibling_that_failed_cannot_be_hidden_by_success(tmp_path):
     assert "tB" not in result.verified
     assert "The agent exited 2." in result.summary
     assert "Mission not verified." in result.summary
+
+
+def test_all_tasks_denied_is_reported_as_policy_denied(tmp_path):
+    svc = _service(tmp_path)
+    plan = _two_worker_plan([_criterion("tA"), _criterion("tB")])
+    out = _outcome(
+        TaskOutcome(taskId="tA", state="denied", detail="scope denied"),
+        TaskOutcome(taskId="tB", state="denied", detail="provider denied"),
+    )
+
+    result = svc._synthesize(_session(tmp_path), plan, out)
+
+    assert result.status == "failed"
+    assert result.outcome == "denied"
+    assert result.failureReason == "policy-denied"
+    assert result.objectiveAccepted is False
+    assert {row.taskId: row.state for row in result.tasks} == {
+        "tA": "denied", "tB": "denied"}
+    assert result.summary.startswith("Policy denied this request:")
+
+
+def test_denial_and_failed_verification_keep_both_task_states(tmp_path):
+    svc = _service(tmp_path)
+    plan = _two_worker_plan([_criterion("tA"), _criterion("tB")])
+    out = _outcome(
+        TaskOutcome(taskId="tA", state="denied", detail="scope denied"),
+        _done("tB", verified=False),
+    )
+
+    result = svc._synthesize(_session(tmp_path), plan, out)
+
+    states = {row.taskId: row for row in result.tasks}
+    assert result.status == "failed" and result.outcome == "failed"
+    assert result.failureReason == "mixed-outcomes"
+    assert result.objectiveAccepted is False
+    assert states["tA"].state == "denied"
+    assert states["tB"].state == "done" and states["tB"].verified is False
+    assert result.verified == []
+    assert "partially completed" in result.summary.lower()
+
+
+def test_denial_with_worker_failure_still_checks_correction_eligibility(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from aura.central_agent.execution import ExecutionOutcome
+    from aura.central_agent.runcontrol import RunControl
+
+    svc = _service(tmp_path)
+    plan = _two_worker_plan([])
+    out = ExecutionOutcome(outcomes=[
+        TaskOutcome(taskId="tA", state="denied", detail="scope denied"),
+        TaskOutcome(taskId="tB", state="failed", performed=True,
+                    verified=False, detail="agent exited 2"),
+    ], denied=True, stopped=True, stop_reason="agent exited 2")
+    svc.controller = SimpleNamespace(execute=lambda *_a, **_k: out)
+    svc.runs = RunControl()
+    checked = []
+    monkeypatch.setattr(svc, "_maybe_correct",
+                        lambda session, plan, outcome: checked.append(outcome))
+    monkeypatch.setattr(svc, "_emit_worker_observations", lambda *_a: None)
+
+    result = svc._execute_plan_leg(_session(tmp_path), plan)
+
+    assert checked == [out]
+    assert result.status == "failed" and result.outcome == "failed"
+    assert result.failureReason == "mixed-outcomes"
+    assert {row.taskId: row.state for row in result.tasks} == {
+        "tA": "denied", "tB": "failed"}
+    assert "agent exited 2" in result.summary
+
+
+def test_denial_and_cancellation_settle_as_cancelled(tmp_path):
+    from test_stopped_mission_view import _agent
+
+    from aura.central_agent.execution import ExecutionOutcome
+
+    agent = _agent(tmp_path)
+    plan = _two_worker_plan([])
+    session = agent.sessions.create("p")
+    token = agent.runs.begin(session.sessionId)
+    token.request("stopped after a policy denial")
+    out = ExecutionOutcome(
+        outcomes=[
+            TaskOutcome(taskId="tA", state="denied", detail="scope denied"),
+            _done("tB"),
+        ], denied=True, cancelled=True, stopped=True,
+        stop_reason="stopped after a policy denial",
+        verified_outputs={"tB": {"stdout": "verified output"}},
+    )
+    agent.controller.execute = lambda *_a, **_k: out
+
+    result = agent._execute_plan_leg(session, plan)
+
+    assert result.status == "cancelled" and result.outcome == "cancelled"
+    assert result.failureReason == "cancelled-by-user"
+    assert {row.taskId: row.state for row in result.tasks} == {
+        "tA": "denied", "tB": "done"}
+    assert result.verified == ["tB"]
+
+
+def test_all_required_tasks_verified_remains_success(tmp_path):
+    svc = _service(tmp_path)
+    plan = _two_worker_plan([_criterion("tA"), _criterion("tB")])
+    result = svc._synthesize(_session(tmp_path), plan,
+                             _outcome(_done("tA"), _done("tB")))
+
+    assert result.status == "completed" and result.outcome == "completed"
+    assert result.objectiveAccepted is True
+    assert result.verified == ["tA", "tB"]
 
 
 def test_an_optional_failure_is_reported_while_the_required_work_passes(project, tmp_path):

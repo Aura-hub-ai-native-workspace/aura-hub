@@ -87,8 +87,8 @@ def test_full_agent_lifecycle_with_real_effects_and_sse(tmp_path,
     # over live HTTP against the same factory and an isolated AURA_HOME.
     from .sse_live import boot_live_server, read_frames
 
-    # The tool is found but cannot be recorded as connected, so policy has no
-    # node to authorize and denies before any effect (the chain under test).
+    # The tool is found but cannot be recorded as connected, so no provider
+    # can satisfy the capability (the chain under test).
     monkeypatch.setattr("aura.central_agent.provisioner.connect_verified_tool",
                         lambda node_id, version: False)
     base, server = boot_live_server(monkeypatch, tmp_path,
@@ -105,11 +105,12 @@ def test_full_agent_lifecycle_with_real_effects_and_sse(tmp_path,
     sid = body.get("sessionId")
     # Workspace runs in the background: poll the session for the terminal
     # result. No node is connected in a fresh AURA_HOME (the registry is
-    # attached but empty), so policy honestly DENIES rather than executing
-    # blind. The full chain up to authority must still be visible:
+    # attached but empty), so execution reports unavailability rather than
+    # mislabeling it as policy denial:
     result = _settled(base, sid)
     assert result.get("status") == "failed", str(result)[:300]
-    assert "Policy denies this plan" in (result.get("summary") or "")
+    assert "Capability unavailable" in (result.get("summary") or "")
+    assert "Nothing connected can perform git status yet" in (result.get("summary") or "")
     assert result.get("performed") == [] and result.get("verified") == [], result
     assert not any(project.iterdir() and list(project.glob("*"))
                    for _ in [0]) or True  # no effects were performed
@@ -202,6 +203,8 @@ MCP_FIXTURE = textwrap.dedent("""
         m = req.get("method")
         if m == "initialize":
             send({"id": req["id"], "result": {"protocolVersion": "2024-11-05"}})
+        elif m == "notifications/initialized":
+            continue
         elif m == "tools/list":
             send({"id": req["id"], "result": {"tools": [
                 {"name": "echo-loud",

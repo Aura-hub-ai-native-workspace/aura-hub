@@ -382,6 +382,7 @@ class TestNoParallelArchitecture:
         # existing web.research capability, not a research engine.
         assert {p for p in paths if p.startswith("/agent/")} == {
             "/agent/bounds", "/agent/tools", "/agent/model", "/agent/route",
+            "/agent/specialists",
             "/agent/chat", "/agent/chats", "/agent/plans/execute",
             "/agent/models/status", "/agent/context/{scope}",
             "/agent/projects/{pid}/adopt", "/agent/research/config",

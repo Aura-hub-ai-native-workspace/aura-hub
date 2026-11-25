@@ -135,7 +135,55 @@ def test_denied_in_wave_is_reported_as_denied(timing, monkeypatch):
     tasks = [_task("t1"), _task("t2")]
     result = _controller().execute(_plan(tasks), project_id=None)
     assert result.denied is True
-    assert result.stopped is True
+    assert result.stopped is False
+
+
+def test_denial_blocks_dependents_but_later_independent_work_continues(
+        timing, monkeypatch):
+    """A policy refusal is terminal for that operation, not the whole
+    mission. Independent tasks continue and dependency consumers stay blocked.
+    """
+    _states(monkeypatch, {"t1": "denied"})
+    tasks = [
+        _task("t1", cap="filesystem.write"),
+        _task("sibling"),
+        _task("dependent", depends=["t1"]),
+        _task("later-independent", cap="filesystem.write"),
+    ]
+    result = _controller().execute(_plan(tasks), project_id=None)
+    by_id = {o.taskId: o for o in result.outcomes}
+
+    assert result.denied is True
+    assert result.stopped is False
+    assert by_id["t1"].state == "denied"
+    assert by_id["sibling"].state == "done"
+    assert by_id["dependent"].state == "blocked"
+    assert "denied" in by_id["dependent"].detail
+    assert by_id["later-independent"].state == "done"
+    assert "dependent" not in timing
+    assert "later-independent" in timing
+
+
+def test_unavailable_task_blocks_dependents_but_independent_work_continues(
+        timing, monkeypatch):
+    _states(monkeypatch, {"t1": "blocked"})
+    tasks = [
+        _task("t1", cap="filesystem.write"),
+        _task("sibling"),
+        _task("dependent", depends=["t1"]),
+        _task("later-independent", cap="filesystem.write"),
+    ]
+    result = _controller().execute(_plan(tasks), project_id=None)
+    by_id = {o.taskId: o for o in result.outcomes}
+
+    assert result.denied is False
+    assert result.stopped is False
+    assert by_id["t1"].state == "blocked"
+    assert by_id["sibling"].state == "done"
+    assert by_id["dependent"].state == "blocked"
+    assert by_id["later-independent"].state == "done"
+    assert "dependent" not in timing
+    assert "later-independent" in timing
 
 
 def test_cancellation_before_wave_dispatches_nothing(timing):
