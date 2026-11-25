@@ -117,6 +117,58 @@ Run `45638369911` on `fe72298`: the Windows service suite now passes (390 passed
 
 **macOS backend tests (first run `45637055087`): 11 failed / 3858 passed**, all in the Verified Relay gate tests. Cause: the test helper defaults to the Linux `/proc` identity method, and 11 adversarial scenarios lack the Linux-only marker. The product uses `lsof` on macOS, and its 3 `lsof` scenarios passed (91 of 109 gate tests passed on macOS). Not changed in #106: making them Linux-only would hide that the macOS security path has only 3 adversarial scenarios. Recorded on #107 as part of C8 (parametrise over both methods). **Consequence:** the macOS backend check on #106 stays red until the #107 remediation, consistent with "do not merge".
 
+**Final CI on `e6c6cd4` (run `45640855107`):** 7 of 8 required checks green (Typecheck & Build; backend tests Linux and Windows; desktop packaging Linux, Windows, macOS arm64, macOS x64). Backend tests macOS arm64: the same 11 gate tests as above, 3,858 passed. Both Windows fixes confirmed. PR #106 remains draft and blocked.
+
+## 2026-11-26 — #110 fixed in PR #111 (not merged)
+
+**Owner decisions:** fix #110 first, then #109; keep #107's C1–C8 unchanged; #106 stays draft; no merges without review.
+
+**Fix:** commit `d7f926564571fab51ff392f03fc3d69130d1f4c4` on `fix/110-resumed-run-state` (base `7607725`). **PR #111** — head verified equal to `d7f9265`; one commit, two files (`backend/aura/central_agent/service.py`, new `backend/tests/unit/test_resumed_run_state.py`).
+- A run resumed after a restart reads `running` and ends in its real terminal state.
+- A run whose STOP had not settled before the restart now comes back `cancelled` and is not relaunched. This related defect was found while writing the tests: on `main` it was relaunched.
+
+**Test evidence (Linux):**
+- 5 new regression tests: 5/5 fail on `main`, 5/5 pass with the fix.
+- Targeted suites (restart recovery, cancellation, stopped mission, background lifecycle, server startup): **32/32 passed**.
+- Full backend suite on the fix: **3,749 passed, 95 skipped, 0 failed**.
+- End-to-end (isolated API, fake worker, real `kill -9` and restart):
+  - resumed run reads `running`, and STOP gives `cancelled`;
+  - STOP followed by a crash, and an injected unsettled STOP, both come back `cancelled` with no worker relaunched.
+
+**Performance benchmark** (restart → resumed run dispatches its worker): 8 matched pairs, order randomised within each pair (seed `3539051513`), fresh isolated home per sample, 90 s timeout, process-group cleanup verified after every sample, no other suites running.
+
+| | Median (s) | p95 (s) | Range (s) | Timeouts |
+|---|---|---|---|---|
+| fix | 2.39 | 3.31 | 2.22–3.31 | 0 |
+| main | 2.50 | 2.61 | 2.23–2.61 | 0 |
+
+- Paired difference (fix − main): median +0.01 s, range −0.35 to +1.08 s; exact Wilcoxon signed-rank p = 0.62.
+- 8/8 fix samples passed the recovery and STOP checks; all 8 `main` samples showed the #110 defect.
+- **Limitations:**
+  - Eight pairs rule out a large regression; they do not prove equal performance.
+  - Linux only, with a fake worker.
+  - The third-party `freebuff` runtime was pre-seeded identically in every sample (owner decision). Otherwise AURA's tool scan downloads it (140 MB) inside the measured interval, which dominated earlier timings (6–16 s).
+- **Harness incidents:** two earlier attempts aborted safely, and their partial data is preserved.
+  - A cleanup false positive: an unreaped zombie counted as alive.
+  - A full disk quota on the RAM-backed `/tmp`.
+  - Also, a stop of an earlier benchmark loop was first reported complete when one orphaned sample was still running; it was found and stopped.
+- **Local evidence (not in this repository):** `/mnt/storage/aura-bench110/BENCHMARK_REPORT.md`, which indexes the raw samples, metadata, logs and the full-suite output.
+
+**CI on PR #111:** see the PR; required Linux, Windows and macOS checks.
+
+## 2026-11-26 — #112 filed: orphaned sandbox worker after a crash
+
+Reproduced on Linux with an isolated API, a fake worker and a real `kill -9`. Containers were identified by the owner-PID label.
+- On `main`, the crashed API's worker container keeps running until the next sandboxed task calls the lazy `sweep()`. That happens only because the run is relaunched.
+- With #111, a run stopped before the crash correctly stays `cancelled`, but its worker container was **still running 60 s after restart**.
+- #111 does not fix #112. Recommended: review #111 and #112 together before merging #111.
+
+## 2026-11-26 — #109 started
+
+Branch `fix/109-durable-audit-start` (base `7607725`), not yet committed. Design: a separate append-only start journal (`audit/started.jsonl`) is written before an authorized action runs. The settled trail's contract is unchanged. On startup, starts never settled by a dead process are marked once.
+
+**Observed, not filed:** in a fresh home, AURA's environment scan probes the system `freebuff` CLI, which then downloads a 140 MB runtime as a side effect.
+
 ---
 
 ## Phase 1 task status
@@ -124,8 +176,8 @@ Run `45638369911` on `fe72298`: the Windows service suite now passes (390 passed
 | Task | Status | Notes |
 |---|---|---|
 | Establish repository and release baseline | **IN PROGRESS** | Change set preserved and in PR #106. Cross-OS merge gate enforced on `main` (8 required checks). Remaining: stale PRs #67/#62, root clutter, old stashes, `enforce_admins` decision. |
-| Close critical Workspace execution bugs | **IN PROGRESS** | Linux acceptance run done. Open critical bugs: #107 (security), #109 (crash audit gap), #110 (resumed run state). None fixed yet. |
-| Complete priority agent-session and coordination gaps | **IN PROGRESS** | PR #106 (draft) — 2 Windows CI failures fixed (`fe72298`, `e6c6cd4`); awaiting green cross-OS CI, independent review, #107. |
+| Close critical Workspace execution bugs | **IN PROGRESS** | #110: fixed in PR #111 (`d7f9265`), Linux-verified, awaiting CI and review, not merged. #109: in progress. #112: filed (orphaned worker after a crash). #107: open (security, blocks alpha). |
+| Complete priority agent-session and coordination gaps | **IN PROGRESS** | PR #106 (draft): 7/8 required checks green; macOS backend blocked on #107 gate tests; awaiting independent review. |
 | Validate Windows, Linux and macOS | **PARTIAL** | CI builds and backend tests pass on all three. Process containment NOT VERIFIED on Windows/macOS. No hands-on install run recorded. |
 | Define verified alpha acceptance checklist | **DONE** | `docs/ALPHA_ACCEPTANCE_CHECKLIST.md` approved by the owner 2026-11-25. |
 
@@ -134,16 +186,17 @@ Run `45638369911` on `fe72298`: the Windows service suite now passes (390 passed
 Tracked privately by the owner (not in this public repository). No GPU allocation or 24/7 server is secured; budget ₹0; Phase 2 implementation not started.
 
 ## In progress
-- PR #106 cross-OS CI run `45640855107` (`e6c6cd4`).
-- Docs PR #108 CI.
+- PR #111 (#110) cross-OS CI.
+- #109 implementation (`fix/109-durable-audit-start`).
 
 ## Blockers and dependencies
 - PR #106 merge: cross-OS CI + independent review + #107.
+- PR #111 merge: cross-OS CI, owner review; review together with #112.
 - Windows/macOS hands-on validation needs real machines or a human tester.
 - Phase 2 credit checks need the owner's account access.
 
 ## Next concrete action
-Owner decides the fix order for #109 and #110 (and whether #107 remediation starts now); confirm PR #106 cross-OS CI is green.
+Finish #109 (full suite, commit, PR); owner reviews PR #111 together with #112.
 
 ## Recommended changes to the roadmap (awaiting approval)
 - None.

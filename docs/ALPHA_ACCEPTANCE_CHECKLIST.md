@@ -35,7 +35,7 @@ Run on a clean user account for each of: **Linux x64**, **Windows x64**, **macOS
 | B2 | Bundled services start (AI service + Python API); failure shows a readable reason, not a blank window | NOT RUN | NOT RUN | NOT RUN |
 | B3 | Sign-in stays inside the hub (Google may open the browser once) | NOT RUN | NOT RUN | NOT RUN |
 | B4 | Connect one provider (BYOK or Ollama); model choice survives reconnect | NOT RUN | NOT RUN | NOT RUN |
-| B5 | Quit the app: no orphan processes remain (`process-containment-verify` + manual check) | PASS for normal exit (`PHASE1_HANDOFF.md`). Observed 2026-11-25: after a `kill -9`, the worker's sandbox container keeps running until the next sandboxed task (cleanup is lazy) — not yet reproduced without an auto-resume, not filed | **NOT VERIFIED** | **NOT VERIFIED** |
+| B5 | Quit the app: no orphan processes remain (`process-containment-verify` + manual check) | **FAIL after a crash** (#112): normal exit PASS (`PHASE1_HANDOFF.md`), but after a `kill -9` the worker's sandbox container keeps running until the next sandboxed task. Reproduced 2026-11-26: still running 60 s after restart when the stopped run is not resumed | **NOT VERIFIED** | **NOT VERIFIED** |
 | B6 | Updater detects and applies a newer build | NOT RUN | NOT RUN | NOT RUN |
 
 ## C. Workspace execution (required)
@@ -49,9 +49,9 @@ Linux run 2026-11-25 on PR #106 (`fe72298`): the Python API the Workspace uses, 
 | C3 | Delegated coding-agent task (OpenCode or Kilo) runs and reports `contextMcp` honestly | Run observer + execution report | **PARTIAL** — delegation PASS with a fake worker (file modified, reported, verified). Not run with real OpenCode/Kilo (gate under #107). `contextMcp` is set by the executor but not shown in the report or audit trail |
 | C4 | Policy denial affects only the denied task; independent tasks still complete; summary says "partially completed" | Covered by unit tests in PR #106; needs one real run | **NOT VERIFIED** — the deterministic planner never produced a mixed plan (it drops or merges parts). The failure it reported was honest. Needs a model-backed run |
 | C5 | Failed task recovers on a permitted alternative, or says plainly that none exists | Run observer "recoveries" list | **PASS (no-alternative case)** — auth failure classified, not re-dispatched, `alternativeAvailable: false`, run failed honestly. The recovered-on-alternative case is NOT RUN |
-| C6 | STOP cancels a running mission within seconds; no worker keeps running | Manual + `process-containment-verify` | **PASS** — `cancelled` in 669 ms; worker container and grandchild process gone (`ps`, `docker ps`) |
-| C7 | `kill -9` of the service mid-mission: decisions and outcomes still on disk; tampering detectable | `audit-journal-verify` | **FAIL** (Python/Workspace path) — the in-flight invocation left no audit record (#109). The earlier PASS covered the Node service only |
-| C8 | A finished run never stays shown as "running" after restart | Restart during and after a run | **FAIL** — after restart the run is auto-resumed but shown as "interrupted" while its worker runs, and still after STOP (#110) |
+| C6 | STOP cancels a running mission within seconds; no worker keeps running | Manual + `process-containment-verify` | **PASS (no crash)** — `cancelled` in 669 ms; worker container and grandchild gone (`ps`, `docker ps`). STOP during the #110 benchmark: 16/16 settled in ≤ 0.8 s with the worker gone. **Exception:** a STOP interrupted by a crash leaves the worker running (#112) |
+| C7 | `kill -9` of the service mid-mission: decisions and outcomes still on disk; tampering detectable | `audit-journal-verify` | **FAIL** (Python/Workspace path) — the in-flight invocation left no audit record (#109, fix in progress). The earlier PASS covered the Node service only |
+| C8 | A finished run never stays shown as "running" after restart | Restart during and after a run | **FAIL on `main`** (#110). **Fix in PR #111** (`d7f9265`, not merged): on Linux the resumed run reads `running`, and after STOP `cancelled` (8/8 benchmark samples + end-to-end); 3,749 backend tests pass. Stays FAIL until #111 is merged with green cross-OS CI |
 
 ## D. Agent sessions and coordination (required)
 
