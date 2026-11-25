@@ -129,6 +129,8 @@ test('status reads sign-in from credential presence, never values', async () => 
 
 test('live MCP status distinguishes handshake, required tools, and successful tool calls', async () => {
   const dir = path.join(home, 'mcp-fixtures'); fs.mkdirSync(dir, { recursive: true });
+  // Launch fixtures as `node <script>`: Windows cannot execute a shebang script directly.
+  const viaNode = (file) => ({ command: process.execPath, args: [file], environment: {} });
   const fixture = (name, mode) => {
     const file = path.join(dir, name);
     const source = String.raw`#!/usr/bin/env node
@@ -153,13 +155,13 @@ process.stdin.on('data', chunk => {
 });
 `;
     fs.writeFileSync(file, source);
-    fs.chmodSync(file, 0o700); return file;
+    fs.chmodSync(file, 0o700); return viaNode(file);
   };
   const absent = await mod.verifyMcp(path.join(dir, 'absent'), 100);
   assert.equal(absent.handshakeVerified, false); assert.equal(absent.toolInvocationVerified, false);
   const startupFailure = path.join(dir, 'startup-failure');
   fs.writeFileSync(startupFailure, '#!/usr/bin/env node\nprocess.stderr.write("startup failed");process.exit(7);\n'); fs.chmodSync(startupFailure, 0o700);
-  const startup = await mod.verifyMcp(startupFailure, 1000);
+  const startup = await mod.verifyMcp(viaNode(startupFailure), 1000);
   assert.equal(startup.handshakeVerified, false); assert.match(startup.error, /server exited before responding/);
   const handshake = await mod.verifyMcp(fixture('bad-handshake', 'handshake-fail'), 3000);
   assert.equal(handshake.handshakeVerified, false);
