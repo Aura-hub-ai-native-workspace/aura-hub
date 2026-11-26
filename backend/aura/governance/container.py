@@ -539,11 +539,21 @@ def run_prefix(run: SandboxRun, *, network: str,
                env: dict | None = None) -> list[str]:
     """The argv prefix that starts `run` and then the command after it."""
     uid, gid = os.getuid(), os.getgid()
+    # Issue #112: the owning instance (whose OS lock proves it is alive) and
+    # the AURA home, so cleanup can tell a crashed owner from a live one and
+    # never touches another home's or another live instance's container.
+    from ..config import aura_home
+    from ..lifecycle import instance as _instance
+
+    home = aura_home()
+    owner = _instance.acquire(home)
     argv = [
         "docker", "run", "--rm", "--init",
         "--name", run.name,
         "--label", f"{LABEL}=run",
         "--label", f"{LABEL}.owner={os.getpid()}",
+        "--label", f"{_instance.LABEL_INSTANCE}={owner.id}",
+        "--label", f"{_instance.LABEL_HOME}={_instance.home_tag(home)}",
         "--user", f"{uid}:{gid}",
         "--read-only",
         "--tmpfs", "/tmp:rw,exec,mode=1777",
@@ -734,33 +744,28 @@ _swept = False
 
 
 def sweep(force: bool = False) -> int:
-    """Remove sandbox containers left by a previous AURA process.
+    """Remove sandbox containers left by an AURA process that is gone.
 
-    A container outlives its run only when AURA itself stopped without
-    cleaning up. Its owner label names the process that started it; any
-    owner other than this process is gone, so the container is removed.
-    Runs once per process unless forced.
+    Issue #112: a container is removed only when its owner is proven dead —
+    its owner instance's OS lock is free (or, for a legacy container without
+    an instance label, its owner pid is confirmed dead). The previous rule
+    ("any owner other than this pid") removed the running workers of any
+    OTHER live AURA process on the machine. Another home's containers, live
+    owners and ambiguous cases are left alone (aura.lifecycle.reaper).
+
+    Runs once per process unless forced; if Docker cannot be queried it is
+    retried on the next call. Returns the number of containers removed.
     """
     global _swept
     if _swept and not force:
         return 0
-    _swept = True
-    try:
-        listing = _docker(["ps", "--all", "--filter", f"label={LABEL}=run",
-                           "--format",
-                           '{{.Names}}\t{{.Label "' + LABEL + '.owner"}}'])
-    except Exception:  # noqa: BLE001
-        return 0
-    if listing.exit_code != 0:
-        return 0
-    removed = 0
-    mine = str(os.getpid())
-    for line in (listing.stdout or "").splitlines():
-        name, _, owner = line.partition("\t")
-        if name.startswith(NAME_PREFIX) and owner.strip() != mine:
-            remove(name)
-            removed += 1
-    return removed
+    from ..config import aura_home
+    from ..lifecycle import reap_now
+
+    report = reap_now(aura_home(), workers=False)
+    if not report.get("deferred") and not report.get("error"):
+        _swept = True
+    return len(report.get("removedContainers") or [])
 
 
 def status(home: str) -> dict:

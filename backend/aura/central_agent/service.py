@@ -1893,6 +1893,34 @@ class CentralAgent:
             "limitations": limits,
         }
 
+    def _settle_stopped_before_restart(self, session: AgentSession,
+                                       stop: dict) -> None:
+        """A run the user stopped, cut off by a restart before it settled.
+
+        It is recorded as cancelled, exactly as if the stop had completed:
+        verified work is kept, nothing is relaunched, and nothing will
+        continue on its own (the user can still resume it explicitly).
+        """
+        verified = sorted((getattr(session, "verifiedEvidence", None) or {}).keys())
+        plan = getattr(session, "activePlan", None) or {}
+        never_started = [str(t.get("id")) for t in (plan.get("tasks") or [])
+                         if isinstance(t, dict) and t.get("id") not in verified]
+        summary = self._cancellation_summary(stop, verified, never_started)
+        session.cancellation = {
+            **stop, "settled": True, "at": _now(), "settledBy": "restart",
+            "performedTasks": list(stop.get("performedTasks") or []),
+            "verifiedTasks": verified, "neverStarted": never_started,
+            "summary": summary,
+        }
+        session.orchestrationState = "cancelled"
+        session.orchestrationFinishedAt = _now()
+        self._finish(session, AgentResult(
+            status="cancelled", outcome="cancelled", summary=summary,
+            performed=list(stop.get("performedTasks") or []), verified=verified,
+            failureReason="cancelled-by-user"))
+        self.sessions.save(session)
+        self._emit("run.cancelled", session.sessionId, **session.cancellation)
+
     def _finish(self, session: AgentSession, result: AgentResult) -> None:
         """Close a session's leg: attach the measured report, then persist."""
         try:
@@ -1903,13 +1931,23 @@ class CentralAgent:
         self.sessions.finish(session, result)
 
     def recover_interrupted_sessions(self) -> list[str]:
-        """After a restart, work that was in flight is not running any more.
+        """After a restart, settle or resume the work that was in flight.
 
-        A session file still saying ``executing`` (or planning/verifying) with
-        no live run behind it was cut off. It is marked failed with the reason
-        ``interrupted-by-restart`` — never left looking active, never promoted
-        to complete — and keeps its plan and verified evidence, so what was
-        already proven is preserved and the rest is plainly unfinished.
+        * A run that was ``running`` with an unfinished durable task queue is
+          **resumed**: its orchestration is relaunched from the saved plan,
+          verified work is kept, and the session reads ``running`` (with a
+          summary saying it was resumed) for as long as that is true, then
+          ends in its real terminal state. (Issue #110: it used to read
+          ``interrupted`` while the worker ran, and for ever after.)
+        * A run the user had asked to stop before the restart is **not**
+          resumed: it comes back ``cancelled`` (see
+          ``AgentSession.cancellation``). Stopping a run and then
+          explicitly resuming it (``resumedAt``) lifts the stop.
+        * A session without a usable task queue that still says
+          ``executing`` (or planning/verifying) is marked failed with the
+          reason ``interrupted-by-restart``, keeping its plan and verified
+          evidence.
+
         Returns the ids it touched."""
         import json as _json
 
@@ -1948,14 +1986,33 @@ class CentralAgent:
                         self._kill_orphaned_workers(session.sessionId)
                     except Exception:  # noqa: BLE001
                         pass
-                    session.orchestrationState = "interrupted"
-                    self.sessions.save(session)
-                    # Relaunch
+                    # The user's last word was STOP: never resume it.
+                    stop = getattr(session, "cancellation", None) or {}
+                    if stop and not stop.get("resumedAt"):
+                        self._settle_stopped_before_restart(session, stop)
+                        touched.append(session.sessionId)
+                        continue
                     try:
                         plan = TaskPlan.model_validate(session.activePlan)
                     except Exception:  # noqa: BLE001
                         plan = None
-                    if plan is not None:
+                    if plan is None:
+                        # Nothing can be relaunched; it is interrupted, and
+                        # says so.
+                        session.orchestrationState = "interrupted"
+                        self.sessions.save(session)
+                    else:
+                        # Relaunch. The session reads "running" for the
+                        # whole resumed run, so the orchestration thread can
+                        # record its real terminal state when it ends.
+                        session.orchestrationState = "running"
+                        session.orchestrationFinishedAt = None
+                        session.lastResult = AgentResult(
+                            status="started", outcome="started",
+                            summary=("AURA restarted while this run was in "
+                                     "progress. It was resumed from its saved "
+                                     "plan; work already verified is kept."))
+                        self.sessions.save(session)
                         intent = AgentIntent(
                             goal=str(getattr(plan, "intent", {}).get("goal", "") if hasattr(plan, "intent") and isinstance(plan.intent, dict) else (plan.intent.goal if hasattr(plan, "intent") else "")),
                             expectedOutcome="resumed",
@@ -1988,20 +2045,20 @@ class CentralAgent:
         return touched
 
     def _kill_orphaned_workers(self, session_id: str) -> None:
-        """Best-effort: terminate worker processes that were running for
-        this session when the backend died. The lease registry is in-memory
-        and lost on restart, so orphaned processes must be found by their
-        command line. Discovery and signalling go through the process
-        boundary (procexec) so the usual guarantees hold; this module never
-        spawns a process itself."""
-        from ..environment.procexec import terminate_matching
+        """Stop workers left running by an AURA process that died.
 
-        # The session id becomes part of a process pattern: accept only the
-        # exact shape the service generates, never free text.
+        Issue #112: the previous command-line match (``<binary>.*<sessionId>``)
+        never matched — worker command lines carry the invocation id, not the
+        session id. Orphans are now found through ownership (instance lock +
+        worker registry + container labels) by ``aura.lifecycle``; this is the
+        same idempotent cleanup the API runs at startup, so it is safe to call
+        per session. Another live instance's workers are never touched."""
         if not re.fullmatch(r"agt-[0-9a-f]{6,64}", session_id or ""):
             return
-        for binary in ("opencode", "kilo", "claude", "codex"):
-            terminate_matching(f"{binary}.*{session_id}")
+        from ..config import aura_home
+        from ..lifecycle import reap_now
+
+        reap_now(aura_home())
 
     def _error_knowledge(self, project_root: str | None, project_id: str | None):
         from pathlib import Path
