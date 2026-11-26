@@ -261,15 +261,20 @@ def test_a_legacy_container_whose_owner_pid_is_alive_is_never_swept(image, tmp_p
     """Issue #112, A6: the old rule removed every container not owned by this
     pid — including another live AURA's worker. An owner pid that is alive
     (possibly reused) is never proof of death, so the container stays."""
+    import sys as _sys
+
     monkeypatch.setenv("AURA_HOME", str(tmp_path / "home"))
+    owner = subprocess.Popen([_sys.executable, "-c", "import time; time.sleep(300)"])
     name = sandbox.new_name("liveowner")
     subprocess.run(["docker", "run", "-d", "--name", name, "--label", f"{sandbox.LABEL}=run",
-                    "--label", f"{sandbox.LABEL}.owner=1", image, "sleep", "300"],
+                    "--label", f"{sandbox.LABEL}.owner={owner.pid}", image, "sleep", "300"],
                    check=True, capture_output=True)
     try:
         sandbox.sweep(force=True)
         assert name in _left(), "a container whose owner pid is alive was removed"
     finally:
+        owner.kill()
+        owner.wait(15)
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
 

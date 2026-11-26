@@ -152,6 +152,9 @@ def test_container_rules_a4_a6(tmp_path):
     tag = home_tag(home)
     dead_iid = _free_instance(home)
     live, live_iid, live_pid = _holder(home)           # another LIVE instance, same home (A4/A5)
+    # A live legacy owner: a real running process on every platform (pid 1
+    # is not a process on Windows, where it reads, correctly, as dead).
+    legacy_owner = _sleeper()
     other_home_iid = "f" * 32
     rows = [
         _row("aura-run-mine", me.id, tag),
@@ -160,7 +163,7 @@ def test_container_rules_a4_a6(tmp_path):
         _row("aura-run-other-home", other_home_iid, "0123456789abcdef"),
         _row("aura-run-no-lock-file", "a" * 32, tag),
         _row("aura-run-legacy-dead", owner=str(_dead_pid())),
-        _row("aura-run-legacy-live", owner="1"),
+        _row("aura-run-legacy-live", owner=str(legacy_owner.pid)),
         _row("aura-run-legacy-unreadable", owner="x"),
         _row("someone-elses-container", dead_iid, tag),
     ]
@@ -170,6 +173,8 @@ def test_container_rules_a4_a6(tmp_path):
                               docker_remove=lambda n: removed.append(n) or True)
     finally:
         _stop(live, live_pid)
+        legacy_owner.kill()
+        legacy_owner.wait(15)
     assert sorted(removed) == ["aura-run-dead-owner", "aura-run-legacy-dead"]
     kept = {k["name"]: k["reason"] for k in report["keptContainers"]}
     assert kept["aura-run-mine"] == "owned by this instance"
