@@ -284,9 +284,17 @@ def test_ambiguous_host_workers_are_kept(tmp_path):
         worker.wait(15)
 
 
+def _age(home: Path, iid: str, seconds: float = 600) -> None:
+    lock = instance.instances_dir(home) / f"{iid}.lock"
+    t = time.time() - seconds
+    os.utime(lock, (t, t))
+
+
 def test_dead_instance_locks_are_cleaned_only_when_nothing_refers_to_them(tmp_path):
     me = instance.acquire(tmp_path)
     dead_a, dead_b = _free_instance(tmp_path), _free_instance(tmp_path)
+    _age(tmp_path, dead_a)
+    _age(tmp_path, dead_b)
     tag = home_tag(tmp_path)
     rows = [_row("aura-run-still-there", dead_b, tag)]
     report = reap_orphans(tmp_path, me, docker_list=lambda: rows, docker_remove=lambda n: False)
@@ -294,6 +302,37 @@ def test_dead_instance_locks_are_cleaned_only_when_nothing_refers_to_them(tmp_pa
     assert instance_state(tmp_path, dead_a) == ABSENT
     assert instance_state(tmp_path, dead_b) == FREE
     assert instance_state(tmp_path, me.id) == HELD
+
+
+def test_a_starting_instances_not_yet_locked_file_is_never_deleted(tmp_path):
+    """Simultaneous start-up: an instance creates its lock file and locks it a
+    moment later. In that gap the file probes "free"; a concurrent cleanup
+    must not delete it (it would orphan the newcomer's ownership)."""
+    me = instance.acquire(tmp_path)
+    d = instance.instances_dir(tmp_path)
+    newcomer = "c" * 32
+    (d / f"{newcomer}.lock").write_bytes(b"\0")  # created, not yet locked: probes FREE
+    assert instance_state(tmp_path, newcomer) == FREE
+    report = reap_orphans(tmp_path, me, docker_list=lambda: [], docker_remove=lambda n: False)
+    assert newcomer not in report["cleanedInstances"]
+    assert (d / f"{newcomer}.lock").exists()
+
+
+def test_simultaneous_startup_instances_each_hold_their_own_lock(tmp_path):
+    """Two instances starting at the same moment get distinct ids and both hold
+    their locks; each sees the other as alive and neither cleans the other."""
+    holders = [_holder(tmp_path) for _ in range(2)]  # started back to back
+    try:
+        ids = [h[1] for h in holders]
+        assert len(set(ids)) == 2
+        assert all(instance_state(tmp_path, i) == HELD for i in ids)
+        me = instance.acquire(tmp_path)
+        report = reap_orphans(tmp_path, me, docker_list=lambda: [], docker_remove=lambda n: False)
+        assert report["cleanedInstances"] == []
+        assert all(instance_state(tmp_path, i) == HELD for i in ids)
+    finally:
+        for p, _iid, pid in holders:
+            _stop(p, pid)
 
 # ── run_agent registers host workers while they run ───────────────────────────
 

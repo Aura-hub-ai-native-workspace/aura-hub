@@ -30,6 +30,8 @@ from . import registry
 from .instance import FREE, HELD, LABEL_HOME, LABEL_INSTANCE, Instance, home_tag, instance_state, instances_dir
 from .procident import ALIVE, DEAD, pid_state, start_identity
 
+#: A lock file younger than this is never cleaned up (see the start-up race note).
+LOCK_CLEANUP_MIN_AGE_S = 120.0
 LABEL_RUN = "aura.sandbox"
 LABEL_OWNER = "aura.sandbox.owner"
 NAME_PREFIX = "aura-run-"
@@ -212,6 +214,16 @@ def reap_orphans(home: str | Path, me: Instance | None, *, containers: bool = Tr
         for lock in d.glob("*.lock"):
             iid = lock.stem
             if iid == me.id or iid in still_owned or owner_state(iid) != FREE:
+                continue
+            # A starting instance creates its lock file and locks it a moment
+            # later; in that gap the file probes "free". Never delete a young
+            # lock file, and re-probe right before deleting (not the cached
+            # state), so a live instance's lock is never removed.
+            try:
+                age = time.time() - lock.stat().st_mtime
+            except OSError:
+                continue
+            if age < LOCK_CLEANUP_MIN_AGE_S or instance_state(home, iid) != FREE:
                 continue
             for f in (lock, d / f"{iid}.json"):
                 try:
