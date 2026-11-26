@@ -77,47 +77,113 @@ STARTS_FILE = "started.jsonl"
 UNSETTLED = "unsettled-after-restart"
 
 
-def _pid_alive(pid: Any) -> bool:
-    """Is a process with this id running? Never signals or affects it."""
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    if os.name == "nt":
-        # os.kill(pid, 0) TERMINATES the process on Windows; query instead.
-        import ctypes
+#: Process states. Only DEAD is proof; UNKNOWN never counts as dead.
+ALIVE, DEAD, UNKNOWN = "alive", "dead", "unknown"
 
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not handle:
-            return False
+_WIN_ERROR_ACCESS_DENIED = 5
+_WIN_ERROR_INVALID_PARAMETER = 87  # OpenProcess: no process has this id
+_WIN_STILL_ACTIVE = 259
+_WIN_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+class _WinProcessApi:
+    """The three kernel32 calls the Windows check needs, with declared types.
+
+    Separate so the decision logic (``_pid_state_windows``) can be tested
+    on every platform with a fake; this class only runs on Windows.
+    """
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        k = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k.OpenProcess.restype = wintypes.HANDLE
+        k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        k.GetExitCodeProcess.restype = wintypes.BOOL
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        k.CloseHandle.restype = wintypes.BOOL
+        self._k, self._ctypes, self._wt = k, ctypes, wintypes
+
+    def open(self, pid: int):
+        return self._k.OpenProcess(_WIN_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+
+    def last_error(self) -> int:
+        return self._ctypes.get_last_error()
+
+    def exit_code(self, handle) -> int | None:
+        code = self._wt.DWORD()
+        if not self._k.GetExitCodeProcess(handle, self._ctypes.byref(code)):
+            return None
+        return int(code.value)
+
+    def close(self, handle) -> None:
+        self._k.CloseHandle(handle)
+
+
+def _pid_state_windows(pid: int, api) -> str:
+    handle = api.open(pid)
+    if not handle:
+        err = api.last_error()
+        if err == _WIN_ERROR_INVALID_PARAMETER:
+            return DEAD
+        # Access denied means the process exists but may not be opened (for
+        # example an elevated one). It is never evidence of death; nor is
+        # any other failure.
+        return UNKNOWN
+    try:
+        code = api.exit_code(handle)
+        if code is None:
+            return UNKNOWN
+        # STILL_ACTIVE; a process that really exited with 259 reads as alive,
+        # which errs on the side of leaving its record alone.
+        return ALIVE if code == _WIN_STILL_ACTIVE else DEAD
+    finally:
+        api.close(handle)
+
+
+def pid_state(pid: Any, *, _win_api=None) -> str:
+    """``alive``, ``dead`` or ``unknown`` for a process id. Never signals it.
+
+    POSIX: ``os.kill(pid, 0)`` — no such process is DEAD, EPERM is ALIVE
+    (exists, owned by someone else), anything else is UNKNOWN. Windows:
+    ``os.kill`` would TERMINATE the process, so the state is queried with
+    ``OpenProcess``/``GetExitCodeProcess``; only "no such process" is DEAD.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return UNKNOWN
+    if os.name == "nt":
         try:
-            code = ctypes.c_ulong()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return False
-            return code.value == 259  # STILL_ACTIVE
-        finally:
-            kernel32.CloseHandle(handle)
+            return _pid_state_windows(pid, _win_api or _WinProcessApi())
+        except Exception:  # noqa: BLE001 — an unusable API proves nothing
+            return UNKNOWN
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return False
+        return DEAD
     except PermissionError:
-        return True  # exists, owned by someone else
+        return ALIVE
     except OSError:
-        return False
-    return True
+        return UNKNOWN
+    return ALIVE
 
 
 def reconcile_unsettled_starts(trail: "AuditStore", *, now: str | None = None,
-                               pid_alive=_pid_alive) -> list[str]:
+                               pid_state=pid_state,
+                               undetermined: list | None = None) -> list[str]:
     """Mark started-but-never-settled invocations of dead processes, once.
 
     After an unexpected termination the trail has no record for an action
     that was in flight, while the start journal does. Each such start gets
     one ``unsettled-after-restart`` marker in the start journal: it was
-    authorized and started, and no outcome was recorded. Starts of a live
-    process (still running elsewhere), already-settled starts and starts
-    already marked are left alone. A start older than everything the
-    trail still holds is skipped: its settlement may have been trimmed.
+    authorized and started, and no outcome was recorded. Only a start whose
+    process is confirmed DEAD is marked. A live process, or one whose state
+    cannot be established (for example access denied on Windows), is left
+    alone and its start record is preserved untouched; the latter is
+    appended to ``undetermined`` (when given) so it can be reported. Already
+    settled or marked starts, and starts older than everything the trail
+    still holds (their settlement may have been trimmed), are skipped.
     Returns the invocation ids it marked.
     """
     from datetime import datetime, timezone
@@ -135,7 +201,12 @@ def reconcile_unsettled_starts(trail: "AuditStore", *, now: str | None = None,
         inv = r["invocationId"]
         if (r.get("phase") != "started" or inv in settled or inv in marked
                 or (oldest is not None and r["at"] < oldest)
-                or r.get("pid") == os.getpid() or pid_alive(r.get("pid"))):
+                or r.get("pid") == os.getpid()):
+            continue
+        state = pid_state(r.get("pid"))
+        if state != DEAD:
+            if state == UNKNOWN and undetermined is not None:
+                undetermined.append(inv)
             continue
         marker = {
             "invocationId": inv, "capabilityId": r["capabilityId"], "at": stamp,

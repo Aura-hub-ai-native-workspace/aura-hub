@@ -215,6 +215,95 @@ def test_reconciliation_leaves_settled_and_live_invocations_alone(home):
     assert reconcile_unsettled_starts(cfg.audit_store) == []
 
 
+# ── liveness: a separate process with its own pid (review finding 2) ─────────
+# The test above uses this process's own pid, which reconciliation skips before
+# it ever asks whether a process is alive. These use an independent child, so
+# the real check runs, on Linux, macOS and Windows alike.
+
+def _sleeping_child() -> subprocess.Popen:
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    assert child.pid != os.getpid()
+    return child
+
+
+def test_pid_state_of_a_separate_child_is_alive_then_dead():
+    from aura.audit import ALIVE, DEAD, pid_state
+
+    child = _sleeping_child()
+    try:
+        assert pid_state(child.pid) == ALIVE
+    finally:
+        child.kill()
+        child.wait(30)
+    assert pid_state(child.pid) == DEAD
+
+
+def test_reconcile_never_marks_a_separate_live_process_and_marks_it_once_dead(home):
+    from aura.audit import reconcile_unsettled_starts
+
+    journal = AuditStore(home / "audit.jsonl").starts()
+    child = _sleeping_child()
+    try:
+        journal.append({"invocationId": "inv-child", "capabilityId": CAP,
+                        "at": "2026-11-26T00:00:00Z", "phase": "started", "pid": child.pid})
+        assert reconcile_unsettled_starts(AuditStore(home / "audit.jsonl")) == []
+        assert [r["invocationId"] for r in _lines(home / "started.jsonl")] == ["inv-child"]
+    finally:
+        child.kill()
+        child.wait(30)
+    assert reconcile_unsettled_starts(AuditStore(home / "audit.jsonl")) == ["inv-child"]
+    assert reconcile_unsettled_starts(AuditStore(home / "audit.jsonl")) == []
+
+
+def test_unknown_liveness_preserves_the_start_and_is_reported(home):
+    from aura.audit import UNKNOWN, reconcile_unsettled_starts
+
+    journal = AuditStore(home / "audit.jsonl").starts()
+    journal.append({"invocationId": "inv-denied", "capabilityId": CAP,
+                    "at": "2026-11-26T00:00:00Z", "phase": "started", "pid": 4242})
+    before = (home / "started.jsonl").read_bytes()
+    undetermined: list = []
+    marked = reconcile_unsettled_starts(AuditStore(home / "audit.jsonl"),
+                                        pid_state=lambda _pid: UNKNOWN, undetermined=undetermined)
+    assert marked == [] and undetermined == ["inv-denied"]
+    assert (home / "started.jsonl").read_bytes() == before, "the start record must be preserved untouched"
+
+
+class _FakeWinApi:
+    def __init__(self, handle=0, error=0, code=None):
+        self._handle, self._error, self._code, self.closed = handle, error, code, False
+
+    def open(self, _pid):
+        return self._handle
+
+    def last_error(self):
+        return self._error
+
+    def exit_code(self, _handle):
+        return self._code
+
+    def close(self, _handle):
+        self.closed = True
+
+
+@pytest.mark.parametrize("api,expected", [
+    (_FakeWinApi(handle=0, error=87), "dead"),              # no such process
+    (_FakeWinApi(handle=0, error=5), "unknown"),            # access denied: exists, never "dead"
+    (_FakeWinApi(handle=0, error=6), "unknown"),            # any other failure proves nothing
+    (_FakeWinApi(handle=1, code=259), "alive"),             # STILL_ACTIVE
+    (_FakeWinApi(handle=1, code=0), "dead"),                # exited
+    (_FakeWinApi(handle=1, code=None), "unknown"),          # exit code unreadable
+])
+def test_windows_liveness_decision(api, expected):
+    """The Windows decision logic, on every platform; the real API runs in the
+    separate-child tests above when CI runs on Windows."""
+    from aura.audit import _pid_state_windows
+
+    assert _pid_state_windows(1234, api) == expected
+    if api._handle:
+        assert api.closed, "an opened handle is always closed"
+
+
 def test_api_startup_marks_unsettled_starts(tmp_path, monkeypatch):
     monkeypatch.setenv("AURA_HOME", str(tmp_path))
     dead = subprocess.Popen([sys.executable, "-c", "pass"])

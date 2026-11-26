@@ -229,7 +229,14 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
     try:
         from ..audit import reconcile_unsettled_starts
 
-        reconcile_unsettled_starts(audit)
+        undetermined: list[str] = []
+        reconcile_unsettled_starts(audit, undetermined=undetermined)
+        if undetermined:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "%d unsettled audit start record(s) were left unmarked because "
+                "their process state could not be established: %s",
+                len(undetermined), ", ".join(undetermined[:20]))
     except Exception:  # noqa: BLE001 — must never stop the service starting
         import logging as _log
         _log.getLogger(__name__).exception(
