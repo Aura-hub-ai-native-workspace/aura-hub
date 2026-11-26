@@ -286,6 +286,58 @@ def test_pid_state_of_a_separate_child_is_alive_then_dead():
     assert pid_state(child.pid) == DEAD
 
 
+@pytest.mark.skipif(os.name == "nt" or not hasattr(os, "waitid")
+                    or not hasattr(os, "WNOWAIT"),
+                    reason="waitid(WNOWAIT) is required to observe an unreaped exit")
+def test_pid_state_reports_an_unreaped_zombie_as_dead():
+    from aura.audit import DEAD, pid_state
+
+    child = subprocess.Popen([sys.executable, "-c", "import os; os._exit(0)"])
+    try:
+        os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+        assert child.returncode is None, "the child must still be unreaped"
+        assert pid_state(child.pid) == DEAD
+    finally:
+        child.wait(30)
+
+
+def test_concurrent_reconciliation_appends_one_marker(home):
+    journal = AuditStore(home / "audit.jsonl").starts()
+    journal.append({"invocationId": "inv-race", "capabilityId": CAP,
+                    "at": "2026-11-26T00:00:00Z", "phase": "started", "pid": 99999999})
+    code = textwrap.dedent("""
+        import sys, time
+        from pathlib import Path
+        sys.path.insert(0, sys.argv[1])
+        from aura.audit import DEAD, AuditStore, reconcile_unsettled_starts
+        def delayed(_pid):
+            Path(sys.argv[3]).touch()
+            time.sleep(2)
+            return DEAD
+        reconcile_unsettled_starts(AuditStore(sys.argv[2]), pid_state=delayed)
+    """)
+    ready1, ready2 = home / "ready-one", home / "ready-two"
+    cmd1 = [sys.executable, "-c", code, str(BACKEND), str(home / "audit.jsonl"), str(ready1)]
+    cmd2 = [sys.executable, "-c", code, str(BACKEND), str(home / "audit.jsonl"), str(ready2)]
+    first = subprocess.Popen(cmd1)
+    deadline = time.monotonic() + 10
+    while not ready1.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ready1.exists(), "first reconciler did not reach its liveness check"
+    second = subprocess.Popen(cmd2)
+    try:
+        assert first.wait(15) == 0
+        assert second.wait(15) == 0
+    finally:
+        for process in (first, second):
+            if process.poll() is None:
+                process.kill()
+                process.wait(5)
+    markers = [r for r in _lines(home / "started.jsonl")
+               if r.get("phase") == "unsettled-after-restart"]
+    assert len(markers) == 1
+
+
 def test_reconcile_never_marks_a_separate_live_process_and_marks_it_once_dead(home):
     from aura.audit import reconcile_unsettled_starts
 

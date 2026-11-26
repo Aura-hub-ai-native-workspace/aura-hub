@@ -9,6 +9,9 @@ still answer the audit question (non-empty invocationId/capabilityId/at).
 from __future__ import annotations
 
 import os
+import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -172,7 +175,79 @@ def pid_state(pid: Any, *, _win_api=None) -> str:
         return ALIVE
     except OSError:
         return UNKNOWN
-    return ALIVE
+    return _posix_pid_state(pid)
+
+
+def _posix_pid_state(pid: int) -> str:
+    """Classify a process that passed os.kill(pid, 0).
+
+    A zombie still has a PID, but its work is over and its parent has not yet
+    collected its exit status. Treat that state as DEAD so crash reconciliation
+    does not wait indefinitely for another process to reap it. If the OS
+    cannot expose process state, preserve the record as UNKNOWN.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            with open(f"/proc/{pid}/stat", encoding="ascii", errors="replace") as fh:
+                stat = fh.read()
+            state = stat[stat.rindex(")") + 2:].split()[0]
+        except FileNotFoundError:
+            return DEAD
+        except (OSError, ValueError, IndexError):
+            return UNKNOWN
+        return DEAD if state in ("Z", "X") else ALIVE
+    if sys.platform == "darwin":
+        try:
+            from ..environment.procexec import ExecStatus, run_argv
+
+            result = run_argv(["ps", "-o", "stat=", "-p", str(pid)],
+                              timeout_ms=5000, env_extra={"LC_ALL": "C"})
+        except Exception:  # noqa: BLE001 — inability to inspect proves nothing
+            return UNKNOWN
+        if result.status is not ExecStatus.OK:
+            return UNKNOWN
+        if result.exit_code != 0:
+            return DEAD
+        state = result.stdout.strip()
+        if not state:
+            return UNKNOWN
+        return DEAD if state.startswith("Z") else ALIVE
+    return UNKNOWN
+
+
+@contextmanager
+def _reconcile_lock(journal: Path):
+    """Serialize startup reconciliation across processes using this journal."""
+    lock_path = journal.with_name(f".{journal.name}.reconcile.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "a+b") as lock:
+        if os.name == "nt":
+            import msvcrt
+
+            lock.seek(0, os.SEEK_END)
+            if lock.tell() == 0:
+                lock.write(b"\0")
+                lock.flush()
+            while True:
+                lock.seek(0)
+                try:
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def reconcile_unsettled_starts(trail: "AuditStore", *, now: str | None = None,
@@ -192,6 +267,14 @@ def reconcile_unsettled_starts(trail: "AuditStore", *, now: str | None = None,
     still holds (their settlement may have been trimmed), are skipped.
     Returns the invocation ids it marked.
     """
+    journal = trail.starts()
+    with _reconcile_lock(journal._file):
+        return _reconcile_unsettled_starts_locked(
+            trail, now=now, pid_state=pid_state, undetermined=undetermined)
+
+
+def _reconcile_unsettled_starts_locked(trail: "AuditStore", *, now: str | None,
+                                       pid_state, undetermined: list | None) -> list[str]:
     from datetime import datetime, timezone
 
     journal = trail.starts()
