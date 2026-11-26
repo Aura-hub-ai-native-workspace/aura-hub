@@ -233,15 +233,42 @@ def test_stop_reaches_the_container_and_nothing_is_left(world):
     assert world["run"].name not in _left()
 
 
-def test_a_container_left_by_a_previous_aura_is_swept(image):
+def _dead_pid() -> int:
+    import sys as _sys
+
+    p = subprocess.Popen([_sys.executable, "-c", "pass"])
+    p.wait()
+    return p.pid
+
+
+def test_a_container_left_by_a_previous_aura_is_swept(image, tmp_path, monkeypatch):
+    """A legacy container (no instance label) whose owner process is
+    confirmed dead is removed (issue #112 keeps this for old containers)."""
+    monkeypatch.setenv("AURA_HOME", str(tmp_path / "home"))
     name = sandbox.new_name("orphan")
     subprocess.run(["docker", "run", "-d", "--name", name, "--label", f"{sandbox.LABEL}=run",
-                    "--label", f"{sandbox.LABEL}.owner=1", image, "sleep", "300"],
+                    "--label", f"{sandbox.LABEL}.owner={_dead_pid()}", image, "sleep", "300"],
                    check=True, capture_output=True)
     try:
         assert name in _left()
         assert sandbox.sweep(force=True) >= 1
         assert name not in _left()
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
+def test_a_legacy_container_whose_owner_pid_is_alive_is_never_swept(image, tmp_path, monkeypatch):
+    """Issue #112, A6: the old rule removed every container not owned by this
+    pid — including another live AURA's worker. An owner pid that is alive
+    (possibly reused) is never proof of death, so the container stays."""
+    monkeypatch.setenv("AURA_HOME", str(tmp_path / "home"))
+    name = sandbox.new_name("liveowner")
+    subprocess.run(["docker", "run", "-d", "--name", name, "--label", f"{sandbox.LABEL}=run",
+                    "--label", f"{sandbox.LABEL}.owner=1", image, "sleep", "300"],
+                   check=True, capture_output=True)
+    try:
+        sandbox.sweep(force=True)
+        assert name in _left(), "a container whose owner pid is alive was removed"
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 

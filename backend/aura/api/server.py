@@ -330,6 +330,18 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
         agent_runtime=agent_runtime_svc,
         model_registry=_model_registry,
     )
+    # Issue #112: hold this process's instance lock for its whole life, then
+    # remove workers and containers left by AURA processes that are gone —
+    # BEFORE deciding what to resume, so a resumed run never overlaps its
+    # crashed predecessor and a stopped run's worker is gone. Another live
+    # instance's workers, and anything ambiguous, are left untouched.
+    try:
+        from ..lifecycle import reap_now
+
+        reap_now(H)
+    except Exception:  # noqa: BLE001 — cleanup must never stop the service starting
+        import logging as _log
+        _log.getLogger(__name__).exception("orphan worker cleanup failed at startup")
     # Work that was in flight when a previous process died is not running
     # any more: say so now, rather than leaving it looking active.
     try:

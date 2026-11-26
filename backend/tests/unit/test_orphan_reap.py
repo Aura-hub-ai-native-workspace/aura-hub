@@ -66,13 +66,20 @@ def test_pattern_must_be_bounded():
 
 
 def test_service_refuses_a_session_id_that_is_not_its_own_shape(monkeypatch):
+    """Malformed session ids are refused; a valid one runs the ownership-based
+    cleanup (issue #112). The old command-line match (which never matched a
+    real worker) is never used again."""
+    import aura.lifecycle as lifecycle
     from aura.central_agent import service as svc
 
-    calls: list[str] = []
-    monkeypatch.setattr(procexec, "terminate_matching", lambda pat, **k: calls.append(pat) or [])
+    reaps: list = []
+    patterns: list[str] = []
+    monkeypatch.setattr(lifecycle, "reap_now", lambda home, **k: reaps.append(home) or {})
+    monkeypatch.setattr(procexec, "terminate_matching", lambda pat, **k: patterns.append(pat) or [])
     agent = svc.CentralAgent.__new__(svc.CentralAgent)  # no backend needed
     agent._kill_orphaned_workers("agt-x; rm -rf /")
     agent._kill_orphaned_workers("")
-    assert calls == []
+    assert reaps == []
     agent._kill_orphaned_workers("agt-9e30a8d5316c")
-    assert calls and all("agt-9e30a8d5316c" in c for c in calls)
+    assert len(reaps) == 1
+    assert patterns == [], "no process is ever matched by command line any more"

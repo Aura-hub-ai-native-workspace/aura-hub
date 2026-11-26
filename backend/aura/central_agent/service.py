@@ -2045,20 +2045,20 @@ class CentralAgent:
         return touched
 
     def _kill_orphaned_workers(self, session_id: str) -> None:
-        """Best-effort: terminate worker processes that were running for
-        this session when the backend died. The lease registry is in-memory
-        and lost on restart, so orphaned processes must be found by their
-        command line. Discovery and signalling go through the process
-        boundary (procexec) so the usual guarantees hold; this module never
-        spawns a process itself."""
-        from ..environment.procexec import terminate_matching
+        """Stop workers left running by an AURA process that died.
 
-        # The session id becomes part of a process pattern: accept only the
-        # exact shape the service generates, never free text.
+        Issue #112: the previous command-line match (``<binary>.*<sessionId>``)
+        never matched — worker command lines carry the invocation id, not the
+        session id. Orphans are now found through ownership (instance lock +
+        worker registry + container labels) by ``aura.lifecycle``; this is the
+        same idempotent cleanup the API runs at startup, so it is safe to call
+        per session. Another live instance's workers are never touched."""
         if not re.fullmatch(r"agt-[0-9a-f]{6,64}", session_id or ""):
             return
-        for binary in ("opencode", "kilo", "claude", "codex"):
-            terminate_matching(f"{binary}.*{session_id}")
+        from ..config import aura_home
+        from ..lifecycle import reap_now
+
+        reap_now(aura_home())
 
     def _error_knowledge(self, project_root: str | None, project_id: str | None):
         from pathlib import Path

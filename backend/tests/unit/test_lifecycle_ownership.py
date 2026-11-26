@@ -295,3 +295,18 @@ def test_dead_instance_locks_are_cleaned_only_when_nothing_refers_to_them(tmp_pa
     assert instance_state(tmp_path, dead_b) == FREE
     assert instance_state(tmp_path, me.id) == HELD
 
+# ── run_agent registers host workers while they run ───────────────────────────
+
+def test_run_agent_registers_a_host_worker_only_while_it_runs(tmp_path, monkeypatch):
+    from aura import exec_
+
+    monkeypatch.setenv("AURA_HOME", str(tmp_path))
+    monkeypatch.setattr(exec_, "resolve_agent_binary",
+                        lambda b: exec_.Resolved(True, sys.executable))
+    probe = ("import os, sys; d = os.path.join(sys.argv[1], 'run', 'workers'); "
+             "print(len([f for f in os.listdir(d) if f.endswith('.json')]))")
+    out = asyncio.run(exec_.run_agent("python", ["-c", probe, str(tmp_path)], str(tmp_path), 30_000))
+    assert out.out.strip().splitlines()[-1] == "1", "the running worker was registered"
+    assert registry.entries(tmp_path) == [], "and unregistered when it ended"
+    entries_seen = instance.current()
+    assert entries_seen is not None and entries_seen.verified

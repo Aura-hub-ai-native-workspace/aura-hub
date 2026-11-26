@@ -192,6 +192,20 @@ def _signal_tree(proc, which: str) -> None:
 _live_sink: "ContextVar[Callable[[str, str], None] | None]" = ContextVar("aura_live_output_sink", default=None)
 
 
+#: Called with the pid of the process run_file just started (issue #112:
+#: host workers are registered so a crashed AURA's workers can be found).
+_spawn_hook: "ContextVar[Callable[[int], None] | None]" = ContextVar("aura_spawn_hook", default=None)
+
+
+def _notify_spawn(pid: int | None) -> None:
+    hook = _spawn_hook.get()
+    if hook is not None and pid:
+        try:
+            hook(pid)
+        except Exception:  # noqa: BLE001 — bookkeeping never fails a run
+            pass
+
+
 @contextmanager
 def live_output(sink: Callable[[str, str], None] | None):
     """Stream a worker's stdout/stderr, line by line, to ``sink(stream, line)``."""
@@ -292,6 +306,7 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
             env=merged_env,
             creationflags=(getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0)
                            | getattr(_sp, "CREATE_NO_WINDOW", 0)))
+        _notify_spawn(proc.pid)
         loop = asyncio.get_running_loop()
         waiter = asyncio.ensure_future(
             loop.run_in_executor(None, proc.communicate))
@@ -304,6 +319,7 @@ async def run_file(argv: list[str], cwd: str, timeout_ms: int,
             # as a group rather than leaving them running after a timeout.
             **({"start_new_session": True} if os.name != "nt" else {}),
         )
+        _notify_spawn(proc.pid)
         waiter = asyncio.ensure_future(_collect_output(proc, _live_sink.get()))
     cancel_task = asyncio.ensure_future(cancel.wait()) if cancel else None
     tasks = [waiter] + ([cancel_task] if cancel_task else [])
@@ -456,8 +472,37 @@ async def run_agent(bin: str, args: list[str], cwd: str,
     if not resolved.ok:
         raise RuntimeError(resolved.reason)
     argv = [*(argv_prefix or []), resolved.bin, *args]
-    return await run_file(argv, cwd, timeout_ms or AGENT_TIMEOUT_MS,
-                          cancel=cancel, env=env)
+    # Issue #112: a worker running on the host (not in a container, which is
+    # attributed by its labels) is registered while it runs, so the workers
+    # of an AURA process that crashes can be found and stopped later.
+    in_container = bool(argv_prefix) and os.path.basename(str(argv_prefix[0])).startswith("docker")
+    entry: dict = {}
+    token = None
+    if not in_container:
+        try:
+            from ..config import aura_home
+            from ..lifecycle import instance as _instance, registry as _registry
+
+            home = aura_home()
+            owner = _instance.acquire(home)
+
+            def _register(pid: int) -> None:
+                entry["home"] = home
+                entry["id"] = _registry.register(home, owner.id, pid, binary=bin)
+
+            token = _spawn_hook.set(_register)
+        except Exception:  # noqa: BLE001 — bookkeeping never fails a run
+            token = None
+    try:
+        return await run_file(argv, cwd, timeout_ms or AGENT_TIMEOUT_MS,
+                              cancel=cancel, env=env)
+    finally:
+        if token is not None:
+            _spawn_hook.reset(token)
+        if entry.get("id"):
+            from ..lifecycle import registry as _registry
+
+            _registry.unregister(entry["home"], entry["id"])
 
 
 # silence linters about intentional parity imports
