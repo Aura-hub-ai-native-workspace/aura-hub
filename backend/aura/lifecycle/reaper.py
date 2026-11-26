@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 from . import registry
 from .instance import FREE, HELD, LABEL_HOME, LABEL_INSTANCE, Instance, home_tag, instance_state, instances_dir
-from .procident import ALIVE, DEAD, pid_state, start_identity
+from .procident import ALIVE, DEAD, pid_state, pidfd_exited, pidfd_open, pidfd_send_signal, start_identity
 
 #: A lock file younger than this is never cleaned up (see the start-up race note).
 LOCK_CLEANUP_MIN_AGE_S = 120.0
@@ -71,7 +71,51 @@ def _docker_remove(name: str) -> bool:
 
 
 def _terminate_tree(pid: int, pgid: int | None, expected_identity: str) -> str:
-    """Stop a verified orphan worker and its children. Returns what happened."""
+    """Stop a verified orphan worker and its children. Returns what happened.
+
+    Linux (kernel >= 5.3): a pidfd is opened FIRST and the start identity is
+    verified AFTER, so the pidfd provably names the verified process; the
+    leader is then signalled through it and can never be confused with a
+    process that later reuses the pid. The process GROUP is signalled with
+    killpg(pgid) only while the pidfd shows the leader alive (the leader
+    keeps that number in use). Remaining limitation: the leader can exit
+    between that check and killpg; if it was the group's last member, the
+    number could in principle be reused in that gap. macOS and Windows have
+    no pidfd here and keep a check-then-signal gap (see _terminate_by_pid).
+    """
+    fd = None
+    try:
+        fd = pidfd_open(pid)
+    except ProcessLookupError:
+        return "terminated"  # already gone
+    if fd is None:
+        return _terminate_by_pid(pid, pgid, expected_identity)
+    try:
+        if start_identity(pid) != expected_identity or pidfd_exited(fd):
+            return "identity-changed"  # the pidfd is not bound to the recorded process
+        group = pgid is not None and pgid == pid and _getpgid(pid) == pid
+        for sig, wait_s in ((signal.SIGTERM, 3.0), (signal.SIGKILL, 3.0)):
+            if pidfd_exited(fd):
+                return "terminated"
+            try:
+                pidfd_send_signal(fd, sig)  # exactly this process
+                if group and not pidfd_exited(fd):
+                    os.killpg(pid, sig)  # its children; leader alive => pgid in use
+            except ProcessLookupError:
+                return "terminated"
+            except PermissionError:
+                return "terminate-not-permitted"
+            if pidfd_exited(fd, wait_s):
+                return "terminated"
+        return "terminated" if pidfd_exited(fd) else "terminate-failed"
+    finally:
+        os.close(fd)
+
+
+def _terminate_by_pid(pid: int, pgid: int | None, expected_identity: str) -> str:
+    """Fallback without a pidfd (macOS, Windows, old Linux kernels): the identity
+    is re-checked immediately before signalling, leaving a small gap in which
+    the pid could, in principle, be reused."""
     if start_identity(pid) != expected_identity:
         return "identity-changed"  # re-checked right before signalling
     if os.name == "nt":

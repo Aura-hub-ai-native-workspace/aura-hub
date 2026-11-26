@@ -354,3 +354,94 @@ def test_run_agent_registers_a_host_worker_only_while_it_runs(tmp_path, monkeypa
     assert registry.entries(tmp_path) == [], "and unregistered when it ended"
     entries_seen = instance.current()
     assert entries_seen is not None and entries_seen.verified
+
+
+# ── Linux pidfd: the final check-to-signal gap for the worker itself ──────────
+
+linux_pidfd = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="pidfd is Linux-only")
+
+
+@linux_pidfd
+def test_a_pidfd_can_never_signal_a_process_after_it_is_gone():
+    """The property that removes the pid-reuse gap: a pidfd names ONE process;
+    once it has exited and been reaped, signalling through it fails instead of
+    reaching whatever process gets that pid next."""
+    from aura.lifecycle.procident import pidfd_open, pidfd_send_signal
+
+    child = _sleeper()
+    fd = pidfd_open(child.pid)
+    if fd is None:
+        pytest.skip("pidfd unavailable on this kernel")
+    try:
+        child.kill()
+        child.wait(15)
+        with pytest.raises(ProcessLookupError):
+            pidfd_send_signal(fd, signal.SIGTERM)
+    finally:
+        os.close(fd)
+
+
+@linux_pidfd
+def test_terminate_binds_the_pidfd_before_verifying_identity(monkeypatch):
+    from aura.lifecycle import reaper
+
+    child = _sleeper()
+    try:
+        real = start_identity(child.pid)
+        order = []
+        real_open = reaper.pidfd_open
+        monkeypatch.setattr(reaper, "pidfd_open", lambda pid: order.append("open") or real_open(pid))
+        monkeypatch.setattr(reaper, "start_identity", lambda pid: order.append("identity") or real + "-not-it")
+        assert reaper._terminate_tree(child.pid, child.pid, real) == "identity-changed"
+        assert order[:2] == ["open", "identity"], "identity must be checked after the pidfd is bound"
+        assert pid_state(child.pid) == ALIVE, "a mismatching process was signalled"
+    finally:
+        child.kill()
+        child.wait(15)
+
+
+@linux_pidfd
+def test_terminate_stops_the_leader_and_its_group_through_the_pidfd(tmp_path):
+    from aura.lifecycle import reaper
+
+    marker = tmp_path / "grandchild.pid"
+    leader = subprocess.Popen([sys.executable, "-c",
+                               "import subprocess, sys, time\n"
+                               "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
+                               f"open({str(marker)!r}, 'w').write(str(g.pid))\n"
+                               "time.sleep(300)\n"], start_new_session=True)
+    try:
+        end = time.monotonic() + 30
+        while not marker.exists() or not marker.read_text():
+            assert time.monotonic() < end
+            time.sleep(0.05)
+        grandchild = int(marker.read_text())
+        assert reaper._terminate_tree(leader.pid, leader.pid, start_identity(leader.pid)) == "terminated"
+        leader.wait(15)
+        end = time.monotonic() + 10
+        while pid_state(grandchild) != DEAD and time.monotonic() < end:
+            time.sleep(0.1)
+        assert pid_state(grandchild) == DEAD, "the worker's child survived"
+    finally:
+        if leader.poll() is None:
+            os.killpg(leader.pid, signal.SIGKILL)
+            leader.wait(15)
+
+
+def test_without_a_pidfd_the_fallback_still_verifies_and_terminates(monkeypatch):
+    from aura.lifecycle import reaper
+
+    monkeypatch.setattr(reaper, "pidfd_open", lambda pid: None)
+    child = _sleeper()
+    try:
+        ident = start_identity(child.pid)
+        if ident is None:
+            pytest.skip(f"start identity unsupported on {sys.platform}")
+        assert reaper._terminate_tree(child.pid, None, ident + "-not-it") == "identity-changed"
+        assert pid_state(child.pid) == ALIVE
+        assert reaper._terminate_tree(child.pid, None, ident) == "terminated"
+        child.wait(15)
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait(15)
