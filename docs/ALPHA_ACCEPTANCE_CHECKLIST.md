@@ -1,0 +1,84 @@
+# AURA Hub — Alpha Acceptance Checklist
+
+**Approved by the owner 2026-11-25** (six sections; evidence-based statuses;
+untested items stay untested; security failures block alpha). Phase 1 exit gate of the Master
+Execution Roadmap. AURA Hub is "alpha" only when every **required** item
+below is marked PASS **with evidence** (a CI run link, a command log, a
+screenshot or recording, or an issue number). An item without evidence is
+not PASS, whatever the code suggests.
+
+Status values: **PASS** · **FAIL** · **NOT RUN** · **BLOCKED** (needs
+something outside the team's control) · **WAIVED** (owner decision,
+recorded with a reason).
+
+Target build: the first tagged release after PR #106 is resolved.
+
+---
+
+## A. Build and release integrity (required)
+
+| # | Check | How to verify | Status | Evidence |
+|---|---|---|---|---|
+| A1 | `main` CI green on Linux, Windows, macOS | CI run on the release commit: typecheck + unit tests, backend pytest ×3 OS, desktop packaging ×4 targets | NOT RUN | |
+| A2 | Merge gate enforces A1 | Branch protection on `main` requires Typecheck & Build, Backend tests ×3 OS and Desktop packaging ×4 targets | **PASS with limitation** — `enforce_admins` is off, so repository admins can still bypass the checks | 2026-11-25: protection API lists 8 required checks (app 15368); `gh pr checks 106 --required` lists all 8; PR #106 merge state `BLOCKED` |
+| A3 | Release assets complete and signed for the updater | Linux AppImage/deb/tar.gz, macOS arm64+x64 dmg, Windows exe, each with `.sig`; `latest.json` valid (`scripts/release-verify.mjs`) | PASS for v0.1.27 (re-run for the alpha tag) | `gh release view v0.1.27` |
+| A4 | No uncommitted or unreviewed product code on `main` | `git status` clean of source changes; all work arrived via PR | NOT RUN (PR #106 open) | |
+| A5 | Full local suites pass on the release commit | `npm run typecheck`, `test:front`, `test:service`, `test:agents`, `pytest backend/tests` | PASS on PR #106 tip (Linux) | `docs/EXECUTION_LOG.md` 2026-11-25 |
+
+## B. Install and first run — per OS (required, hands-on)
+
+Run on a clean user account for each of: **Linux x64**, **Windows x64**, **macOS arm64** (macOS x64 desirable).
+
+| # | Check | Linux | Windows | macOS |
+|---|---|---|---|---|
+| B1 | Installer runs; app launches without a terminal | NOT RUN | NOT RUN | NOT RUN |
+| B2 | Bundled services start (AI service + Python API); failure shows a readable reason, not a blank window | NOT RUN | NOT RUN | NOT RUN |
+| B3 | Sign-in stays inside the hub (Google may open the browser once) | NOT RUN | NOT RUN | NOT RUN |
+| B4 | Connect one provider (BYOK or Ollama); model choice survives reconnect | NOT RUN | NOT RUN | NOT RUN |
+| B5 | Quit the app: no orphan processes remain (`process-containment-verify` + manual check) | **FAIL after a crash** (#112): normal exit PASS (`PHASE1_HANDOFF.md`), but after a `kill -9` the worker's sandbox container keeps running until the next sandboxed task. Reproduced 2026-11-26: still running 60 s after restart when the stopped run is not resumed | **NOT VERIFIED** | **NOT VERIFIED** |
+| B6 | Updater detects and applies a newer build | NOT RUN | NOT RUN | NOT RUN |
+
+## C. Workspace execution (required)
+
+Linux run 2026-11-25 on PR #106 (`fe72298`): the Python API the Workspace uses, driven over HTTP on a throwaway home and project, with no model configured (deterministic mode). Real agents and credentials were unreachable (stripped `PATH`); delegation used a **fake** `claude` worker that passed AURA's readiness proof. Windows and macOS: NOT RUN.
+
+| # | Check | How to verify | Status (Linux) |
+|---|---|---|---|
+| C1 | Read-only request runs and answers with real output ("Show me the git status", "List the files") | Workspace run; answer contains tool output, not advice to run it yourself | **PASS** — git status, list files, read file, git diff, current branch: real output, verified, ~1 s each. Minor: "git diff" says "no uncommitted changes" while an untracked file exists |
+| C2 | Edit task completes and is verified (file change appears in the run observer and on disk) | Workspace run on a scratch repo | **PARTIAL** — file creation PASS (byte-identical read-back). A code change with no coding agent connected is refused before any effect, but worded as "Policy denied" rather than "no agent connected" |
+| C3 | Delegated coding-agent task (OpenCode or Kilo) runs and reports `contextMcp` honestly | Run observer + execution report | **PARTIAL** — delegation PASS with a fake worker (file modified, reported, verified). Not run with real OpenCode/Kilo (gate under #107). `contextMcp` is set by the executor but not shown in the report or audit trail |
+| C4 | Policy denial affects only the denied task; independent tasks still complete; summary says "partially completed" | Covered by unit tests in PR #106; needs one real run | **NOT VERIFIED** — the deterministic planner never produced a mixed plan (it drops or merges parts). The failure it reported was honest. Needs a model-backed run |
+| C5 | Failed task recovers on a permitted alternative, or says plainly that none exists | Run observer "recoveries" list | **PASS (no-alternative case)** — auth failure classified, not re-dispatched, `alternativeAvailable: false`, run failed honestly. The recovered-on-alternative case is NOT RUN |
+| C6 | STOP cancels a running mission within seconds; no worker keeps running | Manual + `process-containment-verify` | **PASS (no crash)** — `cancelled` in 669 ms; worker container and grandchild gone (`ps`, `docker ps`). STOP during the #110 benchmark: 16/16 settled in ≤ 0.8 s with the worker gone. **Exception:** a STOP interrupted by a crash leaves the worker running (#112) |
+| C7 | `kill -9` of the service mid-mission: decisions and outcomes still on disk; tampering detectable | `audit-journal-verify` | **FIX PENDING IN PR #113 — NOT PASS** until #113 is merged and post-merge validation is recorded. On `main` (Python/Workspace path) the in-flight invocation leaves no audit record (#109). Current PR #113 head `117f2fe` writes a separate start record before execution and reconciles unsettled starts; CI run `45840603750` passed, but branch CI is pre-merge evidence only. Owner review remains pending. Tamper detection for this journal is not covered. The earlier PASS covered the Node service only |
+| C8 | A finished run never stays shown as "running" after restart | Restart during and after a run | **FAIL on `main`** (#110). **Fix in PR #111** (`d7f9265`, not merged): on Linux the resumed run reads `running`, and after STOP `cancelled` (8/8 benchmark samples + end-to-end); 3,749 backend tests pass. Stays FAIL until #111 is merged with green cross-OS CI |
+
+## D. Agent sessions and coordination (required)
+
+| # | Check | Status |
+|---|---|---|
+| D1 | Agent setup screen states only what was verified (configured vs verified vs executable) | Implemented in PR #106; NOT RUN on a real install |
+| D2 | Shared context written by one agent is visible to the next in the same project | NOT RUN (`scripts/agents/cross-agent-context-acceptance.mjs`) |
+| D3 | Specialists roster shows real runtime availability | Implemented in PR #106; NOT RUN |
+
+## E. Security boundaries (required)
+
+| # | Check | Status |
+|---|---|---|
+| E1 | Verified Relay Round 3.1 items C1–C8 fixed. **Blocks alpha** (owner decision 2026-11-25: security failures block alpha) | **FAIL** — audits NEEDS REVISION, not implemented (#107) |
+| E2 | Prompt redaction, SSRF guard, approval binding suites pass (`prompt-redaction-verify`, `ssrf-guard-verify`, `approval-binding-verify`) | NOT RUN for this build |
+| E3 | Data folder private; crash records scrubbed (v0.1.27 fix) | NOT RUN for this build |
+
+## F. Desirable (not alpha-blocking)
+
+- F1 Automated GUI journeys for C1–C3 (today manual; finding F-08).
+- F2 One merged audit view across `~/.aura/audit/trail.jsonl` and `~/.aura/fabric-audit.jsonl` (finding F-05).
+- F3 Repository hygiene: scratch files out of the repo root; `graphify-out/` no longer tracked (finding F-11).
+
+---
+
+## Sign-off
+
+| Role | Name | Date | Decision |
+|---|---|---|---|
+| Owner | | | |
