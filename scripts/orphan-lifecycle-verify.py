@@ -231,10 +231,18 @@ def a3(h: Harness) -> dict:
     h.http(4443, f"/agent/sessions/{sid}/cancel", {"reason": "a3 done"})
     time.sleep(3)
     left = h.owned_by_pid(api3.pid)
-    locks = sorted(p.stem for p in (root / "home" / ".aura" / "run" / "instances").glob("*.lock"))
-    ok = not dead and not left and len(locks) == 1
+    # Lock files of instances that died seconds ago are deliberately kept
+    # (never deleted while younger than 120 s, so a STARTING instance's file
+    # is never removed); they must all probe free, and only api3's held.
+    sys.path.insert(0, str(REPO / "backend"))
+    from aura.lifecycle.instance import HELD, instance_state
+
+    inst_dir = root / "home" / ".aura" / "run" / "instances"
+    states = {p.stem: instance_state(root / "home" / ".aura", p.stem) for p in inst_dir.glob("*.lock")}
+    held = [i for i, s in states.items() if s == HELD]
+    ok = not dead and not left and len(held) == 1 and all(s in (HELD, "free") for s in states.values())
     return {"pass": ok, "deadInstanceContainersWhenApi3Dispatched": dead, "leftAfterStop": left,
-            "instanceLockFiles": len(locks)}
+            "instanceLocks": states, "heldLocks": len(held)}
 
 
 def a4(h: Harness) -> dict:
