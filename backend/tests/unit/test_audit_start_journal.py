@@ -136,7 +136,7 @@ CHILD = textwrap.dedent("""
     class Hang:
         capabilityId = "filesystem.read"
         async def run(self, invocation):
-            (home / "ready").write_text(invocation["id"])
+            (home / "ready").write_text(f"{invocation['id']}\\n{os.getpid()}")
             await asyncio.sleep(600)
             return {"ok": True, "detail": "never"}
 
@@ -151,21 +151,31 @@ CHILD = textwrap.dedent("""
 def _crash_mid_invocation(home: Path) -> tuple[str, int]:
     script = home / "child.py"
     script.write_text(CHILD)
+    posix = os.name == "posix"
     child = subprocess.Popen([sys.executable, str(script), str(BACKEND), str(home)],
-                             cwd=str(BACKEND), start_new_session=True)
+                             cwd=str(BACKEND), start_new_session=posix)
     try:
         end = time.monotonic() + 60
         while not (home / "ready").exists():
             assert child.poll() is None, "child exited before the action started"
             assert time.monotonic() < end, "the action never started"
             time.sleep(0.05)
-        os.kill(child.pid, signal.SIGKILL)  # the crash
-        child.wait(10)
+        time.sleep(0.2)  # let the writer finish the two-line ready file
+        inv_id, pid = (home / "ready").read_text().split("\n")
+        # The crash: an unhandleable kill of the process running the action
+        # (SIGKILL on POSIX; on Windows os.kill is TerminateProcess). Its own
+        # pid, because on Windows a venv python.exe may be a launcher whose
+        # child does the work. Nothing in the process gets to clean up.
+        os.kill(int(pid), signal.SIGKILL if posix else signal.SIGTERM)
+        child.wait(30)
     finally:
         if child.poll() is None:
-            os.killpg(child.pid, signal.SIGKILL)
+            if posix:
+                os.killpg(child.pid, signal.SIGKILL)
+            else:
+                child.kill()
             child.wait(10)
-    return (home / "ready").read_text(), child.pid
+    return inv_id, int(pid)
 
 
 def test_a_crash_mid_invocation_leaves_authorization_and_start_on_disk(home):
