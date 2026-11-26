@@ -36,6 +36,7 @@ def build_fabric_config(audit, policy_config=None):
     host = _H()
     fabric = CapabilityFabric(host)
     fabric.attach_audit_store(audit.load, audit.append)
+    fabric.attach_start_journal(audit.starts().append)  # issue #109
     execs = {}
     for exe in all_executors():
         try:

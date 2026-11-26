@@ -222,6 +222,25 @@ def _wire(*, fabric=None, run_scopes=None, secrets_store=None) -> dict:
             read_json_file(H / "fabric-policy.json", DEFAULT_POLICY))
     if hasattr(fabric, "attach_audit_store"):
         fabric.attach_audit_store(audit.load, audit.append)
+    # Issue #109: every authorized action is on disk before it runs, and an
+    # action a previous process never settled is marked as such, once.
+    if hasattr(fabric, "attach_start_journal"):
+        fabric.attach_start_journal(audit.starts().append)
+    try:
+        from ..audit import reconcile_unsettled_starts
+
+        undetermined: list[str] = []
+        reconcile_unsettled_starts(audit, undetermined=undetermined)
+        if undetermined:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "%d unsettled audit start record(s) were left unmarked because "
+                "their process state could not be established: %s",
+                len(undetermined), ", ".join(undetermined[:20]))
+    except Exception:  # noqa: BLE001 — must never stop the service starting
+        import logging as _log
+        _log.getLogger(__name__).exception(
+            "could not reconcile unsettled audit start records")
 
     wf_store = WorkflowStore()
     ver_store = WorkflowVersionStore()

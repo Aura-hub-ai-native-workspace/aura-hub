@@ -12,6 +12,7 @@ tests/fabric keeps it honest).
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -187,6 +188,9 @@ class CapabilityFabric:
                              "overrides": {}, "nodeOverrides": {}, "nodeAllowlists": {},
                              "allowAutonomous": True}
         self._audit_store_append: Callable | None = None
+        self._start_journal_append: Callable | None = None
+        #: invocation id -> why its start record could not be written
+        self._start_journal_failures: dict[str, str] = {}
         self._clock_ms = clock_ms
         self._clock_iso = clock_iso
         self._sleep = sleep
@@ -214,6 +218,68 @@ class CapabilityFabric:
         """EVERYTHING restores for audit — forgetting would be wrong, not cautious."""
         self._audit_store_append = append
         self.audit_log = [*load(), *self.audit_log]
+
+    def attach_start_journal(self, append: Callable[[dict], None]) -> None:
+        """Durably record that an action was authorized and started, BEFORE
+        it runs (issue #109). The settled trail is unchanged; this journal is
+        what survives when the process dies mid-action."""
+        self._start_journal_append = append
+
+    @staticmethod
+    def _may_run_without_start_record(capability: dict, evaluation: dict) -> bool:
+        """Owner policy (2026-11-26) when the start record cannot be written.
+
+        Only actions that are low-risk by BOTH the capability's declared risk
+        and the policy evaluation may still run (the failure is flagged).
+        Medium, high, missing or unrecognised risk is blocked: unknown is
+        treated as high, and the audit failure never lowers a risk class.
+        """
+        return (capability.get("risk") == "low"
+                and evaluation.get("risk") == "low")
+
+    def _journal_start(self, invocation: dict, capability: dict, evaluation: dict,
+                       resolution: dict) -> bool:
+        """Write the start record. True when written (or no journal attached)."""
+        if not self._start_journal_append:
+            return True
+        ctx = invocation["context"]
+        node = resolution.get("node") if isinstance(resolution, dict) else None
+        record: dict[str, Any] = {
+            "invocationId": invocation["id"],
+            "at": self._clock_iso(),
+            "capabilityId": invocation["capabilityId"],
+            "phase": "started",
+            "actor": ctx.get("actor"),
+            "projectId": ctx.get("projectId"),
+            **{k: ctx[k] for k in ("missionId", "taskId", "sessionId", "requestId",
+                                   "workflowId", "runId", "workflowNodeId") if ctx.get(k)},
+            "risk": evaluation["risk"],
+            "decision": evaluation["decision"],
+            "decisionRule": evaluation["rule"],
+            "inputSummary": summarize_input(capability, invocation["input"]),
+            "pid": os.getpid(),
+        }
+        if ctx.get("nodeId") is not None:
+            record["requestedNodeId"] = ctx["nodeId"]
+        if isinstance(node, dict) and node.get("id"):
+            # Routing's choice, not executor attribution (which only the
+            # settled record carries as nodeId/executedNodeId).
+            record["plannedNodeId"] = node["id"]
+        try:
+            self._start_journal_append(record)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            # Never lose it silently: flag it on the settled record and tell
+            # listeners. Whether the action may still run is decided by the
+            # caller (_may_run_without_start_record).
+            self._start_journal_failures[invocation["id"]] = str(exc)[:200]
+            try:
+                self._emit({"type": "audit.persist-failed", "phase": "start",
+                            "at": record["at"], "invocationId": invocation["id"],
+                            "error": str(exc)[:200]})
+            except Exception:  # noqa: BLE001
+                pass
+            return False
 
     def _record(self, entry: dict) -> None:
         self.audit_log.append(entry)
@@ -381,6 +447,19 @@ class CapabilityFabric:
                 f"{capability['name']} is planned for but has no executor yet, so nothing was run. {capability['description']}",
                 dict(NO_VERIFICATION), evaluation, started, started_at, 0)
 
+        # Authorized and about to run: on disk before anything executes.
+        if (not self._journal_start(invocation, capability, evaluation, resolution)
+                and not self._may_run_without_start_record(capability, evaluation)):
+            reason = ("The audit start record could not be written, and this "
+                      f"action is not low-risk ({capability.get('risk') or 'unclassified'}), "
+                      "so it was not run. Nothing was changed.")
+            self._emit({"type": "invocation.denied", "at": self._clock_iso(),
+                        "invocationId": invocation["id"], "reason": reason})
+            return self._settle(invocation, capability, "denied", reason,
+                                dict(NO_VERIFICATION),
+                                {**evaluation, "decision": "deny",
+                                 "rule": "audit-start-unwritable", "reason": reason},
+                                started, started_at, 0)
         self._emit({"type": "invocation.started", "at": self._clock_iso(),
                     "invocationId": invocation["id"], "capabilityId": capability_id})
 
@@ -510,6 +589,9 @@ class CapabilityFabric:
         if executed_node is not None:
             record["nodeId"] = executed_node
             record["executedNodeId"] = executed_node
+        if self._start_journal_failures.pop(invocation["id"], None) is not None:
+            # Present only on failure, like auditPersisted: healthy records keep their shape.
+            record["startJournaled"] = False
 
         self._record(record)
         # A journal write this _record could not persist is marked on the
