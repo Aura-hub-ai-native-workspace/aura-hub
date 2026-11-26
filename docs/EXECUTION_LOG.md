@@ -196,7 +196,7 @@ Branch `fix/109-durable-audit-start` (base `7607725`), not yet committed. Design
 | Task | Status | Notes |
 |---|---|---|
 | Establish repository and release baseline | **IN PROGRESS** | Change set preserved and in PR #106. Cross-OS merge gate enforced on `main` (8 required checks). Remaining: stale PRs #67/#62, root clutter, old stashes, `enforce_admins` decision. |
-| Close critical Workspace execution bugs | **IN PROGRESS** | #110: PR #111 (`d7f9265`), 8/8 CI, held for review with #112. #109: PR #113 (`c8093f6` + `6106b5e`), 8/8 CI, two review findings to fix before merge. #112: remediation plan in progress. #107: open (security, blocks alpha). Nothing merged. |
+| Close critical Workspace execution bugs | **IN PROGRESS** | #110/#112: stacked PR #114 (`d7f9265` + lifecycle changes through `0cfcd0d`), all 9 CI jobs green; owner review pending. #109: PR #113 (`117f2fe`), CI run `45840603750` successful; owner review pending. C7 remains pending until #113 is merged and validated. #107 remains open and blocks alpha. Nothing merged. |
 | Complete priority agent-session and coordination gaps | **IN PROGRESS** | PR #106 (draft): 7/8 required checks green; macOS backend blocked on #107 gate tests; awaiting independent review. |
 | Validate Windows, Linux and macOS | **PARTIAL** | CI builds and backend tests pass on all three. Process containment NOT VERIFIED on Windows/macOS. No hands-on install run recorded. |
 | Define verified alpha acceptance checklist | **DONE** | `docs/ALPHA_ACCEPTANCE_CHECKLIST.md` approved by the owner 2026-11-25. |
@@ -206,20 +206,68 @@ Branch `fix/109-durable-audit-start` (base `7607725`), not yet committed. Design
 Tracked privately by the owner (not in this public repository). No GPU allocation or 24/7 server is secured; budget ₹0; Phase 2 implementation not started.
 
 ## In progress
-- #112 remediation plan (orphaned sandbox workers after a crash).
+- Owner review of PR #113 and PR #114. PR #111 is included in #114, not a separate merge candidate.
 
 ## Blockers and dependencies
 - PR #106 merge: cross-OS CI + independent review + #107.
-- PR #111 merge: owner review; held until the #112 lifecycle risk is resolved and its acceptance tests pass.
-- PR #113 merge: owner review; review findings 1–2 addressed.
+- PR #114 merge: owner review of #112 together with its stacked #111 (`d7f9265`); #111 is not a separate merge candidate.
+- PR #113 merge: owner review of current head `117f2fe`; required CI is green, but C7 stays pending until merge and post-merge validation.
+- Issue #115 is an approved, deferred follow-up after #113 and #114 merge.
 - Windows/macOS hands-on validation needs real machines or a human tester.
 - Phase 2 credit checks need the owner's account access.
 
 ## Next concrete action
-Owner reviews the #112 remediation plan; then implement #112, address PR #113 findings 1–2, and review PR #111 with #112.
+Owner reviews PR #113 and PR #114 together with #111 treated as part of #114. Keep #115 deferred until both PRs merge; then begin that follow-up. C7 remains pending until #113 has merged and post-merge validation is recorded.
 
 ## Recommended changes to the roadmap (awaiting approval)
 - None.
 
 ## Approved changes to the roadmap
 - None. (The 2026-11-25 decisions are execution decisions within Phase 1, not roadmap changes.)
+
+## 2026-11-26 — PR #114 crash acceptance and cross-platform CI (not merged)
+
+**Verified PR state:** #114 is open and unmerged at head `0cfcd0d4466f754f69ae607c269c0f1bb33d2bd6`. It is stacked on #111; commit `d7f926564571fab51ff392f03fc3d69130d1f4c4` is part of #114, not a separate merge candidate.
+
+**Real-crash acceptance at head `0cfcd0d`: six of six scenarios passed** (A1, A2, A3, A4, A5, A8):
+- A1: crashed worker container removed on restart before resumed work starts.
+- A2: orphan removed; a run with an unsettled STOP returns cancelled and is not relaunched.
+- A3: repeated crashes leave no dead-instance container; lock verification reports **one held lock and two free locks**.
+- A4: worker belonging to another home remains untouched.
+- A5: same-home live instance's worker survives the other instance's dispatch sweep and restart.
+- A8: API starts when Docker is unavailable, reports deferred cleanup, and removes the orphan after Docker returns.
+
+**CI:** [run 45850683814](https://github.com/Aura-hub-ai-native-workspace/aura-hub/actions/runs/45850683814) completed with **all nine jobs successful**. This was a pull-request run triggered for head `0cfcd0d`; GitHub checked out merge ref `8fe608516b698c52596d1edb73e14377c3788b0b`, which contains that PR head and base `7607725`. Backend suite results from the run:
+
+| Runner | Passed | Skipped | Failed | Collected |
+|---|---:|---:|---:|---:|
+| Linux | 3,722 | 142 | 0 | 3,864 |
+| Windows | 3,518 | 346 | 0 | 3,864 |
+| macOS arm64 | 3,698 | 166 | 0 | 3,864 |
+
+The Actions run retains the full job logs and JUnit artifacts.
+
+**Evidence limits:** the local backend rerun did not complete and has no final exit status; it is not a pass/fail result and is not presented as independent evidence. The report that a deliberately stopped benchmark run exited 144 and was excluded could not be independently verified from the available artifacts; it is not presented as independently verified benchmark evidence.
+
+### Owner-review checklist — PR #113 and PR #114
+
+Review these as two PRs. Treat #111 (`d7f9265`) as part of #114, not as a separate merge candidate.
+
+**PR #113 — #109 durable audit start, head `117f2febea76316db7db42e547cf5c5f5826e015`**
+- [ ] Confirm the start journal is written before execution, append-only, and leaves the settled trail contract unchanged.
+- [ ] Confirm reconciliation is idempotent, preserves live/settled starts, and records only processes proven dead; review the Windows OpenProcess decision table and separate-child coverage.
+- [ ] Verify follow-up commits `4312769` and `117f2fe` address the initial Windows liveness and separate-child coverage findings, and review the risk-based fail-closed start-write policy.
+- [ ] Confirm high-risk actions fail closed when the start journal cannot be written, while the documented low-risk behavior is understood.
+- [ ] Review documented limits, including lack of OS-crash/power-loss durability and conservative missed markers after PID reuse.
+- [ ] Check current required CI and review outstanding comments on [PR #113](https://github.com/Aura-hub-ai-native-workspace/aura-hub/pull/113). CI run `45840603750` completed successfully.
+- [ ] Keep checklist item C7 pending until #113 is merged and post-merge validation is recorded.
+
+**PR #114 — #112 orphan cleanup, head `0cfcd0d4466f754f69ae607c269c0f1bb33d2bd6`, stacked on #111**
+- [ ] Review #111's resumed-run and unsettled-STOP behavior together with #112's startup orphan cleanup; review/merge #111 only as part of #114.
+- [ ] Confirm the ownership rules require a verified instance lock, home match, and process identity; unknown ownership must cause no cleanup action.
+- [ ] Review the Linux pidfd signaling path, the documented process-group and non-Linux/older-kernel signaling limits, and whether those limits are acceptable.
+- [ ] Inspect A1/A2/A3/A4/A5/A8 evidence, including A3's one-held/two-free lock states and the cross-instance survival checks.
+- [ ] Confirm the Linux-only Docker acceptance is complemented by the passing cross-platform unit coverage, and note that Docker cleanup itself was not exercised on Windows/macOS.
+- [ ] Check all nine jobs in [CI run 45850683814](https://github.com/Aura-hub-ai-native-workspace/aura-hub/actions/runs/45850683814) and review outstanding comments on [PR #114](https://github.com/Aura-hub-ai-native-workspace/aura-hub/pull/114).
+
+**Deferred follow-up:** [issue #115](https://github.com/Aura-hub-ai-native-workspace/aura-hub/issues/115) already tracks consolidation of `aura.lifecycle.procident.pid_state` and `aura.audit.pid_state`. Keep it deferred until #113 and #114 merge; do not create a duplicate.
