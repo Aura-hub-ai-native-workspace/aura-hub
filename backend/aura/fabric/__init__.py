@@ -12,6 +12,7 @@ tests/fabric keeps it honest).
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -187,6 +188,9 @@ class CapabilityFabric:
                              "overrides": {}, "nodeOverrides": {}, "nodeAllowlists": {},
                              "allowAutonomous": True}
         self._audit_store_append: Callable | None = None
+        self._start_journal_append: Callable | None = None
+        #: invocation id -> why its start record could not be written
+        self._start_journal_failures: dict[str, str] = {}
         self._clock_ms = clock_ms
         self._clock_iso = clock_iso
         self._sleep = sleep
@@ -214,6 +218,52 @@ class CapabilityFabric:
         """EVERYTHING restores for audit — forgetting would be wrong, not cautious."""
         self._audit_store_append = append
         self.audit_log = [*load(), *self.audit_log]
+
+    def attach_start_journal(self, append: Callable[[dict], None]) -> None:
+        """Durably record that an action was authorized and started, BEFORE
+        it runs (issue #109). The settled trail is unchanged; this journal is
+        what survives when the process dies mid-action."""
+        self._start_journal_append = append
+
+    def _journal_start(self, invocation: dict, capability: dict, evaluation: dict,
+                       resolution: dict) -> None:
+        if not self._start_journal_append:
+            return
+        ctx = invocation["context"]
+        node = resolution.get("node") if isinstance(resolution, dict) else None
+        record: dict[str, Any] = {
+            "invocationId": invocation["id"],
+            "at": self._clock_iso(),
+            "capabilityId": invocation["capabilityId"],
+            "phase": "started",
+            "actor": ctx.get("actor"),
+            "projectId": ctx.get("projectId"),
+            **{k: ctx[k] for k in ("missionId", "taskId", "sessionId", "requestId",
+                                   "workflowId", "runId", "workflowNodeId") if ctx.get(k)},
+            "risk": evaluation["risk"],
+            "decision": evaluation["decision"],
+            "decisionRule": evaluation["rule"],
+            "inputSummary": summarize_input(capability, invocation["input"]),
+            "pid": os.getpid(),
+        }
+        if ctx.get("nodeId") is not None:
+            record["requestedNodeId"] = ctx["nodeId"]
+        if isinstance(node, dict) and node.get("id"):
+            # Routing's choice, not executor attribution (which only the
+            # settled record carries as nodeId/executedNodeId).
+            record["plannedNodeId"] = node["id"]
+        try:
+            self._start_journal_append(record)
+        except Exception as exc:  # noqa: BLE001
+            # Never fail an action on a logging failure, never lose it
+            # silently: flag it on the settled record and tell listeners.
+            self._start_journal_failures[invocation["id"]] = str(exc)[:200]
+            try:
+                self._emit({"type": "audit.persist-failed", "phase": "start",
+                            "at": record["at"], "invocationId": invocation["id"],
+                            "error": str(exc)[:200]})
+            except Exception:  # noqa: BLE001
+                pass
 
     def _record(self, entry: dict) -> None:
         self.audit_log.append(entry)
@@ -381,6 +431,8 @@ class CapabilityFabric:
                 f"{capability['name']} is planned for but has no executor yet, so nothing was run. {capability['description']}",
                 dict(NO_VERIFICATION), evaluation, started, started_at, 0)
 
+        # Authorized and about to run: on disk before anything executes.
+        self._journal_start(invocation, capability, evaluation, resolution)
         self._emit({"type": "invocation.started", "at": self._clock_iso(),
                     "invocationId": invocation["id"], "capabilityId": capability_id})
 
@@ -510,6 +562,9 @@ class CapabilityFabric:
         if executed_node is not None:
             record["nodeId"] = executed_node
             record["executedNodeId"] = executed_node
+        if self._start_journal_failures.pop(invocation["id"], None) is not None:
+            # Present only on failure, like auditPersisted: healthy records keep their shape.
+            record["startJournaled"] = False
 
         self._record(record)
         # A journal write this _record could not persist is marked on the
