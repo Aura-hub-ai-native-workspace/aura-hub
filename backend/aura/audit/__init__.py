@@ -64,6 +64,12 @@ class AuditStore:
         process that dies mid-action still leaves that on disk. Same
         append-only format, bounds and usability gate as the trail. One
         instance per trail, so trimming is counted per process.
+
+        Durability: each record is written and the file closed before the
+        action runs, so it survives the process being killed. It is NOT
+        guaranteed to survive an operating-system crash or power loss (no
+        fsync). If the record cannot be written, only low-risk actions run
+        (flagged); anything else is blocked (CapabilityFabric).
         """
         journal = getattr(self, "_starts", None)
         if journal is None:

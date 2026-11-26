@@ -107,14 +107,15 @@ def test_denied_invocations_write_no_start_record(home):
     assert len(_lines(home / "audit.jsonl")) == 1
 
 
-def test_a_failed_start_write_never_blocks_the_action_and_is_flagged(home):
+def _broken(_record):
+    raise OSError("disk full")
+
+
+def test_a_failed_start_write_still_runs_a_low_risk_action_and_flags_it(home):
+    """Owner policy: low-risk, reversible actions run, with the failure flagged."""
     ran, events = [], []
     cfg = _cfg(home, lambda inv: ran.append(1) or {"ok": True, "detail": "read"})
-
-    def broken(_record):
-        raise OSError("disk full")
-
-    cfg.fabric.attach_start_journal(broken)
+    cfg.fabric.attach_start_journal(_broken)
     cfg.fabric.listen(events.append)
     r = invoke_fabric(CAP, {"path": str(home / "proj" / "f.txt")}, _ctx(), cfg)
     assert ran == [1]
@@ -122,6 +123,53 @@ def test_a_failed_start_write_never_blocks_the_action_and_is_flagged(home):
     trail = _lines(home / "audit.jsonl")
     assert trail[-1]["startJournaled"] is False
     assert any(e.get("type") == "audit.persist-failed" and e.get("phase") == "start" for e in events)
+
+
+class _WriteExec:
+    capabilityId = "filesystem.write"
+
+    def __init__(self, ran):
+        self._ran = ran
+
+    async def run(self, invocation):
+        self._ran.append(1)
+        return {"ok": True, "detail": "written"}
+
+
+def test_a_failed_start_write_blocks_a_non_low_risk_action(home):
+    """Owner policy: anything not low-risk is blocked before it runs."""
+    ran, events = [], []
+    cfg = make_cfg(home, executors={"filesystem.write": _WriteExec(ran)})
+    cfg.fabric.attach_start_journal(_broken)
+    cfg.fabric.listen(events.append)
+    r = invoke_fabric("filesystem.write", {"path": "g.txt", "content": "x"}, _ctx(), cfg)
+    assert ran == [], "a medium-risk action ran without its start record"
+    assert r["outcome"] == "denied"
+    assert r["policy"]["rule"] == "audit-start-unwritable"
+    assert "could not be written" in r["detail"] and "medium" in r["detail"]
+    trail = _lines(home / "audit.jsonl")
+    assert trail[-1]["outcome"] == "denied" and trail[-1]["decisionRule"] == "audit-start-unwritable"
+    assert trail[-1]["startJournaled"] is False
+    assert any(e.get("type") == "audit.persist-failed" for e in events)
+    assert any(e.get("type") == "invocation.denied" for e in events)
+
+
+@pytest.mark.parametrize("declared,evaluated,allowed", [
+    ("low", "low", True),
+    ("medium", "medium", False),
+    ("high", "high", False),
+    ("low", "high", False),      # the stricter view wins
+    ("high", "low", False),      # never downgraded
+    (None, "low", False),        # unclassified is treated as high
+    ("weird", "low", False),     # unrecognised is treated as high
+    ("low", None, False),
+])
+def test_only_low_risk_by_both_views_may_run_without_a_start_record(declared, evaluated, allowed):
+    from aura.fabric import CapabilityFabric
+
+    cap = {} if declared is None else {"risk": declared}
+    ev = {} if evaluated is None else {"risk": evaluated}
+    assert CapabilityFabric._may_run_without_start_record(cap, ev) is allowed
 
 
 CHILD = textwrap.dedent("""
