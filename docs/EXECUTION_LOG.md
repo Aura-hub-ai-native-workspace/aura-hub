@@ -169,6 +169,26 @@ Branch `fix/109-durable-audit-start` (base `7607725`), not yet committed. Design
 
 **Observed, not filed:** in a fresh home, AURA's environment scan probes the system `freebuff` CLI, which then downloads a 140 MB runtime as a side effect.
 
+## 2026-11-26 — #109 fixed in PR #113 (not merged); PR #111 CI green
+
+**PR #111 (#110):** CI run `45665369615` on `d7f9265` — **8/8 required checks passed** (Linux, Windows, macOS backend tests and desktop packaging). Not merged; held for review together with #112.
+
+**PR #113 (#109):** commits `c8093f6` (fix) and `6106b5e` (Windows test fix), branch `fix/109-durable-audit-start` (base `7607725`).
+- **Design:** a separate append-only start journal (`audit/started.jsonl`) is written before each authorized action runs. The settled trail's contract is unchanged. On startup, a start never settled by a dead process gets one `unsettled-after-restart` marker.
+- **Tests:**
+  - 8 new tests, including a real hard kill of a child process mid-action: 8/8 fail on `main` and pass on the fix.
+  - Related suites: 119 passed.
+  - Full backend suite (Linux): **3,751 passed, 96 skipped, 0 failed**.
+- **CI:**
+  - First run `45827477842` on `c8093f6`: Windows backend failed 2 tests, because the new crash tests used POSIX-only calls (test harness only; 3,503 other tests passed).
+  - Fixed in `6106b5e`. Rerun `45830959861`: **8/8 required checks passed**.
+- **Review findings (posted on #113):**
+  - Linux checks verified: append-only writes, markers written once, live vs dead processes told apart.
+  - Two items recommended before merge:
+    1. On Windows, an access-denied `OpenProcess` is treated as "process gone", which could produce a false marker.
+    2. No test covers a live *other* process on any OS.
+  - Documented limits: missed markers after PID reuse or an OS reboot (conservative); no `fsync`, so OS crash or power loss is not covered; the action runs even if its start record cannot be written (flagged).
+
 ---
 
 ## Phase 1 task status
@@ -176,7 +196,7 @@ Branch `fix/109-durable-audit-start` (base `7607725`), not yet committed. Design
 | Task | Status | Notes |
 |---|---|---|
 | Establish repository and release baseline | **IN PROGRESS** | Change set preserved and in PR #106. Cross-OS merge gate enforced on `main` (8 required checks). Remaining: stale PRs #67/#62, root clutter, old stashes, `enforce_admins` decision. |
-| Close critical Workspace execution bugs | **IN PROGRESS** | #110: fixed in PR #111 (`d7f9265`), Linux-verified, awaiting CI and review, not merged. #109: in progress. #112: filed (orphaned worker after a crash). #107: open (security, blocks alpha). |
+| Close critical Workspace execution bugs | **IN PROGRESS** | #110: PR #111 (`d7f9265`), 8/8 CI, held for review with #112. #109: PR #113 (`c8093f6` + `6106b5e`), 8/8 CI, two review findings to fix before merge. #112: remediation plan in progress. #107: open (security, blocks alpha). Nothing merged. |
 | Complete priority agent-session and coordination gaps | **IN PROGRESS** | PR #106 (draft): 7/8 required checks green; macOS backend blocked on #107 gate tests; awaiting independent review. |
 | Validate Windows, Linux and macOS | **PARTIAL** | CI builds and backend tests pass on all three. Process containment NOT VERIFIED on Windows/macOS. No hands-on install run recorded. |
 | Define verified alpha acceptance checklist | **DONE** | `docs/ALPHA_ACCEPTANCE_CHECKLIST.md` approved by the owner 2026-11-25. |
@@ -186,17 +206,17 @@ Branch `fix/109-durable-audit-start` (base `7607725`), not yet committed. Design
 Tracked privately by the owner (not in this public repository). No GPU allocation or 24/7 server is secured; budget ₹0; Phase 2 implementation not started.
 
 ## In progress
-- PR #111 (#110) cross-OS CI.
-- #109 implementation (`fix/109-durable-audit-start`).
+- #112 remediation plan (orphaned sandbox workers after a crash).
 
 ## Blockers and dependencies
 - PR #106 merge: cross-OS CI + independent review + #107.
-- PR #111 merge: cross-OS CI, owner review; review together with #112.
+- PR #111 merge: owner review; held until the #112 lifecycle risk is resolved and its acceptance tests pass.
+- PR #113 merge: owner review; review findings 1–2 addressed.
 - Windows/macOS hands-on validation needs real machines or a human tester.
 - Phase 2 credit checks need the owner's account access.
 
 ## Next concrete action
-Finish #109 (full suite, commit, PR); owner reviews PR #111 together with #112.
+Owner reviews the #112 remediation plan; then implement #112, address PR #113 findings 1–2, and review PR #111 with #112.
 
 ## Recommended changes to the roadmap (awaiting approval)
 - None.
